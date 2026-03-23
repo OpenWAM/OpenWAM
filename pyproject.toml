@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "open-wam"
+version = "0.1.0"
+description = "Unified WAM research framework with a fixed LingBot-compatible video backbone."
+readme = "notes/new_work_roadmap.md"
+requires-python = ">=3.11"
+dependencies = [
+    "torch>=2.4",
+    "lightning>=2.4",
+    "pyyaml>=6.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/open_wam"]
+
+[tool.uv]
+package = true
