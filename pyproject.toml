@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "open-wam"
 version = "0.1.0"
 description = "Unified WAM research framework with a fixed LingBot-compatible video backbone."
-readme = "notes/new_work_roadmap.md"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "huggingface_hub>=0.30",
