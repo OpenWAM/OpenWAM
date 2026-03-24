@@ -74,6 +74,13 @@ Visualize the default LIBERO reference-relative EEF target in MuJoCo:
 uv run python scripts/visualize_libero_reference_pose.py --cfg configs/experiments/contract_only_libero.yaml
 ```
 
+Compare the original absolute LIBERO state rollout and the rollout reconstructed
+from our public action representation:
+
+```bash
+uv run python scripts/visualize_libero_pose_compare.py --cfg configs/experiments/contract_only_libero.yaml --mode compare
+```
+
 Run smoke tests:
 
 ```bash
