@@ -94,6 +94,9 @@ class ContractOnlyActionHead(ActionHead):
             state_hidden = self.state_proj(state_summary)[:, None, :]
             base_hidden = base_hidden + state_hidden
 
+        # `action_pred` is [B, H_action, D_action]. Even though this head is a
+        # placeholder, it already follows the final action-head contract so new
+        # variants can be dropped in without changing train/eval orchestration.
         action_pred = self.output_proj(base_hidden)
         per_token_loss = F.mse_loss(action_pred, target_actions, reduction="none")
         if action_mask is not None:
@@ -138,4 +141,3 @@ class ContractOnlyActionHead(ActionHead):
             next_state=next_state,
             aux={"interface_head": "contract_only"},
         )
-

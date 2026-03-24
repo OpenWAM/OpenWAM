@@ -18,7 +18,7 @@ except ModuleNotFoundError:
             "Lightning is not installed. Install dependencies with `uv sync` first."
         ) from exc
 
-from open_wam.lightning import OpenWAMLightningModule, RandomRobotWinDataModule
+from open_wam.lightning import OpenWAMDataModule, OpenWAMLightningModule
 from open_wam.utils import load_experiment_config
 
 
@@ -29,13 +29,7 @@ def main() -> None:
 
     config = load_experiment_config(args.config)
     module = OpenWAMLightningModule(config)
-    datamodule = RandomRobotWinDataModule(
-        data_config=config.data,
-        batch_size=2,
-        train_size=8,
-        val_size=2,
-        num_workers=0,
-    )
+    datamodule = OpenWAMDataModule(data_config=config.data)
     trainer = pl.Trainer(
         max_epochs=config.trainer.max_epochs,
         limit_train_batches=config.trainer.limit_train_batches,
@@ -52,4 +46,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

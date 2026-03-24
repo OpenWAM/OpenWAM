@@ -9,8 +9,11 @@ description = "Unified WAM research framework with a fixed LingBot-compatible vi
 readme = "notes/new_work_roadmap.md"
 requires-python = ">=3.11"
 dependencies = [
+    "huggingface_hub>=0.30",
     "torch>=2.4",
     "lightning>=2.4",
+    "pillow>=10.0",
+    "pyarrow>=18.0",
     "pyyaml>=6.0",
 ]
 

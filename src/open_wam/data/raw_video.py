@@ -6,6 +6,8 @@ from typing import Any, Mapping
 import torch
 import torch.nn.functional as F
 
+from open_wam.configs.data import DataConfig, ViewLayoutConfig
+
 
 @dataclass(frozen=True)
 class ViewPlacement:
@@ -36,29 +38,25 @@ class CanonicalVideoBatch:
     metadata: dict[str, Any]
 
 
-class RobotWinCanonicalVideoPreprocessor(torch.nn.Module):
-    """Build the canonical RobotWin multi-view canvas from raw RGB views.
+class ConfiguredCanonicalVideoPreprocessor(torch.nn.Module):
+    """Build a fixed multi-view RGB canvas from arbitrary raw camera streams.
 
-    The layout mirrors the LingBot view composition in RGB space:
-
-    - `cam_high` occupies the full top row at 256x320
-    - `cam_left_wrist` occupies the bottom-left at 128x160
-    - `cam_right_wrist` occupies the bottom-right at 128x160
-
-    The resulting canonical canvas is 384x320 before latentization.
-    With a 16x spatial latentizer this maps to 24x20 latent tokens, which is
-    the same geometry expected by the LingBot-style backbone.
+    The shared video backbone must always receive the same RGB canvas geometry,
+    even when the source dataset exposes different camera sets. The data layer
+    owns the layout decision by resizing each source view into a declared slot
+    inside the canonical canvas.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        placements: tuple[ViewPlacement, ...],
+        canvas_height: int,
+        canvas_width: int,
+    ) -> None:
         super().__init__()
-        self.placements = (
-            ViewPlacement("cam_high", top=0, left=0, height=256, width=320),
-            ViewPlacement("cam_left_wrist", top=256, left=0, height=128, width=160),
-            ViewPlacement("cam_right_wrist", top=256, left=160, height=128, width=160),
-        )
-        self.canvas_height = 384
-        self.canvas_width = 320
+        self.placements = placements
+        self.canvas_height = canvas_height
+        self.canvas_width = canvas_width
 
     def forward(self, views: Mapping[str, torch.Tensor]) -> CanonicalVideoBatch:
         missing = [placement.name for placement in self.placements if placement.name not in views]
@@ -177,3 +175,43 @@ class RobotWinCanonicalVideoPreprocessor(torch.nn.Module):
 
         return tensor
 
+
+class RobotWinCanonicalVideoPreprocessor(ConfiguredCanonicalVideoPreprocessor):
+    """Canonical RobotWin layout that mirrors the LingBot RGB composition."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            placements=(
+                ViewPlacement("cam_high", top=0, left=0, height=256, width=320),
+                ViewPlacement("cam_left_wrist", top=256, left=0, height=128, width=160),
+                ViewPlacement("cam_right_wrist", top=256, left=160, height=128, width=160),
+            ),
+            canvas_height=384,
+            canvas_width=320,
+        )
+
+
+def build_canonical_video_preprocessor(data_config: DataConfig) -> ConfiguredCanonicalVideoPreprocessor:
+    """Construct the canonicalizer from the experiment data config.
+
+    The resulting preprocessor is the only component that should translate
+    dataset-specific camera names and placements into the fixed RGB canvas seen
+    by the shared video backbone.
+    """
+
+    placements = tuple(_view_layout_to_placement(view) for view in data_config.view_layout)
+    return ConfiguredCanonicalVideoPreprocessor(
+        placements=placements,
+        canvas_height=data_config.canonical_height,
+        canvas_width=data_config.canonical_width,
+    )
+
+
+def _view_layout_to_placement(view: ViewLayoutConfig) -> ViewPlacement:
+    return ViewPlacement(
+        name=view.source_name,
+        top=view.top,
+        left=view.left,
+        height=view.height,
+        width=view.width,
+    )

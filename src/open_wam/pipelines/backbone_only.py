@@ -5,7 +5,7 @@ from typing import Mapping
 import torch
 from torch import nn
 
-from open_wam.data import CanonicalVideoBatch, RobotWinCanonicalVideoPreprocessor
+from open_wam.data import CanonicalVideoBatch, ConfiguredCanonicalVideoPreprocessor, RobotWinCanonicalVideoPreprocessor
 from open_wam.models.video_backbone import (
     BackboneOutput,
     LingbotCompatibleVideoBackbone,
@@ -19,7 +19,7 @@ class BackboneOnlyPipeline(nn.Module):
     def __init__(
         self,
         backbone_config: LingbotCompatibleVideoBackboneConfig | None = None,
-        preprocessor: RobotWinCanonicalVideoPreprocessor | None = None,
+        preprocessor: ConfiguredCanonicalVideoPreprocessor | None = None,
     ) -> None:
         super().__init__()
         self.preprocessor = preprocessor or RobotWinCanonicalVideoPreprocessor()
@@ -31,4 +31,3 @@ class BackboneOnlyPipeline(nn.Module):
     def forward(self, views: Mapping[str, torch.Tensor]) -> BackboneOutput:
         canonical_batch = self.canonicalize(views)
         return self.backbone(canonical_batch.video)
-

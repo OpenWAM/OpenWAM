@@ -5,7 +5,16 @@ from typing import Any
 
 import yaml
 
-from open_wam.configs import ActionHeadConfig, ActionSchemaConfig, ExperimentConfig, RobotWinDataConfig, TrainerConfig
+from open_wam.configs import (
+    ActionHeadConfig,
+    ActionSchemaConfig,
+    ExperimentConfig,
+    GenericDataConfig,
+    LiberoDataConfig,
+    RobotWinDataConfig,
+    TrainerConfig,
+    ViewLayoutConfig,
+)
 from open_wam.configs.inference import InferenceConfig
 from open_wam.configs.training import TrainingConfig
 from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
@@ -25,17 +34,83 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
     raw = _read_yaml(path)
     data_raw = raw.get("data", {})
     action_schema_raw = data_raw.get("action_schema", {})
-    data_config = RobotWinDataConfig(
-        dataset_name=data_raw.get("dataset_name", "robotwin"),
-        camera_names=tuple(data_raw.get("camera_names", ("cam_high", "cam_left_wrist", "cam_right_wrist"))),
-        canonical_height=data_raw.get("canonical_height", 384),
-        canonical_width=data_raw.get("canonical_width", 320),
-        num_frames=data_raw.get("num_frames", 2),
+    dataset_name = data_raw.get("dataset_name", "robotwin")
+    dataset_type = data_raw.get("dataset_type")
+
+    # Resolve defaults in two stages:
+    # 1. known benchmark presets such as RobotWin and LIBERO
+    # 2. a fully generic multiview fallback for custom sources
+    #
+    # This keeps new-source onboarding mostly declarative. A collaborator can
+    # often add a new dataset config by specifying `dataset_type`, camera names,
+    # layouts, and action/state schema in YAML without editing the loader.
+    if dataset_name == "libero":
+        data_defaults = LiberoDataConfig()
+        data_config_cls = LiberoDataConfig
+    elif dataset_name == "robotwin":
+        data_defaults = RobotWinDataConfig()
+        data_config_cls = RobotWinDataConfig
+    elif dataset_type == "lerobot_v2":
+        data_defaults = GenericDataConfig(dataset_name=dataset_name, dataset_type="lerobot_v2")
+        data_config_cls = GenericDataConfig
+    else:
+        resolved_type = dataset_type or "synthetic_multiview"
+        data_defaults = GenericDataConfig(dataset_name=dataset_name, dataset_type=resolved_type)
+        data_config_cls = GenericDataConfig
+
+    default_view_layout = [
+        {
+            "source_name": view.source_name,
+            "canonical_name": view.canonical_name,
+            "top": view.top,
+            "left": view.left,
+            "height": view.height,
+            "width": view.width,
+        }
+        for view in data_defaults.view_layout
+    ]
+    view_layout_raw = data_raw.get("view_layout", default_view_layout)
+    view_layout = tuple(
+        ViewLayoutConfig(
+            source_name=view["source_name"],
+            canonical_name=view.get("canonical_name", view["source_name"]),
+            top=view["top"],
+            left=view["left"],
+            height=view["height"],
+            width=view["width"],
+        )
+        for view in view_layout_raw
+    )
+
+    # `data_config_cls` may be a benchmark-specific preset or the generic
+    # fallback. In both cases, the instantiated object carries the exact view
+    # layout and action/state schema that the rest of the code should trust.
+    data_config = data_config_cls(
+        dataset_name=dataset_name,
+        dataset_type=data_raw.get("dataset_type", data_defaults.dataset_type),
+        repo_id=data_raw.get("repo_id", data_defaults.repo_id),
+        split=data_raw.get("split", data_defaults.split),
+        cache_dir=data_raw.get("cache_dir", data_defaults.cache_dir),
+        camera_names=tuple(data_raw.get("camera_names", data_defaults.camera_names)),
+        canonical_height=data_raw.get("canonical_height", data_defaults.canonical_height),
+        canonical_width=data_raw.get("canonical_width", data_defaults.canonical_width),
+        view_layout=view_layout,
+        num_frames=data_raw.get("num_frames", data_defaults.num_frames),
+        frame_stride=data_raw.get("frame_stride", data_defaults.frame_stride),
+        sample_stride=data_raw.get("sample_stride", data_defaults.sample_stride),
+        episode_cache_size=data_raw.get("episode_cache_size", data_defaults.episode_cache_size),
+        train_fraction=data_raw.get("train_fraction", data_defaults.train_fraction),
+        split_seed=data_raw.get("split_seed", data_defaults.split_seed),
+        max_train_episodes=data_raw.get("max_train_episodes", data_defaults.max_train_episodes),
+        max_val_episodes=data_raw.get("max_val_episodes", data_defaults.max_val_episodes),
+        train_batch_size=data_raw.get("train_batch_size", data_defaults.train_batch_size),
+        val_batch_size=data_raw.get("val_batch_size", data_defaults.val_batch_size),
+        num_workers=data_raw.get("num_workers", data_defaults.num_workers),
         action_schema=ActionSchemaConfig(
-            action_dim=action_schema_raw.get("action_dim", 30),
-            action_horizon=action_schema_raw.get("action_horizon", 32),
-            state_dim=action_schema_raw.get("state_dim", 30),
-            state_horizon=action_schema_raw.get("state_horizon", 1),
+            action_dim=action_schema_raw.get("action_dim", data_defaults.action_schema.action_dim),
+            action_horizon=action_schema_raw.get("action_horizon", data_defaults.action_schema.action_horizon),
+            state_dim=action_schema_raw.get("state_dim", data_defaults.action_schema.state_dim),
+            state_horizon=action_schema_raw.get("state_horizon", data_defaults.action_schema.state_horizon),
         ),
     )
 
@@ -105,4 +180,3 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         inference=inference_config,
         trainer=trainer_config,
     )
-

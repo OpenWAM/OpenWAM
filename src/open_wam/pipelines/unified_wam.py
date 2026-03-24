@@ -6,7 +6,11 @@ from typing import Mapping
 import torch
 from torch import nn
 
-from open_wam.data import CanonicalVideoBatch, RobotWinCanonicalVideoPreprocessor
+from open_wam.data import (
+    CanonicalVideoBatch,
+    ConfiguredCanonicalVideoPreprocessor,
+    RobotWinCanonicalVideoPreprocessor,
+)
 from open_wam.models.action_heads import (
     ActionHead,
     ActionHeadInferContext,
@@ -45,7 +49,7 @@ class UnifiedWAMPipeline(nn.Module):
         self,
         action_head: ActionHead,
         backbone_config: LingbotCompatibleVideoBackboneConfig | None = None,
-        preprocessor: RobotWinCanonicalVideoPreprocessor | None = None,
+        preprocessor: ConfiguredCanonicalVideoPreprocessor | None = None,
     ) -> None:
         super().__init__()
         self.preprocessor = preprocessor or RobotWinCanonicalVideoPreprocessor()
@@ -87,4 +91,3 @@ class UnifiedWAMPipeline(nn.Module):
             infer_state=resolved_state,
         )
         return UnifiedWAMInferOutput(backbone_output=backbone_output, head_output=head_output)
-

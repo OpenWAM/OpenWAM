@@ -1,0 +1,352 @@
+from __future__ import annotations
+
+from collections import OrderedDict
+from dataclasses import dataclass
+from io import BytesIO
+import json
+import random
+from pathlib import Path
+from typing import Any
+
+import pyarrow.parquet as pq
+import torch
+from huggingface_hub import hf_hub_download
+from PIL import Image
+from torch.utils.data import Dataset
+
+from open_wam.configs import DataConfig
+
+from .contracts import WAMSample
+
+
+@dataclass(frozen=True)
+class LeRobotEpisodeRecord:
+    """Episode metadata loaded from `meta/episodes.jsonl`."""
+
+    episode_index: int
+    length: int
+    tasks: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class LeRobotV2Metadata:
+    """Minimal metadata needed to index a LeRobot-v2 dataset repo."""
+
+    repo_id: str
+    codebase_version: str
+    fps: int
+    chunk_size: int
+    total_episodes: int
+    data_path_template: str
+    features: dict[str, dict[str, Any]]
+    episodes: tuple[LeRobotEpisodeRecord, ...]
+    tasks_by_index: dict[int, str]
+
+
+@dataclass(frozen=True)
+class EpisodeWindow:
+    """One training window over an episode.
+
+    `observation_start` indexes the first video frame in the observation chunk.
+    The action horizon starts at the anchor frame `observation_start + num_frames - 1`.
+    """
+
+    episode_index: int
+    observation_start: int
+
+
+class LeRobotV2WindowDataset(Dataset[WAMSample]):
+    """Windowed reader for LeRobot-v2 episode-parquet datasets.
+
+    This adapter reads directly from the repo's `meta/*.json*` and
+    `data/chunk-*/episode_*.parquet` files. That is intentional: the installed
+    `lerobot` package in this environment rejects `physical-intelligence/libero`
+    due to a codebase-version compatibility guard, while the dataset repo itself
+    already contains a stable self-describing schema.
+    """
+
+    def __init__(
+        self,
+        data_config: DataConfig,
+        episodes: list[int],
+    ) -> None:
+        if data_config.repo_id is None:
+            raise ValueError("LeRobot-v2 datasets require `data.repo_id` in the experiment config.")
+
+        self.data_config = data_config
+        self.metadata = load_lerobot_v2_metadata(
+            repo_id=data_config.repo_id,
+            cache_dir=data_config.cache_dir,
+        )
+        self.episodes = tuple(episodes)
+        self.episode_records = {episode.episode_index: episode for episode in self.metadata.episodes}
+        self.sample_index = self._build_sample_index()
+        self._episode_cache: OrderedDict[int, list[dict[str, Any]]] = OrderedDict()
+
+        if not self.sample_index:
+            raise ValueError(
+                "No valid LeRobot-v2 windows were constructed. "
+                f"Check num_frames={data_config.num_frames}, "
+                f"action_horizon={data_config.action_schema.action_horizon}, "
+                f"and selected episodes={len(episodes)}."
+            )
+
+    def __len__(self) -> int:
+        return len(self.sample_index)
+
+    def __getitem__(self, index: int) -> WAMSample:
+        window = self.sample_index[index]
+        rows = self._load_episode_rows(window.episode_index)
+        num_frames = self.data_config.num_frames
+        frame_stride = self.data_config.frame_stride
+        action_horizon = self.data_config.action_schema.action_horizon
+        state_horizon = self.data_config.action_schema.state_horizon
+
+        # Observation rows are sparse-sampled from the episode according to the
+        # configured frame stride. These are the only frames seen by the shared
+        # video backbone for this sample.
+        observation_rows = [
+            rows[window.observation_start + offset * frame_stride]
+            for offset in range(num_frames)
+        ]
+        anchor_frame_index = window.observation_start + (num_frames - 1) * frame_stride
+
+        # Action supervision starts at the anchor frame, i.e. the last observed
+        # frame. This makes the data contract agnostic to head placement:
+        # action heads may consume video tokens in different ways, but they all
+        # receive targets aligned to the same policy anchor.
+        action_rows = rows[anchor_frame_index : anchor_frame_index + action_horizon]
+
+        # State history is anchored on the last observed frame. This keeps the
+        # sample semantics stable across head variants: the shared backbone owns
+        # the observation chunk, while heads see state aligned to the current
+        # policy anchor rather than to every intermediate frame.
+        state_start = max(0, anchor_frame_index - state_horizon + 1)
+        state_rows = rows[state_start : anchor_frame_index + 1]
+
+        views = {
+            view_name: self._decode_image_sequence(observation_rows, view_name)
+            for view_name in self.data_config.camera_names
+        }
+        actions, action_mask = self._extract_sequence(
+            rows=action_rows,
+            key="actions",
+            target_dim=self.data_config.action_schema.action_dim,
+            target_length=action_horizon,
+        )
+        state, state_mask = self._extract_sequence(
+            rows=state_rows,
+            key="state",
+            target_dim=self.data_config.action_schema.state_dim,
+            target_length=state_horizon,
+            left_pad=True,
+        )
+
+        episode = self.episode_records[window.episode_index]
+        task_index = int(observation_rows[-1]["task_index"])
+        task_text = self.metadata.tasks_by_index.get(task_index)
+        if task_text is None and episode.tasks:
+            task_text = episode.tasks[0]
+
+        return WAMSample(
+            views=views,
+            actions=actions,
+            action_mask=action_mask,
+            state=state,
+            state_mask=state_mask,
+            task_text=task_text,
+            metadata={
+                "repo_id": self.metadata.repo_id,
+                "episode_index": window.episode_index,
+                "task_index": task_index,
+                "observation_start": window.observation_start,
+                "anchor_frame_index": anchor_frame_index,
+                "observation_frame_indices": [int(row["frame_index"]) for row in observation_rows],
+                "action_frame_indices": [int(row["frame_index"]) for row in action_rows],
+            },
+        )
+
+    def _build_sample_index(self) -> list[EpisodeWindow]:
+        num_frames = self.data_config.num_frames
+        frame_stride = self.data_config.frame_stride
+        action_horizon = self.data_config.action_schema.action_horizon
+        sample_stride = self.data_config.sample_stride
+
+        # A valid window needs:
+        # - `num_frames` observations sampled with `frame_stride`
+        # - `action_horizon` actions starting at the last observed frame
+        #
+        # So the last required frame index is:
+        #   start + (num_frames - 1) * frame_stride + action_horizon - 1
+        # and this must stay inside the episode.
+        required_span = (num_frames - 1) * frame_stride + action_horizon
+        windows: list[EpisodeWindow] = []
+        for episode_index in self.episodes:
+            record = self.episode_records[episode_index]
+            max_start = record.length - required_span
+            if max_start < 0:
+                continue
+            for start in range(0, max_start + 1, sample_stride):
+                windows.append(EpisodeWindow(episode_index=episode_index, observation_start=start))
+        return windows
+
+    def _load_episode_rows(self, episode_index: int) -> list[dict[str, Any]]:
+        if episode_index in self._episode_cache:
+            self._episode_cache.move_to_end(episode_index)
+            return self._episode_cache[episode_index]
+
+        # Episode-level caching keeps repeated window sampling cheap without
+        # forcing the entire dataset into memory. The cache size is config-driven
+        # because different collaborators may prefer different memory / network
+        # tradeoffs depending on the dataset and machine.
+        path = hf_hub_download(
+            repo_id=self.metadata.repo_id,
+            filename=self._episode_file_path(episode_index),
+            repo_type="dataset",
+            cache_dir=self.data_config.cache_dir,
+        )
+        rows = pq.read_table(path).to_pylist()
+        self._episode_cache[episode_index] = rows
+        while len(self._episode_cache) > self.data_config.episode_cache_size:
+            self._episode_cache.popitem(last=False)
+        return rows
+
+    def _episode_file_path(self, episode_index: int) -> str:
+        return self.metadata.data_path_template.format(
+            episode_chunk=episode_index // self.metadata.chunk_size,
+            episode_index=episode_index,
+        )
+
+    def _decode_image_sequence(
+        self,
+        rows: list[dict[str, Any]],
+        key: str,
+    ) -> torch.Tensor:
+        frames = [self._decode_image(row[key]["bytes"]) for row in rows]
+        return torch.stack(frames, dim=0)
+
+    def _decode_image(self, image_bytes: bytes) -> torch.Tensor:
+        with Image.open(BytesIO(image_bytes)) as image:
+            rgb = image.convert("RGB")
+            # Keep uint8 `[H, W, 3]` here. The canonicalizer is responsible for
+            # turning raw RGB into the backbone-ready `[B, 3, T, H, W]` float path.
+            tensor = torch.frombuffer(bytearray(rgb.tobytes()), dtype=torch.uint8)
+            return tensor.reshape(rgb.height, rgb.width, 3)
+
+    def _extract_sequence(
+        self,
+        rows: list[dict[str, Any]],
+        key: str,
+        target_dim: int,
+        target_length: int,
+        left_pad: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if not rows:
+            raise ValueError(f"Cannot extract sequence for key '{key}' from an empty row slice.")
+
+        raw_dim = len(rows[0][key])
+        if raw_dim > target_dim:
+            raise ValueError(f"Raw {key} dim {raw_dim} exceeds configured target dim {target_dim}.")
+
+        output = torch.zeros(target_length, target_dim, dtype=torch.float32)
+        mask = torch.zeros(target_length, target_dim, dtype=torch.float32)
+
+        # Left-padding is used for state history so short prefixes near the
+        # start of an episode still align to the most recent timestep. Actions
+        # keep left_pad=False because they are future-facing targets.
+        if left_pad:
+            start_index = target_length - len(rows)
+        else:
+            start_index = 0
+
+        for index, row in enumerate(rows):
+            values = torch.tensor(row[key], dtype=torch.float32)
+            output[start_index + index, : raw_dim] = values
+            mask[start_index + index, : raw_dim] = 1.0
+
+        return output, mask
+
+
+def build_lerobot_train_val_episode_split(data_config: DataConfig) -> tuple[list[int], list[int]]:
+    """Deterministically split a LeRobot-v2 repo into train/val episodes.
+
+    The repository-level split is often just `train`, so validation is a local
+    concern for this framework rather than something delegated to the dataset.
+    """
+
+    if data_config.repo_id is None:
+        raise ValueError("LeRobot-v2 datasets require `data.repo_id` in the experiment config.")
+
+    metadata = load_lerobot_v2_metadata(repo_id=data_config.repo_id, cache_dir=data_config.cache_dir)
+    episode_indices = [episode.episode_index for episode in metadata.episodes]
+    rng = random.Random(data_config.split_seed)
+    rng.shuffle(episode_indices)
+
+    train_count = int(len(episode_indices) * data_config.train_fraction)
+    train_count = min(max(train_count, 1), len(episode_indices))
+    train_episodes = episode_indices[:train_count]
+    val_episodes = episode_indices[train_count:]
+
+    if data_config.max_train_episodes is not None:
+        train_episodes = train_episodes[: data_config.max_train_episodes]
+    if data_config.max_val_episodes is not None:
+        val_episodes = val_episodes[: data_config.max_val_episodes]
+
+    if not val_episodes and train_episodes:
+        val_episodes = train_episodes[:1]
+    return train_episodes, val_episodes
+
+
+def load_lerobot_v2_metadata(
+    repo_id: str,
+    cache_dir: str | None = None,
+) -> LeRobotV2Metadata:
+    """Load the self-describing metadata files shipped with a LeRobot-v2 repo."""
+
+    info = _read_json_from_hub(repo_id, "meta/info.json", cache_dir=cache_dir)
+    episodes = _read_jsonl_from_hub(repo_id, "meta/episodes.jsonl", cache_dir=cache_dir)
+    tasks = _read_jsonl_from_hub(repo_id, "meta/tasks.jsonl", cache_dir=cache_dir)
+
+    return LeRobotV2Metadata(
+        repo_id=repo_id,
+        codebase_version=str(info["codebase_version"]),
+        fps=int(info["fps"]),
+        chunk_size=int(info["chunks_size"]),
+        total_episodes=int(info["total_episodes"]),
+        data_path_template=str(info["data_path"]),
+        features={name: dict(feature) for name, feature in info["features"].items()},
+        episodes=tuple(
+            LeRobotEpisodeRecord(
+                episode_index=int(record["episode_index"]),
+                length=int(record["length"]),
+                tasks=tuple(record.get("tasks", [])),
+            )
+            for record in episodes
+        ),
+        tasks_by_index={
+            int(record["task_index"]): str(record["task"])
+            for record in tasks
+        },
+    )
+
+
+def _read_json_from_hub(repo_id: str, filename: str, cache_dir: str | None = None) -> dict[str, Any]:
+    path = hf_hub_download(
+        repo_id=repo_id,
+        filename=filename,
+        repo_type="dataset",
+        cache_dir=cache_dir,
+    )
+    with Path(path).open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _read_jsonl_from_hub(repo_id: str, filename: str, cache_dir: str | None = None) -> list[dict[str, Any]]:
+    path = hf_hub_download(
+        repo_id=repo_id,
+        filename=filename,
+        repo_type="dataset",
+        cache_dir=cache_dir,
+    )
+    with Path(path).open("r", encoding="utf-8") as handle:
+        return [json.loads(line) for line in handle if line.strip()]

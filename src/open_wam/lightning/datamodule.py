@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-import torch
 from torch.utils.data import DataLoader, Dataset
 
 try:
@@ -14,43 +11,64 @@ except ModuleNotFoundError:
         pl = None  # type: ignore
 
 from open_wam.configs.data import DataConfig
-
-
-class _RandomRobotWinDataset(Dataset):
-    """Synthetic RobotWin-like dataset used for Lightning smoke experiments."""
-
-    def __init__(self, data_config: DataConfig, length: int) -> None:
-        self.data_config = data_config
-        self.length = length
-
-    def __len__(self) -> int:
-        return self.length
-
-    def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
-        num_frames = self.data_config.num_frames
-        action_schema = self.data_config.action_schema
-        return {
-            "cam_high": torch.randint(0, 255, (num_frames, 300, 400, 3), dtype=torch.uint8),
-            "cam_left_wrist": torch.randint(0, 255, (num_frames, 160, 200, 3), dtype=torch.uint8),
-            "cam_right_wrist": torch.randint(0, 255, (num_frames, 160, 200, 3), dtype=torch.uint8),
-            "actions": torch.randn(action_schema.action_horizon, action_schema.action_dim),
-            "action_mask": torch.ones(action_schema.action_horizon, action_schema.action_dim),
-            "state": torch.randn(action_schema.state_horizon, action_schema.state_dim),
-        }
-
-
-def _collate_robotwin(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
-    keys = batch[0].keys()
-    return {key: torch.stack([item[key] for item in batch], dim=0) for key in keys}
+from open_wam.data import (
+    WAMSample,
+    SyntheticWindowDataset,
+    build_train_val_datasets,
+    collate_wam_samples,
+)
 
 
 if pl is None:
+    class OpenWAMDataModule:  # type: ignore
+        def __init__(self, *args, **kwargs) -> None:
+            raise ImportError("Lightning is required to use OpenWAMDataModule.")
+
+
     class RandomRobotWinDataModule:  # type: ignore
         def __init__(self, *args, **kwargs) -> None:
             raise ImportError("Lightning is required to use RandomRobotWinDataModule.")
 else:
-    class RandomRobotWinDataModule(pl.LightningDataModule):
-        """Minimal DataModule matching the new experiment config split."""
+    class OpenWAMDataModule(pl.LightningDataModule):
+        """Lightning datamodule that emits the uniform `WAMBatch` contract.
+
+        This wrapper deliberately stays ignorant of source-specific fields such
+        as camera names or parquet columns. All of that belongs in the dataset
+        adapter selected by `data.dataset_type`.
+        """
+
+        def __init__(self, data_config: DataConfig) -> None:
+            super().__init__()
+            self.data_config = data_config
+            self.train_dataset: Dataset[WAMSample] | None = None
+            self.val_dataset: Dataset[WAMSample] | None = None
+
+        def setup(self, stage: str | None = None) -> None:
+            self.train_dataset, self.val_dataset = build_train_val_datasets(self.data_config)
+
+        def train_dataloader(self) -> DataLoader:
+            assert self.train_dataset is not None
+            return DataLoader(
+                self.train_dataset,
+                batch_size=self.data_config.train_batch_size,
+                shuffle=True,
+                num_workers=self.data_config.num_workers,
+                collate_fn=collate_wam_samples,
+            )
+
+        def val_dataloader(self) -> DataLoader:
+            assert self.val_dataset is not None
+            return DataLoader(
+                self.val_dataset,
+                batch_size=self.data_config.val_batch_size,
+                shuffle=False,
+                num_workers=self.data_config.num_workers,
+                collate_fn=collate_wam_samples,
+            )
+
+
+    class RandomRobotWinDataModule(OpenWAMDataModule):
+        """Backward-compatible alias for the earlier synthetic smoke datamodule."""
 
         def __init__(
             self,
@@ -60,36 +78,32 @@ else:
             batch_size: int = 2,
             num_workers: int = 0,
         ) -> None:
-            super().__init__()
-            self.data_config = data_config
-            self.train_size = train_size
-            self.val_size = val_size
-            self.batch_size = batch_size
-            self.num_workers = num_workers
-            self.train_dataset: _RandomRobotWinDataset | None = None
-            self.val_dataset: _RandomRobotWinDataset | None = None
+            super().__init__(data_config)
+            self._train_size = train_size
+            self._val_size = val_size
+            self._batch_size = batch_size
+            self._num_workers = num_workers
 
         def setup(self, stage: str | None = None) -> None:
-            self.train_dataset = _RandomRobotWinDataset(self.data_config, self.train_size)
-            self.val_dataset = _RandomRobotWinDataset(self.data_config, self.val_size)
+            self.train_dataset = SyntheticWindowDataset(self.data_config, self._train_size)
+            self.val_dataset = SyntheticWindowDataset(self.data_config, self._val_size)
 
         def train_dataloader(self) -> DataLoader:
             assert self.train_dataset is not None
             return DataLoader(
                 self.train_dataset,
-                batch_size=self.batch_size,
+                batch_size=self._batch_size,
                 shuffle=True,
-                num_workers=self.num_workers,
-                collate_fn=_collate_robotwin,
+                num_workers=self._num_workers,
+                collate_fn=collate_wam_samples,
             )
 
         def val_dataloader(self) -> DataLoader:
             assert self.val_dataset is not None
             return DataLoader(
                 self.val_dataset,
-                batch_size=self.batch_size,
+                batch_size=self._batch_size,
                 shuffle=False,
-                num_workers=self.num_workers,
-                collate_fn=_collate_robotwin,
+                num_workers=self._num_workers,
+                collate_fn=collate_wam_samples,
             )
-
