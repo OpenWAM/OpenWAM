@@ -68,7 +68,7 @@ Inspect the current LIBERO adapter:
 python scripts/inspect_libero_adapter.py --cfg configs/experiments/contract_only_libero.yaml
 ```
 
-Visualize the default LIBERO reference-relative EEF pose target in MuJoCo:
+Visualize the default LIBERO reference-relative EEF target in MuJoCo:
 
 ```bash
 uv run python scripts/visualize_libero_reference_pose.py --cfg configs/experiments/contract_only_libero.yaml
@@ -108,9 +108,9 @@ All dataset adapters should return the same artifact shape after collation:
 The shared backbone canonicalizes `views` into one RGB canvas and emits
 `BackboneOutput`.
 
-For LIBERO specifically, `actions` default to a transformed 7D
-reference-relative EEF target `[rel_xyz, rel_axis_angle, gripper]` rather than
-the raw 7D controller command.
+For LIBERO specifically, `actions` default to a transformed 8D
+reference-relative EEF target `[rel_xyz, rel_axis_angle, gripper_2d]` rather
+than the raw 7D controller command.
 
 ## Notes
 

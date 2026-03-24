@@ -192,10 +192,13 @@ def quaternion_to_axis_angle(quaternion: torch.Tensor) -> torch.Tensor:
 
 
 def collapse_gripper_state(gripper: torch.Tensor, *, gripper_representation: str) -> torch.Tensor:
-    """Reduce a multi-channel gripper state to one scalar per timestep."""
+    """Expose gripper state in the configured public target format."""
 
     if gripper.ndim != 2:
         raise ValueError(f"Expected gripper sequence with shape [T, D], got {tuple(gripper.shape)}.")
+
+    if gripper_representation == "all_channels":
+        return gripper
 
     if gripper_representation == "first_channel":
         return gripper[:, 0:1]

@@ -58,12 +58,12 @@ class ActionTargetConfig:
             and currently supported value is `anchor_state`.
         rotation_representation:
             Rotation parameterization exposed in the action target. The current
-            WM default is `axis_angle`, yielding a 7D target
+            WM default is `axis_angle`, yielding a target such as
             `[xyz, axis_angle, gripper]` when `include_gripper` is enabled.
         include_gripper:
-            Whether to append a 1D gripper state to pose-derived targets.
+            Whether to append gripper state to pose-derived targets.
         gripper_representation:
-            How multi-channel gripper state should be reduced to one scalar when
+            How multi-channel gripper state should be exposed when
             `include_gripper` is enabled.
     """
 
@@ -74,7 +74,7 @@ class ActionTargetConfig:
     reference_source: str = "anchor_state"
     rotation_representation: str = "axis_angle"
     include_gripper: bool = True
-    gripper_representation: str = "first_channel"
+    gripper_representation: str = "all_channels"
 
 
 @dataclass(frozen=True)
@@ -235,8 +235,9 @@ class LiberoDataConfig(DataConfig):
     This preserves the canonical 384x320 RGB canvas and therefore the same
     latent grid of 24x20 expected by the shared video backbone.
 
-    The default action target is a 7D reference-relative EEF pose derived from
-    the LIBERO proprio state rather than the raw 7D controller delta.
+    The default action target is an 8D reference-relative EEF target
+    `[xyz, axis_angle, gripper_2d]` derived from the LIBERO proprio state
+    rather than the raw 7D controller delta.
     """
 
     dataset_name: str = "libero"
@@ -283,7 +284,7 @@ class LiberoDataConfig(DataConfig):
     num_workers: int = 0
     action_schema: ActionSchemaConfig = field(
         default_factory=lambda: ActionSchemaConfig(
-            action_dim=7,
+            action_dim=8,
             action_horizon=6,
             state_dim=8,
             state_horizon=1,
@@ -298,6 +299,6 @@ class LiberoDataConfig(DataConfig):
             reference_source="anchor_state",
             rotation_representation="axis_angle",
             include_gripper=True,
-            gripper_representation="first_channel",
+            gripper_representation="all_channels",
         )
     )
