@@ -8,6 +8,7 @@ import yaml
 from open_wam.configs import (
     ActionHeadConfig,
     ActionSchemaConfig,
+    ActionTargetConfig,
     ExperimentConfig,
     GenericDataConfig,
     LiberoDataConfig,
@@ -34,6 +35,7 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
     raw = _read_yaml(path)
     data_raw = raw.get("data", {})
     action_schema_raw = data_raw.get("action_schema", {})
+    action_target_raw = data_raw.get("action_target", {})
     dataset_name = data_raw.get("dataset_name", "robotwin")
     dataset_type = data_raw.get("dataset_type")
 
@@ -111,6 +113,18 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
             action_horizon=action_schema_raw.get("action_horizon", data_defaults.action_schema.action_horizon),
             state_dim=action_schema_raw.get("state_dim", data_defaults.action_schema.state_dim),
             state_horizon=action_schema_raw.get("state_horizon", data_defaults.action_schema.state_horizon),
+        ),
+        action_target=ActionTargetConfig(
+            representation=action_target_raw.get("representation", data_defaults.action_target.representation),
+            source_key=action_target_raw.get("source_key", data_defaults.action_target.source_key),
+            pose_source_key=action_target_raw.get("pose_source_key", data_defaults.action_target.pose_source_key),
+            state_encoding=action_target_raw.get("state_encoding", data_defaults.action_target.state_encoding),
+            reference_source=action_target_raw.get("reference_source", data_defaults.action_target.reference_source),
+            rotation_representation=action_target_raw.get(
+                "rotation_representation",
+                data_defaults.action_target.rotation_representation,
+            ),
+            include_gripper=action_target_raw.get("include_gripper", data_defaults.action_target.include_gripper),
         ),
     )
 

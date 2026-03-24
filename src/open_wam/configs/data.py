@@ -37,6 +37,44 @@ class ActionSchemaConfig:
 
 
 @dataclass(frozen=True)
+class ActionTargetConfig:
+    """How raw dataset supervision is exposed as action targets.
+
+    Attributes:
+        representation:
+            Target representation consumed by action heads. `raw` forwards the
+            dataset-provided action tensor unchanged. Other modes may derive the
+            target from state, proprio, or decoded video as the project grows.
+        source_key:
+            Row key used when `representation == "raw"`.
+        pose_source_key:
+            Row key used when the target is derived from pose state rather than
+            from the dataset action tensor itself.
+        state_encoding:
+            How the pose source tensor should be unpacked. The current LIBERO
+            path uses `eef_pos_axisangle_gripper_2d`, i.e. `[xyz, axisangle, gripper]`.
+        reference_source:
+            Which observed state anchors the relative pose target. The default
+            and currently supported value is `anchor_state`.
+        rotation_representation:
+            Rotation parameterization exposed in the action target. The current
+            WAM default is `quat`, yielding a 7D pose target `[xyz, xyzw]`.
+        include_gripper:
+            Whether to append the gripper state to pose-derived targets. This is
+            off by default so LIBERO becomes a pure 7D reference-relative pose
+            supervision target, matching the current WM research direction.
+    """
+
+    representation: str = "raw"
+    source_key: str = "actions"
+    pose_source_key: str = "state"
+    state_encoding: str = "identity"
+    reference_source: str = "anchor_state"
+    rotation_representation: str = "quat"
+    include_gripper: bool = False
+
+
+@dataclass(frozen=True)
 class DataConfig:
     """Shared data-layer config independent from head choice."""
 
@@ -61,6 +99,7 @@ class DataConfig:
     val_batch_size: int
     num_workers: int
     action_schema: ActionSchemaConfig
+    action_target: ActionTargetConfig
 
 
 @dataclass(frozen=True)
@@ -111,6 +150,7 @@ class GenericDataConfig(DataConfig):
             state_horizon=1,
         )
     )
+    action_target: ActionTargetConfig = field(default_factory=ActionTargetConfig)
 
 
 @dataclass(frozen=True)
@@ -176,6 +216,7 @@ class RobotWinDataConfig(DataConfig):
             state_horizon=1,
         )
     )
+    action_target: ActionTargetConfig = field(default_factory=ActionTargetConfig)
 
 
 @dataclass(frozen=True)
@@ -190,6 +231,9 @@ class LiberoDataConfig(DataConfig):
 
     This preserves the canonical 384x320 RGB canvas and therefore the same
     latent grid of 24x20 expected by the shared video backbone.
+
+    The default action target is a 7D reference-relative EEF pose derived from
+    the LIBERO proprio state rather than the raw 7D controller delta.
     """
 
     dataset_name: str = "libero"
@@ -240,5 +284,16 @@ class LiberoDataConfig(DataConfig):
             action_horizon=6,
             state_dim=8,
             state_horizon=1,
+        )
+    )
+    action_target: ActionTargetConfig = field(
+        default_factory=lambda: ActionTargetConfig(
+            representation="eef_pose_relative_to_reference",
+            source_key="actions",
+            pose_source_key="state",
+            state_encoding="eef_pos_axisangle_gripper_2d",
+            reference_source="anchor_state",
+            rotation_representation="quat",
+            include_gripper=False,
         )
     )

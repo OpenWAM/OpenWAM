@@ -42,6 +42,7 @@ def main() -> None:
     print("sample.views.image", tuple(first.views["image"].shape))
     print("sample.views.wrist_image", tuple(first.views["wrist_image"].shape))
     print("sample.actions", tuple(first.actions.shape))
+    print("sample.actions[0]", first.actions[0].tolist())
     print("sample.state", tuple(first.state.shape) if first.state is not None else None)
     print("sample.task_text", first.task_text)
     print("sample.metadata", first.metadata)

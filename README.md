@@ -52,6 +52,7 @@ Important source packages:
 - Action heads interact with the backbone through explicit contracts, not ad hoc internals.
 - Camera names, camera count, layout, action dimension, action horizon, and state dimension should be configurable from YAML.
 - Dataset-specific parsing should stay inside dataset adapters registered by `data.dataset_type`.
+- Dataset adapters may expose transformed action supervision, not just raw controller deltas.
 
 ## Quick Start
 
@@ -65,6 +66,12 @@ Inspect the current LIBERO adapter:
 
 ```bash
 python scripts/inspect_libero_adapter.py --cfg configs/experiments/contract_only_libero.yaml
+```
+
+Visualize the default LIBERO reference-relative EEF pose target in MuJoCo:
+
+```bash
+uv run python scripts/visualize_libero_reference_pose.py --cfg configs/experiments/contract_only_libero.yaml
 ```
 
 Run smoke tests:
@@ -100,6 +107,9 @@ All dataset adapters should return the same artifact shape after collation:
 
 The shared backbone canonicalizes `views` into one RGB canvas and emits
 `BackboneOutput`.
+
+For LIBERO specifically, `actions` default to a transformed 7D
+reference-relative EEF pose target rather than the raw 7D controller command.
 
 ## Notes
 

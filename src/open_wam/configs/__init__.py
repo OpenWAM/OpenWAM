@@ -2,6 +2,7 @@
 
 from .action_head import ActionHeadConfig
 from .data import (
+    ActionTargetConfig,
     ActionSchemaConfig,
     DataConfig,
     GenericDataConfig,
@@ -17,6 +18,7 @@ from .training import TrainingConfig
 __all__ = [
     "ActionHeadConfig",
     "ActionSchemaConfig",
+    "ActionTargetConfig",
     "DataConfig",
     "ExperimentConfig",
     "GenericDataConfig",
