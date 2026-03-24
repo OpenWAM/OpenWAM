@@ -29,6 +29,7 @@ def build_relative_pose_targets(
     state_encoding: str,
     rotation_representation: str,
     include_gripper: bool,
+    gripper_representation: str,
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, list[float] | str | bool]]:
     """Convert absolute proprio state into reference-anchored pose targets.
 
@@ -39,9 +40,6 @@ def build_relative_pose_targets(
 
     if state_sequence.ndim != 2:
         raise ValueError(f"Expected state sequence with shape [T, D], got {tuple(state_sequence.shape)}.")
-
-    if rotation_representation != "quat":
-        raise ValueError(f"Unsupported rotation representation: {rotation_representation}")
 
     absolute_pose = state_sequence_to_pose_sequence(state_sequence, state_encoding=state_encoding)
     reference_position = absolute_pose.position[0]
@@ -57,11 +55,23 @@ def build_relative_pose_targets(
     )
     relative_quaternion = normalize_quaternion(relative_quaternion)
 
-    parts = [relative_position, relative_quaternion]
+    if rotation_representation == "quat":
+        relative_rotation = relative_quaternion
+    elif rotation_representation == "axis_angle":
+        relative_rotation = quaternion_to_axis_angle(relative_quaternion)
+    else:
+        raise ValueError(f"Unsupported rotation representation: {rotation_representation}")
+
+    parts = [relative_position, relative_rotation]
     if include_gripper:
         if absolute_pose.gripper is None:
             raise ValueError("Requested gripper targets, but the selected state encoding has no gripper channels.")
-        parts.append(absolute_pose.gripper)
+        parts.append(
+            collapse_gripper_state(
+                absolute_pose.gripper,
+                gripper_representation=gripper_representation,
+            )
+        )
 
     targets = torch.cat(parts, dim=-1).to(dtype=torch.float32)
     mask = torch.ones_like(targets, dtype=torch.float32)
@@ -70,6 +80,7 @@ def build_relative_pose_targets(
         "reference_quaternion_xyzw": reference_quaternion.tolist(),
         "rotation_representation": rotation_representation,
         "include_gripper": include_gripper,
+        "gripper_representation": gripper_representation,
         "state_encoding": state_encoding,
     }
     return targets, mask, metadata
@@ -79,23 +90,35 @@ def reconstruct_absolute_pose_targets(
     reference_position: torch.Tensor,
     reference_quaternion: torch.Tensor,
     relative_pose_targets: torch.Tensor,
+    *,
+    rotation_representation: str,
 ) -> PoseSequence:
-    """Recover absolute pose from the reference-anchored `[xyz, xyzw]` target."""
+    """Recover absolute pose from a reference-anchored pose target."""
 
-    if relative_pose_targets.ndim != 2 or relative_pose_targets.shape[-1] < 7:
-        raise ValueError(
-            "Expected relative pose targets with shape [T, >=7] where the first seven dims are `[xyz, xyzw]`."
-        )
+    if relative_pose_targets.ndim != 2:
+        raise ValueError(f"Expected relative pose targets with shape [T, D], got {tuple(relative_pose_targets.shape)}.")
 
     rel_position = relative_pose_targets[:, :3]
-    rel_quaternion = normalize_quaternion(relative_pose_targets[:, 3:7])
+    if rotation_representation == "quat":
+        if relative_pose_targets.shape[-1] < 7:
+            raise ValueError("Quaternion pose targets require at least 7 dims: `[xyz, xyzw]`.")
+        rel_quaternion = normalize_quaternion(relative_pose_targets[:, 3:7])
+        gripper_start = 7
+    elif rotation_representation == "axis_angle":
+        if relative_pose_targets.shape[-1] < 6:
+            raise ValueError("Axis-angle pose targets require at least 6 dims: `[xyz, axis_angle]`.")
+        rel_quaternion = axis_angle_to_quaternion(relative_pose_targets[:, 3:6])
+        gripper_start = 6
+    else:
+        raise ValueError(f"Unsupported rotation representation: {rotation_representation}")
+
     abs_position = rel_position + reference_position.unsqueeze(0)
     abs_quaternion = quaternion_multiply(
         reference_quaternion.unsqueeze(0).expand_as(rel_quaternion),
         rel_quaternion,
     )
     abs_quaternion = normalize_quaternion(abs_quaternion)
-    gripper = relative_pose_targets[:, 7:] if relative_pose_targets.shape[-1] > 7 else None
+    gripper = relative_pose_targets[:, gripper_start:] if relative_pose_targets.shape[-1] > gripper_start else None
     return PoseSequence(position=abs_position, quaternion=abs_quaternion, gripper=gripper)
 
 
@@ -149,6 +172,35 @@ def axis_angle_to_quaternion(axis_angle: torch.Tensor) -> torch.Tensor:
     quaternion = torch.cat([xyz, w], dim=-1)
     quaternion = torch.where(angle > 1e-8, quaternion, identity_quaternion)
     return normalize_quaternion(quaternion)
+
+
+def quaternion_to_axis_angle(quaternion: torch.Tensor) -> torch.Tensor:
+    """Convert normalized `xyzw` quaternions to axis-angle vectors `[T, 3]`."""
+
+    if quaternion.shape[-1] != 4:
+        raise ValueError(f"Expected quaternion tensor with last dim 4, got {quaternion.shape[-1]}.")
+
+    normalized = normalize_quaternion(quaternion)
+    xyz = normalized[..., 0:3]
+    w = normalized[..., 3:4].clamp(min=-1.0, max=1.0)
+    sin_half = torch.linalg.vector_norm(xyz, dim=-1, keepdim=True)
+    half_angle = torch.atan2(sin_half, w)
+    angle = 2.0 * half_angle
+    safe_axis = xyz / sin_half.clamp_min(1e-8)
+    axis_angle = safe_axis * angle
+    return torch.where(sin_half > 1e-8, axis_angle, torch.zeros_like(axis_angle))
+
+
+def collapse_gripper_state(gripper: torch.Tensor, *, gripper_representation: str) -> torch.Tensor:
+    """Reduce a multi-channel gripper state to one scalar per timestep."""
+
+    if gripper.ndim != 2:
+        raise ValueError(f"Expected gripper sequence with shape [T, D], got {tuple(gripper.shape)}.")
+
+    if gripper_representation == "first_channel":
+        return gripper[:, 0:1]
+
+    raise ValueError(f"Unsupported gripper representation: {gripper_representation}")
 
 
 def quaternion_inverse(quaternion: torch.Tensor) -> torch.Tensor:

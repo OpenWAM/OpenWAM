@@ -109,7 +109,8 @@ The shared backbone canonicalizes `views` into one RGB canvas and emits
 `BackboneOutput`.
 
 For LIBERO specifically, `actions` default to a transformed 7D
-reference-relative EEF pose target rather than the raw 7D controller command.
+reference-relative EEF target `[rel_xyz, rel_axis_angle, gripper]` rather than
+the raw 7D controller command.
 
 ## Notes
 

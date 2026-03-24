@@ -51,6 +51,7 @@ def main() -> None:
         reference_position=reference_position,
         reference_quaternion=reference_quaternion_xyzw,
         relative_pose_targets=sample.actions,
+        rotation_representation=str(sample.metadata["rotation_representation"]),
     )
 
     print("task_text:", sample.task_text)

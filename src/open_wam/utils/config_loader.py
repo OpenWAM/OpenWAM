@@ -125,6 +125,10 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
                 data_defaults.action_target.rotation_representation,
             ),
             include_gripper=action_target_raw.get("include_gripper", data_defaults.action_target.include_gripper),
+            gripper_representation=action_target_raw.get(
+                "gripper_representation",
+                data_defaults.action_target.gripper_representation,
+            ),
         ),
     )
 

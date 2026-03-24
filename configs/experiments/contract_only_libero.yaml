@@ -43,8 +43,9 @@ data:
     pose_source_key: state
     state_encoding: eef_pos_axisangle_gripper_2d
     reference_source: anchor_state
-    rotation_representation: quat
-    include_gripper: false
+    rotation_representation: axis_angle
+    include_gripper: true
+    gripper_representation: first_channel
 
 backbone:
   hidden_size: 256

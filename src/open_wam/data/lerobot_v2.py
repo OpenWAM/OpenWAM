@@ -210,6 +210,7 @@ class LeRobotV2WindowDataset(Dataset[WAMSample]):
                 state_encoding=action_target.state_encoding,
                 rotation_representation=action_target.rotation_representation,
                 include_gripper=action_target.include_gripper,
+                gripper_representation=action_target.gripper_representation,
             )
             metadata.update(
                 {

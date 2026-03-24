@@ -58,11 +58,13 @@ class ActionTargetConfig:
             and currently supported value is `anchor_state`.
         rotation_representation:
             Rotation parameterization exposed in the action target. The current
-            WAM default is `quat`, yielding a 7D pose target `[xyz, xyzw]`.
+            WM default is `axis_angle`, yielding a 7D target
+            `[xyz, axis_angle, gripper]` when `include_gripper` is enabled.
         include_gripper:
-            Whether to append the gripper state to pose-derived targets. This is
-            off by default so LIBERO becomes a pure 7D reference-relative pose
-            supervision target, matching the current WM research direction.
+            Whether to append a 1D gripper state to pose-derived targets.
+        gripper_representation:
+            How multi-channel gripper state should be reduced to one scalar when
+            `include_gripper` is enabled.
     """
 
     representation: str = "raw"
@@ -70,8 +72,9 @@ class ActionTargetConfig:
     pose_source_key: str = "state"
     state_encoding: str = "identity"
     reference_source: str = "anchor_state"
-    rotation_representation: str = "quat"
-    include_gripper: bool = False
+    rotation_representation: str = "axis_angle"
+    include_gripper: bool = True
+    gripper_representation: str = "first_channel"
 
 
 @dataclass(frozen=True)
@@ -293,7 +296,8 @@ class LiberoDataConfig(DataConfig):
             pose_source_key="state",
             state_encoding="eef_pos_axisangle_gripper_2d",
             reference_source="anchor_state",
-            rotation_representation="quat",
-            include_gripper=False,
+            rotation_representation="axis_angle",
+            include_gripper=True,
+            gripper_representation="first_channel",
         )
     )
