@@ -25,7 +25,12 @@ def test_new_variant_yaml_configs_load() -> None:
     post_decoded = load_experiment_config(REPO_ROOT / "configs/experiments/post_decoded_robotwin.yaml")
     register = load_experiment_config(REPO_ROOT / "configs/experiments/register_attached_robotwin.yaml")
     parallel = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin.yaml")
+    replica_parallel = load_experiment_config(
+        REPO_ROOT / "configs/experiments/parallel_stream_robotwin_lingbot_replica.yaml"
+    )
 
     assert isinstance(post_decoded.policy_variant, PostDecodedPolicyConfig)
     assert isinstance(register.policy_variant, RegisterAttachedPolicyConfig)
     assert isinstance(parallel.policy_variant, ParallelStreamPolicyConfig)
+    assert isinstance(replica_parallel.policy_variant, ParallelStreamPolicyConfig)
+    assert replica_parallel.backbone.implementation == "lingbot_replica"

@@ -38,6 +38,9 @@ class VisualCoreInput:
     token_layout: Any | None = None
     position_context: torch.Tensor | None = None
     timestep_context: torch.Tensor | None = None
+    grid_ids: torch.Tensor | None = None
+    timestep_values: torch.Tensor | None = None
+    text_context: torch.Tensor | None = None
     attention_mask: torch.Tensor | None = None
     cache_state: CacheState | None = None
     conditioning: ConditioningState | None = None

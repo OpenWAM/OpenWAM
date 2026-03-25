@@ -327,7 +327,6 @@ class LeRobotV2WindowDataset(Dataset[WAMSample]):
         if not rows:
             raise ValueError(f"Cannot extract sequence for key '{key}' from an empty row slice.")
 
-        raw_dim = len(rows[0][key])
         sequence = torch.stack([torch.tensor(row[key], dtype=torch.float32) for row in rows], dim=0)
         return self._pack_sequence(
             sequence=sequence,

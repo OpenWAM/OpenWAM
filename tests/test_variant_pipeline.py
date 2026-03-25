@@ -28,6 +28,7 @@ def _build_pipeline(config_path: Path) -> tuple:
         ("post_decoded_robotwin.yaml", 6),
         ("register_attached_robotwin.yaml", 6),
         ("parallel_stream_robotwin.yaml", 8),
+        ("parallel_stream_robotwin_lingbot_replica.yaml", 8),
     ],
 )
 def test_variant_pipeline_train_and_infer_shapes(config_name: str, expected_horizon: int) -> None:

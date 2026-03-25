@@ -25,9 +25,14 @@ class LingbotCompatibleVideoBackboneConfig:
     patch_size_t: int = 1
     patch_size_h: int = 2
     patch_size_w: int = 2
+    implementation: str = "dummy"
     hidden_size: int = 3072
     num_layers: int = 0
     num_heads: int = 8
     mlp_ratio: int = 4
+    ffn_dim: int | None = None
+    text_dim: int = 4096
+    freq_dim: int = 256
+    cross_attn_norm: bool = True
+    rope_max_seq_len: int = 1024
     latent_norm_eps: float = 1e-6
-

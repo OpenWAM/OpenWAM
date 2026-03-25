@@ -8,6 +8,8 @@ from .contracts import VisualCoreInput, VisualStageOutputs
 from .core import LingbotVisualCore
 from .decoder import VisualFeatureDecoder
 from .frontend import LingbotVisualFrontend
+from .grid_ids import build_video_grid_ids
+from .replica_core import LingbotReplicaVisualCore
 
 
 class VisualTower(nn.Module):
@@ -17,7 +19,15 @@ class VisualTower(nn.Module):
         super().__init__()
         self.config = config or LingbotCompatibleVideoBackboneConfig()
         self.frontend = LingbotVisualFrontend(self.config)
-        self.core = LingbotVisualCore(self.config)
+        if self.config.implementation == "lingbot_replica":
+            self.core = LingbotReplicaVisualCore(self.config)
+        elif self.config.implementation == "dummy":
+            self.core = LingbotVisualCore(self.config)
+        else:
+            raise ValueError(
+                f"Unsupported backbone implementation '{self.config.implementation}'. "
+                "Expected 'dummy' or 'lingbot_replica'."
+            )
         self.decoder = VisualFeatureDecoder(self.config.hidden_size)
 
     def run_frontend(self, canonical_video):
@@ -27,10 +37,17 @@ class VisualTower(nn.Module):
         return self.core(core_input)
 
     def run_default_core(self, frontend_output):
+        batch_size, seq_len, _ = frontend_output.video_tokens.shape
         return self.run_core(
             VisualCoreInput(
                 tokens=frontend_output.video_tokens,
                 token_layout=frontend_output.token_grid,
+                grid_ids=build_video_grid_ids(
+                    frontend_output.token_grid,
+                    device=frontend_output.video_tokens.device,
+                ),
+                timestep_values=frontend_output.video_tokens.new_zeros((batch_size, seq_len), dtype=frontend_output.video_tokens.dtype),
+                text_context=frontend_output.conditioning.text_context,
                 conditioning=frontend_output.conditioning,
             )
         )

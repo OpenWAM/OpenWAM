@@ -12,7 +12,6 @@ dependencies = [
     "huggingface_hub>=0.30",
     "torch>=2.4",
     "lightning>=2.4",
-    "mujoco>=3.4",
     "pillow>=10.0",
     "pyarrow>=18.0",
     "pyyaml>=6.0",
@@ -25,6 +24,11 @@ dependencies = [
     "gym==0.25.2",
     "matplotlib>=3.10.8",
     "cloudpickle>=3.1.2",
+]
+
+[project.optional-dependencies]
+viz = [
+    "mujoco>=3.4",
 ]
 
 [tool.hatch.build.targets.wheel]

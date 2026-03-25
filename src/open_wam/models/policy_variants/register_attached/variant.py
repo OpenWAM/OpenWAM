@@ -6,6 +6,7 @@ from torch import nn
 from open_wam.configs import InferenceConfig, RegisterAttachedPolicyConfig, TrainingConfig
 from open_wam.models.policy_variants.common.layouts import expand_previous_action
 from open_wam.models.policy_variants.common.positions import build_sequence_position_context
+from open_wam.models.visual_tower.grid_ids import build_sequence_grid_ids, build_video_grid_ids
 from open_wam.models.visual_tower import VisualCoreInput, VisualStageOutputs, VisualTower
 
 from ..base import PolicyVariant
@@ -112,6 +113,18 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
         )
         state_hidden = self.state_encoder(state_inputs)
         packed_tokens = torch.cat([video_tokens, action_hidden, state_hidden], dim=1)
+        packed_grid_ids = torch.cat(
+            [
+                build_video_grid_ids(
+                    visual_outputs.frontend.token_grid,
+                    device=packed_tokens.device,
+                    frame_shift=float(current_start_frame),
+                ),
+                build_sequence_grid_ids(self.action_horizon, device=packed_tokens.device, offset=0.0),
+                build_sequence_grid_ids(self.state_horizon, device=packed_tokens.device, offset=float(self.action_horizon)),
+            ],
+            dim=1,
+        )
         position_context = build_register_position_context(
             layout=layout,
             token_grid=visual_outputs.frontend.token_grid,
@@ -125,6 +138,8 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
                 tokens=packed_tokens,
                 token_layout=layout,
                 position_context=position_context,
+                grid_ids=packed_grid_ids,
+                timestep_values=torch.zeros(batch_size, packed_tokens.shape[1], device=packed_tokens.device, dtype=torch.float32),
                 attention_mask=attention_mask,
                 conditioning=visual_outputs.frontend.conditioning,
             )

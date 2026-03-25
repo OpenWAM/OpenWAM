@@ -5,6 +5,7 @@ from torch import nn
 
 from open_wam.configs import InferenceConfig, ParallelStreamPolicyConfig, TrainingConfig
 from open_wam.models.policy_variants.common.layouts import expand_previous_action
+from open_wam.models.visual_tower.grid_ids import build_action_grid_ids, build_video_grid_ids
 from open_wam.models.visual_tower import VisualCoreInput, VisualStageOutputs, VisualTower
 
 from ..base import PolicyVariant
@@ -115,6 +116,52 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         packed_tokens = torch.cat([stream_map[name] for name in self.config.sequence_order], dim=1)
         return packed_tokens, layout
 
+    def _build_parallel_grid_ids(
+        self,
+        visual_outputs: VisualStageOutputs,
+        layout: ParallelPackedSequenceLayout,
+    ) -> torch.Tensor:
+        contexts = []
+        for name in self.config.sequence_order:
+            if name.startswith("video"):
+                contexts.append(
+                    build_video_grid_ids(
+                        visual_outputs.frontend.token_grid,
+                        device=visual_outputs.frontend.video_tokens.device,
+                    )
+                )
+            else:
+                contexts.append(
+                    build_action_grid_ids(
+                        num_frames=visual_outputs.frontend.token_grid.num_frames,
+                        action_per_frame=self.config.action_per_frame,
+                        device=visual_outputs.frontend.video_tokens.device,
+                    )
+                )
+        return torch.cat(contexts, dim=1)
+
+    def _build_parallel_timestep_values(
+        self,
+        layout: ParallelPackedSequenceLayout,
+        batch_size: int,
+        device: torch.device,
+        video_scalar: torch.Tensor,
+        action_scalar: torch.Tensor,
+    ) -> torch.Tensor:
+        values = []
+        zero = torch.zeros(batch_size, device=device, dtype=torch.float32)
+        for name in self.config.sequence_order:
+            start, end = layout.spans[name]
+            length = end - start
+            if name == "video_noisy":
+                base = video_scalar
+            elif name == "action_noisy":
+                base = action_scalar
+            else:
+                base = zero
+            values.append(base[:, None].expand(-1, length))
+        return torch.cat(values, dim=1)
+
     def _run_parallel_core(
         self,
         visual_tower: VisualTower,
@@ -150,6 +197,13 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             video_scalar=video_scalar,
             action_scalar=action_scalar,
         )
+        timestep_values = self._build_parallel_timestep_values(
+            layout=layout,
+            batch_size=batch_size,
+            device=packed_tokens.device,
+            video_scalar=video_scalar,
+            action_scalar=action_scalar,
+        )
         attention_mask = build_parallel_attention_mask(layout, batch_size=batch_size, device=packed_tokens.device)
         core_output = visual_tower.run_core(
             VisualCoreInput(
@@ -157,6 +211,8 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 token_layout=layout,
                 position_context=position_context,
                 timestep_context=timestep_context,
+                grid_ids=self._build_parallel_grid_ids(visual_outputs, layout),
+                timestep_values=timestep_values,
                 attention_mask=attention_mask,
                 conditioning=visual_outputs.frontend.conditioning,
             )

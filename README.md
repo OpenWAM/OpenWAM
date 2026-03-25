@@ -62,6 +62,12 @@ Install dependencies with `uv`:
 uv sync
 ```
 
+Install MuJoCo-backed visualization extras only when you need the viewer scripts:
+
+```bash
+uv sync --extra viz
+```
+
 Inspect the current LIBERO adapter:
 
 ```bash

@@ -277,10 +277,16 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         patch_size_t=backbone_raw.get("patch_size_t", 1),
         patch_size_h=backbone_raw.get("patch_size_h", 2),
         patch_size_w=backbone_raw.get("patch_size_w", 2),
+        implementation=backbone_raw.get("implementation", "dummy"),
         hidden_size=backbone_raw.get("hidden_size", 3072),
         num_layers=backbone_raw.get("num_layers", 0),
         num_heads=backbone_raw.get("num_heads", 8),
         mlp_ratio=backbone_raw.get("mlp_ratio", 4),
+        ffn_dim=backbone_raw.get("ffn_dim"),
+        text_dim=backbone_raw.get("text_dim", 4096),
+        freq_dim=backbone_raw.get("freq_dim", 256),
+        cross_attn_norm=backbone_raw.get("cross_attn_norm", True),
+        rope_max_seq_len=backbone_raw.get("rope_max_seq_len", 1024),
         latent_norm_eps=backbone_raw.get("latent_norm_eps", 1e-6),
     )
 
