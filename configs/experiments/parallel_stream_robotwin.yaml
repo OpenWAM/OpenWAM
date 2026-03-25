@@ -1,0 +1,61 @@
+name: parallel_stream_robotwin
+
+data:
+  dataset_name: robotwin
+  camera_names: [cam_high, cam_left_wrist, cam_right_wrist]
+  canonical_height: 384
+  canonical_width: 320
+  num_frames: 4
+  action_schema:
+    action_dim: 30
+    action_horizon: 8
+    state_dim: 30
+    state_horizon: 1
+
+backbone:
+  hidden_size: 256
+  num_layers: 1
+  num_heads: 8
+
+policy_variant:
+  name: parallel_stream
+  hidden_size: 256
+  frame_chunk_size: 2
+  action_per_frame: 2
+  attn_window: 8
+  sequence_order: [video_noisy, video_condition, action_noisy, action_condition]
+  mask_mode: lingbot_chunked
+  cache_mode: metadata_only
+
+action_decoder:
+  name: mlp_decoder
+  hidden_size: 256
+  action_dim: 30
+  action_horizon: 8
+
+training:
+  video_num_train_timesteps: 1000
+  action_num_train_timesteps: 1000
+  video_sigma_shift: 5.0
+  action_sigma_shift: 1.0
+  use_teacher_forcing: false
+  chunk_size: 2
+  window_size: 8
+
+inference:
+  video_num_inference_steps: 25
+  action_num_inference_steps: 50
+  frame_chunk_size: 2
+  use_cache: true
+  guidance_scale: 1.0
+
+trainer:
+  max_epochs: 1
+  limit_train_batches: 2
+  limit_val_batches: 1
+  log_every_n_steps: 1
+  accelerator: cpu
+  devices: 1
+  precision: 32-true
+  enable_checkpointing: false
+  enable_model_summary: false
