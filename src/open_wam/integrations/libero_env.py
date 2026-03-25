@@ -53,6 +53,8 @@ class LiberoControlConfig:
     max_rot_delta_rad: float = 0.5
     max_gripper_delta: float = 0.005
     control_substeps_per_target: int = 8
+    env_control_hz: int = 20
+    action_command_delay_steps: int = 1
     gripper_open_threshold: float = 0.060
     gripper_close_threshold: float = 0.030
     gripper_position_tolerance: float = 0.002
@@ -349,6 +351,11 @@ def track_relative_targets_in_libero_env(
             relative_pose_targets=relative_pose_targets,
             rotation_representation=rotation_representation,
         )
+        aligned_gripper_targets = _align_replay_gripper_targets(
+            desired_pose.gripper,
+            gripper_representation=gripper_representation,
+            delay_steps=control_config.action_command_delay_steps,
+        )
 
         tracked_positions: list[torch.Tensor] = []
         tracked_quaternions: list[torch.Tensor] = []
@@ -360,7 +367,7 @@ def track_relative_targets_in_libero_env(
             target_pose = PoseSequence(
                 position=desired_pose.position[target_index],
                 quaternion=desired_pose.quaternion[target_index],
-                gripper=None if desired_pose.gripper is None else desired_pose.gripper[target_index],
+                gripper=None if aligned_gripper_targets is None else aligned_gripper_targets[target_index],
             )
             for _ in range(control_config.control_substeps_per_target):
                 current_pose = extract_pose_from_obs(obs)
@@ -405,7 +412,7 @@ def track_relative_targets_in_libero_env(
         )
         if desired_pose.gripper is not None and tracked_pose.gripper is not None:
             gripper_error_per_target = torch.linalg.vector_norm(
-                tracked_pose.gripper - desired_pose.gripper,
+                tracked_pose.gripper - aligned_gripper_targets,
                 dim=-1,
             )
         else:
@@ -456,3 +463,35 @@ def _project_gripper_state(gripper_state: torch.Tensor, *, gripper_representatio
         gripper_state.unsqueeze(0),
         gripper_representation=gripper_representation,
     )[0]
+
+
+def _align_replay_gripper_targets(
+    gripper_targets: torch.Tensor | None,
+    *,
+    gripper_representation: str,
+    delay_steps: int,
+) -> torch.Tensor | None:
+    """Shift command-domain gripper targets to the state they actually produce.
+
+    LIBERO's 1D action gripper command is causal: `action[t]` drives the
+    transition from state `t` toward state `t+1`. For replay we compare against
+    pose targets at state-aligned timesteps, so the command must be delayed by
+    one target to avoid visibly closing / opening too early.
+    """
+
+    if gripper_targets is None:
+        return None
+    if gripper_representation != "action_command":
+        return gripper_targets
+    if delay_steps < 0:
+        raise ValueError(f"Expected non-negative action_command_delay_steps, got {delay_steps}.")
+
+    aligned = torch.zeros_like(gripper_targets)
+    if delay_steps == 0:
+        aligned.copy_(gripper_targets)
+        return aligned
+    if delay_steps >= gripper_targets.shape[0]:
+        return aligned
+
+    aligned[delay_steps:] = gripper_targets[:-delay_steps]
+    return aligned

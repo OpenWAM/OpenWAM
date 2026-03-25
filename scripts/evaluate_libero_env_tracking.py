@@ -56,7 +56,17 @@ def main() -> None:
     )
     parser.add_argument("--camera-height", type=int, default=256)
     parser.add_argument("--camera-width", type=int, default=256)
-    parser.add_argument("--control-substeps-per-target", type=int, default=8)
+    parser.add_argument(
+        "--control-substeps-per-target",
+        type=int,
+        default=4,
+        help=(
+            "Env control steps to spend on each dataset target. `4` is the "
+            "current default because it fixes the old over-held command "
+            "behavior while keeping pose tracking tighter than the strict "
+            "10FPS-to-20Hz match of `2`."
+        ),
+    )
     parser.add_argument(
         "--output",
         type=str,
@@ -80,6 +90,7 @@ def main() -> None:
     train_episodes, _ = build_lerobot_train_val_episode_split(config.data)
     dataset = LeRobotV2WindowDataset(config.data, episodes=train_episodes)
     sample = dataset[args.sample_index]
+    control_substeps_per_target = args.control_substeps_per_target
 
     (
         task_text,
@@ -112,7 +123,7 @@ def main() -> None:
         gripper_representation=config.data.action_target.gripper_representation,
         init_state_index=init_state_index,
         control_config=LiberoControlConfig(
-            control_substeps_per_target=args.control_substeps_per_target,
+            control_substeps_per_target=control_substeps_per_target,
         ),
         camera_height=args.camera_height,
         camera_width=args.camera_width,
@@ -140,7 +151,7 @@ def main() -> None:
     print("task_local_episode_rank:", task_local_episode_rank)
     print("init_state_index:", tracking.init_state_index)
     print("num_targets:", int(relative_targets.shape[0]))
-    print("control_substeps_per_target:", args.control_substeps_per_target)
+    print("control_substeps_per_target:", control_substeps_per_target)
     print("mean_position_error_m:", float(tracking.position_error_per_target.mean()))
     print("max_position_error_m:", float(tracking.position_error_per_target.max()))
     print("mean_rotation_error_deg:", float(tracking.rotation_error_deg_per_target.mean()))
