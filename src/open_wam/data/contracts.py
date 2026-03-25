@@ -15,6 +15,9 @@ class WAMSample:
             Raw RGB videos per camera view. Each tensor is `[T, H, W, 3]`.
         actions:
             Action targets aligned to the sample anchor, `[H_action, D_action]`.
+            The exact representation is dataset-configured: it may be the raw
+            dataset action, a reference-relative EEF pose target, or another
+            transformed control target exposed by the data layer.
         action_mask:
             Valid action dimensions for padded schemas, same shape as `actions`.
         state:

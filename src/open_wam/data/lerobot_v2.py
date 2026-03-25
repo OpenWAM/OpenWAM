@@ -16,6 +16,7 @@ from torch.utils.data import Dataset
 
 from open_wam.configs import DataConfig
 
+from .action_transforms import build_relative_pose_targets, expected_pose_target_dim
 from .contracts import WAMSample
 
 
@@ -116,6 +117,7 @@ class LeRobotV2WindowDataset(Dataset[WAMSample]):
         # action heads may consume video tokens in different ways, but they all
         # receive targets aligned to the same policy anchor.
         action_rows = rows[anchor_frame_index : anchor_frame_index + action_horizon]
+        target_state_rows = rows[anchor_frame_index : anchor_frame_index + action_horizon]
 
         # State history is anchored on the last observed frame. This keeps the
         # sample semantics stable across head variants: the shared backbone owns
@@ -128,11 +130,9 @@ class LeRobotV2WindowDataset(Dataset[WAMSample]):
             view_name: self._decode_image_sequence(observation_rows, view_name)
             for view_name in self.data_config.camera_names
         }
-        actions, action_mask = self._extract_sequence(
-            rows=action_rows,
-            key="actions",
-            target_dim=self.data_config.action_schema.action_dim,
-            target_length=action_horizon,
+        actions, action_mask, action_target_metadata = self._build_action_targets(
+            action_rows=action_rows,
+            target_state_rows=target_state_rows,
         )
         state, state_mask = self._extract_sequence(
             rows=state_rows,
@@ -163,8 +163,91 @@ class LeRobotV2WindowDataset(Dataset[WAMSample]):
                 "anchor_frame_index": anchor_frame_index,
                 "observation_frame_indices": [int(row["frame_index"]) for row in observation_rows],
                 "action_frame_indices": [int(row["frame_index"]) for row in action_rows],
+                "target_state_frame_indices": [int(row["frame_index"]) for row in target_state_rows],
+                "action_representation": self.data_config.action_target.representation,
+                **action_target_metadata,
             },
         )
+
+    def _build_action_targets(
+        self,
+        *,
+        action_rows: list[dict[str, Any]],
+        target_state_rows: list[dict[str, Any]],
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
+        """Build one action target tensor under the configured representation.
+
+        The output always follows the common WAM contract `[H_action, D_action]`
+        even when the supervision source is dataset state rather than the raw
+        dataset action tensor.
+        """
+
+        action_target = self.data_config.action_target
+        target_dim = self.data_config.action_schema.action_dim
+        target_length = self.data_config.action_schema.action_horizon
+
+        if action_target.representation == "raw":
+            actions, action_mask = self._extract_sequence(
+                rows=action_rows,
+                key=action_target.source_key,
+                target_dim=target_dim,
+                target_length=target_length,
+            )
+            return actions, action_mask, {}
+
+        if action_target.representation == "eef_pose_relative_to_reference":
+            if action_target.reference_source != "anchor_state":
+                raise ValueError(
+                    "LeRobot-v2 reference-relative EEF targets currently support only "
+                    f"`reference_source=anchor_state`, got {action_target.reference_source}."
+                )
+            pose_source = torch.stack(
+                [torch.tensor(row[action_target.pose_source_key], dtype=torch.float32) for row in target_state_rows],
+                dim=0,
+            )
+            raw_action_sequence = torch.stack(
+                [torch.tensor(row[action_target.source_key], dtype=torch.float32) for row in action_rows],
+                dim=0,
+            )
+            relative_targets, relative_mask, metadata = build_relative_pose_targets(
+                pose_source,
+                state_encoding=action_target.state_encoding,
+                rotation_representation=action_target.rotation_representation,
+                include_gripper=action_target.include_gripper,
+                gripper_representation=action_target.gripper_representation,
+                raw_action_sequence=raw_action_sequence,
+                gripper_action_index=action_target.gripper_action_index,
+            )
+            expected_dim = expected_pose_target_dim(
+                rotation_representation=action_target.rotation_representation,
+                include_gripper=action_target.include_gripper,
+                gripper_representation=action_target.gripper_representation,
+            )
+            if target_dim != expected_dim:
+                raise ValueError(
+                    "Configured action_dim does not match the derived pose-target dimension: "
+                    f"action_dim={target_dim}, expected={expected_dim} for "
+                    f"[rotation_representation={action_target.rotation_representation}, "
+                    f"gripper_representation={action_target.gripper_representation}]."
+                )
+            metadata.update(
+                {
+                    "reference_source": action_target.reference_source,
+                    "pose_source_key": action_target.pose_source_key,
+                    "gripper_source_key": action_target.source_key,
+                }
+            )
+            actions, action_mask = self._pack_sequence(
+                sequence=relative_targets,
+                target_dim=target_dim,
+                target_length=target_length,
+            )
+            if relative_mask.shape[-1] != relative_targets.shape[-1]:
+                raise ValueError("Relative target mask shape must match the relative target tensor shape.")
+            action_mask[:, : relative_mask.shape[-1]] = relative_mask
+            return actions, action_mask, metadata
+
+        raise ValueError(f"Unsupported action target representation: {action_target.representation}")
 
     def _build_sample_index(self) -> list[EpisodeWindow]:
         num_frames = self.data_config.num_frames
@@ -244,9 +327,32 @@ class LeRobotV2WindowDataset(Dataset[WAMSample]):
         if not rows:
             raise ValueError(f"Cannot extract sequence for key '{key}' from an empty row slice.")
 
-        raw_dim = len(rows[0][key])
+        sequence = torch.stack([torch.tensor(row[key], dtype=torch.float32) for row in rows], dim=0)
+        return self._pack_sequence(
+            sequence=sequence,
+            target_dim=target_dim,
+            target_length=target_length,
+            left_pad=left_pad,
+            sequence_name=key,
+        )
+
+    def _pack_sequence(
+        self,
+        *,
+        sequence: torch.Tensor,
+        target_dim: int,
+        target_length: int,
+        left_pad: bool = False,
+        sequence_name: str = "sequence",
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if sequence.ndim != 2:
+            raise ValueError(
+                f"Expected {sequence_name} tensor with shape [T, D], got {tuple(sequence.shape)}."
+            )
+
+        raw_dim = sequence.shape[-1]
         if raw_dim > target_dim:
-            raise ValueError(f"Raw {key} dim {raw_dim} exceeds configured target dim {target_dim}.")
+            raise ValueError(f"Raw {sequence_name} dim {raw_dim} exceeds configured target dim {target_dim}.")
 
         output = torch.zeros(target_length, target_dim, dtype=torch.float32)
         mask = torch.zeros(target_length, target_dim, dtype=torch.float32)
@@ -255,12 +361,11 @@ class LeRobotV2WindowDataset(Dataset[WAMSample]):
         # start of an episode still align to the most recent timestep. Actions
         # keep left_pad=False because they are future-facing targets.
         if left_pad:
-            start_index = target_length - len(rows)
+            start_index = target_length - len(sequence)
         else:
             start_index = 0
 
-        for index, row in enumerate(rows):
-            values = torch.tensor(row[key], dtype=torch.float32)
+        for index, values in enumerate(sequence):
             output[start_index + index, : raw_dim] = values
             mask[start_index + index, : raw_dim] = 1.0
 

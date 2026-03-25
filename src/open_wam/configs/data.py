@@ -37,6 +37,53 @@ class ActionSchemaConfig:
 
 
 @dataclass(frozen=True)
+class ActionTargetConfig:
+    """How raw dataset supervision is exposed as action targets.
+
+    Attributes:
+        representation:
+            Target representation consumed by action heads. `raw` forwards the
+            dataset-provided action tensor unchanged. Other modes may derive the
+            target from state, proprio, or decoded video as the project grows.
+        source_key:
+            Row key used when `representation == "raw"`.
+        pose_source_key:
+            Row key used when the target is derived from pose state rather than
+            from the dataset action tensor itself.
+        state_encoding:
+            How the pose source tensor should be unpacked. The current LIBERO
+            path uses `eef_pos_axisangle_gripper_2d`, i.e. `[xyz, axisangle, gripper]`.
+        reference_source:
+            Which observed state anchors the relative pose target. The default
+            and currently supported value is `anchor_state`.
+        rotation_representation:
+            Rotation parameterization exposed in the action target. The current
+            WM default is `axis_angle`, yielding a target such as
+            `[xyz, axis_angle, gripper]` when `include_gripper` is enabled.
+        include_gripper:
+            Whether to append gripper state to pose-derived targets.
+        gripper_representation:
+            How multi-channel gripper state should be exposed when
+            `include_gripper` is enabled. `first_channel` and `all_channels`
+            expose measured state, while `action_command` copies the scalar
+            gripper command directly from the raw dataset action tensor.
+        gripper_action_index:
+            Channel index used when `gripper_representation == action_command`.
+            The default `-1` means "take the last action dimension".
+    """
+
+    representation: str = "raw"
+    source_key: str = "actions"
+    pose_source_key: str = "state"
+    state_encoding: str = "identity"
+    reference_source: str = "anchor_state"
+    rotation_representation: str = "axis_angle"
+    include_gripper: bool = True
+    gripper_representation: str = "first_channel"
+    gripper_action_index: int = -1
+
+
+@dataclass(frozen=True)
 class DataConfig:
     """Shared data-layer config independent from head choice."""
 
@@ -61,6 +108,7 @@ class DataConfig:
     val_batch_size: int
     num_workers: int
     action_schema: ActionSchemaConfig
+    action_target: ActionTargetConfig
 
 
 @dataclass(frozen=True)
@@ -111,6 +159,7 @@ class GenericDataConfig(DataConfig):
             state_horizon=1,
         )
     )
+    action_target: ActionTargetConfig = field(default_factory=ActionTargetConfig)
 
 
 @dataclass(frozen=True)
@@ -176,6 +225,7 @@ class RobotWinDataConfig(DataConfig):
             state_horizon=1,
         )
     )
+    action_target: ActionTargetConfig = field(default_factory=ActionTargetConfig)
 
 
 @dataclass(frozen=True)
@@ -190,6 +240,10 @@ class LiberoDataConfig(DataConfig):
 
     This preserves the canonical 384x320 RGB canvas and therefore the same
     latent grid of 24x20 expected by the shared video backbone.
+
+    The default action target is a 7D reference-relative EEF target
+    `[xyz, axis_angle, gripper_1d_command]`. Pose comes from proprio state,
+    while the 1D gripper channel comes from the raw LIBERO action command.
     """
 
     dataset_name: str = "libero"
@@ -240,5 +294,18 @@ class LiberoDataConfig(DataConfig):
             action_horizon=6,
             state_dim=8,
             state_horizon=1,
+        )
+    )
+    action_target: ActionTargetConfig = field(
+        default_factory=lambda: ActionTargetConfig(
+            representation="eef_pose_relative_to_reference",
+            source_key="actions",
+            pose_source_key="state",
+            state_encoding="eef_pos_axisangle_gripper_2d",
+            reference_source="anchor_state",
+            rotation_representation="axis_angle",
+            include_gripper=True,
+            gripper_representation="action_command",
+            gripper_action_index=-1,
         )
     )
