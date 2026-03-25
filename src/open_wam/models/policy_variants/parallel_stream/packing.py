@@ -9,7 +9,17 @@ from open_wam.models.video_backbone.contracts import TokenGridMetadata
 
 @dataclass(frozen=True)
 class ParallelPackedSequenceLayout:
-    """Packed layout for the parallel-stream variant."""
+    """Packed layout for the parallel-stream variant.
+
+    All fields are flattened over the final packed token axis `S_total`.
+
+    For a typical sequence order
+    `[video_noisy, video_condition, action_noisy, action_condition]`:
+
+    - each video span has length `T_video = num_frames * tokens_per_frame`
+    - each action span has length `T_action = num_frames * action_per_frame`
+    - total packed length is `2 * T_video + 2 * T_action`
+    """
 
     spans: dict[str, tuple[int, int]]
     frame_ids: torch.Tensor
@@ -48,10 +58,15 @@ def build_parallel_layout(
     modality_ids: list[torch.Tensor] = []
     cursor = 0
 
+    # Video tokens are already flattened frame-major by the frontend:
+    # `[frame0 patch0..patchN, frame1 patch0..patchN, ...]`.
+    # `video_frame_ids` therefore has shape `[T_video]`.
     video_frame_ids = torch.arange(token_grid.num_frames, device=device, dtype=torch.long).repeat_interleave(
         token_grid.tokens_per_frame
     )
     video_chunk_ids = (video_frame_ids // frame_chunk_size) * 2
+    # Action tokens are constructed as one short per-frame sequence of length
+    # `action_per_frame`, so `action_frame_ids` has shape `[T_action]`.
     action_frame_ids = torch.arange(token_grid.num_frames, device=device, dtype=torch.long).repeat_interleave(
         action_per_frame
     )

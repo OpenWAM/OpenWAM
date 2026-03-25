@@ -13,11 +13,15 @@ The current implementation is organized around one constraint:
 The repo currently includes:
 
 - a stage-aware `VisualTower + PolicyVariant + ActionDecoder` stack
-- runnable method 1, 2, 3, and 4 policy variants
+- runnable `parallel_stream`, `register_attached`, `post_latent`, and
+  `post_decoded` policy variants
 - a LingBot-compatible backbone knob under `backbone.implementation`:
   - `dummy`
   - `lingbot_replica`
-- an exact method-1 LingBot loading path owned by `VisualTower`
+- an optional `backbone.load_reference_core_weights` path that loads LingBot
+  backbone weights into the shared replica core for
+  `register_attached`, `post_latent`, and `post_decoded`
+- an exact LingBot parallel-stream loading path owned by `VisualTower`
 - a uniform data contract for all sources and policy variants
 - a config-driven canonical RGB layout builder
 - a dataset registry keyed by `data.dataset_type`
@@ -43,8 +47,10 @@ Important source packages:
 
 - `src/open_wam/configs`: typed config contracts
 - `src/open_wam/data`: dataset adapters, collation, and canonical RGB preprocessing
-- `src/open_wam/models/visual_tower`: shared visual frontend, core, decode boundary, and exact method-1 reference loader
-- `src/open_wam/models/policy_variants`: method 1, 2, 3, and 4 policy attachment paths
+- `src/open_wam/models/visual_tower`: shared visual frontend, core, decode
+  boundary, and exact LingBot reference loader
+- `src/open_wam/models/policy_variants`: `parallel_stream`,
+  `register_attached`, `post_latent`, and `post_decoded` attachment paths
 - `src/open_wam/models/action_decoders`: action decoders and losses
 - `src/open_wam/models/video_backbone`: backbone config and compatibility contracts
 - `src/open_wam/pipelines`: variant pipeline, exact LingBot runner, and compatibility builders
@@ -147,19 +153,33 @@ All four methods now run through the same top-level owner:
 With `backbone.implementation = lingbot_replica`, methods 2, 3, and 4 use the
 shared `LingbotVisualFrontend` plus `LingbotReplicaVisualCore`.
 
-Method 1 has two paths:
+The parallel-stream variant has two paths:
 
 - the standard parallel-stream path can also use `lingbot_replica`
 - the exact LingBot-compatible path uses a reference transformer loaded as-is
   and owned by `VisualTower`
 
-The exact method-1 path requires `backbone.reference_model_path` to point at
+The exact LingBot path requires `backbone.reference_model_path` to point at
 the LingBot `WanTransformer3DModel` source file. The provided exact-runtime
 experiment YAML sets that path explicitly.
 
 So the owner and frontend boundary are shared across all methods, but exact
-method 1 does not yet share the same physical core module or weights as methods
-2, 3, and 4.
+parallel-stream does not yet share the same physical core module or weights as
+`register_attached`, `post_latent`, and `post_decoded`.
+
+The other three variants can use LingBot backbone weights by setting:
+
+- `backbone.implementation: lingbot_replica`
+- `backbone.load_reference_core_weights: true`
+- `backbone.reference_model_path: .../model.py`
+
+That path initializes the shared replica core from LingBot reference weights
+while keeping the stage-aware `VisualTower` contracts intact.
+
+For exact loading and execution details, including how to point Open-WAM at a
+vanilla LingBot repo checkout plus a local checkpoint directory, see:
+
+- [notes/lingbot_reference_usage.md](notes/lingbot_reference_usage.md)
 
 ## Current Dataset Contract
 
@@ -195,6 +215,7 @@ Start here for collaborator-facing context:
 - [notes/architecture.md](notes/architecture.md)
 - [notes/current_all_variant_execution_status.md](notes/current_all_variant_execution_status.md)
 - [notes/current_four_method_architecture.md](notes/current_four_method_architecture.md)
+- [notes/lingbot_reference_usage.md](notes/lingbot_reference_usage.md)
 - [notes/libero_lerobot.md](notes/libero_lerobot.md)
 - [notes/new_work_roadmap.md](notes/new_work_roadmap.md)
 

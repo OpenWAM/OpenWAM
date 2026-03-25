@@ -56,6 +56,7 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
             nn.GELU(),
             nn.Linear(config.hidden_size, config.hidden_size),
         )
+        self.register_role_embedding = nn.Embedding(2, config.hidden_size)
 
     def attach_site(self) -> str:
         return self.config.attach_site
@@ -100,7 +101,7 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
         action_inputs: torch.Tensor,
         state_inputs: torch.Tensor,
         current_start_frame: int,
-    ) -> tuple[torch.Tensor, RegisterSequenceLayout]:
+    ) -> tuple[torch.Tensor, RegisterSequenceLayout, dict[str, object]]:
         layout = self._build_layout(visual_outputs)
         video_tokens = visual_outputs.frontend.video_tokens
         batch_size = video_tokens.shape[0]
@@ -111,8 +112,27 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
             hidden_size=self.config.hidden_size,
             device=action_hidden.device,
         )
+        action_hidden = action_hidden + self.register_role_embedding.weight[0][None, None, :]
         state_hidden = self.state_encoder(state_inputs)
+        state_hidden = state_hidden + self.register_role_embedding.weight[1][None, None, :]
+        # Packed register-attached sequence:
+        # - `video_tokens`: `[B, T_video, H]`
+        # - `action_hidden`: `[B, H_action, H]`
+        # - `state_hidden`: `[B, H_state, H]`
+        # Concatenation stays 1D over sequence length because action/state
+        # registers are inserted as compact slots after the video region.
         packed_tokens = torch.cat([video_tokens, action_hidden, state_hidden], dim=1)
+        stream_ids = torch.cat(
+            [
+                torch.zeros(batch_size, video_tokens.shape[1], device=packed_tokens.device, dtype=torch.long),
+                torch.ones(batch_size, action_hidden.shape[1] + state_hidden.shape[1], device=packed_tokens.device, dtype=torch.long),
+            ],
+            dim=1,
+        )
+        # Grid ids mix two position systems in one shared core input:
+        # - video tokens use the spatial-temporal patch grid
+        # - action/state registers use 1D sequence ids with offsets so the core
+        #   can keep action slots and state slots distinct.
         packed_grid_ids = torch.cat(
             [
                 build_video_grid_ids(
@@ -133,6 +153,9 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
             current_start_frame=current_start_frame,
         )[None, :, :].expand(batch_size, -1, -1)
         attention_mask = build_register_attention_mask(layout, batch_size=batch_size, device=packed_tokens.device)
+        # The shared core still receives one generic packed representation:
+        # `[B, S_total, H]` plus side channels that describe where video ends
+        # and registers begin.
         core_output = visual_tower.run_core(
             VisualCoreInput(
                 tokens=packed_tokens,
@@ -140,13 +163,14 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
                 position_context=position_context,
                 grid_ids=packed_grid_ids,
                 timestep_values=torch.zeros(batch_size, packed_tokens.shape[1], device=packed_tokens.device, dtype=torch.float32),
+                stream_ids=stream_ids,
                 attention_mask=attention_mask,
                 conditioning=visual_outputs.frontend.conditioning,
             )
         )
         action_start = layout.action_block_spans[0][0]
         action_end = layout.action_block_spans[-1][1]
-        return core_output.tokens[:, action_start:action_end, :], layout
+        return core_output.tokens[:, action_start:action_end, :], layout, dict(core_output.aux)
 
     def forward_train(
         self,
@@ -157,7 +181,7 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
         batch = prepared_inputs.batch
         if batch.state is None:
             raise ValueError("Register-attached variant requires state inputs.")
-        action_tokens, layout = self._run_packed_core(
+        action_tokens, layout, core_aux = self._run_packed_core(
             visual_tower=visual_tower,
             visual_outputs=visual_outputs,
             action_inputs=batch.actions,
@@ -167,7 +191,7 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
         return PolicyTrainOutput(
             policy_features=action_tokens,
             metrics={"num_image_blocks": torch.tensor(float(layout.num_image_blocks), device=action_tokens.device)},
-            aux={"variant": self.config.name, "layout": layout},
+            aux={"variant": self.config.name, "layout": layout, "core_aux": core_aux},
         )
 
     def prepare_infer_state(
@@ -202,7 +226,7 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
             state_inputs = torch.zeros(batch_size, self.state_horizon, self.state_dim, device=device, dtype=dtype)
         else:
             state_inputs = context.state.to(device=device, dtype=dtype)
-        action_tokens, layout = self._run_packed_core(
+        action_tokens, layout, core_aux = self._run_packed_core(
             visual_tower=visual_tower,
             visual_outputs=visual_outputs,
             action_inputs=previous_actions,
@@ -213,5 +237,5 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
         return PolicyInferOutput(
             policy_features=action_tokens,
             next_state=PolicyInferState(step_index=infer_state.step_index + 1, cache=next_cache),
-            aux={"variant": self.config.name, "layout": layout},
+            aux={"variant": self.config.name, "layout": layout, "core_aux": core_aux},
         )

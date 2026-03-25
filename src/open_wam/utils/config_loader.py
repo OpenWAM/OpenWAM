@@ -320,6 +320,7 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         max_text_tokens=backbone_raw.get("max_text_tokens", 512),
         load_wan_vae_frontend=backbone_raw.get("load_wan_vae_frontend", False),
         load_text_conditioning=backbone_raw.get("load_text_conditioning", False),
+        load_reference_core_weights=backbone_raw.get("load_reference_core_weights", False),
         reference_model_path=backbone_raw.get("reference_model_path"),
     )
 

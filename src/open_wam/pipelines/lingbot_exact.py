@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Mapping
 
 import torch
 
@@ -15,7 +16,7 @@ from .variant_pipeline import VariantPipeline
 
 @dataclass
 class LingbotExactSession:
-    """Stateful exact method-1 session that mirrors LingBot server lifecycle."""
+    """Stateful exact parallel-stream session that mirrors the LingBot server lifecycle."""
 
     policy_state: PolicyInferState
     task_text: tuple[str | None, ...] | None = None
@@ -28,11 +29,12 @@ class LingbotExactWarmupOutput:
 
     session: LingbotExactSession
     visual_outputs: VisualStageOutputs
+    debug: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class LingbotExactChunkOutput:
-    """Chunk-native exact method-1 inference outputs."""
+    """Chunk-native exact LingBot parallel-stream inference outputs."""
 
     session: LingbotExactSession
     policy_output: PolicyInferOutput
@@ -41,10 +43,55 @@ class LingbotExactChunkOutput:
     chunk_action_pred: torch.Tensor
     raw_chunk_action_pred: torch.Tensor | None
     predicted_latents: torch.Tensor
+    debug: dict[str, Any] = field(default_factory=dict)
 
 
-class LingbotExactMethod1Runner:
-    """Reset / cache-warmup / generate lifecycle for exact LingBot method 1."""
+@dataclass
+class LingbotExactArtifactBundle:
+    """Portable exact LingBot parallel-stream inputs for offline replay or cluster execution."""
+
+    video_latents: torch.Tensor | None = None
+    views: dict[str, torch.Tensor] | None = None
+    action_history: torch.Tensor | None = None
+    task_text: tuple[str | None, ...] | None = None
+    text_context: torch.Tensor | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def save_lingbot_exact_artifact_bundle(path: str | Path, bundle: LingbotExactArtifactBundle) -> None:
+    torch.save(
+        {
+            "video_latents": bundle.video_latents,
+            "views": bundle.views,
+            "action_history": bundle.action_history,
+            "task_text": bundle.task_text,
+            "text_context": bundle.text_context,
+            "metadata": bundle.metadata,
+        },
+        Path(path),
+    )
+
+
+def load_lingbot_exact_artifact_bundle(path: str | Path) -> LingbotExactArtifactBundle:
+    path = Path(path)
+    try:
+        payload = torch.load(path, map_location="cpu", weights_only=True)
+    except TypeError:
+        # Older torch versions do not expose `weights_only`; those loads should
+        # still be treated as trusted local artifacts.
+        payload = torch.load(path, map_location="cpu")
+    return LingbotExactArtifactBundle(
+        video_latents=payload.get("video_latents"),
+        views=payload.get("views"),
+        action_history=payload.get("action_history"),
+        task_text=payload.get("task_text"),
+        text_context=payload.get("text_context"),
+        metadata=dict(payload.get("metadata", {})),
+    )
+
+
+class LingbotExactRunner:
+    """Reset / cache-warmup / generate lifecycle for the exact LingBot parallel-stream runtime."""
 
     def __init__(self, pipeline: VariantPipeline) -> None:
         self.pipeline = pipeline
@@ -108,6 +155,7 @@ class LingbotExactMethod1Runner:
                 text_context=visual_outputs.frontend.conditioning.text_context,
             ),
             visual_outputs=visual_outputs,
+            debug=dict(next_policy_state.cache.get("debug_last_warmup", {})),
         )
 
     def infer_chunk(
@@ -156,6 +204,7 @@ class LingbotExactMethod1Runner:
             chunk_action_pred=policy_output.aux["chunk_action_pred"],
             raw_chunk_action_pred=policy_output.aux["raw_chunk_action_pred"],
             predicted_latents=policy_output.aux["predicted_latents"],
+            debug=dict(policy_output.aux.get("debug", {})),
         )
 
     def _prepare_visual_outputs(
@@ -177,7 +226,7 @@ class LingbotExactMethod1Runner:
                 text_context=resolved_text_context,
             )
         if views is None:
-            raise ValueError("Exact method-1 warmup/infer requires either `views` or `video_latents`.")
+            raise ValueError("Exact LingBot warmup/infer requires either `views` or `video_latents`.")
         return self.pipeline.prepare_visual_outputs(
             views,
             task_text=resolved_task_text,

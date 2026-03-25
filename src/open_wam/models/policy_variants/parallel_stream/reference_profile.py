@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class LingbotReferenceProfile:
-    """Reference LingBot method-1 runtime settings for a known benchmark."""
+    """Reference LingBot parallel-stream runtime settings for a known benchmark."""
 
     name: str
     action_dim: int

@@ -11,7 +11,7 @@ from open_wam.models.policy_variants.parallel_stream.reference_runtime import da
 
 
 class LingbotParallelActionDecoder(ActionDecoder):
-    """Pass-through decoder and exact LingBot joint loss for method 1."""
+    """Pass-through decoder and exact LingBot joint loss for the parallel-stream runtime."""
 
     def __init__(self, hidden_size: int, action_dim: int, action_horizon: int, dropout: float = 0.0) -> None:
         super().__init__()

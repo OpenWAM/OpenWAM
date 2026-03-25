@@ -12,7 +12,7 @@ from .reference_profile import LingbotReferenceProfile, load_reference_profile
 
 @dataclass(frozen=True)
 class LingbotActionAdapterSpec:
-    """Model-space vs raw-space action alignment for exact method 1."""
+    """Model-space vs raw-space action alignment for the exact parallel-stream runtime."""
 
     model_action_dim: int
     raw_action_dim: int
@@ -46,14 +46,14 @@ def build_action_adapter_spec(
         return None
     if len(inverse_used_action_channel_ids) != model_action_dim:
         raise ValueError(
-            "Exact method-1 inverse channel ids must have length equal to the model action dim, "
+            "Exact parallel-stream inverse channel ids must have length equal to the model action dim, "
             f"got {len(inverse_used_action_channel_ids)} and model_action_dim={model_action_dim}."
         )
     if action_norm_method not in {"none", "quantiles"}:
-        raise ValueError(f"Unsupported exact method-1 action_norm_method '{action_norm_method}'.")
+        raise ValueError(f"Unsupported exact parallel-stream action_norm_method '{action_norm_method}'.")
     if action_norm_method == "quantiles" and (len(norm_q01) != model_action_dim or len(norm_q99) != model_action_dim):
         raise ValueError(
-            "Quantile-normalized exact method-1 actions require q01/q99 values for every model action channel, "
+            "Quantile-normalized exact parallel-stream actions require q01/q99 values for every model action channel, "
             f"got len(q01)={len(norm_q01)}, len(q99)={len(norm_q99)}, model_action_dim={model_action_dim}."
         )
     return LingbotActionAdapterSpec(
@@ -69,7 +69,7 @@ def build_action_adapter_spec(
 
 
 class LingbotActionAdapter:
-    """Convert exact method-1 actions between raw-space and model-space."""
+    """Convert exact LingBot parallel-stream actions between raw-space and model-space."""
 
     def __init__(self, spec: LingbotActionAdapterSpec | None) -> None:
         self.spec = spec
@@ -153,7 +153,7 @@ class LingbotActionAdapter:
         )
         if sequence.shape[1] % action_per_frame != 0:
             raise ValueError(
-                "Exact method-1 action sequence length must be divisible by action_per_frame, "
+                "Exact parallel-stream action sequence length must be divisible by action_per_frame, "
                 f"got sequence_length={sequence.shape[1]} and action_per_frame={action_per_frame}."
             )
         return rearrange(

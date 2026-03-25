@@ -194,6 +194,7 @@ class LingbotParallelInferArtifacts:
     action_pred: torch.Tensor
     predicted_latents: torch.Tensor
     next_cache: dict[str, Any]
+    debug: dict[str, Any]
 
 
 def _add_noise(
@@ -206,6 +207,10 @@ def _add_noise(
     patch_size: tuple[int, int, int],
 ) -> dict[str, torch.Tensor]:
     batch_size, _, num_frames, height, width = latent.shape
+    # LingBot samples one timestep per frame, then broadcasts that scalar across
+    # every channel/spatial location inside that frame. For video latents the
+    # tensor is `[B, C_latent, F, H_latent, W_latent]`; for action latents it is
+    # `[B, D_action, F, action_per_frame, 1]`.
     timestep_ids = sample_timestep_id(
         batch_size=num_frames,
         num_train_timesteps=train_scheduler.num_train_timesteps,
@@ -220,6 +225,10 @@ def _add_noise(
     if action_mode:
         patch_f = patch_h = patch_w = 1
 
+    # Grid ids stay flattened to match the reference transformer input after
+    # patchification:
+    # - video: `[B, 4, T_video]` where `T_video = F/p_t * H/p_h * W/p_w`
+    # - action: `[B, 4, T_action]` where `T_action = F * action_per_frame`
     latent_grid_id = get_mesh_id(
         latent.shape[-3] // patch_f,
         latent.shape[-2] // patch_h,
@@ -271,6 +280,10 @@ def prepare_parallel_exact_train_artifacts(
     text_emb: torch.Tensor | None,
 ) -> LingbotParallelTrainArtifacts:
     batch_size, _, num_frames, _, _ = video_latents.shape
+    # Exact parallel-stream training keeps video and action in the same frame
+    # count. Actions are reshaped from `[B, F * A, D]` into
+    # `[B, D, F, A, 1]` so the reference transformer can treat them like a
+    # narrow latent volume with one "width" slot per action token.
     action_latents = rearrange(
         actions,
         "b (f a) c -> b c f a 1",
@@ -337,6 +350,9 @@ def prepare_parallel_exact_train_artifacts(
         if action_mask_latents is not None
         else torch.ones_like(action_latents, device=video_latents.device)
     )
+    # LingBot varies the effective chunk and window during training. Those
+    # values are carried through as metadata because later layout/mask builders
+    # need them to reproduce the same local-attention regime.
     chunk_size = max(1, int(training_config.chunk_size))
     sampled_chunk_size = int(torch.randint(1, chunk_size + 1, (1,), device=video_latents.device).item())
     if training_config.window_size >= 4:
@@ -396,6 +412,12 @@ def prepare_reference_single_stream_input(
         timesteps = torch.ones(num_frames, device=device, dtype=torch.float32) * timestep_value
     else:
         timesteps = timestep_value
+    # This helper produces the exact single-stream dict the LingBot reference
+    # transformer expects. Before patch embedding:
+    # - video stream latents: `[B, C_latent, F, H_latent, W_latent]`
+    # - action stream latents: `[B, D_action, F, action_per_frame, 1]`
+    # The paired `grid_id` encodes where every future token belongs in frame
+    # time and whether it came from the video or action stream.
     if action_mode:
         grid_id = get_mesh_id(
             num_frames,
@@ -448,7 +470,7 @@ def prepare_reference_forward_input(
     *,
     transformer: torch.nn.Module,
 ) -> dict[str, torch.Tensor]:
-    model_dtype = preferred_reference_dtype(next(transformer.parameters()).device)
+    model_dtype = next(transformer.parameters()).dtype
     return {
         "noisy_latents": input_dict["noisy_latents"].to(model_dtype),
         "text_emb": input_dict["text_emb"].to(model_dtype),
@@ -526,7 +548,7 @@ def run_parallel_exact_cache_warmup(
     infer_cache: dict[str, Any],
 ) -> dict[str, Any]:
     device = observed_video_latents.device
-    model_dtype = preferred_reference_dtype(device)
+    model_dtype = next(transformer.parameters()).dtype
     batch_size, _, observed_frames, latent_height, latent_width = observed_video_latents.shape
     text_emb = ensure_reference_text_embeddings(
         text_emb,
@@ -569,6 +591,10 @@ def run_parallel_exact_cache_warmup(
     if inference_config.use_cache:
         transformer.clear_pred_cache(cache_name)
 
+    # Warmup pushes already-observed history into the transformer cache without
+    # denoising it. Both streams therefore use timestep `0.0`, and the
+    # resulting KV cache represents the observed prefix before generation
+    # starts at `frame_start_after`.
     cache_video_input = prepare_reference_single_stream_input(
         latents=observed_video_latents.to(dtype=model_dtype),
         timestep=0.0,
@@ -607,6 +633,14 @@ def run_parallel_exact_cache_warmup(
         combine_cfg=False,
         force_cfg_batch=use_cfg and inference_config.use_cache,
     )
+    debug = {
+        "cache_name": cache_name,
+        "use_cfg": use_cfg,
+        "batch_size": batch_size,
+        "observed_frames": observed_frames,
+        "frame_start_before": int(infer_cache.get("frame_start", 0)),
+        "frame_start_after": current_frame_start + observed_frames,
+    }
     return {
         "runtime_mode": "lingbot_exact",
         "cache_name": cache_name,
@@ -617,6 +651,7 @@ def run_parallel_exact_cache_warmup(
         "batch_size": batch_size,
         "step_index": int(infer_cache.get("step_index", 0)),
         "use_cfg": use_cfg,
+        "debug_last_warmup": debug,
     }
 
 
@@ -647,7 +682,7 @@ def run_parallel_exact_inference_rollout(
         batch_size = int(infer_cache["batch_size"])
         latent_height = int(infer_cache["latent_height"])
         latent_width = int(infer_cache["latent_width"])
-    model_dtype = preferred_reference_dtype(device)
+    model_dtype = next(transformer.parameters()).dtype
     text_emb = ensure_reference_text_embeddings(
         text_emb,
         batch_size=batch_size,
@@ -691,6 +726,10 @@ def run_parallel_exact_inference_rollout(
         device=device,
         dtype=model_dtype,
     )
+    # One generated chunk always has aligned video/action frame count:
+    # - `latents`: `[B, C_latent, F_chunk, H_latent, W_latent]`
+    # - `actions`: `[B, D_action, F_chunk, action_per_frame, 1]`
+    # Both streams share `F_chunk = inference_config.frame_chunk_size`.
     actions = torch.randn(
         batch_size,
         action_dim,
@@ -720,6 +759,9 @@ def run_parallel_exact_inference_rollout(
         video_timesteps = video_timesteps[: inference_config.video_exec_step]
     action_timesteps = F.pad(action_scheduler.timesteps.to(device=device), (0, 1), mode="constant", value=0)
 
+    # Video denoising always runs before action denoising so the action stream
+    # can condition on the final visual chunk, matching the LingBot server
+    # rollout order.
     for index, timestep in enumerate(video_timesteps):
         last_step = index == len(video_timesteps) - 1
         video_input = prepare_reference_single_stream_input(
@@ -765,6 +807,9 @@ def run_parallel_exact_inference_rollout(
             device=device,
             dtype=model_dtype,
         )
+    # Actions are denoised in their native `[B, D_action, F_chunk, A, 1]`
+    # volume and converted back to `[B, F_chunk * A, D_action]` only once the
+    # chunk is complete.
     for index, timestep in enumerate(action_timesteps):
         last_step = index == len(action_timesteps) - 1
         action_input = prepare_reference_single_stream_input(
@@ -809,12 +854,23 @@ def run_parallel_exact_inference_rollout(
         "step_index": int(infer_cache.get("step_index", 0) + 1),
         "use_cfg": use_cfg,
     }
+    debug = {
+        "cache_name": cache_name,
+        "use_cfg": use_cfg,
+        "generation_frame_start": generation_frame_start,
+        "advance_frame_start": advance_frame_start,
+        "video_timesteps": video_timesteps.tolist(),
+        "action_timesteps": action_timesteps.tolist(),
+        "video_guidance_scale": float(inference_config.guidance_scale),
+        "action_guidance_scale": float(inference_config.action_guidance_scale),
+    }
     output_dtype = condition_latents.dtype if condition_latents is not None else model_dtype
     action_pred = rearrange(actions, "b c f n 1 -> b (f n) c").to(dtype=output_dtype)
     return LingbotParallelInferArtifacts(
         action_pred=action_pred,
         predicted_latents=latents.to(dtype=output_dtype),
         next_cache=next_cache,
+        debug=debug,
     )
 
 
@@ -824,7 +880,7 @@ def run_parallel_exact_train(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     latent_dict = input_dict["latent_dict"]
     action_dict = input_dict["action_dict"]
-    model_dtype = preferred_reference_dtype(next(transformer.parameters()).device)
+    model_dtype = next(transformer.parameters()).dtype
     latent_dict["noisy_latents"] = latent_dict["noisy_latents"].to(model_dtype)
     latent_dict["latent"] = latent_dict["latent"].to(model_dtype)
     action_dict["noisy_latents"] = action_dict["noisy_latents"].to(model_dtype)

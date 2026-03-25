@@ -19,7 +19,30 @@ from open_wam.models.policy_variants import (
 from open_wam.models.visual_tower import VisualTower
 
 from .variant_pipeline import VariantPipeline
-from .lingbot_exact import LingbotExactMethod1Runner
+from .lingbot_exact import LingbotExactRunner
+
+
+def validate_experiment_config(config: ExperimentConfig) -> None:
+    action_schema = config.data.action_schema
+    if isinstance(config.policy_variant, ParallelStreamPolicyConfig):
+        expected_horizon = config.data.num_frames * config.policy_variant.action_per_frame
+        if action_schema.action_horizon != expected_horizon:
+            raise ValueError(
+                "Parallel-stream config requires `action_horizon == num_frames * action_per_frame`, "
+                f"got action_horizon={action_schema.action_horizon}, num_frames={config.data.num_frames}, "
+                f"action_per_frame={config.policy_variant.action_per_frame}."
+            )
+        if config.policy_variant.runtime_mode == "lingbot_exact":
+            if config.backbone.reference_model_path is None:
+                raise ValueError(
+                    "Exact LingBot runtime requires `backbone.reference_model_path` to be set."
+                )
+            if config.action_decoder.name != "lingbot_parallel_decoder":
+                raise ValueError(
+                    "Exact LingBot runtime requires `action_decoder.name = lingbot_parallel_decoder`."
+                )
+    if config.backbone.load_reference_core_weights and config.backbone.reference_model_path is None:
+        raise ValueError("`backbone.load_reference_core_weights` requires `backbone.reference_model_path`.")
 
 
 def build_policy_variant(config: ExperimentConfig):
@@ -98,13 +121,17 @@ def build_action_decoder(config: ExperimentConfig):
 
 
 def build_variant_pipeline_from_config(config: ExperimentConfig) -> VariantPipeline:
+    validate_experiment_config(config)
     return VariantPipeline(
-        visual_tower=VisualTower(config.backbone),
+        visual_tower=VisualTower(
+            config.backbone,
+            action_dim=config.data.action_schema.action_dim,
+        ),
         policy_variant=build_policy_variant(config),
         action_decoder=build_action_decoder(config),
         preprocessor=build_canonical_video_preprocessor(config.data),
     )
 
 
-def build_lingbot_exact_runner_from_config(config: ExperimentConfig) -> LingbotExactMethod1Runner:
-    return LingbotExactMethod1Runner(build_variant_pipeline_from_config(config))
+def build_lingbot_exact_runner_from_config(config: ExperimentConfig) -> LingbotExactRunner:
+    return LingbotExactRunner(build_variant_pipeline_from_config(config))

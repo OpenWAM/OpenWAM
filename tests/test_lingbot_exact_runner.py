@@ -85,8 +85,8 @@ def test_lingbot_exact_runner_supports_warmup_and_chunk_generation(tmp_path: Pat
 
     batch = build_synthetic_batch(config.data, batch_size=2)
     runner = build_lingbot_exact_runner_from_config(config)
-    shared_transformer = runner.pipeline.visual_tower.get_exact_method1_transformer(action_dim=4)
-    assert shared_transformer is runner.pipeline.visual_tower.get_exact_method1_transformer(action_dim=4)
+    shared_transformer = runner.pipeline.visual_tower.get_lingbot_reference_transformer(action_dim=4)
+    assert shared_transformer is runner.pipeline.visual_tower.get_lingbot_reference_transformer(action_dim=4)
     assert not hasattr(runner.policy_variant, "reference_transformer")
     session = runner.reset(task_text=batch.task_text)
 

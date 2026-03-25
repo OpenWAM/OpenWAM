@@ -36,3 +36,4 @@ def test_new_variant_yaml_configs_load() -> None:
     assert replica_parallel.backbone.implementation == "lingbot_replica"
     assert replica_parallel.policy_variant.runtime_mode == "lingbot_exact"
     assert replica_parallel.action_decoder.name == "lingbot_parallel_decoder"
+    assert replica_parallel.backbone.reference_model_path == "previous_works/lingbot-va/wan_va/modules/model.py"

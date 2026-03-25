@@ -231,7 +231,9 @@ class LingbotReplicaVisualCore(nn.Module):
         self.ffn_dim = self.config.ffn_dim or (self.config.hidden_size * self.config.mlp_ratio)
         self.rope = LingbotReplicaRotaryPosEmbed(self.config.hidden_size // self.config.num_heads)
         self.time_conditioner = LingbotReplicaTimeEmbedding(self.config.hidden_size, self.config.freq_dim)
+        self.action_time_conditioner = LingbotReplicaTimeEmbedding(self.config.hidden_size, self.config.freq_dim)
         self.text_proj = PixArtAlphaTextProjection(self.config.text_dim, self.config.hidden_size, act_fn="gelu_tanh")
+        self.action_text_proj = PixArtAlphaTextProjection(self.config.text_dim, self.config.hidden_size, act_fn="gelu_tanh")
         self.blocks = nn.ModuleList(
             [
                 LingbotReplicaTransformerBlock(
@@ -247,9 +249,46 @@ class LingbotReplicaVisualCore(nn.Module):
         self.norm_out = FP32LayerNorm(self.config.hidden_size, self.config.latent_norm_eps, elementwise_affine=False)
         self.scale_shift_table = nn.Parameter(torch.randn(1, 2, self.config.hidden_size) / self.config.hidden_size**0.5)
 
+    def _resolve_stream_ids(
+        self,
+        stream_ids: torch.Tensor | None,
+        *,
+        batch_size: int,
+        seq_len: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        if stream_ids is None:
+            return torch.zeros(batch_size, seq_len, device=device, dtype=torch.long)
+        if stream_ids.ndim == 1:
+            if stream_ids.shape[0] != seq_len:
+                raise ValueError(f"Expected 1D stream_ids with length {seq_len}, got {tuple(stream_ids.shape)}")
+            return stream_ids[None, :].expand(batch_size, -1).to(device=device, dtype=torch.long)
+        if stream_ids.ndim == 2:
+            if stream_ids.shape != (batch_size, seq_len):
+                raise ValueError(
+                    f"Expected 2D stream_ids with shape {(batch_size, seq_len)}, got {tuple(stream_ids.shape)}"
+                )
+            return stream_ids.to(device=device, dtype=torch.long)
+        raise ValueError(f"Expected stream_ids with ndim 1 or 2, got shape {tuple(stream_ids.shape)}")
+
+    def _select_stream_tensor(
+        self,
+        video_tensor: torch.Tensor,
+        action_tensor: torch.Tensor,
+        stream_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        if video_tensor.ndim == 3:
+            mask = stream_ids[..., None].bool()
+        elif video_tensor.ndim == 4:
+            mask = stream_ids[..., None, None].bool()
+        else:
+            raise ValueError(f"Unsupported stream-conditioned tensor rank {video_tensor.ndim}")
+        return torch.where(mask, action_tensor, video_tensor)
+
     def _resolve_encoder_hidden_states(
         self,
         core_input: VisualCoreInput,
+        stream_ids: torch.Tensor,
         batch_size: int,
         dtype: torch.dtype,
         device: torch.device,
@@ -263,14 +302,20 @@ class LingbotReplicaVisualCore(nn.Module):
         if text_context.ndim == 2:
             text_context = text_context[:, None, :]
         if text_context.shape[-1] == self.config.hidden_size:
-            return text_context.to(dtype=dtype)
-        return self.text_proj(text_context).to(dtype=dtype)
+            video_hidden_states = text_context.to(dtype=dtype)
+            action_hidden_states = video_hidden_states
+        else:
+            video_hidden_states = self.text_proj(text_context).to(dtype=dtype)
+            action_hidden_states = self.action_text_proj(text_context).to(dtype=dtype)
+        action_fraction = stream_ids.float().mean(dim=1, keepdim=True).unsqueeze(-1)
+        return (1.0 - action_fraction) * video_hidden_states + action_fraction * action_hidden_states
 
     def forward(self, core_input: VisualCoreInput) -> VisualCoreOutput:
         hidden_states = core_input.tokens
         batch_size, seq_len, _ = hidden_states.shape
         device = hidden_states.device
         dtype = hidden_states.dtype
+        stream_ids = self._resolve_stream_ids(core_input.stream_ids, batch_size=batch_size, seq_len=seq_len, device=device)
 
         if core_input.position_context is not None and core_input.grid_ids is None:
             hidden_states = hidden_states + core_input.position_context
@@ -279,16 +324,37 @@ class LingbotReplicaVisualCore(nn.Module):
         if timestep_values is None:
             if core_input.timestep_context is not None:
                 hidden_states = hidden_states + core_input.timestep_context
-                temb = torch.zeros(batch_size, seq_len, self.config.hidden_size, device=device, dtype=dtype)
-                timestep_proj = torch.zeros(batch_size, seq_len, 6, self.config.hidden_size, device=device, dtype=dtype)
+                video_temb = torch.zeros(batch_size, seq_len, self.config.hidden_size, device=device, dtype=dtype)
+                video_timestep_proj = torch.zeros(
+                    batch_size,
+                    seq_len,
+                    6,
+                    self.config.hidden_size,
+                    device=device,
+                    dtype=dtype,
+                )
+                action_temb = video_temb
+                action_timestep_proj = video_timestep_proj
             else:
                 timestep_values = torch.zeros(batch_size, seq_len, device=device, dtype=torch.float32)
-                temb, timestep_proj = self.time_conditioner(timestep_values, dtype=dtype)
+                video_temb, video_timestep_proj = self.time_conditioner(timestep_values, dtype=dtype)
+                action_temb, action_timestep_proj = self.action_time_conditioner(timestep_values, dtype=dtype)
         else:
-            temb, timestep_proj = self.time_conditioner(timestep_values.to(device=device), dtype=dtype)
+            timestep_values = timestep_values.to(device=device)
+            video_temb, video_timestep_proj = self.time_conditioner(timestep_values, dtype=dtype)
+            action_temb, action_timestep_proj = self.action_time_conditioner(timestep_values, dtype=dtype)
+
+        temb = self._select_stream_tensor(video_temb, action_temb, stream_ids)
+        timestep_proj = self._select_stream_tensor(video_timestep_proj, action_timestep_proj, stream_ids)
 
         rotary_emb = self.rope(core_input.grid_ids.to(device=device))[:, :, None] if core_input.grid_ids is not None else None
-        encoder_hidden_states = self._resolve_encoder_hidden_states(core_input, batch_size=batch_size, dtype=dtype, device=device)
+        encoder_hidden_states = self._resolve_encoder_hidden_states(
+            core_input,
+            stream_ids=stream_ids,
+            batch_size=batch_size,
+            dtype=dtype,
+            device=device,
+        )
 
         for block in self.blocks:
             hidden_states = block(
@@ -316,5 +382,9 @@ class LingbotReplicaVisualCore(nn.Module):
             tokens=hidden_states,
             token_layout=core_input.token_layout,
             cache_state=cache_state,
-            aux={"implementation": "lingbot_replica", "used_rotary": core_input.grid_ids is not None},
+            aux={
+                "implementation": "lingbot_replica",
+                "used_rotary": core_input.grid_ids is not None,
+                "used_action_conditioner": bool((stream_ids != 0).any().item()),
+            },
         )

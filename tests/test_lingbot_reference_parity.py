@@ -4,6 +4,7 @@ from copy import deepcopy
 from pathlib import Path
 import sys
 
+import pytest
 import torch
 
 from open_wam.configs import ParallelStreamPolicyConfig, TrainingConfig
@@ -20,8 +21,6 @@ def _clone_train_input_dict(input_dict: dict[str, object]) -> dict[str, object]:
         key: {inner_key: inner_value.clone() for inner_key, inner_value in value.items()} if isinstance(value, dict) else value
         for key, value in input_dict.items()
     }
-
-
 def test_exact_train_runtime_matches_reference_transformer_forward_train(tmp_path: Path) -> None:
     backbone_config = LingbotCompatibleVideoBackboneConfig(
         implementation="lingbot_replica",
@@ -56,7 +55,9 @@ def test_exact_train_runtime_matches_reference_transformer_forward_train(tmp_pat
     transformer_dir = tmp_path / "lingbot_ckpt" / "transformer"
     reference_model.save_pretrained(transformer_dir)
 
-    transformer = build_reference_transformer(backbone_config, action_dim=4)
+    transformer = build_reference_transformer(backbone_config, action_dim=4).to(dtype=torch.bfloat16)
+    if next(transformer.parameters()).device.type == "cpu":
+        pytest.skip("Reference forward_train hardcodes BF16 inputs; exact parity is only checked on non-CPU runs.")
     policy_config = ParallelStreamPolicyConfig(
         hidden_size=32,
         runtime_mode="lingbot_exact",
@@ -83,6 +84,14 @@ def test_exact_train_runtime_matches_reference_transformer_forward_train(tmp_pat
     ours_input = _clone_train_input_dict(train_artifacts.input_dict)
     reference_input = _clone_train_input_dict(train_artifacts.input_dict)
     latent_pred, action_pred = run_parallel_exact_train(transformer, ours_input)
+    reference_dtype = next(transformer.parameters()).dtype
+    for stream_name in ("latent_dict", "action_dict"):
+        stream = reference_input[stream_name]
+        assert isinstance(stream, dict)
+        for key, value in tuple(stream.items()):
+            if torch.is_tensor(value) and torch.is_floating_point(value):
+                stream[key] = value.to(dtype=reference_dtype)
+    assert reference_input["latent_dict"]["noisy_latents"].dtype == reference_dtype
     reference_module = sys.modules[transformer.__class__.__module__]
     original_init_mask = reference_module.FlexAttnFunc.init_mask
     reference_module.FlexAttnFunc.init_mask = staticmethod(lambda *args, **kwargs: None)

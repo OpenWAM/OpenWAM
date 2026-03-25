@@ -8,7 +8,8 @@ from .reference_loader import load_wan_transformer_class, resolve_pretrained_com
 
 
 def preferred_reference_dtype(device: torch.device) -> torch.dtype:
-    del device
+    if device.type == "cpu":
+        return torch.float32
     return torch.bfloat16
 
 
@@ -18,6 +19,7 @@ def build_reference_transformer(
     action_dim: int,
 ) -> torch.nn.Module:
     model_cls = load_wan_transformer_class(backbone_config)
+    preferred_dtype = preferred_reference_dtype(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     transformer_dir = resolve_pretrained_component_dir(
         backbone_config.pretrained_model_name_or_path,
         backbone_config.transformer_subdir,
@@ -25,7 +27,7 @@ def build_reference_transformer(
     if transformer_dir is not None and transformer_dir.exists():
         return model_cls.from_pretrained(
             str(transformer_dir),
-            torch_dtype=torch.bfloat16,
+            torch_dtype=preferred_dtype,
         )
     attention_head_dim = backbone_config.attention_head_dim or (backbone_config.hidden_size // backbone_config.num_heads)
     return model_cls(

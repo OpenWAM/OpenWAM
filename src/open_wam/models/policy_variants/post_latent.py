@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import math
+
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 from open_wam.configs import InferenceConfig, PostLatentPolicyConfig, TrainingConfig
@@ -36,6 +39,8 @@ class PostLatentPolicyVariant(PolicyVariant):
         self.action_horizon = action_horizon
         self.state_dim = state_dim
         self.state_proj = nn.Linear(state_dim, config.hidden_size) if config.use_state_projection else None
+        self.query_tokens = nn.Parameter(torch.randn(config.query_count, config.hidden_size)) if config.query_count > 0 else None
+        self.query_norm = nn.LayerNorm(config.hidden_size) if config.query_count > 0 else None
 
     def attach_site(self) -> str:
         return self.config.attach_site
@@ -69,6 +74,13 @@ class PostLatentPolicyVariant(PolicyVariant):
         if self.config.pooling_mode == "compat_global_mean":
             return tokens.mean(dim=1, keepdim=True).expand(-1, self.action_horizon, -1)
         frame_tokens = tokens_to_frame_major(tokens, visual_outputs.frontend.token_grid)
+        if self.query_tokens is not None and self.query_norm is not None:
+            frame_features = pool_frame_tokens(frame_tokens, mode="mean")
+            queries = self.query_norm(self.query_tokens)[None, :, :].expand(frame_features.shape[0], -1, -1)
+            attn_scores = torch.matmul(queries, frame_features.transpose(1, 2)) / math.sqrt(frame_features.shape[-1])
+            attn_weights = F.softmax(attn_scores, dim=-1)
+            queried_features = torch.matmul(attn_weights, frame_features)
+            return align_sequence_length(queried_features, self.action_horizon)
         frame_features = pool_frame_tokens(frame_tokens, mode="mean")
         return align_sequence_length(frame_features, self.action_horizon)
 

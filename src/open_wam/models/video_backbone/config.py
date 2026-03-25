@@ -46,4 +46,5 @@ class LingbotCompatibleVideoBackboneConfig:
     max_text_tokens: int = 512
     load_wan_vae_frontend: bool = False
     load_text_conditioning: bool = False
+    load_reference_core_weights: bool = False
     reference_model_path: str | None = None

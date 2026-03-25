@@ -10,6 +10,7 @@ from .core import LingbotVisualCore
 from .decoder import VisualFeatureDecoder
 from .frontend import LingbotVisualFrontend
 from .grid_ids import build_video_grid_ids
+from .reference_core_weights import ReferenceCoreLoadReport, load_reference_weights_into_replica_core
 from .replica_core import LingbotReplicaVisualCore
 from .reference_transformer import build_reference_transformer, preferred_reference_dtype
 
@@ -17,9 +18,15 @@ from .reference_transformer import build_reference_transformer, preferred_refere
 class VisualTower(nn.Module):
     """Stage-aware visual tower used by all policy variants."""
 
-    def __init__(self, config: LingbotCompatibleVideoBackboneConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: LingbotCompatibleVideoBackboneConfig | None = None,
+        *,
+        action_dim: int | None = None,
+    ) -> None:
         super().__init__()
         self.config = config or LingbotCompatibleVideoBackboneConfig()
+        self.action_dim = action_dim
         self.frontend = LingbotVisualFrontend(self.config)
         if self.config.implementation == "lingbot_replica":
             self.core = LingbotReplicaVisualCore(self.config)
@@ -31,7 +38,18 @@ class VisualTower(nn.Module):
                 "Expected 'dummy' or 'lingbot_replica'."
             )
         self.decoder = VisualFeatureDecoder(self.config.hidden_size)
-        self._exact_method1_transformers = nn.ModuleDict()
+        self._lingbot_reference_transformers = nn.ModuleDict()
+        self.reference_core_load_report: ReferenceCoreLoadReport | None = None
+        if self.config.load_reference_core_weights:
+            if self.config.implementation != "lingbot_replica":
+                raise ValueError("`backbone.load_reference_core_weights` requires `backbone.implementation = lingbot_replica`.")
+            if self.action_dim is None:
+                raise ValueError("VisualTower requires `action_dim` to load LingBot reference weights into the shared core.")
+            self.reference_core_load_report = load_reference_weights_into_replica_core(
+                self.core,
+                backbone_config=self.config,
+                action_dim=self.action_dim,
+            )
 
     def run_frontend(
         self,
@@ -69,7 +87,14 @@ class VisualTower(nn.Module):
         self.frontend.reset_runtime_state()
 
     def run_core(self, core_input: VisualCoreInput):
-        return self.core(core_input)
+        core_output = self.core(core_input)
+        core_output.aux.setdefault(
+            "weight_source",
+            "lingbot_reference_init" if self.reference_core_load_report is not None else "local_init",
+        )
+        if self.reference_core_load_report is not None:
+            core_output.aux.setdefault("reference_core_loaded_keys", len(self.reference_core_load_report.loaded_keys))
+        return core_output
 
     def run_default_core(self, frontend_output):
         batch_size, seq_len, _ = frontend_output.video_tokens.shape
@@ -82,6 +107,7 @@ class VisualTower(nn.Module):
                     device=frontend_output.video_tokens.device,
                 ),
                 timestep_values=frontend_output.video_tokens.new_zeros((batch_size, seq_len), dtype=frontend_output.video_tokens.dtype),
+                stream_ids=frontend_output.video_tokens.new_zeros((batch_size, seq_len), dtype=frontend_output.video_tokens.dtype).long(),
                 text_context=frontend_output.conditioning.text_context,
                 conditioning=frontend_output.conditioning,
             )
@@ -90,22 +116,22 @@ class VisualTower(nn.Module):
     def run_decode(self, frontend_output, core_output):
         return self.decoder(frontend_output=frontend_output, core_output=core_output)
 
-    def get_exact_method1_transformer(self, *, action_dim: int) -> nn.Module:
+    def get_lingbot_reference_transformer(self, *, action_dim: int) -> nn.Module:
         key = str(action_dim)
-        if key not in self._exact_method1_transformers:
-            self._exact_method1_transformers[key] = build_reference_transformer(self.config, action_dim=action_dim)
-        return self._exact_method1_transformers[key]
+        if key not in self._lingbot_reference_transformers:
+            self._lingbot_reference_transformers[key] = build_reference_transformer(self.config, action_dim=action_dim)
+        return self._lingbot_reference_transformers[key]
 
-    def ensure_exact_method1_transformer_device(self, *, action_dim: int, device) -> nn.Module:
-        transformer = self.get_exact_method1_transformer(action_dim=action_dim)
+    def ensure_lingbot_reference_transformer_device(self, *, action_dim: int, device) -> nn.Module:
+        transformer = self.get_lingbot_reference_transformer(action_dim=action_dim)
         target_dtype = preferred_reference_dtype(device)
         parameter = next(transformer.parameters())
         if parameter.device != device or parameter.dtype != target_dtype:
             transformer.to(device=device, dtype=target_dtype)
         return transformer
 
-    def reset_exact_method1_runtime(self, *, action_dim: int, cache_name: str = "open_wam_exact") -> None:
-        transformer = self.get_exact_method1_transformer(action_dim=action_dim)
+    def reset_lingbot_reference_runtime(self, *, action_dim: int, cache_name: str = "open_wam_exact") -> None:
+        transformer = self.get_lingbot_reference_transformer(action_dim=action_dim)
         try:
             transformer.clear_pred_cache(cache_name)
         except KeyError:

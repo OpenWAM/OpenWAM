@@ -102,6 +102,10 @@ class ParallelStreamPolicyVariant(PolicyVariant):
     def _build_action_tokens(self, actions: torch.Tensor) -> torch.Tensor:
         self._validate_action_layout(actions.shape[1])
         hidden = self.action_embedder(actions)
+        # Validate that the flat action horizon can be viewed as
+        # `[B, num_frames, action_per_frame, hidden]`. The returned frame-major
+        # view is intentionally discarded here because the downstream packer
+        # still expects the flattened `[B, T_action, hidden]` layout.
         action_tokens_to_frame_major(hidden, self.num_frames, self.config.action_per_frame)
         return hidden
 
@@ -134,6 +138,11 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             sequence_order=self.config.sequence_order,
             device=visual_outputs.frontend.video_tokens.device,
         )
+        # Shapes before concatenation:
+        # - `video_noisy` / `video_condition`: `[B, T_video, H]`
+        # - `action_noisy` / `action_condition`: `[B, T_action, H]`
+        # The concatenated sequence is `[B, S_total, H]`, where `S_total` is
+        # the sum of span lengths in `layout.spans`.
         stream_map = {
             "video_noisy": video_noisy,
             "video_condition": visual_outputs.frontend.video_tokens,
@@ -151,6 +160,8 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         contexts = []
         for name in self.config.sequence_order:
             if name.startswith("video"):
+                # Video spans reuse the frontend patch grid:
+                # `[1, T_video, 3]` with `(frame, row, col)`-style coordinates.
                 contexts.append(
                     build_video_grid_ids(
                         visual_outputs.frontend.token_grid,
@@ -158,6 +169,9 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                     )
                 )
             else:
+                # Action spans live in a compact frame-major 1D grid:
+                # `[1, T_action, 3]`, aligned so each frame owns
+                # `action_per_frame` adjacent action slots.
                 contexts.append(
                     build_action_grid_ids(
                         num_frames=visual_outputs.frontend.token_grid.num_frames,
@@ -180,6 +194,9 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         for name in self.config.sequence_order:
             start, end = layout.spans[name]
             length = end - start
+            # Timesteps are expanded from one scalar per sample to one scalar per
+            # packed token. Conditioning streams receive zero so the core can
+            # distinguish denoised context from actively denoised streams.
             if name == "video_noisy":
                 base = video_scalar
             elif name == "action_noisy":
@@ -189,6 +206,21 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             values.append(base[:, None].expand(-1, length))
         return torch.cat(values, dim=1)
 
+    def _build_parallel_stream_ids(
+        self,
+        layout: ParallelPackedSequenceLayout,
+        *,
+        batch_size: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        stream_ids = []
+        for name in self.config.sequence_order:
+            start, end = layout.spans[name]
+            length = end - start
+            value = 0 if name.startswith("video") else 1
+            stream_ids.append(torch.full((batch_size, length), value, device=device, dtype=torch.long))
+        return torch.cat(stream_ids, dim=1)
+
     def _run_parallel_core(
         self,
         visual_tower: VisualTower,
@@ -196,7 +228,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         action_inputs: torch.Tensor,
         video_noise_scale: float,
         action_noise_scale: float,
-    ) -> tuple[torch.Tensor, ParallelPackedSequenceLayout]:
+    ) -> tuple[torch.Tensor, ParallelPackedSequenceLayout, dict[str, object]]:
         video_tokens = visual_outputs.frontend.video_tokens
         action_tokens = self._build_action_tokens(action_inputs)
         video_noisy = video_tokens + video_noise_scale * torch.randn_like(video_tokens)
@@ -232,6 +264,13 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             action_scalar=action_scalar,
         )
         attention_mask = build_parallel_attention_mask(layout, batch_size=batch_size, device=packed_tokens.device)
+        # `VisualCoreInput` is the fully packed multimodal view of the sample:
+        # - `tokens`: `[B, S_total, H]`
+        # - `position_context`: `[B, S_total, H]`
+        # - `grid_ids`: `[1, S_total, 3]`
+        # - `timestep_values`: `[B, S_total]`
+        # - `stream_ids`: `[B, S_total]` with `0=video`, `1=action/register`
+        # - `attention_mask`: `[B, 1, S_total, S_total]`
         core_output = visual_tower.run_core(
             VisualCoreInput(
                 tokens=packed_tokens,
@@ -240,12 +279,13 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 timestep_context=timestep_context,
                 grid_ids=self._build_parallel_grid_ids(visual_outputs, layout),
                 timestep_values=timestep_values,
+                stream_ids=self._build_parallel_stream_ids(layout, batch_size=batch_size, device=packed_tokens.device),
                 attention_mask=attention_mask,
                 conditioning=visual_outputs.frontend.conditioning,
             )
         )
         action_start, action_end = layout.spans["action_noisy"]
-        return core_output.tokens[:, action_start:action_end, :], layout
+        return core_output.tokens[:, action_start:action_end, :], layout, dict(core_output.aux)
 
     def forward_train(
         self,
@@ -255,7 +295,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
     ) -> PolicyTrainOutput:
         if self.config.runtime_mode == "lingbot_exact":
             del visual_outputs
-            reference_transformer = visual_tower.ensure_exact_method1_transformer_device(
+            reference_transformer = visual_tower.ensure_lingbot_reference_transformer_device(
                 action_dim=self.action_dim,
                 device=prepared_inputs.batch.actions.device,
             )
@@ -277,9 +317,13 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                         self.backbone_config.patch_size_h,
                         self.backbone_config.patch_size_w,
                     ),
+                    "debug": {
+                        "sampled_chunk_size": train_artifacts.input_dict["chunk_size"],
+                        "sampled_window_size": train_artifacts.input_dict["window_size"],
+                    },
                 },
             )
-        action_tokens, layout = self._run_parallel_core(
+        action_tokens, layout, core_aux = self._run_parallel_core(
             visual_tower=visual_tower,
             visual_outputs=visual_outputs,
             action_inputs=prepared_inputs.batch.actions,
@@ -289,7 +333,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         return PolicyTrainOutput(
             policy_features=action_tokens,
             metrics={"packed_sequence_length": torch.tensor(float(layout.frame_ids.numel()), device=action_tokens.device)},
-            aux={"variant": self.config.name, "layout": layout},
+            aux={"variant": self.config.name, "layout": layout, "core_aux": core_aux},
         )
 
     def prepare_infer_state(
@@ -320,7 +364,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         visual_tower: VisualTower,
         cache_name: str = "open_wam_exact",
     ) -> PolicyInferState:
-        visual_tower.reset_exact_method1_runtime(action_dim=self.action_dim, cache_name=cache_name)
+        visual_tower.reset_lingbot_reference_runtime(action_dim=self.action_dim, cache_name=cache_name)
         return PolicyInferState(
             step_index=0,
             cache={
@@ -341,7 +385,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         infer_state: PolicyInferState,
         action_space: str = "auto",
     ) -> PolicyInferState:
-        reference_transformer = visual_tower.ensure_exact_method1_transformer_device(
+        reference_transformer = visual_tower.ensure_lingbot_reference_transformer_device(
             action_dim=self.action_dim,
             device=visual_outputs.frontend.video_latents.device,
         )
@@ -355,7 +399,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         )
         if observed_action_latents.shape[2] != observed_video_latents.shape[2]:
             raise ValueError(
-                "Exact method-1 cache warmup requires action-history frames to match observed video frames, "
+                "Exact LingBot parallel-stream cache warmup requires action-history frames to match observed video frames, "
                 f"got action_frames={observed_action_latents.shape[2]} and video_frames={observed_video_latents.shape[2]}."
             )
         next_cache = run_parallel_exact_cache_warmup(
@@ -380,7 +424,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         advance_frame_start: bool = False,
     ) -> PolicyInferOutput:
         if visual_outputs is not None:
-            reference_transformer = visual_tower.ensure_exact_method1_transformer_device(
+            reference_transformer = visual_tower.ensure_lingbot_reference_transformer_device(
                 action_dim=self.action_dim,
                 device=visual_outputs.frontend.video_latents.device,
             )
@@ -388,7 +432,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             text_emb = visual_outputs.frontend.conditioning.text_context
             output_dtype = condition_latents.dtype
         else:
-            reference_transformer = visual_tower.get_exact_method1_transformer(action_dim=self.action_dim)
+            reference_transformer = visual_tower.get_lingbot_reference_transformer(action_dim=self.action_dim)
             parameter = next(reference_transformer.parameters())
             condition_latents = None
             text_emb = text_context
@@ -418,6 +462,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 "predicted_latents": infer_artifacts.predicted_latents,
                 "chunk_action_pred": infer_artifacts.action_pred,
                 "raw_chunk_action_pred": raw_chunk_action,
+                "debug": infer_artifacts.debug,
             },
         )
 
@@ -466,7 +511,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             device=device,
             dtype=dtype,
         )
-        action_tokens, layout = self._run_parallel_core(
+        action_tokens, layout, core_aux = self._run_parallel_core(
             visual_tower=visual_tower,
             visual_outputs=visual_outputs,
             action_inputs=previous_actions,
@@ -477,7 +522,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         return PolicyInferOutput(
             policy_features=action_tokens,
             next_state=PolicyInferState(step_index=infer_state.step_index + 1, cache=next_cache),
-            aux={"variant": self.config.name, "layout": layout},
+            aux={"variant": self.config.name, "layout": layout, "core_aux": core_aux},
         )
 
     def _validate_reference_profile(self) -> None:
