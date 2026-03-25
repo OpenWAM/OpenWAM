@@ -14,16 +14,20 @@ data:
 
 backbone:
   implementation: lingbot_replica
+  attn_mode: torch
   hidden_size: 256
   num_layers: 1
   num_heads: 8
+  attention_head_dim: 32
   ffn_dim: 1024
   cross_attn_norm: true
   rope_max_seq_len: 1024
+  reference_model_path: previous_works/lingbot-va/wan_va/modules/model.py
 
 policy_variant:
   name: parallel_stream
   hidden_size: 256
+  runtime_mode: lingbot_exact
   frame_chunk_size: 2
   action_per_frame: 2
   attn_window: 8
@@ -32,7 +36,7 @@ policy_variant:
   cache_mode: metadata_only
 
 action_decoder:
-  name: mlp_decoder
+  name: lingbot_parallel_decoder
   hidden_size: 256
   action_dim: 30
   action_horizon: 8

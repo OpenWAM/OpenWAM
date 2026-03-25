@@ -36,3 +36,11 @@ class DecodedFeatureActionDecoderConfig(ActionDecoderConfig):
     hidden_size: int = 256
     action_dim: int = 0
     action_horizon: int = 0
+
+
+@dataclass(frozen=True)
+class LingbotParallelActionDecoderConfig(ActionDecoderConfig):
+    name: str = "lingbot_parallel_decoder"
+    hidden_size: int = 256
+    action_dim: int = 0
+    action_horizon: int = 0

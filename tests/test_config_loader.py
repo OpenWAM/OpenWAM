@@ -34,3 +34,5 @@ def test_new_variant_yaml_configs_load() -> None:
     assert isinstance(parallel.policy_variant, ParallelStreamPolicyConfig)
     assert isinstance(replica_parallel.policy_variant, ParallelStreamPolicyConfig)
     assert replica_parallel.backbone.implementation == "lingbot_replica"
+    assert replica_parallel.policy_variant.runtime_mode == "lingbot_exact"
+    assert replica_parallel.action_decoder.name == "lingbot_parallel_decoder"

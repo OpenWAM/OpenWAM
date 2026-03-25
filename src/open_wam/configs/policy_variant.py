@@ -56,6 +56,8 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
     name: str = "parallel_stream"
     hidden_size: int = 256
     attach_site: str = "within_visual_core"
+    runtime_mode: str = "approx"
+    reference_profile: str | None = None
     frame_chunk_size: int = 2
     action_per_frame: int = 1
     attn_window: int = 8
@@ -69,3 +71,9 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
     )
     mask_mode: str = "lingbot_chunked"
     cache_mode: str = "metadata_only"
+    noisy_video_condition_prob: float = 0.5
+    used_action_channel_ids: tuple[int, ...] = field(default_factory=tuple)
+    inverse_used_action_channel_ids: tuple[int, ...] = field(default_factory=tuple)
+    action_norm_method: str = "none"
+    norm_q01: tuple[float, ...] = field(default_factory=tuple)
+    norm_q99: tuple[float, ...] = field(default_factory=tuple)

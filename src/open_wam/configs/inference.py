@@ -12,4 +12,5 @@ class InferenceConfig:
     frame_chunk_size: int = 2
     use_cache: bool = True
     guidance_scale: float = 1.0
-
+    action_guidance_scale: float = 1.0
+    video_exec_step: int = -1

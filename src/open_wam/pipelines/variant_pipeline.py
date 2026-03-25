@@ -56,9 +56,41 @@ class VariantPipeline(nn.Module):
     def canonicalize(self, views: Mapping[str, torch.Tensor]) -> CanonicalVideoBatch:
         return self.preprocessor(views)
 
-    def prepare_visual_outputs(self, views: Mapping[str, torch.Tensor]) -> VisualStageOutputs:
+    def prepare_visual_outputs(
+        self,
+        views: Mapping[str, torch.Tensor],
+        *,
+        task_text: tuple[str | None, ...] | None = None,
+        text_context: torch.Tensor | None = None,
+        preserve_stream_cache: bool = False,
+    ) -> VisualStageOutputs:
         canonical_batch = self.canonicalize(views)
-        frontend_output = self.visual_tower.run_frontend(canonical_batch.video)
+        frontend_output = self.visual_tower.run_frontend(
+            canonical_batch.video,
+            placements=canonical_batch.placements,
+            task_text=task_text,
+            text_context=text_context,
+            preserve_stream_cache=preserve_stream_cache,
+        )
+        return self._complete_visual_outputs(frontend_output)
+
+    def prepare_visual_outputs_from_latents(
+        self,
+        video_latents: torch.Tensor,
+        *,
+        task_text: tuple[str | None, ...] | None = None,
+        text_context: torch.Tensor | None = None,
+        canonical_video: torch.Tensor | None = None,
+    ) -> VisualStageOutputs:
+        frontend_output = self.visual_tower.run_frontend_from_latents(
+            video_latents,
+            task_text=task_text,
+            text_context=text_context,
+            canonical_video=canonical_video,
+        )
+        return self._complete_visual_outputs(frontend_output)
+
+    def _complete_visual_outputs(self, frontend_output) -> VisualStageOutputs:
         requested_stages = set(self.policy_variant.required_visual_stages())
         core_output = None
         decode_output = None
@@ -75,14 +107,17 @@ class VariantPipeline(nn.Module):
         views: Mapping[str, torch.Tensor],
         batch: PolicyTrainBatch,
     ) -> VariantPipelineTrainOutput:
-        visual_outputs = self.prepare_visual_outputs(views)
+        visual_outputs = self.prepare_visual_outputs(
+            views,
+            task_text=batch.extra.get("task_text"),
+        )
         prepared_inputs = self.policy_variant.prepare_train_inputs(visual_outputs, batch)
         policy_output = self.policy_variant.forward_train(
             visual_tower=self.visual_tower,
             visual_outputs=visual_outputs,
             prepared_inputs=prepared_inputs,
         )
-        decoder_output = self.action_decoder.forward_train(policy_output.policy_features, prepared_inputs.batch)
+        decoder_output = self.action_decoder.forward_train(policy_output, prepared_inputs.batch)
         return VariantPipelineTrainOutput(
             visual_outputs=visual_outputs,
             policy_output=policy_output,
@@ -95,7 +130,10 @@ class VariantPipeline(nn.Module):
         context: PolicyInferContext,
         infer_state: PolicyInferState | None = None,
     ) -> VariantPipelineInferOutput:
-        visual_outputs = self.prepare_visual_outputs(views)
+        visual_outputs = self.prepare_visual_outputs(
+            views,
+            task_text=context.extra.get("task_text"),
+        )
         resolved_state = self.policy_variant.prepare_infer_state(
             visual_outputs=visual_outputs,
             context=context,
@@ -107,7 +145,7 @@ class VariantPipeline(nn.Module):
             context=context,
             infer_state=resolved_state,
         )
-        decoder_output = self.action_decoder.forward_infer(policy_output.policy_features)
+        decoder_output = self.action_decoder.forward_infer(policy_output)
         return VariantPipelineInferOutput(
             visual_outputs=visual_outputs,
             policy_output=policy_output,

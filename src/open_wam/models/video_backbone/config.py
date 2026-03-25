@@ -29,6 +29,7 @@ class LingbotCompatibleVideoBackboneConfig:
     hidden_size: int = 3072
     num_layers: int = 0
     num_heads: int = 8
+    attention_head_dim: int | None = None
     mlp_ratio: int = 4
     ffn_dim: int | None = None
     text_dim: int = 4096
@@ -36,3 +37,13 @@ class LingbotCompatibleVideoBackboneConfig:
     cross_attn_norm: bool = True
     rope_max_seq_len: int = 1024
     latent_norm_eps: float = 1e-6
+    attn_mode: str = "torch"
+    pretrained_model_name_or_path: str | None = None
+    transformer_subdir: str = "transformer"
+    vae_subdir: str = "vae"
+    text_encoder_subdir: str = "text_encoder"
+    tokenizer_subdir: str = "tokenizer"
+    max_text_tokens: int = 512
+    load_wan_vae_frontend: bool = False
+    load_text_conditioning: bool = False
+    reference_model_path: str | None = None

@@ -5,19 +5,24 @@ in a world action model while keeping the **video backbone fixed**.
 
 The current implementation is organized around one constraint:
 
-- the shared video path should remain LingBot-compatible
-- action-head structure and placement are the main research variable
+- the shared visual path should remain LingBot-compatible
+- policy attachment structure and placement are the main research variable
 
 ## Current Status
 
 The repo currently includes:
 
-- a protected LingBot-compatible video backbone path under `src/open_wam/models/video_backbone`
-- a uniform data contract for all sources and future action heads
+- a stage-aware `VisualTower + PolicyVariant + ActionDecoder` stack
+- runnable method 1, 2, 3, and 4 policy variants
+- a LingBot-compatible backbone knob under `backbone.implementation`:
+  - `dummy`
+  - `lingbot_replica`
+- an exact method-1 LingBot loading path owned by `VisualTower`
+- a uniform data contract for all sources and policy variants
 - a config-driven canonical RGB layout builder
 - a dataset registry keyed by `data.dataset_type`
 - a real LeRobot-v2 adapter for `physical-intelligence/libero`
-- a placeholder `contract_only` action head used to validate train and infer boundaries
+- legacy `contract_only` compatibility via config migration into the new stack
 - Lightning train/eval wrappers and root experiment YAMLs
 
 The first real dataset path is:
@@ -38,9 +43,11 @@ Important source packages:
 
 - `src/open_wam/configs`: typed config contracts
 - `src/open_wam/data`: dataset adapters, collation, and canonical RGB preprocessing
-- `src/open_wam/models/video_backbone`: protected shared video backbone
-- `src/open_wam/models/action_heads`: action-head interface and variants
-- `src/open_wam/pipelines`: backbone-only and unified WAM orchestration
+- `src/open_wam/models/visual_tower`: shared visual frontend, core, decode boundary, and exact method-1 reference loader
+- `src/open_wam/models/policy_variants`: method 1, 2, 3, and 4 policy attachment paths
+- `src/open_wam/models/action_decoders`: action decoders and losses
+- `src/open_wam/models/video_backbone`: backbone config and compatibility contracts
+- `src/open_wam/pipelines`: variant pipeline, exact LingBot runner, and compatibility builders
 - `src/open_wam/lightning`: Lightning module and datamodule
 - `src/open_wam/training`: train entrypoint
 - `src/open_wam/evals`: eval entrypoint
@@ -48,11 +55,12 @@ Important source packages:
 ## Design Rules
 
 - Raw-video ingestion lives in the data layer, not in the backbone.
-- The shared video backbone should stay stable across action-head experiments.
-- Action heads interact with the backbone through explicit contracts, not ad hoc internals.
+- The shared visual tower should stay stable across policy-attachment experiments.
+- Policy variants interact with the backbone through explicit stage contracts, not ad hoc internals.
 - Camera names, camera count, layout, action dimension, action horizon, and state dimension should be configurable from YAML.
 - Dataset-specific parsing should stay inside dataset adapters registered by `data.dataset_type`.
 - Dataset adapters may expose transformed action supervision, not just raw controller deltas.
+- All four methodologies should continue to share the same top-level `VariantPipeline -> VisualTower` boundary even when their within-core runtimes differ.
 
 ## Quick Start
 
@@ -114,6 +122,8 @@ Run smoke tests:
 ```bash
 python scripts/smoke_backbone_only.py
 python scripts/smoke_phase_two.py
+python scripts/smoke_parallel_stream_lingbot_replica.py
+python scripts/smoke_lingbot_exact_runner.py
 ```
 
 Train the current contract-only path:
@@ -128,6 +138,29 @@ Run eval:
 uv run python -m open_wam.evals.evaluate --cfg configs/experiments/contract_only_libero.yaml
 ```
 
+## Backbone Sharing Clarification
+
+All four methods now run through the same top-level owner:
+
+- `VariantPipeline -> VisualTower -> PolicyVariant -> ActionDecoder`
+
+With `backbone.implementation = lingbot_replica`, methods 2, 3, and 4 use the
+shared `LingbotVisualFrontend` plus `LingbotReplicaVisualCore`.
+
+Method 1 has two paths:
+
+- the standard parallel-stream path can also use `lingbot_replica`
+- the exact LingBot-compatible path uses a reference transformer loaded as-is
+  and owned by `VisualTower`
+
+The exact method-1 path requires `backbone.reference_model_path` to point at
+the LingBot `WanTransformer3DModel` source file. The provided exact-runtime
+experiment YAML sets that path explicitly.
+
+So the owner and frontend boundary are shared across all methods, but exact
+method 1 does not yet share the same physical core module or weights as methods
+2, 3, and 4.
+
 ## Current Dataset Contract
 
 All dataset adapters should return the same artifact shape after collation:
@@ -140,8 +173,8 @@ All dataset adapters should return the same artifact shape after collation:
 - `task_text`: optional tuple of task strings
 - `metadata`: tuple of per-sample metadata dicts
 
-The shared backbone canonicalizes `views` into one RGB canvas and emits
-`BackboneOutput`.
+The shared visual path canonicalizes `views` into one RGB canvas and emits
+stageful `VisualStageOutputs`.
 
 For LIBERO specifically, `actions` default to a transformed 7D
 reference-relative EEF target `[rel_xyz, rel_axis_angle, gripper_1d_command]`.
@@ -160,6 +193,8 @@ Start here for collaborator-facing context:
 
 - [notes/collaboration_guide.md](notes/collaboration_guide.md)
 - [notes/architecture.md](notes/architecture.md)
+- [notes/current_all_variant_execution_status.md](notes/current_all_variant_execution_status.md)
+- [notes/current_four_method_architecture.md](notes/current_four_method_architecture.md)
 - [notes/libero_lerobot.md](notes/libero_lerobot.md)
 - [notes/new_work_roadmap.md](notes/new_work_roadmap.md)
 

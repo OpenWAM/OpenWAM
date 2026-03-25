@@ -9,6 +9,7 @@ from open_wam.configs import (
     ActionDecoderConfig,
     DecodedFeatureActionDecoderConfig,
     ActionHeadConfig,
+    LingbotParallelActionDecoderConfig,
     MLPActionDecoderConfig,
     ParallelStreamPolicyConfig,
     PolicyVariantConfig,
@@ -108,12 +109,20 @@ def _load_policy_variant_config(
         )
         return ParallelStreamPolicyConfig(
             hidden_size=hidden_size,
+            runtime_mode=resolved_raw.get("runtime_mode", "approx"),
+            reference_profile=resolved_raw.get("reference_profile"),
             frame_chunk_size=resolved_raw.get("frame_chunk_size", inference_config.frame_chunk_size),
             action_per_frame=resolved_raw.get("action_per_frame", default_action_per_frame),
             attn_window=resolved_raw.get("attn_window", training_config.window_size),
             sequence_order=sequence_order,
             mask_mode=resolved_raw.get("mask_mode", "lingbot_chunked"),
             cache_mode=resolved_raw.get("cache_mode", "metadata_only"),
+            noisy_video_condition_prob=resolved_raw.get("noisy_video_condition_prob", 0.5),
+            used_action_channel_ids=tuple(resolved_raw.get("used_action_channel_ids", ())),
+            inverse_used_action_channel_ids=tuple(resolved_raw.get("inverse_used_action_channel_ids", ())),
+            action_norm_method=resolved_raw.get("action_norm_method", "none"),
+            norm_q01=tuple(resolved_raw.get("norm_q01", ())),
+            norm_q99=tuple(resolved_raw.get("norm_q99", ())),
         )
     raise ValueError(f"Unsupported policy variant '{name}'.")
 
@@ -129,6 +138,12 @@ def _load_action_decoder_config(
             resolved_raw["name"] = "register_decoder"
         elif policy_variant_config.name == "post_decoded":
             resolved_raw["name"] = "decoded_feature_decoder"
+        elif (
+            policy_variant_config.name == "parallel_stream"
+            and isinstance(policy_variant_config, ParallelStreamPolicyConfig)
+            and policy_variant_config.runtime_mode == "lingbot_exact"
+        ):
+            resolved_raw["name"] = "lingbot_parallel_decoder"
         else:
             resolved_raw["name"] = "mlp_decoder"
 
@@ -154,6 +169,13 @@ def _load_action_decoder_config(
         )
     if name == "decoded_feature_decoder":
         return DecodedFeatureActionDecoderConfig(
+            hidden_size=hidden_size,
+            action_dim=action_dim,
+            action_horizon=action_horizon,
+            dropout=dropout,
+        )
+    if name == "lingbot_parallel_decoder":
+        return LingbotParallelActionDecoderConfig(
             hidden_size=hidden_size,
             action_dim=action_dim,
             action_horizon=action_horizon,
@@ -281,6 +303,7 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         hidden_size=backbone_raw.get("hidden_size", 3072),
         num_layers=backbone_raw.get("num_layers", 0),
         num_heads=backbone_raw.get("num_heads", 8),
+        attention_head_dim=backbone_raw.get("attention_head_dim"),
         mlp_ratio=backbone_raw.get("mlp_ratio", 4),
         ffn_dim=backbone_raw.get("ffn_dim"),
         text_dim=backbone_raw.get("text_dim", 4096),
@@ -288,6 +311,16 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         cross_attn_norm=backbone_raw.get("cross_attn_norm", True),
         rope_max_seq_len=backbone_raw.get("rope_max_seq_len", 1024),
         latent_norm_eps=backbone_raw.get("latent_norm_eps", 1e-6),
+        attn_mode=backbone_raw.get("attn_mode", "torch"),
+        pretrained_model_name_or_path=backbone_raw.get("pretrained_model_name_or_path"),
+        transformer_subdir=backbone_raw.get("transformer_subdir", "transformer"),
+        vae_subdir=backbone_raw.get("vae_subdir", "vae"),
+        text_encoder_subdir=backbone_raw.get("text_encoder_subdir", "text_encoder"),
+        tokenizer_subdir=backbone_raw.get("tokenizer_subdir", "tokenizer"),
+        max_text_tokens=backbone_raw.get("max_text_tokens", 512),
+        load_wan_vae_frontend=backbone_raw.get("load_wan_vae_frontend", False),
+        load_text_conditioning=backbone_raw.get("load_text_conditioning", False),
+        reference_model_path=backbone_raw.get("reference_model_path"),
     )
 
     training_raw = raw.get("training", {})
@@ -308,6 +341,8 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         frame_chunk_size=inference_raw.get("frame_chunk_size", 2),
         use_cache=inference_raw.get("use_cache", True),
         guidance_scale=inference_raw.get("guidance_scale", 1.0),
+        action_guidance_scale=inference_raw.get("action_guidance_scale", 1.0),
+        video_exec_step=inference_raw.get("video_exec_step", -1),
     )
 
     action_head_raw = raw.get("action_head", {})

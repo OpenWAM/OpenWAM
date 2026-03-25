@@ -3,6 +3,7 @@
 from .action_decoder import (
     ActionDecoderConfig,
     DecodedFeatureActionDecoderConfig,
+    LingbotParallelActionDecoderConfig,
     MLPActionDecoderConfig,
     RegisterActionDecoderConfig,
 )
@@ -38,6 +39,7 @@ __all__ = [
     "ExperimentConfig",
     "GenericDataConfig",
     "InferenceConfig",
+    "LingbotParallelActionDecoderConfig",
     "LiberoDataConfig",
     "MLPActionDecoderConfig",
     "ParallelStreamPolicyConfig",

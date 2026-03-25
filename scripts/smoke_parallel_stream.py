@@ -30,6 +30,7 @@ def main() -> None:
         visual_tower=VisualTower(LingbotCompatibleVideoBackboneConfig(hidden_size=256, num_layers=1, num_heads=8)),
         policy_variant=ParallelStreamPolicyVariant(
             config=ParallelStreamPolicyConfig(hidden_size=256, frame_chunk_size=2, action_per_frame=2, attn_window=8),
+            backbone_config=LingbotCompatibleVideoBackboneConfig(hidden_size=256, num_layers=1, num_heads=8),
             training_config=TrainingConfig(),
             inference_config=InferenceConfig(frame_chunk_size=2),
             action_dim=data_config.action_schema.action_dim,

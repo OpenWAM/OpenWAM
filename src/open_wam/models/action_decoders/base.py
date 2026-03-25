@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from open_wam.models.policy_variants.contracts import PolicyTrainBatch
+from open_wam.models.policy_variants.contracts import PolicyInferOutput, PolicyTrainBatch, PolicyTrainOutput
 
 
 @dataclass
@@ -46,11 +46,11 @@ class ActionDecoder(nn.Module, ABC):
     """Action decoder interface shared across policy variants."""
 
     @abstractmethod
-    def forward_train(self, policy_features: torch.Tensor, batch: PolicyTrainBatch) -> ActionDecoderTrainOutput:
+    def forward_train(self, policy_output: PolicyTrainOutput, batch: PolicyTrainBatch) -> ActionDecoderTrainOutput:
         """Decode actions and compute loss."""
 
     @abstractmethod
-    def forward_infer(self, policy_features: torch.Tensor) -> ActionDecoderInferOutput:
+    def forward_infer(self, policy_output: PolicyInferOutput) -> ActionDecoderInferOutput:
         """Decode actions for one inference step."""
 
 
@@ -73,8 +73,8 @@ class LinearActionDecoder(ActionDecoder):
         aligned = align_policy_features(policy_features, self.action_horizon)
         return self.proj(aligned)
 
-    def forward_train(self, policy_features: torch.Tensor, batch: PolicyTrainBatch) -> ActionDecoderTrainOutput:
-        action_pred = self.decode(policy_features)
+    def forward_train(self, policy_output: PolicyTrainOutput, batch: PolicyTrainBatch) -> ActionDecoderTrainOutput:
+        action_pred = self.decode(policy_output.policy_features)
         per_token_loss = F.mse_loss(action_pred, batch.actions, reduction="none")
         if batch.action_mask is not None:
             per_token_loss = per_token_loss * batch.action_mask.float()
@@ -89,8 +89,8 @@ class LinearActionDecoder(ActionDecoder):
             aux={"decoder": self.__class__.__name__},
         )
 
-    def forward_infer(self, policy_features: torch.Tensor) -> ActionDecoderInferOutput:
+    def forward_infer(self, policy_output: PolicyInferOutput) -> ActionDecoderInferOutput:
         return ActionDecoderInferOutput(
-            action_pred=self.decode(policy_features),
+            action_pred=self.decode(policy_output.policy_features),
             aux={"decoder": self.__class__.__name__},
         )

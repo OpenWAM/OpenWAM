@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from torch import nn
 
+from open_wam.data.raw_video import ViewPlacement
 from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
 
 from .contracts import VisualCoreInput, VisualStageOutputs
@@ -10,6 +11,7 @@ from .decoder import VisualFeatureDecoder
 from .frontend import LingbotVisualFrontend
 from .grid_ids import build_video_grid_ids
 from .replica_core import LingbotReplicaVisualCore
+from .reference_transformer import build_reference_transformer, preferred_reference_dtype
 
 
 class VisualTower(nn.Module):
@@ -29,9 +31,42 @@ class VisualTower(nn.Module):
                 "Expected 'dummy' or 'lingbot_replica'."
             )
         self.decoder = VisualFeatureDecoder(self.config.hidden_size)
+        self._exact_method1_transformers = nn.ModuleDict()
 
-    def run_frontend(self, canonical_video):
-        return self.frontend(canonical_video)
+    def run_frontend(
+        self,
+        canonical_video,
+        *,
+        placements: tuple[ViewPlacement, ...] | None = None,
+        task_text: tuple[str | None, ...] | None = None,
+        text_context=None,
+        preserve_stream_cache: bool = False,
+    ):
+        return self.frontend(
+            canonical_video,
+            placements=placements,
+            task_text=task_text,
+            text_context=text_context,
+            preserve_stream_cache=preserve_stream_cache,
+        )
+
+    def run_frontend_from_latents(
+        self,
+        video_latents,
+        *,
+        task_text: tuple[str | None, ...] | None = None,
+        text_context=None,
+        canonical_video=None,
+    ):
+        return self.frontend.from_video_latents(
+            video_latents,
+            task_text=task_text,
+            text_context=text_context,
+            canonical_video=canonical_video,
+        )
+
+    def reset_runtime_state(self) -> None:
+        self.frontend.reset_runtime_state()
 
     def run_core(self, core_input: VisualCoreInput):
         return self.core(core_input)
@@ -55,8 +90,40 @@ class VisualTower(nn.Module):
     def run_decode(self, frontend_output, core_output):
         return self.decoder(frontend_output=frontend_output, core_output=core_output)
 
-    def forward_default(self, canonical_video, include_decode: bool = False) -> VisualStageOutputs:
-        frontend_output = self.run_frontend(canonical_video)
+    def get_exact_method1_transformer(self, *, action_dim: int) -> nn.Module:
+        key = str(action_dim)
+        if key not in self._exact_method1_transformers:
+            self._exact_method1_transformers[key] = build_reference_transformer(self.config, action_dim=action_dim)
+        return self._exact_method1_transformers[key]
+
+    def ensure_exact_method1_transformer_device(self, *, action_dim: int, device) -> nn.Module:
+        transformer = self.get_exact_method1_transformer(action_dim=action_dim)
+        target_dtype = preferred_reference_dtype(device)
+        parameter = next(transformer.parameters())
+        if parameter.device != device or parameter.dtype != target_dtype:
+            transformer.to(device=device, dtype=target_dtype)
+        return transformer
+
+    def reset_exact_method1_runtime(self, *, action_dim: int, cache_name: str = "open_wam_exact") -> None:
+        transformer = self.get_exact_method1_transformer(action_dim=action_dim)
+        try:
+            transformer.clear_pred_cache(cache_name)
+        except KeyError:
+            pass
+        try:
+            transformer.clear_cache(cache_name)
+        except KeyError:
+            pass
+
+    def forward_default(
+        self,
+        canonical_video,
+        *,
+        placements: tuple[ViewPlacement, ...] | None = None,
+        task_text: tuple[str | None, ...] | None = None,
+        include_decode: bool = False,
+    ) -> VisualStageOutputs:
+        frontend_output = self.run_frontend(canonical_video, placements=placements, task_text=task_text)
         core_output = self.run_default_core(frontend_output)
         decode_output = self.run_decode(frontend_output, core_output) if include_decode else None
         return VisualStageOutputs(frontend=frontend_output, core=core_output, decode=decode_output)

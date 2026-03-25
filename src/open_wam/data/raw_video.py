@@ -59,7 +59,11 @@ class ConfiguredCanonicalVideoPreprocessor(torch.nn.Module):
         self.canvas_width = canvas_width
 
     def forward(self, views: Mapping[str, torch.Tensor]) -> CanonicalVideoBatch:
-        missing = [placement.name for placement in self.placements if placement.name not in views]
+        resolved_keys = {
+            placement.name: self._resolve_view_key(views, placement.name)
+            for placement in self.placements
+        }
+        missing = [name for name, key in resolved_keys.items() if key is None]
         if missing:
             raise KeyError(f"Missing camera views for canonical layout: {missing}")
 
@@ -70,7 +74,7 @@ class ConfiguredCanonicalVideoPreprocessor(torch.nn.Module):
         dtype: torch.dtype | None = None
 
         for placement in self.placements:
-            canonical = self._to_bcthw(views[placement.name])
+            canonical = self._to_bcthw(views[resolved_keys[placement.name]])
             if batch_size is None:
                 batch_size = canonical.shape[0]
                 num_frames = canonical.shape[2]
@@ -119,8 +123,17 @@ class ConfiguredCanonicalVideoPreprocessor(torch.nn.Module):
             "canvas_width": self.canvas_width,
             "num_frames": num_frames,
             "view_names": tuple(placement.name for placement in self.placements),
+            "resolved_view_names": tuple(resolved_keys[placement.name] for placement in self.placements),
         }
         return CanonicalVideoBatch(video=canvas, placements=self.placements, metadata=metadata)
+
+    def _resolve_view_key(self, views: Mapping[str, torch.Tensor], name: str) -> str | None:
+        if name in views:
+            return name
+        suffix_matches = [key for key in views if key.endswith(f".{name}") or key.split(".")[-1] == name]
+        if len(suffix_matches) == 1:
+            return suffix_matches[0]
+        return None
 
     def _resize_video(
         self,
