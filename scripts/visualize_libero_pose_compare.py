@@ -15,6 +15,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from open_wam.data import (  # noqa: E402
     LeRobotV2WindowDataset,
+    build_relative_pose_targets,
     build_lerobot_train_val_episode_split,
     reconstruct_absolute_pose_targets,
     state_sequence_to_pose_sequence,
@@ -37,6 +38,18 @@ def main() -> None:
         default="configs/experiments/contract_only_libero.yaml",
     )
     parser.add_argument("--sample-index", type=int, default=0)
+    parser.add_argument(
+        "--trajectory",
+        choices=("sample", "episode"),
+        default="sample",
+        help="Visualize either one sampled horizon or the full episode trajectory.",
+    )
+    parser.add_argument(
+        "--episode-index",
+        type=int,
+        default=None,
+        help="Episode to visualize when `--trajectory episode`. Defaults to the selected sample's episode.",
+    )
     parser.add_argument("--sleep-seconds", type=float, default=0.7)
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="Print comparison stats without launching MuJoCo.")
@@ -58,14 +71,38 @@ def main() -> None:
     dataset = LeRobotV2WindowDataset(config.data, episodes=train_episodes)
     sample = dataset[args.sample_index]
 
-    original_pose = _load_original_target_pose(dataset=dataset, sample=sample, config=config)
-    reference_position = torch.tensor(sample.metadata["reference_position"], dtype=torch.float32)
-    reference_quaternion_xyzw = torch.tensor(sample.metadata["reference_quaternion_xyzw"], dtype=torch.float32)
+    if args.trajectory == "sample":
+        task_text = sample.task_text
+        episode_index = int(sample.metadata["episode_index"])
+        action_indices = sample.metadata["action_frame_indices"]
+        target_indices = sample.metadata["target_state_frame_indices"]
+        public_actions = sample.actions
+        reference_position = torch.tensor(sample.metadata["reference_position"], dtype=torch.float32)
+        reference_quaternion_xyzw = torch.tensor(sample.metadata["reference_quaternion_xyzw"], dtype=torch.float32)
+        rotation_representation = str(sample.metadata["rotation_representation"])
+        original_pose = _load_original_target_pose(dataset=dataset, sample=sample, config=config)
+    else:
+        episode_index = args.episode_index if args.episode_index is not None else int(sample.metadata["episode_index"])
+        (
+            task_text,
+            action_indices,
+            target_indices,
+            public_actions,
+            reference_position,
+            reference_quaternion_xyzw,
+            rotation_representation,
+            original_pose,
+        ) = _load_full_episode_rollout(
+            dataset=dataset,
+            episode_index=episode_index,
+            config=config,
+        )
+
     reconstructed_pose = reconstruct_absolute_pose_targets(
         reference_position=reference_position,
         reference_quaternion=reference_quaternion_xyzw,
-        relative_pose_targets=sample.actions,
-        rotation_representation=str(sample.metadata["rotation_representation"]),
+        relative_pose_targets=public_actions,
+        rotation_representation=rotation_representation,
     )
 
     position_errors = torch.linalg.vector_norm(original_pose.position - reconstructed_pose.position, dim=-1)
@@ -74,15 +111,17 @@ def main() -> None:
         reconstructed_pose.quaternion,
     )
 
-    print("task_text:", sample.task_text)
+    print("task_text:", task_text)
     print("mode:", args.mode)
+    print("trajectory:", args.trajectory)
     print("sample_index:", args.sample_index)
-    print("episode_index:", sample.metadata["episode_index"])
-    print("action_frame_indices:", sample.metadata["action_frame_indices"])
-    print("target_state_frame_indices:", sample.metadata["target_state_frame_indices"])
-    print("action_representation:", sample.metadata["action_representation"])
-    print("rotation_representation:", sample.metadata["rotation_representation"])
-    print("first_public_action:", sample.actions[0].tolist())
+    print("episode_index:", episode_index)
+    print("num_steps:", len(original_pose.position))
+    print("action_frame_indices:", action_indices[:10], "..." if len(action_indices) > 10 else "")
+    print("target_state_frame_indices:", target_indices[:10], "..." if len(target_indices) > 10 else "")
+    print("action_representation:", config.data.action_target.representation)
+    print("rotation_representation:", rotation_representation)
+    print("first_public_action:", public_actions[0].tolist())
     print("mean_position_error_m:", float(position_errors.mean()))
     print("max_position_error_m:", float(position_errors.max()))
     print("mean_rotation_error_deg:", float(angular_errors.mean()))
@@ -166,6 +205,58 @@ def _load_original_target_pose(
     return state_sequence_to_pose_sequence(
         state_sequence,
         state_encoding=config.data.action_target.state_encoding,
+    )
+
+
+def _load_full_episode_rollout(
+    *,
+    dataset: LeRobotV2WindowDataset,
+    episode_index: int,
+    config,
+):
+    rows = dataset._load_episode_rows(episode_index)  # noqa: SLF001
+    if not rows:
+        raise ValueError(f"Episode {episode_index} is empty.")
+
+    state_sequence = torch.stack(
+        [torch.tensor(row[config.data.action_target.pose_source_key], dtype=torch.float32) for row in rows],
+        dim=0,
+    )
+    raw_action_sequence = torch.stack(
+        [torch.tensor(row[config.data.action_target.source_key], dtype=torch.float32) for row in rows],
+        dim=0,
+    )
+    original_pose = state_sequence_to_pose_sequence(
+        state_sequence,
+        state_encoding=config.data.action_target.state_encoding,
+    )
+    relative_targets, _, metadata = build_relative_pose_targets(
+        state_sequence,
+        state_encoding=config.data.action_target.state_encoding,
+        rotation_representation=config.data.action_target.rotation_representation,
+        include_gripper=config.data.action_target.include_gripper,
+        gripper_representation=config.data.action_target.gripper_representation,
+        raw_action_sequence=raw_action_sequence,
+        gripper_action_index=config.data.action_target.gripper_action_index,
+    )
+    episode_record = dataset.episode_records[episode_index]
+    task_index = int(rows[0]["task_index"])
+    task_text = dataset.metadata.tasks_by_index.get(task_index)
+    if task_text is None and episode_record.tasks:
+        task_text = episode_record.tasks[0]
+
+    reference_position = torch.tensor(metadata["reference_position"], dtype=torch.float32)
+    reference_quaternion_xyzw = torch.tensor(metadata["reference_quaternion_xyzw"], dtype=torch.float32)
+    frame_indices = [int(row["frame_index"]) for row in rows]
+    return (
+        task_text,
+        frame_indices,
+        frame_indices,
+        relative_targets,
+        reference_position,
+        reference_quaternion_xyzw,
+        str(metadata["rotation_representation"]),
+        original_pose,
     )
 
 

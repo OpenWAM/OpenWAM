@@ -16,7 +16,7 @@ from torch.utils.data import Dataset
 
 from open_wam.configs import DataConfig
 
-from .action_transforms import build_relative_pose_targets
+from .action_transforms import build_relative_pose_targets, expected_pose_target_dim
 from .contracts import WAMSample
 
 
@@ -205,17 +205,36 @@ class LeRobotV2WindowDataset(Dataset[WAMSample]):
                 [torch.tensor(row[action_target.pose_source_key], dtype=torch.float32) for row in target_state_rows],
                 dim=0,
             )
+            raw_action_sequence = torch.stack(
+                [torch.tensor(row[action_target.source_key], dtype=torch.float32) for row in action_rows],
+                dim=0,
+            )
             relative_targets, relative_mask, metadata = build_relative_pose_targets(
                 pose_source,
                 state_encoding=action_target.state_encoding,
                 rotation_representation=action_target.rotation_representation,
                 include_gripper=action_target.include_gripper,
                 gripper_representation=action_target.gripper_representation,
+                raw_action_sequence=raw_action_sequence,
+                gripper_action_index=action_target.gripper_action_index,
             )
+            expected_dim = expected_pose_target_dim(
+                rotation_representation=action_target.rotation_representation,
+                include_gripper=action_target.include_gripper,
+                gripper_representation=action_target.gripper_representation,
+            )
+            if target_dim != expected_dim:
+                raise ValueError(
+                    "Configured action_dim does not match the derived pose-target dimension: "
+                    f"action_dim={target_dim}, expected={expected_dim} for "
+                    f"[rotation_representation={action_target.rotation_representation}, "
+                    f"gripper_representation={action_target.gripper_representation}]."
+                )
             metadata.update(
                 {
                     "reference_source": action_target.reference_source,
                     "pose_source_key": action_target.pose_source_key,
+                    "gripper_source_key": action_target.source_key,
                 }
             )
             actions, action_mask = self._pack_sequence(

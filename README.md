@@ -81,6 +81,28 @@ from our public action representation:
 uv run mjpython scripts/visualize_libero_pose_compare.py --cfg configs/experiments/contract_only_libero.yaml --mode compare
 ```
 
+Compare the entire episode trajectory instead of only one sampled horizon:
+
+```bash
+uv run python scripts/visualize_libero_pose_compare.py \
+  --cfg configs/experiments/contract_only_libero.yaml \
+  --trajectory episode \
+  --episode-index 0 \
+  --dry-run
+```
+
+Replay the same public trajectory inside the real LIBERO environment and save a
+side-by-side GIF of original dataset frames vs env replay:
+
+```bash
+./scripts/run_eval_libero_env_tracking.sh \
+  --cfg configs/experiments/contract_only_libero.yaml \
+  --trajectory episode \
+  --episode-index 0 \
+  --control-substeps-per-target 8 \
+  --output outputs/libero_tracking_ep0.gif
+```
+
 Run smoke tests:
 
 ```bash
@@ -115,9 +137,16 @@ All dataset adapters should return the same artifact shape after collation:
 The shared backbone canonicalizes `views` into one RGB canvas and emits
 `BackboneOutput`.
 
-For LIBERO specifically, `actions` default to a transformed 8D
-reference-relative EEF target `[rel_xyz, rel_axis_angle, gripper_2d]` rather
-than the raw 7D controller command.
+For LIBERO specifically, `actions` default to a transformed 7D
+reference-relative EEF target `[rel_xyz, rel_axis_angle, gripper_1d_command]`.
+The pose part comes from dataset state, while the last scalar is copied from
+the raw LIBERO action command rather than from finger-joint state. That public
+target is now supported by:
+
+- exact original-vs-reconstructed trajectory comparison over either a sampled
+  horizon or a full episode
+- closed-loop conversion back into LIBERO `OSC_POSE` actions for simulator
+  replay / evaluation
 
 ## Notes
 

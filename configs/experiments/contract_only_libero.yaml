@@ -33,7 +33,7 @@ data:
       height: 128
       width: 320
   action_schema:
-    action_dim: 8
+    action_dim: 7
     action_horizon: 6
     state_dim: 8
     state_horizon: 1
@@ -45,7 +45,8 @@ data:
     reference_source: anchor_state
     rotation_representation: axis_angle
     include_gripper: true
-    gripper_representation: all_channels
+    gripper_representation: action_command
+    gripper_action_index: -1
 
 backbone:
   hidden_size: 256
@@ -55,7 +56,7 @@ backbone:
 action_head:
   name: contract_only
   hidden_size: 256
-  action_dim: 8
+  action_dim: 7
   action_horizon: 6
   state_dim: 8
 

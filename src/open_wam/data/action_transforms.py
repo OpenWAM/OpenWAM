@@ -30,6 +30,8 @@ def build_relative_pose_targets(
     rotation_representation: str,
     include_gripper: bool,
     gripper_representation: str,
+    raw_action_sequence: torch.Tensor | None = None,
+    gripper_action_index: int = -1,
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, list[float] | str | bool]]:
     """Convert absolute proprio state into reference-anchored pose targets.
 
@@ -67,9 +69,11 @@ def build_relative_pose_targets(
         if absolute_pose.gripper is None:
             raise ValueError("Requested gripper targets, but the selected state encoding has no gripper channels.")
         parts.append(
-            collapse_gripper_state(
-                absolute_pose.gripper,
+            extract_public_gripper_targets(
+                state_gripper=absolute_pose.gripper,
+                raw_action_sequence=raw_action_sequence,
                 gripper_representation=gripper_representation,
+                gripper_action_index=gripper_action_index,
             )
         )
 
@@ -81,6 +85,7 @@ def build_relative_pose_targets(
         "rotation_representation": rotation_representation,
         "include_gripper": include_gripper,
         "gripper_representation": gripper_representation,
+        "gripper_action_index": gripper_action_index,
         "state_encoding": state_encoding,
     }
     return targets, mask, metadata
@@ -204,6 +209,73 @@ def collapse_gripper_state(gripper: torch.Tensor, *, gripper_representation: str
         return gripper[:, 0:1]
 
     raise ValueError(f"Unsupported gripper representation: {gripper_representation}")
+
+
+def extract_public_gripper_targets(
+    *,
+    state_gripper: torch.Tensor,
+    raw_action_sequence: torch.Tensor | None,
+    gripper_representation: str,
+    gripper_action_index: int,
+) -> torch.Tensor:
+    """Build the public gripper supervision channel from state or raw action.
+
+    `first_channel` / `all_channels` expose measured gripper state from the
+    proprio tensor. `action_command` instead copies the scalar command from the
+    raw action tensor, which is the semantically correct 1D LIBERO gripper
+    control signal in `[-1, 1]`.
+    """
+
+    if gripper_representation in {"all_channels", "first_channel"}:
+        return collapse_gripper_state(
+            state_gripper,
+            gripper_representation=gripper_representation,
+        )
+
+    if gripper_representation == "action_command":
+        if raw_action_sequence is None:
+            raise ValueError(
+                "gripper_representation=action_command requires `raw_action_sequence` so the public "
+                "target can use the dataset's native scalar gripper command."
+            )
+        if raw_action_sequence.ndim != 2:
+            raise ValueError(
+                f"Expected raw action sequence with shape [T, D], got {tuple(raw_action_sequence.shape)}."
+            )
+        if raw_action_sequence.shape[0] != state_gripper.shape[0]:
+            raise ValueError(
+                "Raw action and state sequences must have the same length when building "
+                "reference-relative pose targets."
+            )
+        action_dim = raw_action_sequence.shape[-1]
+        resolved_index = gripper_action_index if gripper_action_index >= 0 else action_dim + gripper_action_index
+        if resolved_index < 0 or resolved_index >= action_dim:
+            raise ValueError(
+                f"gripper_action_index={gripper_action_index} resolved outside action dim {action_dim}."
+            )
+        return raw_action_sequence[:, resolved_index : resolved_index + 1]
+
+    raise ValueError(f"Unsupported gripper representation: {gripper_representation}")
+
+
+def expected_pose_target_dim(*, rotation_representation: str, include_gripper: bool, gripper_representation: str) -> int:
+    """Return the public action dimension implied by one pose-target config."""
+
+    if rotation_representation == "quat":
+        dim = 3 + 4
+    elif rotation_representation == "axis_angle":
+        dim = 3 + 3
+    else:
+        raise ValueError(f"Unsupported rotation representation: {rotation_representation}")
+
+    if include_gripper:
+        if gripper_representation == "all_channels":
+            dim += 2
+        elif gripper_representation in {"first_channel", "action_command"}:
+            dim += 1
+        else:
+            raise ValueError(f"Unsupported gripper representation: {gripper_representation}")
+    return dim
 
 
 def quaternion_inverse(quaternion: torch.Tensor) -> torch.Tensor:

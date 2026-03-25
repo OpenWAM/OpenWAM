@@ -3,6 +3,7 @@
 from .action_transforms import (
     PoseSequence,
     build_relative_pose_targets,
+    expected_pose_target_dim,
     reconstruct_absolute_pose_targets,
     state_sequence_to_pose_sequence,
 )
@@ -20,6 +21,7 @@ from .synthetic import SyntheticWindowDataset, build_synthetic_batch, build_synt
 __all__ = [
     "CanonicalVideoBatch",
     "ConfiguredCanonicalVideoPreprocessor",
+    "expected_pose_target_dim",
     "LeRobotV2WindowDataset",
     "PoseSequence",
     "RobotWinCanonicalVideoPreprocessor",

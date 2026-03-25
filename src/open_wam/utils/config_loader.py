@@ -129,6 +129,10 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
                 "gripper_representation",
                 data_defaults.action_target.gripper_representation,
             ),
+            gripper_action_index=action_target_raw.get(
+                "gripper_action_index",
+                data_defaults.action_target.gripper_action_index,
+            ),
         ),
     )
 
