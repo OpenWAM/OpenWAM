@@ -4,6 +4,7 @@ import torch
 from torch import nn
 
 from open_wam.configs import InferenceConfig, RegisterAttachedPolicyConfig, TrainingConfig
+from open_wam.models.common.flow_matching import build_action_flow_match_train_artifacts
 from open_wam.models.policy_variants.common.layouts import expand_previous_action
 from open_wam.models.policy_variants.common.positions import build_sequence_position_context
 from open_wam.models.visual_tower.grid_ids import build_sequence_grid_ids, build_video_grid_ids
@@ -92,7 +93,18 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
                 f"Expected state with shape [B, {self.state_horizon}, {self.state_dim}], "
                 f"got {tuple(batch.state.shape)}"
             )
-        return PolicyPreparedInputs(batch=batch)
+        # Method 2 should train as a denoiser, not as a direct regressor over
+        # clean action tokens. We therefore create the noisy action register
+        # here and reuse the exact same timesteps/targets in the decoder loss.
+        train_artifacts = build_action_flow_match_train_artifacts(
+            batch.actions,
+            batch.action_mask,
+            training_config=self.training_config,
+        )
+        return PolicyPreparedInputs(
+            batch=batch,
+            variant_inputs={"action_flow_match_train_artifacts": train_artifacts},
+        )
 
     def _run_packed_core(
         self,
@@ -181,17 +193,26 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
         batch = prepared_inputs.batch
         if batch.state is None:
             raise ValueError("Register-attached variant requires state inputs.")
+        train_artifacts = prepared_inputs.variant_inputs["action_flow_match_train_artifacts"]
         action_tokens, layout, core_aux = self._run_packed_core(
             visual_tower=visual_tower,
             visual_outputs=visual_outputs,
-            action_inputs=batch.actions,
+            # DreamZero-style method-2 training packs the noisy action register
+            # through the shared core. Clean actions stay outside as diffusion
+            # targets and are never injected directly into the core.
+            action_inputs=train_artifacts.noisy_actions,
             state_inputs=batch.state,
             current_start_frame=0,
         )
         return PolicyTrainOutput(
             policy_features=action_tokens,
             metrics={"num_image_blocks": torch.tensor(float(layout.num_image_blocks), device=action_tokens.device)},
-            aux={"variant": self.config.name, "layout": layout, "core_aux": core_aux},
+            aux={
+                "variant": self.config.name,
+                "layout": layout,
+                "core_aux": core_aux,
+                "action_flow_match_train_artifacts": train_artifacts,
+            },
         )
 
     def prepare_infer_state(

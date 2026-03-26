@@ -119,6 +119,8 @@ def build_action_decoder(config: ExperimentConfig):
             hidden_size=decoder_config.hidden_size,
             action_dim=decoder_config.action_dim,
             action_horizon=decoder_config.action_horizon,
+            training_config=config.training,
+            inference_config=config.inference,
             dropout=decoder_config.dropout,
         )
     if decoder_config.name == "register_decoder":
@@ -126,6 +128,8 @@ def build_action_decoder(config: ExperimentConfig):
             hidden_size=decoder_config.hidden_size,
             action_dim=decoder_config.action_dim,
             action_horizon=decoder_config.action_horizon,
+            training_config=config.training,
+            inference_config=config.inference,
             dropout=decoder_config.dropout,
         )
     if decoder_config.name == "decoded_feature_decoder":
@@ -133,6 +137,8 @@ def build_action_decoder(config: ExperimentConfig):
             hidden_size=decoder_config.hidden_size,
             action_dim=decoder_config.action_dim,
             action_horizon=decoder_config.action_horizon,
+            training_config=config.training,
+            inference_config=config.inference,
             dropout=decoder_config.dropout,
         )
     if decoder_config.name == "lingbot_parallel_decoder":

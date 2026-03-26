@@ -4,6 +4,7 @@ import torch
 from torch import nn
 
 from open_wam.configs import InferenceConfig, ParallelStreamPolicyConfig, TrainingConfig
+from open_wam.models.common.flow_matching import build_action_flow_match_train_artifacts
 from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
 from open_wam.models.policy_variants.common.layouts import expand_previous_action
 from open_wam.models.visual_tower.grid_ids import build_action_grid_ids, build_video_grid_ids
@@ -102,7 +103,15 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 text_emb=visual_outputs.frontend.conditioning.text_context,
             )
             return PolicyPreparedInputs(batch=batch, variant_inputs={"lingbot_train_artifacts": train_artifacts})
-        return PolicyPreparedInputs(batch=batch)
+        action_flow_match_artifacts = build_action_flow_match_train_artifacts(
+            batch.actions,
+            batch.action_mask,
+            training_config=self.training_config,
+        )
+        return PolicyPreparedInputs(
+            batch=batch,
+            variant_inputs={"action_flow_match_train_artifacts": action_flow_match_artifacts},
+        )
 
     def _prepare_exact_train_actions(
         self,
@@ -382,14 +391,23 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         action_tokens, layout, core_aux = self._run_parallel_core(
             visual_tower=visual_tower,
             visual_outputs=visual_outputs,
-            action_inputs=prepared_inputs.batch.actions,
+            # Approximate method-1 training still needs noisy action tokens in
+            # the packed sequence. The exact LingBot path uses a dedicated
+            # reference transformer; this approximation reuses the shared core
+            # but preserves the same denoising supervision semantics.
+            action_inputs=prepared_inputs.variant_inputs["action_flow_match_train_artifacts"].noisy_actions,
             video_noise_scale=self.training_config.video_sigma_shift / max(1.0, float(self.training_config.video_num_train_timesteps)),
             action_noise_scale=self.training_config.action_sigma_shift / max(1.0, float(self.training_config.action_num_train_timesteps)),
         )
         return PolicyTrainOutput(
             policy_features=action_tokens,
             metrics={"packed_sequence_length": torch.tensor(float(layout.frame_ids.numel()), device=action_tokens.device)},
-            aux={"variant": self.config.name, "layout": layout, "core_aux": core_aux},
+            aux={
+                "variant": self.config.name,
+                "layout": layout,
+                "core_aux": core_aux,
+                "action_flow_match_train_artifacts": prepared_inputs.variant_inputs["action_flow_match_train_artifacts"],
+            },
         )
 
     def prepare_infer_state(

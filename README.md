@@ -68,6 +68,72 @@ Important source packages:
 - Dataset adapters may expose transformed action supervision, not just raw controller deltas.
 - All four methodologies should continue to share the same top-level `VariantPipeline -> VisualTower` boundary even when their within-core runtimes differ.
 
+## Trainer and Variant Flow
+
+Training uses one generic Lightning stack:
+
+- [src/open_wam/training/train.py](src/open_wam/training/train.py) loads a root
+  experiment config and instantiates one `OpenWAMLightningModule` and one
+  `OpenWAMDataModule`
+- [src/open_wam/lightning/module.py](src/open_wam/lightning/module.py) converts
+  `WAMBatch` into `PolicyTrainBatch` and always calls
+  `pipeline.forward_train(...)`
+- [src/open_wam/pipelines/variant_pipeline.py](src/open_wam/pipelines/variant_pipeline.py)
+  is where the variant actually changes behavior:
+  - prepare visual stages
+  - let the policy variant prepare train-time artifacts
+  - run the variant forward
+  - let the action decoder compute the final loss
+
+That means the trainer itself is not variant-specific. Variants change training
+semantics by implementing:
+
+- `required_visual_stages()`
+- `prepare_train_inputs()`
+- `forward_train()`
+- `prepare_infer_state()`
+- `forward_infer_step()`
+
+inside `src/open_wam/models/policy_variants/`.
+
+## Current Diffusion Granularity
+
+Current diffusion behavior is split into two buckets.
+
+Exact LingBot path:
+
+- `parallel_stream` with `runtime_mode: lingbot_exact`
+- separate video and action schedulers
+- one sampled diffusion timestep per **frame**
+- video sigma is broadcast across latent channels and spatial positions of that
+  frame
+- action sigma is broadcast across action channels and `action_per_frame`
+  positions of that frame
+- loss is reduced and normalized per frame
+
+Non-exact variants:
+
+- `post_latent`
+- `post_decoded`
+- `register_attached`
+- approximate `parallel_stream`
+
+These now use LingBot-style **action flow matching**:
+
+- action tensor is `[B, H_action, D_action]`
+- one sampled diffusion timestep per **action horizon slot**
+- that sigma is broadcast across all `D_action` channels at that slot
+- diffusion loss is reduced per slot across action dims, then averaged over
+  slots and batch
+
+One important architectural distinction:
+
+- `post_latent` and `post_decoded` do not place noisy action tokens inside the
+  shared core; the decoder performs the denoising
+- `register_attached` and approximate `parallel_stream` now inject **noisy
+  actions** into the shared core during training, so the core no longer sees
+  clean target actions directly
+
 ## Quick Start
 
 Set up the `uv` environment used for current CUDA runs:
