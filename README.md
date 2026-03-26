@@ -239,6 +239,37 @@ Run eval:
 uv run python -m open_wam.evals.evaluate --cfg configs/experiments/contract_only_libero.yaml
 ```
 
+Or use an eval-wrapper YAML under `configs/evals/`:
+
+```bash
+uv run python -m open_wam.evals.evaluate --cfg configs/evals/contract_only_robotwin.yaml
+```
+
+The current generic evaluator now:
+
+- loads either an experiment YAML or an eval-wrapper YAML
+- builds the current `VariantPipeline`, not the legacy `UnifiedWAMPipeline`
+- supports two modes:
+  - `batch`: independent one-window inference on each sampled batch
+  - `trajectory`: stateful rollout over episode-ordered windows, carrying
+    `PolicyInferState` and previous predictions across the trajectory
+- runs the standard inference path in both modes, so each evaluation step still
+  includes the variant's full denoising loop
+- reports action-prediction shape and mean masked action MSE
+- reports mean per-trajectory action MSE when trajectory mode is used
+- optionally loads a checkpoint passed with `--checkpoint`
+
+Trajectory mode requires an episode-aware dataset adapter, i.e. one that can
+group windows by `episode_index` and `observation_start`. The current LIBERO
+adapters support this; the synthetic RobotWin smoke dataset does not.
+
+Run trajectory eval on LIBERO:
+
+```bash
+uv run python -m open_wam.evals.evaluate \
+  --cfg configs/evals/contract_only_libero_trajectory.yaml
+```
+
 ## Backbone Sharing Clarification
 
 All four methods now run through the same top-level owner:

@@ -1,0 +1,5 @@
+name: contract_only_libero_trajectory_eval
+experiment_config: configs/experiments/contract_only_libero.yaml
+mode: trajectory
+split: val
+max_trajectories: 1
