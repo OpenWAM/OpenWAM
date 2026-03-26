@@ -7,6 +7,7 @@ from torch.utils.data import Dataset
 from open_wam.configs import DataConfig
 
 from .contracts import WAMSample
+from .libero_hdf5 import LiberoOfflineWindowDataset, build_libero_offline_train_val_episode_split
 from .lerobot_v2 import LeRobotV2WindowDataset, build_lerobot_train_val_episode_split
 from .synthetic import SyntheticWindowDataset
 
@@ -59,6 +60,15 @@ def _build_lerobot_v2_datasets(data_config: DataConfig) -> tuple[Dataset[WAMSamp
     )
 
 
+def _build_libero_hdf5_datasets(data_config: DataConfig) -> tuple[Dataset[WAMSample], Dataset[WAMSample]]:
+    train_episodes, val_episodes = build_libero_offline_train_val_episode_split(data_config)
+    return (
+        LiberoOfflineWindowDataset(data_config=data_config, episodes=train_episodes),
+        LiberoOfflineWindowDataset(data_config=data_config, episodes=val_episodes),
+    )
+
+
 register_dataset_builder("synthetic_robotwin", _build_synthetic_datasets)
 register_dataset_builder("synthetic_multiview", _build_synthetic_datasets)
 register_dataset_builder("lerobot_v2", _build_lerobot_v2_datasets)
+register_dataset_builder("libero_hdf5", _build_libero_hdf5_datasets)

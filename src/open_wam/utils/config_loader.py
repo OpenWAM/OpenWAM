@@ -202,7 +202,10 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
     # often add a new dataset config by specifying `dataset_type`, camera names,
     # layouts, and action/state schema in YAML without editing the loader.
     if dataset_name == "libero":
-        data_defaults = LiberoDataConfig()
+        if dataset_type == "libero_hdf5":
+            data_defaults = LiberoDataConfig(dataset_type="libero_hdf5", repo_id=None)
+        else:
+            data_defaults = LiberoDataConfig()
         data_config_cls = LiberoDataConfig
     elif dataset_name == "robotwin":
         data_defaults = RobotWinDataConfig()
@@ -246,6 +249,7 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         dataset_name=dataset_name,
         dataset_type=data_raw.get("dataset_type", data_defaults.dataset_type),
         repo_id=data_raw.get("repo_id", data_defaults.repo_id),
+        local_root=data_raw.get("local_root", data_defaults.local_root),
         split=data_raw.get("split", data_defaults.split),
         cache_dir=data_raw.get("cache_dir", data_defaults.cache_dir),
         camera_names=tuple(data_raw.get("camera_names", data_defaults.camera_names)),
@@ -321,6 +325,7 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         load_wan_vae_frontend=backbone_raw.get("load_wan_vae_frontend", False),
         load_text_conditioning=backbone_raw.get("load_text_conditioning", False),
         load_reference_core_weights=backbone_raw.get("load_reference_core_weights", False),
+        reference_assets_device_policy=backbone_raw.get("reference_assets_device_policy", "runtime"),
         reference_model_path=backbone_raw.get("reference_model_path"),
     )
 

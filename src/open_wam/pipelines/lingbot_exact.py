@@ -21,6 +21,7 @@ class LingbotExactSession:
     policy_state: PolicyInferState
     task_text: tuple[str | None, ...] | None = None
     text_context: torch.Tensor | None = None
+    negative_text_context: torch.Tensor | None = None
 
 
 @dataclass
@@ -55,6 +56,7 @@ class LingbotExactArtifactBundle:
     action_history: torch.Tensor | None = None
     task_text: tuple[str | None, ...] | None = None
     text_context: torch.Tensor | None = None
+    negative_text_context: torch.Tensor | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -66,6 +68,7 @@ def save_lingbot_exact_artifact_bundle(path: str | Path, bundle: LingbotExactArt
             "action_history": bundle.action_history,
             "task_text": bundle.task_text,
             "text_context": bundle.text_context,
+            "negative_text_context": bundle.negative_text_context,
             "metadata": bundle.metadata,
         },
         Path(path),
@@ -86,6 +89,7 @@ def load_lingbot_exact_artifact_bundle(path: str | Path) -> LingbotExactArtifact
         action_history=payload.get("action_history"),
         task_text=payload.get("task_text"),
         text_context=payload.get("text_context"),
+        negative_text_context=payload.get("negative_text_context"),
         metadata=dict(payload.get("metadata", {})),
     )
 
@@ -109,6 +113,7 @@ class LingbotExactRunner:
         *,
         task_text: tuple[str | None, ...] | None = None,
         text_context: torch.Tensor | None = None,
+        negative_text_context: torch.Tensor | None = None,
         cache_name: str = "open_wam_exact",
     ) -> LingbotExactSession:
         self.pipeline.visual_tower.reset_runtime_state()
@@ -120,6 +125,7 @@ class LingbotExactRunner:
             policy_state=policy_state,
             task_text=task_text,
             text_context=text_context,
+            negative_text_context=negative_text_context,
         )
 
     def warmup_cache(
@@ -131,6 +137,7 @@ class LingbotExactRunner:
         video_latents: torch.Tensor | None = None,
         task_text: tuple[str | None, ...] | None = None,
         text_context: torch.Tensor | None = None,
+        negative_text_context: torch.Tensor | None = None,
         action_space: str = "auto",
     ) -> LingbotExactWarmupOutput:
         visual_outputs = self._prepare_visual_outputs(
@@ -139,6 +146,7 @@ class LingbotExactRunner:
             video_latents=video_latents,
             task_text=task_text,
             text_context=text_context,
+            negative_text_context=negative_text_context,
             preserve_stream_cache=True,
         )
         next_policy_state = self.policy_variant.warm_reference_cache(
@@ -153,6 +161,7 @@ class LingbotExactRunner:
                 policy_state=next_policy_state,
                 task_text=self._resolve_task_text(session, task_text),
                 text_context=visual_outputs.frontend.conditioning.text_context,
+                negative_text_context=visual_outputs.frontend.conditioning.negative_text_context,
             ),
             visual_outputs=visual_outputs,
             debug=dict(next_policy_state.cache.get("debug_last_warmup", {})),
@@ -166,6 +175,7 @@ class LingbotExactRunner:
         video_latents: torch.Tensor | None = None,
         task_text: tuple[str | None, ...] | None = None,
         text_context: torch.Tensor | None = None,
+        negative_text_context: torch.Tensor | None = None,
         advance_frame_start: bool = False,
     ) -> LingbotExactChunkOutput:
         visual_outputs = None
@@ -176,6 +186,7 @@ class LingbotExactRunner:
                 video_latents=video_latents,
                 task_text=task_text,
                 text_context=text_context,
+                negative_text_context=negative_text_context,
                 preserve_stream_cache=True,
             )
         resolved_text_context = (
@@ -183,11 +194,17 @@ class LingbotExactRunner:
             if visual_outputs is not None
             else (text_context if text_context is not None else session.text_context)
         )
+        resolved_negative_text_context = (
+            visual_outputs.frontend.conditioning.negative_text_context
+            if visual_outputs is not None
+            else (negative_text_context if negative_text_context is not None else session.negative_text_context)
+        )
         policy_output = self.policy_variant.generate_reference_chunk(
             visual_tower=self.pipeline.visual_tower,
             visual_outputs=visual_outputs,
             infer_state=session.policy_state,
             text_context=resolved_text_context,
+            negative_text_context=resolved_negative_text_context,
             advance_frame_start=advance_frame_start,
         )
         decoder_output = self.pipeline.action_decoder.forward_infer(policy_output)
@@ -195,6 +212,7 @@ class LingbotExactRunner:
             policy_state=policy_output.next_state,
             task_text=self._resolve_task_text(session, task_text),
             text_context=resolved_text_context,
+            negative_text_context=resolved_negative_text_context,
         )
         return LingbotExactChunkOutput(
             session=next_session,
@@ -215,15 +233,20 @@ class LingbotExactRunner:
         video_latents: torch.Tensor | None,
         task_text: tuple[str | None, ...] | None,
         text_context: torch.Tensor | None,
+        negative_text_context: torch.Tensor | None,
         preserve_stream_cache: bool,
     ) -> VisualStageOutputs:
         resolved_task_text = self._resolve_task_text(session, task_text)
         resolved_text_context = text_context if text_context is not None else session.text_context
+        resolved_negative_text_context = (
+            negative_text_context if negative_text_context is not None else session.negative_text_context
+        )
         if video_latents is not None:
             return self.pipeline.prepare_visual_outputs_from_latents(
                 video_latents,
                 task_text=resolved_task_text,
                 text_context=resolved_text_context,
+                negative_text_context=resolved_negative_text_context,
             )
         if views is None:
             raise ValueError("Exact LingBot warmup/infer requires either `views` or `video_latents`.")
@@ -231,6 +254,7 @@ class LingbotExactRunner:
             views,
             task_text=resolved_task_text,
             text_context=resolved_text_context,
+            negative_text_context=resolved_negative_text_context,
             preserve_stream_cache=preserve_stream_cache,
         )
 

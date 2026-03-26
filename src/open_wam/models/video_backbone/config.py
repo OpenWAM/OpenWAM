@@ -47,4 +47,8 @@ class LingbotCompatibleVideoBackboneConfig:
     load_wan_vae_frontend: bool = False
     load_text_conditioning: bool = False
     load_reference_core_weights: bool = False
+    # `runtime`: keep reference VAE/text assets on the active runtime device.
+    # `cpu_offload`: mirror Heng's eval server and keep them on CPU.
+    reference_assets_device_policy: str = "runtime"
+    # Optional override for the vendored LingBot reference model source file.
     reference_model_path: str | None = None

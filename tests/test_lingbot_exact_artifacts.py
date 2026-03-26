@@ -17,6 +17,7 @@ def test_lingbot_exact_artifact_bundle_round_trip(tmp_path: Path) -> None:
         action_history=torch.randn(2, 4, 30),
         task_text=("pick up block", None),
         text_context=torch.randn(2, 512, 16),
+        negative_text_context=torch.randn(2, 512, 16),
         metadata={"episode_id": "demo-0"},
     )
     path = tmp_path / "artifact_bundle.pt"
@@ -27,4 +28,5 @@ def test_lingbot_exact_artifact_bundle_round_trip(tmp_path: Path) -> None:
     assert torch.equal(loaded.action_history, bundle.action_history)
     assert loaded.task_text == bundle.task_text
     assert torch.equal(loaded.text_context, bundle.text_context)
+    assert torch.equal(loaded.negative_text_context, bundle.negative_text_context)
     assert loaded.metadata == bundle.metadata

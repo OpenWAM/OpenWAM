@@ -16,8 +16,8 @@ def _repo_root() -> Path:
 def resolve_reference_model_path(config: LingbotCompatibleVideoBackboneConfig) -> Path:
     if config.reference_model_path is None:
         raise ValueError(
-            "Exact LingBot reference loading requires `backbone.reference_model_path` to point "
-            "at the LingBot `WanTransformer3DModel` source file."
+            "No external reference model path was provided. "
+            "Set `backbone.reference_model_path` only if you want to override the vendored LingBot reference model."
         )
     raw_path = Path(config.reference_model_path)
     if raw_path.is_absolute():
@@ -60,6 +60,14 @@ def _ensure_flash_attn_shims() -> None:
 
 
 @lru_cache(maxsize=1)
+def load_internal_wan_transformer_class() -> type:
+    _ensure_flash_attn_shims()
+    from open_wam.third_party.lingbot import WanTransformer3DModel
+
+    return WanTransformer3DModel
+
+
+@lru_cache(maxsize=1)
 def load_reference_wan_transformer_class(reference_model_path: str) -> type:
     module_path = Path(reference_model_path).resolve()
     _ensure_flash_attn_shims()
@@ -73,6 +81,8 @@ def load_reference_wan_transformer_class(reference_model_path: str) -> type:
 
 
 def load_wan_transformer_class(config: LingbotCompatibleVideoBackboneConfig) -> type:
+    if config.reference_model_path is None:
+        return load_internal_wan_transformer_class()
     return load_reference_wan_transformer_class(str(resolve_reference_model_path(config)))
 
 

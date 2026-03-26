@@ -38,7 +38,7 @@ The first real dataset path is:
 ```text
 configs/         runnable experiment and eval YAMLs
 notes/           research and engineering notes
-previous_works/  linked prior projects and references
+src/open_wam/third_party/  vendored external modules kept inside the repo
 scripts/         thin wrappers, smoke tests, and inspection scripts
 src/open_wam/    all source code
 ```
@@ -70,10 +70,11 @@ Important source packages:
 
 ## Quick Start
 
-Install dependencies with `uv`:
+Set up the `uv` environment used for current CUDA runs:
 
 ```bash
-uv sync
+uv sync --group dev
+uv run python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu')"
 ```
 
 Install MuJoCo-backed visualization extras only when you need the viewer scripts:
@@ -138,6 +139,34 @@ Train the current contract-only path:
 uv run python -m open_wam.training.train --cfg configs/experiments/contract_only_libero.yaml
 ```
 
+Train from the local offline LIBERO HDF5 dataset tree instead of the LeRobot
+metadata path:
+
+```bash
+uv run python -m open_wam.training.train --cfg configs/experiments/contract_only_libero_local.yaml
+```
+
+Run the Heng-compatible exact LIBERO side-by-side render with a fixed seed:
+
+```bash
+uv run python scripts/run_libero_exact_visualization.py \
+  --cfg configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml \
+  --benchmark libero_10 \
+  --task-id 8 \
+  --episode-idx 0 \
+  --max-chunks 6 \
+  --seed 1234 \
+  --output-dir outputs/libero_exact_visualization_chunks6_seeded
+
+uv run python scripts/run_heng_libero_exact_visualization.py \
+  --benchmark libero_10 \
+  --task-id 8 \
+  --episode-idx 0 \
+  --max-chunks 6 \
+  --seed 1234 \
+  --output-dir outputs/libero_exact_visualization_chunks6_seeded
+```
+
 Run eval:
 
 ```bash
@@ -159,9 +188,10 @@ The parallel-stream variant has two paths:
 - the exact LingBot-compatible path uses a reference transformer loaded as-is
   and owned by `VisualTower`
 
-The exact LingBot path requires `backbone.reference_model_path` to point at
-the LingBot `WanTransformer3DModel` source file. The provided exact-runtime
-experiment YAML sets that path explicitly.
+The exact LingBot path now defaults to the vendored implementation under
+`src/open_wam/third_party/lingbot`. You only need
+`backbone.reference_model_path` when you deliberately want to override that
+with another `model.py`.
 
 So the owner and frontend boundary are shared across all methods, but exact
 parallel-stream does not yet share the same physical core module or weights as
@@ -171,15 +201,17 @@ The other three variants can use LingBot backbone weights by setting:
 
 - `backbone.implementation: lingbot_replica`
 - `backbone.load_reference_core_weights: true`
-- `backbone.reference_model_path: .../model.py`
+- `backbone.pretrained_model_name_or_path: /path/to/checkpoint-root`
 
-That path initializes the shared replica core from LingBot reference weights
-while keeping the stage-aware `VisualTower` contracts intact.
+That path initializes the shared replica core from LingBot-compatible weights
+while keeping the stage-aware `VisualTower` contracts intact. An external
+`reference_model_path` is optional there too.
 
-For exact loading and execution details, including how to point Open-WAM at a
-vanilla LingBot repo checkout plus a local checkpoint directory, see:
+For exact loading and execution details, including the local LIBERO 30D path
+and Heng comparison workflow, see:
 
 - [notes/lingbot_reference_usage.md](notes/lingbot_reference_usage.md)
+- [notes/libero_exact_rendering.md](notes/libero_exact_rendering.md)
 
 ## Current Dataset Contract
 
@@ -215,6 +247,7 @@ Start here for collaborator-facing context:
 - [notes/architecture.md](notes/architecture.md)
 - [notes/current_all_variant_execution_status.md](notes/current_all_variant_execution_status.md)
 - [notes/current_four_method_architecture.md](notes/current_four_method_architecture.md)
+- [notes/libero_exact_rendering.md](notes/libero_exact_rendering.md)
 - [notes/lingbot_reference_usage.md](notes/lingbot_reference_usage.md)
 - [notes/libero_lerobot.md](notes/libero_lerobot.md)
 - [notes/new_work_roadmap.md](notes/new_work_roadmap.md)

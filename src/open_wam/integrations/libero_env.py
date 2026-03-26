@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import importlib
 import os
 from pathlib import Path
-import sys
 from typing import Any
 
 import numpy as np
@@ -85,8 +85,7 @@ def ensure_local_libero_config(project_root: Path | None = None) -> Path:
     """
 
     root = _project_root(project_root)
-    libero_repo_root = root / "previous_works" / "LIBERO"
-    libero_package_root = libero_repo_root / "libero" / "libero"
+    libero_repo_root, libero_package_root = _resolve_libero_paths()
     config_dir = root / ".cache" / "libero_config"
     config_dir.mkdir(parents=True, exist_ok=True)
 
@@ -102,8 +101,6 @@ def ensure_local_libero_config(project_root: Path | None = None) -> Path:
         yaml.safe_dump(config, handle, sort_keys=False)
 
     os.environ["LIBERO_CONFIG_PATH"] = str(config_dir)
-    if str(libero_repo_root.resolve()) not in sys.path:
-        sys.path.insert(0, str(libero_repo_root.resolve()))
     return config_path
 
 
@@ -448,6 +445,22 @@ def _project_root(project_root: Path | None) -> Path:
     if project_root is not None:
         return project_root.resolve()
     return Path(__file__).resolve().parents[3]
+
+
+def _resolve_libero_paths() -> tuple[Path, Path]:
+    """Resolve the installed LIBERO repo root and package root from Python imports."""
+
+    try:
+        libero_pkg = importlib.import_module("libero.libero")
+    except ModuleNotFoundError as exc:
+        raise ImportError(
+            "LIBERO is not installed in the active environment. Install the LIBERO package into the uv environment "
+            "instead of relying on an external checkout."
+        ) from exc
+
+    package_root = Path(libero_pkg.__file__).resolve().parent
+    repo_root = package_root.parents[1]
+    return repo_root, package_root
 
 
 def _project_gripper_state(gripper_state: torch.Tensor, *, gripper_representation: str) -> torch.Tensor:

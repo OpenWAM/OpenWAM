@@ -41,10 +41,10 @@ def test_variant_pipeline_train_and_infer_shapes(config_name: str, expected_hori
     assert train_output.decoder_output.action_pred.shape == (
         2,
         expected_horizon,
-        config.data.action_schema.action_dim,
+        config.action_decoder.action_dim,
     )
     assert infer_output.decoder_output.action_pred.shape == (
         2,
         expected_horizon,
-        config.data.action_schema.action_dim,
+        config.action_decoder.action_dim,
     )

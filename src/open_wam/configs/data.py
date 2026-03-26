@@ -90,6 +90,7 @@ class DataConfig:
     dataset_name: str
     dataset_type: str
     repo_id: str | None
+    local_root: str | None
     split: str
     cache_dir: str | None
     camera_names: tuple[str, ...]
@@ -123,6 +124,7 @@ class GenericDataConfig(DataConfig):
     dataset_name: str = "custom"
     dataset_type: str = "synthetic_multiview"
     repo_id: str | None = None
+    local_root: str | None = None
     split: str = "train"
     cache_dir: str | None = None
     camera_names: tuple[str, ...] = ("camera_0",)
@@ -169,6 +171,7 @@ class RobotWinDataConfig(DataConfig):
     dataset_name: str = "robotwin"
     dataset_type: str = "synthetic_robotwin"
     repo_id: str | None = None
+    local_root: str | None = None
     split: str = "train"
     cache_dir: str | None = None
     camera_names: tuple[str, ...] = (
@@ -249,6 +252,7 @@ class LiberoDataConfig(DataConfig):
     dataset_name: str = "libero"
     dataset_type: str = "lerobot_v2"
     repo_id: str | None = "physical-intelligence/libero"
+    local_root: str | None = None
     split: str = "train"
     cache_dir: str | None = None
     camera_names: tuple[str, ...] = (

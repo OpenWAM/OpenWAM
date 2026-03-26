@@ -22,7 +22,6 @@ backbone:
   ffn_dim: 1024
   cross_attn_norm: true
   rope_max_seq_len: 1024
-  reference_model_path: previous_works/lingbot-va/wan_va/modules/model.py
 
 policy_variant:
   name: parallel_stream

@@ -16,6 +16,14 @@ from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackbone
 from open_wam.models.visual_tower.reference_transformer import preferred_reference_dtype
 
 
+def reference_runtime_dtype(transformer: torch.nn.Module) -> torch.dtype:
+    try:
+        device = next(transformer.parameters()).device
+    except StopIteration:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return preferred_reference_dtype(device)
+
+
 class FlowMatchScheduler:
     def __init__(
         self,
@@ -401,6 +409,7 @@ def prepare_reference_single_stream_input(
     backbone_config: LingbotCompatibleVideoBackboneConfig,
     action_mode: bool,
     cond: torch.Tensor | None = None,
+    action_channel_mask: torch.Tensor | None = None,
 ) -> dict[str, torch.Tensor]:
     batch_size, _, num_frames, height, width = latents.shape
     device = latents.device
@@ -449,6 +458,11 @@ def prepare_reference_single_stream_input(
     if cond is not None:
         input_dict["noisy_latents"][:, :, 0:1] = cond[:, :, 0:1]
         input_dict["timesteps"][:, 0:1] *= 0
+    if action_mode and action_channel_mask is not None:
+        input_dict["noisy_latents"] = input_dict["noisy_latents"] * action_channel_mask.to(
+            device=input_dict["noisy_latents"].device,
+            dtype=input_dict["noisy_latents"].dtype,
+        )
     return input_dict
 
 
@@ -470,7 +484,7 @@ def prepare_reference_forward_input(
     *,
     transformer: torch.nn.Module,
 ) -> dict[str, torch.Tensor]:
-    model_dtype = next(transformer.parameters()).dtype
+    model_dtype = reference_runtime_dtype(transformer)
     return {
         "noisy_latents": input_dict["noisy_latents"].to(model_dtype),
         "text_emb": input_dict["text_emb"].to(model_dtype),
@@ -497,12 +511,13 @@ def run_reference_single_stream_forward(
     if use_cfg:
         effective_input = repeat_input_for_cfg(input_dict, negative_text_emb=negative_text_emb)
     effective_input = prepare_reference_forward_input(effective_input, transformer=transformer)
-    output = transformer(
-        effective_input,
-        update_cache=update_cache,
-        cache_name=cache_name,
-        action_mode=action_mode,
-    )
+    with torch.inference_mode():
+        output = transformer(
+            effective_input,
+            update_cache=update_cache,
+            cache_name=cache_name,
+            action_mode=action_mode,
+        )
     if use_cfg and combine_cfg:
         cond_output = output[:batch_size]
         uncond_output = output[batch_size:]
@@ -515,23 +530,27 @@ def initialize_reference_cache(
     *,
     cache_name: str,
     attn_window: int,
-    video_latents: torch.Tensor,
+    batch_size: int,
+    frame_chunk_size: int,
+    latent_height: int,
+    latent_width: int,
+    device: torch.device,
     action_per_frame: int,
     use_cfg: bool,
 ) -> None:
-    batch_size = video_latents.shape[0] * (2 if use_cfg else 1)
+    batch_size = batch_size * (2 if use_cfg else 1)
     latent_token_per_chunk = (
-        video_latents.shape[2] * video_latents.shape[3] * video_latents.shape[4]
+        frame_chunk_size * latent_height * latent_width
     ) // math.prod(transformer.patch_size)
-    action_token_per_chunk = video_latents.shape[2] * action_per_frame
+    action_token_per_chunk = frame_chunk_size * action_per_frame
     transformer.clear_cache(cache_name)
     transformer.create_empty_cache(
         cache_name,
         attn_window,
         latent_token_per_chunk,
         action_token_per_chunk,
-        device=video_latents.device,
-        dtype=next(transformer.parameters()).dtype,
+        device=device,
+        dtype=reference_runtime_dtype(transformer),
         batch_size=batch_size,
     )
 
@@ -545,10 +564,12 @@ def run_parallel_exact_cache_warmup(
     observed_video_latents: torch.Tensor,
     observed_action_latents: torch.Tensor,
     text_emb: torch.Tensor | None,
+    negative_text_emb: torch.Tensor | None,
+    action_channel_mask: torch.Tensor | None,
     infer_cache: dict[str, Any],
 ) -> dict[str, Any]:
     device = observed_video_latents.device
-    model_dtype = next(transformer.parameters()).dtype
+    model_dtype = reference_runtime_dtype(transformer)
     batch_size, _, observed_frames, latent_height, latent_width = observed_video_latents.shape
     text_emb = ensure_reference_text_embeddings(
         text_emb,
@@ -557,13 +578,22 @@ def run_parallel_exact_cache_warmup(
         device=device,
         dtype=model_dtype,
     )
-    negative_text_emb = torch.zeros_like(text_emb)
     use_cfg = bool(
         infer_cache.get(
             "use_cfg",
             inference_config.guidance_scale > 1.0 or inference_config.action_guidance_scale > 1.0,
         )
     )
+    if negative_text_emb is not None:
+        negative_text_emb = ensure_reference_text_embeddings(
+            negative_text_emb,
+            batch_size=batch_size,
+            backbone_config=backbone_config,
+            device=device,
+            dtype=model_dtype,
+        )
+    elif use_cfg:
+        negative_text_emb = torch.zeros_like(text_emb)
     cache_name = str(infer_cache.get("cache_name", "open_wam_exact"))
     current_frame_start = int(infer_cache.get("frame_start", 0))
     cache_initialized = bool(infer_cache.get("cache_initialized", False))
@@ -581,7 +611,11 @@ def run_parallel_exact_cache_warmup(
             transformer,
             cache_name=cache_name,
             attn_window=policy_config.attn_window,
-            video_latents=observed_video_latents,
+            batch_size=batch_size,
+            frame_chunk_size=inference_config.frame_chunk_size,
+            latent_height=latent_height,
+            latent_width=latent_width,
+            device=device,
             action_per_frame=policy_config.action_per_frame,
             use_cfg=use_cfg,
         )
@@ -610,6 +644,7 @@ def run_parallel_exact_cache_warmup(
         frame_st_id=current_frame_start,
         backbone_config=backbone_config,
         action_mode=True,
+        action_channel_mask=action_channel_mask,
     )
     run_reference_single_stream_forward(
         transformer,
@@ -665,6 +700,8 @@ def run_parallel_exact_inference_rollout(
     action_dim: int,
     condition_latents: torch.Tensor | None,
     text_emb: torch.Tensor | None,
+    negative_text_emb: torch.Tensor | None,
+    action_channel_mask: torch.Tensor | None,
     infer_cache: dict[str, Any],
     advance_frame_start: bool = False,
 ) -> LingbotParallelInferArtifacts:
@@ -682,7 +719,7 @@ def run_parallel_exact_inference_rollout(
         batch_size = int(infer_cache["batch_size"])
         latent_height = int(infer_cache["latent_height"])
         latent_width = int(infer_cache["latent_width"])
-    model_dtype = next(transformer.parameters()).dtype
+    model_dtype = reference_runtime_dtype(transformer)
     text_emb = ensure_reference_text_embeddings(
         text_emb,
         batch_size=batch_size,
@@ -690,13 +727,22 @@ def run_parallel_exact_inference_rollout(
         device=device,
         dtype=model_dtype,
     )
-    negative_text_emb = torch.zeros_like(text_emb)
     use_cfg = bool(
         infer_cache.get(
             "use_cfg",
             inference_config.guidance_scale > 1.0 or inference_config.action_guidance_scale > 1.0,
         )
     )
+    if negative_text_emb is not None:
+        negative_text_emb = ensure_reference_text_embeddings(
+            negative_text_emb,
+            batch_size=batch_size,
+            backbone_config=backbone_config,
+            device=device,
+            dtype=model_dtype,
+        )
+    elif use_cfg:
+        negative_text_emb = torch.zeros_like(text_emb)
     cache_name = str(infer_cache.get("cache_name", "open_wam_exact"))
     current_frame_start = int(infer_cache.get("frame_start", 0))
     cache_initialized = bool(infer_cache.get("cache_initialized", False))
@@ -707,7 +753,11 @@ def run_parallel_exact_inference_rollout(
             transformer,
             cache_name=cache_name,
             attn_window=policy_config.attn_window,
-            video_latents=condition_latents,
+            batch_size=batch_size,
+            frame_chunk_size=inference_config.frame_chunk_size,
+            latent_height=latent_height,
+            latent_width=latent_width,
+            device=device,
             action_per_frame=policy_config.action_per_frame,
             use_cfg=use_cfg,
         )
@@ -820,6 +870,7 @@ def run_parallel_exact_inference_rollout(
             backbone_config=backbone_config,
             action_mode=True,
             cond=action_cond,
+            action_channel_mask=action_channel_mask,
         )
         action_noise_pred = run_reference_single_stream_forward(
             transformer,
@@ -880,7 +931,7 @@ def run_parallel_exact_train(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     latent_dict = input_dict["latent_dict"]
     action_dict = input_dict["action_dict"]
-    model_dtype = next(transformer.parameters()).dtype
+    model_dtype = reference_runtime_dtype(transformer)
     latent_dict["noisy_latents"] = latent_dict["noisy_latents"].to(model_dtype)
     latent_dict["latent"] = latent_dict["latent"].to(model_dtype)
     action_dict["noisy_latents"] = action_dict["noisy_latents"].to(model_dtype)

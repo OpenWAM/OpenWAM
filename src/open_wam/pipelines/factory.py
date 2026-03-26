@@ -16,10 +16,17 @@ from open_wam.models.policy_variants import (
     PostLatentPolicyVariant,
     RegisterAttachedPolicyVariant,
 )
+from open_wam.models.policy_variants.parallel_stream.action_adapter import build_action_adapter_spec
 from open_wam.models.visual_tower import VisualTower
 
 from .variant_pipeline import VariantPipeline
 from .lingbot_exact import LingbotExactRunner
+
+
+def _resolve_parallel_stream_model_action_dim(config: ExperimentConfig) -> int:
+    if isinstance(config.policy_variant, ParallelStreamPolicyConfig) and config.policy_variant.runtime_mode == "lingbot_exact":
+        return config.action_decoder.action_dim
+    return config.data.action_schema.action_dim
 
 
 def validate_experiment_config(config: ExperimentConfig) -> None:
@@ -33,16 +40,34 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
                 f"action_per_frame={config.policy_variant.action_per_frame}."
             )
         if config.policy_variant.runtime_mode == "lingbot_exact":
-            if config.backbone.reference_model_path is None:
-                raise ValueError(
-                    "Exact LingBot runtime requires `backbone.reference_model_path` to be set."
-                )
             if config.action_decoder.name != "lingbot_parallel_decoder":
                 raise ValueError(
                     "Exact LingBot runtime requires `action_decoder.name = lingbot_parallel_decoder`."
                 )
-    if config.backbone.load_reference_core_weights and config.backbone.reference_model_path is None:
-        raise ValueError("`backbone.load_reference_core_weights` requires `backbone.reference_model_path`.")
+            if config.action_decoder.action_horizon != action_schema.action_horizon:
+                raise ValueError(
+                    "Exact LingBot runtime requires `action_decoder.action_horizon` to match "
+                    "`data.action_schema.action_horizon`, "
+                    f"got decoder={config.action_decoder.action_horizon}, data={action_schema.action_horizon}."
+                )
+            model_action_dim = _resolve_parallel_stream_model_action_dim(config)
+            adapter_spec = build_action_adapter_spec(config.policy_variant, model_action_dim=model_action_dim)
+            if adapter_spec is None and action_schema.action_dim != model_action_dim:
+                raise ValueError(
+                    "Exact LingBot runtime needs an action adapter when dataset and model action dims differ, "
+                    f"got data action_dim={action_schema.action_dim} and model action_dim={model_action_dim}."
+                )
+            if (
+                adapter_spec is not None
+                and action_schema.action_dim != model_action_dim
+                and adapter_spec.raw_action_dim != action_schema.action_dim
+            ):
+                raise ValueError(
+                    "Exact LingBot action adapter raw action dim must match `data.action_schema.action_dim` "
+                    "when dataset and model action dims differ, "
+                    f"got adapter raw_action_dim={adapter_spec.raw_action_dim}, "
+                    f"data action_dim={action_schema.action_dim}, model action_dim={model_action_dim}."
+                )
 
 
 def build_policy_variant(config: ExperimentConfig):
@@ -80,7 +105,7 @@ def build_policy_variant(config: ExperimentConfig):
             backbone_config=config.backbone,
             training_config=config.training,
             inference_config=config.inference,
-            action_dim=action_schema.action_dim,
+            action_dim=_resolve_parallel_stream_model_action_dim(config),
             action_horizon=action_schema.action_horizon,
             num_frames=config.data.num_frames,
         )
@@ -122,10 +147,11 @@ def build_action_decoder(config: ExperimentConfig):
 
 def build_variant_pipeline_from_config(config: ExperimentConfig) -> VariantPipeline:
     validate_experiment_config(config)
+    policy_action_dim = _resolve_parallel_stream_model_action_dim(config)
     return VariantPipeline(
         visual_tower=VisualTower(
             config.backbone,
-            action_dim=config.data.action_schema.action_dim,
+            action_dim=policy_action_dim,
         ),
         policy_variant=build_policy_variant(config),
         action_decoder=build_action_decoder(config),

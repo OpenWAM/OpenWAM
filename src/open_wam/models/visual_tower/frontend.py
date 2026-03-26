@@ -46,6 +46,7 @@ class LingbotVisualFrontend(nn.Module):
         placements: tuple[ViewPlacement, ...] | None = None,
         task_text: tuple[str | None, ...] | None = None,
         text_context: torch.Tensor | None = None,
+        negative_text_context: torch.Tensor | None = None,
         preserve_stream_cache: bool = False,
     ) -> VisualFrontendOutput:
         if canonical_video.ndim != 5:
@@ -65,10 +66,18 @@ class LingbotVisualFrontend(nn.Module):
                 device=canonical_video.device,
                 dtype=canonical_video.dtype,
             )
+        resolved_negative_text_context = negative_text_context
+        if resolved_negative_text_context is None and resolved_text_context is not None:
+            resolved_negative_text_context = self.reference_assets.encode_blank_text(
+                batch_size=canonical_video.shape[0],
+                device=canonical_video.device,
+                dtype=canonical_video.dtype,
+            )
         return self._build_output(
             canonical_video=canonical_video,
             video_latents=video_latents,
             text_context=resolved_text_context,
+            negative_text_context=resolved_negative_text_context,
         )
 
     def from_video_latents(
@@ -77,6 +86,7 @@ class LingbotVisualFrontend(nn.Module):
         *,
         task_text: tuple[str | None, ...] | None = None,
         text_context: torch.Tensor | None = None,
+        negative_text_context: torch.Tensor | None = None,
         canonical_video: torch.Tensor | None = None,
     ) -> VisualFrontendOutput:
         if video_latents.ndim != 5:
@@ -100,10 +110,18 @@ class LingbotVisualFrontend(nn.Module):
                 device=video_latents.device,
                 dtype=video_latents.dtype,
             )
+        resolved_negative_text_context = negative_text_context
+        if resolved_negative_text_context is None and resolved_text_context is not None:
+            resolved_negative_text_context = self.reference_assets.encode_blank_text(
+                batch_size=video_latents.shape[0],
+                device=video_latents.device,
+                dtype=video_latents.dtype,
+            )
         return self._build_output(
             canonical_video=canonical,
             video_latents=video_latents,
             text_context=resolved_text_context,
+            negative_text_context=resolved_negative_text_context,
         )
 
     def reset_runtime_state(self) -> None:
@@ -115,6 +133,7 @@ class LingbotVisualFrontend(nn.Module):
         canonical_video: torch.Tensor,
         video_latents: torch.Tensor,
         text_context: torch.Tensor | None,
+        negative_text_context: torch.Tensor | None,
     ) -> VisualFrontendOutput:
         video_tokens, token_grid = self.tokenize_video_latents(video_latents)
         return VisualFrontendOutput(
@@ -131,6 +150,7 @@ class LingbotVisualFrontend(nn.Module):
             conditioning=ConditioningState(
                 supported=text_context is not None,
                 text_context=text_context,
+                negative_text_context=negative_text_context,
                 first_frame_context=video_latents[:, :, :1],
                 metadata={"backbone_config": asdict(self.config)},
             ),
@@ -180,6 +200,7 @@ class LingbotVisualFrontend(nn.Module):
             .permute(0, 2, 4, 6, 1, 3, 5, 7)
             .reshape(batch_size, -1, channels * patch_t * patch_h * patch_w)
         )
+        patches = patches.to(dtype=self.token_embed.weight.dtype)
         tokens = self.token_embed(patches)
         patches_per_frame_h = latent_height // patch_h
         patches_per_frame_w = latent_width // patch_w

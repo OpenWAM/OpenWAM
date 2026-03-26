@@ -6,7 +6,7 @@ import pytest
 
 
 def reference_model_path_or_skip() -> str:
-    candidate = Path(__file__).resolve().parents[1] / "previous_works" / "lingbot-va" / "wan_va" / "modules" / "model.py"
+    candidate = Path(__file__).resolve().parents[1] / "src" / "open_wam" / "third_party" / "lingbot" / "model.py"
     if not candidate.exists():
-        pytest.skip("LingBot reference model source file is unavailable in this checkout.")
+        pytest.skip("Vendored LingBot reference model source file is unavailable in this checkout.")
     return str(candidate)

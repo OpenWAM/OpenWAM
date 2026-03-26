@@ -105,6 +105,48 @@ class LingbotActionAdapter:
         dtype: torch.dtype | None = None,
     ) -> torch.Tensor:
         sequence = self._flatten_to_sequence(action)
+        if self.spec is None:
+            if device is not None or dtype is not None:
+                sequence = sequence.to(device=device or sequence.device, dtype=dtype or sequence.dtype)
+            return sequence
+        resolved_space = self.infer_action_space(sequence) if action_space == "auto" else action_space
+        target_device = device or sequence.device
+        target_dtype = dtype or sequence.dtype
+        if resolved_space == "model":
+            if sequence.shape[-1] != self.spec.model_action_dim:
+                raise ValueError(
+                    f"Expected model-space action dim {self.spec.model_action_dim}, got {sequence.shape[-1]}."
+                )
+            return sequence.to(device=target_device, dtype=target_dtype)
+        if resolved_space != "raw":
+            raise ValueError(f"Unsupported exact action_space '{action_space}'.")
+        if sequence.shape[-1] != self.spec.raw_action_dim:
+            raise ValueError(f"Expected raw-space action dim {self.spec.raw_action_dim}, got {sequence.shape[-1]}.")
+        padded = torch.cat(
+            [sequence.to(device=target_device, dtype=torch.float32), sequence.new_zeros(sequence.shape[0], sequence.shape[1], 1, device=target_device, dtype=torch.float32)],
+            dim=-1,
+        )
+        gather_ids = torch.tensor(
+            self.spec.inverse_used_action_channel_ids,
+            device=target_device,
+            dtype=torch.long,
+        )
+        aligned = padded.index_select(dim=-1, index=gather_ids)
+        if self.spec.action_norm_method == "quantiles":
+            q01 = torch.tensor(self.spec.norm_q01, device=target_device, dtype=torch.float32)
+            q99 = torch.tensor(self.spec.norm_q99, device=target_device, dtype=torch.float32)
+            aligned = (aligned - q01) / (q99 - q01 + 1e-6) * 2.0 - 1.0
+        return aligned.to(dtype=target_dtype)
+
+    def to_model_action_mask_sequence(
+        self,
+        action_mask: torch.Tensor,
+        *,
+        action_space: str = "auto",
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> torch.Tensor:
+        sequence = self._flatten_to_sequence(action_mask)
         if device is not None or dtype is not None:
             sequence = sequence.to(device=device or sequence.device, dtype=dtype or sequence.dtype)
         if self.spec is None:
@@ -113,13 +155,15 @@ class LingbotActionAdapter:
         if resolved_space == "model":
             if sequence.shape[-1] != self.spec.model_action_dim:
                 raise ValueError(
-                    f"Expected model-space action dim {self.spec.model_action_dim}, got {sequence.shape[-1]}."
+                    f"Expected model-space action mask dim {self.spec.model_action_dim}, got {sequence.shape[-1]}."
                 )
             return sequence
         if resolved_space != "raw":
             raise ValueError(f"Unsupported exact action_space '{action_space}'.")
         if sequence.shape[-1] != self.spec.raw_action_dim:
-            raise ValueError(f"Expected raw-space action dim {self.spec.raw_action_dim}, got {sequence.shape[-1]}.")
+            raise ValueError(
+                f"Expected raw-space action mask dim {self.spec.raw_action_dim}, got {sequence.shape[-1]}."
+            )
         padded = torch.cat(
             [sequence, sequence.new_zeros(sequence.shape[0], sequence.shape[1], 1)],
             dim=-1,
@@ -129,12 +173,7 @@ class LingbotActionAdapter:
             device=sequence.device,
             dtype=torch.long,
         )
-        aligned = padded.index_select(dim=-1, index=gather_ids)
-        if self.spec.action_norm_method == "quantiles":
-            q01 = torch.tensor(self.spec.norm_q01, device=sequence.device, dtype=sequence.dtype)
-            q99 = torch.tensor(self.spec.norm_q99, device=sequence.device, dtype=sequence.dtype)
-            aligned = (aligned - q01) / (q99 - q01 + 1e-6) * 2.0 - 1.0
-        return aligned
+        return padded.index_select(dim=-1, index=gather_ids)
 
     def to_model_action_latents(
         self,
@@ -173,9 +212,10 @@ class LingbotActionAdapter:
             raise ValueError(
                 f"Expected model-space action dim {self.spec.model_action_dim}, got {sequence.shape[-1]}."
             )
+        sequence = sequence.float()
         if self.spec.action_norm_method == "quantiles":
-            q01 = torch.tensor(self.spec.norm_q01, device=sequence.device, dtype=sequence.dtype)
-            q99 = torch.tensor(self.spec.norm_q99, device=sequence.device, dtype=sequence.dtype)
+            q01 = torch.tensor(self.spec.norm_q01, device=sequence.device, dtype=torch.float32)
+            q99 = torch.tensor(self.spec.norm_q99, device=sequence.device, dtype=torch.float32)
             sequence = (sequence + 1.0) / 2.0 * (q99 - q01 + 1e-6) + q01
         gather_ids = torch.tensor(self.spec.used_action_channel_ids, device=sequence.device, dtype=torch.long)
         return sequence.index_select(dim=-1, index=gather_ids)

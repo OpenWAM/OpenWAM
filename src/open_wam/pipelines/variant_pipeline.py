@@ -62,6 +62,7 @@ class VariantPipeline(nn.Module):
         *,
         task_text: tuple[str | None, ...] | None = None,
         text_context: torch.Tensor | None = None,
+        negative_text_context: torch.Tensor | None = None,
         preserve_stream_cache: bool = False,
     ) -> VisualStageOutputs:
         canonical_batch = self.canonicalize(views)
@@ -70,6 +71,7 @@ class VariantPipeline(nn.Module):
             placements=canonical_batch.placements,
             task_text=task_text,
             text_context=text_context,
+            negative_text_context=negative_text_context,
             preserve_stream_cache=preserve_stream_cache,
         )
         return self._complete_visual_outputs(frontend_output)
@@ -80,12 +82,14 @@ class VariantPipeline(nn.Module):
         *,
         task_text: tuple[str | None, ...] | None = None,
         text_context: torch.Tensor | None = None,
+        negative_text_context: torch.Tensor | None = None,
         canonical_video: torch.Tensor | None = None,
     ) -> VisualStageOutputs:
         frontend_output = self.visual_tower.run_frontend_from_latents(
             video_latents,
             task_text=task_text,
             text_context=text_context,
+            negative_text_context=negative_text_context,
             canonical_video=canonical_video,
         )
         return self._complete_visual_outputs(frontend_output)

@@ -50,6 +50,7 @@ class ConditioningState:
 
     supported: bool
     text_context: torch.Tensor | None = None
+    negative_text_context: torch.Tensor | None = None
     first_frame_context: torch.Tensor | None = None
     metadata: dict[str, Any] | None = None
 

@@ -8,6 +8,7 @@ class LingbotReferenceProfile:
     """Reference LingBot parallel-stream runtime settings for a known benchmark."""
 
     name: str
+    max_text_tokens: int
     action_dim: int
     action_per_frame: int
     frame_chunk_size: int
@@ -30,6 +31,7 @@ class LingbotReferenceProfile:
 _BUILTIN_REFERENCE_PROFILES: dict[str, LingbotReferenceProfile] = {
     "robotwin": LingbotReferenceProfile(
         name="robotwin",
+        max_text_tokens=512,
         action_dim=30,
         action_per_frame=16,
         frame_chunk_size=2,
@@ -87,6 +89,7 @@ _BUILTIN_REFERENCE_PROFILES: dict[str, LingbotReferenceProfile] = {
     ),
     "franka": LingbotReferenceProfile(
         name="franka",
+        max_text_tokens=512,
         action_dim=30,
         action_per_frame=20,
         frame_chunk_size=4,
@@ -144,6 +147,7 @@ _BUILTIN_REFERENCE_PROFILES: dict[str, LingbotReferenceProfile] = {
     ),
     "demo": LingbotReferenceProfile(
         name="demo",
+        max_text_tokens=512,
         action_dim=30,
         action_per_frame=8,
         frame_chunk_size=4,
@@ -180,6 +184,48 @@ _BUILTIN_REFERENCE_PROFILES: dict[str, LingbotReferenceProfile] = {
         )
         + (0.0,) * 23
         + (100.0, 0.0),
+    ),
+    "libero": LingbotReferenceProfile(
+        name="libero",
+        max_text_tokens=512,
+        action_dim=30,
+        action_per_frame=4,
+        frame_chunk_size=4,
+        attn_window=30,
+        guidance_scale=5.0,
+        action_guidance_scale=1.0,
+        video_num_inference_steps=20,
+        action_num_inference_steps=50,
+        video_exec_step=-1,
+        video_sigma_shift=5.0,
+        action_sigma_shift=1.0,
+        obs_cam_keys=(
+            "observation.images.agentview_rgb",
+            "observation.images.eye_in_hand_rgb",
+        ),
+        used_action_channel_ids=(0, 1, 2, 3, 4, 5, 28),
+        inverse_used_action_channel_ids=(0, 1, 2, 3, 4, 5) + (7,) * 22 + (6, 7),
+        action_norm_method="quantiles",
+        norm_q01=(
+            -0.6589285731315613,
+            -0.84375,
+            -0.9375,
+            -0.12107142806053162,
+            -0.15964286029338837,
+            -0.26571428775787354,
+        )
+        + (0.0,) * 22
+        + (-1.0, 0.0),
+        norm_q99=(
+            0.8999999761581421,
+            0.8544642925262451,
+            0.9375,
+            0.17142857611179352,
+            0.1842857152223587,
+            0.34392857551574707,
+        )
+        + (0.0,) * 22
+        + (1.0, 0.0),
     ),
 }
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import torch
 from torch import nn
 
 from open_wam.data.raw_video import ViewPlacement
@@ -58,13 +59,16 @@ class VisualTower(nn.Module):
         placements: tuple[ViewPlacement, ...] | None = None,
         task_text: tuple[str | None, ...] | None = None,
         text_context=None,
+        negative_text_context=None,
         preserve_stream_cache: bool = False,
     ):
+        self._ensure_frontend_runtime_device(canonical_video.device)
         return self.frontend(
             canonical_video,
             placements=placements,
             task_text=task_text,
             text_context=text_context,
+            negative_text_context=negative_text_context,
             preserve_stream_cache=preserve_stream_cache,
         )
 
@@ -74,12 +78,15 @@ class VisualTower(nn.Module):
         *,
         task_text: tuple[str | None, ...] | None = None,
         text_context=None,
+        negative_text_context=None,
         canonical_video=None,
     ):
+        self._ensure_frontend_runtime_device(video_latents.device)
         return self.frontend.from_video_latents(
             video_latents,
             task_text=task_text,
             text_context=text_context,
+            negative_text_context=negative_text_context,
             canonical_video=canonical_video,
         )
 
@@ -124,11 +131,35 @@ class VisualTower(nn.Module):
 
     def ensure_lingbot_reference_transformer_device(self, *, action_dim: int, device) -> nn.Module:
         transformer = self.get_lingbot_reference_transformer(action_dim=action_dim)
+        device = torch.device(device)
         target_dtype = preferred_reference_dtype(device)
-        parameter = next(transformer.parameters())
-        if parameter.device != device or parameter.dtype != target_dtype:
+        needs_move = False
+        for parameter in transformer.parameters():
+            if parameter.device != device:
+                needs_move = True
+                break
+            if parameter.is_floating_point() and parameter.dtype != target_dtype:
+                needs_move = True
+                break
+        if not needs_move:
+            for buffer in transformer.buffers():
+                if buffer.device != device:
+                    needs_move = True
+                    break
+                if buffer.is_floating_point() and buffer.dtype != target_dtype:
+                    needs_move = True
+                    break
+        if needs_move:
             transformer.to(device=device, dtype=target_dtype)
         return transformer
+
+    def _ensure_frontend_runtime_device(self, device) -> None:
+        device = torch.device(device)
+        if any(parameter.device != device for parameter in self.frontend.parameters()):
+            self.frontend.to(device=device)
+            return
+        if any(buffer.device != device for buffer in self.frontend.buffers()):
+            self.frontend.to(device=device)
 
     def reset_lingbot_reference_runtime(self, *, action_dim: int, cache_name: str = "open_wam_exact") -> None:
         transformer = self.get_lingbot_reference_transformer(action_dim=action_dim)
