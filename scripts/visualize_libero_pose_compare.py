@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
 
+import imageio.v2 as imageio
 import mujoco
-import mujoco.viewer
+import numpy as np
 import torch
 
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
@@ -58,6 +60,20 @@ def main() -> None:
         choices=("original", "reconstructed", "compare"),
         default="compare",
         help="What rollout to animate in the MuJoCo scene.",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Optional animation output path (.gif or .mp4). When set, render offscreen instead of launching a GLFW viewer.",
+    )
+    parser.add_argument("--camera-height", type=int, default=480)
+    parser.add_argument("--camera-width", type=int, default=640)
+    parser.add_argument(
+        "--frame-duration",
+        type=float,
+        default=None,
+        help="Frame duration in seconds. Defaults to --sleep-seconds for animated steps.",
     )
     args = parser.parse_args()
 
@@ -144,7 +160,38 @@ def main() -> None:
 
     mocap_handles = _resolve_mocap_handles(model=model, mode=args.mode)
 
-    with mujoco.viewer.launch_passive(model, data) as viewer:
+    if args.output is not None:
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        frame_duration = args.frame_duration if args.frame_duration is not None else args.sleep_seconds
+        _render_animation_offscreen(
+            model=model,
+            data=data,
+            mocap_handles=mocap_handles,
+            reference_position=reference_position,
+            reference_quaternion_xyzw=reference_quaternion_xyzw,
+            original_positions=original_pose.position,
+            original_quaternions_xyzw=original_pose.quaternion,
+            reconstructed_positions=reconstructed_pose.position,
+            reconstructed_quaternions_xyzw=reconstructed_pose.quaternion,
+            mode=args.mode,
+            output_path=output_path,
+            camera_height=args.camera_height,
+            camera_width=args.camera_width,
+            frame_duration_seconds=frame_duration,
+        )
+        print("saved_animation:", str(output_path.resolve()))
+        return
+
+    if not os.environ.get("DISPLAY"):
+        raise RuntimeError(
+            "No DISPLAY was found. On a headless/slurm node, pass --output outputs/libero_reference_pose_compare.mp4 "
+            "to render offscreen instead of launching the GLFW viewer."
+        )
+
+    from mujoco import viewer as mujoco_viewer
+
+    with mujoco_viewer.launch_passive(model, data) as viewer:
         while viewer.is_running():
             _move_to_reference(
                 data=data,
@@ -182,6 +229,71 @@ def main() -> None:
                     viewer.sync()
                     time.sleep(0.05)
                 break
+
+
+def _render_animation_offscreen(
+    *,
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    mocap_handles: dict[str, int],
+    reference_position: torch.Tensor,
+    reference_quaternion_xyzw: torch.Tensor,
+    original_positions: torch.Tensor,
+    original_quaternions_xyzw: torch.Tensor,
+    reconstructed_positions: torch.Tensor,
+    reconstructed_quaternions_xyzw: torch.Tensor,
+    mode: str,
+    output_path: Path,
+    camera_height: int,
+    camera_width: int,
+    frame_duration_seconds: float,
+) -> None:
+    frames: list[np.ndarray] = []
+    camera = _build_offscreen_camera(
+        reference_position=reference_position,
+        original_positions=original_positions,
+        reconstructed_positions=reconstructed_positions,
+    )
+
+    try:
+        with mujoco.Renderer(model, height=camera_height, width=camera_width) as renderer:
+            _move_to_reference(
+                data=data,
+                mocap_handles=mocap_handles,
+                reference_position=reference_position,
+                reference_quaternion_xyzw=reference_quaternion_xyzw,
+            )
+            mujoco.mj_forward(model, data)
+            renderer.update_scene(data, camera=camera)
+            frames.append(renderer.render().copy())
+
+            step_count = len(original_positions)
+            for step_index in range(step_count):
+                if "animated_original" in mocap_handles and mode in {"original", "compare"}:
+                    _set_mocap_pose(
+                        data=data,
+                        mocap_index=mocap_handles["animated_original"],
+                        position=original_positions[step_index],
+                        quaternion_xyzw=original_quaternions_xyzw[step_index],
+                    )
+                if "animated_reconstructed" in mocap_handles and mode in {"reconstructed", "compare"}:
+                    _set_mocap_pose(
+                        data=data,
+                        mocap_index=mocap_handles["animated_reconstructed"],
+                        position=reconstructed_positions[step_index],
+                        quaternion_xyzw=reconstructed_quaternions_xyzw[step_index],
+                    )
+                mujoco.mj_forward(model, data)
+                renderer.update_scene(data, camera=camera)
+                frames.append(renderer.render().copy())
+    except mujoco.FatalError as exc:
+        raise RuntimeError(
+            "Offscreen rendering failed because MuJoCo could not create a headless OpenGL context. "
+            "On slurm/GPU nodes, try `MUJOCO_GL=egl uv run python ... --output ...`. "
+            "If EGL is unavailable, try `MUJOCO_GL=osmesa uv run python ... --output ...`."
+        ) from exc
+
+    _write_animation(output_path=output_path, frames=frames, frame_duration_seconds=frame_duration_seconds)
 
 
 def _load_original_target_pose(
@@ -333,6 +445,32 @@ def _build_scene_xml(
 """.strip()
 
 
+def _build_offscreen_camera(
+    *,
+    reference_position: torch.Tensor,
+    original_positions: torch.Tensor,
+    reconstructed_positions: torch.Tensor,
+) -> mujoco.MjvCamera:
+    all_positions = torch.cat(
+        [
+            reference_position.unsqueeze(0),
+            original_positions,
+            reconstructed_positions,
+        ],
+        dim=0,
+    )
+    center = all_positions.mean(dim=0)
+    radius = torch.linalg.vector_norm(all_positions - center.unsqueeze(0), dim=-1).max().item()
+
+    camera = mujoco.MjvCamera()
+    camera.type = mujoco.mjtCamera.mjCAMERA_FREE
+    camera.lookat[:] = center.detach().cpu().numpy()
+    camera.distance = max(radius * 3.2, 0.55)
+    camera.azimuth = 145.0
+    camera.elevation = -28.0
+    return camera
+
+
 def _build_trace_geoms(
     *,
     prefix: str,
@@ -422,6 +560,18 @@ def _trace_rgba(*, index: int, total: int, family: str) -> str:
     if family == "original":
         return f"0.10 {0.55 + 0.30 * (index / max(total - 1, 1)):.3f} 0.25 {alpha:.3f}"
     return f"0.95 {0.55 + 0.25 * (index / max(total - 1, 1)):.3f} 0.10 {alpha:.3f}"
+
+
+def _write_animation(*, output_path: Path, frames: list[np.ndarray], frame_duration_seconds: float) -> None:
+    suffix = output_path.suffix.lower()
+    if suffix == ".gif":
+        imageio.mimsave(output_path, frames, duration=frame_duration_seconds)
+        return
+    if suffix == ".mp4":
+        fps = max(int(round(1.0 / max(frame_duration_seconds, 1e-3))), 1)
+        imageio.mimwrite(output_path, frames, fps=fps, codec="libx264")
+        return
+    raise ValueError(f"Unsupported output format `{suffix}`. Use .gif or .mp4.")
 
 
 if __name__ == "__main__":

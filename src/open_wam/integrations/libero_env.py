@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import importlib
 import os
 from pathlib import Path
+import sys
 from typing import Any
 
 import numpy as np
@@ -448,15 +449,45 @@ def _project_root(project_root: Path | None) -> Path:
 
 
 def _resolve_libero_paths() -> tuple[Path, Path]:
-    """Resolve the installed LIBERO repo root and package root from Python imports."""
+    """Resolve the installed LIBERO repo root and package root from Python imports.
+
+    Upstream LIBERO uses an unusual nested package layout:
+    `<repo>/libero/libero/__init__.py`.
+    Some local installs therefore record distribution metadata without exposing
+    an importable `libero` package. When that happens, fall back to a checkout
+    path so the current uv environment can still import `libero.libero`.
+    """
 
     try:
         libero_pkg = importlib.import_module("libero.libero")
     except ModuleNotFoundError as exc:
-        raise ImportError(
-            "LIBERO is not installed in the active environment. Install the LIBERO package into the uv environment "
-            "instead of relying on an external checkout."
-        ) from exc
+        fallback_repo_roots: list[Path] = []
+
+        env_repo_root = os.environ.get("LIBERO_REPO_ROOT")
+        if env_repo_root:
+            fallback_repo_roots.append(Path(env_repo_root).expanduser())
+
+        project_root = _project_root(None)
+        fallback_repo_roots.append(project_root.parent / "LIBERO")
+
+        for repo_root in fallback_repo_roots:
+            package_root = repo_root / "libero" / "libero"
+            if not (package_root / "__init__.py").exists():
+                continue
+            repo_root_resolved = repo_root.resolve()
+            repo_root_str = str(repo_root_resolved)
+            if repo_root_str not in sys.path:
+                sys.path.insert(0, repo_root_str)
+            try:
+                libero_pkg = importlib.import_module("libero.libero")
+                break
+            except ModuleNotFoundError:
+                continue
+        else:
+            raise ImportError(
+                "LIBERO could not be imported. Either install an importable LIBERO package into the uv environment "
+                "or set LIBERO_REPO_ROOT to a checkout whose structure contains `libero/libero/__init__.py`."
+            ) from exc
 
     package_root = Path(libero_pkg.__file__).resolve().parent
     repo_root = package_root.parents[1]

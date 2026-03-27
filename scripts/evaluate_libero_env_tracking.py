@@ -71,7 +71,7 @@ def main() -> None:
         "--output",
         type=str,
         default="outputs/libero_tracking_compare.gif",
-        help="GIF output path for the side-by-side original vs env replay.",
+        help="Animation output path (.gif or .mp4) for the side-by-side original vs env replay.",
     )
     parser.add_argument(
         "--max-targets",
@@ -143,7 +143,7 @@ def main() -> None:
     )
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    imageio.mimsave(output_path, video_frames, duration=0.08)
+    _write_animation(output_path=output_path, frames=video_frames, frame_duration_seconds=0.08)
 
     print("task_text:", task_text)
     print("trajectory:", args.trajectory)
@@ -158,7 +158,7 @@ def main() -> None:
     print("max_rotation_error_deg:", float(tracking.rotation_error_deg_per_target.max()))
     print("mean_gripper_error:", float(tracking.gripper_error_per_target.mean()))
     print("max_gripper_error:", float(tracking.gripper_error_per_target.max()))
-    print("saved_gif:", str(output_path.resolve()))
+    print("saved_animation:", str(output_path.resolve()))
 
 
 def _load_public_trajectory(
@@ -324,6 +324,18 @@ def _canonicalize_env_pair(*, agentview, wrist) -> Image.Image:
     frame.paste(top, (0, 0))
     frame.paste(bottom, (0, 256))
     return frame
+
+
+def _write_animation(*, output_path: Path, frames: list[Image.Image], frame_duration_seconds: float) -> None:
+    suffix = output_path.suffix.lower()
+    if suffix == ".gif":
+        imageio.mimsave(output_path, frames, duration=frame_duration_seconds)
+        return
+    if suffix == ".mp4":
+        fps = max(int(round(1.0 / max(frame_duration_seconds, 1e-3))), 1)
+        imageio.mimwrite(output_path, frames, fps=fps, codec="libx264")
+        return
+    raise ValueError(f"Unsupported output format `{suffix}`. Use .gif or .mp4.")
 
 
 if __name__ == "__main__":
