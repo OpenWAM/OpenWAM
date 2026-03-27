@@ -88,7 +88,7 @@ def main() -> None:
             if first_chunk:
                 chunk = runner.infer_chunk(
                     session=session,
-                    views=_obs_list_to_views([first_obs], device=runtime_device),
+                    views=_obs_list_to_views([first_obs], config=config, device=runtime_device),
                 )
             else:
                 chunk = runner.infer_chunk(session=session)
@@ -195,7 +195,7 @@ def main() -> None:
 
             if first_chunk:
                 new_visual_outputs = runner.pipeline.prepare_visual_outputs(
-                    _obs_list_to_views(key_frame_list, device=runtime_device),
+                    _obs_list_to_views(key_frame_list, config=config, device=runtime_device),
                     task_text=(prompt,),
                     text_context=session.text_context,
                     negative_text_context=session.negative_text_context,
@@ -224,7 +224,7 @@ def main() -> None:
             else:
                 warmup = runner.warmup_cache(
                     session=session,
-                    views=_obs_list_to_views(key_frame_list, device=runtime_device),
+                    views=_obs_list_to_views(key_frame_list, config=config, device=runtime_device),
                     action_history=raw_actions_batched,
                     action_space="raw",
                 )
@@ -345,12 +345,29 @@ def _extract_obs(obs) -> dict[str, np.ndarray]:
 def _obs_list_to_views(
     obs_list: list[dict[str, np.ndarray]],
     *,
+    config,
     device: torch.device,
 ) -> dict[str, torch.Tensor]:
-    return {
-        "image": torch.from_numpy(np.stack([obs["image"] for obs in obs_list], axis=0)).to(device=device),
-        "wrist_image": torch.from_numpy(np.stack([obs["wrist_image"] for obs in obs_list], axis=0)).to(device=device),
+    alias_sources = {
+        "image": "image",
+        "agentview_image": "image",
+        "observation.images.agentview_rgb": "image",
+        "wrist_image": "wrist_image",
+        "robot0_eye_in_hand_image": "wrist_image",
+        "observation.images.eye_in_hand_rgb": "wrist_image",
     }
+    views: dict[str, torch.Tensor] = {}
+    for placement in config.data.view_layout:
+        source_key = alias_sources.get(placement.source_name)
+        if source_key is None:
+            raise KeyError(
+                f"Unsupported visualization camera key {placement.source_name!r}. "
+                "Add it to the alias map in _obs_list_to_views."
+            )
+        views[placement.source_name] = torch.from_numpy(
+            np.stack([obs[source_key] for obs in obs_list], axis=0)
+        ).to(device=device)
+    return views
 
 
 def _decode_imagined_video(runner, predicted_latent_chunks: list[torch.Tensor]) -> np.ndarray | None:
