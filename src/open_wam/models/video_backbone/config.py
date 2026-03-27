@@ -1,13 +1,31 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
+
+
+_IMPLEMENTATION_ALIASES: dict[str, str] = {
+    "shared_transformer": "shared_transformer",
+    "lingbot_replica": "shared_transformer",
+    "dummy": "dummy",
+}
+
+
+def normalize_backbone_implementation(name: str) -> str:
+    try:
+        return _IMPLEMENTATION_ALIASES[name]
+    except KeyError as exc:  # pragma: no cover - defensive config guard
+        raise ValueError(
+            f"Unsupported backbone implementation {name!r}. "
+            f"Expected one of {tuple(_IMPLEMENTATION_ALIASES)}."
+        ) from exc
 
 
 @dataclass(frozen=True)
-class LingbotCompatibleVideoBackboneConfig:
-    """Stage-1 config for the protected LingBot-compatible video backbone.
+class SharedVideoTransformerConfig:
+    """Config for the shared video-transformer backbone family.
 
-    The defaults preserve LingBot geometry:
+    The defaults preserve the protected reference geometry:
 
     - canonical RGB canvas: 384x320
     - latent spatial stride: 16
@@ -16,7 +34,7 @@ class LingbotCompatibleVideoBackboneConfig:
     - patch size: (1, 2, 2)
     - tokens per frame: 12 * 10 = 120
 
-    `hidden_size` matches LingBot by default but can be lowered for smoke tests.
+    `hidden_size` matches the reference model by default but can be lowered for smoke tests.
     """
 
     input_channels: int = 3
@@ -25,9 +43,9 @@ class LingbotCompatibleVideoBackboneConfig:
     patch_size_t: int = 1
     patch_size_h: int = 2
     patch_size_w: int = 2
-    # Default to the LingBot-style shared-core implementation so real variants
-    # run on the same backbone family unless a smoke-test config overrides it.
-    implementation: str = "lingbot_replica"
+    # Default to the shared transformer implementation so real variants run on
+    # the same backbone family unless a smoke-test config overrides it.
+    implementation: str = "shared_transformer"
     hidden_size: int = 3072
     num_layers: int = 1
     num_heads: int = 8
@@ -40,6 +58,8 @@ class LingbotCompatibleVideoBackboneConfig:
     rope_max_seq_len: int = 1024
     latent_norm_eps: float = 1e-6
     attn_mode: str = "torch"
+    train_attn_mode: str | None = None
+    infer_attn_mode: str | None = None
     pretrained_model_name_or_path: str | None = None
     transformer_subdir: str = "transformer"
     vae_subdir: str = "vae"
@@ -54,3 +74,25 @@ class LingbotCompatibleVideoBackboneConfig:
     reference_assets_device_policy: str = "runtime"
     # Optional override for the vendored LingBot reference model source file.
     reference_model_path: str | None = None
+
+
+LingbotCompatibleVideoBackboneConfig = SharedVideoTransformerConfig
+
+
+def resolve_stage_attention_mode(
+    config: SharedVideoTransformerConfig,
+    *,
+    stage: Literal["train", "infer"],
+    exact_runtime: bool = False,
+) -> str:
+    if stage == "train":
+        if config.train_attn_mode is not None:
+            return config.train_attn_mode
+        if exact_runtime:
+            # LingBot requires FlexAttention for exact training while keeping
+            # inference on torch/flash attention.
+            return "flex"
+        return config.attn_mode
+    if config.infer_attn_mode is not None:
+        return config.infer_attn_mode
+    return config.attn_mode

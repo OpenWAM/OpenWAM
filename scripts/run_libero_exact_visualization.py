@@ -27,7 +27,7 @@ from open_wam.integrations import (  # noqa: E402
     load_libero_task_init_states,
 )
 from open_wam.models.visual_tower.reference_loader import resolve_pretrained_component_dir  # noqa: E402
-from open_wam.pipelines import build_lingbot_exact_runner_from_config  # noqa: E402
+from open_wam.pipelines import build_exact_runtime_runner_from_config  # noqa: E402
 from open_wam.utils import load_experiment_config, seed_everywhere  # noqa: E402
 
 
@@ -57,7 +57,7 @@ def main() -> None:
     if not config_path.is_absolute():
         config_path = (REPO_ROOT / config_path).resolve()
     config = load_experiment_config(config_path)
-    runner = build_lingbot_exact_runner_from_config(config)
+    runner = build_exact_runtime_runner_from_config(config)
     runtime_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     component_report = _build_open_wam_component_report(config, runner)
     _print_log("load_report", component_report)
@@ -483,7 +483,7 @@ def _build_open_wam_component_report(config, runner) -> dict[str, object]:
         backbone.pretrained_model_name_or_path,
         backbone.tokenizer_subdir,
     )
-    transformer = runner.pipeline.visual_tower.get_lingbot_reference_transformer(
+    transformer = runner.pipeline.visual_tower.get_runtime_backbone(
         action_dim=config.action_decoder.action_dim
     )
     transformer_config = getattr(transformer, "config", None)
@@ -518,7 +518,8 @@ def _build_open_wam_component_report(config, runner) -> dict[str, object]:
         "action_decoder_trainable_params": _count_trainable_parameters(action_decoder),
         "policy_variant_class": policy_variant.__class__.__name__,
         "runtime_mode": getattr(policy_variant.config, "runtime_mode", None),
-        "exact_inference_uses_reference_transformer_only": True,
+        "exact_inference_uses_reference_transformer_only": False,
+        "exact_inference_uses_shared_transformer_backbone": True,
         "visual_tower_decoder_bypassed_in_exact_mode": True,
         "exact_action_adapter_enabled": adapter_spec is not None,
         "exact_action_adapter_profile": getattr(config.policy_variant, "reference_profile", None),

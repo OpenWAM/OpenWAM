@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import torch
 
-from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
+from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 
 from .reference_transformer import build_reference_transformer
 
@@ -34,7 +34,7 @@ def _copy_if_present(
 def load_reference_weights_into_replica_core(
     replica_core: torch.nn.Module,
     *,
-    backbone_config: LingbotCompatibleVideoBackboneConfig,
+    backbone_config: SharedVideoTransformerConfig,
     action_dim: int,
 ) -> ReferenceCoreLoadReport:
     reference_transformer = build_reference_transformer(backbone_config, action_dim=action_dim)
@@ -45,6 +45,14 @@ def load_reference_weights_into_replica_core(
 
     direct_pairs = [
         ("scale_shift_table", "scale_shift_table"),
+        ("patch_embedding_mlp.weight", "patch_embedding_mlp.weight"),
+        ("patch_embedding_mlp.bias", "patch_embedding_mlp.bias"),
+        ("action_embedder.weight", "action_embedder.weight"),
+        ("action_embedder.bias", "action_embedder.bias"),
+        ("proj_out.weight", "proj_out.weight"),
+        ("proj_out.bias", "proj_out.bias"),
+        ("action_proj_out.weight", "action_proj_out.weight"),
+        ("action_proj_out.bias", "action_proj_out.bias"),
         ("time_conditioner.time_embedder.linear_1.weight", "condition_embedder.time_embedder.linear_1.weight"),
         ("time_conditioner.time_embedder.linear_1.bias", "condition_embedder.time_embedder.linear_1.bias"),
         ("time_conditioner.time_embedder.linear_2.weight", "condition_embedder.time_embedder.linear_2.weight"),

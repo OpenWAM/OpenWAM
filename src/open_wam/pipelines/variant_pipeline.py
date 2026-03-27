@@ -106,6 +106,32 @@ class VariantPipeline(nn.Module):
             decode_output = self.visual_tower.run_decode(frontend_output, core_output)
         return VisualStageOutputs(frontend=frontend_output, core=core_output, decode=decode_output)
 
+    def resolve_train_decoder_output(
+        self,
+        policy_output: PolicyTrainOutput,
+        train_batch: PolicyTrainBatch,
+    ) -> ActionDecoderTrainOutput:
+        # Joint variants may compute their own train loss/predictions inside the
+        # policy variant and expose them through `policy_output.aux`. Simpler
+        # variants still rely on the shared action decoder. Centralizing that
+        # choice here keeps the pipeline behavior uniform.
+        direct_decoder_output = policy_output.aux.get("decoder_output")
+        if isinstance(direct_decoder_output, ActionDecoderTrainOutput):
+            return direct_decoder_output
+        return self.action_decoder.forward_train(policy_output, train_batch)
+
+    def resolve_infer_decoder_output(
+        self,
+        policy_output: PolicyInferOutput,
+    ) -> ActionDecoderInferOutput:
+        # The infer-side rule mirrors the train-side rule above: variants may
+        # either return a complete decoder output directly or only provide
+        # policy features for the shared decoder.
+        direct_decoder_output = policy_output.aux.get("decoder_output")
+        if isinstance(direct_decoder_output, ActionDecoderInferOutput):
+            return direct_decoder_output
+        return self.action_decoder.forward_infer(policy_output)
+
     def forward_train(
         self,
         views: Mapping[str, torch.Tensor],
@@ -121,11 +147,7 @@ class VariantPipeline(nn.Module):
             visual_outputs=visual_outputs,
             prepared_inputs=prepared_inputs,
         )
-        direct_decoder_output = policy_output.aux.get("decoder_output")
-        if isinstance(direct_decoder_output, ActionDecoderTrainOutput):
-            decoder_output = direct_decoder_output
-        else:
-            decoder_output = self.action_decoder.forward_train(policy_output, prepared_inputs.batch)
+        decoder_output = self.resolve_train_decoder_output(policy_output, prepared_inputs.batch)
         return VariantPipelineTrainOutput(
             visual_outputs=visual_outputs,
             policy_output=policy_output,
@@ -142,6 +164,23 @@ class VariantPipeline(nn.Module):
             views,
             task_text=context.extra.get("task_text"),
         )
+        return self._forward_infer_with_visual_outputs(
+            visual_outputs,
+            context=context,
+            infer_state=infer_state,
+        )
+
+    def _forward_infer_with_visual_outputs(
+        self,
+        visual_outputs: VisualStageOutputs,
+        *,
+        context: PolicyInferContext,
+        infer_state: PolicyInferState | None = None,
+    ) -> VariantPipelineInferOutput:
+        # Views and latents should share the exact same policy/decode
+        # orchestration once `VisualStageOutputs` already exist. Keep this
+        # helper as the single infer-side execution body so rollout behavior
+        # does not drift between RGB-driven and latent-driven evaluation paths.
         resolved_state = self.policy_variant.prepare_infer_state(
             visual_tower=self.visual_tower,
             visual_outputs=visual_outputs,
@@ -154,11 +193,7 @@ class VariantPipeline(nn.Module):
             context=context,
             infer_state=resolved_state,
         )
-        direct_decoder_output = policy_output.aux.get("decoder_output")
-        if isinstance(direct_decoder_output, ActionDecoderInferOutput):
-            decoder_output = direct_decoder_output
-        else:
-            decoder_output = self.action_decoder.forward_infer(policy_output)
+        decoder_output = self.resolve_infer_decoder_output(policy_output)
         return VariantPipelineInferOutput(
             visual_outputs=visual_outputs,
             policy_output=policy_output,
@@ -190,25 +225,8 @@ class VariantPipeline(nn.Module):
             negative_text_context=negative_text_context,
             canonical_video=canonical_video,
         )
-        resolved_state = self.policy_variant.prepare_infer_state(
-            visual_tower=self.visual_tower,
-            visual_outputs=visual_outputs,
+        return self._forward_infer_with_visual_outputs(
+            visual_outputs,
             context=context,
-            previous_state=infer_state,
-        )
-        policy_output = self.policy_variant.forward_infer_step(
-            visual_tower=self.visual_tower,
-            visual_outputs=visual_outputs,
-            context=context,
-            infer_state=resolved_state,
-        )
-        direct_decoder_output = policy_output.aux.get("decoder_output")
-        if isinstance(direct_decoder_output, ActionDecoderInferOutput):
-            decoder_output = direct_decoder_output
-        else:
-            decoder_output = self.action_decoder.forward_infer(policy_output)
-        return VariantPipelineInferOutput(
-            visual_outputs=visual_outputs,
-            policy_output=policy_output,
-            decoder_output=decoder_output,
+            infer_state=infer_state,
         )

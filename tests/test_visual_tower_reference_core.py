@@ -4,7 +4,7 @@ from pathlib import Path
 
 import torch
 
-from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
+from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.visual_tower import VisualCoreInput, VisualTower
 from open_wam.models.visual_tower.reference_loader import load_wan_transformer_class
 
@@ -12,8 +12,8 @@ from reference_model_test_utils import reference_model_path_or_skip
 
 
 def test_visual_tower_can_initialize_replica_core_from_reference_weights(tmp_path: Path) -> None:
-    backbone_config = LingbotCompatibleVideoBackboneConfig(
-        implementation="lingbot_replica",
+    backbone_config = SharedVideoTransformerConfig(
+        implementation="shared_transformer",
         hidden_size=32,
         num_layers=2,
         num_heads=4,
@@ -60,6 +60,14 @@ def test_visual_tower_can_initialize_replica_core_from_reference_weights(tmp_pat
         tower.core.blocks[0].attn1.to_q.weight,
         reference_model.state_dict()["blocks.0.attn1.to_q.weight"],
     )
+    assert torch.equal(
+        tower.core.patch_embedding_mlp.weight,
+        reference_model.state_dict()["patch_embedding_mlp.weight"],
+    )
+    assert torch.equal(
+        tower.core.action_proj_out.weight,
+        reference_model.state_dict()["action_proj_out.weight"],
+    )
 
     output = tower.run_core(
         VisualCoreInput(
@@ -68,5 +76,5 @@ def test_visual_tower_can_initialize_replica_core_from_reference_weights(tmp_pat
             timestep_values=torch.zeros(2, 12, dtype=torch.float32),
         )
     )
-    assert output.aux["weight_source"] == "lingbot_reference_init"
+    assert output.aux["weight_source"] == "reference_initialized"
     assert output.aux["used_action_conditioner"] is True

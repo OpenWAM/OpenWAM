@@ -6,14 +6,13 @@ from open_wam.configs import InferenceConfig, PostDecodedPolicyConfig, TrainingC
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
 from .base import PolicyVariant
+from .common import advance_default_runtime_infer_state, prepare_default_runtime_infer_state
 from .common.layouts import align_sequence_length
-from .common.rollout import advance_rollout_cursor
 from .contracts import (
     PolicyInferContext,
     PolicyInferOutput,
     PolicyInferState,
     PolicyPreparedInputs,
-    RolloutCursor,
     PolicyTrainBatch,
     PolicyTrainOutput,
 )
@@ -94,18 +93,11 @@ class PostDecodedPolicyVariant(PolicyVariant):
         previous_state: PolicyInferState | None = None,
     ) -> PolicyInferState:
         del visual_outputs, context
-        if previous_state is None:
-            cursor = RolloutCursor()
-            return PolicyInferState(
-                step_index=0,
-                cache=visual_tower.resolve_runtime_cache_state(
-                    None,
-                    cursor=cursor,
-                    stage="post_decoded",
-                ),
-                cursor=cursor,
-            )
-        return previous_state
+        return prepare_default_runtime_infer_state(
+            visual_tower,
+            previous_state=previous_state,
+            stage="post_decoded",
+        )
 
     def forward_infer_step(
         self,
@@ -116,20 +108,12 @@ class PostDecodedPolicyVariant(PolicyVariant):
     ) -> PolicyInferOutput:
         policy_features = self._extract_policy_features(visual_outputs)
         policy_features = self._fuse_state(policy_features, context.state)
-        next_cursor = advance_rollout_cursor(infer_state.cursor)
         return PolicyInferOutput(
             policy_features=policy_features,
-            next_state=PolicyInferState(
-                step_index=infer_state.step_index + 1,
-                cursor=next_cursor,
-                cache=visual_tower.advance_runtime_cache_state(
-                    visual_tower.resolve_runtime_cache_state(
-                        infer_state.cache,
-                        cursor=infer_state.cursor,
-                        stage="post_decoded",
-                    ),
-                    next_cursor=next_cursor,
-                ),
+            next_state=advance_default_runtime_infer_state(
+                visual_tower,
+                infer_state=infer_state,
+                stage="post_decoded",
             ),
             aux={"variant": self.config.name},
         )

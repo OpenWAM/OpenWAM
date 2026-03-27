@@ -5,7 +5,7 @@ from typing import Any
 
 import torch
 
-from open_wam.models.common import RegisterSequenceLayout
+from open_wam.models.common import PreparedAttentionProfile, RegisterSequenceLayout
 from open_wam.models.video_backbone.contracts import (
     CacheState,
     CacheUpdateMetadata,
@@ -73,6 +73,85 @@ class RegisterSequenceSemantics:
     state_register_tokens: int
     current_start_frame: int
     teacher_forcing: bool
+    structured_block_mode: str = "none"
+    structured_time_layout: str = "generic"
+    structured_frequency_mode: str = "shared_rotary_only"
+    structured_teacher_forcing_layout: str = "none"
+    structured_attention_kernel: str = "mask_only"
+    structured_cache_kernel: str = "prefix_mask_only"
+
+
+@dataclass(frozen=True)
+class StructuredFrequencyBundle:
+    """Explicit per-stream frequency inputs for structured block runtimes."""
+
+    layout: str
+    clean_prefix_grid_ids: torch.Tensor | None = None
+    video_grid_ids: torch.Tensor | None = None
+    action_grid_ids: torch.Tensor | None = None
+    state_grid_ids: torch.Tensor | None = None
+    shared_grid_ids: torch.Tensor | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class StructuredBlockSemantics:
+    """Explicit block-facing structured runtime semantics."""
+
+    mode: str
+    teacher_forcing_enabled: bool
+    clean_prefix_span: tuple[int, int]
+    video_span: tuple[int, int]
+    action_span: tuple[int, int]
+    state_span: tuple[int, int]
+    clean_prefix_length: int
+    video_token_length: int
+    action_register_length: int
+    state_register_length: int
+    current_start_frame: int
+    observed_prefix_frames: int
+    time_layout: str
+    position_layout: str
+    frequency_mode: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class StructuredAttentionContext:
+    """Unified block-facing context for structured attention runtimes."""
+
+    mode: str
+    teacher_forcing_enabled: bool
+    clean_prefix_length: int
+    video_token_length: int
+    action_register_length: int
+    state_register_length: int
+    current_start_frame: int
+    observed_prefix_frames: int
+    num_frame_per_block: int
+    num_action_per_block: int
+    num_state_per_block: int
+    num_video_blocks: int
+    num_action_blocks: int
+    num_state_blocks: int
+    tokens_per_frame: int
+    tokens_per_video_block: int
+    frequency_mode: str
+    attention_kernel: str = "mask_only"
+    cache_kernel: str = "prefix_mask_only"
+    rollout_phase: str = "teacher_forcing"
+    action_state_index: int = 0
+    cached_video_tokens: int = 0
+    cached_segment_lengths: tuple[int, ...] = field(default_factory=tuple)
+    clean_prefix_grid_ids: torch.Tensor | None = None
+    video_grid_ids: torch.Tensor | None = None
+    action_grid_ids: torch.Tensor | None = None
+    state_grid_ids: torch.Tensor | None = None
+    clean_prefix_freqs: torch.Tensor | None = None
+    video_freqs: torch.Tensor | None = None
+    action_freqs: torch.Tensor | None = None
+    state_freqs: torch.Tensor | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -105,11 +184,15 @@ class VisualCoreInput:
     stream_ids: torch.Tensor | None = None
     text_context: torch.Tensor | None = None
     attention_mask: torch.Tensor | None = None
+    attention_profile: PreparedAttentionProfile | None = None
     cache_state: CacheState | None = None
     cache_update_metadata: CacheUpdateMetadata | None = None
     conditioning: ConditioningState | None = None
     sequence_metadata: VisualSequenceMetadata | None = None
     register_components: RegisterSequenceComponents | None = None
+    structured_block_semantics: StructuredBlockSemantics | None = None
+    structured_frequency_bundle: StructuredFrequencyBundle | None = None
+    structured_attention_context: StructuredAttentionContext | None = None
 
 
 @dataclass

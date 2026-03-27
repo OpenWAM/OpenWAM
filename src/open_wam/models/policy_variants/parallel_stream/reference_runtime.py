@@ -12,7 +12,12 @@ from einops import rearrange
 from open_wam.configs.inference import InferenceConfig
 from open_wam.configs.policy_variant import ParallelStreamPolicyConfig
 from open_wam.configs.training import TrainingConfig
-from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
+from open_wam.models.video_backbone.config import SharedVideoTransformerConfig, resolve_stage_attention_mode
+from open_wam.models.visual_tower import (
+    RuntimeStepInput,
+    build_chunked_dual_stream_exact_train_program,
+    build_single_stream_exact_runtime_program,
+)
 from open_wam.models.visual_tower.reference_transformer import preferred_reference_dtype
 
 
@@ -233,8 +238,8 @@ def _add_noise(
     if action_mode:
         patch_f = patch_h = patch_w = 1
 
-    # Grid ids stay flattened to match the reference transformer input after
-    # patchification:
+    # Grid ids stay flattened to match the shared exact-runtime backbone input
+    # after patchification:
     # - video: `[B, 4, T_video]` where `T_video = F/p_t * H/p_h * W/p_w`
     # - action: `[B, 4, T_action]` where `T_action = F * action_per_frame`
     latent_grid_id = get_mesh_id(
@@ -279,7 +284,7 @@ def _add_noise(
 
 def prepare_parallel_exact_train_artifacts(
     *,
-    backbone_config: LingbotCompatibleVideoBackboneConfig,
+    backbone_config: SharedVideoTransformerConfig,
     policy_config: ParallelStreamPolicyConfig,
     training_config: TrainingConfig,
     video_latents: torch.Tensor,
@@ -288,10 +293,11 @@ def prepare_parallel_exact_train_artifacts(
     text_emb: torch.Tensor | None,
 ) -> LingbotParallelTrainArtifacts:
     batch_size, _, num_frames, _, _ = video_latents.shape
+    train_attn_mode = resolve_stage_attention_mode(backbone_config, stage="train", exact_runtime=True)
     # Exact parallel-stream training keeps video and action in the same frame
     # count. Actions are reshaped from `[B, F * A, D]` into
-    # `[B, D, F, A, 1]` so the reference transformer can treat them like a
-    # narrow latent volume with one "width" slot per action token.
+    # `[B, D, F, A, 1]` so the shared exact-runtime backbone can treat them
+    # like a narrow latent volume with one "width" slot per action token.
     action_latents = rearrange(
         actions,
         "b (f a) c -> b c f a 1",
@@ -375,6 +381,7 @@ def prepare_parallel_exact_train_artifacts(
             "action_dict": action_dict,
             "chunk_size": sampled_chunk_size,
             "window_size": sampled_window_size,
+            "attention_profile_name": "chunked_temporal_exact" if train_attn_mode == "flex" else None,
         },
         latent_scheduler=latent_scheduler,
         action_scheduler=action_scheduler,
@@ -385,7 +392,7 @@ def ensure_reference_text_embeddings(
     text_emb: torch.Tensor | None,
     *,
     batch_size: int,
-    backbone_config: LingbotCompatibleVideoBackboneConfig,
+    backbone_config: SharedVideoTransformerConfig,
     device: torch.device,
     dtype: torch.dtype,
 ) -> torch.Tensor:
@@ -406,7 +413,7 @@ def prepare_reference_single_stream_input(
     timestep: torch.Tensor | float,
     text_emb: torch.Tensor,
     frame_st_id: int,
-    backbone_config: LingbotCompatibleVideoBackboneConfig,
+    backbone_config: SharedVideoTransformerConfig,
     action_mode: bool,
     cond: torch.Tensor | None = None,
     action_channel_mask: torch.Tensor | None = None,
@@ -512,12 +519,26 @@ def run_reference_single_stream_forward(
         effective_input = repeat_input_for_cfg(input_dict, negative_text_emb=negative_text_emb)
     effective_input = prepare_reference_forward_input(effective_input, transformer=transformer)
     with torch.inference_mode():
-        output = transformer(
-            effective_input,
-            update_cache=update_cache,
-            cache_name=cache_name,
-            action_mode=action_mode,
-        )
+        if hasattr(transformer, "execute_runtime_step"):
+            step_output = transformer.execute_runtime_step(
+                RuntimeStepInput(
+                    program=build_single_stream_exact_runtime_program(),
+                    payload=effective_input,
+                    update_cache=update_cache,
+                    cache_name=cache_name,
+                    action_mode=action_mode,
+                )
+            )
+            output = step_output.tokens
+        else:
+            output = transformer(
+                effective_input,
+                update_cache=update_cache,
+                cache_name=cache_name,
+                action_mode=action_mode,
+            )
+    if output is None:
+        raise ValueError("Exact single-stream runtime execution did not return token predictions.")
     if use_cfg and combine_cfg:
         cond_output = output[:batch_size]
         uncond_output = output[batch_size:]
@@ -537,28 +558,45 @@ def initialize_reference_cache(
     device: torch.device,
     action_per_frame: int,
     use_cfg: bool,
+    cache_backend_name: str = "slot_pool_exact",
 ) -> None:
     batch_size = batch_size * (2 if use_cfg else 1)
     latent_token_per_chunk = (
         frame_chunk_size * latent_height * latent_width
     ) // math.prod(transformer.patch_size)
     action_token_per_chunk = frame_chunk_size * action_per_frame
-    transformer.clear_cache(cache_name)
-    transformer.create_empty_cache(
-        cache_name,
-        attn_window,
-        latent_token_per_chunk,
-        action_token_per_chunk,
-        device=device,
-        dtype=reference_runtime_dtype(transformer),
-        batch_size=batch_size,
-    )
+    if hasattr(transformer, "clear_runtime_cache_state"):
+        transformer.clear_runtime_cache_state(cache_name)
+    else:
+        transformer.clear_cache(cache_name)
+    if hasattr(transformer, "initialize_runtime_cache_backend"):
+        transformer.initialize_runtime_cache_backend(
+            cache_name,
+            attn_window=attn_window,
+            latent_token_per_chunk=latent_token_per_chunk,
+            action_token_per_chunk=action_token_per_chunk,
+            device=device,
+            dtype=reference_runtime_dtype(transformer),
+            batch_size=batch_size,
+            backend_name=cache_backend_name,
+        )
+    else:
+        transformer.create_empty_cache(
+            cache_name,
+            attn_window,
+            latent_token_per_chunk,
+            action_token_per_chunk,
+            device=device,
+            dtype=reference_runtime_dtype(transformer),
+            batch_size=batch_size,
+            backend_name=cache_backend_name,
+        )
 
 
 def run_parallel_exact_cache_warmup(
     *,
     transformer: torch.nn.Module,
-    backbone_config: LingbotCompatibleVideoBackboneConfig,
+    backbone_config: SharedVideoTransformerConfig,
     policy_config: ParallelStreamPolicyConfig,
     inference_config: InferenceConfig,
     observed_video_latents: torch.Tensor,
@@ -595,6 +633,7 @@ def run_parallel_exact_cache_warmup(
     elif use_cfg:
         negative_text_emb = torch.zeros_like(text_emb)
     cache_name = str(infer_cache.get("cache_name", "open_wam_exact"))
+    cache_backend_name = str(infer_cache.get("cache_backend_name", "slot_pool_exact"))
     current_frame_start = int(infer_cache.get("frame_start", 0))
     cache_initialized = bool(infer_cache.get("cache_initialized", False))
     cached_batch_size = int(infer_cache.get("batch_size", batch_size))
@@ -618,12 +657,16 @@ def run_parallel_exact_cache_warmup(
             device=device,
             action_per_frame=policy_config.action_per_frame,
             use_cfg=use_cfg,
+            cache_backend_name=cache_backend_name,
         )
         cache_initialized = True
         current_frame_start = 0
 
     if inference_config.use_cache:
-        transformer.clear_pred_cache(cache_name)
+        if hasattr(transformer, "clear_runtime_prediction_cache"):
+            transformer.clear_runtime_prediction_cache(cache_name)
+        else:
+            transformer.clear_pred_cache(cache_name)
 
     # Warmup pushes already-observed history into the transformer cache without
     # denoising it. Both streams therefore use timestep `0.0`, and the
@@ -670,6 +713,7 @@ def run_parallel_exact_cache_warmup(
     )
     debug = {
         "cache_name": cache_name,
+        "cache_backend_name": cache_backend_name,
         "use_cfg": use_cfg,
         "batch_size": batch_size,
         "observed_frames": observed_frames,
@@ -679,6 +723,7 @@ def run_parallel_exact_cache_warmup(
     return {
         "runtime_mode": "lingbot_exact",
         "cache_name": cache_name,
+        "cache_backend_name": cache_backend_name,
         "cache_initialized": cache_initialized and inference_config.use_cache,
         "frame_start": current_frame_start + observed_frames,
         "latent_height": latent_height,
@@ -693,7 +738,7 @@ def run_parallel_exact_cache_warmup(
 def run_parallel_exact_inference_rollout(
     *,
     transformer: torch.nn.Module,
-    backbone_config: LingbotCompatibleVideoBackboneConfig,
+    backbone_config: SharedVideoTransformerConfig,
     policy_config: ParallelStreamPolicyConfig,
     training_config: TrainingConfig,
     inference_config: InferenceConfig,
@@ -744,6 +789,7 @@ def run_parallel_exact_inference_rollout(
     elif use_cfg:
         negative_text_emb = torch.zeros_like(text_emb)
     cache_name = str(infer_cache.get("cache_name", "open_wam_exact"))
+    cache_backend_name = str(infer_cache.get("cache_backend_name", "slot_pool_exact"))
     current_frame_start = int(infer_cache.get("frame_start", 0))
     cache_initialized = bool(infer_cache.get("cache_initialized", False))
     if inference_config.use_cache and not cache_initialized:
@@ -760,6 +806,7 @@ def run_parallel_exact_inference_rollout(
             device=device,
             action_per_frame=policy_config.action_per_frame,
             use_cfg=use_cfg,
+            cache_backend_name=cache_backend_name,
         )
         cache_initialized = True
     generation_frame_start = current_frame_start
@@ -895,6 +942,7 @@ def run_parallel_exact_inference_rollout(
     next_cache = {
         "runtime_mode": "lingbot_exact",
         "cache_name": cache_name,
+        "cache_backend_name": cache_backend_name,
         "cache_initialized": cache_initialized and inference_config.use_cache,
         "frame_start": int(
             current_frame_start + inference_config.frame_chunk_size if advance_frame_start else current_frame_start
@@ -907,6 +955,7 @@ def run_parallel_exact_inference_rollout(
     }
     debug = {
         "cache_name": cache_name,
+        "cache_backend_name": cache_backend_name,
         "use_cfg": use_cfg,
         "generation_frame_start": generation_frame_start,
         "advance_frame_start": advance_frame_start,
@@ -929,6 +978,29 @@ def run_parallel_exact_train(
     transformer: torch.nn.Module,
     input_dict: dict[str, torch.Tensor | dict[str, torch.Tensor]],
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    if hasattr(transformer, "execute_runtime_step"):
+        step_output = transformer.execute_runtime_step(
+            RuntimeStepInput(
+                program=build_chunked_dual_stream_exact_train_program(
+                    attention_profile_name=input_dict.get("attention_profile_name"),  # type: ignore[arg-type]
+                    cache_backend_name="slot_pool_exact",
+                ),
+                payload=input_dict,
+                train_mode=True,
+            )
+        )
+        try:
+            return (
+                step_output.projected_outputs["video_prediction"],
+                step_output.projected_outputs["action_prediction"],
+            )
+        except KeyError as exc:
+            raise ValueError("Exact dual-stream runtime step did not return both video/action predictions.") from exc
+
+    forward_train = getattr(transformer, "forward_train", None)
+    if callable(forward_train):
+        return forward_train(input_dict)
+
     latent_dict = input_dict["latent_dict"]
     action_dict = input_dict["action_dict"]
     model_dtype = reference_runtime_dtype(transformer)

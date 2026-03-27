@@ -6,15 +6,18 @@ import torch
 
 from open_wam.configs import RegisterAttachedPolicyConfig
 from open_wam.models.common import RegisterSequenceLayout, build_register_sequence_layout
-from open_wam.models.policy_variants.common.timesteps import build_token_timestep_context
 from open_wam.models.video_backbone.contracts import CacheState, CacheUpdateMetadata, ConditioningState
 from open_wam.models.visual_tower import (
     RegisterSequenceComponents,
     RegisterSequenceSemantics,
+    StructuredBlockSemantics,
+    StructuredFrequencyBundle,
+    RuntimeStepInput,
     VisualCoreInput,
     VisualSequenceMetadata,
     VisualStageOutputs,
     VisualTower,
+    build_register_sequence_runtime_program,
 )
 
 
@@ -24,6 +27,7 @@ class RegisterCoreRuntimeResult:
 
     video_hidden: torch.Tensor
     action_hidden: torch.Tensor
+    projected_outputs: dict[str, torch.Tensor]
     layout: RegisterSequenceLayout
     cache_state: CacheState
     aux: dict[str, object]
@@ -40,6 +44,17 @@ class RegisterRuntimeSpec:
     num_action_per_block: int
     num_state_per_block: int
     variant_name: str
+    structured_block_mode: str
+    structured_time_layout: str
+    structured_frequency_mode: str
+    structured_teacher_forcing_layout: str
+    structured_attention_kernel: str
+    structured_cache_kernel: str
+    stream_input_adapter_family: str
+    stream_output_head_family: str
+    use_state_encoder: bool
+    action_encoder_type: str
+    state_encoder_type: str
 
 
 class RegisterAttachedRuntime:
@@ -148,9 +163,6 @@ class RegisterAttachedRuntime:
         noisy_video_tokens: torch.Tensor,
         action_inputs: torch.Tensor,
         state_inputs: torch.Tensor,
-        action_encoder,
-        state_encoder,
-        register_role_embedding,
         video_timesteps: torch.Tensor,
         action_timesteps: torch.Tensor,
         current_start_frame: int,
@@ -160,6 +172,11 @@ class RegisterAttachedRuntime:
         include_register_tokens: bool = True,
         cache_reference_token_span: tuple[int, int] | None = None,
     ) -> RegisterCoreRuntimeResult:
+        # Method 2 describes its structured sequence in terms of semantic
+        # components here, then delegates actual materialization/execution to
+        # the shared runtime program. The variant should stay at the level of
+        # layout, cache policy, and scheduler behavior rather than owning token
+        # encoders or flow heads directly.
         layout = self.build_layout(
             visual_outputs,
             include_clean_video_prefix=clean_video_prefix_tokens is not None,
@@ -168,14 +185,19 @@ class RegisterAttachedRuntime:
         batch_size = noisy_video_tokens.shape[0]
 
         if include_register_tokens:
-            action_hidden = action_encoder(action_inputs)
-            action_hidden = action_hidden + build_token_timestep_context(action_timesteps, self.spec.hidden_size)
-            action_hidden = action_hidden + register_role_embedding.weight[0][None, None, :]
-
-            state_hidden = state_encoder(state_inputs)
             state_timesteps = self.build_state_timestep_values(action_timesteps)
-            state_hidden = state_hidden + build_token_timestep_context(state_timesteps, self.spec.hidden_size)
-            state_hidden = state_hidden + register_role_embedding.weight[1][None, None, :]
+            prepared_streams = visual_tower.prepare_runtime_stream_inputs(
+                family=self.spec.stream_input_adapter_family,
+                action_inputs=action_inputs,
+                state_inputs=state_inputs,
+                action_timesteps=action_timesteps,
+                state_timesteps=state_timesteps,
+                action_adapter_name=self.spec.action_encoder_type,
+                state_adapter_name=self.spec.state_encoder_type,
+                use_state_adapter=self.spec.use_state_encoder,
+            )
+            action_hidden = prepared_streams["action_register"].tokens
+            state_hidden = prepared_streams["state_register"].tokens
         else:
             action_hidden = noisy_video_tokens.new_zeros((batch_size, 0, self.spec.hidden_size))
             state_hidden = noisy_video_tokens.new_zeros((batch_size, 0, self.spec.hidden_size))
@@ -184,8 +206,17 @@ class RegisterAttachedRuntime:
         cache_reference_start, cache_reference_end = (
             cache_reference_token_span if cache_reference_token_span is not None else layout.noisy_video_span
         )
-        core_output = visual_tower.run_core(
-            VisualCoreInput(
+        step_output = visual_tower.execute_runtime_step(
+            RuntimeStepInput(
+                program=build_register_sequence_runtime_program(
+                    input_adapter_family=self.spec.stream_input_adapter_family,
+                    output_head_family=self.spec.stream_output_head_family,
+                    structured_cache_kernel=self.spec.structured_cache_kernel,
+                ),
+                # `VisualCoreInput` here is intentionally high level: it carries
+                # raw noisy/clean stream components plus structured semantics,
+                # and the shared sequence adapter/core own the actual packing.
+                core_input=VisualCoreInput(
                 tokens=None,
                 token_layout=layout,
                 position_context=None,
@@ -239,10 +270,20 @@ class RegisterAttachedRuntime:
                         state_register_tokens=state_hidden.shape[1],
                         current_start_frame=current_start_frame,
                         teacher_forcing=clean_video_prefix_tokens is not None,
+                        structured_block_mode=self.spec.structured_block_mode,
+                        structured_time_layout=self.spec.structured_time_layout,
+                        structured_frequency_mode=self.spec.structured_frequency_mode,
+                        structured_teacher_forcing_layout=self.spec.structured_teacher_forcing_layout,
+                        structured_attention_kernel=self.spec.structured_attention_kernel,
+                        structured_cache_kernel=self.spec.structured_cache_kernel,
                     ),
+                ),
                 ),
             )
         )
+        if step_output.core_output is None:
+            raise ValueError("Register sequence runtime execution did not return a `core_output`.")
+        core_output = step_output.core_output
         noisy_video_start, noisy_video_end = layout.noisy_video_span
         if layout.action_block_spans:
             action_start = layout.action_block_spans[0][0]
@@ -253,7 +294,8 @@ class RegisterAttachedRuntime:
         return RegisterCoreRuntimeResult(
             video_hidden=core_output.tokens[:, noisy_video_start:noisy_video_end, :],
             action_hidden=action_hidden,
+            projected_outputs=dict(step_output.projected_outputs),
             layout=layout,
             cache_state=core_output.cache_state,
-            aux=dict(core_output.aux),
+            aux={**core_output.aux, **step_output.aux},
         )

@@ -95,7 +95,11 @@ def load_lingbot_exact_artifact_bundle(path: str | Path) -> LingbotExactArtifact
 
 
 class LingbotExactRunner:
-    """Reset / cache-warmup / generate lifecycle for the exact LingBot parallel-stream runtime."""
+    """Reset / cache-warmup / generate lifecycle for the exact method-1 runtime.
+
+    The runner preserves LingBot's serving contract, but the transformer it
+    drives is the shared local backbone owned by `VisualTower`.
+    """
 
     def __init__(self, pipeline: VariantPipeline) -> None:
         self.pipeline = pipeline
@@ -140,6 +144,9 @@ class LingbotExactRunner:
         negative_text_context: torch.Tensor | None = None,
         action_space: str = "auto",
     ) -> LingbotExactWarmupOutput:
+        # Warmup uses the same shared frontend/runtime owner as the normal
+        # pipeline path, while preserving the exact slot-pool cache lifecycle
+        # needed by staged method-1 rollout.
         visual_outputs = self._prepare_visual_outputs(
             session=session,
             views=views,
@@ -207,7 +214,7 @@ class LingbotExactRunner:
             negative_text_context=resolved_negative_text_context,
             advance_frame_start=advance_frame_start,
         )
-        decoder_output = self.pipeline.action_decoder.forward_infer(policy_output)
+        decoder_output = self.pipeline.resolve_infer_decoder_output(policy_output)
         next_session = LingbotExactSession(
             policy_state=policy_output.next_state,
             task_text=self._resolve_task_text(session, task_text),

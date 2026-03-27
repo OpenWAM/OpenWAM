@@ -28,6 +28,8 @@ class RuntimeGuidanceConfig:
     action_guidance_scale: float
     video_mode: str
     action_mode: str
+    conditioned_cache_branch: str = "conditioned"
+    unconditioned_cache_branch: str = "unconditioned"
 
 
 @dataclass(frozen=True)
@@ -219,6 +221,28 @@ def _resolve_stream_cfg_prediction(
     if mode == "unconditioned":
         return unconditioned_prediction
     raise ValueError(f"Unsupported per-stream CFG mode {mode!r}.")
+
+
+def resolve_runtime_cache_branches(
+    guidance: RuntimeGuidanceConfig,
+) -> tuple[str, ...]:
+    """Return the named cache branches required by the current guidance mode."""
+
+    if not guidance.enabled:
+        return ("default",)
+    return (guidance.conditioned_cache_branch, guidance.unconditioned_cache_branch)
+
+
+def resolve_runtime_cache_branch(
+    guidance: RuntimeGuidanceConfig,
+    *,
+    conditioned: bool,
+) -> str:
+    """Select the cache branch for one conditioned/unconditioned pass."""
+
+    if not guidance.enabled:
+        return "default"
+    return guidance.conditioned_cache_branch if conditioned else guidance.unconditioned_cache_branch
 
 
 def build_joint_runtime_schedulers(

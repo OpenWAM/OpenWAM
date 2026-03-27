@@ -14,7 +14,7 @@ from open_wam.utils.config_loader import load_experiment_config  # noqa: E402
 
 
 def main() -> None:
-    config = load_experiment_config("configs/experiments/parallel_stream_robotwin_lingbot_replica.yaml")
+    config = load_experiment_config("configs/experiments/parallel_stream_robotwin_smoke.yaml")
     batch = build_synthetic_batch(config.data, batch_size=2)
     runner = build_lingbot_exact_runner_from_config(config)
 

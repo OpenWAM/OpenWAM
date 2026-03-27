@@ -17,13 +17,14 @@ The repo currently includes:
   `post_decoded` policy variants
 - a LingBot replica backbone as the default shared-core family for real
   multimodal variants
-- a LingBot-compatible backbone knob under `backbone.implementation`:
-  - `lingbot_replica` (default)
+- a shared runtime backbone knob under `backbone.implementation`:
+  - `shared_transformer` (default)
   - `dummy` (smoke/legacy only)
 - an optional `backbone.load_reference_core_weights` path that loads LingBot
   backbone weights into the shared replica core for
   `register_attached`, `post_latent`, and `post_decoded`
-- an exact LingBot parallel-stream loading path owned by `VisualTower`
+- an exact LingBot parallel-stream runtime path that executes on the same
+  shared backbone object used by the other real variants
 - a uniform data contract for all sources and policy variants
 - a config-driven canonical RGB layout builder
 - a dataset registry keyed by `data.dataset_type`
@@ -69,6 +70,9 @@ Important source packages:
 - Dataset-specific parsing should stay inside dataset adapters registered by `data.dataset_type`.
 - Dataset adapters may expose transformed action supervision, not just raw controller deltas.
 - All four methodologies should continue to share the same top-level `VariantPipeline -> VisualTower` boundary even when their within-core runtimes differ.
+- For the canonical multimodal methods, differences should come from runtime
+  programs, sequence semantics, cache policy, and decoders rather than from
+  swapping out the transformer object underneath them.
 
 ## Trainer and Variant Flow
 
@@ -98,6 +102,16 @@ semantics by implementing:
 
 inside `src/open_wam/models/policy_variants/`.
 
+The current method split is:
+
+- `parallel_stream` / method 1: exact LingBot train/infer semantics through
+  shared-backbone exact runtime programs
+- `register_attached` / method 2: shared runtime-program executor with
+  structured sequence adapters, structured attention kernels, shared stream
+  adapters, and shared stream output heads
+- `post_latent` / `post_decoded`: simple feature-attached baselines over the
+  same stage-aware pipeline
+
 ## Current Diffusion Granularity
 
 Current diffusion behavior is split into three buckets.
@@ -112,6 +126,8 @@ Method 1, LingBot:
 - action sigma is broadcast across action channels and `action_per_frame`
   positions of that frame
 - loss is reduced and normalized per frame
+- the shared backbone executes method 1 through exact runtime programs rather
+  than a sidecar transformer module
 
 Method 2, DreamZero-style register-attached on LingBot backbone:
 
@@ -135,6 +151,8 @@ Method 2, DreamZero-style register-attached on LingBot backbone:
     - `inference.joint_cache_rollout_warmup_anchor`
   - `inference.joint_observed_video_prefix_frames: 1` keeps the observed
     first frame fixed during inference-time denoising
+  - stream tokenizers and flow heads are now backbone-owned shared runtime
+    components rather than variant-local modules
 
 Action-only diffusion variants:
 
@@ -218,7 +236,7 @@ Run smoke tests:
 ```bash
 python scripts/smoke_backbone_only.py
 python scripts/smoke_phase_two.py
-python scripts/smoke_parallel_stream_lingbot_replica.py
+python scripts/smoke_parallel_stream.py
 python scripts/smoke_lingbot_exact_runner.py
 ```
 
@@ -307,37 +325,36 @@ uv run python -m open_wam.evals.evaluate \
 
 ## Backbone Sharing Clarification
 
-All four methods now run through the same top-level owner:
+All canonical multimodal methods now run through the same top-level owner:
 
 - `VariantPipeline -> VisualTower -> PolicyVariant -> ActionDecoder`
 
-With `backbone.implementation = lingbot_replica`, methods 2, 3, and 4 use the
-shared `LingbotVisualFrontend` plus `LingbotReplicaVisualCore`.
+With `backbone.implementation = shared_transformer`, methods 1, 2, and 4 run
+through the same shared `VisualTower` frontend and shared transformer-core
+object.
 
-The parallel-stream variant has two paths:
+What differs between the methods is the runtime program:
 
-- the standard parallel-stream path can also use `lingbot_replica`
-- the exact LingBot-compatible path uses a reference transformer loaded as-is
-  and owned by `VisualTower`
+- method 1 uses exact LingBot-compatible runtime programs, chunk/window
+  attention, and slot-pool cache semantics
+- method 2 uses structured register-sequence runtime programs, structured
+  branchwise attention, and structured rollout-cache semantics
+- method 4 uses the same shared core with a lightweight decoded-feature policy
+  head
 
-The exact LingBot path now defaults to the vendored implementation under
-`src/open_wam/third_party/lingbot`. You only need
-`backbone.reference_model_path` when you deliberately want to override that
-with another `model.py`.
+`post_latent` is the intentional exception: when configured with
+`attach_site=post_frontend_latents`, it may stop at the shared frontend and
+bypass the transformer core by design.
 
-So the owner and frontend boundary are shared across all methods, but exact
-parallel-stream does not yet share the same physical core module or weights as
-`register_attached`, `post_latent`, and `post_decoded`.
+LingBot-compatible weights can initialize the shared backbone by setting:
 
-The other three variants can use LingBot backbone weights by setting:
-
-- `backbone.implementation: lingbot_replica`
+- `backbone.implementation: shared_transformer`
 - `backbone.load_reference_core_weights: true`
 - `backbone.pretrained_model_name_or_path: /path/to/checkpoint-root`
 
-That path initializes the shared replica core from LingBot-compatible weights
-while keeping the stage-aware `VisualTower` contracts intact. An external
-`reference_model_path` is optional there too.
+Exact method-1 execution uses that same shared backbone object, but drives it
+through the LingBot-compatible exact runtime programs exposed by the shared
+runtime executor rather than a sidecar transformer module.
 
 For exact loading and execution details, including the local LIBERO 30D path
 and Heng comparison workflow, see:

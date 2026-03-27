@@ -13,7 +13,9 @@ data:
     state_horizon: 1
 
 backbone:
-  implementation: lingbot_replica
+  implementation: shared_transformer
+  train_attn_mode: flex
+  infer_attn_mode: torch
   hidden_size: 3072
   num_layers: 30
   num_heads: 24

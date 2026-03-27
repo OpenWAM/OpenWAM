@@ -6,26 +6,26 @@ from torch import nn
 from open_wam.data.raw_video import ViewPlacement
 from open_wam.models.visual_tower import VisualTower
 
-from .config import LingbotCompatibleVideoBackboneConfig
+from .config import SharedVideoTransformerConfig
 from .contracts import BackboneOutput
 
 
-class LingbotCompatibleVideoBackbone(nn.Module):
-    """Protected stage-1 backbone boundary for the new WAM codebase.
+class SharedVideoTransformerBackbone(nn.Module):
+    """Shared video-transformer backbone boundary for the WAM codebase.
 
-    This module does not yet port the full LingBot transformer stack. Instead,
-    it establishes the LingBot-compatible geometry and the shared output
-    contract that all future action-head variants will consume.
+    This module does not expose any policy-specific behavior. It preserves the
+    protected reference geometry and returns the shared backbone contract that
+    future action-head variants consume.
 
-    Stage-1 responsibilities:
+    Responsibilities:
     - preserve the canonical RGB -> latent -> token geometry
     - provide a stable backbone output contract
-    - keep the boundary clean so future LingBot weight-loading can happen here
+    - keep the boundary clean so reference-compatible weight loading can happen here
     """
 
-    def __init__(self, config: LingbotCompatibleVideoBackboneConfig | None = None) -> None:
+    def __init__(self, config: SharedVideoTransformerConfig | None = None) -> None:
         super().__init__()
-        self.config = config or LingbotCompatibleVideoBackboneConfig()
+        self.config = config or SharedVideoTransformerConfig()
         self.tower = VisualTower(self.config)
 
     def forward(
@@ -72,3 +72,6 @@ class LingbotCompatibleVideoBackbone(nn.Module):
 
     def tokenize_video_latents(self, video_latents: torch.Tensor):
         return self.tower.frontend.tokenize_video_latents(video_latents)
+
+
+LingbotCompatibleVideoBackbone = SharedVideoTransformerBackbone

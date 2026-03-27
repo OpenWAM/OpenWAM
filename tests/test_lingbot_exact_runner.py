@@ -14,16 +14,16 @@ from open_wam.configs import (
     TrainingConfig,
 )
 from open_wam.data import build_synthetic_batch
-from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
+from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.visual_tower.reference_loader import load_wan_transformer_class
-from open_wam.pipelines import build_lingbot_exact_runner_from_config
+from open_wam.pipelines import build_exact_runtime_runner_from_config
 
 from reference_model_test_utils import reference_model_path_or_skip
 
 
 def test_lingbot_exact_runner_supports_warmup_and_chunk_generation(tmp_path: Path) -> None:
-    backbone_config = LingbotCompatibleVideoBackboneConfig(
-        implementation="lingbot_replica",
+    backbone_config = SharedVideoTransformerConfig(
+        implementation="shared_transformer",
         attn_mode="torch",
         hidden_size=32,
         num_layers=2,
@@ -84,9 +84,10 @@ def test_lingbot_exact_runner_supports_warmup_and_chunk_generation(tmp_path: Pat
     )
 
     batch = build_synthetic_batch(config.data, batch_size=2)
-    runner = build_lingbot_exact_runner_from_config(config)
-    shared_transformer = runner.pipeline.visual_tower.get_lingbot_reference_transformer(action_dim=4)
-    assert shared_transformer is runner.pipeline.visual_tower.get_lingbot_reference_transformer(action_dim=4)
+    runner = build_exact_runtime_runner_from_config(config)
+    shared_transformer = runner.pipeline.visual_tower.get_runtime_backbone(action_dim=4)
+    assert shared_transformer is runner.pipeline.visual_tower.get_runtime_backbone(action_dim=4)
+    assert shared_transformer is runner.pipeline.visual_tower.core
     assert not hasattr(runner.policy_variant, "reference_transformer")
     session = runner.reset(task_text=batch.task_text)
 

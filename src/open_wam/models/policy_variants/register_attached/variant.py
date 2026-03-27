@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import torch
-from torch import nn
 
 from open_wam.configs import InferenceConfig, RegisterAttachedPolicyConfig, TrainingConfig
 from open_wam.models.action_decoders import ActionDecoderInferOutput, ActionDecoderTrainOutput
@@ -18,6 +17,8 @@ from open_wam.models.common import (
     reduce_slot_aligned_action_flow_match_loss,
     reduce_video_flow_match_loss,
     resolve_runtime_cache_policy,
+    resolve_runtime_cache_branch,
+    resolve_runtime_cache_branches,
     resolve_runtime_guidance,
     resolve_runtime_warmup_reference,
     should_update_cache_during_denoise,
@@ -80,19 +81,11 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
         self.action_horizon = action_horizon
         self.state_dim = state_dim
         self.state_horizon = state_horizon
-        self.action_encoder = nn.Sequential(
-            nn.Linear(action_dim, config.hidden_size),
-            nn.GELU(),
-            nn.Linear(config.hidden_size, config.hidden_size),
-        )
-        self.state_encoder = nn.Sequential(
-            nn.Linear(state_dim, config.hidden_size),
-            nn.GELU(),
-            nn.Linear(config.hidden_size, config.hidden_size),
-        )
-        self.register_role_embedding = nn.Embedding(2, config.hidden_size)
         self.runtime = RegisterAttachedRuntime(
             RegisterRuntimeSpec(
+                # Variants pick the rollout program; the shared runtime/backbone
+                # own tokenizers, structured attention kernels, cache semantics,
+                # and stream output heads.
                 hidden_size=config.hidden_size,
                 action_horizon=action_horizon,
                 state_horizon=state_horizon,
@@ -100,6 +93,17 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
                 num_action_per_block=config.num_action_per_block,
                 num_state_per_block=config.num_state_per_block,
                 variant_name=config.name,
+                structured_block_mode=config.structured_block_mode,
+                structured_time_layout=config.structured_time_layout,
+                structured_frequency_mode=config.structured_frequency_mode,
+                structured_teacher_forcing_layout=config.structured_teacher_forcing_layout,
+                structured_attention_kernel=config.structured_attention_kernel,
+                structured_cache_kernel=config.structured_cache_kernel,
+                stream_input_adapter_family=config.stream_input_adapter_family,
+                stream_output_head_family=config.stream_output_head_family,
+                use_state_encoder=config.use_state_encoder,
+                action_encoder_type=config.action_encoder_type,
+                state_encoder_type=config.state_encoder_type,
             )
         )
         self.video_patch_dim = (
@@ -108,9 +112,6 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
             * self.backbone_config.patch_size_h
             * self.backbone_config.patch_size_w
         )
-        self.video_flow_head = nn.Linear(config.hidden_size, self.video_patch_dim)
-        self.action_flow_head = nn.Linear(config.hidden_size, action_dim)
-
     def attach_site(self) -> str:
         return self.config.attach_site
 
@@ -189,19 +190,6 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
             noisy_video_latents=noisy_video_latents,
         )
 
-    def _decode_future_video_flow(
-        self,
-        *,
-        hidden_tokens: torch.Tensor,
-        token_grid,
-    ) -> torch.Tensor:
-        patch_tokens = self.video_flow_head(hidden_tokens)
-        return unpatchify_video_tokens(
-            patch_tokens,
-            token_grid=token_grid,
-            latent_channels=self.backbone_config.latent_channels,
-        )
-
     def _run_packed_core(
         self,
         visual_tower: VisualTower,
@@ -219,7 +207,9 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
         conditioning_override=None,
         include_register_tokens: bool = True,
         cache_reference_token_span: tuple[int, int] | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, RegisterSequenceLayout, CacheState, dict[str, object]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor], RegisterSequenceLayout, CacheState, dict[str, object]]:
+        # Keep method 2 on the shared runtime surface so future within-core
+        # variants can reuse the same tokenization, attention, and cache stack.
         runtime_result = self.runtime.run_core(
             visual_tower=visual_tower,
             visual_outputs=visual_outputs,
@@ -227,9 +217,6 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
             noisy_video_tokens=noisy_video_tokens,
             action_inputs=action_inputs,
             state_inputs=state_inputs,
-            action_encoder=self.action_encoder,
-            state_encoder=self.state_encoder,
-            register_role_embedding=self.register_role_embedding,
             video_timesteps=video_timesteps,
             action_timesteps=action_timesteps,
             current_start_frame=current_start_frame,
@@ -242,6 +229,7 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
         return (
             runtime_result.video_hidden,
             runtime_result.action_hidden,
+            runtime_result.projected_outputs,
             runtime_result.layout,
             runtime_result.cache_state,
             runtime_result.aux,
@@ -302,6 +290,8 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
         guidance_cfg_mode: str,
         current_start_frame: int,
         cache_reference_token_span: tuple[int, int],
+        cache_branch: str,
+        conditioning_override=None,
     ) -> CacheState:
         """Warm the shared cache with clean reference-video context.
 
@@ -332,7 +322,7 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
             device=device,
             dtype=torch.float32,
         )
-        _, _, _, warmed_cache_state, _ = self._run_packed_core(
+        _, _, _, _, warmed_cache_state, _ = self._run_packed_core(
             visual_tower=visual_tower,
             visual_outputs=visual_outputs,
             noisy_video_tokens=visual_outputs.frontend.video_tokens,
@@ -349,7 +339,9 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
                 update_kv_cache=True,
                 update_cross_attention_cache=True,
                 cfg_mode=guidance_cfg_mode,
+                cache_branch=cache_branch,
             ),
+            conditioning_override=conditioning_override,
             include_register_tokens=False,
             cache_reference_token_span=cache_reference_token_span,
         )
@@ -371,7 +363,7 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
             visual_outputs=visual_outputs,
             noisy_video_latents=video_artifacts.noisy_latents,
         )
-        video_hidden, action_hidden, layout, _, core_aux = self._run_packed_core(
+        video_hidden, action_hidden, projected_outputs, layout, _, core_aux = self._run_packed_core(
             visual_tower=visual_tower,
             visual_outputs=visual_outputs,
             noisy_video_tokens=noisy_visual_outputs.frontend.video_tokens,
@@ -382,11 +374,12 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
             action_timesteps=action_artifacts.timesteps,
             current_start_frame=0,
         )
-        video_flow_pred = self._decode_future_video_flow(
-            hidden_tokens=video_hidden,
+        video_flow_pred = unpatchify_video_tokens(
+            projected_outputs["video_patch_flow"],
             token_grid=visual_outputs.frontend.token_grid,
+            latent_channels=self.backbone_config.latent_channels,
         )
-        action_flow_pred = self.action_flow_head(action_hidden)
+        action_flow_pred = projected_outputs["action_flow"]
         denoised_video_latents = denoised_video_latents_from_flow(
             noisy_latents=video_artifacts.noisy_latents,
             flow_pred=video_flow_pred,
@@ -538,6 +531,13 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
         unconditional_conditioning = build_unconditional_conditioning(
             visual_outputs.frontend.conditioning
         )
+        latest_core_cache = cache_state
+        conditioned_cache_branch = resolve_runtime_cache_branch(guidance, conditioned=True)
+        unconditioned_cache_branch = resolve_runtime_cache_branch(guidance, conditioned=False)
+        latest_core_cache = visual_tower.ensure_runtime_cache_branches(
+            latest_core_cache,
+            branch_names=resolve_runtime_cache_branches(guidance),
+        )
         video_scheduler = scheduler_bundle.video_scheduler
         action_scheduler = scheduler_bundle.action_scheduler
         use_unipc = scheduler_bundle.use_unipc
@@ -545,10 +545,9 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
             raise ValueError(
                 "Register-attached joint inference expects video/action schedulers with the same number of steps, "
                 f"got video={len(video_scheduler.timesteps)} and action={len(action_scheduler.timesteps)}."
-            )
+        )
         layout: RegisterSequenceLayout | None = None
         core_aux: dict[str, object] = {}
-        latest_core_cache = cache_state
         warmup_reference = resolve_runtime_warmup_reference(
             policy=cache_policy,
             current_start_frame=int(infer_state.cursor.current_start_frame),
@@ -569,7 +568,20 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
                 guidance_cfg_mode=guidance.cfg_mode,
                 current_start_frame=int(infer_state.cursor.current_start_frame),
                 cache_reference_token_span=warmup_token_span,
+                cache_branch=conditioned_cache_branch,
             )
+            if guidance.enabled and unconditional_conditioning is not None:
+                latest_core_cache = self._warmup_runtime_cache(
+                    visual_tower=visual_tower,
+                    visual_outputs=visual_outputs,
+                    cache_state=latest_core_cache,
+                    state_inputs=state_inputs,
+                    guidance_cfg_mode=guidance.cfg_mode,
+                    current_start_frame=int(infer_state.cursor.current_start_frame),
+                    cache_reference_token_span=warmup_token_span,
+                    cache_branch=unconditioned_cache_branch,
+                    conditioning_override=unconditional_conditioning,
+                )
         for step_index, (video_timestep, action_timestep) in enumerate(
             zip(video_scheduler.timesteps.to(device=device), action_scheduler.timesteps.to(device=device))
         ):
@@ -589,8 +601,9 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
                 ),
                 update_cross_attention_cache=cache_policy.update_cross_attention_during_denoise,
                 cfg_mode=guidance.cfg_mode,
+                cache_branch=conditioned_cache_branch,
             )
-            video_hidden, action_hidden, layout, latest_core_cache, core_aux = self._run_packed_core(
+            video_hidden, action_hidden, projected_outputs, layout, latest_core_cache, core_aux = self._run_packed_core(
                 visual_tower=visual_tower,
                 visual_outputs=visual_outputs,
                 noisy_video_tokens=noisy_visual_outputs.frontend.video_tokens,
@@ -613,13 +626,14 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
                 cache_state=input_cache_state,
                 cache_update_metadata=step_cache_update,
             )
-            video_flow_pred = self._decode_future_video_flow(
-                hidden_tokens=video_hidden,
+            video_flow_pred = unpatchify_video_tokens(
+                projected_outputs["video_patch_flow"],
                 token_grid=visual_outputs.frontend.token_grid,
+                latent_channels=self.backbone_config.latent_channels,
             )
-            action_flow_pred = self.action_flow_head(action_hidden)
+            action_flow_pred = projected_outputs["action_flow"]
             if guidance.enabled and unconditional_conditioning is not None:
-                uncond_video_hidden, uncond_action_hidden, _, _, _ = self._run_packed_core(
+                uncond_video_hidden, uncond_action_hidden, uncond_projected_outputs, _, _, _ = self._run_packed_core(
                     visual_tower=visual_tower,
                     visual_outputs=visual_outputs,
                     noisy_video_tokens=noisy_visual_outputs.frontend.video_tokens,
@@ -646,14 +660,16 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
                         update_kv_cache=False,
                         update_cross_attention_cache=False,
                         cfg_mode=guidance.cfg_mode,
+                        cache_branch=unconditioned_cache_branch,
                     ),
                     conditioning_override=unconditional_conditioning,
                 )
-                uncond_video_flow_pred = self._decode_future_video_flow(
-                    hidden_tokens=uncond_video_hidden,
+                uncond_video_flow_pred = unpatchify_video_tokens(
+                    uncond_projected_outputs["video_patch_flow"],
                     token_grid=visual_outputs.frontend.token_grid,
+                    latent_channels=self.backbone_config.latent_channels,
                 )
-                uncond_action_flow_pred = self.action_flow_head(uncond_action_hidden)
+                uncond_action_flow_pred = uncond_projected_outputs["action_flow"]
                 video_flow_pred, action_flow_pred = combine_joint_cfg_predictions(
                     conditioned_video_prediction=video_flow_pred,
                     unconditioned_video_prediction=uncond_video_flow_pred,
@@ -729,6 +745,10 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
                 "variant": self.config.name,
                 "layout": layout,
                 "core_aux": core_aux,
+                "structured_attention_full_cache_prefix": core_aux.get(
+                    "structured_attention_full_cache_prefix",
+                    False,
+                ),
                 "predicted_latents": noisy_video_latents.detach(),
                 "decoder_output": decoder_output,
             },

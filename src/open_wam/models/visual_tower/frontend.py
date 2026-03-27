@@ -6,19 +6,19 @@ import torch
 from torch import nn
 
 from open_wam.data.raw_video import ViewPlacement
-from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
+from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.video_backbone.contracts import ChunkMetadata, ConditioningState, TokenGridMetadata
 
 from .contracts import VisualFrontendOutput
 from .reference_assets import LingbotReferenceAssets
 
 
-class LingbotVisualFrontend(nn.Module):
+class SharedVideoFrontend(nn.Module):
     """Canonical RGB -> latent -> token visual frontend."""
 
-    def __init__(self, config: LingbotCompatibleVideoBackboneConfig | None = None) -> None:
+    def __init__(self, config: SharedVideoTransformerConfig | None = None) -> None:
         super().__init__()
-        self.config = config or LingbotCompatibleVideoBackboneConfig()
+        self.config = config or SharedVideoTransformerConfig()
         self.reference_assets = LingbotReferenceAssets.maybe_load(self.config)
         self.latentizer = nn.Conv3d(
             in_channels=self.config.input_channels,
@@ -91,7 +91,7 @@ class LingbotVisualFrontend(nn.Module):
     ) -> VisualFrontendOutput:
         if video_latents.ndim != 5:
             raise ValueError(
-                "Expected LingBot video latents of shape [B, C, T, H, W], "
+                "Expected shared-backbone video latents of shape [B, C, T, H, W], "
                 f"got {tuple(video_latents.shape)}"
             )
         canonical = canonical_video
@@ -216,3 +216,6 @@ class LingbotVisualFrontend(nn.Module):
             sequence_length=tokens.shape[1],
         )
         return tokens, token_grid
+
+
+LingbotVisualFrontend = SharedVideoFrontend

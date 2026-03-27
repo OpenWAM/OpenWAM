@@ -50,6 +50,14 @@ class RegisterAttachedPolicyConfig(PolicyVariantConfig):
     action_encoder_type: str = "mlp"
     state_encoder_type: str = "mlp"
     couple_action_to_video_blocks: bool = True
+    structured_block_mode: str = "register_explicit"
+    structured_time_layout: str = "video_action_state"
+    structured_frequency_mode: str = "stream_local"
+    structured_teacher_forcing_layout: str = "clean_prefix"
+    structured_attention_kernel: str = "branchwise_explicit"
+    structured_cache_kernel: str = "branchwise_rollout_explicit"
+    stream_input_adapter_family: str = "structured_register_streams"
+    stream_output_head_family: str = "structured_joint_flow"
 
 
 @dataclass(frozen=True)

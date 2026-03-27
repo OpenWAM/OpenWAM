@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
+from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 
 from .reference_loader import load_wan_transformer_class, resolve_pretrained_component_dir
 
@@ -14,7 +14,7 @@ def preferred_reference_dtype(device: torch.device) -> torch.dtype:
 
 
 def build_reference_transformer(
-    backbone_config: LingbotCompatibleVideoBackboneConfig,
+    backbone_config: SharedVideoTransformerConfig,
     *,
     action_dim: int,
 ) -> torch.nn.Module:

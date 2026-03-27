@@ -32,9 +32,11 @@ def test_new_variant_yaml_configs_load() -> None:
     assert isinstance(register.policy_variant, RegisterAttachedPolicyConfig)
     assert isinstance(parallel.policy_variant, ParallelStreamPolicyConfig)
     assert isinstance(smoke_parallel.policy_variant, ParallelStreamPolicyConfig)
-    assert register.backbone.implementation == "lingbot_replica"
-    assert parallel.backbone.implementation == "lingbot_replica"
-    assert smoke_parallel.backbone.implementation == "lingbot_replica"
+    assert register.backbone.implementation == "shared_transformer"
+    assert parallel.backbone.implementation == "shared_transformer"
+    assert smoke_parallel.backbone.implementation == "shared_transformer"
+    assert parallel.backbone.train_attn_mode == "flex"
+    assert parallel.backbone.infer_attn_mode == "torch"
     assert parallel.policy_variant.runtime_mode == "lingbot_exact"
     assert parallel.action_decoder.name == "lingbot_parallel_decoder"
     assert parallel.backbone.hidden_size == 3072
@@ -47,6 +49,14 @@ def test_new_variant_yaml_configs_load() -> None:
     assert register.inference.joint_cache_initial_warmup_anchor == "start"
     assert register.inference.joint_cache_rollout_warmup_anchor == "end"
     assert register.inference.joint_observed_video_prefix_frames == 1
+    assert register.policy_variant.structured_block_mode == "register_explicit"
+    assert register.policy_variant.structured_time_layout == "video_action_state"
+    assert register.policy_variant.structured_frequency_mode == "stream_local"
+    assert register.policy_variant.structured_teacher_forcing_layout == "clean_prefix"
+    assert register.policy_variant.structured_attention_kernel == "branchwise_explicit"
+    assert register.policy_variant.structured_cache_kernel == "branchwise_rollout_explicit"
+    assert register.policy_variant.stream_input_adapter_family == "structured_register_streams"
+    assert register.policy_variant.stream_output_head_family == "structured_joint_flow"
 
 
 def test_local_libero_yaml_config_loads() -> None:
@@ -62,6 +72,8 @@ def test_exact_local_libero_yaml_config_loads() -> None:
     assert isinstance(exact_libero.policy_variant, ParallelStreamPolicyConfig)
     assert exact_libero.policy_variant.runtime_mode == "lingbot_exact"
     assert exact_libero.policy_variant.reference_profile == "libero"
+    assert exact_libero.backbone.train_attn_mode == "flex"
+    assert exact_libero.backbone.infer_attn_mode == "torch"
     assert exact_libero.backbone.max_text_tokens == 512
     assert exact_libero.data.canonical_height == 128
     assert exact_libero.data.canonical_width == 256

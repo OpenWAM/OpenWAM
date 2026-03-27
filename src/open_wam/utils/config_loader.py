@@ -28,7 +28,7 @@ from open_wam.configs import (
 )
 from open_wam.configs.inference import InferenceConfig
 from open_wam.configs.training import TrainingConfig
-from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
+from open_wam.models.video_backbone.config import SharedVideoTransformerConfig, normalize_backbone_implementation
 
 
 def _read_yaml(path: str | Path) -> dict[str, Any]:
@@ -43,7 +43,7 @@ def _load_policy_variant_config(
     policy_variant_raw: dict[str, Any],
     action_head_raw: dict[str, Any],
     data_config: GenericDataConfig | LiberoDataConfig | RobotWinDataConfig,
-    backbone_config: LingbotCompatibleVideoBackboneConfig,
+    backbone_config: SharedVideoTransformerConfig,
     training_config: TrainingConfig,
     inference_config: InferenceConfig,
 ) -> PolicyVariantConfig:
@@ -96,6 +96,29 @@ def _load_policy_variant_config(
             action_encoder_type=resolved_raw.get("action_encoder_type", "mlp"),
             state_encoder_type=resolved_raw.get("state_encoder_type", "mlp"),
             couple_action_to_video_blocks=resolved_raw.get("couple_action_to_video_blocks", True),
+            structured_block_mode=resolved_raw.get("structured_block_mode", "register_explicit"),
+            structured_time_layout=resolved_raw.get("structured_time_layout", "video_action_state"),
+            structured_frequency_mode=resolved_raw.get("structured_frequency_mode", "stream_local"),
+            structured_teacher_forcing_layout=resolved_raw.get(
+                "structured_teacher_forcing_layout",
+                "clean_prefix",
+            ),
+            structured_attention_kernel=resolved_raw.get(
+                "structured_attention_kernel",
+                "branchwise_explicit",
+            ),
+            structured_cache_kernel=resolved_raw.get(
+                "structured_cache_kernel",
+                "branchwise_rollout_explicit",
+            ),
+            stream_input_adapter_family=resolved_raw.get(
+                "stream_input_adapter_family",
+                "structured_register_streams",
+            ),
+            stream_output_head_family=resolved_raw.get(
+                "stream_output_head_family",
+                "structured_joint_flow",
+            ),
         )
     if name == "parallel_stream":
         default_action_per_frame = max(
@@ -297,7 +320,7 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
     )
 
     backbone_raw = raw.get("backbone", {})
-    backbone_defaults = LingbotCompatibleVideoBackboneConfig()
+    backbone_defaults = SharedVideoTransformerConfig()
     pretrained_model_name_or_path = backbone_raw.get("pretrained_model_name_or_path")
     load_wan_vae_frontend = backbone_raw.get("load_wan_vae_frontend")
     if load_wan_vae_frontend is None:
@@ -309,14 +332,16 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
     if load_reference_core_weights is None:
         load_reference_core_weights = False
 
-    backbone_config = LingbotCompatibleVideoBackboneConfig(
+    backbone_config = SharedVideoTransformerConfig(
         input_channels=backbone_raw.get("input_channels", backbone_defaults.input_channels),
         latent_channels=backbone_raw.get("latent_channels", backbone_defaults.latent_channels),
         latent_stride=backbone_raw.get("latent_stride", backbone_defaults.latent_stride),
         patch_size_t=backbone_raw.get("patch_size_t", backbone_defaults.patch_size_t),
         patch_size_h=backbone_raw.get("patch_size_h", backbone_defaults.patch_size_h),
         patch_size_w=backbone_raw.get("patch_size_w", backbone_defaults.patch_size_w),
-        implementation=backbone_raw.get("implementation", backbone_defaults.implementation),
+        implementation=normalize_backbone_implementation(
+            backbone_raw.get("implementation", backbone_defaults.implementation)
+        ),
         hidden_size=backbone_raw.get("hidden_size", backbone_defaults.hidden_size),
         num_layers=backbone_raw.get("num_layers", backbone_defaults.num_layers),
         num_heads=backbone_raw.get("num_heads", backbone_defaults.num_heads),
@@ -329,6 +354,8 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         rope_max_seq_len=backbone_raw.get("rope_max_seq_len", backbone_defaults.rope_max_seq_len),
         latent_norm_eps=backbone_raw.get("latent_norm_eps", backbone_defaults.latent_norm_eps),
         attn_mode=backbone_raw.get("attn_mode", backbone_defaults.attn_mode),
+        train_attn_mode=backbone_raw.get("train_attn_mode", backbone_defaults.train_attn_mode),
+        infer_attn_mode=backbone_raw.get("infer_attn_mode", backbone_defaults.infer_attn_mode),
         pretrained_model_name_or_path=pretrained_model_name_or_path,
         transformer_subdir=backbone_raw.get("transformer_subdir", backbone_defaults.transformer_subdir),
         vae_subdir=backbone_raw.get("vae_subdir", backbone_defaults.vae_subdir),

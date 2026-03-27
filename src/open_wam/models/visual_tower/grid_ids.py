@@ -84,3 +84,29 @@ def build_sequence_grid_ids(length: int, *, device: torch.device, offset: float 
     """Build simple sequential grid ids for non-video packed tokens."""
 
     return build_mesh_id(f=length, h=1, w=1, t=0.0, f_shift=offset, device=device)
+
+
+def build_block_register_grid_ids(
+    *,
+    num_blocks: int,
+    tokens_per_block: int,
+    device: torch.device,
+    frame_shift: float = 0.0,
+    stream_marker: float = -1.0,
+) -> torch.Tensor:
+    """Build rollout-aware grid ids for structured register-token streams.
+
+    This keeps register tokens aligned to their corresponding future-video
+    blocks instead of treating the entire register suffix as one flat 1D
+    sequence. `stream_marker` lets different register streams occupy distinct
+    spatial marker lanes while still sharing the same temporal block index.
+    """
+
+    if num_blocks <= 0 or tokens_per_block <= 0:
+        return torch.zeros(4, 0, device=device, dtype=torch.float32)
+    frame_ids = (
+        torch.arange(num_blocks, device=device, dtype=torch.float32) + float(frame_shift)
+    ).repeat_interleave(tokens_per_block)
+    marker = torch.full_like(frame_ids, float(stream_marker))
+    zeros = torch.zeros_like(frame_ids)
+    return torch.stack([frame_ids, marker, marker, zeros], dim=0)

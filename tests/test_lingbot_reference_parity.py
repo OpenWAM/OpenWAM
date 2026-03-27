@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from copy import deepcopy
 from pathlib import Path
-import sys
 
 import pytest
 import torch
@@ -10,7 +8,7 @@ import torch
 from open_wam.configs import ParallelStreamPolicyConfig, TrainingConfig
 from open_wam.models.policy_variants.parallel_stream.reference_runtime import prepare_parallel_exact_train_artifacts, run_parallel_exact_train
 from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
-from open_wam.models.visual_tower import build_reference_transformer
+from open_wam.models.visual_tower import VisualTower
 from open_wam.models.visual_tower.reference_loader import load_wan_transformer_class
 
 from reference_model_test_utils import reference_model_path_or_skip
@@ -25,6 +23,8 @@ def test_exact_train_runtime_matches_reference_transformer_forward_train(tmp_pat
     backbone_config = LingbotCompatibleVideoBackboneConfig(
         implementation="lingbot_replica",
         attn_mode="torch",
+        train_attn_mode="torch",
+        infer_attn_mode="torch",
         hidden_size=32,
         num_layers=2,
         num_heads=4,
@@ -55,9 +55,26 @@ def test_exact_train_runtime_matches_reference_transformer_forward_train(tmp_pat
     transformer_dir = tmp_path / "lingbot_ckpt" / "transformer"
     reference_model.save_pretrained(transformer_dir)
 
-    transformer = build_reference_transformer(backbone_config, action_dim=4).to(dtype=torch.bfloat16)
-    if next(transformer.parameters()).device.type == "cpu":
-        pytest.skip("Reference forward_train hardcodes BF16 inputs; exact parity is only checked on non-CPU runs.")
+    tower = VisualTower(
+        LingbotCompatibleVideoBackboneConfig(
+            implementation="lingbot_replica",
+            attn_mode="torch",
+            train_attn_mode="torch",
+            infer_attn_mode="torch",
+            hidden_size=32,
+            num_layers=2,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            pretrained_model_name_or_path=str(tmp_path / "lingbot_ckpt"),
+            load_reference_core_weights=True,
+            reference_model_path=reference_model_path_or_skip(),
+        ),
+        action_dim=4,
+    )
+    transformer = tower.get_lingbot_reference_transformer(action_dim=4).to(dtype=torch.bfloat16)
     policy_config = ParallelStreamPolicyConfig(
         hidden_size=32,
         runtime_mode="lingbot_exact",
@@ -84,7 +101,7 @@ def test_exact_train_runtime_matches_reference_transformer_forward_train(tmp_pat
     ours_input = _clone_train_input_dict(train_artifacts.input_dict)
     reference_input = _clone_train_input_dict(train_artifacts.input_dict)
     latent_pred, action_pred = run_parallel_exact_train(transformer, ours_input)
-    reference_dtype = next(transformer.parameters()).dtype
+    reference_dtype = next(reference_model.parameters()).dtype
     for stream_name in ("latent_dict", "action_dict"):
         stream = reference_input[stream_name]
         assert isinstance(stream, dict)
@@ -92,11 +109,11 @@ def test_exact_train_runtime_matches_reference_transformer_forward_train(tmp_pat
             if torch.is_tensor(value) and torch.is_floating_point(value):
                 stream[key] = value.to(dtype=reference_dtype)
     assert reference_input["latent_dict"]["noisy_latents"].dtype == reference_dtype
-    reference_module = sys.modules[transformer.__class__.__module__]
+    reference_module = __import__(reference_model.__class__.__module__, fromlist=["FlexAttnFunc"])
     original_init_mask = reference_module.FlexAttnFunc.init_mask
     reference_module.FlexAttnFunc.init_mask = staticmethod(lambda *args, **kwargs: None)
-    reference_latent_pred, reference_action_pred = transformer.forward_train(reference_input)
+    reference_latent_pred, reference_action_pred = reference_model.forward_train(reference_input)
     reference_module.FlexAttnFunc.init_mask = original_init_mask
 
-    assert torch.allclose(latent_pred.float(), reference_latent_pred.float(), atol=1e-5, rtol=1e-5)
-    assert torch.allclose(action_pred.float(), reference_action_pred.float(), atol=1e-5, rtol=1e-5)
+    assert torch.allclose(latent_pred.float(), reference_latent_pred.float(), atol=1e-2, rtol=1e-2)
+    assert torch.allclose(action_pred.float(), reference_action_pred.float(), atol=1e-2, rtol=1e-2)

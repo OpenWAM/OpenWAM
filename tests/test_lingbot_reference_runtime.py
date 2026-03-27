@@ -5,6 +5,7 @@ from torch import nn
 
 from open_wam.configs import InferenceConfig, ParallelStreamPolicyConfig, TrainingConfig
 from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
+    prepare_parallel_exact_train_artifacts,
     run_parallel_exact_cache_warmup,
     run_parallel_exact_inference_rollout,
     run_reference_single_stream_forward,
@@ -38,8 +39,9 @@ class _FakeReferenceTransformer(nn.Module):
         device: torch.device,
         dtype: torch.dtype,
         batch_size: int,
+        backend_name: str = "lingbot_slot_pool",
     ) -> None:
-        del attn_window, device, dtype
+        del attn_window, device, dtype, backend_name
         self.cache_batch_sizes[cache_name] = batch_size
         self.cache_layouts[cache_name] = (latent_token_per_chunk, action_token_per_chunk)
 
@@ -269,10 +271,51 @@ def test_exact_runtime_uses_provided_negative_text_embeddings_for_cfg() -> None:
         infer_cache=warm_cache,
     )
 
+    assert rollout.debug["use_cfg"] is True
+    assert rollout.action_pred.shape == (1, 4, 4)
+    assert rollout.predicted_latents.shape == (1, 48, 2, 8, 8)
     assert transformer.last_text_emb is not None
     assert torch.equal(transformer.last_text_emb[0], text_emb[0].to(dtype=transformer.last_text_emb.dtype))
     assert torch.equal(transformer.last_text_emb[1], negative_text_emb[0].to(dtype=transformer.last_text_emb.dtype))
-    assert rollout.action_pred.shape == (1, 4, 4)
+
+
+def test_exact_train_artifacts_default_to_flex_attention_profile() -> None:
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        implementation="shared_transformer",
+        attn_mode="torch",
+        train_attn_mode=None,
+        infer_attn_mode=None,
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+    )
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode="lingbot_exact",
+        frame_chunk_size=2,
+        action_per_frame=2,
+        attn_window=8,
+    )
+    training_config = TrainingConfig(chunk_size=2, window_size=8)
+    video_latents = torch.randn(1, 48, 2, 8, 8)
+    actions = torch.randn(1, 4, 4)
+    action_mask = torch.ones_like(actions, dtype=torch.bool)
+    text_emb = torch.randn(1, 512, 16)
+
+    artifacts = prepare_parallel_exact_train_artifacts(
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        video_latents=video_latents,
+        actions=actions,
+        action_mask=action_mask,
+        text_emb=text_emb,
+    )
+
+    assert artifacts.input_dict["attention_profile_name"] == "chunked_temporal_exact"
 
 
 def test_exact_runtime_applies_action_channel_mask_to_action_stream() -> None:

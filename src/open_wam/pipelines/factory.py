@@ -18,6 +18,7 @@ from open_wam.models.policy_variants import (
 )
 from open_wam.models.policy_variants.parallel_stream.action_adapter import build_action_adapter_spec
 from open_wam.models.visual_tower import VisualTower
+from open_wam.models.video_backbone import normalize_backbone_implementation
 
 from .variant_pipeline import VariantPipeline
 from .lingbot_exact import LingbotExactRunner
@@ -32,9 +33,9 @@ def _resolve_parallel_stream_model_action_dim(config: ExperimentConfig) -> int:
 def validate_experiment_config(config: ExperimentConfig) -> None:
     action_schema = config.data.action_schema
     if isinstance(config.policy_variant, (ParallelStreamPolicyConfig, RegisterAttachedPolicyConfig)):
-        if config.backbone.implementation != "lingbot_replica":
+        if normalize_backbone_implementation(config.backbone.implementation) != "shared_transformer":
             raise ValueError(
-                "Joint video+action diffusion variants require the LingBot replica backbone by default, "
+                "Joint video+action diffusion variants require the shared transformer backbone by default, "
                 f"got backbone.implementation={config.backbone.implementation!r}."
             )
     if isinstance(config.policy_variant, ParallelStreamPolicyConfig):
@@ -169,6 +170,7 @@ def build_variant_pipeline_from_config(config: ExperimentConfig) -> VariantPipel
         visual_tower=VisualTower(
             config.backbone,
             action_dim=policy_action_dim,
+            state_dim=config.data.action_schema.state_dim,
         ),
         policy_variant=build_policy_variant(config),
         action_decoder=build_action_decoder(config),
@@ -178,3 +180,7 @@ def build_variant_pipeline_from_config(config: ExperimentConfig) -> VariantPipel
 
 def build_lingbot_exact_runner_from_config(config: ExperimentConfig) -> LingbotExactRunner:
     return LingbotExactRunner(build_variant_pipeline_from_config(config))
+
+
+def build_exact_runtime_runner_from_config(config: ExperimentConfig) -> LingbotExactRunner:
+    return build_lingbot_exact_runner_from_config(config)

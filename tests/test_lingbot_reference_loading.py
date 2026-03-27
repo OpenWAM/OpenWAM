@@ -15,7 +15,7 @@ from open_wam.configs import (
 )
 from open_wam.data import build_synthetic_batch
 from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
-from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
+from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.visual_tower.reference_loader import load_wan_transformer_class
 from open_wam.models.visual_tower.reference_transformer import preferred_reference_dtype
 from open_wam.pipelines import build_variant_pipeline_from_config
@@ -24,8 +24,8 @@ from reference_model_test_utils import reference_model_path_or_skip
 
 
 def test_lingbot_reference_transformer_weights_load_as_is(tmp_path: Path) -> None:
-    backbone_config = LingbotCompatibleVideoBackboneConfig(
-        implementation="lingbot_replica",
+    backbone_config = SharedVideoTransformerConfig(
+        implementation="shared_transformer",
         attn_mode="torch",
         hidden_size=32,
         num_layers=2,
@@ -81,7 +81,8 @@ def test_lingbot_reference_transformer_weights_load_as_is(tmp_path: Path) -> Non
     )
 
     pipeline = build_variant_pipeline_from_config(config)
-    reference_transformer = pipeline.visual_tower.get_lingbot_reference_transformer(action_dim=30)
+    reference_transformer = pipeline.visual_tower.get_runtime_backbone(action_dim=30)
+    assert reference_transformer is pipeline.visual_tower.core
     loaded_state_dict = reference_transformer.state_dict()
     expected_dtype = preferred_reference_dtype(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
@@ -93,6 +94,10 @@ def test_lingbot_reference_transformer_weights_load_as_is(tmp_path: Path) -> Non
     assert torch.equal(
         loaded_state_dict["blocks.0.attn1.to_q.weight"],
         reference_model.state_dict()["blocks.0.attn1.to_q.weight"].to(dtype=expected_dtype),
+    )
+    assert torch.equal(
+        loaded_state_dict["action_proj_out.weight"],
+        reference_model.state_dict()["action_proj_out.weight"].to(dtype=expected_dtype),
     )
 
     batch = build_synthetic_batch(config.data, batch_size=2)

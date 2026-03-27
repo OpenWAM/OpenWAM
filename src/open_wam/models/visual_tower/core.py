@@ -3,10 +3,12 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
+from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.video_backbone.contracts import AttentionCacheEntry, CacheState, CacheUpdateMetadata
 
 from .contracts import VisualCoreInput, VisualCoreOutput
+from .runtime_programs import RuntimeStepInput, RuntimeStepOutput
+from .sequence_adapters import prepare_runtime_sequence
 
 
 def _prepare_attention_mask(
@@ -84,12 +86,12 @@ class SimpleTransformerBlock(nn.Module):
         return hidden_states
 
 
-class LingbotVisualCore(nn.Module):
+class PackedSequenceVisualCore(nn.Module):
     """Shared visual core over a generic packed token sequence."""
 
-    def __init__(self, config: LingbotCompatibleVideoBackboneConfig | None = None) -> None:
+    def __init__(self, config: SharedVideoTransformerConfig | None = None) -> None:
         super().__init__()
-        self.config = config or LingbotCompatibleVideoBackboneConfig()
+        self.config = config or SharedVideoTransformerConfig()
         self.blocks = nn.ModuleList(
             [
                 SimpleTransformerBlock(
@@ -138,6 +140,8 @@ class LingbotVisualCore(nn.Module):
                     if core_input.cache_state.capability != "none"
                     else ("layer_placeholder" if has_runtime_sequence else "none")
                 ),
+                backend_name=core_input.cache_state.backend_name,
+                backend_payload=core_input.cache_state.backend_payload,
                 payload=dict(core_input.cache_state.payload),
                 self_attention_kv=(
                     core_input.cache_state.self_attention_kv
@@ -146,6 +150,7 @@ class LingbotVisualCore(nn.Module):
                 ),
                 cross_attention_kv=core_input.cache_state.cross_attention_kv,
                 update_metadata=cache_update_metadata,
+                branch_states=dict(core_input.cache_state.branch_states),
             )
         else:
             cache_state = CacheState(
@@ -154,9 +159,12 @@ class LingbotVisualCore(nn.Module):
                 cached_frames=0,
                 chunk_size=hidden_states.shape[1],
                 capability="layer_placeholder" if has_runtime_sequence else "none",
+                backend_name="merged_prefix",
+                backend_payload=None,
                 payload={"stage": "visual_core"},
                 self_attention_kv=layer_cache_entries,
                 update_metadata=cache_update_metadata,
+                branch_states={},
             )
         return VisualCoreOutput(
             tokens=hidden_states,
@@ -168,3 +176,26 @@ class LingbotVisualCore(nn.Module):
                 "cache_runtime_metadata": cache_update_metadata,
             },
         )
+
+    def execute_runtime_step(self, step_input: RuntimeStepInput) -> RuntimeStepOutput:
+        prepared = prepare_runtime_sequence(step_input, hidden_size=self.config.hidden_size)
+        if prepared.mode != "core_input" or prepared.core_input is None:
+            raise ValueError(
+                "PackedSequenceVisualCore only supports runtime programs that resolve to `core_input`."
+            )
+        core_output = self.forward(prepared.core_input)
+        core_output.aux.setdefault("runtime_program", step_input.program.name)
+        core_output.aux.setdefault("sequence_family", step_input.program.sequence_family)
+        return RuntimeStepOutput(
+            tokens=core_output.tokens,
+            core_output=core_output,
+            cache_state=core_output.cache_state,
+            aux={
+                **core_output.aux,
+                "runtime_program": step_input.program.name,
+                "sequence_family": step_input.program.sequence_family,
+            },
+        )
+
+
+LingbotVisualCore = PackedSequenceVisualCore
