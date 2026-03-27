@@ -14,6 +14,28 @@ from open_wam.pipelines import build_variant_pipeline_from_config  # noqa: E402
 from open_wam.utils import load_experiment_config  # noqa: E402
 
 
+def _summarize_cache(cache: dict[str, object]) -> dict[str, object]:
+    backbone_cache = cache.get("backbone_cache")
+    backbone_summary = None
+    if backbone_cache is not None:
+        backbone_summary = {
+            "supported": backbone_cache.supported,
+            "current_start_frame": backbone_cache.current_start_frame,
+            "cached_frames": backbone_cache.cached_frames,
+            "chunk_size": backbone_cache.chunk_size,
+            "backend_name": backbone_cache.backend_name,
+            "capability": backbone_cache.capability,
+        }
+    return {
+        "runtime_mode": cache.get("runtime_mode"),
+        "cache_name": cache.get("cache_name"),
+        "cache_initialized": cache.get("cache_initialized"),
+        "frame_start": cache.get("frame_start"),
+        "step_index": cache.get("step_index"),
+        "backbone_cache": backbone_summary,
+    }
+
+
 def main() -> None:
     config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
     batch = build_synthetic_batch(config.data, batch_size=2)
@@ -32,7 +54,7 @@ def main() -> None:
 
     infer_output = pipeline.forward_infer_step(views=batch.views, context=PolicyInferContext(state=batch.state))
     print("infer.action_pred", tuple(infer_output.decoder_output.action_pred.shape))
-    print("infer.cache", infer_output.policy_output.next_state.cache)
+    print("infer.cache", _summarize_cache(infer_output.policy_output.next_state.cache))
 
 
 if __name__ == "__main__":

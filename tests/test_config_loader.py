@@ -20,6 +20,7 @@ def test_legacy_contract_only_maps_to_post_latent() -> None:
     assert isinstance(config.policy_variant, PostLatentPolicyConfig)
     assert config.policy_variant.compatibility_mode is True
     assert config.action_decoder.name == "mlp_decoder"
+    assert not hasattr(config, "action_head")
 
 
 def test_new_variant_yaml_configs_load() -> None:

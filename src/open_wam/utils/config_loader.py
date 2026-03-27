@@ -8,7 +8,6 @@ import yaml
 from open_wam.configs import (
     ActionDecoderConfig,
     DecodedFeatureActionDecoderConfig,
-    ActionHeadConfig,
     LingbotParallelActionDecoderConfig,
     MLPActionDecoderConfig,
     ParallelStreamPolicyConfig,
@@ -443,14 +442,10 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         video_exec_step=inference_raw.get("video_exec_step", -1),
     )
 
+    # Legacy configs may still provide an `action_head` block. The current
+    # runtime no longer instantiates a separate head stack, but we still read
+    # those fields here to derive the equivalent variant/decoder defaults.
     action_head_raw = raw.get("action_head", {})
-    action_head_config = ActionHeadConfig(
-        name=action_head_raw.get("name", "contract_only"),
-        hidden_size=action_head_raw.get("hidden_size", backbone_config.hidden_size),
-        action_dim=action_head_raw.get("action_dim", data_config.action_schema.action_dim),
-        action_horizon=action_head_raw.get("action_horizon", data_config.action_schema.action_horizon),
-        state_dim=action_head_raw.get("state_dim", data_config.action_schema.state_dim),
-    )
     policy_variant_config = _load_policy_variant_config(
         policy_variant_raw=raw.get("policy_variant", {}),
         action_head_raw=action_head_raw,
@@ -484,7 +479,6 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         backbone=backbone_config,
         policy_variant=policy_variant_config,
         action_decoder=action_decoder_config,
-        action_head=action_head_config,
         training=training_config,
         inference=inference_config,
         trainer=trainer_config,

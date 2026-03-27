@@ -23,7 +23,6 @@ from .lingbot_exact import (
     save_lingbot_exact_artifact_bundle,
 )
 from .rollout import VariantRolloutRunner, VariantRolloutSession, VariantRolloutStepOutput
-from .unified_wam import UnifiedWAMInferOutput, UnifiedWAMPipeline, UnifiedWAMTrainOutput
 from .variant_pipeline import VariantPipeline, VariantPipelineInferOutput, VariantPipelineTrainOutput
 
 __all__ = [
@@ -33,9 +32,6 @@ __all__ = [
     "LingbotExactRunner",
     "LingbotExactSession",
     "LingbotExactWarmupOutput",
-    "UnifiedWAMInferOutput",
-    "UnifiedWAMPipeline",
-    "UnifiedWAMTrainOutput",
     "VariantPipeline",
     "VariantPipelineInferOutput",
     "VariantPipelineTrainOutput",

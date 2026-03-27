@@ -56,7 +56,7 @@ Important source packages:
   `register_attached`, `post_latent`, and `post_decoded` attachment paths
 - `src/open_wam/models/action_decoders`: action decoders and losses
 - `src/open_wam/models/video_backbone`: backbone config and compatibility contracts
-- `src/open_wam/pipelines`: variant pipeline, exact LingBot runner, and compatibility builders
+- `src/open_wam/pipelines`: variant pipeline, exact LingBot runner, and rollout helpers
 - `src/open_wam/lightning`: Lightning module and datamodule
 - `src/open_wam/training`: train entrypoint
 - `src/open_wam/evals`: eval entrypoint
@@ -296,7 +296,7 @@ Trajectory eval modes:
 The current generic evaluator now:
 
 - loads either an experiment YAML or an eval-wrapper YAML
-- builds the current `VariantPipeline`, not the legacy `UnifiedWAMPipeline`
+- builds the current `VariantPipeline`
 - supports three modes:
   - `batch`: independent one-window inference on each sampled batch
   - `trajectory`: stateful rollout over episode-ordered windows, carrying
@@ -392,6 +392,7 @@ target is now supported by:
 
 Start here for collaborator-facing context:
 
+- [notes/README.md](notes/README.md)
 - [notes/collaboration_guide.md](notes/collaboration_guide.md)
 - [notes/architecture.md](notes/architecture.md)
 - [notes/current_all_variant_execution_status.md](notes/current_all_variant_execution_status.md)
@@ -399,7 +400,6 @@ Start here for collaborator-facing context:
 - [notes/libero_exact_rendering.md](notes/libero_exact_rendering.md)
 - [notes/lingbot_reference_usage.md](notes/lingbot_reference_usage.md)
 - [notes/libero_lerobot.md](notes/libero_lerobot.md)
-- [notes/new_work_roadmap.md](notes/new_work_roadmap.md)
 
 ## Current Caveat
 

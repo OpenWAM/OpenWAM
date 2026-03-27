@@ -7,7 +7,6 @@ from .action_decoder import (
     MLPActionDecoderConfig,
     RegisterActionDecoderConfig,
 )
-from .action_head import ActionHeadConfig
 from .data import (
     ActionTargetConfig,
     ActionSchemaConfig,
@@ -31,7 +30,6 @@ from .training import TrainingConfig
 
 __all__ = [
     "ActionDecoderConfig",
-    "ActionHeadConfig",
     "ActionSchemaConfig",
     "ActionTargetConfig",
     "DecodedFeatureActionDecoderConfig",
