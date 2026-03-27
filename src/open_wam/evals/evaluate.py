@@ -14,7 +14,7 @@ SRC_ROOT = Path(__file__).resolve().parents[2]
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from open_wam.configs import DataConfig, ExperimentConfig
+from open_wam.configs import DataConfig, DataSplit, EvalMode, EvalPredictionSource, ExperimentConfig, TrainerAccelerator
 from open_wam.data import WAMBatch, WAMSample, build_train_val_datasets, collate_wam_samples, move_wam_batch_to_device
 from open_wam.models.policy_variants import PolicyInferContext
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config
@@ -26,8 +26,8 @@ class EvaluationRequest:
     """Resolved evaluation request after applying YAML defaults and CLI overrides."""
 
     experiment_config_path: Path
-    mode: str
-    split: str
+    mode: EvalMode
+    split: DataSplit
     max_batches: int
     max_trajectories: int | None
     max_steps_per_trajectory: int | None
@@ -42,15 +42,15 @@ class EvaluationSummary:
     """Minimal structured result for CLI output and tests."""
 
     experiment_name: str
-    mode: str
-    split: str
+    mode: EvalMode
+    split: DataSplit
     num_batches: int
     num_trajectories: int
     device: str
-    action_prediction_source: str
+    action_prediction_source: EvalPredictionSource
     action_prediction_shape: tuple[int, ...]
     target_action_shape: tuple[int, ...]
-    video_prediction_source: str
+    video_prediction_source: EvalPredictionSource
     video_prediction_shape: tuple[int, ...]
     target_video_shape: tuple[int, ...]
     mean_action_mse: float | None
@@ -110,8 +110,8 @@ def _coerce_optional_positive_int(
 def resolve_evaluation_request(
     config_path: str | Path,
     *,
-    mode_override: str | None = None,
-    split_override: str | None = None,
+    mode_override: EvalMode | str | None = None,
+    split_override: DataSplit | str | None = None,
     max_batches_override: int | None = None,
     max_trajectories_override: int | None = None,
     max_steps_per_trajectory_override: int | None = None,
@@ -162,8 +162,8 @@ def resolve_evaluation_request(
 
     return EvaluationRequest(
         experiment_config_path=experiment_config_path,
-        mode=mode_override or raw.get("mode", "batch"),
-        split=split_override or raw.get("split", "val"),
+        mode=EvalMode(mode_override or raw.get("mode", "batch")),
+        split=DataSplit(split_override or raw.get("split", "val")),
         max_batches=max_batches_override if max_batches_override is not None else int(raw.get("max_batches", 1)),
         max_trajectories=max_trajectories,
         max_steps_per_trajectory=max_steps_per_trajectory,
@@ -177,7 +177,7 @@ def resolve_evaluation_request(
 def _resolve_device(device: str, experiment_config: ExperimentConfig) -> torch.device:
     if device != "auto":
         return torch.device(device)
-    if experiment_config.trainer.accelerator == "cpu":
+    if experiment_config.trainer.accelerator == TrainerAccelerator.CPU:
         return torch.device("cpu")
     if torch.cuda.is_available():
         return torch.device("cuda")
@@ -189,15 +189,15 @@ def _resolve_device(device: str, experiment_config: ExperimentConfig) -> torch.d
 def _build_eval_dataloader(
     data_config: DataConfig,
     *,
-    split: str,
+    split: DataSplit,
     batch_size_override: int | None,
 ) -> DataLoader[WAMBatch]:
     train_dataset, val_dataset = build_train_val_datasets(data_config)
     dataset: Dataset[WAMSample]
-    if split == "train":
+    if split == DataSplit.TRAIN:
         dataset = train_dataset
         batch_size = batch_size_override or data_config.train_batch_size
-    elif split == "val":
+    elif split == DataSplit.VAL:
         dataset = val_dataset
         batch_size = batch_size_override or data_config.val_batch_size
     else:
@@ -214,12 +214,12 @@ def _build_eval_dataloader(
 def _select_eval_dataset(
     data_config: DataConfig,
     *,
-    split: str,
+    split: DataSplit,
 ) -> Dataset[WAMSample]:
     train_dataset, val_dataset = build_train_val_datasets(data_config)
-    if split == "train":
+    if split == DataSplit.TRAIN:
         return train_dataset
-    if split == "val":
+    if split == DataSplit.VAL:
         return val_dataset
     raise ValueError(f"Unsupported eval split '{split}'. Expected 'train' or 'val'.")
 
@@ -282,13 +282,13 @@ def _select_eval_action_prediction(
     target_actions: torch.Tensor,
     decoder_action_pred: torch.Tensor,
     policy_aux: dict[str, Any],
-) -> tuple[str, torch.Tensor]:
+) -> tuple[EvalPredictionSource, torch.Tensor]:
     if decoder_action_pred.shape == target_actions.shape:
-        return "decoder_action_pred", decoder_action_pred
+        return EvalPredictionSource.DECODER_ACTION_PRED, decoder_action_pred
     raw_chunk_action_pred = policy_aux.get("raw_chunk_action_pred")
     if isinstance(raw_chunk_action_pred, torch.Tensor) and raw_chunk_action_pred.shape == target_actions.shape:
-        return "raw_chunk_action_pred", raw_chunk_action_pred
-    return "decoder_action_pred_unmatched", decoder_action_pred
+        return EvalPredictionSource.RAW_CHUNK_ACTION_PRED, raw_chunk_action_pred
+    return EvalPredictionSource.DECODER_ACTION_PRED_UNMATCHED, decoder_action_pred
 
 
 def _select_eval_video_prediction(
@@ -296,16 +296,24 @@ def _select_eval_video_prediction(
     target_video_latents: torch.Tensor,
     decoder_aux: dict[str, Any],
     policy_aux: dict[str, Any],
-) -> tuple[str, torch.Tensor | None]:
+) -> tuple[EvalPredictionSource, torch.Tensor | None]:
     for source_name in ("predicted_latents", "predicted_video_latents"):
         candidate = decoder_aux.get(source_name)
         if isinstance(candidate, torch.Tensor) and candidate.shape == target_video_latents.shape:
-            return f"decoder_{source_name}", candidate
+            return (
+                EvalPredictionSource.DECODER_PREDICTED_LATENTS
+                if source_name == "predicted_latents"
+                else EvalPredictionSource.DECODER_PREDICTED_VIDEO_LATENTS
+            ), candidate
     for source_name in ("predicted_latents", "predicted_video_latents"):
         candidate = policy_aux.get(source_name)
         if isinstance(candidate, torch.Tensor) and candidate.shape == target_video_latents.shape:
-            return f"policy_{source_name}", candidate
-    return "unavailable", None
+            return (
+                EvalPredictionSource.POLICY_PREDICTED_LATENTS
+                if source_name == "predicted_latents"
+                else EvalPredictionSource.POLICY_PREDICTED_VIDEO_LATENTS
+            ), candidate
+    return EvalPredictionSource.UNAVAILABLE, None
 
 
 def _group_dataset_indices_by_episode(dataset: Dataset[WAMSample]) -> list[list[int]]:
@@ -434,15 +442,15 @@ def run_evaluation(
     trajectory_video_mse_values: list[float] = []
     action_prediction_shape: tuple[int, ...] | None = None
     target_action_shape: tuple[int, ...] | None = None
-    action_prediction_source = "unavailable"
+    action_prediction_source = EvalPredictionSource.UNAVAILABLE
     video_prediction_shape: tuple[int, ...] | None = None
     target_video_shape: tuple[int, ...] | None = None
-    video_prediction_source = "unavailable"
+    video_prediction_source = EvalPredictionSource.UNAVAILABLE
     num_batches = 0
     num_trajectories = 0
 
     with torch.no_grad():
-        if request.mode == "batch":
+        if request.mode == EvalMode.BATCH:
             dataloader = _build_eval_dataloader(
                 experiment_config.data,
                 split=request.split,
@@ -494,7 +502,7 @@ def run_evaluation(
                         )
                     )
                 num_batches += 1
-        elif request.mode in {"trajectory", "trajectory_open_loop"}:
+        elif request.mode in {EvalMode.TRAJECTORY, EvalMode.TRAJECTORY_OPEN_LOOP}:
             dataset = _select_eval_dataset(experiment_config.data, split=request.split)
             episode_groups = _group_dataset_indices_by_episode(dataset)
             if request.max_trajectories is not None:
@@ -526,7 +534,7 @@ def run_evaluation(
                             "metadata": batch.metadata,
                         },
                     )
-                    if request.mode == "trajectory_open_loop":
+                    if request.mode == EvalMode.TRAJECTORY_OPEN_LOOP:
                         target_visual_outputs = pipeline.prepare_visual_outputs(
                             batch.views,
                             task_text=batch.task_text,
@@ -611,7 +619,7 @@ def run_evaluation(
                     previous_action = action_prediction.detach()
                     if video_prediction is not None:
                         rollout_latents = video_prediction.detach()
-                    if request.mode == "trajectory_open_loop":
+                    if request.mode == EvalMode.TRAJECTORY_OPEN_LOOP:
                         rollout_frame_indices = current_frame_indices
                     rollout_canonical_video = output.visual_outputs.frontend.canonical_video
                     num_batches += 1

@@ -2,6 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .enums import (
+    ActionTargetReferenceSource,
+    ActionTargetRepresentation,
+    ActionTargetStateEncoding,
+    DataSplit,
+    GripperRepresentation,
+    RotationRepresentation,
+    coerce_fields,
+)
+
 
 @dataclass(frozen=True)
 class ViewLayoutConfig:
@@ -72,15 +82,27 @@ class ActionTargetConfig:
             The default `-1` means "take the last action dimension".
     """
 
-    representation: str = "raw"
+    representation: ActionTargetRepresentation = ActionTargetRepresentation.RAW
     source_key: str = "actions"
     pose_source_key: str = "state"
-    state_encoding: str = "identity"
-    reference_source: str = "anchor_state"
-    rotation_representation: str = "axis_angle"
+    state_encoding: ActionTargetStateEncoding = ActionTargetStateEncoding.IDENTITY
+    reference_source: ActionTargetReferenceSource = ActionTargetReferenceSource.ANCHOR_STATE
+    rotation_representation: RotationRepresentation = RotationRepresentation.AXIS_ANGLE
     include_gripper: bool = True
-    gripper_representation: str = "first_channel"
+    gripper_representation: GripperRepresentation = GripperRepresentation.FIRST_CHANNEL
     gripper_action_index: int = -1
+
+    def __post_init__(self) -> None:
+        coerce_fields(
+            self,
+            enum_fields={
+                "representation": ActionTargetRepresentation,
+                "state_encoding": ActionTargetStateEncoding,
+                "reference_source": ActionTargetReferenceSource,
+                "rotation_representation": RotationRepresentation,
+                "gripper_representation": GripperRepresentation,
+            },
+        )
 
 
 @dataclass(frozen=True)
@@ -91,9 +113,12 @@ class DataConfig:
     dataset_type: str
     repo_id: str | None
     local_root: str | None
-    split: str
+    latent_root: str | None
+    latent_subdir: str
+    split: DataSplit
     cache_dir: str | None
     camera_names: tuple[str, ...]
+    latent_camera_names: tuple[str, ...]
     canonical_height: int
     canonical_width: int
     view_layout: tuple[ViewLayoutConfig, ...]
@@ -111,6 +136,9 @@ class DataConfig:
     action_schema: ActionSchemaConfig
     action_target: ActionTargetConfig
 
+    def __post_init__(self) -> None:
+        coerce_fields(self, enum_fields={"split": DataSplit})
+
 
 @dataclass(frozen=True)
 class GenericDataConfig(DataConfig):
@@ -125,9 +153,12 @@ class GenericDataConfig(DataConfig):
     dataset_type: str = "synthetic_multiview"
     repo_id: str | None = None
     local_root: str | None = None
-    split: str = "train"
+    latent_root: str | None = None
+    latent_subdir: str = "latents"
+    split: DataSplit = DataSplit.TRAIN
     cache_dir: str | None = None
     camera_names: tuple[str, ...] = ("camera_0",)
+    latent_camera_names: tuple[str, ...] = ("camera_0",)
     canonical_height: int = 384
     canonical_width: int = 320
     view_layout: tuple[ViewLayoutConfig, ...] = field(
@@ -172,9 +203,16 @@ class RobotWinDataConfig(DataConfig):
     dataset_type: str = "synthetic_robotwin"
     repo_id: str | None = None
     local_root: str | None = None
-    split: str = "train"
+    latent_root: str | None = None
+    latent_subdir: str = "latents"
+    split: DataSplit = DataSplit.TRAIN
     cache_dir: str | None = None
     camera_names: tuple[str, ...] = (
+        "cam_high",
+        "cam_left_wrist",
+        "cam_right_wrist",
+    )
+    latent_camera_names: tuple[str, ...] = (
         "cam_high",
         "cam_left_wrist",
         "cam_right_wrist",
@@ -253,9 +291,15 @@ class LiberoDataConfig(DataConfig):
     dataset_type: str = "lerobot_v2"
     repo_id: str | None = "physical-intelligence/libero"
     local_root: str | None = None
-    split: str = "train"
+    latent_root: str | None = None
+    latent_subdir: str = "latents"
+    split: DataSplit = DataSplit.TRAIN
     cache_dir: str | None = None
     camera_names: tuple[str, ...] = (
+        "image",
+        "wrist_image",
+    )
+    latent_camera_names: tuple[str, ...] = (
         "image",
         "wrist_image",
     )
@@ -302,14 +346,14 @@ class LiberoDataConfig(DataConfig):
     )
     action_target: ActionTargetConfig = field(
         default_factory=lambda: ActionTargetConfig(
-            representation="eef_pose_relative_to_reference",
+            representation=ActionTargetRepresentation.EEF_POSE_RELATIVE_TO_REFERENCE,
             source_key="actions",
             pose_source_key="state",
-            state_encoding="eef_pos_axisangle_gripper_2d",
-            reference_source="anchor_state",
-            rotation_representation="axis_angle",
+            state_encoding=ActionTargetStateEncoding.EEF_POS_AXISANGLE_GRIPPER_2D,
+            reference_source=ActionTargetReferenceSource.ANCHOR_STATE,
+            rotation_representation=RotationRepresentation.AXIS_ANGLE,
             include_gripper=True,
-            gripper_representation="action_command",
+            gripper_representation=GripperRepresentation.ACTION_COMMAND,
             gripper_action_index=-1,
         )
     )

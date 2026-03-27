@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from open_wam.configs import InferenceConfig, ParallelStreamPolicyConfig, TrainingConfig
+from open_wam.configs import ActionSpace, InferenceConfig, ParallelRuntimeMode, ParallelStreamPolicyConfig, TrainingConfig
 from open_wam.models.video_backbone.contracts import CacheState
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.policy_variants.common.layouts import expand_previous_action
@@ -47,7 +47,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         num_frames: int,
     ) -> None:
         super().__init__()
-        if config.runtime_mode != "lingbot_exact":
+        if config.runtime_mode != ParallelRuntimeMode.LINGBOT_EXACT:
             raise ValueError(
                 "Parallel-stream method 1 now only supports LingBot-exact semantics. "
                 f"Got runtime_mode={config.runtime_mode!r}."
@@ -126,7 +126,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             dtype=dtype,
         )
         action_mask = batch.action_mask
-        if action_mask is None and resolved_action_space == "raw":
+        if action_mask is None and resolved_action_space == ActionSpace.RAW:
             action_mask = torch.ones_like(batch.actions)
         model_action_mask = (
             self.exact_action_adapter.to_model_action_mask_sequence(
@@ -181,6 +181,10 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 "runtime_mode": self.config.runtime_mode,
                 "latent_pred": latent_pred,
                 "lingbot_train_artifacts": train_artifacts,
+                "loss_weights": {
+                    "latent": self.training_config.objective_weight("latent"),
+                    "action": self.training_config.objective_weight("action"),
+                },
                 "patch_size": (
                     self.backbone_config.patch_size_t,
                     self.backbone_config.patch_size_h,
@@ -253,7 +257,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         *,
         action_history: torch.Tensor,
         infer_state: PolicyInferState,
-        action_space: str = "auto",
+        action_space: ActionSpace | str = ActionSpace.AUTO,
     ) -> PolicyInferState:
         # Warmup mirrors the original LingBot server lifecycle: observed video
         # and aligned action history are committed to the exact cache before any
@@ -409,7 +413,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 visual_outputs,
                 action_history=previous_actions,
                 infer_state=infer_state,
-                action_space="model",
+                action_space=ActionSpace.MODEL,
             )
             condition_outputs = None
         return self.generate_reference_chunk(

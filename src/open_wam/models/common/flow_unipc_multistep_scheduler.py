@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import math
+from enum import StrEnum
 from typing import List
 
 import numpy as np
 import torch
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.schedulers.scheduling_utils import SchedulerMixin, SchedulerOutput
+
+
+class FlowUniPCPredictionType(StrEnum):
+    FLOW_PREDICTION = "flow_prediction"
+
+
+class FlowUniPCSolverType(StrEnum):
+    BH1 = "bh1"
+    BH2 = "bh2"
 
 
 class FlowUniPCMultistepScheduler(SchedulerMixin, ConfigMixin):
@@ -24,17 +34,17 @@ class FlowUniPCMultistepScheduler(SchedulerMixin, ConfigMixin):
         self,
         num_train_timesteps: int = 1000,
         solver_order: int = 2,
-        prediction_type: str = "flow_prediction",
+        prediction_type: FlowUniPCPredictionType | str = FlowUniPCPredictionType.FLOW_PREDICTION,
         shift: float = 1.0,
         thresholding: bool = False,
         dynamic_thresholding_ratio: float = 0.995,
         sample_max_value: float = 1.0,
         predict_x0: bool = True,
-        solver_type: str = "bh2",
+        solver_type: FlowUniPCSolverType | str = FlowUniPCSolverType.BH2,
         lower_order_final: bool = True,
         disable_corrector: List[int] | None = None,
     ) -> None:
-        if solver_type not in {"bh1", "bh2"}:
+        if solver_type not in {FlowUniPCSolverType.BH1, FlowUniPCSolverType.BH2}:
             raise NotImplementedError(f"{solver_type} is not implemented for flow UniPC.")
         self.predict_x0 = predict_x0
         self.num_inference_steps: int | None = None
@@ -97,7 +107,7 @@ class FlowUniPCMultistepScheduler(SchedulerMixin, ConfigMixin):
         sample: torch.Tensor,
         step_index: int,
     ) -> torch.Tensor:
-        if not self.predict_x0 or self.config.prediction_type != "flow_prediction":
+        if not self.predict_x0 or self.config.prediction_type != FlowUniPCPredictionType.FLOW_PREDICTION:
             raise ValueError("FlowUniPCMultistepScheduler only supports predict_x0 flow_prediction mode.")
         sigma_t = self.sigmas[step_index].to(device=sample.device, dtype=sample.dtype)
         x0_pred = sample - sigma_t * model_output
@@ -146,7 +156,7 @@ class FlowUniPCMultistepScheduler(SchedulerMixin, ConfigMixin):
         factorial_i = 1
         b = []
         r = []
-        b_h = hh if self.config.solver_type == "bh1" else torch.expm1(hh)
+        b_h = hh if self.config.solver_type == FlowUniPCSolverType.BH1 else torch.expm1(hh)
         for i in range(1, order + 1):
             r.append(torch.pow(rks_tensor, i - 1))
             b.append(h_phi_k * factorial_i / b_h)
@@ -210,7 +220,7 @@ class FlowUniPCMultistepScheduler(SchedulerMixin, ConfigMixin):
         factorial_i = 1
         b = []
         r = []
-        b_h = hh if self.config.solver_type == "bh1" else torch.expm1(hh)
+        b_h = hh if self.config.solver_type == FlowUniPCSolverType.BH1 else torch.expm1(hh)
         for i in range(1, order + 1):
             r.append(torch.pow(rks_tensor, i - 1))
             b.append(h_phi_k * factorial_i / b_h)

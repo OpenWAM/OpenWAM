@@ -14,10 +14,21 @@ from huggingface_hub import hf_hub_download
 from PIL import Image
 from torch.utils.data import Dataset
 
-from open_wam.configs import DataConfig
+from open_wam.configs import ActionTargetReferenceSource, ActionTargetRepresentation, DataConfig
 
 from .action_transforms import build_relative_pose_targets, expected_pose_target_dim
 from .contracts import WAMSample
+
+
+def _resolve_row_key(row: dict[str, Any], key: str) -> str:
+    if key in row:
+        return key
+    if key.endswith("s") and key[:-1] in row:
+        return key[:-1]
+    singular_candidate = f"{key}s"
+    if singular_candidate in row:
+        return singular_candidate
+    raise KeyError(key)
 
 
 @dataclass(frozen=True)
@@ -134,9 +145,10 @@ class LeRobotV2WindowDataset(Dataset[WAMSample]):
             action_rows=action_rows,
             target_state_rows=target_state_rows,
         )
+        state_source_key = self.data_config.action_target.pose_source_key
         state, state_mask = self._extract_sequence(
             rows=state_rows,
-            key="state",
+            key=state_source_key,
             target_dim=self.data_config.action_schema.state_dim,
             target_length=state_horizon,
             left_pad=True,
@@ -164,6 +176,7 @@ class LeRobotV2WindowDataset(Dataset[WAMSample]):
                 "observation_frame_indices": [int(row["frame_index"]) for row in observation_rows],
                 "action_frame_indices": [int(row["frame_index"]) for row in action_rows],
                 "target_state_frame_indices": [int(row["frame_index"]) for row in target_state_rows],
+                "state_source_key": state_source_key,
                 "action_representation": self.data_config.action_target.representation,
                 **action_target_metadata,
             },
@@ -186,7 +199,7 @@ class LeRobotV2WindowDataset(Dataset[WAMSample]):
         target_dim = self.data_config.action_schema.action_dim
         target_length = self.data_config.action_schema.action_horizon
 
-        if action_target.representation == "raw":
+        if action_target.representation == ActionTargetRepresentation.RAW:
             actions, action_mask = self._extract_sequence(
                 rows=action_rows,
                 key=action_target.source_key,
@@ -195,18 +208,24 @@ class LeRobotV2WindowDataset(Dataset[WAMSample]):
             )
             return actions, action_mask, {}
 
-        if action_target.representation == "eef_pose_relative_to_reference":
-            if action_target.reference_source != "anchor_state":
+        if action_target.representation == ActionTargetRepresentation.EEF_POSE_RELATIVE_TO_REFERENCE:
+            if action_target.reference_source != ActionTargetReferenceSource.ANCHOR_STATE:
                 raise ValueError(
                     "LeRobot-v2 reference-relative EEF targets currently support only "
                     f"`reference_source=anchor_state`, got {action_target.reference_source}."
                 )
             pose_source = torch.stack(
-                [torch.tensor(row[action_target.pose_source_key], dtype=torch.float32) for row in target_state_rows],
+                [
+                    torch.tensor(row[_resolve_row_key(row, action_target.pose_source_key)], dtype=torch.float32)
+                    for row in target_state_rows
+                ],
                 dim=0,
             )
             raw_action_sequence = torch.stack(
-                [torch.tensor(row[action_target.source_key], dtype=torch.float32) for row in action_rows],
+                [
+                    torch.tensor(row[_resolve_row_key(row, action_target.source_key)], dtype=torch.float32)
+                    for row in action_rows
+                ],
                 dim=0,
             )
             relative_targets, relative_mask, metadata = build_relative_pose_targets(
@@ -327,7 +346,10 @@ class LeRobotV2WindowDataset(Dataset[WAMSample]):
         if not rows:
             raise ValueError(f"Cannot extract sequence for key '{key}' from an empty row slice.")
 
-        sequence = torch.stack([torch.tensor(row[key], dtype=torch.float32) for row in rows], dim=0)
+        sequence = torch.stack(
+            [torch.tensor(row[_resolve_row_key(row, key)], dtype=torch.float32) for row in rows],
+            dim=0,
+        )
         return self._pack_sequence(
             sequence=sequence,
             target_dim=target_dim,

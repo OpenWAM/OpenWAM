@@ -7,6 +7,7 @@ import torch
 import torch.nn.functional as F
 from diffusers import AutoencoderKLWan
 
+from open_wam.configs import ReferenceAssetsDevicePolicy
 from open_wam.data.raw_video import ViewPlacement
 from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
 
@@ -309,8 +310,8 @@ class LingbotReferenceAssets:
             self.text_encoder = self.text_encoder.to(device=target_device, dtype=target_dtype)
 
     def _resolve_reference_runtime_device(self, device: torch.device) -> torch.device:
-        policy = getattr(self.config, "reference_assets_device_policy", "runtime")
-        if policy == "cpu_offload":
+        policy = getattr(self.config, "reference_assets_device_policy", ReferenceAssetsDevicePolicy.RUNTIME)
+        if policy == ReferenceAssetsDevicePolicy.CPU_OFFLOAD:
             return torch.device("cpu")
         return torch.device(device)
 

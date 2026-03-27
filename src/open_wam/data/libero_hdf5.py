@@ -12,7 +12,7 @@ import h5py
 import torch
 from torch.utils.data import Dataset
 
-from open_wam.configs import DataConfig
+from open_wam.configs import ActionTargetReferenceSource, ActionTargetRepresentation, DataConfig
 
 from .action_transforms import build_relative_pose_targets, expected_pose_target_dim
 from .contracts import WAMSample
@@ -161,7 +161,7 @@ class LiberoOfflineWindowDataset(Dataset[WAMSample]):
         target_dim = self.data_config.action_schema.action_dim
         target_length = self.data_config.action_schema.action_horizon
 
-        if action_target.representation == "raw":
+        if action_target.representation == ActionTargetRepresentation.RAW:
             actions, action_mask = self._pack_sequence(
                 sequence=action_rows,
                 target_dim=target_dim,
@@ -170,8 +170,8 @@ class LiberoOfflineWindowDataset(Dataset[WAMSample]):
             )
             return actions, action_mask, {}
 
-        if action_target.representation == "eef_pose_relative_to_reference":
-            if action_target.reference_source != "anchor_state":
+        if action_target.representation == ActionTargetRepresentation.EEF_POSE_RELATIVE_TO_REFERENCE:
+            if action_target.reference_source != ActionTargetReferenceSource.ANCHOR_STATE:
                 raise ValueError(
                     "Local LIBERO HDF5 reference-relative EEF targets currently support only "
                     f"`reference_source=anchor_state`, got {action_target.reference_source}."

@@ -6,6 +6,7 @@ from typing import Any, Mapping
 
 import torch
 
+from open_wam.configs import ActionSpace, ParallelRuntimeMode
 from open_wam.models.action_decoders import ActionDecoderInferOutput
 from open_wam.models.policy_variants import PolicyInferOutput, PolicyInferState
 from open_wam.models.policy_variants.parallel_stream import ParallelStreamPolicyVariant
@@ -105,7 +106,7 @@ class LingbotExactRunner:
         self.pipeline = pipeline
         if not isinstance(self.pipeline.policy_variant, ParallelStreamPolicyVariant):
             raise TypeError("LingBot exact runner requires a parallel-stream policy variant.")
-        if self.pipeline.policy_variant.config.runtime_mode != "lingbot_exact":
+        if self.pipeline.policy_variant.config.runtime_mode != ParallelRuntimeMode.LINGBOT_EXACT:
             raise ValueError("LingBot exact runner requires `parallel_stream.runtime_mode = lingbot_exact`.")
 
     @property
@@ -142,7 +143,7 @@ class LingbotExactRunner:
         task_text: tuple[str | None, ...] | None = None,
         text_context: torch.Tensor | None = None,
         negative_text_context: torch.Tensor | None = None,
-        action_space: str = "auto",
+        action_space: ActionSpace | str = ActionSpace.AUTO,
     ) -> LingbotExactWarmupOutput:
         # Warmup uses the same shared frontend/runtime owner as the normal
         # pipeline path, while preserving the exact slot-pool cache lifecycle

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from open_wam.configs import (
+    ActionDecoderName,
+    BackboneImplementation,
     ExperimentConfig,
+    ParallelRuntimeMode,
     ParallelStreamPolicyConfig,
     PostDecodedPolicyConfig,
     PostLatentPolicyConfig,
@@ -25,7 +28,10 @@ from .lingbot_exact import LingbotExactRunner
 
 
 def _resolve_parallel_stream_model_action_dim(config: ExperimentConfig) -> int:
-    if isinstance(config.policy_variant, ParallelStreamPolicyConfig) and config.policy_variant.runtime_mode == "lingbot_exact":
+    if (
+        isinstance(config.policy_variant, ParallelStreamPolicyConfig)
+        and config.policy_variant.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT
+    ):
         return config.action_decoder.action_dim
     return config.data.action_schema.action_dim
 
@@ -33,13 +39,13 @@ def _resolve_parallel_stream_model_action_dim(config: ExperimentConfig) -> int:
 def validate_experiment_config(config: ExperimentConfig) -> None:
     action_schema = config.data.action_schema
     if isinstance(config.policy_variant, (ParallelStreamPolicyConfig, RegisterAttachedPolicyConfig)):
-        if normalize_backbone_implementation(config.backbone.implementation) != "shared_transformer":
+        if normalize_backbone_implementation(config.backbone.implementation) != BackboneImplementation.SHARED_TRANSFORMER:
             raise ValueError(
                 "Joint video+action diffusion variants require the shared transformer backbone by default, "
                 f"got backbone.implementation={config.backbone.implementation!r}."
             )
     if isinstance(config.policy_variant, ParallelStreamPolicyConfig):
-        if config.policy_variant.runtime_mode != "lingbot_exact":
+        if config.policy_variant.runtime_mode != ParallelRuntimeMode.LINGBOT_EXACT:
             raise ValueError(
                 "Parallel-stream method 1 now only supports LingBot-exact semantics, "
                 f"got policy_variant.runtime_mode={config.policy_variant.runtime_mode!r}."
@@ -51,7 +57,7 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
                 f"got action_horizon={action_schema.action_horizon}, num_frames={config.data.num_frames}, "
                 f"action_per_frame={config.policy_variant.action_per_frame}."
             )
-        if config.action_decoder.name != "lingbot_parallel_decoder":
+        if config.action_decoder.name != ActionDecoderName.LINGBOT_PARALLEL:
             raise ValueError(
                 "Parallel-stream method 1 requires `action_decoder.name = lingbot_parallel_decoder`."
             )
@@ -126,7 +132,7 @@ def build_policy_variant(config: ExperimentConfig):
 
 def build_action_decoder(config: ExperimentConfig):
     decoder_config = config.action_decoder
-    if decoder_config.name == "mlp_decoder":
+    if decoder_config.name == ActionDecoderName.MLP:
         return MLPActionDecoder(
             hidden_size=decoder_config.hidden_size,
             action_dim=decoder_config.action_dim,
@@ -135,7 +141,7 @@ def build_action_decoder(config: ExperimentConfig):
             inference_config=config.inference,
             dropout=decoder_config.dropout,
         )
-    if decoder_config.name == "register_decoder":
+    if decoder_config.name == ActionDecoderName.REGISTER:
         return RegisterActionDecoder(
             hidden_size=decoder_config.hidden_size,
             action_dim=decoder_config.action_dim,
@@ -144,7 +150,7 @@ def build_action_decoder(config: ExperimentConfig):
             inference_config=config.inference,
             dropout=decoder_config.dropout,
         )
-    if decoder_config.name == "decoded_feature_decoder":
+    if decoder_config.name == ActionDecoderName.DECODED_FEATURE:
         return DecodedFeatureActionDecoder(
             hidden_size=decoder_config.hidden_size,
             action_dim=decoder_config.action_dim,
@@ -153,7 +159,7 @@ def build_action_decoder(config: ExperimentConfig):
             inference_config=config.inference,
             dropout=decoder_config.dropout,
         )
-    if decoder_config.name == "lingbot_parallel_decoder":
+    if decoder_config.name == ActionDecoderName.LINGBOT_PARALLEL:
         return LingbotParallelActionDecoder(
             hidden_size=decoder_config.hidden_size,
             action_dim=decoder_config.action_dim,

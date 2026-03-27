@@ -5,6 +5,7 @@ from typing import Any
 import torch
 from torch import nn
 
+from open_wam.configs import BackboneImplementation
 from open_wam.data.raw_video import ViewPlacement
 from open_wam.models.common import (
     RolloutCursor,
@@ -45,9 +46,9 @@ class VisualTower(nn.Module):
         self.state_dim = state_dim
         implementation = normalize_backbone_implementation(self.config.implementation)
         self.frontend = SharedVideoFrontend(self.config)
-        if implementation == "shared_transformer":
+        if implementation == BackboneImplementation.SHARED_TRANSFORMER:
             self.core = SharedVideoTransformerCore(self.config, action_dim=action_dim, state_dim=state_dim)
-        elif implementation == "dummy":
+        elif implementation == BackboneImplementation.DUMMY:
             self.core = PackedSequenceVisualCore(self.config)
         else:
             raise ValueError(
@@ -57,7 +58,7 @@ class VisualTower(nn.Module):
         self.decoder = VisualFeatureDecoder(self.config.hidden_size)
         self.reference_core_load_report: ReferenceCoreLoadReport | None = None
         if self.config.load_reference_core_weights:
-            if implementation != "shared_transformer":
+            if implementation != BackboneImplementation.SHARED_TRANSFORMER:
                 raise ValueError("`backbone.load_reference_core_weights` requires `backbone.implementation = shared_transformer`.")
             if self.action_dim is None:
                 raise ValueError("VisualTower requires `action_dim` to load reference weights into the shared core.")
@@ -187,7 +188,7 @@ class VisualTower(nn.Module):
         )
 
     def cache_capability(self) -> str:
-        if normalize_backbone_implementation(self.config.implementation) == "shared_transformer":
+        if normalize_backbone_implementation(self.config.implementation) == BackboneImplementation.SHARED_TRANSFORMER:
             return "self_attn_plus_cross_attn"
         return "none"
 

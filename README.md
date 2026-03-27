@@ -41,6 +41,7 @@ The first real dataset path is:
 ```text
 configs/         runnable experiment and eval YAMLs
 notes/           research and engineering notes
+AGENTS.md        repo-level contributor and agent style guide
 src/open_wam/third_party/  vendored external modules kept inside the repo
 scripts/         thin wrappers, smoke tests, and inspection scripts
 src/open_wam/    all source code

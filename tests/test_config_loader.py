@@ -4,10 +4,23 @@ from pathlib import Path
 import yaml
 
 from open_wam.configs import (
+    ActionDecoderName,
+    AttentionMode,
+    BatchAdapterName,
+    CacheWarmupSource,
+    CFGMode,
+    JointSampler,
+    LoopPolicyName,
+    ParallelRuntimeMode,
     ParallelStreamPolicyConfig,
     PostDecodedPolicyConfig,
     PostLatentPolicyConfig,
     RegisterAttachedPolicyConfig,
+    StrategyName,
+    TrainerRuntimeName,
+    TrainingComponentSelector,
+    TrainingObjective,
+    WarmupAnchor,
 )
 from open_wam.utils.config_loader import load_experiment_config
 
@@ -88,6 +101,60 @@ def test_exact_local_libero_yaml_config_loads() -> None:
     assert exact_libero.action_decoder.action_horizon == 16
 
 
+def test_heng_compatible_libero_yaml_config_loads() -> None:
+    heng_libero = load_experiment_config(
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
+    )
+
+    assert isinstance(heng_libero.policy_variant, ParallelStreamPolicyConfig)
+    assert heng_libero.data.dataset_type == "lerobot_v2_latent_local"
+    assert heng_libero.data.local_root == "/path/to/private-resource"
+    assert heng_libero.data.camera_names == (
+        "observation.images.agentview_rgb",
+        "observation.images.eye_in_hand_rgb",
+    )
+    assert heng_libero.data.latent_camera_names == (
+        "observation.images.agentview_rgb",
+        "observation.images.eye_in_hand_rgb",
+    )
+    assert heng_libero.data.action_target.source_key == "action"
+    assert heng_libero.data.action_target.pose_source_key == "observation.state"
+    assert heng_libero.training.learning_rate == 1e-5
+    assert heng_libero.training.gradient_accumulation_steps == 10
+    assert heng_libero.training.num_steps == 5000
+    assert heng_libero.training.enabled_objectives == ("latent",)
+    assert heng_libero.training.action_loss_weight == 1.0
+    assert heng_libero.training.trainable_components == ("visual_tower.runtime_backbone",)
+    assert heng_libero.trainer.runtime == "composable"
+    assert heng_libero.trainer.batch_adapter == "latents"
+    assert heng_libero.trainer.loop_policy == "steps"
+    assert heng_libero.trainer.strategy == "fsdp"
+    assert heng_libero.trainer.save_interval == 50
+    assert heng_libero.trainer.enable_wandb is True
+    assert heng_libero.trainer.wandb_project == "lingbot-va-posttrain-libero"
+
+
+def test_loaded_enum_like_fields_are_real_enum_members() -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml")
+
+    assert isinstance(config.backbone.train_attn_mode, AttentionMode)
+    assert isinstance(config.backbone.infer_attn_mode, AttentionMode)
+    assert isinstance(config.policy_variant.runtime_mode, ParallelRuntimeMode)
+    assert isinstance(config.action_decoder.name, ActionDecoderName)
+    assert isinstance(config.inference.joint_sampler, JointSampler)
+    assert isinstance(config.inference.video_cfg_mode, CFGMode)
+    assert isinstance(config.inference.action_cfg_mode, CFGMode)
+    assert isinstance(config.inference.joint_cache_warmup_source, CacheWarmupSource)
+    assert isinstance(config.inference.joint_cache_initial_warmup_anchor, WarmupAnchor)
+    assert isinstance(config.inference.joint_cache_rollout_warmup_anchor, WarmupAnchor)
+    assert config.training.enabled_objectives == (TrainingObjective.LATENT,)
+    assert config.training.trainable_components == (TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE,)
+    assert isinstance(config.trainer.runtime, TrainerRuntimeName)
+    assert isinstance(config.trainer.batch_adapter, BatchAdapterName)
+    assert isinstance(config.trainer.loop_policy, LoopPolicyName)
+    assert isinstance(config.trainer.strategy, StrategyName)
+
+
 def test_legacy_method2_runtime_fields_still_map_to_generic_runtime_config(tmp_path: Path) -> None:
     source_path = REPO_ROOT / "configs/experiments/register_attached_robotwin_smoke.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
@@ -114,3 +181,84 @@ def test_legacy_method2_runtime_fields_still_map_to_generic_runtime_config(tmp_p
     assert config.inference.joint_cache_initial_warmup_frames == 1
     assert config.inference.joint_cache_rollout_warmup_anchor == "end"
     assert config.inference.joint_cache_rollout_warmup_frames is None
+
+
+def test_composable_runtime_fields_load(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    raw["training"]["learning_rate"] = 2e-4
+    raw["training"]["beta1"] = 0.8
+    raw["training"]["beta2"] = 0.95
+    raw["training"]["weight_decay"] = 0.1
+    raw["training"]["warmup_steps"] = 7
+    raw["training"]["gradient_accumulation_steps"] = 3
+    raw["training"]["max_grad_norm"] = 1.5
+    raw["training"]["num_steps"] = 11
+    raw["training"]["text_condition_dropout_prob"] = 0.25
+    raw["training"]["enabled_objectives"] = ["latent"]
+    raw["training"]["latent_loss_weight"] = 0.75
+    raw["training"]["action_loss_weight"] = 0.2
+    raw["training"]["trainable_components"] = ["visual_tower.core", "action_decoder"]
+    raw["training"]["frozen_components"] = ["visual_tower.frontend"]
+    raw["trainer"]["runtime"] = "composable"
+    raw["trainer"]["batch_adapter"] = "latents"
+    raw["trainer"]["loop_policy"] = "steps"
+    raw["trainer"]["strategy"] = "single_device"
+    raw["trainer"]["default_root_dir"] = "/tmp/open-wam-test"
+    raw["trainer"]["checkpoint_dir"] = "/tmp/open-wam-test/checkpoints"
+    raw["trainer"]["save_interval"] = 5
+    raw["trainer"]["checkpoint_mode"] = "model_only"
+    raw["trainer"]["export_runtime_backbone"] = True
+    raw["trainer"]["resume_from"] = "/tmp/open-wam-test/checkpoints/checkpoint_step_5"
+    raw["trainer"]["enable_jsonl_logging"] = True
+    raw["trainer"]["metrics_filename"] = "run.jsonl"
+    raw["trainer"]["enable_wandb"] = True
+    raw["trainer"]["wandb_project"] = "open-wam"
+    raw["trainer"]["wandb_entity"] = "robotics"
+    raw["trainer"]["wandb_mode"] = "offline"
+    raw["trainer"]["run_name"] = "smoke-run"
+    raw["data"]["latent_root"] = "/tmp/open-wam-test/latents"
+    raw["data"]["latent_subdir"] = "custom_latents"
+    raw["data"]["latent_camera_names"] = ["latent_cam_0", "latent_cam_1"]
+
+    runtime_path = tmp_path / "runtime.yaml"
+    with runtime_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(runtime_path)
+
+    assert config.training.learning_rate == 2e-4
+    assert config.training.beta1 == 0.8
+    assert config.training.beta2 == 0.95
+    assert config.training.weight_decay == 0.1
+    assert config.training.warmup_steps == 7
+    assert config.training.gradient_accumulation_steps == 3
+    assert config.training.max_grad_norm == 1.5
+    assert config.training.num_steps == 11
+    assert config.training.text_condition_dropout_prob == 0.25
+    assert config.training.enabled_objectives == ("latent",)
+    assert config.training.latent_loss_weight == 0.75
+    assert config.training.action_loss_weight == 0.2
+    assert config.training.trainable_components == ("visual_tower.core", "action_decoder")
+    assert config.training.frozen_components == ("visual_tower.frontend",)
+    assert config.trainer.runtime == "composable"
+    assert config.trainer.batch_adapter == "latents"
+    assert config.trainer.loop_policy == "steps"
+    assert config.trainer.strategy == "single_device"
+    assert config.trainer.default_root_dir == "/tmp/open-wam-test"
+    assert config.trainer.checkpoint_dir == "/tmp/open-wam-test/checkpoints"
+    assert config.trainer.save_interval == 5
+    assert config.trainer.checkpoint_mode == "model_only"
+    assert config.trainer.export_runtime_backbone is True
+    assert config.trainer.resume_from == "/tmp/open-wam-test/checkpoints/checkpoint_step_5"
+    assert config.trainer.enable_jsonl_logging is True
+    assert config.trainer.metrics_filename == "run.jsonl"
+    assert config.trainer.enable_wandb is True
+    assert config.trainer.wandb_project == "open-wam"
+    assert config.trainer.wandb_entity == "robotics"
+    assert config.trainer.wandb_mode == "offline"
+    assert config.trainer.run_name == "smoke-run"
+    assert config.data.latent_root == "/tmp/open-wam-test/latents"
+    assert config.data.latent_subdir == "custom_latents"
+    assert config.data.latent_camera_names == ("latent_cam_0", "latent_cam_1")

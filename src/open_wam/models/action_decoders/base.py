@@ -203,12 +203,14 @@ class LinearActionDecoder(ActionDecoder):
         else:
             action_denom = torch.tensor(float(action_mse.numel()), device=action_mse.device)
         action_mse_value = action_mse.sum() / action_denom
+        weighted_loss = loss * self.training_config.objective_weight("action")
         return ActionDecoderTrainOutput(
             action_pred=denoised_actions,
-            loss=loss,
+            loss=weighted_loss,
             metrics={
                 "action_mse": action_mse_value.detach(),
                 "action_diffusion_loss": loss.detach(),
+                "weighted_action_diffusion_loss": weighted_loss.detach(),
             },
             aux={
                 "decoder": self.__class__.__name__,

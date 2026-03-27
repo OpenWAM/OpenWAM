@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 import torch
 
+from open_wam.configs import ActionTargetStateEncoding, GripperRepresentation, RotationRepresentation
+
 
 @dataclass(frozen=True)
 class PoseSequence:
@@ -26,10 +28,10 @@ class PoseSequence:
 def build_relative_pose_targets(
     state_sequence: torch.Tensor,
     *,
-    state_encoding: str,
-    rotation_representation: str,
+    state_encoding: ActionTargetStateEncoding | str,
+    rotation_representation: RotationRepresentation | str,
     include_gripper: bool,
-    gripper_representation: str,
+    gripper_representation: GripperRepresentation | str,
     raw_action_sequence: torch.Tensor | None = None,
     gripper_action_index: int = -1,
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, list[float] | str | bool]]:
@@ -57,9 +59,9 @@ def build_relative_pose_targets(
     )
     relative_quaternion = normalize_quaternion(relative_quaternion)
 
-    if rotation_representation == "quat":
+    if rotation_representation == RotationRepresentation.QUAT:
         relative_rotation = relative_quaternion
-    elif rotation_representation == "axis_angle":
+    elif rotation_representation == RotationRepresentation.AXIS_ANGLE:
         relative_rotation = quaternion_to_axis_angle(relative_quaternion)
     else:
         raise ValueError(f"Unsupported rotation representation: {rotation_representation}")
@@ -96,7 +98,7 @@ def reconstruct_absolute_pose_targets(
     reference_quaternion: torch.Tensor,
     relative_pose_targets: torch.Tensor,
     *,
-    rotation_representation: str,
+    rotation_representation: RotationRepresentation | str,
 ) -> PoseSequence:
     """Recover absolute pose from a reference-anchored pose target."""
 
@@ -104,12 +106,12 @@ def reconstruct_absolute_pose_targets(
         raise ValueError(f"Expected relative pose targets with shape [T, D], got {tuple(relative_pose_targets.shape)}.")
 
     rel_position = relative_pose_targets[:, :3]
-    if rotation_representation == "quat":
+    if rotation_representation == RotationRepresentation.QUAT:
         if relative_pose_targets.shape[-1] < 7:
             raise ValueError("Quaternion pose targets require at least 7 dims: `[xyz, xyzw]`.")
         rel_quaternion = normalize_quaternion(relative_pose_targets[:, 3:7])
         gripper_start = 7
-    elif rotation_representation == "axis_angle":
+    elif rotation_representation == RotationRepresentation.AXIS_ANGLE:
         if relative_pose_targets.shape[-1] < 6:
             raise ValueError("Axis-angle pose targets require at least 6 dims: `[xyz, axis_angle]`.")
         rel_quaternion = axis_angle_to_quaternion(relative_pose_targets[:, 3:6])
@@ -127,10 +129,14 @@ def reconstruct_absolute_pose_targets(
     return PoseSequence(position=abs_position, quaternion=abs_quaternion, gripper=gripper)
 
 
-def state_sequence_to_pose_sequence(state_sequence: torch.Tensor, *, state_encoding: str) -> PoseSequence:
+def state_sequence_to_pose_sequence(
+    state_sequence: torch.Tensor,
+    *,
+    state_encoding: ActionTargetStateEncoding | str,
+) -> PoseSequence:
     """Parse a raw proprio sequence into absolute EEF pose tensors."""
 
-    if state_encoding == "eef_pos_axisangle_gripper_2d":
+    if state_encoding == ActionTargetStateEncoding.EEF_POS_AXISANGLE_GRIPPER_2D:
         if state_sequence.shape[-1] < 8:
             raise ValueError(
                 "Expected state encoding `eef_pos_axisangle_gripper_2d` to expose at least 8 dims "
@@ -142,7 +148,7 @@ def state_sequence_to_pose_sequence(state_sequence: torch.Tensor, *, state_encod
         gripper = state_sequence[:, 6:8]
         return PoseSequence(position=position, quaternion=quaternion, gripper=gripper)
 
-    if state_encoding == "eef_pos_quat_gripper_1d":
+    if state_encoding == ActionTargetStateEncoding.EEF_POS_QUAT_GRIPPER_1D:
         if state_sequence.shape[-1] < 8:
             raise ValueError(
                 "Expected state encoding `eef_pos_quat_gripper_1d` to expose at least 8 dims "
@@ -196,16 +202,20 @@ def quaternion_to_axis_angle(quaternion: torch.Tensor) -> torch.Tensor:
     return torch.where(sin_half > 1e-8, axis_angle, torch.zeros_like(axis_angle))
 
 
-def collapse_gripper_state(gripper: torch.Tensor, *, gripper_representation: str) -> torch.Tensor:
+def collapse_gripper_state(
+    gripper: torch.Tensor,
+    *,
+    gripper_representation: GripperRepresentation | str,
+) -> torch.Tensor:
     """Expose gripper state in the configured public target format."""
 
     if gripper.ndim != 2:
         raise ValueError(f"Expected gripper sequence with shape [T, D], got {tuple(gripper.shape)}.")
 
-    if gripper_representation == "all_channels":
+    if gripper_representation == GripperRepresentation.ALL_CHANNELS:
         return gripper
 
-    if gripper_representation == "first_channel":
+    if gripper_representation == GripperRepresentation.FIRST_CHANNEL:
         return gripper[:, 0:1]
 
     raise ValueError(f"Unsupported gripper representation: {gripper_representation}")
@@ -215,7 +225,7 @@ def extract_public_gripper_targets(
     *,
     state_gripper: torch.Tensor,
     raw_action_sequence: torch.Tensor | None,
-    gripper_representation: str,
+    gripper_representation: GripperRepresentation | str,
     gripper_action_index: int,
 ) -> torch.Tensor:
     """Build the public gripper supervision channel from state or raw action.
@@ -226,13 +236,13 @@ def extract_public_gripper_targets(
     control signal in `[-1, 1]`.
     """
 
-    if gripper_representation in {"all_channels", "first_channel"}:
+    if gripper_representation in {GripperRepresentation.ALL_CHANNELS, GripperRepresentation.FIRST_CHANNEL}:
         return collapse_gripper_state(
             state_gripper,
             gripper_representation=gripper_representation,
         )
 
-    if gripper_representation == "action_command":
+    if gripper_representation == GripperRepresentation.ACTION_COMMAND:
         if raw_action_sequence is None:
             raise ValueError(
                 "gripper_representation=action_command requires `raw_action_sequence` so the public "
@@ -258,20 +268,25 @@ def extract_public_gripper_targets(
     raise ValueError(f"Unsupported gripper representation: {gripper_representation}")
 
 
-def expected_pose_target_dim(*, rotation_representation: str, include_gripper: bool, gripper_representation: str) -> int:
+def expected_pose_target_dim(
+    *,
+    rotation_representation: RotationRepresentation | str,
+    include_gripper: bool,
+    gripper_representation: GripperRepresentation | str,
+) -> int:
     """Return the public action dimension implied by one pose-target config."""
 
-    if rotation_representation == "quat":
+    if rotation_representation == RotationRepresentation.QUAT:
         dim = 3 + 4
-    elif rotation_representation == "axis_angle":
+    elif rotation_representation == RotationRepresentation.AXIS_ANGLE:
         dim = 3 + 3
     else:
         raise ValueError(f"Unsupported rotation representation: {rotation_representation}")
 
     if include_gripper:
-        if gripper_representation == "all_channels":
+        if gripper_representation == GripperRepresentation.ALL_CHANNELS:
             dim += 2
-        elif gripper_representation in {"first_channel", "action_command"}:
+        elif gripper_representation in {GripperRepresentation.FIRST_CHANNEL, GripperRepresentation.ACTION_COMMAND}:
             dim += 1
         else:
             raise ValueError(f"Unsupported gripper representation: {gripper_representation}")

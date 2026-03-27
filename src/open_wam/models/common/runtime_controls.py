@@ -4,7 +4,15 @@ from dataclasses import dataclass
 
 import torch
 
-from open_wam.configs import InferenceConfig, TrainingConfig
+from open_wam.configs import (
+    CFGMode,
+    CacheUpdateMode,
+    CacheWarmupSource,
+    InferenceConfig,
+    JointSampler,
+    TrainingConfig,
+    WarmupAnchor,
+)
 from open_wam.models.video_backbone.contracts import ConditioningState
 
 from .flow_matching import (
@@ -26,8 +34,8 @@ class RuntimeGuidanceConfig:
     cfg_mode: str
     video_guidance_scale: float
     action_guidance_scale: float
-    video_mode: str
-    action_mode: str
+    video_mode: CFGMode
+    action_mode: CFGMode
     conditioned_cache_branch: str = "conditioned"
     unconditioned_cache_branch: str = "unconditioned"
 
@@ -37,13 +45,13 @@ class RuntimeCachePolicy:
     """Shared cache warmup/update policy for rollout-time inference."""
 
     warmup_before_denoise: bool
-    warmup_source: str
-    update_mode: str
+    warmup_source: CacheWarmupSource
+    update_mode: CacheUpdateMode
     update_cross_attention_on_warmup: bool
     update_cross_attention_during_denoise: bool
-    initial_warmup_anchor: str
+    initial_warmup_anchor: WarmupAnchor
     initial_warmup_frames: int | None
-    rollout_warmup_anchor: str
+    rollout_warmup_anchor: WarmupAnchor
     rollout_warmup_frames: int | None
 
 
@@ -134,7 +142,7 @@ def resolve_runtime_guidance(
         ("video_cfg_mode", inference_config.video_cfg_mode),
         ("action_cfg_mode", inference_config.action_cfg_mode),
     ):
-        if mode not in {"guided", "conditioned", "unconditioned"}:
+        if mode not in {CFGMode.GUIDED, CFGMode.CONDITIONED, CFGMode.UNCONDITIONED}:
             raise ValueError(f"Unsupported `{field_name}`, got {mode!r}.")
     return RuntimeGuidanceConfig(
         enabled=enabled,
@@ -208,17 +216,17 @@ def _resolve_stream_cfg_prediction(
     conditioned_prediction: torch.Tensor,
     unconditioned_prediction: torch.Tensor,
     guidance_scale: float,
-    mode: str,
+    mode: CFGMode | str,
 ) -> torch.Tensor:
-    if mode == "guided":
+    if mode == CFGMode.GUIDED:
         return combine_cfg_prediction(
             conditioned_prediction,
             unconditioned_prediction,
             guidance_scale=guidance_scale,
         )
-    if mode == "conditioned":
+    if mode == CFGMode.CONDITIONED:
         return conditioned_prediction
-    if mode == "unconditioned":
+    if mode == CFGMode.UNCONDITIONED:
         return unconditioned_prediction
     raise ValueError(f"Unsupported per-stream CFG mode {mode!r}.")
 
@@ -253,7 +261,7 @@ def build_joint_runtime_schedulers(
 ) -> JointRuntimeSchedulers:
     """Build the shared sampler bundle for DreamZero-style joint rollout."""
 
-    if inference_config.joint_sampler == "unipc":
+    if inference_config.joint_sampler == JointSampler.UNIPC:
         num_joint_steps = (
             inference_config.joint_num_inference_steps
             or inference_config.video_num_inference_steps
@@ -303,12 +311,17 @@ def resolve_runtime_cache_policy(
 
     update_mode = inference_config.joint_cache_update_mode
     warmup_source = inference_config.joint_cache_warmup_source
-    if update_mode not in {"warmup_only", "final_step", "every_step", "none"}:
+    if update_mode not in {
+        CacheUpdateMode.WARMUP_ONLY,
+        CacheUpdateMode.FINAL_STEP,
+        CacheUpdateMode.EVERY_STEP,
+        CacheUpdateMode.NONE,
+    }:
         raise ValueError(
             "Unsupported `inference.joint_cache_update_mode`, "
             f"got {update_mode!r}."
         )
-    if warmup_source not in {"reference_video", "none"}:
+    if warmup_source not in {CacheWarmupSource.REFERENCE_VIDEO, CacheWarmupSource.NONE}:
         raise ValueError(
             "Unsupported `inference.joint_cache_warmup_source`, "
             f"got {warmup_source!r}."
@@ -317,13 +330,16 @@ def resolve_runtime_cache_policy(
         ("joint_cache_initial_warmup_anchor", inference_config.joint_cache_initial_warmup_anchor),
         ("joint_cache_rollout_warmup_anchor", inference_config.joint_cache_rollout_warmup_anchor),
     ):
-        if anchor not in {"start", "end", "full"}:
+        if anchor not in {WarmupAnchor.START, WarmupAnchor.END, WarmupAnchor.FULL}:
             raise ValueError(f"Unsupported `{field_name}`, got {anchor!r}.")
-    warmup_before_denoise = update_mode == "warmup_only" and warmup_source != "none"
+    warmup_before_denoise = (
+        update_mode == CacheUpdateMode.WARMUP_ONLY
+        and warmup_source != CacheWarmupSource.NONE
+    )
     return RuntimeCachePolicy(
         warmup_before_denoise=warmup_before_denoise,
         warmup_source=warmup_source,
-        update_mode=("none" if update_mode == "warmup_only" else update_mode),
+        update_mode=CacheUpdateMode.NONE if update_mode == CacheUpdateMode.WARMUP_ONLY else update_mode,
         update_cross_attention_on_warmup=warmup_before_denoise,
         update_cross_attention_during_denoise=False,
         initial_warmup_anchor=inference_config.joint_cache_initial_warmup_anchor,
@@ -341,9 +357,9 @@ def should_update_cache_during_denoise(
 ) -> bool:
     """Return whether the current denoising step should write KV cache."""
 
-    if policy.update_mode == "every_step":
+    if policy.update_mode == CacheUpdateMode.EVERY_STEP:
         return True
-    if policy.update_mode == "final_step":
+    if policy.update_mode == CacheUpdateMode.FINAL_STEP:
         return step_index == num_steps - 1
     return False
 
@@ -364,9 +380,9 @@ def resolve_runtime_warmup_reference(
 
     if not policy.warmup_before_denoise:
         return None
-    if policy.warmup_source == "none":
+    if policy.warmup_source == CacheWarmupSource.NONE:
         return None
-    if policy.warmup_source == "reference_video":
+    if policy.warmup_source == CacheWarmupSource.REFERENCE_VIDEO:
         if current_start_frame == 0:
             return _resolve_warmup_slice(
                 anchor=policy.initial_warmup_anchor,
@@ -385,20 +401,20 @@ def resolve_runtime_warmup_reference(
 
 def _resolve_warmup_slice(
     *,
-    anchor: str,
+    anchor: WarmupAnchor | str,
     frame_count: int | None,
     num_video_frames: int,
     default_frame_count: int,
 ) -> RuntimeWarmupReference:
-    if anchor == "full":
+    if anchor == WarmupAnchor.FULL:
         return RuntimeWarmupReference(frame_start=0, frame_count=num_video_frames)
     resolved_frame_count = default_frame_count if frame_count is None else frame_count
     if resolved_frame_count <= 0:
         return RuntimeWarmupReference(frame_start=0, frame_count=0)
     resolved_frame_count = min(resolved_frame_count, num_video_frames)
-    if anchor == "start":
+    if anchor == WarmupAnchor.START:
         return RuntimeWarmupReference(frame_start=0, frame_count=resolved_frame_count)
-    if anchor == "end":
+    if anchor == WarmupAnchor.END:
         return RuntimeWarmupReference(
             frame_start=max(num_video_frames - resolved_frame_count, 0),
             frame_count=resolved_frame_count,

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import torch
 from einops import rearrange
 
+from open_wam.configs import ActionNormMethod, ActionSpace
+from open_wam.configs.enums import coerce_enum_value
 from open_wam.configs.policy_variant import ParallelStreamPolicyConfig
 
 from .reference_profile import LingbotReferenceProfile, load_reference_profile
@@ -16,7 +18,7 @@ class LingbotActionAdapterSpec:
 
     model_action_dim: int
     raw_action_dim: int
-    action_norm_method: str
+    action_norm_method: ActionNormMethod
     used_action_channel_ids: tuple[int, ...]
     inverse_used_action_channel_ids: tuple[int, ...]
     norm_q01: tuple[float, ...]
@@ -37,8 +39,9 @@ def build_action_adapter_spec(
         tuple(profile.inverse_used_action_channel_ids) if profile is not None else tuple()
     )
     action_norm_method = config.action_norm_method
-    if action_norm_method == "none" and profile is not None:
+    if action_norm_method == ActionNormMethod.NONE and profile is not None:
         action_norm_method = profile.action_norm_method
+    action_norm_method = coerce_enum_value(ActionNormMethod, action_norm_method)
     norm_q01 = config.norm_q01 or (tuple(profile.norm_q01) if profile is not None else tuple())
     norm_q99 = config.norm_q99 or (tuple(profile.norm_q99) if profile is not None else tuple())
 
@@ -49,9 +52,11 @@ def build_action_adapter_spec(
             "Exact parallel-stream inverse channel ids must have length equal to the model action dim, "
             f"got {len(inverse_used_action_channel_ids)} and model_action_dim={model_action_dim}."
         )
-    if action_norm_method not in {"none", "quantiles"}:
+    if action_norm_method not in {ActionNormMethod.NONE, ActionNormMethod.QUANTILES}:
         raise ValueError(f"Unsupported exact parallel-stream action_norm_method '{action_norm_method}'.")
-    if action_norm_method == "quantiles" and (len(norm_q01) != model_action_dim or len(norm_q99) != model_action_dim):
+    if action_norm_method == ActionNormMethod.QUANTILES and (
+        len(norm_q01) != model_action_dim or len(norm_q99) != model_action_dim
+    ):
         raise ValueError(
             "Quantile-normalized exact parallel-stream actions require q01/q99 values for every model action channel, "
             f"got len(q01)={len(norm_q01)}, len(q99)={len(norm_q99)}, model_action_dim={model_action_dim}."
@@ -78,14 +83,14 @@ class LingbotActionAdapter:
     def supports_raw_actions(self) -> bool:
         return self.spec is not None
 
-    def infer_action_space(self, action: torch.Tensor) -> str:
+    def infer_action_space(self, action: torch.Tensor) -> ActionSpace:
         if self.spec is None:
-            return "model"
+            return ActionSpace.MODEL
         feature_dim = self._flatten_to_sequence(action).shape[-1]
         if feature_dim == self.spec.model_action_dim and feature_dim != self.spec.raw_action_dim:
-            return "model"
+            return ActionSpace.MODEL
         if feature_dim == self.spec.raw_action_dim and feature_dim != self.spec.model_action_dim:
-            return "raw"
+            return ActionSpace.RAW
         if feature_dim == self.spec.model_action_dim == self.spec.raw_action_dim:
             raise ValueError(
                 "Automatic exact action-space inference is ambiguous because raw and model action dims are equal. "
@@ -100,7 +105,7 @@ class LingbotActionAdapter:
         self,
         action: torch.Tensor,
         *,
-        action_space: str = "auto",
+        action_space: ActionSpace | str = ActionSpace.AUTO,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
     ) -> torch.Tensor:
@@ -109,16 +114,16 @@ class LingbotActionAdapter:
             if device is not None or dtype is not None:
                 sequence = sequence.to(device=device or sequence.device, dtype=dtype or sequence.dtype)
             return sequence
-        resolved_space = self.infer_action_space(sequence) if action_space == "auto" else action_space
+        resolved_space = self.infer_action_space(sequence) if action_space == ActionSpace.AUTO else ActionSpace(action_space)
         target_device = device or sequence.device
         target_dtype = dtype or sequence.dtype
-        if resolved_space == "model":
+        if resolved_space == ActionSpace.MODEL:
             if sequence.shape[-1] != self.spec.model_action_dim:
                 raise ValueError(
                     f"Expected model-space action dim {self.spec.model_action_dim}, got {sequence.shape[-1]}."
                 )
             return sequence.to(device=target_device, dtype=target_dtype)
-        if resolved_space != "raw":
+        if resolved_space != ActionSpace.RAW:
             raise ValueError(f"Unsupported exact action_space '{action_space}'.")
         if sequence.shape[-1] != self.spec.raw_action_dim:
             raise ValueError(f"Expected raw-space action dim {self.spec.raw_action_dim}, got {sequence.shape[-1]}.")
@@ -132,7 +137,7 @@ class LingbotActionAdapter:
             dtype=torch.long,
         )
         aligned = padded.index_select(dim=-1, index=gather_ids)
-        if self.spec.action_norm_method == "quantiles":
+        if self.spec.action_norm_method == ActionNormMethod.QUANTILES:
             q01 = torch.tensor(self.spec.norm_q01, device=target_device, dtype=torch.float32)
             q99 = torch.tensor(self.spec.norm_q99, device=target_device, dtype=torch.float32)
             aligned = (aligned - q01) / (q99 - q01 + 1e-6) * 2.0 - 1.0
@@ -142,7 +147,7 @@ class LingbotActionAdapter:
         self,
         action_mask: torch.Tensor,
         *,
-        action_space: str = "auto",
+        action_space: ActionSpace | str = ActionSpace.AUTO,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
     ) -> torch.Tensor:
@@ -151,14 +156,14 @@ class LingbotActionAdapter:
             sequence = sequence.to(device=device or sequence.device, dtype=dtype or sequence.dtype)
         if self.spec is None:
             return sequence
-        resolved_space = self.infer_action_space(sequence) if action_space == "auto" else action_space
-        if resolved_space == "model":
+        resolved_space = self.infer_action_space(sequence) if action_space == ActionSpace.AUTO else ActionSpace(action_space)
+        if resolved_space == ActionSpace.MODEL:
             if sequence.shape[-1] != self.spec.model_action_dim:
                 raise ValueError(
                     f"Expected model-space action mask dim {self.spec.model_action_dim}, got {sequence.shape[-1]}."
                 )
             return sequence
-        if resolved_space != "raw":
+        if resolved_space != ActionSpace.RAW:
             raise ValueError(f"Unsupported exact action_space '{action_space}'.")
         if sequence.shape[-1] != self.spec.raw_action_dim:
             raise ValueError(
@@ -180,7 +185,7 @@ class LingbotActionAdapter:
         action: torch.Tensor,
         *,
         action_per_frame: int,
-        action_space: str = "auto",
+        action_space: ActionSpace | str = ActionSpace.AUTO,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
     ) -> torch.Tensor:
@@ -213,7 +218,7 @@ class LingbotActionAdapter:
                 f"Expected model-space action dim {self.spec.model_action_dim}, got {sequence.shape[-1]}."
             )
         sequence = sequence.float()
-        if self.spec.action_norm_method == "quantiles":
+        if self.spec.action_norm_method == ActionNormMethod.QUANTILES:
             q01 = torch.tensor(self.spec.norm_q01, device=sequence.device, dtype=torch.float32)
             q99 = torch.tensor(self.spec.norm_q99, device=sequence.device, dtype=torch.float32)
             sequence = (sequence + 1.0) / 2.0 * (q99 - q01 + 1e-6) + q01

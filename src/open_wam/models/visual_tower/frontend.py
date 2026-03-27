@@ -6,6 +6,7 @@ import torch
 from torch import nn
 
 from open_wam.data.raw_video import ViewPlacement
+from open_wam.configs.enums import serialize_enum_values
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.video_backbone.contracts import ChunkMetadata, ConditioningState, TokenGridMetadata
 
@@ -152,7 +153,7 @@ class SharedVideoFrontend(nn.Module):
                 text_context=text_context,
                 negative_text_context=negative_text_context,
                 first_frame_context=video_latents[:, :, :1],
-                metadata={"backbone_config": asdict(self.config)},
+                metadata={"backbone_config": serialize_enum_values(asdict(self.config))},
             ),
         )
 

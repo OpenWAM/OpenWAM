@@ -3,15 +3,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from open_wam.configs.enums import (
+    AttentionMode,
+    BackboneImplementation,
+    ReferenceAssetsDevicePolicy,
+    coerce_fields,
+)
 
-_IMPLEMENTATION_ALIASES: dict[str, str] = {
-    "shared_transformer": "shared_transformer",
-    "lingbot_replica": "shared_transformer",
-    "dummy": "dummy",
+
+_IMPLEMENTATION_ALIASES: dict[str, BackboneImplementation] = {
+    "shared_transformer": BackboneImplementation.SHARED_TRANSFORMER,
+    "lingbot_replica": BackboneImplementation.SHARED_TRANSFORMER,
+    "dummy": BackboneImplementation.DUMMY,
 }
 
 
-def normalize_backbone_implementation(name: str) -> str:
+def normalize_backbone_implementation(name: str | BackboneImplementation) -> BackboneImplementation:
     try:
         return _IMPLEMENTATION_ALIASES[name]
     except KeyError as exc:  # pragma: no cover - defensive config guard
@@ -45,7 +52,7 @@ class SharedVideoTransformerConfig:
     patch_size_w: int = 2
     # Default to the shared transformer implementation so real variants run on
     # the same backbone family unless a smoke-test config overrides it.
-    implementation: str = "shared_transformer"
+    implementation: BackboneImplementation = BackboneImplementation.SHARED_TRANSFORMER
     hidden_size: int = 3072
     num_layers: int = 1
     num_heads: int = 8
@@ -57,9 +64,9 @@ class SharedVideoTransformerConfig:
     cross_attn_norm: bool = True
     rope_max_seq_len: int = 1024
     latent_norm_eps: float = 1e-6
-    attn_mode: str = "torch"
-    train_attn_mode: str | None = None
-    infer_attn_mode: str | None = None
+    attn_mode: AttentionMode = AttentionMode.TORCH
+    train_attn_mode: AttentionMode | None = None
+    infer_attn_mode: AttentionMode | None = None
     pretrained_model_name_or_path: str | None = None
     transformer_subdir: str = "transformer"
     vae_subdir: str = "vae"
@@ -71,9 +78,25 @@ class SharedVideoTransformerConfig:
     load_reference_core_weights: bool = False
     # `runtime`: keep reference VAE/text assets on the active runtime device.
     # `cpu_offload`: mirror Heng's eval server and keep them on CPU.
-    reference_assets_device_policy: str = "runtime"
+    reference_assets_device_policy: ReferenceAssetsDevicePolicy = ReferenceAssetsDevicePolicy.RUNTIME
     # Optional override for the vendored LingBot reference model source file.
     reference_model_path: str | None = None
+
+    def __post_init__(self) -> None:
+        coerce_fields(
+            self,
+            enum_fields={
+                "attn_mode": AttentionMode,
+                "reference_assets_device_policy": ReferenceAssetsDevicePolicy,
+            },
+            optional_enum_fields={
+                "train_attn_mode": AttentionMode,
+                "infer_attn_mode": AttentionMode,
+            },
+            transforms={
+                "implementation": normalize_backbone_implementation,
+            },
+        )
 
 
 LingbotCompatibleVideoBackboneConfig = SharedVideoTransformerConfig
@@ -84,14 +107,14 @@ def resolve_stage_attention_mode(
     *,
     stage: Literal["train", "infer"],
     exact_runtime: bool = False,
-) -> str:
+) -> AttentionMode:
     if stage == "train":
         if config.train_attn_mode is not None:
             return config.train_attn_mode
         if exact_runtime:
             # LingBot requires FlexAttention for exact training while keeping
             # inference on torch/flash attention.
-            return "flex"
+            return AttentionMode.FLEX
         return config.attn_mode
     if config.infer_attn_mode is not None:
         return config.infer_attn_mode

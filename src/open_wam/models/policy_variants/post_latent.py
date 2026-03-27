@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from open_wam.configs import InferenceConfig, PostLatentPolicyConfig, TrainingConfig
+from open_wam.configs import AttachSite, InferenceConfig, PoolingMode, PostLatentPolicyConfig, TrainingConfig
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
 from .base import PolicyVariant
@@ -47,7 +47,7 @@ class PostLatentPolicyVariant(PolicyVariant):
         return self.config.attach_site
 
     def required_visual_stages(self) -> tuple[str, ...]:
-        if self.config.attach_site == "post_frontend_latents":
+        if self.config.attach_site == AttachSite.POST_FRONTEND_LATENTS:
             return ("frontend",)
         return ("frontend", "core")
 
@@ -64,7 +64,7 @@ class PostLatentPolicyVariant(PolicyVariant):
         return PolicyPreparedInputs(batch=batch)
 
     def _select_video_tokens(self, visual_outputs: VisualStageOutputs) -> torch.Tensor:
-        if self.config.attach_site == "post_frontend_latents":
+        if self.config.attach_site == AttachSite.POST_FRONTEND_LATENTS:
             return visual_outputs.frontend.video_tokens
         if visual_outputs.core is None:
             raise ValueError("Post-latent variant requires core outputs for post-visual-core attachment.")
@@ -72,7 +72,7 @@ class PostLatentPolicyVariant(PolicyVariant):
 
     def _extract_policy_features(self, visual_outputs: VisualStageOutputs) -> torch.Tensor:
         tokens = self._select_video_tokens(visual_outputs)
-        if self.config.pooling_mode == "compat_global_mean":
+        if self.config.pooling_mode == PoolingMode.COMPAT_GLOBAL_MEAN:
             return tokens.mean(dim=1, keepdim=True).expand(-1, self.action_horizon, -1)
         frame_tokens = tokens_to_frame_major(tokens, visual_outputs.frontend.token_grid)
         if self.query_tokens is not None and self.query_norm is not None:

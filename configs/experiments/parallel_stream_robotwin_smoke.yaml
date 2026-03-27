@@ -1,11 +1,13 @@
 name: parallel_stream_robotwin_smoke
 
 data:
+  # Minimal smoke-test dataset knobs
   dataset_name: robotwin
   camera_names: [cam_high, cam_left_wrist, cam_right_wrist]
   canonical_height: 384
   canonical_width: 320
   num_frames: 4
+  # Shared action/state schema knobs
   action_schema:
     action_dim: 30
     action_horizon: 8
@@ -13,6 +15,7 @@ data:
     state_horizon: 1
 
 backbone:
+  # Small backbone geometry for fast local verification
   implementation: shared_transformer
   train_attn_mode: flex
   infer_attn_mode: torch
@@ -23,6 +26,7 @@ backbone:
   ffn_dim: 1024
 
 policy_variant:
+  # Exact method-1 chunk layout knobs
   name: parallel_stream
   hidden_size: 256
   runtime_mode: lingbot_exact
@@ -34,12 +38,14 @@ policy_variant:
   cache_mode: metadata_only
 
 action_decoder:
+  # LingBot-compatible action decoder for smoke validation
   name: lingbot_parallel_decoder
   hidden_size: 256
   action_dim: 30
   action_horizon: 8
 
 training:
+  # Training-noise and windowing knobs
   video_num_train_timesteps: 1000
   action_num_train_timesteps: 1000
   video_sigma_shift: 5.0
@@ -49,6 +55,7 @@ training:
   window_size: 8
 
 inference:
+  # Short rollout knobs for quick inference smoke tests
   video_num_inference_steps: 4
   action_num_inference_steps: 4
   frame_chunk_size: 2
@@ -56,6 +63,7 @@ inference:
   guidance_scale: 1.0
 
 trainer:
+  # Small single-process smoke-test runtime knobs
   max_epochs: 1
   limit_train_batches: 2
   limit_val_batches: 1

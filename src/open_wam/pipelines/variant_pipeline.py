@@ -141,6 +141,32 @@ class VariantPipeline(nn.Module):
             views,
             task_text=batch.extra.get("task_text"),
         )
+        return self._forward_train_with_visual_outputs(visual_outputs, batch=batch)
+
+    def forward_train_from_latents(
+        self,
+        video_latents: torch.Tensor,
+        batch: PolicyTrainBatch,
+        *,
+        canonical_video: torch.Tensor | None = None,
+        text_context: torch.Tensor | None = None,
+        negative_text_context: torch.Tensor | None = None,
+    ) -> VariantPipelineTrainOutput:
+        visual_outputs = self.prepare_visual_outputs_from_latents(
+            video_latents,
+            task_text=batch.extra.get("task_text"),
+            text_context=text_context,
+            negative_text_context=negative_text_context,
+            canonical_video=canonical_video,
+        )
+        return self._forward_train_with_visual_outputs(visual_outputs, batch=batch)
+
+    def _forward_train_with_visual_outputs(
+        self,
+        visual_outputs: VisualStageOutputs,
+        *,
+        batch: PolicyTrainBatch,
+    ) -> VariantPipelineTrainOutput:
         prepared_inputs = self.policy_variant.prepare_train_inputs(visual_outputs, batch)
         policy_output = self.policy_variant.forward_train(
             visual_tower=self.visual_tower,

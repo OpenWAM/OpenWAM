@@ -17,6 +17,8 @@ from open_wam.configs import (
 from open_wam.data import WAMBatch, move_wam_batch_to_device
 from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
 from open_wam.pipelines import build_variant_pipeline_from_config
+from open_wam.training.controls import apply_training_component_controls
+from open_wam.training.optim import build_optimizer, build_scheduler
 
 
 if pl is None:
@@ -36,6 +38,7 @@ else:
             super().__init__()
             self.config = config
             self.pipeline = build_variant_pipeline_from_config(config)
+            self.trainability_report = apply_training_component_controls(self.pipeline, config.training)
             self.save_hyperparameters(ignore=["pipeline"])
 
         def _policy_batch_from_batch(self, batch: WAMBatch) -> PolicyTrainBatch:
@@ -134,4 +137,12 @@ else:
             return move_wam_batch_to_device(batch, device)
 
         def configure_optimizers(self):
-            return torch.optim.AdamW(self.parameters(), lr=1e-4)
+            optimizer = build_optimizer(self, self.config.training)
+            scheduler = build_scheduler(optimizer, self.config.training)
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": {
+                    "scheduler": scheduler,
+                    "interval": "step",
+                },
+            }

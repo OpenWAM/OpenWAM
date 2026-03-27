@@ -23,10 +23,13 @@ class LingbotParallelActionDecoder(ActionDecoder):
     def forward_train(self, policy_output: PolicyTrainOutput, batch: PolicyTrainBatch) -> ActionDecoderTrainOutput:
         latent_pred = policy_output.aux["latent_pred"]
         train_artifacts = policy_output.aux["lingbot_train_artifacts"]
+        loss_weights = policy_output.aux.get("loss_weights", {})
         latent_scheduler = train_artifacts.latent_scheduler
         action_scheduler = train_artifacts.action_scheduler
         input_dict = train_artifacts.input_dict
         action_pred = policy_output.policy_features
+        configured_latent_loss_weight = float(loss_weights.get("latent", 1.0))
+        configured_action_loss_weight = float(loss_weights.get("action", 1.0))
 
         action_pred_5d = rearrange(
             action_pred,
@@ -43,11 +46,11 @@ class LingbotParallelActionDecoder(ActionDecoder):
         )
 
         batch_frames, num_frames = input_dict["latent_dict"]["timesteps"].shape
-        latent_loss_weight = latent_scheduler.training_weight(input_dict["latent_dict"]["timesteps"].flatten()).reshape(
+        latent_scheduler_weight = latent_scheduler.training_weight(input_dict["latent_dict"]["timesteps"].flatten()).reshape(
             batch_frames,
             num_frames,
         )
-        action_loss_weight = action_scheduler.training_weight(input_dict["action_dict"]["timesteps"].flatten()).reshape(
+        action_scheduler_weight = action_scheduler.training_weight(input_dict["action_dict"]["timesteps"].flatten()).reshape(
             batch_frames,
             num_frames,
         )
@@ -57,7 +60,7 @@ class LingbotParallelActionDecoder(ActionDecoder):
             input_dict["latent_dict"]["targets"].float().detach(),
             reduction="none",
         )
-        latent_loss = latent_loss * latent_loss_weight[:, None, :, None, None]
+        latent_loss = latent_loss * latent_scheduler_weight[:, None, :, None, None]
         latent_loss = latent_loss.permute(0, 2, 3, 4, 1).flatten(0, 1).flatten(1)
         latent_loss_per_frame = latent_loss.sum(dim=1)
         latent_mask_per_frame = torch.ones_like(latent_loss).sum(dim=1)
@@ -68,7 +71,7 @@ class LingbotParallelActionDecoder(ActionDecoder):
             input_dict["action_dict"]["targets"].float().detach(),
             reduction="none",
         )
-        action_loss = action_loss * action_loss_weight[:, None, :, None, None]
+        action_loss = action_loss * action_scheduler_weight[:, None, :, None, None]
         action_loss = action_loss * input_dict["action_dict"]["actions_mask"].float()
         action_loss = action_loss.permute(0, 2, 3, 4, 1).flatten(0, 1).flatten(1)
         action_mask = input_dict["action_dict"]["actions_mask"].float().permute(0, 2, 3, 4, 1).flatten(0, 1).flatten(1)
@@ -76,13 +79,17 @@ class LingbotParallelActionDecoder(ActionDecoder):
         action_mask_per_frame = action_mask.sum(dim=1)
         action_loss = (action_loss_per_frame / (action_mask_per_frame + 1e-6)).mean()
 
-        loss = latent_loss + action_loss
+        weighted_latent_loss = latent_loss * configured_latent_loss_weight
+        weighted_action_loss = action_loss * configured_action_loss_weight
+        loss = weighted_latent_loss + weighted_action_loss
         return ActionDecoderTrainOutput(
             action_pred=action_pred,
             loss=loss,
             metrics={
                 "action_mse": action_loss.detach(),
                 "latent_mse": latent_loss.detach(),
+                "weighted_action_loss": weighted_action_loss.detach(),
+                "weighted_latent_loss": weighted_latent_loss.detach(),
                 "joint_loss": loss.detach(),
             },
             aux={"decoder": self.__class__.__name__},
