@@ -25,9 +25,11 @@ class LingbotCompatibleVideoBackboneConfig:
     patch_size_t: int = 1
     patch_size_h: int = 2
     patch_size_w: int = 2
-    implementation: str = "dummy"
+    # Default to the LingBot-style shared-core implementation so real variants
+    # run on the same backbone family unless a smoke-test config overrides it.
+    implementation: str = "lingbot_replica"
     hidden_size: int = 3072
-    num_layers: int = 0
+    num_layers: int = 1
     num_heads: int = 8
     attention_head_dim: int | None = None
     mlp_ratio: int = 4

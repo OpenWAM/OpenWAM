@@ -1,4 +1,4 @@
-name: register_attached_robotwin
+name: register_attached_robotwin_smoke
 
 data:
   dataset_name: robotwin
@@ -14,18 +14,15 @@ data:
 
 backbone:
   implementation: lingbot_replica
-  hidden_size: 3072
-  num_layers: 30
-  num_heads: 24
-  attention_head_dim: 128
-  ffn_dim: 14336
-  load_wan_vae_frontend: false
-  load_text_conditioning: false
-  load_reference_core_weights: false
+  hidden_size: 256
+  num_layers: 1
+  num_heads: 8
+  attention_head_dim: 32
+  ffn_dim: 1024
 
 policy_variant:
   name: register_attached
-  hidden_size: 3072
+  hidden_size: 256
   num_frame_per_block: 1
   num_action_per_block: 2
   num_state_per_block: 1
@@ -36,7 +33,7 @@ policy_variant:
 
 action_decoder:
   name: register_decoder
-  hidden_size: 3072
+  hidden_size: 256
   action_dim: 30
   action_horizon: 6
 
@@ -48,10 +45,10 @@ training:
   use_teacher_forcing: false
 
 inference:
-  video_num_inference_steps: 25
-  action_num_inference_steps: 50
-  joint_num_inference_steps: 16
-  joint_sampler: unipc
+  video_num_inference_steps: 4
+  action_num_inference_steps: 4
+  joint_num_inference_steps: 4
+  joint_sampler: flow_match
   video_cfg_mode: guided
   action_cfg_mode: conditioned
   joint_cache_update_mode: warmup_only

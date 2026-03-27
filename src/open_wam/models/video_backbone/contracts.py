@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
@@ -31,6 +31,33 @@ class ChunkMetadata:
 
 
 @dataclass
+class AttentionCacheEntry:
+    """One cache slot owned by the backbone runtime.
+
+    The tensors are optional because the first cache-aware rewrite slice only
+    establishes the contract. Later stages will populate these with per-layer
+    KV / cross-attention tensors.
+    """
+
+    key: torch.Tensor | None = None
+    value: torch.Tensor | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class CacheUpdateMetadata:
+    """Runtime instructions for one cache-aware forward pass."""
+
+    current_start_frame: int = 0
+    update_kv_cache: bool = False
+    update_cross_attention_cache: bool = False
+    cfg_mode: str = "none"
+    max_cached_frames: int | None = None
+    sink_frames: int = 0
+    local_attn_window: int | None = None
+
+
+@dataclass
 class CacheState:
     """Backbone-owned cache contract exposed to downstream heads.
 
@@ -41,7 +68,11 @@ class CacheState:
     current_start_frame: int
     cached_frames: int
     chunk_size: int
-    payload: dict[str, Any]
+    capability: str = "none"
+    payload: dict[str, Any] = field(default_factory=dict)
+    self_attention_kv: tuple[AttentionCacheEntry, ...] = field(default_factory=tuple)
+    cross_attention_kv: tuple[AttentionCacheEntry, ...] = field(default_factory=tuple)
+    update_metadata: CacheUpdateMetadata = field(default_factory=CacheUpdateMetadata)
 
 
 @dataclass

@@ -15,9 +15,11 @@ The repo currently includes:
 - a stage-aware `VisualTower + PolicyVariant + ActionDecoder` stack
 - runnable `parallel_stream`, `register_attached`, `post_latent`, and
   `post_decoded` policy variants
+- a LingBot replica backbone as the default shared-core family for real
+  multimodal variants
 - a LingBot-compatible backbone knob under `backbone.implementation`:
-  - `dummy`
-  - `lingbot_replica`
+  - `lingbot_replica` (default)
+  - `dummy` (smoke/legacy only)
 - an optional `backbone.load_reference_core_weights` path that loads LingBot
   backbone weights into the shared replica core for
   `register_attached`, `post_latent`, and `post_decoded`
@@ -98,11 +100,11 @@ inside `src/open_wam/models/policy_variants/`.
 
 ## Current Diffusion Granularity
 
-Current diffusion behavior is split into two buckets.
+Current diffusion behavior is split into three buckets.
 
-Exact LingBot path:
+Method 1, LingBot:
 
-- `parallel_stream` with `runtime_mode: lingbot_exact`
+- `parallel_stream`
 - separate video and action schedulers
 - one sampled diffusion timestep per **frame**
 - video sigma is broadcast across latent channels and spatial positions of that
@@ -111,28 +113,41 @@ Exact LingBot path:
   positions of that frame
 - loss is reduced and normalized per frame
 
-Non-exact variants:
+Method 2, DreamZero-style register-attached on LingBot backbone:
+
+- video latents get their own noise scheduler, targets, and weighted loss
+- actions get their own noise scheduler, targets, and weighted loss
+- the shared core sees noisy video and noisy action tokens together
+- training loss is `video_diffusion_loss + action_diffusion_loss`
+- `register_attached`
+  - full clean-video teacher-forcing prefix during training
+  - one sampled timestep per video frame
+  - action timesteps are coupled to future video blocks by default
+  - joint inference rollout: update video and action in the same denoising loop
+  - `inference.joint_sampler: unipc` by default for DreamZero-style multistep sampling
+  - optional shared denoising count via `inference.joint_num_inference_steps`
+  - per-stream CFG stays generic:
+    - `inference.video_cfg_mode: guided`
+    - `inference.action_cfg_mode: conditioned`
+  - cache warmup stays generic:
+    - `inference.joint_cache_warmup_source`
+    - `inference.joint_cache_initial_warmup_anchor`
+    - `inference.joint_cache_rollout_warmup_anchor`
+  - `inference.joint_observed_video_prefix_frames: 1` keeps the observed
+    first frame fixed during inference-time denoising
+
+Action-only diffusion variants:
 
 - `post_latent`
 - `post_decoded`
-- `register_attached`
-- approximate `parallel_stream`
 
-These now use LingBot-style **action flow matching**:
+These still use LingBot-style action flow matching:
 
 - action tensor is `[B, H_action, D_action]`
 - one sampled diffusion timestep per **action horizon slot**
 - that sigma is broadcast across all `D_action` channels at that slot
 - diffusion loss is reduced per slot across action dims, then averaged over
   slots and batch
-
-One important architectural distinction:
-
-- `post_latent` and `post_decoded` do not place noisy action tokens inside the
-  shared core; the decoder performs the denoising
-- `register_attached` and approximate `parallel_stream` now inject **noisy
-  actions** into the shared core during training, so the core no longer sees
-  clean target actions directly
 
 ## Quick Start
 
@@ -153,6 +168,14 @@ Inspect the current LIBERO adapter:
 
 ```bash
 python scripts/inspect_libero_adapter.py --cfg configs/experiments/contract_only_libero.yaml
+```
+
+Use the lightweight smoke configs when you want fast CPU checks of method 1 and
+method 2 without instantiating the full LingBot-scale backbone:
+
+```bash
+python -m open_wam.evals.evaluate --cfg configs/experiments/parallel_stream_robotwin_smoke.yaml --device cpu
+python -m open_wam.evals.evaluate --cfg configs/experiments/register_attached_robotwin_smoke.yaml --device cpu
 ```
 
 Visualize the default LIBERO reference-relative EEF target in MuJoCo:
@@ -245,18 +268,30 @@ Or use an eval-wrapper YAML under `configs/evals/`:
 uv run python -m open_wam.evals.evaluate --cfg configs/evals/contract_only_robotwin.yaml
 ```
 
+Trajectory eval modes:
+
+- `trajectory`: teacher-forced visual rollout over episode windows
+- `trajectory_open_loop`: reuses predicted video latents across later windows
+  by aligning overlapping frame indices and seeding newly entered frames from
+  the current clean observation window
+
 The current generic evaluator now:
 
 - loads either an experiment YAML or an eval-wrapper YAML
 - builds the current `VariantPipeline`, not the legacy `UnifiedWAMPipeline`
-- supports two modes:
+- supports three modes:
   - `batch`: independent one-window inference on each sampled batch
   - `trajectory`: stateful rollout over episode-ordered windows, carrying
     `PolicyInferState` and previous predictions across the trajectory
+  - `trajectory_open_loop`: same stateful rollout, but the next step may
+    consume predicted video latents instead of rereading GT RGB
 - runs the standard inference path in both modes, so each evaluation step still
   includes the variant's full denoising loop
 - reports action-prediction shape and mean masked action MSE
-- reports mean per-trajectory action MSE when trajectory mode is used
+- reports video latent MSE whenever the active variant exposes predicted
+  latents
+- reports mean per-trajectory action MSE and video latent MSE for trajectory
+  modes when available
 - optionally loads a checkpoint passed with `--checkpoint`
 
 Trajectory mode requires an episode-aware dataset adapter, i.e. one that can

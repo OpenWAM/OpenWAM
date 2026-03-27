@@ -11,23 +11,31 @@ class RegisterSequenceLayout:
 
     The packed sequence is laid out as:
 
-    - first observed frame tokens
-    - blockwise future video tokens
+    - optional clean video prefix tokens used only for teacher forcing
+    - noisy video tokens, where the first noisy frame stays special and the
+      remaining frames are grouped into DreamZero-style image blocks
     - action-register blocks
     - state-register blocks
 
     All spans are over the flattened packed axis `S_total`.
     """
 
-    first_frame_span: tuple[int, int]
-    video_block_spans: tuple[tuple[int, int], ...]
+    clean_video_span: tuple[int, int]
+    noisy_video_span: tuple[int, int]
+    first_noisy_frame_span: tuple[int, int]
+    noisy_video_block_spans: tuple[tuple[int, int], ...]
     action_block_spans: tuple[tuple[int, int], ...]
     state_block_spans: tuple[tuple[int, int], ...]
-    video_sequence_length: int
+    clean_video_sequence_length: int
+    noisy_video_sequence_length: int
     total_sequence_length: int
     num_image_blocks: int
     num_action_blocks: int
     num_state_blocks: int
+    tokens_per_frame: int
+    tokens_per_image_block: int
+    num_video_frames: int
+    has_clean_video_prefix: bool
 
 
 def build_register_sequence_layout(
@@ -37,6 +45,8 @@ def build_register_sequence_layout(
     num_frame_per_block: int,
     num_action_per_block: int,
     num_state_per_block: int,
+    *,
+    include_clean_video_prefix: bool,
 ) -> RegisterSequenceLayout:
     if token_grid.num_frames < 1:
         raise ValueError("Register-attached variant requires at least one frame.")
@@ -65,19 +75,24 @@ def build_register_sequence_layout(
         )
 
     tokens_per_frame = token_grid.tokens_per_frame
-    first_frame_span = (0, tokens_per_frame)
-    video_block_spans: list[tuple[int, int]] = []
-    cursor = tokens_per_frame
+    clean_video_length = token_grid.sequence_length if include_clean_video_prefix else 0
+    clean_video_span = (0, clean_video_length)
+    cursor = clean_video_length
+
+    first_noisy_frame_span = (cursor, cursor + tokens_per_frame)
+    cursor += tokens_per_frame
+    noisy_video_block_spans: list[tuple[int, int]] = []
     for _ in range(num_image_blocks):
         # Each image block represents `num_frame_per_block` future frames, with
         # `tokens_per_frame` flattened patch tokens per frame.
         block_tokens = num_frame_per_block * tokens_per_frame
-        video_block_spans.append((cursor, cursor + block_tokens))
+        noisy_video_block_spans.append((cursor, cursor + block_tokens))
         cursor += block_tokens
-    video_sequence_length = cursor
+    noisy_video_span = (first_noisy_frame_span[0], cursor)
+    noisy_video_sequence_length = noisy_video_span[1] - noisy_video_span[0]
 
     action_block_spans: list[tuple[int, int]] = []
-    register_cursor = video_sequence_length
+    register_cursor = cursor
     for _ in range(num_action_blocks):
         # Action registers stay in 1D sequence space, so one block contributes
         # `num_action_per_block` learned register slots.
@@ -90,13 +105,20 @@ def build_register_sequence_layout(
         register_cursor += num_state_per_block
 
     return RegisterSequenceLayout(
-        first_frame_span=first_frame_span,
-        video_block_spans=tuple(video_block_spans),
+        clean_video_span=clean_video_span,
+        noisy_video_span=noisy_video_span,
+        first_noisy_frame_span=first_noisy_frame_span,
+        noisy_video_block_spans=tuple(noisy_video_block_spans),
         action_block_spans=tuple(action_block_spans),
         state_block_spans=tuple(state_block_spans),
-        video_sequence_length=video_sequence_length,
+        clean_video_sequence_length=clean_video_length,
+        noisy_video_sequence_length=noisy_video_sequence_length,
         total_sequence_length=register_cursor,
         num_image_blocks=num_image_blocks,
         num_action_blocks=num_action_blocks,
         num_state_blocks=num_state_blocks,
+        tokens_per_frame=tokens_per_frame,
+        tokens_per_image_block=num_frame_per_block * tokens_per_frame,
+        num_video_frames=token_grid.num_frames,
+        has_clean_video_prefix=include_clean_video_prefix,
     )

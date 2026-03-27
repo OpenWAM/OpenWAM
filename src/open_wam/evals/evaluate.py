@@ -17,7 +17,7 @@ if str(SRC_ROOT) not in sys.path:
 from open_wam.configs import DataConfig, ExperimentConfig
 from open_wam.data import WAMBatch, WAMSample, build_train_val_datasets, collate_wam_samples, move_wam_batch_to_device
 from open_wam.models.policy_variants import PolicyInferContext
-from open_wam.pipelines import build_variant_pipeline_from_config
+from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config
 from open_wam.utils import load_experiment_config, seed_everywhere
 
 
@@ -50,8 +50,13 @@ class EvaluationSummary:
     action_prediction_source: str
     action_prediction_shape: tuple[int, ...]
     target_action_shape: tuple[int, ...]
+    video_prediction_source: str
+    video_prediction_shape: tuple[int, ...]
+    target_video_shape: tuple[int, ...]
     mean_action_mse: float | None
     mean_trajectory_action_mse: float | None
+    mean_video_latent_mse: float | None
+    mean_trajectory_video_latent_mse: float | None
     checkpoint_path: str | None
 
 
@@ -264,6 +269,14 @@ def _masked_action_mse(
     return float((squared_error.sum() / denom).item())
 
 
+def _video_latent_mse(
+    predicted: torch.Tensor,
+    target: torch.Tensor,
+) -> float:
+    squared_error = (predicted.float() - target.float()).pow(2)
+    return float(squared_error.mean().item())
+
+
 def _select_eval_action_prediction(
     *,
     target_actions: torch.Tensor,
@@ -276,6 +289,23 @@ def _select_eval_action_prediction(
     if isinstance(raw_chunk_action_pred, torch.Tensor) and raw_chunk_action_pred.shape == target_actions.shape:
         return "raw_chunk_action_pred", raw_chunk_action_pred
     return "decoder_action_pred_unmatched", decoder_action_pred
+
+
+def _select_eval_video_prediction(
+    *,
+    target_video_latents: torch.Tensor,
+    decoder_aux: dict[str, Any],
+    policy_aux: dict[str, Any],
+) -> tuple[str, torch.Tensor | None]:
+    for source_name in ("predicted_latents", "predicted_video_latents"):
+        candidate = decoder_aux.get(source_name)
+        if isinstance(candidate, torch.Tensor) and candidate.shape == target_video_latents.shape:
+            return f"decoder_{source_name}", candidate
+    for source_name in ("predicted_latents", "predicted_video_latents"):
+        candidate = policy_aux.get(source_name)
+        if isinstance(candidate, torch.Tensor) and candidate.shape == target_video_latents.shape:
+            return f"policy_{source_name}", candidate
+    return "unavailable", None
 
 
 def _group_dataset_indices_by_episode(dataset: Dataset[WAMSample]) -> list[list[int]]:
@@ -325,6 +355,66 @@ def _group_dataset_indices_by_episode(dataset: Dataset[WAMSample]) -> list[list[
     ]
 
 
+def _resolve_observation_frame_indices(
+    metadata: dict[str, Any],
+    *,
+    num_frames: int,
+) -> tuple[int, ...]:
+    """Resolve per-window frame ids for trajectory-open-loop alignment.
+
+    Open-loop evaluation carries predicted video latents across advancing dataset
+    windows. Those windows often overlap, so the latent tensor for the next
+    step must be shifted into the current frame-index basis before reuse.
+    """
+
+    raw_indices = metadata.get("observation_frame_indices")
+    if isinstance(raw_indices, (list, tuple)):
+        if len(raw_indices) != num_frames:
+            raise ValueError(
+                "Expected `observation_frame_indices` to match the current video "
+                f"window length {num_frames}, got {len(raw_indices)}."
+            )
+        return tuple(int(value) for value in raw_indices)
+
+    observation_start = metadata.get("observation_start")
+    if observation_start is None:
+        raise ValueError(
+            "Trajectory-open-loop evaluation requires per-sample metadata with "
+            "`observation_frame_indices` or `observation_start`."
+        )
+    return tuple(int(observation_start) + offset for offset in range(num_frames))
+
+
+def _align_rollout_window_tensor(
+    previous_tensor: torch.Tensor | None,
+    *,
+    previous_frame_indices: tuple[int, ...] | None,
+    current_frame_indices: tuple[int, ...],
+    current_target_tensor: torch.Tensor,
+    frame_dim: int,
+) -> torch.Tensor:
+    """Shift a predicted rollout window into the current observation basis.
+
+    Overlapping frame ids reuse the previous step's predicted tensor. Any newly
+    entered frames are seeded from the current clean window so evaluation stays
+    temporally aligned even when the dataset advances the observation window by
+    one or more frames each step.
+    """
+
+    aligned = current_target_tensor.clone()
+    if previous_tensor is None or previous_frame_indices is None:
+        return aligned
+
+    previous_lookup = {frame_index: index for index, frame_index in enumerate(previous_frame_indices)}
+    max_previous_frames = previous_tensor.shape[frame_dim]
+    for current_index, frame_index in enumerate(current_frame_indices):
+        previous_index = previous_lookup.get(frame_index)
+        if previous_index is None or previous_index >= max_previous_frames:
+            continue
+        aligned.select(frame_dim, current_index).copy_(previous_tensor.select(frame_dim, previous_index))
+    return aligned
+
+
 def run_evaluation(
     request: EvaluationRequest,
 ) -> EvaluationSummary:
@@ -340,9 +430,14 @@ def run_evaluation(
 
     action_mse_values: list[float] = []
     trajectory_mse_values: list[float] = []
+    video_mse_values: list[float] = []
+    trajectory_video_mse_values: list[float] = []
     action_prediction_shape: tuple[int, ...] | None = None
     target_action_shape: tuple[int, ...] | None = None
     action_prediction_source = "unavailable"
+    video_prediction_shape: tuple[int, ...] | None = None
+    target_video_shape: tuple[int, ...] | None = None
+    video_prediction_source = "unavailable"
     num_batches = 0
     num_trajectories = 0
 
@@ -373,8 +468,16 @@ def run_evaluation(
                     decoder_action_pred=output.decoder_output.action_pred,
                     policy_aux=output.policy_output.aux,
                 )
+                video_prediction_source, video_prediction = _select_eval_video_prediction(
+                    target_video_latents=output.visual_outputs.frontend.video_latents,
+                    decoder_aux=output.decoder_output.aux,
+                    policy_aux=output.policy_output.aux,
+                )
                 action_prediction_shape = tuple(action_prediction.shape)
                 target_action_shape = tuple(batch.actions.shape)
+                target_video_shape = tuple(output.visual_outputs.frontend.video_latents.shape)
+                if video_prediction is not None:
+                    video_prediction_shape = tuple(video_prediction.shape)
                 if action_prediction.shape == batch.actions.shape:
                     action_mse_values.append(
                         _masked_action_mse(
@@ -383,22 +486,38 @@ def run_evaluation(
                             batch.action_mask,
                         )
                     )
+                if video_prediction is not None and video_prediction.shape == output.visual_outputs.frontend.video_latents.shape:
+                    video_mse_values.append(
+                        _video_latent_mse(
+                            video_prediction,
+                            output.visual_outputs.frontend.video_latents,
+                        )
+                    )
                 num_batches += 1
-        elif request.mode == "trajectory":
+        elif request.mode in {"trajectory", "trajectory_open_loop"}:
             dataset = _select_eval_dataset(experiment_config.data, split=request.split)
             episode_groups = _group_dataset_indices_by_episode(dataset)
             if request.max_trajectories is not None:
                 episode_groups = episode_groups[: request.max_trajectories]
 
             for dataset_indices in episode_groups:
-                infer_state = None
+                rollout_runner = VariantRolloutRunner(pipeline)
+                session = None
                 previous_action = None
                 step_mse_values: list[float] = []
+                step_video_mse_values: list[float] = []
+                rollout_latents: torch.Tensor | None = None
+                rollout_canonical_video: torch.Tensor | None = None
+                rollout_frame_indices: tuple[int, ...] | None = None
                 for step_index, dataset_index in enumerate(dataset_indices):
                     if request.max_steps_per_trajectory is not None and step_index >= request.max_steps_per_trajectory:
                         break
                     sample = dataset[dataset_index]
                     batch = move_wam_batch_to_device(collate_wam_samples([sample]), device)
+                    if session is None:
+                        session = rollout_runner.reset(
+                            task_text=batch.task_text,
+                        )
                     infer_context = PolicyInferContext(
                         state=batch.state,
                         previous_action=previous_action,
@@ -407,17 +526,76 @@ def run_evaluation(
                             "metadata": batch.metadata,
                         },
                     )
-                    # Trajectory mode reuses the exact same full-denoising
-                    # infer path, but now carries `infer_state` and previous
-                    # predictions forward across the whole episode window chain.
-                    output = pipeline.forward_infer_step(batch.views, infer_context, infer_state=infer_state)
+                    if request.mode == "trajectory_open_loop":
+                        target_visual_outputs = pipeline.prepare_visual_outputs(
+                            batch.views,
+                            task_text=batch.task_text,
+                        )
+                        current_frame_indices = _resolve_observation_frame_indices(
+                            batch.metadata[0],
+                            num_frames=target_visual_outputs.frontend.video_latents.shape[2],
+                        )
+                        if rollout_latents is not None:
+                            # Trajectory-open-loop steps advance the dataset
+                            # observation window. Reuse predicted latents only
+                            # for overlapping frame ids, and seed newly entered
+                            # frames from the current clean window so the
+                            # rollout stays temporally aligned.
+                            aligned_rollout_latents = _align_rollout_window_tensor(
+                                rollout_latents,
+                                previous_frame_indices=rollout_frame_indices,
+                                current_frame_indices=current_frame_indices,
+                                current_target_tensor=target_visual_outputs.frontend.video_latents,
+                                frame_dim=2,
+                            )
+                            aligned_canonical_video = _align_rollout_window_tensor(
+                                rollout_canonical_video,
+                                previous_frame_indices=rollout_frame_indices,
+                                current_frame_indices=current_frame_indices,
+                                current_target_tensor=target_visual_outputs.frontend.canonical_video,
+                                frame_dim=2,
+                            )
+                            step_output = rollout_runner.infer_step(
+                                session=session,
+                                context=infer_context,
+                                video_latents=aligned_rollout_latents,
+                                canonical_video=aligned_canonical_video,
+                            )
+                            output = step_output.infer_output
+                            session = step_output.session
+                        else:
+                            step_output = rollout_runner.infer_step(
+                                session=session,
+                                context=infer_context,
+                                views=batch.views,
+                            )
+                            output = step_output.infer_output
+                            session = step_output.session
+                        target_video_latents = target_visual_outputs.frontend.video_latents
+                    else:
+                        step_output = rollout_runner.infer_step(
+                            session=session,
+                            context=infer_context,
+                            views=batch.views,
+                        )
+                        output = step_output.infer_output
+                        session = step_output.session
+                        target_video_latents = output.visual_outputs.frontend.video_latents
                     action_prediction_source, action_prediction = _select_eval_action_prediction(
                         target_actions=batch.actions,
                         decoder_action_pred=output.decoder_output.action_pred,
                         policy_aux=output.policy_output.aux,
                     )
+                    video_prediction_source, video_prediction = _select_eval_video_prediction(
+                        target_video_latents=target_video_latents,
+                        decoder_aux=output.decoder_output.aux,
+                        policy_aux=output.policy_output.aux,
+                    )
                     action_prediction_shape = tuple(action_prediction.shape)
                     target_action_shape = tuple(batch.actions.shape)
+                    target_video_shape = tuple(target_video_latents.shape)
+                    if video_prediction is not None:
+                        video_prediction_shape = tuple(video_prediction.shape)
                     if action_prediction.shape == batch.actions.shape:
                         step_mse = _masked_action_mse(
                             action_prediction,
@@ -426,15 +604,25 @@ def run_evaluation(
                         )
                         action_mse_values.append(step_mse)
                         step_mse_values.append(step_mse)
-                    infer_state = output.policy_output.next_state
+                    if video_prediction is not None and video_prediction.shape == target_video_latents.shape:
+                        step_video_mse = _video_latent_mse(video_prediction, target_video_latents)
+                        video_mse_values.append(step_video_mse)
+                        step_video_mse_values.append(step_video_mse)
                     previous_action = action_prediction.detach()
+                    if video_prediction is not None:
+                        rollout_latents = video_prediction.detach()
+                    if request.mode == "trajectory_open_loop":
+                        rollout_frame_indices = current_frame_indices
+                    rollout_canonical_video = output.visual_outputs.frontend.canonical_video
                     num_batches += 1
                 if step_mse_values:
                     trajectory_mse_values.append(sum(step_mse_values) / len(step_mse_values))
+                    if step_video_mse_values:
+                        trajectory_video_mse_values.append(sum(step_video_mse_values) / len(step_video_mse_values))
                     num_trajectories += 1
         else:
             raise ValueError(
-                f"Unsupported eval mode '{request.mode}'. Expected 'batch' or 'trajectory'."
+                f"Unsupported eval mode '{request.mode}'. Expected 'batch', 'trajectory', or 'trajectory_open_loop'."
             )
 
     if num_batches == 0:
@@ -453,9 +641,18 @@ def run_evaluation(
         action_prediction_source=action_prediction_source,
         action_prediction_shape=action_prediction_shape or tuple(),
         target_action_shape=target_action_shape or tuple(),
+        video_prediction_source=video_prediction_source,
+        video_prediction_shape=video_prediction_shape or tuple(),
+        target_video_shape=target_video_shape or tuple(),
         mean_action_mse=(sum(action_mse_values) / len(action_mse_values)) if action_mse_values else None,
         mean_trajectory_action_mse=(
             sum(trajectory_mse_values) / len(trajectory_mse_values) if trajectory_mse_values else None
+        ),
+        mean_video_latent_mse=(sum(video_mse_values) / len(video_mse_values)) if video_mse_values else None,
+        mean_trajectory_video_latent_mse=(
+            sum(trajectory_video_mse_values) / len(trajectory_video_mse_values)
+            if trajectory_video_mse_values
+            else None
         ),
         checkpoint_path=str(request.checkpoint_path) if request.checkpoint_path is not None else None,
     )
@@ -497,8 +694,13 @@ def main() -> None:
     print("eval.action_prediction_source", summary.action_prediction_source)
     print("eval.action_prediction_shape", summary.action_prediction_shape)
     print("eval.target_action_shape", summary.target_action_shape)
+    print("eval.video_prediction_source", summary.video_prediction_source)
+    print("eval.video_prediction_shape", summary.video_prediction_shape)
+    print("eval.target_video_shape", summary.target_video_shape)
     print("eval.mean_action_mse", summary.mean_action_mse)
     print("eval.mean_trajectory_action_mse", summary.mean_trajectory_action_mse)
+    print("eval.mean_video_latent_mse", summary.mean_video_latent_mse)
+    print("eval.mean_trajectory_video_latent_mse", summary.mean_trajectory_video_latent_mse)
     print("eval.checkpoint_path", summary.checkpoint_path)
 
 

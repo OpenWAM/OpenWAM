@@ -4,7 +4,7 @@ import torch
 from torch import nn
 
 from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
-from open_wam.models.video_backbone.contracts import CacheState
+from open_wam.models.video_backbone.contracts import AttentionCacheEntry, CacheState, CacheUpdateMetadata
 
 from .contracts import VisualCoreInput, VisualCoreOutput
 
@@ -111,16 +111,60 @@ class LingbotVisualCore(nn.Module):
         for block in self.blocks:
             hidden_states = block(hidden_states, attention_mask=core_input.attention_mask)
         hidden_states = self.final_norm(hidden_states)
-        cache_state = core_input.cache_state or CacheState(
-            supported=False,
-            current_start_frame=0,
-            cached_frames=0,
-            chunk_size=hidden_states.shape[1],
-            payload={"stage": "visual_core"},
+        cache_update_metadata = core_input.cache_update_metadata or CacheUpdateMetadata()
+        has_runtime_sequence = core_input.sequence_metadata is not None
+        layer_cache_entries = (
+            tuple(
+                AttentionCacheEntry(
+                    metadata={
+                        "layer_index": layer_index,
+                        "sequence_length": layer_seq_len,
+                        "current_start_frame": cache_update_metadata.current_start_frame,
+                    }
+                )
+                for layer_index, layer_seq_len in enumerate([hidden_states.shape[1]] * len(self.blocks))
+            )
+            if has_runtime_sequence
+            else tuple()
         )
+        if core_input.cache_state is not None:
+            cache_state = CacheState(
+                supported=core_input.cache_state.supported or has_runtime_sequence,
+                current_start_frame=cache_update_metadata.current_start_frame,
+                cached_frames=core_input.cache_state.cached_frames,
+                chunk_size=core_input.cache_state.chunk_size,
+                capability=(
+                    core_input.cache_state.capability
+                    if core_input.cache_state.capability != "none"
+                    else ("layer_placeholder" if has_runtime_sequence else "none")
+                ),
+                payload=dict(core_input.cache_state.payload),
+                self_attention_kv=(
+                    core_input.cache_state.self_attention_kv
+                    if core_input.cache_state.self_attention_kv
+                    else layer_cache_entries
+                ),
+                cross_attention_kv=core_input.cache_state.cross_attention_kv,
+                update_metadata=cache_update_metadata,
+            )
+        else:
+            cache_state = CacheState(
+                supported=has_runtime_sequence,
+                current_start_frame=cache_update_metadata.current_start_frame,
+                cached_frames=0,
+                chunk_size=hidden_states.shape[1],
+                capability="layer_placeholder" if has_runtime_sequence else "none",
+                payload={"stage": "visual_core"},
+                self_attention_kv=layer_cache_entries,
+                update_metadata=cache_update_metadata,
+            )
         return VisualCoreOutput(
             tokens=hidden_states,
             token_layout=core_input.token_layout,
             cache_state=cache_state,
-            aux={"used_attention_mask": core_input.attention_mask is not None},
+            aux={
+                "used_attention_mask": core_input.attention_mask is not None,
+                "has_sequence_metadata": core_input.sequence_metadata is not None,
+                "cache_runtime_metadata": cache_update_metadata,
+            },
         )

@@ -28,6 +28,7 @@ def test_register_layout_block_counts_match() -> None:
         num_frame_per_block=1,
         num_action_per_block=2,
         num_state_per_block=1,
+        include_clean_video_prefix=True,
     )
     assert layout.num_image_blocks == 3
     assert layout.num_action_blocks == 3

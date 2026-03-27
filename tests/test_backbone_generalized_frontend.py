@@ -123,9 +123,8 @@ def test_all_policy_variants_consume_shared_frontend_video_latents() -> None:
     config_names = (
         "post_latent_robotwin.yaml",
         "post_decoded_robotwin.yaml",
-        "register_attached_robotwin.yaml",
-        "parallel_stream_robotwin.yaml",
-        "parallel_stream_robotwin_lingbot_replica.yaml",
+        "register_attached_robotwin_smoke.yaml",
+        "parallel_stream_robotwin_smoke.yaml",
     )
 
     for config_name in config_names:

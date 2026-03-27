@@ -12,6 +12,7 @@ from .lingbot_exact import (
     load_lingbot_exact_artifact_bundle,
     save_lingbot_exact_artifact_bundle,
 )
+from .rollout import VariantRolloutRunner, VariantRolloutSession, VariantRolloutStepOutput
 from .unified_wam import UnifiedWAMInferOutput, UnifiedWAMPipeline, UnifiedWAMTrainOutput
 from .variant_pipeline import VariantPipeline, VariantPipelineInferOutput, VariantPipelineTrainOutput
 
@@ -28,6 +29,9 @@ __all__ = [
     "VariantPipeline",
     "VariantPipelineInferOutput",
     "VariantPipelineTrainOutput",
+    "VariantRolloutRunner",
+    "VariantRolloutSession",
+    "VariantRolloutStepOutput",
     "build_action_decoder",
     "build_lingbot_exact_runner_from_config",
     "build_policy_variant",

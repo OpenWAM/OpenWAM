@@ -5,6 +5,8 @@ from typing import Any
 
 import torch
 
+from open_wam.models.common import RolloutCursor
+
 
 @dataclass
 class PolicyTrainBatch:
@@ -38,7 +40,8 @@ class PolicyInferState:
     """Per-variant inference state."""
 
     step_index: int = 0
-    cache: dict[str, Any] = field(default_factory=dict)
+    cursor: RolloutCursor = field(default_factory=RolloutCursor)
+    cache: Any = field(default_factory=dict)
 
 
 @dataclass

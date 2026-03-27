@@ -7,8 +7,9 @@ from open_wam.configs import (
     InferenceConfig,
     LingbotParallelActionDecoderConfig,
     LiberoDataConfig,
-    MLPActionDecoderConfig,
     ParallelStreamPolicyConfig,
+    RegisterActionDecoderConfig,
+    RegisterAttachedPolicyConfig,
     RobotWinDataConfig,
     TrainingConfig,
 )
@@ -43,20 +44,19 @@ def test_reference_core_weight_loading_uses_vendored_reference_model_by_default(
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=2,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=1, state_dim=4, state_horizon=1),
         ),
         backbone=LingbotCompatibleVideoBackboneConfig(
             implementation="lingbot_replica",
             load_reference_core_weights=True,
         ),
-        policy_variant=ParallelStreamPolicyConfig(
+        policy_variant=RegisterAttachedPolicyConfig(
             hidden_size=32,
-            runtime_mode="approx",
-            frame_chunk_size=2,
-            action_per_frame=2,
-            attn_window=8,
+            num_frame_per_block=1,
+            num_action_per_block=1,
+            num_state_per_block=1,
         ),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=RegisterActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=1),
         training=TrainingConfig(chunk_size=2, window_size=8),
         inference=InferenceConfig(frame_chunk_size=2),
     )

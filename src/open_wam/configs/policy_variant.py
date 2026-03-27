@@ -49,6 +49,7 @@ class RegisterAttachedPolicyConfig(PolicyVariantConfig):
     use_state_encoder: bool = True
     action_encoder_type: str = "mlp"
     state_encoder_type: str = "mlp"
+    couple_action_to_video_blocks: bool = True
 
 
 @dataclass(frozen=True)
@@ -56,7 +57,7 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
     name: str = "parallel_stream"
     hidden_size: int = 256
     attach_site: str = "within_visual_core"
-    runtime_mode: str = "approx"
+    runtime_mode: str = "lingbot_exact"
     reference_profile: str | None = None
     frame_chunk_size: int = 2
     action_per_frame: int = 1

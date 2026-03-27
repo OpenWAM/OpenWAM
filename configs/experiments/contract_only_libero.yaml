@@ -49,6 +49,7 @@ data:
     gripper_action_index: -1
 
 backbone:
+  implementation: lingbot_replica
   hidden_size: 256
   num_layers: 1
   num_heads: 8

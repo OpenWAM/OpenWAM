@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,22 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 def _build_pipeline(config_path: Path) -> tuple:
     config = load_experiment_config(config_path)
+    # Joint diffusion variants now run the shared core at every denoising step.
+    # Keep the pipeline test on a short smoke rollout so it stays focused on
+    # shape/contract coverage rather than full reference-timing parity.
+    config = replace(
+        config,
+        inference=replace(
+            config.inference,
+            video_num_inference_steps=min(config.inference.video_num_inference_steps, 2),
+            action_num_inference_steps=min(config.inference.action_num_inference_steps, 2),
+            joint_num_inference_steps=(
+                min(config.inference.joint_num_inference_steps, 2)
+                if config.inference.joint_num_inference_steps is not None
+                else None
+            ),
+        ),
+    )
     pipeline = build_variant_pipeline_from_config(config)
     batch = build_synthetic_batch(config.data, batch_size=2)
     train_batch = PolicyTrainBatch(actions=batch.actions, action_mask=batch.action_mask, state=batch.state)
@@ -26,9 +43,8 @@ def _build_pipeline(config_path: Path) -> tuple:
     [
         ("post_latent_robotwin.yaml", 6),
         ("post_decoded_robotwin.yaml", 6),
-        ("register_attached_robotwin.yaml", 6),
-        ("parallel_stream_robotwin.yaml", 8),
-        ("parallel_stream_robotwin_lingbot_replica.yaml", 8),
+        ("register_attached_robotwin_smoke.yaml", 6),
+        ("parallel_stream_robotwin_smoke.yaml", 8),
     ],
 )
 def test_variant_pipeline_train_and_infer_shapes(config_name: str, expected_horizon: int) -> None:

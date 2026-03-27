@@ -1,4 +1,4 @@
-name: parallel_stream_robotwin_lingbot_replica
+name: parallel_stream_robotwin_smoke
 
 data:
   dataset_name: robotwin
@@ -14,14 +14,11 @@ data:
 
 backbone:
   implementation: lingbot_replica
-  attn_mode: torch
   hidden_size: 256
   num_layers: 1
   num_heads: 8
   attention_head_dim: 32
   ffn_dim: 1024
-  cross_attn_norm: true
-  rope_max_seq_len: 1024
 
 policy_variant:
   name: parallel_stream
@@ -50,8 +47,8 @@ training:
   window_size: 8
 
 inference:
-  video_num_inference_steps: 25
-  action_num_inference_steps: 50
+  video_num_inference_steps: 4
+  action_num_inference_steps: 4
   frame_chunk_size: 2
   use_cache: true
   guidance_scale: 1.0

@@ -15,3 +15,9 @@ def expand_token_timestep_context(base_embedding: torch.Tensor, length: int) -> 
     """Expand `[B, D]` timestep embeddings across `length` tokens."""
 
     return base_embedding[:, None, :].expand(-1, length, -1)
+
+
+def build_token_timestep_context(values: torch.Tensor, hidden_size: int) -> torch.Tensor:
+    """Embed one scalar timestep per token from `[B, L]` to `[B, L, D]`."""
+
+    return sinusoidal_embedding(values.float(), hidden_size)

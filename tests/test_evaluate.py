@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
+import yaml
 from torch.utils.data import Dataset
 
 import open_wam.evals.evaluate as evaluate_module
@@ -35,18 +36,29 @@ def test_run_evaluation_on_contract_only_robotwin() -> None:
     assert summary.num_batches == 1
     assert summary.action_prediction_shape == summary.target_action_shape
     assert summary.mean_action_mse is not None
+    assert summary.mean_video_latent_mse is None
 
 
-def test_run_evaluation_on_parallel_stream_robotwin() -> None:
+def test_run_evaluation_on_parallel_stream_robotwin(tmp_path: Path) -> None:
+    config_path = REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml"
+    with config_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    raw.setdefault("inference", {})
+    raw["inference"]["video_num_inference_steps"] = 2
+    raw["inference"]["action_num_inference_steps"] = 2
+    smoke_path = tmp_path / "parallel_stream_robotwin_eval_smoke.yaml"
+    with smoke_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
     request = resolve_evaluation_request(
-        REPO_ROOT / "configs/experiments/parallel_stream_robotwin.yaml",
+        smoke_path,
         max_batches_override=1,
         device_override="cpu",
     )
     summary = run_evaluation(request)
-    assert summary.experiment_name == "parallel_stream_robotwin"
+    assert summary.experiment_name == "parallel_stream_robotwin_smoke"
     assert summary.num_batches == 1
     assert summary.action_prediction_shape == summary.target_action_shape
+    assert summary.mean_action_mse is not None
 
 
 @dataclass(frozen=True)
@@ -109,6 +121,35 @@ def test_run_trajectory_evaluation_carries_across_episode_windows(monkeypatch) -
     assert summary.action_prediction_shape == summary.target_action_shape
     assert summary.mean_action_mse is not None
     assert summary.mean_trajectory_action_mse is not None
+    assert summary.mean_video_latent_mse is None
+    assert summary.mean_trajectory_video_latent_mse is None
+
+
+def test_resolve_observation_frame_indices_prefers_metadata_list() -> None:
+    indices = evaluate_module._resolve_observation_frame_indices(
+        {
+            "observation_start": 10,
+            "observation_frame_indices": [4, 6, 8, 10],
+        },
+        num_frames=4,
+    )
+
+    assert indices == (4, 6, 8, 10)
+
+
+def test_align_rollout_window_tensor_shifts_overlap_and_seeds_new_frames() -> None:
+    previous = torch.tensor([[[10.0, 20.0, 30.0]]])
+    current_target = torch.tensor([[[100.0, 200.0, 300.0]]])
+
+    aligned = evaluate_module._align_rollout_window_tensor(
+        previous,
+        previous_frame_indices=(0, 1, 2),
+        current_frame_indices=(1, 2, 3),
+        current_target_tensor=current_target,
+        frame_dim=2,
+    )
+
+    assert torch.equal(aligned, torch.tensor([[[20.0, 30.0, 300.0]]]))
 
 
 def test_run_evaluation_loads_pipeline_prefixed_checkpoint(tmp_path: Path) -> None:
@@ -129,3 +170,4 @@ def test_run_evaluation_loads_pipeline_prefixed_checkpoint(tmp_path: Path) -> No
     assert summary.checkpoint_path == str(checkpoint_path)
     assert summary.action_prediction_shape == summary.target_action_shape
     assert summary.mean_action_mse is not None
+    assert summary.mean_video_latent_mse is None

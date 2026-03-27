@@ -95,6 +95,7 @@ def _load_policy_variant_config(
             use_state_encoder=resolved_raw.get("use_state_encoder", True),
             action_encoder_type=resolved_raw.get("action_encoder_type", "mlp"),
             state_encoder_type=resolved_raw.get("state_encoder_type", "mlp"),
+            couple_action_to_video_blocks=resolved_raw.get("couple_action_to_video_blocks", True),
         )
     if name == "parallel_stream":
         default_action_per_frame = max(
@@ -109,7 +110,7 @@ def _load_policy_variant_config(
         )
         return ParallelStreamPolicyConfig(
             hidden_size=hidden_size,
-            runtime_mode=resolved_raw.get("runtime_mode", "approx"),
+            runtime_mode=resolved_raw.get("runtime_mode", "lingbot_exact"),
             reference_profile=resolved_raw.get("reference_profile"),
             frame_chunk_size=resolved_raw.get("frame_chunk_size", inference_config.frame_chunk_size),
             action_per_frame=resolved_raw.get("action_per_frame", default_action_per_frame),
@@ -296,36 +297,51 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
     )
 
     backbone_raw = raw.get("backbone", {})
+    backbone_defaults = LingbotCompatibleVideoBackboneConfig()
+    pretrained_model_name_or_path = backbone_raw.get("pretrained_model_name_or_path")
+    load_wan_vae_frontend = backbone_raw.get("load_wan_vae_frontend")
+    if load_wan_vae_frontend is None:
+        load_wan_vae_frontend = pretrained_model_name_or_path is not None
+    load_text_conditioning = backbone_raw.get("load_text_conditioning")
+    if load_text_conditioning is None:
+        load_text_conditioning = pretrained_model_name_or_path is not None
+    load_reference_core_weights = backbone_raw.get("load_reference_core_weights")
+    if load_reference_core_weights is None:
+        load_reference_core_weights = False
+
     backbone_config = LingbotCompatibleVideoBackboneConfig(
-        input_channels=backbone_raw.get("input_channels", 3),
-        latent_channels=backbone_raw.get("latent_channels", 48),
-        latent_stride=backbone_raw.get("latent_stride", 16),
-        patch_size_t=backbone_raw.get("patch_size_t", 1),
-        patch_size_h=backbone_raw.get("patch_size_h", 2),
-        patch_size_w=backbone_raw.get("patch_size_w", 2),
-        implementation=backbone_raw.get("implementation", "dummy"),
-        hidden_size=backbone_raw.get("hidden_size", 3072),
-        num_layers=backbone_raw.get("num_layers", 0),
-        num_heads=backbone_raw.get("num_heads", 8),
+        input_channels=backbone_raw.get("input_channels", backbone_defaults.input_channels),
+        latent_channels=backbone_raw.get("latent_channels", backbone_defaults.latent_channels),
+        latent_stride=backbone_raw.get("latent_stride", backbone_defaults.latent_stride),
+        patch_size_t=backbone_raw.get("patch_size_t", backbone_defaults.patch_size_t),
+        patch_size_h=backbone_raw.get("patch_size_h", backbone_defaults.patch_size_h),
+        patch_size_w=backbone_raw.get("patch_size_w", backbone_defaults.patch_size_w),
+        implementation=backbone_raw.get("implementation", backbone_defaults.implementation),
+        hidden_size=backbone_raw.get("hidden_size", backbone_defaults.hidden_size),
+        num_layers=backbone_raw.get("num_layers", backbone_defaults.num_layers),
+        num_heads=backbone_raw.get("num_heads", backbone_defaults.num_heads),
         attention_head_dim=backbone_raw.get("attention_head_dim"),
-        mlp_ratio=backbone_raw.get("mlp_ratio", 4),
+        mlp_ratio=backbone_raw.get("mlp_ratio", backbone_defaults.mlp_ratio),
         ffn_dim=backbone_raw.get("ffn_dim"),
-        text_dim=backbone_raw.get("text_dim", 4096),
-        freq_dim=backbone_raw.get("freq_dim", 256),
-        cross_attn_norm=backbone_raw.get("cross_attn_norm", True),
-        rope_max_seq_len=backbone_raw.get("rope_max_seq_len", 1024),
-        latent_norm_eps=backbone_raw.get("latent_norm_eps", 1e-6),
-        attn_mode=backbone_raw.get("attn_mode", "torch"),
-        pretrained_model_name_or_path=backbone_raw.get("pretrained_model_name_or_path"),
-        transformer_subdir=backbone_raw.get("transformer_subdir", "transformer"),
-        vae_subdir=backbone_raw.get("vae_subdir", "vae"),
-        text_encoder_subdir=backbone_raw.get("text_encoder_subdir", "text_encoder"),
-        tokenizer_subdir=backbone_raw.get("tokenizer_subdir", "tokenizer"),
-        max_text_tokens=backbone_raw.get("max_text_tokens", 512),
-        load_wan_vae_frontend=backbone_raw.get("load_wan_vae_frontend", False),
-        load_text_conditioning=backbone_raw.get("load_text_conditioning", False),
-        load_reference_core_weights=backbone_raw.get("load_reference_core_weights", False),
-        reference_assets_device_policy=backbone_raw.get("reference_assets_device_policy", "runtime"),
+        text_dim=backbone_raw.get("text_dim", backbone_defaults.text_dim),
+        freq_dim=backbone_raw.get("freq_dim", backbone_defaults.freq_dim),
+        cross_attn_norm=backbone_raw.get("cross_attn_norm", backbone_defaults.cross_attn_norm),
+        rope_max_seq_len=backbone_raw.get("rope_max_seq_len", backbone_defaults.rope_max_seq_len),
+        latent_norm_eps=backbone_raw.get("latent_norm_eps", backbone_defaults.latent_norm_eps),
+        attn_mode=backbone_raw.get("attn_mode", backbone_defaults.attn_mode),
+        pretrained_model_name_or_path=pretrained_model_name_or_path,
+        transformer_subdir=backbone_raw.get("transformer_subdir", backbone_defaults.transformer_subdir),
+        vae_subdir=backbone_raw.get("vae_subdir", backbone_defaults.vae_subdir),
+        text_encoder_subdir=backbone_raw.get("text_encoder_subdir", backbone_defaults.text_encoder_subdir),
+        tokenizer_subdir=backbone_raw.get("tokenizer_subdir", backbone_defaults.tokenizer_subdir),
+        max_text_tokens=backbone_raw.get("max_text_tokens", backbone_defaults.max_text_tokens),
+        load_wan_vae_frontend=load_wan_vae_frontend,
+        load_text_conditioning=load_text_conditioning,
+        load_reference_core_weights=load_reference_core_weights,
+        reference_assets_device_policy=backbone_raw.get(
+            "reference_assets_device_policy",
+            backbone_defaults.reference_assets_device_policy,
+        ),
         reference_model_path=backbone_raw.get("reference_model_path"),
     )
 
@@ -341,9 +357,58 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
     )
 
     inference_raw = raw.get("inference", {})
+    joint_cfg_application = inference_raw.get("joint_cfg_application")
+    if joint_cfg_application == "video_only":
+        video_cfg_mode = "guided"
+        action_cfg_mode = "conditioned"
+    elif joint_cfg_application == "joint":
+        video_cfg_mode = "guided"
+        action_cfg_mode = "guided"
+    else:
+        video_cfg_mode = inference_raw.get("video_cfg_mode", "guided")
+        action_cfg_mode = inference_raw.get("action_cfg_mode", "conditioned")
+
+    joint_cache_warmup_source = inference_raw.get("joint_cache_warmup_source")
+    if joint_cache_warmup_source == "dreamzero_reference_block":
+        resolved_warmup_source = "reference_video"
+        initial_warmup_anchor = inference_raw.get("joint_cache_initial_warmup_anchor", "start")
+        initial_warmup_frames = inference_raw.get("joint_cache_initial_warmup_frames", 1)
+        rollout_warmup_anchor = inference_raw.get("joint_cache_rollout_warmup_anchor", "end")
+        rollout_warmup_frames = inference_raw.get("joint_cache_rollout_warmup_frames")
+    elif joint_cache_warmup_source == "reference_video":
+        resolved_warmup_source = "reference_video"
+        initial_warmup_anchor = inference_raw.get("joint_cache_initial_warmup_anchor", "full")
+        initial_warmup_frames = inference_raw.get("joint_cache_initial_warmup_frames")
+        rollout_warmup_anchor = inference_raw.get("joint_cache_rollout_warmup_anchor", "full")
+        rollout_warmup_frames = inference_raw.get("joint_cache_rollout_warmup_frames")
+    elif joint_cache_warmup_source in {None, "none"}:
+        resolved_warmup_source = "reference_video" if joint_cache_warmup_source is None else "none"
+        initial_warmup_anchor = inference_raw.get("joint_cache_initial_warmup_anchor", "start")
+        initial_warmup_frames = inference_raw.get("joint_cache_initial_warmup_frames", 1)
+        rollout_warmup_anchor = inference_raw.get("joint_cache_rollout_warmup_anchor", "end")
+        rollout_warmup_frames = inference_raw.get("joint_cache_rollout_warmup_frames")
+    else:
+        resolved_warmup_source = joint_cache_warmup_source
+        initial_warmup_anchor = inference_raw.get("joint_cache_initial_warmup_anchor", "start")
+        initial_warmup_frames = inference_raw.get("joint_cache_initial_warmup_frames", 1)
+        rollout_warmup_anchor = inference_raw.get("joint_cache_rollout_warmup_anchor", "end")
+        rollout_warmup_frames = inference_raw.get("joint_cache_rollout_warmup_frames")
+
     inference_config = InferenceConfig(
         video_num_inference_steps=inference_raw.get("video_num_inference_steps", 25),
         action_num_inference_steps=inference_raw.get("action_num_inference_steps", 50),
+        joint_num_inference_steps=inference_raw.get("joint_num_inference_steps"),
+        joint_sampler=inference_raw.get("joint_sampler", "unipc"),
+        video_cfg_mode=video_cfg_mode,
+        action_cfg_mode=action_cfg_mode,
+        joint_cfg_application=joint_cfg_application,
+        joint_cache_update_mode=inference_raw.get("joint_cache_update_mode", "warmup_only"),
+        joint_cache_warmup_source=resolved_warmup_source,
+        joint_cache_initial_warmup_anchor=initial_warmup_anchor,
+        joint_cache_initial_warmup_frames=initial_warmup_frames,
+        joint_cache_rollout_warmup_anchor=rollout_warmup_anchor,
+        joint_cache_rollout_warmup_frames=rollout_warmup_frames,
+        joint_observed_video_prefix_frames=inference_raw.get("joint_observed_video_prefix_frames", 1),
         frame_chunk_size=inference_raw.get("frame_chunk_size", 2),
         use_cache=inference_raw.get("use_cache", True),
         guidance_scale=inference_raw.get("guidance_scale", 1.0),

@@ -31,7 +31,18 @@ def _resolve_parallel_stream_model_action_dim(config: ExperimentConfig) -> int:
 
 def validate_experiment_config(config: ExperimentConfig) -> None:
     action_schema = config.data.action_schema
+    if isinstance(config.policy_variant, (ParallelStreamPolicyConfig, RegisterAttachedPolicyConfig)):
+        if config.backbone.implementation != "lingbot_replica":
+            raise ValueError(
+                "Joint video+action diffusion variants require the LingBot replica backbone by default, "
+                f"got backbone.implementation={config.backbone.implementation!r}."
+            )
     if isinstance(config.policy_variant, ParallelStreamPolicyConfig):
+        if config.policy_variant.runtime_mode != "lingbot_exact":
+            raise ValueError(
+                "Parallel-stream method 1 now only supports LingBot-exact semantics, "
+                f"got policy_variant.runtime_mode={config.policy_variant.runtime_mode!r}."
+            )
         expected_horizon = config.data.num_frames * config.policy_variant.action_per_frame
         if action_schema.action_horizon != expected_horizon:
             raise ValueError(
@@ -39,35 +50,34 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
                 f"got action_horizon={action_schema.action_horizon}, num_frames={config.data.num_frames}, "
                 f"action_per_frame={config.policy_variant.action_per_frame}."
             )
-        if config.policy_variant.runtime_mode == "lingbot_exact":
-            if config.action_decoder.name != "lingbot_parallel_decoder":
-                raise ValueError(
-                    "Exact LingBot runtime requires `action_decoder.name = lingbot_parallel_decoder`."
-                )
-            if config.action_decoder.action_horizon != action_schema.action_horizon:
-                raise ValueError(
-                    "Exact LingBot runtime requires `action_decoder.action_horizon` to match "
-                    "`data.action_schema.action_horizon`, "
-                    f"got decoder={config.action_decoder.action_horizon}, data={action_schema.action_horizon}."
-                )
-            model_action_dim = _resolve_parallel_stream_model_action_dim(config)
-            adapter_spec = build_action_adapter_spec(config.policy_variant, model_action_dim=model_action_dim)
-            if adapter_spec is None and action_schema.action_dim != model_action_dim:
-                raise ValueError(
-                    "Exact LingBot runtime needs an action adapter when dataset and model action dims differ, "
-                    f"got data action_dim={action_schema.action_dim} and model action_dim={model_action_dim}."
-                )
-            if (
-                adapter_spec is not None
-                and action_schema.action_dim != model_action_dim
-                and adapter_spec.raw_action_dim != action_schema.action_dim
-            ):
-                raise ValueError(
-                    "Exact LingBot action adapter raw action dim must match `data.action_schema.action_dim` "
-                    "when dataset and model action dims differ, "
-                    f"got adapter raw_action_dim={adapter_spec.raw_action_dim}, "
-                    f"data action_dim={action_schema.action_dim}, model action_dim={model_action_dim}."
-                )
+        if config.action_decoder.name != "lingbot_parallel_decoder":
+            raise ValueError(
+                "Parallel-stream method 1 requires `action_decoder.name = lingbot_parallel_decoder`."
+            )
+        if config.action_decoder.action_horizon != action_schema.action_horizon:
+            raise ValueError(
+                "Parallel-stream method 1 requires `action_decoder.action_horizon` to match "
+                "`data.action_schema.action_horizon`, "
+                f"got decoder={config.action_decoder.action_horizon}, data={action_schema.action_horizon}."
+            )
+        model_action_dim = _resolve_parallel_stream_model_action_dim(config)
+        adapter_spec = build_action_adapter_spec(config.policy_variant, model_action_dim=model_action_dim)
+        if adapter_spec is None and action_schema.action_dim != model_action_dim:
+            raise ValueError(
+                "Exact LingBot runtime needs an action adapter when dataset and model action dims differ, "
+                f"got data action_dim={action_schema.action_dim} and model action_dim={model_action_dim}."
+            )
+        if (
+            adapter_spec is not None
+            and action_schema.action_dim != model_action_dim
+            and adapter_spec.raw_action_dim != action_schema.action_dim
+        ):
+            raise ValueError(
+                "Exact LingBot action adapter raw action dim must match `data.action_schema.action_dim` "
+                "when dataset and model action dims differ, "
+                f"got adapter raw_action_dim={adapter_spec.raw_action_dim}, "
+                f"data action_dim={action_schema.action_dim}, model action_dim={model_action_dim}."
+            )
 
 
 def build_policy_variant(config: ExperimentConfig):
@@ -92,6 +102,7 @@ def build_policy_variant(config: ExperimentConfig):
     if isinstance(policy_config, RegisterAttachedPolicyConfig):
         return RegisterAttachedPolicyVariant(
             config=policy_config,
+            backbone_config=config.backbone,
             training_config=config.training,
             inference_config=config.inference,
             action_dim=action_schema.action_dim,

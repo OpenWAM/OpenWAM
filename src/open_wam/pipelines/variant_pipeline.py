@@ -121,7 +121,11 @@ class VariantPipeline(nn.Module):
             visual_outputs=visual_outputs,
             prepared_inputs=prepared_inputs,
         )
-        decoder_output = self.action_decoder.forward_train(policy_output, prepared_inputs.batch)
+        direct_decoder_output = policy_output.aux.get("decoder_output")
+        if isinstance(direct_decoder_output, ActionDecoderTrainOutput):
+            decoder_output = direct_decoder_output
+        else:
+            decoder_output = self.action_decoder.forward_train(policy_output, prepared_inputs.batch)
         return VariantPipelineTrainOutput(
             visual_outputs=visual_outputs,
             policy_output=policy_output,
@@ -139,6 +143,7 @@ class VariantPipeline(nn.Module):
             task_text=context.extra.get("task_text"),
         )
         resolved_state = self.policy_variant.prepare_infer_state(
+            visual_tower=self.visual_tower,
             visual_outputs=visual_outputs,
             context=context,
             previous_state=infer_state,
@@ -149,7 +154,59 @@ class VariantPipeline(nn.Module):
             context=context,
             infer_state=resolved_state,
         )
-        decoder_output = self.action_decoder.forward_infer(policy_output)
+        direct_decoder_output = policy_output.aux.get("decoder_output")
+        if isinstance(direct_decoder_output, ActionDecoderInferOutput):
+            decoder_output = direct_decoder_output
+        else:
+            decoder_output = self.action_decoder.forward_infer(policy_output)
+        return VariantPipelineInferOutput(
+            visual_outputs=visual_outputs,
+            policy_output=policy_output,
+            decoder_output=decoder_output,
+        )
+
+    def forward_infer_step_from_latents(
+        self,
+        video_latents: torch.Tensor,
+        context: PolicyInferContext,
+        infer_state: PolicyInferState | None = None,
+        *,
+        canonical_video: torch.Tensor | None = None,
+        text_context: torch.Tensor | None = None,
+        negative_text_context: torch.Tensor | None = None,
+    ) -> VariantPipelineInferOutput:
+        """Run one inference step from already-computed video latents.
+
+        Joint video+action trajectory evaluation needs an open-loop mode where
+        the next step consumes the previous step's predicted video latents
+        rather than re-reading ground-truth RGB windows. This mirrors the
+        regular inference path, but skips raw-view canonicalization.
+        """
+
+        visual_outputs = self.prepare_visual_outputs_from_latents(
+            video_latents,
+            task_text=context.extra.get("task_text"),
+            text_context=text_context,
+            negative_text_context=negative_text_context,
+            canonical_video=canonical_video,
+        )
+        resolved_state = self.policy_variant.prepare_infer_state(
+            visual_tower=self.visual_tower,
+            visual_outputs=visual_outputs,
+            context=context,
+            previous_state=infer_state,
+        )
+        policy_output = self.policy_variant.forward_infer_step(
+            visual_tower=self.visual_tower,
+            visual_outputs=visual_outputs,
+            context=context,
+            infer_state=resolved_state,
+        )
+        direct_decoder_output = policy_output.aux.get("decoder_output")
+        if isinstance(direct_decoder_output, ActionDecoderInferOutput):
+            decoder_output = direct_decoder_output
+        else:
+            decoder_output = self.action_decoder.forward_infer(policy_output)
         return VariantPipelineInferOutput(
             visual_outputs=visual_outputs,
             policy_output=policy_output,

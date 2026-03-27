@@ -15,7 +15,7 @@ from open_wam.configs import (
     ExperimentConfig,
 )
 from open_wam.data import WAMBatch, move_wam_batch_to_device
-from open_wam.models.policy_variants import PolicyTrainBatch
+from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
 from open_wam.pipelines import build_variant_pipeline_from_config
 
 
@@ -50,22 +50,85 @@ else:
                 },
             )
 
+        def _select_validation_action_prediction(self, batch: WAMBatch, output) -> torch.Tensor:
+            if output.decoder_output.action_pred.shape == batch.actions.shape:
+                return output.decoder_output.action_pred
+            raw_chunk_action_pred = output.policy_output.aux.get("raw_chunk_action_pred")
+            if isinstance(raw_chunk_action_pred, torch.Tensor) and raw_chunk_action_pred.shape == batch.actions.shape:
+                return raw_chunk_action_pred
+            return output.decoder_output.action_pred
+
+        def _select_validation_video_prediction(self, output) -> torch.Tensor | None:
+            target_video_latents = output.visual_outputs.frontend.video_latents
+            for source_name in ("predicted_latents", "predicted_video_latents"):
+                candidate = output.decoder_output.aux.get(source_name)
+                if isinstance(candidate, torch.Tensor) and candidate.shape == target_video_latents.shape:
+                    return candidate
+            for source_name in ("predicted_latents", "predicted_video_latents"):
+                candidate = output.policy_output.aux.get(source_name)
+                if isinstance(candidate, torch.Tensor) and candidate.shape == target_video_latents.shape:
+                    return candidate
+            return None
+
         def training_step(self, batch: WAMBatch, batch_idx: int) -> torch.Tensor:
             output = self.pipeline.forward_train(
                 views=batch.views,
                 batch=self._policy_batch_from_batch(batch),
             )
             self.log("train/loss", output.decoder_output.loss, on_step=True, on_epoch=True, prog_bar=True)
-            self.log("train/action_mse", output.decoder_output.metrics["action_mse"], on_step=True, on_epoch=True)
+            for metric_name, metric_value in output.decoder_output.metrics.items():
+                self.log(f"train/{metric_name}", metric_value, on_step=True, on_epoch=True, prog_bar=(metric_name == "action_mse"))
             return output.decoder_output.loss
 
         def validation_step(self, batch: WAMBatch, batch_idx: int) -> None:
-            output = self.pipeline.forward_train(
+            train_output = self.pipeline.forward_train(
                 views=batch.views,
                 batch=self._policy_batch_from_batch(batch),
             )
-            self.log("val/loss", output.decoder_output.loss, on_step=False, on_epoch=True, prog_bar=True)
-            self.log("val/action_mse", output.decoder_output.metrics["action_mse"], on_step=False, on_epoch=True)
+            self.log("val/loss", train_output.decoder_output.loss, on_step=False, on_epoch=True, prog_bar=True)
+            for metric_name, metric_value in train_output.decoder_output.metrics.items():
+                self.log(f"val/{metric_name}", metric_value, on_step=False, on_epoch=True, prog_bar=(metric_name == "action_mse"))
+
+            infer_output = self.pipeline.forward_infer_step(
+                batch.views,
+                PolicyInferContext(
+                    state=batch.state,
+                    extra={
+                        "task_text": batch.task_text,
+                        "metadata": batch.metadata,
+                    },
+                ),
+            )
+            action_prediction = self._select_validation_action_prediction(batch, infer_output)
+            if action_prediction.shape == batch.actions.shape:
+                action_mse = torch.nn.functional.mse_loss(
+                    action_prediction.float(),
+                    batch.actions.float(),
+                    reduction="none",
+                )
+                if batch.action_mask is not None:
+                    action_mse = action_mse * batch.action_mask.float()
+                    action_denom = batch.action_mask.float().sum().clamp_min(1.0)
+                else:
+                    action_denom = torch.tensor(float(action_mse.numel()), device=action_mse.device)
+                self.log(
+                    "val/infer_action_mse",
+                    action_mse.sum() / action_denom,
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=True,
+                )
+
+            video_prediction = self._select_validation_video_prediction(infer_output)
+            if video_prediction is not None:
+                target_video_latents = infer_output.visual_outputs.frontend.video_latents
+                self.log(
+                    "val/infer_video_latent_mse",
+                    torch.nn.functional.mse_loss(video_prediction.float(), target_video_latents.float()),
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=False,
+                )
 
         def transfer_batch_to_device(self, batch: WAMBatch, device: torch.device, dataloader_idx: int):
             return move_wam_batch_to_device(batch, device)

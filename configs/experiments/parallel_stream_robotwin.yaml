@@ -13,13 +13,22 @@ data:
     state_horizon: 1
 
 backbone:
-  hidden_size: 256
-  num_layers: 1
-  num_heads: 8
+  implementation: lingbot_replica
+  hidden_size: 3072
+  num_layers: 30
+  num_heads: 24
+  attention_head_dim: 128
+  ffn_dim: 14336
+  # Enable these three flags together once a LingBot checkpoint root is
+  # available locally via `pretrained_model_name_or_path`.
+  load_wan_vae_frontend: false
+  load_text_conditioning: false
+  load_reference_core_weights: false
 
 policy_variant:
   name: parallel_stream
-  hidden_size: 256
+  hidden_size: 3072
+  runtime_mode: lingbot_exact
   frame_chunk_size: 2
   action_per_frame: 2
   attn_window: 8
@@ -28,8 +37,8 @@ policy_variant:
   cache_mode: metadata_only
 
 action_decoder:
-  name: mlp_decoder
-  hidden_size: 256
+  name: lingbot_parallel_decoder
+  hidden_size: 3072
   action_dim: 30
   action_horizon: 8
 

@@ -47,6 +47,7 @@ class PolicyVariant(nn.Module, ABC):
     @abstractmethod
     def prepare_infer_state(
         self,
+        visual_tower: VisualTower,
         visual_outputs: VisualStageOutputs,
         context: PolicyInferContext,
         previous_state: PolicyInferState | None = None,
