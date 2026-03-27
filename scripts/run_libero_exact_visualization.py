@@ -46,7 +46,7 @@ def main() -> None:
     parser.add_argument("--task-id", type=int, default=8)
     parser.add_argument("--episode-idx", type=int, default=0)
     parser.add_argument("--max-timestep", type=int, default=800)
-    parser.add_argument("--max-chunks", type=int, default=6)
+    parser.add_argument("--max-chunks", type=int, default=None)
     parser.add_argument("--video-fps", type=float, default=15.0)
     parser.add_argument("--output-dir", type=str, default="outputs/libero_exact_visualization")
     parser.add_argument("--suffix", type=str, default="open_wam")
