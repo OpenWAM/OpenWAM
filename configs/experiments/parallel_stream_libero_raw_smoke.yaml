@@ -1,0 +1,111 @@
+name: parallel_stream_libero_raw_smoke
+
+data:
+  # Minimal raw-LIBERO smoke dataset knobs aligned to exact method-1 geometry
+  dataset_name: libero
+  dataset_type: lerobot_v2
+  repo_id: physical-intelligence/libero
+  split: train
+  camera_names: [image, wrist_image]
+  canonical_height: 128
+  canonical_width: 256
+  num_frames: 4
+  frame_stride: 1
+  sample_stride: 1
+  episode_cache_size: 2
+  train_fraction: 0.95
+  split_seed: 0
+  max_train_episodes: 8
+  max_val_episodes: 2
+  train_batch_size: 1
+  val_batch_size: 1
+  num_workers: 0
+  view_layout:
+    - source_name: image
+      canonical_name: image
+      top: 0
+      left: 0
+      height: 128
+      width: 128
+    - source_name: wrist_image
+      canonical_name: wrist_image
+      top: 0
+      left: 128
+      height: 128
+      width: 128
+  action_schema:
+    action_dim: 7
+    action_horizon: 16
+    state_dim: 8
+    state_horizon: 1
+  action_target:
+    representation: raw
+    source_key: actions
+    pose_source_key: state
+    state_encoding: eef_pos_axisangle_gripper_2d
+    reference_source: anchor_state
+    rotation_representation: axis_angle
+    include_gripper: true
+    gripper_representation: action_command
+    gripper_action_index: -1
+
+backbone:
+  # Small exact-method-1 smoke backbone
+  implementation: shared_transformer
+  train_attn_mode: flex
+  infer_attn_mode: torch
+  hidden_size: 256
+  num_layers: 1
+  num_heads: 8
+  attention_head_dim: 32
+  ffn_dim: 1024
+  max_text_tokens: 512
+  load_wan_vae_frontend: false
+  load_text_conditioning: false
+
+policy_variant:
+  name: parallel_stream
+  hidden_size: 256
+  runtime_mode: lingbot_exact
+  reference_profile: libero
+  frame_chunk_size: 4
+  action_per_frame: 4
+  attn_window: 30
+  sequence_order: [video_noisy, video_condition, action_noisy, action_condition]
+  mask_mode: lingbot_chunked
+  cache_mode: metadata_only
+
+action_decoder:
+  name: lingbot_parallel_decoder
+  hidden_size: 256
+  action_dim: 30
+  action_horizon: 16
+
+training:
+  video_num_train_timesteps: 1000
+  action_num_train_timesteps: 1000
+  video_sigma_shift: 5.0
+  action_sigma_shift: 1.0
+  use_teacher_forcing: false
+  chunk_size: 4
+  window_size: 30
+
+inference:
+  video_num_inference_steps: 20
+  action_num_inference_steps: 50
+  frame_chunk_size: 4
+  use_cache: true
+  guidance_scale: 5.0
+  action_guidance_scale: 1.0
+  video_exec_step: -1
+
+trainer:
+  max_epochs: 1
+  limit_train_batches: 2
+  limit_val_batches: 1
+  log_every_n_steps: 1
+  accelerator: cpu
+  devices: 1
+  precision: 32-true
+  enable_checkpointing: false
+  enable_model_summary: false

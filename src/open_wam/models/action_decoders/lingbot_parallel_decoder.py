@@ -95,7 +95,12 @@ class LingbotParallelActionDecoder(ActionDecoder):
             aux={"decoder": self.__class__.__name__},
         )
 
-    def forward_infer(self, policy_output: PolicyInferOutput) -> ActionDecoderInferOutput:
+    def forward_infer(
+        self,
+        policy_output: PolicyInferOutput,
+        previous_state: object | None = None,
+    ) -> ActionDecoderInferOutput:
+        del previous_state
         action_pred = align_policy_features(policy_output.policy_features, self.action_horizon)
         return ActionDecoderInferOutput(
             action_pred=action_pred,

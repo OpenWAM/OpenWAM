@@ -32,6 +32,25 @@ class ActionDecoderInferOutput:
     """Common inference-time action-decoder outputs."""
 
     action_pred: torch.Tensor
+    next_state: Any | None = None
+    aux: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class DecoderRolloutState:
+    """Reusable decoder-owned inference state.
+
+    Sequence-native decoders such as VPP-style action models may cache a full
+    predicted action chunk and only refresh it every few environment steps.
+    Keeping this state generic lets the pipeline support that behavior without
+    turning decoders into hidden stateful singletons.
+    """
+
+    action_chunk: torch.Tensor | None = None
+    chunk_index: int = 0
+    step_within_chunk: int = 0
+    cached_sequence_context: dict[str, Any] = field(default_factory=dict)
+    goal_context: torch.Tensor | None = None
     aux: dict[str, Any] = field(default_factory=dict)
 
 
@@ -56,7 +75,11 @@ class ActionDecoder(nn.Module, ABC):
         """Decode actions and compute loss."""
 
     @abstractmethod
-    def forward_infer(self, policy_output: PolicyInferOutput) -> ActionDecoderInferOutput:
+    def forward_infer(
+        self,
+        policy_output: PolicyInferOutput,
+        previous_state: Any | None = None,
+    ) -> ActionDecoderInferOutput:
         """Decode actions for one inference step."""
 
 
@@ -218,7 +241,12 @@ class LinearActionDecoder(ActionDecoder):
             },
         )
 
-    def forward_infer(self, policy_output: PolicyInferOutput) -> ActionDecoderInferOutput:
+    def forward_infer(
+        self,
+        policy_output: PolicyInferOutput,
+        previous_state: Any | None = None,
+    ) -> ActionDecoderInferOutput:
+        del previous_state
         scheduler = build_action_flow_match_inference_scheduler(
             training_config=self.training_config,
             inference_config=self.inference_config,

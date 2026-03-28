@@ -7,11 +7,15 @@ from open_wam.configs import (
     InferenceConfig,
     LingbotParallelActionDecoderConfig,
     LiberoDataConfig,
+    MLPActionDecoderConfig,
     ParallelStreamPolicyConfig,
+    PostLatentPolicyConfig,
+    PostDecodedPolicyConfig,
     RegisterActionDecoderConfig,
     RegisterAttachedPolicyConfig,
     RobotWinDataConfig,
     TrainingConfig,
+    VideoSequencePolicyConfig,
 )
 from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
 from open_wam.pipelines import build_variant_pipeline_from_config
@@ -146,3 +150,96 @@ def test_exact_parallel_stream_reference_profile_rejects_mismatched_text_length(
         assert "max_text_tokens" in str(exc)
     else:  # pragma: no cover - defensive guard
         raise AssertionError("Expected LingBot exact profile validation to reject mismatched max_text_tokens.")
+
+
+def test_post_latent_requires_shared_transformer_backbone() -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=2,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=LingbotCompatibleVideoBackboneConfig(implementation="dummy"),
+        policy_variant=PostLatentPolicyConfig(hidden_size=32),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(chunk_size=2, window_size=8),
+        inference=InferenceConfig(frame_chunk_size=2),
+    )
+
+    try:
+        build_variant_pipeline_from_config(config)
+    except ValueError as exc:
+        assert "shared transformer backbone" in str(exc)
+    else:  # pragma: no cover - defensive guard
+        raise AssertionError("Expected post-latent validation to reject a non-shared backbone.")
+
+
+def test_video_sequence_policy_requires_shared_transformer_backbone() -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=2,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=LingbotCompatibleVideoBackboneConfig(implementation="dummy"),
+        policy_variant=VideoSequencePolicyConfig(hidden_size=32),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(chunk_size=2, window_size=8),
+        inference=InferenceConfig(frame_chunk_size=2),
+    )
+
+    try:
+        build_variant_pipeline_from_config(config)
+    except ValueError as exc:
+        assert "shared transformer backbone" in str(exc)
+    else:  # pragma: no cover - defensive guard
+        raise AssertionError("Expected video-sequence validation to reject a non-shared backbone.")
+
+
+def test_post_latent_rejects_frontend_only_attachment() -> None:
+    try:
+        PostLatentPolicyConfig(hidden_size=32, attach_site="post_frontend_latents")
+    except ValueError as exc:
+        assert "post_visual_core" in str(exc)
+    else:  # pragma: no cover - defensive guard
+        raise AssertionError("Expected post-latent config to reject frontend-only attachment.")
+
+
+def test_post_decoded_rejects_non_decode_attachment() -> None:
+    try:
+        PostDecodedPolicyConfig(hidden_size=32, attach_site="post_visual_core")
+    except ValueError as exc:
+        assert "post_visual_decode" in str(exc)
+    else:  # pragma: no cover - defensive guard
+        raise AssertionError("Expected post-decoded config to reject non-decode attachment.")
+
+
+def test_register_attached_rejects_misaligned_libero_style_block_counts() -> None:
+    config = ExperimentConfig(
+        data=LiberoDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=7, action_horizon=6, state_dim=8, state_horizon=1),
+            action_target=ActionTargetConfig(representation="eef_pose_relative_to_reference"),
+        ),
+        backbone=LingbotCompatibleVideoBackboneConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+        ),
+        policy_variant=RegisterAttachedPolicyConfig(
+            hidden_size=32,
+            num_frame_per_block=1,
+            num_action_per_block=2,
+            num_state_per_block=1,
+        ),
+        action_decoder=RegisterActionDecoderConfig(hidden_size=32, action_dim=7, action_horizon=6),
+        training=TrainingConfig(chunk_size=2, window_size=8),
+        inference=InferenceConfig(frame_chunk_size=1),
+    )
+
+    try:
+        build_variant_pipeline_from_config(config)
+    except ValueError as exc:
+        assert "block counts to match" in str(exc)
+    else:  # pragma: no cover - defensive guard
+        raise AssertionError("Expected register-attached validation to reject misaligned raw-LIBERO block counts.")

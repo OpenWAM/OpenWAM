@@ -16,6 +16,7 @@ from open_wam.configs import (
     PostDecodedPolicyConfig,
     PostLatentPolicyConfig,
     RegisterAttachedPolicyConfig,
+    VideoSequencePolicyConfig,
     StrategyName,
     TrainerRuntimeName,
     TrainingComponentSelector,
@@ -71,6 +72,87 @@ def test_new_variant_yaml_configs_load() -> None:
     assert register.policy_variant.structured_cache_kernel == "branchwise_rollout_explicit"
     assert register.policy_variant.stream_input_adapter_family == "structured_register_streams"
     assert register.policy_variant.stream_output_head_family == "structured_joint_flow"
+
+
+def test_raw_libero_smoke_variant_yaml_configs_load() -> None:
+    post_latent = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_libero_smoke.yaml")
+    post_decoded = load_experiment_config(REPO_ROOT / "configs/experiments/post_decoded_libero_smoke.yaml")
+    video_sequence = load_experiment_config(REPO_ROOT / "configs/experiments/video_sequence_policy_libero_smoke.yaml")
+    register = load_experiment_config(REPO_ROOT / "configs/experiments/register_attached_libero_smoke.yaml")
+    parallel = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_raw_smoke.yaml")
+
+    assert isinstance(post_latent.policy_variant, PostLatentPolicyConfig)
+    assert isinstance(post_decoded.policy_variant, PostDecodedPolicyConfig)
+    assert isinstance(video_sequence.policy_variant, VideoSequencePolicyConfig)
+    assert isinstance(register.policy_variant, RegisterAttachedPolicyConfig)
+    assert isinstance(parallel.policy_variant, ParallelStreamPolicyConfig)
+
+    assert post_latent.data.dataset_name == "libero"
+    assert post_decoded.data.dataset_name == "libero"
+    assert video_sequence.data.dataset_name == "libero"
+    assert register.data.dataset_name == "libero"
+    assert parallel.data.dataset_name == "libero"
+
+    assert register.data.action_schema.state_horizon == 3
+    assert parallel.data.action_schema.action_horizon == 16
+    assert parallel.action_decoder.name == ActionDecoderName.LINGBOT_PARALLEL
+    assert video_sequence.action_decoder.name == ActionDecoderName.VPP
+
+
+def test_video_sequence_policy_yaml_config_loads(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    raw["name"] = "video_sequence_policy_robotwin"
+    raw["policy_variant"]["name"] = "video_sequence_policy"
+    raw["policy_variant"]["attach_site"] = "post_visual_core"
+    raw["policy_variant"].pop("pooling_mode", None)
+    raw["policy_variant"].pop("query_count", None)
+    raw["policy_variant"].pop("use_state_projection", None)
+    raw["action_decoder"]["name"] = "vpp_decoder"
+    raw["action_decoder"]["rollout_chunk_steps"] = 2
+    raw["action_decoder"]["num_sampling_steps"] = 2
+
+    config_path = tmp_path / "video_sequence_policy_robotwin.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    assert isinstance(config.policy_variant, VideoSequencePolicyConfig)
+    assert config.policy_variant.name == "video_sequence_policy"
+    assert config.policy_variant.attach_site == "post_visual_core"
+    assert config.action_decoder.name == ActionDecoderName.VPP
+    assert config.action_decoder.temporal_compression_adapter_family == "temporal_latent_resampler_3d"
+    assert config.action_decoder.sequence_denoiser_family == "generic_transformer"
+
+
+def test_video_sequence_policy_exact_vpp_knobs_load(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    raw["name"] = "video_sequence_policy_exact_robotwin"
+    raw["policy_variant"]["name"] = "video_sequence_policy"
+    raw["policy_variant"]["attach_site"] = "post_visual_core"
+    raw["policy_variant"].pop("pooling_mode", None)
+    raw["policy_variant"].pop("query_count", None)
+    raw["policy_variant"].pop("use_state_projection", None)
+    raw["action_decoder"]["name"] = "vpp_decoder"
+    raw["action_decoder"]["temporal_compression_adapter_family"] = "video_former_3d"
+    raw["action_decoder"]["sequence_denoiser_family"] = "film_diffusion_transformer"
+    raw["action_decoder"]["rollout_chunk_steps"] = 2
+    raw["action_decoder"]["num_sampling_steps"] = 2
+
+    config_path = tmp_path / "video_sequence_policy_exact_robotwin.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    assert isinstance(config.policy_variant, VideoSequencePolicyConfig)
+    assert config.action_decoder.name == ActionDecoderName.VPP
+    assert config.action_decoder.temporal_compression_adapter_family == "video_former_3d"
+    assert config.action_decoder.sequence_denoiser_family == "film_diffusion_transformer"
 
 
 def test_local_libero_yaml_config_loads() -> None:

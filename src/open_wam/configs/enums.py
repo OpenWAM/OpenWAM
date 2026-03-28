@@ -17,6 +17,7 @@ class ActionDecoderName(StrEnum):
     MLP = "mlp_decoder"
     REGISTER = "register_decoder"
     DECODED_FEATURE = "decoded_feature_decoder"
+    VPP = "vpp_decoder"
     LINGBOT_PARALLEL = "lingbot_parallel_decoder"
 
 
@@ -117,8 +118,59 @@ class PolicyVariantName(StrEnum):
 
     POST_LATENT = "post_latent"
     POST_DECODED = "post_decoded"
+    VIDEO_SEQUENCE_POLICY = "video_sequence_policy"
     REGISTER_ATTACHED = "register_attached"
     PARALLEL_STREAM = "parallel_stream"
+
+
+class GoalConditioningAdapterFamily(StrEnum):
+    """Goal/language conditioning adapter family for sequence decoders."""
+
+    PASSTHROUGH = "passthrough"
+    MEAN_POOL = "mean_pool"
+
+
+class StateSequenceAdapterFamily(StrEnum):
+    """State/proprio adapter family for sequence decoders."""
+
+    IDENTITY = "identity"
+    LINEAR = "linear"
+
+
+class TemporalCompressionAdapterFamily(StrEnum):
+    """Temporal/token compression family for sequence decoders."""
+
+    IDENTITY = "identity"
+    FRAME_MEAN_POOL = "frame_mean_pool"
+    TEMPORAL_LATENT_RESAMPLER_3D = "temporal_latent_resampler_3d"
+    VIDEO_FORMER_3D = "video_former_3d"
+
+
+class SequenceDenoiserFamily(StrEnum):
+    """Sequence-denoiser architecture for sequence-native action decoders."""
+
+    GENERIC_TRANSFORMER = "generic_transformer"
+    FILM_DIFFUSION_TRANSFORMER = "film_diffusion_transformer"
+
+
+class ActionGenerationBackendFamily(StrEnum):
+    """Action-generation backend family for sequence-native decoders."""
+
+    EDM_DIFFUSION = "edm_diffusion"
+
+
+class DiffusionNoiseSchedule(StrEnum):
+    """Noise schedule family for diffusion-based action decoders."""
+
+    EXPONENTIAL = "exponential"
+    KARRAS = "karras"
+
+
+class DiffusionSampler(StrEnum):
+    """Sampling solver family for diffusion-based action decoders."""
+
+    DDIM = "ddim"
+    EULER = "euler"
 
 
 class AttachSite(StrEnum):

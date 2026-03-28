@@ -9,15 +9,17 @@ from open_wam.configs import (
     PostDecodedPolicyConfig,
     PostLatentPolicyConfig,
     RegisterAttachedPolicyConfig,
+    VideoSequencePolicyConfig,
 )
 from open_wam.data import build_canonical_video_preprocessor
 from open_wam.models.action_decoders import DecodedFeatureActionDecoder, MLPActionDecoder, RegisterActionDecoder
-from open_wam.models.action_decoders import LingbotParallelActionDecoder
+from open_wam.models.action_decoders import LingbotParallelActionDecoder, VPPSequenceActionDecoder
 from open_wam.models.policy_variants import (
     ParallelStreamPolicyVariant,
     PostDecodedPolicyVariant,
     PostLatentPolicyVariant,
     RegisterAttachedPolicyVariant,
+    VideoSequencePolicyVariant,
 )
 from open_wam.models.policy_variants.parallel_stream.action_adapter import build_action_adapter_spec
 from open_wam.models.visual_tower import VisualTower
@@ -38,11 +40,21 @@ def _resolve_parallel_stream_model_action_dim(config: ExperimentConfig) -> int:
 
 def validate_experiment_config(config: ExperimentConfig) -> None:
     action_schema = config.data.action_schema
-    if isinstance(config.policy_variant, (ParallelStreamPolicyConfig, RegisterAttachedPolicyConfig)):
+    if isinstance(
+        config.policy_variant,
+        (
+            ParallelStreamPolicyConfig,
+            RegisterAttachedPolicyConfig,
+            PostLatentPolicyConfig,
+            PostDecodedPolicyConfig,
+            VideoSequencePolicyConfig,
+        ),
+    ):
         if normalize_backbone_implementation(config.backbone.implementation) != BackboneImplementation.SHARED_TRANSFORMER:
             raise ValueError(
-                "Joint video+action diffusion variants require the shared transformer backbone by default, "
-                f"got backbone.implementation={config.backbone.implementation!r}."
+                "Policy variants in the current repo all require the shared transformer backbone so they run "
+                f"through the same LingBot-compatible visual core, got "
+                f"backbone.implementation={config.backbone.implementation!r}."
             )
     if isinstance(config.policy_variant, ParallelStreamPolicyConfig):
         if config.policy_variant.runtime_mode != ParallelRuntimeMode.LINGBOT_EXACT:
@@ -85,6 +97,39 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
                 f"got adapter raw_action_dim={adapter_spec.raw_action_dim}, "
                 f"data action_dim={action_schema.action_dim}, model action_dim={model_action_dim}."
             )
+    if isinstance(config.policy_variant, RegisterAttachedPolicyConfig):
+        num_frames = config.data.num_frames
+        if (num_frames - 1) % config.policy_variant.num_frame_per_block != 0:
+            raise ValueError(
+                "Register-attached config requires `(num_frames - 1)` to be divisible by "
+                "`policy_variant.num_frame_per_block`, "
+                f"got num_frames={num_frames}, "
+                f"num_frame_per_block={config.policy_variant.num_frame_per_block}."
+            )
+        if action_schema.action_horizon % config.policy_variant.num_action_per_block != 0:
+            raise ValueError(
+                "Register-attached config requires `action_horizon` to be divisible by "
+                "`policy_variant.num_action_per_block`, "
+                f"got action_horizon={action_schema.action_horizon}, "
+                f"num_action_per_block={config.policy_variant.num_action_per_block}."
+            )
+        if action_schema.state_horizon % config.policy_variant.num_state_per_block != 0:
+            raise ValueError(
+                "Register-attached config requires `state_horizon` to be divisible by "
+                "`policy_variant.num_state_per_block`, "
+                f"got state_horizon={action_schema.state_horizon}, "
+                f"num_state_per_block={config.policy_variant.num_state_per_block}."
+            )
+        image_block_count = (num_frames - 1) // config.policy_variant.num_frame_per_block
+        action_block_count = action_schema.action_horizon // config.policy_variant.num_action_per_block
+        state_block_count = action_schema.state_horizon // config.policy_variant.num_state_per_block
+        if image_block_count != action_block_count or image_block_count != state_block_count:
+            raise ValueError(
+                "Register-attached config requires image, action, and state block counts to match, "
+                f"got image={image_block_count}, action={action_block_count}, state={state_block_count}. "
+                "For raw LIBERO this usually means increasing `data.action_schema.state_horizon` so the "
+                "state register blocks align with the future image/action blocks."
+            )
 
 
 def build_policy_variant(config: ExperimentConfig):
@@ -100,6 +145,14 @@ def build_policy_variant(config: ExperimentConfig):
         )
     if isinstance(policy_config, PostDecodedPolicyConfig):
         return PostDecodedPolicyVariant(
+            config=policy_config,
+            training_config=config.training,
+            inference_config=config.inference,
+            action_horizon=action_schema.action_horizon,
+            state_dim=action_schema.state_dim,
+        )
+    if isinstance(policy_config, VideoSequencePolicyConfig):
+        return VideoSequencePolicyVariant(
             config=policy_config,
             training_config=config.training,
             inference_config=config.inference,
@@ -165,6 +218,13 @@ def build_action_decoder(config: ExperimentConfig):
             action_dim=decoder_config.action_dim,
             action_horizon=decoder_config.action_horizon,
             dropout=decoder_config.dropout,
+        )
+    if decoder_config.name == ActionDecoderName.VPP:
+        return VPPSequenceActionDecoder(
+            decoder_config,
+            training_config=config.training,
+            inference_config=config.inference,
+            state_dim=config.data.action_schema.state_dim,
         )
     raise ValueError(f"Unsupported action decoder '{decoder_config.name}'.")
 

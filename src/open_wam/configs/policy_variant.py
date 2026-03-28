@@ -59,6 +59,11 @@ class PostLatentPolicyConfig(PolicyVariantConfig):
 
     def __post_init__(self) -> None:
         super().__post_init__()
+        if self.attach_site != AttachSite.POST_VISUAL_CORE:
+            raise ValueError(
+                "Post-latent policy now requires `attach_site = post_visual_core` so all variants share "
+                f"the same visual backbone path, got attach_site={self.attach_site!r}."
+            )
         coerce_fields(
             self,
             enum_fields={
@@ -80,11 +85,48 @@ class PostDecodedPolicyConfig(PolicyVariantConfig):
 
     def __post_init__(self) -> None:
         super().__post_init__()
+        if self.attach_site != AttachSite.POST_VISUAL_DECODE:
+            raise ValueError(
+                "Post-decoded policy requires `attach_site = post_visual_decode`, "
+                f"got attach_site={self.attach_site!r}."
+            )
         coerce_fields(
             self,
             enum_fields={
                 "decode_feature_mode": DecodeFeatureMode,
                 "pooling_mode": PoolingMode,
+                "temporal_projection": TemporalProjection,
+            },
+        )
+
+
+@dataclass(frozen=True)
+class VideoSequencePolicyConfig(PolicyVariantConfig):
+    """Sequence-preserving post-core policy family for future method-3 decoders.
+
+    The variant itself stays intentionally lightweight: it owns the attachment
+    point and packages rich decoder-facing sequence context, while future
+    sequence decoders own temporal compression, goal/state conditioning, and
+    action-generation algorithms.
+    """
+
+    name: PolicyVariantName = PolicyVariantName.VIDEO_SEQUENCE_POLICY
+    hidden_size: int = 256
+    attach_site: AttachSite = AttachSite.POST_VISUAL_CORE
+    temporal_projection: TemporalProjection = TemporalProjection.INTERPOLATE
+    use_state_context: bool = True
+    use_goal_context: bool = True
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.attach_site != AttachSite.POST_VISUAL_CORE:
+            raise ValueError(
+                "Video-sequence policy requires `attach_site = post_visual_core`, "
+                f"got attach_site={self.attach_site!r}."
+            )
+        coerce_fields(
+            self,
+            enum_fields={
                 "temporal_projection": TemporalProjection,
             },
         )

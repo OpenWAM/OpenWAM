@@ -123,6 +123,8 @@ class VariantPipeline(nn.Module):
     def resolve_infer_decoder_output(
         self,
         policy_output: PolicyInferOutput,
+        *,
+        previous_decoder_state: object | None = None,
     ) -> ActionDecoderInferOutput:
         # The infer-side rule mirrors the train-side rule above: variants may
         # either return a complete decoder output directly or only provide
@@ -130,7 +132,7 @@ class VariantPipeline(nn.Module):
         direct_decoder_output = policy_output.aux.get("decoder_output")
         if isinstance(direct_decoder_output, ActionDecoderInferOutput):
             return direct_decoder_output
-        return self.action_decoder.forward_infer(policy_output)
+        return self.action_decoder.forward_infer(policy_output, previous_state=previous_decoder_state)
 
     def forward_train(
         self,
@@ -219,7 +221,11 @@ class VariantPipeline(nn.Module):
             context=context,
             infer_state=resolved_state,
         )
-        decoder_output = self.resolve_infer_decoder_output(policy_output)
+        decoder_output = self.resolve_infer_decoder_output(
+            policy_output,
+            previous_decoder_state=resolved_state.decoder_state,
+        )
+        policy_output.next_state.decoder_state = decoder_output.next_state
         return VariantPipelineInferOutput(
             visual_outputs=visual_outputs,
             policy_output=policy_output,

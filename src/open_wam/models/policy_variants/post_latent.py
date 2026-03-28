@@ -6,13 +6,14 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from open_wam.configs import AttachSite, InferenceConfig, PoolingMode, PostLatentPolicyConfig, TrainingConfig
+from open_wam.configs import InferenceConfig, PoolingMode, PostLatentPolicyConfig, TrainingConfig
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
 from .base import PolicyVariant
 from .common import advance_default_runtime_infer_state, prepare_default_runtime_infer_state
 from .common.layouts import align_sequence_length, pool_frame_tokens, tokens_to_frame_major
 from .contracts import (
+    DecoderSequenceContext,
     PolicyInferContext,
     PolicyInferOutput,
     PolicyInferState,
@@ -47,8 +48,6 @@ class PostLatentPolicyVariant(PolicyVariant):
         return self.config.attach_site
 
     def required_visual_stages(self) -> tuple[str, ...]:
-        if self.config.attach_site == AttachSite.POST_FRONTEND_LATENTS:
-            return ("frontend",)
         return ("frontend", "core")
 
     def prepare_train_inputs(
@@ -64,8 +63,6 @@ class PostLatentPolicyVariant(PolicyVariant):
         return PolicyPreparedInputs(batch=batch)
 
     def _select_video_tokens(self, visual_outputs: VisualStageOutputs) -> torch.Tensor:
-        if self.config.attach_site == AttachSite.POST_FRONTEND_LATENTS:
-            return visual_outputs.frontend.video_tokens
         if visual_outputs.core is None:
             raise ValueError("Post-latent variant requires core outputs for post-visual-core attachment.")
         return visual_outputs.core.tokens
@@ -85,6 +82,28 @@ class PostLatentPolicyVariant(PolicyVariant):
         frame_features = pool_frame_tokens(frame_tokens, mode="mean")
         return align_sequence_length(frame_features, self.action_horizon)
 
+    def _build_decoder_sequence_context(
+        self,
+        visual_outputs: VisualStageOutputs,
+        *,
+        state: torch.Tensor | None,
+    ) -> DecoderSequenceContext:
+        tokens = self._select_video_tokens(visual_outputs)
+        frame_tokens = tokens_to_frame_major(tokens, visual_outputs.frontend.token_grid)
+        return DecoderSequenceContext(
+            sequence_tokens=frame_tokens,
+            sequence_layout={
+                "family": "video_feature_policy",
+                "kind": "frame_token_grid",
+                "attach_site": str(self.config.attach_site),
+                "pooling_mode": str(self.config.pooling_mode),
+            },
+            token_grid=visual_outputs.frontend.token_grid,
+            frame_count=frame_tokens.shape[1],
+            source_stage="core",
+            state_sequence=state,
+        )
+
     def _fuse_state(self, policy_features: torch.Tensor, state: torch.Tensor | None) -> torch.Tensor:
         if state is None or self.state_proj is None:
             return policy_features
@@ -102,6 +121,10 @@ class PostLatentPolicyVariant(PolicyVariant):
         return PolicyTrainOutput(
             policy_features=policy_features,
             metrics={"policy_feature_norm": policy_features.norm(dim=-1).mean().detach()},
+            decoder_sequence_context=self._build_decoder_sequence_context(
+                visual_outputs,
+                state=prepared_inputs.batch.state,
+            ),
             aux={"variant": self.config.name, "attach_site": self.config.attach_site},
         )
 
@@ -134,6 +157,10 @@ class PostLatentPolicyVariant(PolicyVariant):
                 visual_tower,
                 infer_state=infer_state,
                 stage="post_latent",
+            ),
+            decoder_sequence_context=self._build_decoder_sequence_context(
+                visual_outputs,
+                state=context.state,
             ),
             aux={"variant": self.config.name, "attach_site": self.config.attach_site},
         )

@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from torch import nn
-
-from open_wam.configs import InferenceConfig, PostDecodedPolicyConfig, TrainingConfig
+from open_wam.configs import InferenceConfig, TrainingConfig, VideoSequencePolicyConfig
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
 from .base import PolicyVariant
 from .common import advance_default_runtime_infer_state, prepare_default_runtime_infer_state
-from .common.layouts import align_sequence_length
+from .common.layouts import align_sequence_length, pool_frame_tokens, tokens_to_frame_major
 from .contracts import (
     DecoderSequenceContext,
     PolicyInferContext,
@@ -19,12 +17,22 @@ from .contracts import (
 )
 
 
-class PostDecodedPolicyVariant(PolicyVariant):
-    """Policy variant over decoded visual features."""
+class VideoSequencePolicyVariant(PolicyVariant):
+    """Sequence-preserving post-core policy family for method-3 decoders.
+
+    This variant deliberately keeps policy semantics minimal:
+    - request final shared-core visual tokens
+    - preserve frame/token-grid structure for downstream sequence decoders
+    - keep state and goal context attached to the decoder-facing payload
+
+    The temporary `policy_features` output remains a pooled visual fallback so
+    existing simple decoders can still execute while the dedicated
+    `video_sequence_policy` decoder stack is introduced.
+    """
 
     def __init__(
         self,
-        config: PostDecodedPolicyConfig,
+        config: VideoSequencePolicyConfig,
         training_config: TrainingConfig,
         inference_config: InferenceConfig,
         action_horizon: int,
@@ -35,37 +43,37 @@ class PostDecodedPolicyVariant(PolicyVariant):
         self.training_config = training_config
         self.inference_config = inference_config
         self.action_horizon = action_horizon
-        self.state_proj = nn.Linear(state_dim, config.hidden_size) if config.use_state_projection else None
+        self.state_dim = state_dim
 
     def attach_site(self) -> str:
         return self.config.attach_site
 
     def required_visual_stages(self) -> tuple[str, ...]:
-        return ("frontend", "core", "decode")
+        return ("frontend", "core")
 
     def prepare_train_inputs(
         self,
         visual_outputs: VisualStageOutputs,
         batch: PolicyTrainBatch,
     ) -> PolicyPreparedInputs:
-        if visual_outputs.decode is None:
-            raise ValueError("Post-decoded variant requires decode outputs.")
+        if visual_outputs.core is None:
+            raise ValueError("Video-sequence policy requires shared core outputs.")
         return PolicyPreparedInputs(batch=batch)
 
-    def _extract_policy_features(self, visual_outputs: VisualStageOutputs):
-        if visual_outputs.decode is None:
-            raise ValueError("Post-decoded variant requires decode outputs.")
-        decoded_features = visual_outputs.decode.decoded_features
-        if decoded_features.ndim == 4:
-            frame_features = decoded_features.mean(dim=2)
-        elif decoded_features.ndim == 3:
-            frame_features = decoded_features
-        else:
-            raise ValueError(
-                "Expected decoded features with shape [B, T, N, D] or [B, T, D], "
-                f"got {tuple(decoded_features.shape)}"
-            )
+    def _require_frame_tokens(self, visual_outputs: VisualStageOutputs):
+        if visual_outputs.core is None:
+            raise ValueError("Video-sequence policy requires shared core outputs.")
+        return tokens_to_frame_major(visual_outputs.core.tokens, visual_outputs.frontend.token_grid)
+
+    def _build_policy_features(self, visual_outputs: VisualStageOutputs):
+        frame_tokens = self._require_frame_tokens(visual_outputs)
+        frame_features = pool_frame_tokens(frame_tokens, mode="mean")
         return align_sequence_length(frame_features, self.action_horizon)
+
+    def _build_goal_features(self, visual_outputs: VisualStageOutputs):
+        if not self.config.use_goal_context:
+            return None
+        return visual_outputs.frontend.conditioning.text_context
 
     def _build_decoder_sequence_context(
         self,
@@ -73,28 +81,24 @@ class PostDecodedPolicyVariant(PolicyVariant):
         *,
         state,
     ) -> DecoderSequenceContext:
-        if visual_outputs.decode is None:
-            raise ValueError("Post-decoded variant requires decode outputs.")
-        decoded_features = visual_outputs.decode.decoded_features
+        frame_tokens = self._require_frame_tokens(visual_outputs)
         return DecoderSequenceContext(
-            sequence_tokens=decoded_features,
+            sequence_tokens=frame_tokens,
             sequence_layout={
-                "family": "video_feature_policy",
-                "kind": ("frame_token_grid" if decoded_features.ndim == 4 else "frame_feature_sequence"),
+                "family": "video_sequence_policy",
+                "kind": "frame_token_grid",
                 "attach_site": str(self.config.attach_site),
-                "decode_feature_mode": str(self.config.decode_feature_mode),
-                "pooling_mode": str(self.config.pooling_mode),
+                "temporal_projection": str(self.config.temporal_projection),
             },
             token_grid=visual_outputs.frontend.token_grid,
-            frame_count=int(decoded_features.shape[1]),
-            source_stage="decode",
-            state_sequence=state,
+            frame_count=int(frame_tokens.shape[1]),
+            source_stage="core",
+            state_sequence=(state if self.config.use_state_context else None),
+            goal_features=self._build_goal_features(visual_outputs),
+            aux_features={
+                "negative_goal_features": visual_outputs.frontend.conditioning.negative_text_context,
+            },
         )
-
-    def _fuse_state(self, policy_features, state):
-        if state is None or self.state_proj is None:
-            return policy_features
-        return policy_features + self.state_proj(state.mean(dim=1))[:, None, :]
 
     def forward_train(
         self,
@@ -102,8 +106,8 @@ class PostDecodedPolicyVariant(PolicyVariant):
         visual_outputs: VisualStageOutputs,
         prepared_inputs: PolicyPreparedInputs,
     ) -> PolicyTrainOutput:
-        policy_features = self._extract_policy_features(visual_outputs)
-        policy_features = self._fuse_state(policy_features, prepared_inputs.batch.state)
+        del visual_tower
+        policy_features = self._build_policy_features(visual_outputs)
         return PolicyTrainOutput(
             policy_features=policy_features,
             metrics={"policy_feature_norm": policy_features.norm(dim=-1).mean().detach()},
@@ -111,7 +115,7 @@ class PostDecodedPolicyVariant(PolicyVariant):
                 visual_outputs,
                 state=prepared_inputs.batch.state,
             ),
-            aux={"variant": self.config.name},
+            aux={"variant": self.config.name, "method_family": "video_sequence_policy"},
         )
 
     def prepare_infer_state(
@@ -125,7 +129,7 @@ class PostDecodedPolicyVariant(PolicyVariant):
         return prepare_default_runtime_infer_state(
             visual_tower,
             previous_state=previous_state,
-            stage="post_decoded",
+            stage="video_sequence_policy",
         )
 
     def forward_infer_step(
@@ -135,18 +139,17 @@ class PostDecodedPolicyVariant(PolicyVariant):
         context: PolicyInferContext,
         infer_state: PolicyInferState,
     ) -> PolicyInferOutput:
-        policy_features = self._extract_policy_features(visual_outputs)
-        policy_features = self._fuse_state(policy_features, context.state)
+        policy_features = self._build_policy_features(visual_outputs)
         return PolicyInferOutput(
             policy_features=policy_features,
             next_state=advance_default_runtime_infer_state(
                 visual_tower,
                 infer_state=infer_state,
-                stage="post_decoded",
+                stage="video_sequence_policy",
             ),
             decoder_sequence_context=self._build_decoder_sequence_context(
                 visual_outputs,
                 state=context.state,
             ),
-            aux={"variant": self.config.name},
+            aux={"variant": self.config.name, "method_family": "video_sequence_policy"},
         )

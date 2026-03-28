@@ -215,7 +215,11 @@ class LingbotExactRunner:
             negative_text_context=resolved_negative_text_context,
             advance_frame_start=advance_frame_start,
         )
-        decoder_output = self.pipeline.resolve_infer_decoder_output(policy_output)
+        decoder_output = self.pipeline.resolve_infer_decoder_output(
+            policy_output,
+            previous_decoder_state=session.policy_state.decoder_state,
+        )
+        policy_output.next_state.decoder_state = decoder_output.next_state
         next_session = LingbotExactSession(
             policy_state=policy_output.next_state,
             task_text=self._resolve_task_text(session, task_text),

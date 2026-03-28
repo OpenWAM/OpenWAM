@@ -27,11 +27,35 @@ class PolicyPreparedInputs:
 
 
 @dataclass
+class DecoderSequenceContext:
+    """Structured decoder-facing visual sequence context.
+
+    This is the additive contract needed by future `video_sequence_policy`
+    decoders. Existing simple decoders can ignore it and continue consuming
+    `policy_features` only.
+
+    `sequence_tokens` is intentionally flexible:
+    - `[B, T, N, D]` for frame-token grids
+    - `[B, T, D]` for already-collapsed frame sequences
+    """
+
+    sequence_tokens: torch.Tensor
+    sequence_layout: dict[str, Any] = field(default_factory=dict)
+    token_grid: Any | None = None
+    frame_count: int | None = None
+    source_stage: str | None = None
+    state_sequence: torch.Tensor | None = None
+    goal_features: torch.Tensor | None = None
+    aux_features: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class PolicyTrainOutput:
     """Train-time features emitted by a policy variant."""
 
     policy_features: torch.Tensor
     metrics: dict[str, torch.Tensor]
+    decoder_sequence_context: DecoderSequenceContext | None = None
     aux: dict[str, Any] = field(default_factory=dict)
 
 
@@ -42,6 +66,7 @@ class PolicyInferState:
     step_index: int = 0
     cursor: RolloutCursor = field(default_factory=RolloutCursor)
     cache: Any = field(default_factory=dict)
+    decoder_state: Any | None = None
 
 
 @dataclass
@@ -59,4 +84,5 @@ class PolicyInferOutput:
 
     policy_features: torch.Tensor
     next_state: PolicyInferState
+    decoder_sequence_context: DecoderSequenceContext | None = None
     aux: dict[str, Any] = field(default_factory=dict)
