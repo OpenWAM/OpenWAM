@@ -13,6 +13,28 @@ except ImportError:  # pragma: no cover - older torch builds may not expose Flex
     flex_attention = None  # type: ignore[assignment]
 
 
+_COMPILED_FLEX_ATTENTION = None
+_COMPILED_CREATE_BLOCK_MASK = None
+
+
+def _resolve_compiled_flex_attention():
+    global _COMPILED_FLEX_ATTENTION
+    if flex_attention is None:
+        return None
+    if _COMPILED_FLEX_ATTENTION is None:
+        _COMPILED_FLEX_ATTENTION = torch.compile(flex_attention, dynamic=True)
+    return _COMPILED_FLEX_ATTENTION
+
+
+def _resolve_compiled_create_block_mask():
+    global _COMPILED_CREATE_BLOCK_MASK
+    if create_block_mask is None:
+        return None
+    if _COMPILED_CREATE_BLOCK_MASK is None:
+        _COMPILED_CREATE_BLOCK_MASK = torch.compile(create_block_mask)
+    return _COMPILED_CREATE_BLOCK_MASK
+
+
 @dataclass(frozen=True)
 class AttentionProfileSpec:
     """Declarative description of a reusable attention visibility profile."""
@@ -114,6 +136,9 @@ def apply_attention_backend(
     if block_mask is not None:
         if flex_attention is None:
             raise RuntimeError("FlexAttention is not available in this torch build.")
+        compiled_flex_attention = _resolve_compiled_flex_attention()
+        if compiled_flex_attention is not None:
+            return compiled_flex_attention(query, key, value, block_mask=block_mask, kernel_options=kernel_options)
         return flex_attention(query, key, value, block_mask=block_mask, kernel_options=kernel_options)
     return torch.nn.functional.scaled_dot_product_attention(query, key, value, attn_mask=attention_mask)
 
@@ -252,23 +277,25 @@ def build_chunked_temporal_exact_attention_profile(
 
         total_seq_len = int(seq_ids.numel())
         total_text_len = int(text_seq_ids.numel())
-        self_attention_block_mask = create_block_mask(
+        compiled_create_block_mask = _resolve_compiled_create_block_mask()
+        block_mask_builder = compiled_create_block_mask or create_block_mask
+        self_attention_block_mask = block_mask_builder(
             self_mask_mod,
             1,
             1,
             total_seq_len,
             total_seq_len,
             device=str(device),
-            _compile=False,
+            _compile=compiled_create_block_mask is not None,
         )
-        cross_attention_block_mask = create_block_mask(
+        cross_attention_block_mask = block_mask_builder(
             cross_mask_mod,
             1,
             1,
             total_seq_len,
             total_text_len,
             device=str(device),
-            _compile=False,
+            _compile=compiled_create_block_mask is not None,
         )
 
     return PreparedAttentionProfile(

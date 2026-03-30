@@ -6,6 +6,7 @@ import os
 
 import torch
 import torch.distributed as dist
+from torch.distributed.device_mesh import init_device_mesh
 from torch import nn
 from torch.nn.parallel import DistributedDataParallel
 
@@ -18,6 +19,135 @@ def _resolve_device(accelerator: TrainerAccelerator | str, local_rank: int = 0) 
             raise RuntimeError("Requested `accelerator=gpu` but CUDA is not available.")
         return torch.device("cuda", local_rank)
     return torch.device("cpu")
+
+
+def _apply_block_activation_checkpointing(module: nn.Module) -> None:
+    try:
+        from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
+    except ImportError:
+        return
+
+    for child in module.modules():
+        blocks = getattr(child, "blocks", None)
+        if not isinstance(blocks, nn.ModuleList):
+            continue
+        for block_index, block in enumerate(blocks):
+            if getattr(block, "_open_wam_activation_checkpoint_wrapped", False):
+                continue
+            wrapped = checkpoint_wrapper(block, preserve_rng_state=False)
+            setattr(wrapped, "_open_wam_activation_checkpoint_wrapped", True)
+            blocks[block_index] = wrapped
+
+
+def _apply_composable_fsdp_sharding(
+    model: nn.Module,
+    *,
+    mesh,
+    mp_policy,
+) -> nn.Module:
+    from torch.distributed.fsdp import fully_shard
+
+    visual_tower = getattr(model, "visual_tower", None)
+    core = getattr(visual_tower, "core", None) if visual_tower is not None else None
+    blocks = getattr(core, "blocks", None) if core is not None else None
+
+    if isinstance(blocks, nn.ModuleList):
+        shard_kwargs = {
+            "mesh": mesh,
+            "mp_policy": mp_policy,
+            "reshard_after_forward": True,
+        }
+        for block in blocks:
+            if hasattr(block, "attn1"):
+                fully_shard(block.attn1, **shard_kwargs)
+            if hasattr(block, "attn2"):
+                fully_shard(block.attn2, **shard_kwargs)
+            if hasattr(block, "ffn"):
+                fully_shard(block.ffn, **shard_kwargs)
+            fully_shard(block, **shard_kwargs)
+
+    return model
+
+
+def _set_module_gradient_sync(module: nn.Module, enabled: bool) -> bool:
+    toggled = False
+    setter = getattr(module, "set_requires_gradient_sync", None)
+    if callable(setter):
+        setter(enabled)
+        return True
+    if hasattr(module, "require_backward_grad_sync"):
+        setattr(module, "require_backward_grad_sync", enabled)
+        toggled = True
+    if hasattr(module, "require_forward_param_sync"):
+        setattr(module, "require_forward_param_sync", enabled)
+        toggled = True
+    return toggled
+
+
+def _set_gradient_sync_recursive(module: nn.Module, enabled: bool) -> None:
+    visited: set[int] = set()
+    for submodule in module.modules():
+        module_id = id(submodule)
+        if module_id in visited:
+            continue
+        visited.add(module_id)
+        _set_module_gradient_sync(submodule, enabled)
+
+
+def _local_grad_tensor(grad: torch.Tensor) -> torch.Tensor:
+    try:
+        from torch.distributed.tensor import DTensor
+    except ImportError:
+        DTensor = None
+    if DTensor is not None and isinstance(grad, DTensor):
+        return grad.to_local()
+    return grad
+
+
+def _is_dtensor_grad(grad: torch.Tensor) -> bool:
+    try:
+        from torch.distributed.tensor import DTensor
+    except ImportError:
+        return False
+    return isinstance(grad, DTensor)
+
+
+def _clip_grad_norm_mixed(
+    parameters,
+    max_grad_norm: float,
+    *,
+    distributed: bool,
+) -> torch.Tensor:
+    grads: list[torch.Tensor] = [param.grad for param in parameters if getattr(param, "grad", None) is not None]
+    if not grads:
+        return torch.tensor(0.0)
+
+    device = _local_grad_tensor(grads[0]).device
+    local_tensor_sq = torch.zeros((), device=device, dtype=torch.float32)
+    local_dtensor_sq = torch.zeros((), device=device, dtype=torch.float32)
+
+    for grad in grads:
+        local_grad = _local_grad_tensor(grad).detach()
+        grad_norm_sq = local_grad.float().pow(2).sum()
+        if _is_dtensor_grad(grad):
+            local_dtensor_sq = local_dtensor_sq + grad_norm_sq
+        else:
+            local_tensor_sq = local_tensor_sq + grad_norm_sq
+
+    total_dtensor_sq = local_dtensor_sq
+    if distributed and dist.is_initialized():
+        dist.all_reduce(total_dtensor_sq, op=dist.ReduceOp.SUM)
+
+    total_norm = torch.sqrt(local_tensor_sq + total_dtensor_sq)
+    max_norm_tensor = torch.tensor(float(max_grad_norm), device=device, dtype=torch.float32)
+    clip_coef = torch.clamp(max_norm_tensor / (total_norm + 1e-6), max=1.0)
+
+    if clip_coef.item() < 1.0:
+        for grad in grads:
+            local_grad = _local_grad_tensor(grad)
+            local_grad.mul_(clip_coef.to(device=local_grad.device, dtype=local_grad.dtype))
+
+    return total_norm
 
 
 @dataclass
@@ -68,10 +198,14 @@ class SingleDeviceStrategy:
             optimizer.step()
 
     def clip_grad_norm_(self, parameters, max_grad_norm: float) -> torch.Tensor:
-        return torch.nn.utils.clip_grad_norm_(parameters, max_grad_norm)
+        return _clip_grad_norm_mixed(parameters, max_grad_norm, distributed=False)
 
     def zero_grad(self, optimizer: torch.optim.Optimizer) -> None:
         optimizer.zero_grad(set_to_none=True)
+
+    def set_gradient_sync(self, model: nn.Module, enabled: bool) -> None:
+        del model, enabled
+        return None
 
     def state_dict(self) -> dict[str, object]:
         return {"grad_scaler": self.grad_scaler.state_dict() if self.grad_scaler.is_enabled() else None}
@@ -110,6 +244,8 @@ class DistributedStrategy(SingleDeviceStrategy):
         self.world_size = int(os.getenv("WORLD_SIZE", "1"))
         self.distributed = self.world_size > 1
         self.is_main_process = self.rank == 0
+        if self.accelerator == TrainerAccelerator.GPU and torch.cuda.is_available():
+            torch.cuda.set_device(self.local_rank)
         self.device = _resolve_device(self.accelerator, local_rank=self.local_rank)
         self._use_fp16_scaler = self.precision == TrainerPrecision.FP16 and self.device.type == "cuda"
         self.grad_scaler = torch.amp.GradScaler("cuda", enabled=self._use_fp16_scaler)
@@ -118,6 +254,11 @@ class DistributedStrategy(SingleDeviceStrategy):
             backend = "nccl" if self.device.type == "cuda" else "gloo"
             dist.init_process_group(backend=backend)
             self._owns_process_group = True
+        self._device_mesh = (
+            init_device_mesh(self.device.type, (self.world_size,))
+            if self.distributed and self.device.type != "cpu"
+            else None
+        )
 
     def prepare_model(self, model: nn.Module) -> nn.Module:
         model.to(device=self.device)
@@ -130,12 +271,29 @@ class DistributedStrategy(SingleDeviceStrategy):
                 output_device=self.local_rank if self.device.type == "cuda" else None,
             )
         if self.kind == StrategyName.FSDP:
-            from torch.distributed.fsdp import FullyShardedDataParallel
+            from torch.distributed.fsdp import MixedPrecisionPolicy
 
-            return FullyShardedDataParallel(
+            _apply_block_activation_checkpointing(model)
+            mp_policy = MixedPrecisionPolicy(cast_forward_inputs=False)
+            if self.device.type == "cuda":
+                if self.precision == TrainerPrecision.BF16:
+                    mp_policy = MixedPrecisionPolicy(
+                        param_dtype=torch.bfloat16,
+                        reduce_dtype=torch.float32,
+                        output_dtype=torch.bfloat16,
+                        cast_forward_inputs=False,
+                    )
+                elif self.precision == TrainerPrecision.FP16:
+                    mp_policy = MixedPrecisionPolicy(
+                        param_dtype=torch.float16,
+                        reduce_dtype=torch.float32,
+                        output_dtype=torch.float16,
+                        cast_forward_inputs=False,
+                    )
+            return _apply_composable_fsdp_sharding(
                 model,
-                device_id=self.device if self.device.type == "cuda" else None,
-                use_orig_params=True,
+                mesh=self._device_mesh,
+                mp_policy=mp_policy,
             )
         raise ValueError(f"Unsupported distributed strategy kind {self.kind!r}.")
 
@@ -145,6 +303,14 @@ class DistributedStrategy(SingleDeviceStrategy):
     def barrier(self) -> None:
         if self.distributed and dist.is_initialized():
             dist.barrier()
+
+    def set_gradient_sync(self, model: nn.Module, enabled: bool) -> None:
+        if not self.distributed:
+            return
+        _set_gradient_sync_recursive(model, enabled)
+
+    def clip_grad_norm_(self, parameters, max_grad_norm: float) -> torch.Tensor:
+        return _clip_grad_norm_mixed(parameters, max_grad_norm, distributed=self.distributed)
 
     def close(self) -> None:
         if self._owns_process_group and dist.is_initialized():

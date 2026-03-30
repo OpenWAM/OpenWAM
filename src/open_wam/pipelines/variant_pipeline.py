@@ -134,6 +134,38 @@ class VariantPipeline(nn.Module):
             return direct_decoder_output
         return self.action_decoder.forward_infer(policy_output, previous_state=previous_decoder_state)
 
+    def forward(
+        self,
+        *,
+        batch: PolicyTrainBatch,
+        views: Mapping[str, torch.Tensor] | None = None,
+        video_latents: torch.Tensor | None = None,
+        canonical_video: torch.Tensor | None = None,
+        text_context: torch.Tensor | None = None,
+        negative_text_context: torch.Tensor | None = None,
+    ) -> VariantPipelineTrainOutput:
+        """Standard train-time forward used by distributed wrappers.
+
+        FSDP/DDP only intercept the module's public ``forward``. Keep this as
+        the single training entrypoint so distributed strategies can safely
+        wrap the pipeline while preserving the existing view-based and
+        latent-based execution paths.
+        """
+
+        if views is not None:
+            if video_latents is not None:
+                raise ValueError("Pass either `views` or `video_latents` to VariantPipeline.forward, not both.")
+            return self.forward_train(views, batch)
+        if video_latents is not None:
+            return self.forward_train_from_latents(
+                video_latents,
+                batch,
+                canonical_video=canonical_video,
+                text_context=text_context,
+                negative_text_context=negative_text_context,
+            )
+        raise ValueError("VariantPipeline.forward requires either `views` or `video_latents`.")
+
     def forward_train(
         self,
         views: Mapping[str, torch.Tensor],

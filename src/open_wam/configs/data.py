@@ -113,6 +113,7 @@ class DataConfig:
     dataset_type: str
     repo_id: str | None
     local_root: str | None
+    empty_text_embedding_path: str | None
     latent_root: str | None
     latent_subdir: str
     split: DataSplit
@@ -153,6 +154,7 @@ class GenericDataConfig(DataConfig):
     dataset_type: str = "synthetic_multiview"
     repo_id: str | None = None
     local_root: str | None = None
+    empty_text_embedding_path: str | None = None
     latent_root: str | None = None
     latent_subdir: str = "latents"
     split: DataSplit = DataSplit.TRAIN
@@ -203,6 +205,7 @@ class RobotWinDataConfig(DataConfig):
     dataset_type: str = "synthetic_robotwin"
     repo_id: str | None = None
     local_root: str | None = None
+    empty_text_embedding_path: str | None = None
     latent_root: str | None = None
     latent_subdir: str = "latents"
     split: DataSplit = DataSplit.TRAIN
@@ -291,6 +294,7 @@ class LiberoDataConfig(DataConfig):
     dataset_type: str = "lerobot_v2"
     repo_id: str | None = "physical-intelligence/libero"
     local_root: str | None = None
+    empty_text_embedding_path: str | None = None
     latent_root: str | None = None
     latent_subdir: str = "latents"
     split: DataSplit = DataSplit.TRAIN

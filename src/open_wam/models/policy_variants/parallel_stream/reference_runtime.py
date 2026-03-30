@@ -230,7 +230,8 @@ def _add_noise(
         device=latent.device,
     )
     noise = torch.zeros_like(latent).normal_()
-    timesteps = train_scheduler.timesteps[timestep_ids].to(device=latent.device)
+    scheduler_timesteps = train_scheduler.timesteps.to(device=latent.device)
+    timesteps = scheduler_timesteps[timestep_ids]
     noisy_latents = train_scheduler.add_noise(latent, noise, timesteps, t_dim=2)
     targets = train_scheduler.training_target(latent, noise, timesteps)
 
@@ -262,7 +263,7 @@ def _add_noise(
             device=latent.device,
         )
         cond_noise = torch.zeros_like(latent).normal_()
-        cond_timesteps = train_scheduler.timesteps[cond_timestep_ids].to(device=latent.device)
+        cond_timesteps = scheduler_timesteps[cond_timestep_ids]
         latent = train_scheduler.add_noise(latent, cond_noise, cond_timesteps, t_dim=2)
     else:
         cond_timesteps = torch.zeros_like(timesteps)

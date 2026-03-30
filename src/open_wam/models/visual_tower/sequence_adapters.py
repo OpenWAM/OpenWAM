@@ -344,11 +344,11 @@ def prepare_exact_dual_stream_train_sequence(
     }
 
     batch_size = int(latent_dict["noisy_latents"].shape[0])
-    latent_hidden_states = input_embed(latent_dict["noisy_latents"], "latent").flatten(0, 1)[None]
-    action_hidden_states = input_embed(action_dict["noisy_latents"], "action").flatten(0, 1)[None]
-    text_hidden_states = exact_text_hidden_states(latent_dict["text_emb"]).flatten(0, 1)[None]
-    condition_latent_hidden_states = input_embed(latent_dict["latent"], "latent").flatten(0, 1)[None]
-    condition_action_hidden_states = input_embed(action_dict["latent"], "action").flatten(0, 1)[None]
+    latent_hidden_states = input_embed(latent_dict["noisy_latents"], "latent").flatten(0, 1).contiguous()[None].clone()
+    action_hidden_states = input_embed(action_dict["noisy_latents"], "action").flatten(0, 1).contiguous()[None].clone()
+    text_hidden_states = exact_text_hidden_states(latent_dict["text_emb"]).flatten(0, 1).contiguous()[None].clone()
+    condition_latent_hidden_states = input_embed(latent_dict["latent"], "latent").flatten(0, 1).contiguous()[None].clone()
+    condition_action_hidden_states = input_embed(action_dict["latent"], "action").flatten(0, 1).contiguous()[None].clone()
 
     hidden_states = torch.cat(
         [
@@ -359,19 +359,19 @@ def prepare_exact_dual_stream_train_sequence(
         ],
         dim=1,
     )
-    latent_grid_id = latent_dict["grid_id"].permute(1, 0, 2).flatten(1)[None]
-    action_grid_id = action_dict["grid_id"].permute(1, 0, 2).flatten(1)[None]
+    latent_grid_id = latent_dict["grid_id"].permute(1, 0, 2).flatten(1).contiguous()[None].clone()
+    action_grid_id = action_dict["grid_id"].permute(1, 0, 2).flatten(1).contiguous()[None].clone()
     full_grid_id = torch.cat([latent_grid_id] * 2 + [action_grid_id] * 2, dim=2)
     rotary_emb = rope(full_grid_id)[:, :, None]
 
     latent_time_steps = torch.cat(
         [latent_dict["timesteps"].flatten(0, 1), latent_dict["cond_timesteps"].flatten(0, 1)],
         dim=0,
-    )[None]
+    ).contiguous()[None].clone()
     action_time_steps = torch.cat(
         [action_dict["timesteps"].flatten(0, 1), action_dict["cond_timesteps"].flatten(0, 1)],
         dim=0,
-    )[None]
+    ).contiguous()[None].clone()
     latent_temb, latent_timestep_proj = time_embed(
         latent_time_steps,
         int(latent_dict["noisy_latents"].shape[-2]),

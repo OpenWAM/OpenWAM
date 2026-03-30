@@ -135,6 +135,35 @@ def test_local_lerobot_latent_dataset_builds_canonical_latents(tmp_path: Path) -
     assert sample.metadata["observed_frame_ids"] == [0, 1, 2, 3]
 
 
+def test_local_lerobot_latent_dataset_loads_empty_text_embedding_as_negative_context(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent"
+    _build_local_robotwin_latent_repo(repo_root)
+    empty_emb = torch.randn(512, 4096)
+    empty_emb_path = tmp_path / "empty_emb.pt"
+    torch.save(empty_emb, empty_emb_path)
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            empty_text_embedding_path=str(empty_emb_path),
+            train_fraction=1.0,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    sample = train_dataset[0]
+
+    assert sample.negative_text_context is not None
+    assert torch.equal(sample.negative_text_context, empty_emb)
+
+
 def test_local_lerobot_latent_dataset_uses_pose_source_key_for_state(tmp_path: Path) -> None:
     repo_root = tmp_path / "libero_local_latent"
     _build_local_robotwin_latent_repo(

@@ -191,6 +191,9 @@ def test_heng_compatible_libero_yaml_config_loads() -> None:
     assert isinstance(heng_libero.policy_variant, ParallelStreamPolicyConfig)
     assert heng_libero.data.dataset_type == "lerobot_v2_latent_local"
     assert heng_libero.data.local_root == "/path/to/private-resource"
+    assert heng_libero.data.empty_text_embedding_path == (
+        "/path/to/private-resource"
+    )
     assert heng_libero.data.camera_names == (
         "observation.images.agentview_rgb",
         "observation.images.eye_in_hand_rgb",
@@ -204,16 +207,16 @@ def test_heng_compatible_libero_yaml_config_loads() -> None:
     assert heng_libero.training.learning_rate == 1e-5
     assert heng_libero.training.gradient_accumulation_steps == 10
     assert heng_libero.training.num_steps == 5000
-    assert heng_libero.training.enabled_objectives == ("latent",)
+    assert heng_libero.training.enabled_objectives == ("latent", "action")
     assert heng_libero.training.action_loss_weight == 1.0
     assert heng_libero.training.trainable_components == ("visual_tower.runtime_backbone",)
     assert heng_libero.trainer.runtime == "composable"
     assert heng_libero.trainer.batch_adapter == "latents"
     assert heng_libero.trainer.loop_policy == "steps"
     assert heng_libero.trainer.strategy == "fsdp"
-    assert heng_libero.trainer.save_interval == 50
+    assert heng_libero.trainer.save_interval == 10
     assert heng_libero.trainer.enable_wandb is True
-    assert heng_libero.trainer.wandb_project == "lingbot-va-posttrain-libero"
+    assert heng_libero.trainer.wandb_project == "lingbot-va-posttrain-libero_openwam"
 
 
 def test_loaded_enum_like_fields_are_real_enum_members() -> None:
@@ -229,7 +232,10 @@ def test_loaded_enum_like_fields_are_real_enum_members() -> None:
     assert isinstance(config.inference.joint_cache_warmup_source, CacheWarmupSource)
     assert isinstance(config.inference.joint_cache_initial_warmup_anchor, WarmupAnchor)
     assert isinstance(config.inference.joint_cache_rollout_warmup_anchor, WarmupAnchor)
-    assert config.training.enabled_objectives == (TrainingObjective.LATENT,)
+    assert config.training.enabled_objectives == (
+        TrainingObjective.LATENT,
+        TrainingObjective.ACTION,
+    )
     assert config.training.trainable_components == (TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE,)
     assert isinstance(config.trainer.runtime, TrainerRuntimeName)
     assert isinstance(config.trainer.batch_adapter, BatchAdapterName)

@@ -30,6 +30,11 @@ from open_wam.models.visual_tower.reference_loader import resolve_pretrained_com
 from open_wam.pipelines import build_exact_runtime_runner_from_config  # noqa: E402
 from open_wam.utils import load_experiment_config, seed_everywhere  # noqa: E402
 
+LIBERO_OBS_KEYS = (
+    "observation.images.agentview_rgb",
+    "observation.images.eye_in_hand_rgb",
+)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -337,8 +342,8 @@ def _init_single_env(env, init_state) -> dict[str, np.ndarray]:
 
 def _extract_obs(obs) -> dict[str, np.ndarray]:
     return {
-        "image": np.ascontiguousarray(obs["agentview_image"][::-1]),
-        "wrist_image": np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1]),
+        LIBERO_OBS_KEYS[0]: np.ascontiguousarray(obs["agentview_image"][::-1]),
+        LIBERO_OBS_KEYS[1]: np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1]),
     }
 
 
@@ -348,13 +353,9 @@ def _obs_list_to_views(
     config,
     device: torch.device,
 ) -> dict[str, torch.Tensor]:
-    alias_sources = {
-        "image": "image",
-        "agentview_image": "image",
-        "observation.images.agentview_rgb": "image",
-        "wrist_image": "wrist_image",
-        "robot0_eye_in_hand_image": "wrist_image",
-        "observation.images.eye_in_hand_rgb": "wrist_image",
+    return {
+        LIBERO_OBS_KEYS[0]: torch.from_numpy(np.stack([obs[LIBERO_OBS_KEYS[0]] for obs in obs_list], axis=0)).to(device=device),
+        LIBERO_OBS_KEYS[1]: torch.from_numpy(np.stack([obs[LIBERO_OBS_KEYS[1]] for obs in obs_list], axis=0)).to(device=device),
     }
     views: dict[str, torch.Tensor] = {}
     for placement in config.data.view_layout:
@@ -433,8 +434,8 @@ def _build_comparison_video_frames(
     panel_height = 300
 
     for index, obs in enumerate(real_obs_list):
-        agentview = np.ascontiguousarray(obs["image"])
-        wrist = np.ascontiguousarray(obs["wrist_image"])
+        agentview = np.ascontiguousarray(obs[LIBERO_OBS_KEYS[0]])
+        wrist = np.ascontiguousarray(obs[LIBERO_OBS_KEYS[1]])
         row_real = np.hstack([agentview, wrist])
         row_real = np.ascontiguousarray(row_real)
         row_real = np.array(_with_title(Image.fromarray(row_real), "Real (AgentView / Wrist)"), copy=True)

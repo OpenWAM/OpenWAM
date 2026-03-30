@@ -50,6 +50,7 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             raise ValueError("Local latent datasets require `data.local_root` in the experiment config.")
         self.data_config = data_config
         self.windows = list(windows)
+        self.empty_text_embedding = self._load_empty_text_embedding()
         self._repo_bundles = {
             str(bundle.root): bundle
             for bundle in discover_local_lerobot_repo_bundles(data_config.local_root)
@@ -75,18 +76,17 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
         primary_payload = latent_payloads[self.data_config.latent_camera_names[0]]
         observed_frame_ids = [int(value) for value in list(primary_payload.get("frame_ids", []))]
         if not observed_frame_ids:
-            observed_frame_ids = list(range(window.start_frame, window.start_frame + video_latents.shape[1]))
+            observed_frame_ids = list(range(window.start_frame, window.end_frame))
         anchor_frame_index = observed_frame_ids[-1]
 
-        action_rows = rows[anchor_frame_index : anchor_frame_index + self.data_config.action_schema.action_horizon]
-        target_state_rows = rows[anchor_frame_index : anchor_frame_index + self.data_config.action_schema.action_horizon]
+        actions, action_mask, action_target_metadata = self._build_lingbot_window_action_targets(
+            rows=rows,
+            window=window,
+            observed_frame_ids=observed_frame_ids,
+            latent_num_frames=int(video_latents.shape[1]),
+        )
         state_start = max(0, anchor_frame_index - self.data_config.action_schema.state_horizon + 1)
         state_rows = rows[state_start : anchor_frame_index + 1]
-
-        actions, action_mask, action_target_metadata = self._build_action_targets(
-            action_rows=action_rows,
-            target_state_rows=target_state_rows,
-        )
         state_source_key = self.data_config.action_target.pose_source_key
         state, state_mask = self._extract_sequence(
             rows=state_rows,
@@ -101,6 +101,7 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             text_context = text_context.to(dtype=torch.float32)
         else:
             text_context = None
+        negative_text_context = self.empty_text_embedding.clone() if self.empty_text_embedding is not None else None
 
         episode_record = repo_bundle.episodes_by_index.get(window.episode_index)
         task_index = int(rows[min(anchor_frame_index, len(rows) - 1)].get("task_index", 0)) if rows else 0
@@ -116,6 +117,7 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             state_mask=state_mask,
             task_text=task_text,
             text_context=text_context,
+            negative_text_context=negative_text_context,
             metadata={
                 "repo_root": str(window.repo_root),
                 "episode_index": window.episode_index,
@@ -130,6 +132,30 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
                 **action_target_metadata,
             },
         )
+
+    def _load_empty_text_embedding(self) -> torch.Tensor | None:
+        configured_path = self.data_config.empty_text_embedding_path
+        candidate_path = (
+            Path(configured_path)
+            if configured_path is not None
+            else Path(self.data_config.local_root) / "empty_emb.pt"
+        )
+        if not candidate_path.exists():
+            if configured_path is not None:
+                raise FileNotFoundError(
+                    "Configured `data.empty_text_embedding_path` does not exist: "
+                    f"{candidate_path}"
+                )
+            return None
+        payload = torch.load(candidate_path, map_location="cpu", weights_only=False)
+        if not isinstance(payload, torch.Tensor):
+            raise TypeError(
+                "Expected `empty_text_embedding_path` to point at a tensor checkpoint, "
+                f"got {type(payload)!r} from {candidate_path}"
+            )
+        if payload.ndim == 3 and payload.shape[0] == 1:
+            payload = payload.squeeze(0)
+        return payload.to(dtype=torch.float32).contiguous()
 
     def _load_window_latents(
         self,
@@ -190,6 +216,79 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
         if canonical_latents is None:
             raise ValueError("Expected at least one latent camera payload.")
         return canonical_latents.permute(3, 0, 1, 2).contiguous().to(dtype=torch.float32), metadata
+
+    def _build_lingbot_window_action_targets(
+        self,
+        *,
+        rows: list[dict[str, Any]],
+        window: LocalEpisodeWindow,
+        observed_frame_ids: list[int],
+        latent_num_frames: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
+        action_target = self.data_config.action_target
+        if action_target.representation != ActionTargetRepresentation.RAW:
+            raise ValueError(
+                "Long-window local latent datasets currently support only `action_target.representation=raw` "
+                "for LingBot-compatible exact training."
+            )
+        if latent_num_frames <= 0:
+            raise ValueError("Expected at least one latent frame in the local latent window.")
+        if not observed_frame_ids:
+            raise ValueError("Expected non-empty frame_ids metadata for the local latent window.")
+
+        frame_stride = 1
+        if len(observed_frame_ids) > 1:
+            frame_stride = max(1, int(observed_frame_ids[1] - observed_frame_ids[0]))
+        prefix_actions = frame_stride * int(self.data_config.action_schema.action_horizon // max(1, self.data_config.num_frames))
+        required_action_num = latent_num_frames * prefix_actions
+
+        action_start_offset = max(0, int(observed_frame_ids[0] - window.start_frame))
+        raw_window_rows = rows[window.start_frame : window.end_frame]
+        raw_actions = torch.stack(
+            [
+                torch.tensor(row[_resolve_row_key(row, action_target.source_key)], dtype=torch.float32)
+                for row in raw_window_rows
+            ],
+            dim=0,
+        )
+        raw_actions = raw_actions[action_start_offset:]
+        action_dim = raw_actions.shape[-1] if raw_actions.numel() > 0 else self.data_config.action_schema.action_dim
+        if raw_actions.shape[-1] != self.data_config.action_schema.action_dim:
+            raise ValueError(
+                "Configured action_dim does not match raw local latent supervision: "
+                f"configured={self.data_config.action_schema.action_dim}, raw={raw_actions.shape[-1]}."
+            )
+
+        padded_actions = torch.cat(
+            [
+                torch.zeros(prefix_actions, action_dim, dtype=torch.float32),
+                raw_actions,
+            ],
+            dim=0,
+        )
+        if padded_actions.shape[0] < required_action_num:
+            padded_actions = torch.cat(
+                [
+                    padded_actions,
+                    torch.zeros(required_action_num - padded_actions.shape[0], action_dim, dtype=torch.float32),
+                ],
+                dim=0,
+            )
+        actions = padded_actions[:required_action_num].contiguous()
+
+        action_mask = torch.ones_like(actions, dtype=torch.float32)
+        if raw_actions.shape[0] + prefix_actions < required_action_num:
+            action_mask[raw_actions.shape[0] + prefix_actions :] = 0.0
+        return actions, action_mask, {
+            "lingbot_window_action_alignment": {
+                "latent_num_frames": latent_num_frames,
+                "raw_frame_count": len(observed_frame_ids),
+                "frame_stride": frame_stride,
+                "prefix_actions": prefix_actions,
+                "required_action_num": required_action_num,
+                "action_start_offset": action_start_offset,
+            }
+        }
 
     def _build_action_targets(
         self,

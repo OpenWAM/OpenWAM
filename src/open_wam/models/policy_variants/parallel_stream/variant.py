@@ -71,12 +71,12 @@ class ParallelStreamPolicyVariant(PolicyVariant):
     def required_visual_stages(self) -> tuple[str, ...]:
         return ("frontend",)
 
-    def _validate_action_layout(self, action_horizon: int) -> None:
-        expected_horizon = self.num_frames * self.config.action_per_frame
+    def _validate_action_layout(self, action_horizon: int, *, num_frames: int) -> None:
+        expected_horizon = num_frames * self.config.action_per_frame
         if action_horizon != expected_horizon:
             raise ValueError(
                 "Parallel-stream variant requires `action_horizon == num_frames * action_per_frame`, "
-                f"got action_horizon={action_horizon}, num_frames={self.num_frames}, "
+                f"got action_horizon={action_horizon}, num_frames={num_frames}, "
                 f"action_per_frame={self.config.action_per_frame}"
             )
 
@@ -85,7 +85,8 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         visual_outputs: VisualStageOutputs,
         batch: PolicyTrainBatch,
     ) -> PolicyPreparedInputs:
-        self._validate_action_layout(batch.actions.shape[1])
+        observed_num_frames = int(visual_outputs.frontend.video_latents.shape[2])
+        self._validate_action_layout(batch.actions.shape[1], num_frames=observed_num_frames)
         model_actions, model_action_mask = self._prepare_exact_train_actions(
             batch,
             device=visual_outputs.frontend.video_latents.device,

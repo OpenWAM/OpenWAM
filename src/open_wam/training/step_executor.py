@@ -128,12 +128,15 @@ class PipelineTrainStepExecutor:
         prepared = self.batch_adapter.prepare(batch)
         prepared = self._apply_text_condition_dropout(prepared)
         if prepared.views is not None:
-            output = self.pipeline.forward_train(prepared.views, prepared.policy_batch)
+            output = self.pipeline(
+                views=prepared.views,
+                batch=prepared.policy_batch,
+            )
         else:
             assert prepared.video_latents is not None
-            output = self.pipeline.forward_train_from_latents(
-                prepared.video_latents,
-                prepared.policy_batch,
+            output = self.pipeline(
+                video_latents=prepared.video_latents,
+                batch=prepared.policy_batch,
                 canonical_video=prepared.canonical_video,
                 text_context=prepared.text_context,
                 negative_text_context=prepared.negative_text_context,

@@ -5,6 +5,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
@@ -28,6 +29,31 @@ from .optim import build_optimizer, build_scheduler
 from .state import TrainState
 from .step_executor import PipelineTrainStepExecutor, build_batch_adapter
 from .strategies import build_training_strategy
+
+
+def _resolve_optimizer_state_dtype(strategy) -> torch.dtype | None:
+    precision = getattr(strategy, "precision", None)
+    if precision is None:
+        return None
+    precision_value = str(precision)
+    if "bf16" in precision_value:
+        return torch.bfloat16
+    if "fp16" in precision_value or "16" == precision_value:
+        return torch.float16
+    return None
+
+
+def _normalize_optimizer_state_dtypes(optimizer: torch.optim.Optimizer, *, state_dtype: torch.dtype | None) -> None:
+    if state_dtype is None:
+        return
+    for state in optimizer.state.values():
+        if not isinstance(state, dict):
+            continue
+        for key, value in list(state.items()):
+            if key == "step":
+                continue
+            if torch.is_tensor(value) and torch.is_floating_point(value) and value.dtype != state_dtype:
+                state[key] = value.to(dtype=state_dtype)
 
 
 class TrainingRuntime:
@@ -61,11 +87,18 @@ class TrainingRuntime:
         self.log_sink = log_sink
         self.train_state = train_state
         self.trainability_report = trainability_report
+        self._accumulated_train_metrics: dict[str, list[torch.Tensor]] = {}
 
     @classmethod
     def from_config(cls, config: ExperimentConfig) -> "TrainingRuntime":
         strategy = build_training_strategy(config.trainer)
         model = build_variant_pipeline_from_config(config)
+        visual_tower = getattr(model, "visual_tower", None)
+        action_dim = getattr(visual_tower, "action_dim", None)
+        if visual_tower is not None and action_dim is not None:
+            # Initialize reference runtime weights before FSDP/DDP wrapping so
+            # shared-core state dict keys stay in the replica module namespace.
+            visual_tower.get_runtime_backbone(action_dim=action_dim)
         trainability_report = apply_training_component_controls(model, config.training)
         model = strategy.prepare_model(model)
         batch_adapter = build_batch_adapter(config.trainer.batch_adapter)
@@ -113,6 +146,10 @@ class TrainingRuntime:
             optimizer=self.optimizer,
             scheduler=self.scheduler,
             map_location=self.strategy.device,
+        )
+        _normalize_optimizer_state_dtypes(
+            self.optimizer,
+            state_dtype=_resolve_optimizer_state_dtype(self.strategy),
         )
         self.train_state = train_state
         self.strategy.load_state_dict(payload.get("strategy_state_dict") if isinstance(payload, dict) else None)
@@ -184,26 +221,39 @@ class TrainingRuntime:
     def _train_micro_step(self, batch) -> None:
         device_batch = self.step_executor.batch_adapter.move_to_device(batch, self.strategy.device)
         self.model.train()
+        gradient_accumulation_steps = max(1, self.config.training.gradient_accumulation_steps)
+        should_update = (self.train_state.global_step + 1) % gradient_accumulation_steps == 0
+        self.strategy.set_gradient_sync(self.model, enabled=should_update)
         with self.strategy.autocast_context():
             result = self.step_executor.forward_train(device_batch)
-            loss = result.loss / max(1, self.config.training.gradient_accumulation_steps)
+            loss = result.loss / gradient_accumulation_steps
         self.strategy.backward(loss)
         self.train_state.global_step += 1
         self.train_state.seen_batches += 1
+        self._accumulate_train_metrics(result.metrics)
 
-        should_update = self.train_state.global_step % max(1, self.config.training.gradient_accumulation_steps) == 0
         if not should_update:
             return
 
         self.strategy.unscale_(self.optimizer)
         if self.config.training.max_grad_norm is not None:
-            self.strategy.clip_grad_norm_(self.model.parameters(), self.config.training.max_grad_norm)
+            grad_norm = self.strategy.clip_grad_norm_(self.model.parameters(), self.config.training.max_grad_norm)
+        else:
+            grad_norm = None
         self.strategy.optimizer_step(self.optimizer)
         self.scheduler.step()
         self.strategy.zero_grad(self.optimizer)
+        self.strategy.set_gradient_sync(self.model, enabled=True)
         self.train_state.optimizer_step += 1
 
-        metric_payload = {name: float(value.item()) for name, value in result.metrics.items()}
+        metric_payload = self._finalize_accumulated_train_metrics()
+        if "latent_mse" in metric_payload:
+            metric_payload["latent_loss"] = metric_payload["latent_mse"]
+        if "action_mse" in metric_payload:
+            metric_payload["action_loss"] = metric_payload["action_mse"]
+        metric_payload["lr"] = float(self.scheduler.get_last_lr()[0])
+        if grad_norm is not None:
+            metric_payload["grad_norm"] = float(grad_norm.item())
         if (
             self.config.trainer.log_every_n_steps <= 1
             or self.train_state.optimizer_step % self.config.trainer.log_every_n_steps == 0
@@ -245,9 +295,6 @@ class TrainingRuntime:
         )
         if not should_write:
             return
-        if not self.strategy.is_main_process:
-            self.strategy.barrier()
-            return
         checkpoint_dir = self.checkpoint_manager.save(
             step=self.train_state.optimizer_step,
             model=self.strategy.unwrap_model(self.model),
@@ -257,11 +304,42 @@ class TrainingRuntime:
             strategy_state=self.strategy.state_dict(),
         )
         self.train_state.last_checkpoint_path = str(checkpoint_dir)
-        self.log_sink.log_event(
-            name="checkpoint_saved",
-            payload={"path": str(checkpoint_dir), "final": final, "optimizer_step": self.train_state.optimizer_step},
-        )
+        if self.strategy.is_main_process:
+            self.log_sink.log_event(
+                name="checkpoint_saved",
+                payload={"path": str(checkpoint_dir), "final": final, "optimizer_step": self.train_state.optimizer_step},
+            )
         self.strategy.barrier()
+
+    def _accumulate_train_metrics(self, metrics: dict[str, torch.Tensor]) -> None:
+        gradient_accumulation_steps = max(1, self.config.training.gradient_accumulation_steps)
+        for name, value in metrics.items():
+            scaled_value = value.detach() / gradient_accumulation_steps
+            self._accumulated_train_metrics.setdefault(name, []).append(scaled_value)
+
+    def _finalize_accumulated_train_metrics(self) -> dict[str, float]:
+        finalized: dict[str, float] = {}
+        for name, values in self._accumulated_train_metrics.items():
+            if not values:
+                continue
+            accumulated = torch.stack(values).sum()
+            finalized[name] = float(self._distributed_mean(accumulated).item())
+            finalized[f"max_{name}"] = float(self._distributed_max(accumulated).item())
+        self._accumulated_train_metrics = {}
+        return finalized
+
+    def _distributed_mean(self, value: torch.Tensor) -> torch.Tensor:
+        reduced = value.detach().float().clone()
+        if dist.is_initialized():
+            dist.all_reduce(reduced, op=dist.ReduceOp.SUM)
+            reduced = reduced / float(dist.get_world_size())
+        return reduced
+
+    def _distributed_max(self, value: torch.Tensor) -> torch.Tensor:
+        reduced = value.detach().float().clone()
+        if dist.is_initialized():
+            dist.all_reduce(reduced, op=dist.ReduceOp.MAX)
+        return reduced
 
 
 def build_runtime_dataloaders(config: ExperimentConfig, strategy) -> tuple[DataLoader, DataLoader]:

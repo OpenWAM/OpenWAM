@@ -20,9 +20,14 @@ from open_wam.models.video_backbone.contracts import CacheBranchState
 from .contracts import VisualCoreInput, VisualStageOutputs
 from .core import PackedSequenceVisualCore
 from .decoder import VisualFeatureDecoder
+from .exported_runtime_backbone import (
+    is_open_wam_exported_runtime_backbone_dir,
+    load_exported_runtime_backbone_into_replica_core,
+    resolve_runtime_backbone_dir,
+)
 from .frontend import SharedVideoFrontend
 from .grid_ids import build_video_grid_ids
-from .reference_core_weights import ReferenceCoreLoadReport, load_reference_weights_into_replica_core
+from .reference_core_weights import BackboneLoadReport, load_reference_weights_into_replica_core
 from .replica_core import SharedVideoTransformerCore
 from .reference_transformer import preferred_reference_dtype
 from .runtime_programs import RuntimeStepInput, RuntimeStepOutput, build_dense_runtime_program
@@ -56,7 +61,7 @@ class VisualTower(nn.Module):
                 "Expected 'dummy' or 'shared_transformer'."
             )
         self.decoder = VisualFeatureDecoder(self.config.hidden_size)
-        self.reference_core_load_report: ReferenceCoreLoadReport | None = None
+        self.reference_core_load_report: BackboneLoadReport | None = None
         if self.config.load_reference_core_weights:
             if implementation != BackboneImplementation.SHARED_TRANSFORMER:
                 raise ValueError("`backbone.load_reference_core_weights` requires `backbone.implementation = shared_transformer`.")
@@ -587,11 +592,18 @@ class VisualTower(nn.Module):
                 f"requested={action_dim}, tower_action_dim={self.action_dim}."
             )
         if self.reference_core_load_report is None and self.config.pretrained_model_name_or_path is not None:
-            self.reference_core_load_report = load_reference_weights_into_replica_core(
-                self.core,
-                backbone_config=self.config,
-                action_dim=self.action_dim,
-            )
+            runtime_backbone_dir = resolve_runtime_backbone_dir(self.config)
+            if is_open_wam_exported_runtime_backbone_dir(runtime_backbone_dir):
+                self.reference_core_load_report = load_exported_runtime_backbone_into_replica_core(
+                    self.core,
+                    backbone_config=self.config,
+                )
+            else:
+                self.reference_core_load_report = load_reference_weights_into_replica_core(
+                    self.core,
+                    backbone_config=self.config,
+                    action_dim=self.action_dim,
+                )
         return self.core
 
     def ensure_runtime_backbone_device(self, *, action_dim: int, device) -> nn.Module:

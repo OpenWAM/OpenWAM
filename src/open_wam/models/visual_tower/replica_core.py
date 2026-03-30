@@ -112,6 +112,22 @@ def _apply_rotary_emb(x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
     return x_out.to(x.dtype)
 
 
+def _select_chunk_slices(tensor: torch.Tensor, count: int) -> tuple[torch.Tensor, ...]:
+    chunked = rearrange(tensor, "b l n c -> b n l c").contiguous()
+    if int(chunked.shape[1]) != count:
+        raise ValueError(f"Expected chunk axis length {count}, got {tuple(chunked.shape)}.")
+    return tuple(chunked[:, index, :, :].clone() for index in range(count))
+
+
+def _select_split_segments(tensor: torch.Tensor, lengths: tuple[int, ...]) -> tuple[torch.Tensor, ...]:
+    offset = 0
+    segments: list[torch.Tensor] = []
+    for length in lengths:
+        segments.append(tensor.narrow(1, offset, length).clone())
+        offset += length
+    return tuple(segments)
+
+
 def _prepare_sdpa_mask(attention_mask: torch.Tensor | None, device: torch.device) -> torch.Tensor | None:
     if attention_mask is None:
         return None
@@ -286,6 +302,9 @@ class SharedTransformerAttention(nn.Module):
         cache_backend_state=None,
         cache_backend_update_mode: int = 0,
     ) -> tuple[torch.Tensor, AttentionCacheEntry | None]:
+        q = q.contiguous().clone()
+        k = k.contiguous().clone()
+        v = v.contiguous().clone()
         query = self.norm_q(self.to_q(q)).unflatten(2, (self.heads, -1))
         use_slot_pool_backend = cache_backend_uses_slot_pool(cache_backend_name) and cache_backend_state is not None
         current_cache_entry = None
@@ -507,16 +526,10 @@ class SharedTransformerBlock(nn.Module):
         self_attention_cache_update_mode: int = 0,
     ) -> tuple[torch.Tensor, AttentionCacheEntry | None, AttentionCacheEntry | None]:
         temb_scale_shift_table = self.scale_shift_table[None] + temb.float()
-        shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = rearrange(
+        shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = _select_chunk_slices(
             temb_scale_shift_table,
-            "b l n c -> b n l c",
-        ).chunk(6, dim=1)
-        shift_msa = shift_msa.squeeze(1)
-        scale_msa = scale_msa.squeeze(1)
-        gate_msa = gate_msa.squeeze(1)
-        c_shift_msa = c_shift_msa.squeeze(1)
-        c_scale_msa = c_scale_msa.squeeze(1)
-        c_gate_msa = c_gate_msa.squeeze(1)
+            6,
+        )
 
         structured_attention_plan = build_structured_attention_execution_plan(
             structured_attention_context,
@@ -978,7 +991,7 @@ class SharedVideoTransformerCore(nn.Module):
         return self._exact_runtime_caches.get(cache_name)
 
     def _exact_text_hidden_states(self, text_emb: torch.Tensor, *, dtype: torch.dtype) -> torch.Tensor:
-        return self.text_proj(text_emb).to(dtype=dtype)
+        return self.text_proj(text_emb.clone()).to(dtype=dtype)
 
     def _input_embed(self, latents: torch.Tensor, input_type: str = "latent") -> torch.Tensor:
         if input_type == "latent":
@@ -989,13 +1002,13 @@ class SharedVideoTransformerCore(nn.Module):
                 p2=self.patch_size[1],
                 p3=self.patch_size[2],
             )
-            return self.patch_embedding_mlp(hidden_states)
+            return self.patch_embedding_mlp(hidden_states.clone())
         if input_type == "action":
             self._require_exact_action_dim()
             hidden_states = rearrange(latents, "b c f h w -> b (f h w) c")
-            return self.action_embedder(hidden_states)
+            return self.action_embedder(hidden_states.clone())
         if input_type == "text":
-            return self.text_proj(latents)
+            return self.text_proj(latents.clone())
         raise ValueError(f"Unsupported input_type={input_type!r}")
 
     def _time_embed(
@@ -1015,7 +1028,7 @@ class SharedVideoTransformerCore(nn.Module):
         )
         conditioner = self.action_time_conditioner if action_mode else self.time_conditioner
         temb, timestep_proj = conditioner(latent_time_steps, dtype=dtype)
-        return temb, timestep_proj
+        return temb.contiguous().clone(), timestep_proj.contiguous().clone()
 
     def forward_train(self, input_dict: dict[str, torch.Tensor | dict[str, torch.Tensor]]) -> tuple[torch.Tensor, torch.Tensor]:
         prepared = prepare_exact_dual_stream_train_sequence(
@@ -1053,11 +1066,14 @@ class SharedVideoTransformerCore(nn.Module):
             )
 
         temb_scale_shift_table = self.scale_shift_table[None] + temb[:, :, None, ...]
-        shift, scale = rearrange(temb_scale_shift_table, "b l n c -> b n l c").chunk(2, dim=1)
-        shift = shift.to(hidden_states.device).squeeze(1)
-        scale = scale.to(hidden_states.device).squeeze(1)
+        shift, scale = _select_chunk_slices(temb_scale_shift_table, 2)
+        shift = shift.to(hidden_states.device)
+        scale = scale.to(hidden_states.device)
         hidden_states = (self.norm_out(hidden_states.float()) * (1.0 + scale) + shift).type_as(hidden_states)
-        latent_hidden_states, _, action_hidden_states, _, _ = torch.split(hidden_states, split_list, dim=1)
+        latent_hidden_states, _, action_hidden_states, _, _ = _select_split_segments(
+            hidden_states,
+            tuple(int(length) for length in split_list),
+        )
         latent_hidden_states = self.proj_out(latent_hidden_states)
         latent_hidden_states = rearrange(
             latent_hidden_states,
@@ -1115,9 +1131,9 @@ class SharedVideoTransformerCore(nn.Module):
             del current_self_cache_entry
 
         temb_scale_shift_table = self.scale_shift_table[None] + temb[:, :, None, ...]
-        shift, scale = rearrange(temb_scale_shift_table, "b l n c -> b n l c").chunk(2, dim=1)
-        shift = shift.to(hidden_states.device).squeeze(1)
-        scale = scale.to(hidden_states.device).squeeze(1)
+        shift, scale = _select_chunk_slices(temb_scale_shift_table, 2)
+        shift = shift.to(hidden_states.device)
+        scale = scale.to(hidden_states.device)
         hidden_states = (self.norm_out(hidden_states.float()) * (1.0 + scale) + shift).type_as(hidden_states)
 
         if cache_state is not None and cache_backend_uses_slot_pool(cache_backend_name):
@@ -1213,11 +1229,14 @@ class SharedVideoTransformerCore(nn.Module):
                 )
 
             temb_scale_shift_table = self.scale_shift_table[None] + temb[:, :, None, ...]
-            shift, scale = rearrange(temb_scale_shift_table, "b l n c -> b n l c").chunk(2, dim=1)
-            shift = shift.to(hidden_states.device).squeeze(1)
-            scale = scale.to(hidden_states.device).squeeze(1)
+            shift, scale = _select_chunk_slices(temb_scale_shift_table, 2)
+            shift = shift.to(hidden_states.device)
+            scale = scale.to(hidden_states.device)
             hidden_states = (self.norm_out(hidden_states.float()) * (1.0 + scale) + shift).type_as(hidden_states)
-            latent_hidden_states, _, action_hidden_states, _, _ = torch.split(hidden_states, split_list, dim=1)
+            latent_hidden_states, _, action_hidden_states, _, _ = _select_split_segments(
+                hidden_states,
+                tuple(int(length) for length in split_list),
+            )
             video_prediction = self.proj_out(latent_hidden_states)
             video_prediction = rearrange(
                 video_prediction,
@@ -1586,9 +1605,7 @@ class SharedVideoTransformerCore(nn.Module):
                 next_cross_attention_kv.append(AttentionCacheEntry())
 
         temb_scale_shift_table = self.scale_shift_table[None] + temb[:, :, None, ...]
-        shift, scale = rearrange(temb_scale_shift_table, "b l n c -> b n l c").chunk(2, dim=1)
-        shift = shift.squeeze(1)
-        scale = scale.squeeze(1)
+        shift, scale = _select_chunk_slices(temb_scale_shift_table, 2)
         hidden_states = (self.norm_out(hidden_states.float()) * (1.0 + scale) + shift).type_as(hidden_states)
 
         has_runtime_sequence = core_input.sequence_metadata is not None

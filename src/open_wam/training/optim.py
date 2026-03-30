@@ -36,6 +36,8 @@ def build_optimizer(
         lr=training_config.learning_rate,
         betas=(training_config.beta1, training_config.beta2),
         weight_decay=training_config.weight_decay,
+        foreach=False,
+        fused=False,
     )
 
 

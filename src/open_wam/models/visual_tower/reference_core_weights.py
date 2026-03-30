@@ -10,9 +10,12 @@ from .reference_transformer import build_reference_transformer
 
 
 @dataclass(frozen=True)
-class ReferenceCoreLoadReport:
+class BackboneLoadReport:
     loaded_keys: tuple[str, ...]
     missing_reference_keys: tuple[str, ...]
+
+
+ReferenceCoreLoadReport = BackboneLoadReport
 
 
 def _copy_if_present(
@@ -36,7 +39,7 @@ def load_reference_weights_into_replica_core(
     *,
     backbone_config: SharedVideoTransformerConfig,
     action_dim: int,
-) -> ReferenceCoreLoadReport:
+) -> BackboneLoadReport:
     reference_transformer = build_reference_transformer(backbone_config, action_dim=action_dim)
     reference_state = reference_transformer.state_dict()
     target_state = replica_core.state_dict()
@@ -119,7 +122,7 @@ def load_reference_weights_into_replica_core(
         )
 
     replica_core.load_state_dict(target_state, strict=False)
-    return ReferenceCoreLoadReport(
+    return BackboneLoadReport(
         loaded_keys=tuple(loaded_keys),
         missing_reference_keys=tuple(missing_reference_keys),
     )

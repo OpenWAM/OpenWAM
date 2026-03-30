@@ -452,6 +452,10 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         dataset_type=data_raw.get("dataset_type", data_defaults.dataset_type),
         repo_id=data_raw.get("repo_id", data_defaults.repo_id),
         local_root=data_raw.get("local_root", data_defaults.local_root),
+        empty_text_embedding_path=data_raw.get(
+            "empty_text_embedding_path",
+            data_defaults.empty_text_embedding_path,
+        ),
         latent_root=data_raw.get("latent_root", data_defaults.latent_root),
         latent_subdir=data_raw.get("latent_subdir", data_defaults.latent_subdir),
         split=_coerce_enum(config_enums.DataSplit, data_raw.get("split", data_defaults.split)),
