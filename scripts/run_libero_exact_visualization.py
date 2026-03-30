@@ -56,6 +56,9 @@ def main() -> None:
     parser.add_argument("--output-dir", type=str, default="outputs/libero_exact_visualization")
     parser.add_argument("--suffix", type=str, default="open_wam")
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--runtime-device", type=str, default=None)
+    parser.add_argument("--frontend-device", type=str, default=None)
+    parser.add_argument("--decode-device", type=str, default=None)
     args = parser.parse_args()
 
     config_path = Path(args.config)
@@ -63,8 +66,16 @@ def main() -> None:
         config_path = (REPO_ROOT / config_path).resolve()
     config = load_experiment_config(config_path)
     runner = build_exact_runtime_runner_from_config(config)
-    runtime_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    component_report = _build_open_wam_component_report(config, runner)
+    runtime_device = _resolve_device(args.runtime_device)
+    frontend_device = _resolve_device(args.frontend_device, fallback=runtime_device)
+    decode_device = _resolve_device(args.decode_device, fallback=frontend_device)
+    component_report = _build_open_wam_component_report(
+        config,
+        runner,
+        runtime_device=runtime_device,
+        frontend_device=frontend_device,
+        decode_device=decode_device,
+    )
     _print_log("load_report", component_report)
 
     task_spec, prompt = _resolve_task_spec(args.benchmark, args.task_id)
@@ -91,9 +102,18 @@ def main() -> None:
                 seed_everywhere(args.seed + chunk_count)
             timestep_before = int(env.env.timestep)
             if first_chunk:
+                first_chunk_inputs = _prepare_exact_runtime_inputs(
+                    runner,
+                    views=_obs_list_to_views([first_obs], config=config, device=frontend_device),
+                    task_text=(prompt,),
+                    frontend_device=frontend_device,
+                    runtime_device=runtime_device,
+                )
                 chunk = runner.infer_chunk(
                     session=session,
-                    views=_obs_list_to_views([first_obs], config=config, device=runtime_device),
+                    video_latents=first_chunk_inputs["video_latents"],
+                    text_context=first_chunk_inputs["text_context"],
+                    negative_text_context=first_chunk_inputs["negative_text_context"],
                 )
             else:
                 chunk = runner.infer_chunk(session=session)
@@ -199,21 +219,24 @@ def main() -> None:
                 break
 
             if first_chunk:
-                new_visual_outputs = runner.pipeline.prepare_visual_outputs(
-                    _obs_list_to_views(key_frame_list, config=config, device=runtime_device),
+                new_visual_outputs = _prepare_exact_runtime_inputs(
+                    runner,
+                    views=_obs_list_to_views(key_frame_list, config=config, device=frontend_device),
                     task_text=(prompt,),
                     text_context=session.text_context,
                     negative_text_context=session.negative_text_context,
+                    frontend_device=frontend_device,
+                    runtime_device=runtime_device,
                     preserve_stream_cache=True,
                 )
                 initial_latents = chunk.visual_outputs.frontend.video_latents
-                combined_latents = torch.cat([initial_latents, new_visual_outputs.frontend.video_latents], dim=2)
+                combined_latents = torch.cat([initial_latents, new_visual_outputs["video_latents"]], dim=2)
                 _print_log(
                     f"chunk_{chunk_count - 1}",
                     {
                         "phase": "warmup_prepare",
                         "initial_latents_shape": list(initial_latents.shape),
-                        "new_latents_shape": list(new_visual_outputs.frontend.video_latents.shape),
+                        "new_latents_shape": list(new_visual_outputs["video_latents"].shape),
                         "combined_latents_shape": list(combined_latents.shape),
                         "raw_actions_shape": list(raw_actions_batched.shape),
                     },
@@ -221,15 +244,27 @@ def main() -> None:
                 warmup = runner.warmup_cache(
                     session=session,
                     video_latents=combined_latents,
-                    text_context=new_visual_outputs.frontend.conditioning.text_context,
-                    negative_text_context=new_visual_outputs.frontend.conditioning.negative_text_context,
+                    text_context=new_visual_outputs["text_context"],
+                    negative_text_context=new_visual_outputs["negative_text_context"],
                     action_history=raw_actions_batched,
                     action_space="raw",
                 )
             else:
+                warmup_inputs = _prepare_exact_runtime_inputs(
+                    runner,
+                    views=_obs_list_to_views(key_frame_list, config=config, device=frontend_device),
+                    task_text=(prompt,),
+                    text_context=session.text_context,
+                    negative_text_context=session.negative_text_context,
+                    frontend_device=frontend_device,
+                    runtime_device=runtime_device,
+                    preserve_stream_cache=True,
+                )
                 warmup = runner.warmup_cache(
                     session=session,
-                    views=_obs_list_to_views(key_frame_list, config=config, device=runtime_device),
+                    video_latents=warmup_inputs["video_latents"],
+                    text_context=warmup_inputs["text_context"],
+                    negative_text_context=warmup_inputs["negative_text_context"],
                     action_history=raw_actions_batched,
                     action_space="raw",
                 )
@@ -248,6 +283,7 @@ def main() -> None:
         imagined_video = _decode_imagined_video(
             runner,
             predicted_latent_chunks,
+            decode_device=decode_device,
         )
         output_path = _build_output_path(
             root=Path(args.output_dir),
@@ -353,25 +389,63 @@ def _obs_list_to_views(
     config,
     device: torch.device,
 ) -> dict[str, torch.Tensor]:
+    del config
     return {
         LIBERO_OBS_KEYS[0]: torch.from_numpy(np.stack([obs[LIBERO_OBS_KEYS[0]] for obs in obs_list], axis=0)).to(device=device),
         LIBERO_OBS_KEYS[1]: torch.from_numpy(np.stack([obs[LIBERO_OBS_KEYS[1]] for obs in obs_list], axis=0)).to(device=device),
     }
-    views: dict[str, torch.Tensor] = {}
-    for placement in config.data.view_layout:
-        source_key = alias_sources.get(placement.source_name)
-        if source_key is None:
-            raise KeyError(
-                f"Unsupported visualization camera key {placement.source_name!r}. "
-                "Add it to the alias map in _obs_list_to_views."
-            )
-        views[placement.source_name] = torch.from_numpy(
-            np.stack([obs[source_key] for obs in obs_list], axis=0)
-        ).to(device=device)
-    return views
 
 
-def _decode_imagined_video(runner, predicted_latent_chunks: list[torch.Tensor]) -> np.ndarray | None:
+def _prepare_exact_runtime_inputs(
+    runner,
+    *,
+    views: dict[str, torch.Tensor],
+    task_text: tuple[str | None, ...] | None,
+    frontend_device: torch.device,
+    runtime_device: torch.device,
+    text_context: torch.Tensor | None = None,
+    negative_text_context: torch.Tensor | None = None,
+    preserve_stream_cache: bool = False,
+) -> dict[str, torch.Tensor | None]:
+    canonical_batch = runner.pipeline.canonicalize(views)
+    canonical_video = canonical_batch.video.to(device=frontend_device)
+    frontend_output = runner.pipeline.visual_tower.run_frontend(
+        canonical_video,
+        placements=canonical_batch.placements,
+        task_text=task_text,
+        text_context=(
+            None
+            if text_context is None
+            else text_context.to(device=frontend_device)
+        ),
+        negative_text_context=(
+            None
+            if negative_text_context is None
+            else negative_text_context.to(device=frontend_device)
+        ),
+        preserve_stream_cache=preserve_stream_cache,
+    )
+    return {
+        "video_latents": frontend_output.video_latents.to(device=runtime_device),
+        "text_context": (
+            None
+            if frontend_output.conditioning.text_context is None
+            else frontend_output.conditioning.text_context.to(device=runtime_device)
+        ),
+        "negative_text_context": (
+            None
+            if frontend_output.conditioning.negative_text_context is None
+            else frontend_output.conditioning.negative_text_context.to(device=runtime_device)
+        ),
+    }
+
+
+def _decode_imagined_video(
+    runner,
+    predicted_latent_chunks: list[torch.Tensor],
+    *,
+    decode_device: torch.device,
+) -> np.ndarray | None:
     if not predicted_latent_chunks:
         return None
     assets = runner.pipeline.visual_tower.frontend.reference_assets
@@ -385,7 +459,7 @@ def _decode_imagined_video(runner, predicted_latent_chunks: list[torch.Tensor]) 
     original_device = vae_param.device
     original_dtype = vae_param.dtype
 
-    target_device = torch.device("cuda" if torch.cuda.is_available() else original_device)
+    target_device = decode_device
     target_dtype = torch.bfloat16 if target_device.type == "cuda" else torch.float32
     if original_device != target_device or original_dtype != target_dtype:
         vae = vae.to(device=target_device, dtype=target_dtype)
@@ -480,7 +554,14 @@ def _to_uint8(frame: np.ndarray) -> np.ndarray:
     return np.clip(frame, 0.0, 255.0).astype(np.uint8)
 
 
-def _build_open_wam_component_report(config, runner) -> dict[str, object]:
+def _build_open_wam_component_report(
+    config,
+    runner,
+    *,
+    runtime_device: torch.device,
+    frontend_device: torch.device,
+    decode_device: torch.device,
+) -> dict[str, object]:
     backbone = config.backbone
     action_decoder = runner.pipeline.action_decoder
     policy_variant = runner.pipeline.policy_variant
@@ -507,7 +588,9 @@ def _build_open_wam_component_report(config, runner) -> dict[str, object]:
     transformer_config = getattr(transformer, "config", None)
     return {
         "pipeline": "open_wam",
-        "runtime_device": str(torch.device("cuda" if torch.cuda.is_available() else "cpu")),
+        "runtime_device": str(runtime_device),
+        "frontend_device": str(frontend_device),
+        "decode_device": str(decode_device),
         "backbone_pretrained_root": str(backbone.pretrained_model_name_or_path),
         "transformer_dir": str(transformer_dir.resolve()) if transformer_dir is not None else None,
         "transformer_config_sha256": _sha256_if_exists(transformer_dir / "config.json" if transformer_dir is not None else None),
@@ -569,6 +652,14 @@ def _preview_tensor(tensor: torch.Tensor, *, limit: int = 8) -> list[float]:
 
 def _count_trainable_parameters(module: torch.nn.Module) -> int:
     return sum(parameter.numel() for parameter in module.parameters() if parameter.requires_grad)
+
+
+def _resolve_device(device_arg: str | None, *, fallback: torch.device | None = None) -> torch.device:
+    if device_arg is not None:
+        return torch.device(device_arg)
+    if fallback is not None:
+        return fallback
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 if __name__ == "__main__":
