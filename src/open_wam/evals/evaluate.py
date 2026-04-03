@@ -327,7 +327,7 @@ def _group_dataset_indices_by_episode(dataset: Dataset[WAMSample]) -> list[list[
     """
 
     sample_index = getattr(dataset, "sample_index", None)
-    grouped: dict[int, list[tuple[int, int]]] = {}
+    grouped: dict[tuple[str, int], list[tuple[int, int]]] = {}
     if sample_index is not None:
         for dataset_index, window in enumerate(sample_index):
             episode_index = getattr(window, "episode_index", None)
@@ -337,7 +337,13 @@ def _group_dataset_indices_by_episode(dataset: Dataset[WAMSample]) -> list[list[
                     "Trajectory evaluation requires dataset sample_index entries with "
                     "`episode_index` and `observation_start`."
                 )
-            grouped.setdefault(int(episode_index), []).append((int(observation_start), dataset_index))
+            dataset_identity = (
+                getattr(window, "repo_id", None)
+                or getattr(window, "member_id", None)
+                or getattr(window, "dataset_id", None)
+                or "__default__"
+            )
+            grouped.setdefault((str(dataset_identity), int(episode_index)), []).append((int(observation_start), dataset_index))
         return [
             [dataset_index for _, dataset_index in sorted(entries)]
             for _, entries in sorted(grouped.items(), key=lambda item: item[0])
@@ -356,7 +362,13 @@ def _group_dataset_indices_by_episode(dataset: Dataset[WAMSample]) -> list[list[
                 "`episode_index`/`observation_start`, or per-sample metadata with "
                 "those fields."
             )
-        grouped.setdefault(int(episode_index), []).append((int(observation_start), dataset_index))
+        dataset_identity = (
+            sample.metadata.get("repo_id")
+            or sample.metadata.get("member_id")
+            or sample.metadata.get("dataset_id")
+            or "__default__"
+        )
+        grouped.setdefault((str(dataset_identity), int(episode_index)), []).append((int(observation_start), dataset_index))
     return [
         [dataset_index for _, dataset_index in sorted(entries)]
         for _, entries in sorted(grouped.items(), key=lambda item: item[0])

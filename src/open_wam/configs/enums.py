@@ -28,6 +28,72 @@ class DataSplit(StrEnum):
     VAL = "val"
 
 
+class ConsortiumChannelSelectionMode(StrEnum):
+    """How a consortium dataset selects visual channels from each member repo."""
+
+    ALL_AVAILABLE = "all_available"
+    REQUIRED_SUBSET = "required_subset"
+    EXPLICIT_MAPPING = "explicit_mapping"
+
+
+class ConsortiumViewPackingMode(StrEnum):
+    """How multi-camera observations are exposed to the model."""
+
+    MULTICAM_AS_SLOTS = "multicam_as_slots"
+    MULTICAM_AS_FRAMES = "multicam_as_frames"
+
+
+class ConsortiumFramePackingOrder(StrEnum):
+    """How cameras are enumerated when cameras are flattened into frames."""
+
+    CAMERA_MAJOR = "camera_major"
+
+
+class ConsortiumMissingChannelPolicy(StrEnum):
+    """What to do when one configured canonical slot has no source channel."""
+
+    ERROR = "error"
+    ZERO_FILL = "zero_fill"
+
+
+class ConsortiumRandomMode(StrEnum):
+    """How the train sampler randomizes consortium samples."""
+
+    NONE = "none"
+    WITHIN_DATASET = "within_dataset"
+    TRAJECTORY_GLOBAL = "trajectory_global"
+
+
+class ConsortiumWeightMode(StrEnum):
+    """How per-dataset weight overrides affect one training epoch."""
+
+    PROPORTIONAL_TO_SIZE = "proportional_to_size"
+    PROPORTIONAL_THEN_MANUAL_SCALE = "proportional_then_manual_scale"
+    MANUAL_OVERRIDE = "manual_override"
+
+
+class ConsortiumSplitMode(StrEnum):
+    """How consortium member episodes are split into train and val."""
+
+    HASH_BY_EPISODE = "hash_by_episode"
+    SEEDED_SHUFFLE_BY_EPISODE = "seeded_shuffle_by_episode"
+    EXPLICIT_MANIFEST = "explicit_manifest"
+
+
+class ConsortiumCacheMode(StrEnum):
+    """Runtime behavior of one optional consortium cache tier."""
+
+    DISABLED = "disabled"
+    WRITE_THROUGH = "write_through"
+    READ_ONLY = "read_only"
+
+
+class ConsortiumCloudCacheBackend(StrEnum):
+    """Backend family for the optional consortium cloud cache."""
+
+    FILESYSTEM = "filesystem"
+
+
 # Action-target and supervision enums.
 class ActionTargetRepresentation(StrEnum):
     """Public action-target family exposed by the data layer."""

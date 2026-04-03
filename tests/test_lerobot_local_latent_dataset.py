@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 import torch
 
 from open_wam.data import build_train_val_latent_datasets
@@ -164,6 +165,29 @@ def test_local_lerobot_latent_dataset_loads_empty_text_embedding_as_negative_con
     assert torch.equal(sample.negative_text_context, empty_emb)
 
 
+def test_local_lerobot_latent_dataset_raises_for_missing_configured_empty_text_embedding(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent"
+    _build_local_robotwin_latent_repo(repo_root)
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            empty_text_embedding_path=str(tmp_path / "missing_empty_emb.pt"),
+            train_fraction=1.0,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+        ),
+    )
+
+    with pytest.raises(FileNotFoundError, match="Configured `data.empty_text_embedding_path` does not exist"):
+        _ = build_train_val_latent_datasets(config.data)
+
+
 def test_local_lerobot_latent_dataset_uses_pose_source_key_for_state(tmp_path: Path) -> None:
     repo_root = tmp_path / "libero_local_latent"
     _build_local_robotwin_latent_repo(
@@ -180,6 +204,7 @@ def test_local_lerobot_latent_dataset_uses_pose_source_key_for_state(tmp_path: P
         data=replace(
             config.data,
             local_root=str(repo_root),
+            empty_text_embedding_path=None,
             train_fraction=1.0,
             num_workers=0,
             train_batch_size=1,

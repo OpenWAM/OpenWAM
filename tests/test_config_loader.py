@@ -214,7 +214,7 @@ def test_heng_compatible_libero_yaml_config_loads() -> None:
     assert heng_libero.trainer.batch_adapter == "latents"
     assert heng_libero.trainer.loop_policy == "steps"
     assert heng_libero.trainer.strategy == "fsdp"
-    assert heng_libero.trainer.save_interval == 10
+    assert heng_libero.trainer.save_interval == 100
     assert heng_libero.trainer.enable_wandb is True
     assert heng_libero.trainer.wandb_project == "lingbot-va-posttrain-libero_openwam"
 

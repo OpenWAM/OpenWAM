@@ -1,0 +1,287 @@
+# Heterogeneous real-HF consortium template: `multicam_as_frames`.
+#
+# This file is a commented data-config template for the real sanity-check set:
+# - DaivdYuan/exumi-insert-pen-lerobot
+# - DaivdYuan/umi-bimanual-dish-washing-lerobot
+# - lerobot/aloha_static_towel
+# - lerobot/aloha_sim_insertion_human
+# - physical-intelligence/libero
+#
+# Important:
+# - This is intentionally a template, not a directly trainable recipe today.
+# - The five repos disagree on:
+#   - metadata layout (`v3.0` parquet meta vs `v2.0` jsonl meta)
+#   - action/state keys (`action` + `observation.state` vs `actions` + `state`)
+#   - action/state dims
+#   - image resolution
+# - It is useful as:
+#   - a consortium membership template
+#   - a single-slot camera-major video-only pretraining template
+#   - a channel-mapping template
+#   - an inspection-script config to edit into a runnable subset
+# - It is not yet a single clean training config for all five repos together.
+#
+# Companion file:
+# - `configs/examples/lerobot_consortium_real_heterogeneous_multicam_as_slots_template.yaml`
+#   shows the same set in the traditional multi-slot packing mode.
+
+data:
+  # Required identity for the additive consortium loader.
+  dataset_name: lerobot_consortium
+  dataset_type: lerobot_consortium
+
+  # These base-source fields exist on every DataConfig for compatibility.
+  # Leave them null in consortium mode and drive source selection with
+  # `consortium_members` below.
+  repo_id: null
+  local_root: null
+
+  # Present for compatibility with other data paths.
+  # The current raw consortium loader does not use these fields.
+  empty_text_embedding_path: null
+  latent_root: null
+  latent_subdir: latents
+
+  # Generic split selector used by shared dataloading/eval surfaces.
+  # Actual train/val membership comes from `split_mode`, `train_fraction`,
+  # and the explicit manifests below.
+  split: train
+
+  # Optional HF cache root used by huggingface_hub downloads.
+  # Safe to leave null unless you want a specific shared cache path.
+  cache_dir: null
+
+  # Canonical consortium slot names that the rest of Open-WAM will see.
+  camera_names:
+    - observation.images.slot0
+
+  # Keep aligned with camera_names for compatibility with the rest of the repo.
+  latent_camera_names:
+    - observation.images.slot0
+
+  # Canvas metadata carried in the public data contract.
+  # These values do not resize heterogeneous raw samples by themselves today.
+  canonical_height: 480
+  canonical_width: 640
+
+  # Canonical slot placement metadata.
+  # For single-slot frame packing, only one slot is allowed.
+  # Raw sample tensors still keep source size today.
+  view_layout:
+    - source_name: observation.images.slot0
+      canonical_name: observation.images.slot0
+      top: 0
+      left: 0
+      height: 480
+      width: 640
+
+  # Temporal windowing.
+  num_frames: 2
+  frame_stride: 1
+  sample_stride: 1
+
+  # Per-worker episode cache inside the dataset object.
+  episode_cache_size: 2
+
+  # Split policy controls.
+  train_fraction: 0.95
+  split_seed: 7
+  max_train_episodes: null
+  max_val_episodes: null
+
+  # Use batch_size 1 for this heterogeneous-resolution sanity template.
+  # Even in single-slot mode, mixed 224x224, 256x256, and 640x480 raw views are
+  # not yet globally collatable into a normal training batch without an
+  # additional resizing/normalization step.
+  train_batch_size: 1
+  val_batch_size: 1
+  num_workers: 0
+
+  # Public action/state contract expected by downstream variants.
+  # This exact five-repo set is not action-compatible for one training run:
+  # - exumi_insert_pen: action/state dim 7/7
+  # - umi_bimanual_dish_washing: 14/14
+  # - aloha_static_towel: 14/14
+  # - aloha_sim_insertion_human: 14/14
+  # - libero: 7/8
+  #
+  # Keep these values as placeholders while editing the file into a runnable subset.
+  action_schema:
+    action_dim: 14
+    action_horizon: 2
+    state_dim: 14
+    state_horizon: 1
+
+  # Public supervision contract.
+  # This exact five-repo set is also mixed here:
+  # - four v3 repos use `action` and `observation.state`
+  # - LIBERO uses `actions` and `state`
+  #
+  # So these keys are placeholders for editing, not a claim that all five fit today.
+  action_target:
+    representation: raw
+    source_key: action
+    pose_source_key: observation.state
+    state_encoding: identity
+    reference_source: anchor_state
+    rotation_representation: axis_angle
+    include_gripper: true
+    gripper_representation: action_command
+    gripper_action_index: -1
+
+  # New consortium view-packing controls.
+  #
+  # Supported values:
+  # - multicam_as_slots
+  # - multicam_as_frames
+  #
+  # This template uses single-slot frame packing:
+  # - each (episode, camera) becomes one pseudo-trajectory
+  # - windows stay within one camera
+  # - all cameras map to the single configured slot
+  view_packing_mode: multicam_as_frames
+
+  # Supported values:
+  # - camera_major
+  #
+  # Current frame packing only supports camera_major.
+  frame_packing_order: camera_major
+
+  # Member list.
+  # One item per dataset in the consortium.
+  consortium_members:
+    - member_id: exumi_insert_pen
+      repo_id: DaivdYuan/exumi-insert-pen-lerobot
+      local_root: null
+      enabled: true
+      source_group: nmotion_current
+
+      # Optional member-local required channel list, used only when
+      # `channel_selection_mode: required_subset`.
+      include_channels: []
+
+      # Optional member-local explicit mappings.
+      # These override the top-level `channel_mappings` for this member.
+      channel_mappings:
+        - source_name: observation.images.camera0_rgb
+          target_slot: observation.images.slot0
+
+      # Optional per-member sampling weight.
+      # Meaning depends on `weight_mode`.
+      sampling_weight: 1.0
+
+    - member_id: umi_bimanual_dish_washing
+      repo_id: DaivdYuan/umi-bimanual-dish-washing-lerobot
+      local_root: null
+      enabled: true
+      source_group: nmotion_current
+      include_channels: []
+      channel_mappings:
+        - source_name: observation.images.camera0_rgb
+          target_slot: observation.images.slot0
+        - source_name: observation.images.camera1_rgb
+          target_slot: observation.images.slot0
+      sampling_weight: 1.0
+
+    - member_id: aloha_static_towel
+      repo_id: lerobot/aloha_static_towel
+      local_root: null
+      enabled: true
+      source_group: official_lerobot
+      include_channels: []
+      channel_mappings:
+        - source_name: observation.images.cam_high
+          target_slot: observation.images.slot0
+        - source_name: observation.images.cam_left_wrist
+          target_slot: observation.images.slot0
+        - source_name: observation.images.cam_low
+          target_slot: observation.images.slot0
+        - source_name: observation.images.cam_right_wrist
+          target_slot: observation.images.slot0
+      sampling_weight: 1.0
+
+    - member_id: aloha_sim_insertion_human
+      repo_id: lerobot/aloha_sim_insertion_human
+      local_root: null
+      enabled: true
+      source_group: official_lerobot
+      include_channels: []
+      channel_mappings:
+        - source_name: observation.images.top
+          target_slot: observation.images.slot0
+      sampling_weight: 1.0
+
+    - member_id: libero
+      repo_id: physical-intelligence/libero
+      local_root: null
+      enabled: true
+      source_group: official_lerobot
+      include_channels: []
+      channel_mappings:
+        - source_name: image
+          target_slot: observation.images.slot0
+        - source_name: wrist_image
+          target_slot: observation.images.slot0
+      sampling_weight: 1.0
+
+  # How the consortium resolves visual channels for each member.
+  # Supported values:
+  # - all_available
+  # - required_subset
+  # - explicit_mapping
+  #
+  # In single-slot frame-packing mode, explicit_mapping is often the clearest
+  # choice because every source camera must target the same slot.
+  channel_selection_mode: explicit_mapping
+
+  # Used only when channel_selection_mode: required_subset.
+  # Source channel names must either match the canonical slot names directly,
+  # or you should switch to explicit_mapping.
+  required_channels: []
+
+  # Optional global mappings shared across members.
+  # Leave empty when using member-local mappings above.
+  channel_mappings: []
+
+  # What to do when one canonical slot has no source channel for a member.
+  # Supported values:
+  # - error
+  # - zero_fill
+  missing_channel_policy: zero_fill
+
+  # Train-sampler randomization policy.
+  # Supported values:
+  # - none
+  # - within_dataset
+  # - trajectory_global
+  random_mode: none
+
+  # Weighting policy.
+  # Supported values:
+  # - proportional_to_size
+  # - proportional_then_manual_scale
+  # - manual_override
+  weight_mode: proportional_then_manual_scale
+  sampling_seed: 11
+
+  # Train/val split policy.
+  # Supported values:
+  # - hash_by_episode
+  # - seeded_shuffle_by_episode
+  # - explicit_manifest
+  split_mode: hash_by_episode
+
+  # Used only when split_mode: explicit_manifest.
+  explicit_train_episodes: []
+  explicit_val_episodes: []
+
+  # Optional local-disk cache tier for consortium source files.
+  local_cache:
+    mode: disabled
+    root: null
+
+  # Optional shared/cloud-style cache tier.
+  cloud_cache:
+    mode: disabled
+    backend: filesystem
+    root: null

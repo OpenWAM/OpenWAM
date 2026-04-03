@@ -135,18 +135,18 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
 
     def _load_empty_text_embedding(self) -> torch.Tensor | None:
         configured_path = self.data_config.empty_text_embedding_path
-        candidate_path = (
-            Path(configured_path)
-            if configured_path is not None
-            else Path(self.data_config.local_root) / "empty_emb.pt"
-        )
-        if not candidate_path.exists():
-            if configured_path is not None:
+        if configured_path is not None:
+            configured_candidate = Path(configured_path)
+            if not configured_candidate.exists():
                 raise FileNotFoundError(
                     "Configured `data.empty_text_embedding_path` does not exist: "
-                    f"{candidate_path}"
+                    f"{configured_candidate}"
                 )
-            return None
+            candidate_path = configured_candidate
+        else:
+            candidate_path = Path(self.data_config.local_root) / "empty_emb.pt"
+            if not candidate_path.exists():
+                return None
         payload = torch.load(candidate_path, map_location="cpu", weights_only=False)
         if not isinstance(payload, torch.Tensor):
             raise TypeError(

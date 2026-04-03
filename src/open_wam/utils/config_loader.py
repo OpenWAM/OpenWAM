@@ -19,10 +19,17 @@ from open_wam.configs import (
     RegisterAttachedPolicyConfig,
     VPPActionDecoderConfig,
     VideoSequencePolicyConfig,
+    ConsortiumChannelMappingConfig,
+    ConsortiumCloudCacheConfig,
+    ConsortiumEpisodeSelectionConfig,
+    ConsortiumLocalCacheConfig,
+    ConsortiumMemberConfig,
     ActionSchemaConfig,
     ActionTargetConfig,
+    DataConfig,
     ExperimentConfig,
     GenericDataConfig,
+    LeRobotConsortiumDataConfig,
     LiberoDataConfig,
     RobotWinDataConfig,
     TrainerConfig,
@@ -60,10 +67,57 @@ def _coerce_enum_tuple(enum_cls: type[EnumT], values: tuple[EnumT | str, ...] | 
     return tuple(_coerce_enum(enum_cls, value) for value in values)
 
 
+def _load_consortium_channel_mappings(raw_value: Any) -> tuple[ConsortiumChannelMappingConfig, ...]:
+    mappings_raw = raw_value or ()
+    if not isinstance(mappings_raw, (list, tuple)):
+        raise ValueError("Expected `channel_mappings` to be a list of mappings.")
+    return tuple(
+        ConsortiumChannelMappingConfig(
+            source_name=str(item["source_name"]),
+            target_slot=str(item["target_slot"]),
+        )
+        for item in mappings_raw
+    )
+
+
+def _load_consortium_episode_selection(raw_value: Any) -> tuple[ConsortiumEpisodeSelectionConfig, ...]:
+    selections_raw = raw_value or ()
+    if not isinstance(selections_raw, (list, tuple)):
+        raise ValueError("Expected explicit consortium episode selections to be a list.")
+    return tuple(
+        ConsortiumEpisodeSelectionConfig(
+            member_id=str(item["member_id"]),
+            episode_indices=tuple(int(value) for value in item.get("episode_indices", ())),
+        )
+        for item in selections_raw
+    )
+
+
+def _load_consortium_members(raw_value: Any) -> tuple[ConsortiumMemberConfig, ...]:
+    members_raw = raw_value or ()
+    if not isinstance(members_raw, (list, tuple)):
+        raise ValueError("Expected `consortium_members` to be a list of member mappings.")
+    members: list[ConsortiumMemberConfig] = []
+    for item in members_raw:
+        members.append(
+            ConsortiumMemberConfig(
+                member_id=item.get("member_id"),
+                repo_id=item.get("repo_id"),
+                local_root=item.get("local_root"),
+                enabled=item.get("enabled", True),
+                source_group=item.get("source_group"),
+                include_channels=tuple(item.get("include_channels", ())),
+                channel_mappings=_load_consortium_channel_mappings(item.get("channel_mappings")),
+                sampling_weight=item.get("sampling_weight"),
+            )
+        )
+    return tuple(members)
+
+
 def _load_policy_variant_config(
     policy_variant_raw: dict[str, Any],
     action_head_raw: dict[str, Any],
-    data_config: GenericDataConfig | LiberoDataConfig | RobotWinDataConfig,
+    data_config: DataConfig,
     backbone_config: SharedVideoTransformerConfig,
     training_config: TrainingConfig,
     inference_config: InferenceConfig,
@@ -267,7 +321,7 @@ def _load_policy_variant_config(
 def _load_action_decoder_config(
     action_decoder_raw: dict[str, Any],
     policy_variant_config: PolicyVariantConfig,
-    data_config: GenericDataConfig | LiberoDataConfig | RobotWinDataConfig,
+    data_config: DataConfig,
 ) -> ActionDecoderConfig:
     resolved_raw = dict(action_decoder_raw)
     if not resolved_raw:
@@ -409,6 +463,9 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         else:
             data_defaults = LiberoDataConfig()
         data_config_cls = LiberoDataConfig
+    elif dataset_type == "lerobot_consortium" or dataset_name == "lerobot_consortium":
+        data_defaults = LeRobotConsortiumDataConfig()
+        data_config_cls = LeRobotConsortiumDataConfig
     elif dataset_name == "robotwin":
         data_defaults = RobotWinDataConfig()
         data_config_cls = RobotWinDataConfig
@@ -444,10 +501,7 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         for view in view_layout_raw
     )
 
-    # `data_config_cls` may be a benchmark-specific preset or the generic
-    # fallback. In both cases, the instantiated object carries the exact view
-    # layout and action/state schema that the rest of the code should trust.
-    data_config = data_config_cls(
+    common_data_kwargs = dict(
         dataset_name=dataset_name,
         dataset_type=data_raw.get("dataset_type", data_defaults.dataset_type),
         repo_id=data_raw.get("repo_id", data_defaults.repo_id),
@@ -512,7 +566,68 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
             ),
         ),
     )
+    if data_config_cls is LeRobotConsortiumDataConfig:
+        common_data_kwargs.update(
+            consortium_members=_load_consortium_members(data_raw.get("consortium_members")),
+            channel_selection_mode=_coerce_enum(
+                config_enums.ConsortiumChannelSelectionMode,
+                data_raw.get("channel_selection_mode", data_defaults.channel_selection_mode),
+            ),
+            required_channels=tuple(data_raw.get("required_channels", data_defaults.required_channels)),
+            channel_mappings=_load_consortium_channel_mappings(data_raw.get("channel_mappings")),
+            view_packing_mode=_coerce_enum(
+                config_enums.ConsortiumViewPackingMode,
+                data_raw.get("view_packing_mode", data_defaults.view_packing_mode),
+            ),
+            frame_packing_order=_coerce_enum(
+                config_enums.ConsortiumFramePackingOrder,
+                data_raw.get("frame_packing_order", data_defaults.frame_packing_order),
+            ),
+            missing_channel_policy=_coerce_enum(
+                config_enums.ConsortiumMissingChannelPolicy,
+                data_raw.get("missing_channel_policy", data_defaults.missing_channel_policy),
+            ),
+            random_mode=_coerce_enum(
+                config_enums.ConsortiumRandomMode,
+                data_raw.get("random_mode", data_defaults.random_mode),
+            ),
+            weight_mode=_coerce_enum(
+                config_enums.ConsortiumWeightMode,
+                data_raw.get("weight_mode", data_defaults.weight_mode),
+            ),
+            sampling_seed=data_raw.get("sampling_seed", data_defaults.sampling_seed),
+            split_mode=_coerce_enum(
+                config_enums.ConsortiumSplitMode,
+                data_raw.get("split_mode", data_defaults.split_mode),
+            ),
+            explicit_train_episodes=_load_consortium_episode_selection(data_raw.get("explicit_train_episodes")),
+            explicit_val_episodes=_load_consortium_episode_selection(data_raw.get("explicit_val_episodes")),
+            local_cache=ConsortiumLocalCacheConfig(
+                mode=_coerce_enum(
+                    config_enums.ConsortiumCacheMode,
+                    (data_raw.get("local_cache", {}) or {}).get("mode", data_defaults.local_cache.mode),
+                ),
+                root=(data_raw.get("local_cache", {}) or {}).get("root", data_defaults.local_cache.root),
+            ),
+            cloud_cache=ConsortiumCloudCacheConfig(
+                mode=_coerce_enum(
+                    config_enums.ConsortiumCacheMode,
+                    (data_raw.get("cloud_cache", {}) or {}).get("mode", data_defaults.cloud_cache.mode),
+                ),
+                backend=_coerce_enum(
+                    config_enums.ConsortiumCloudCacheBackend,
+                    (data_raw.get("cloud_cache", {}) or {}).get("backend", data_defaults.cloud_cache.backend),
+                ),
+                root=(data_raw.get("cloud_cache", {}) or {}).get("root", data_defaults.cloud_cache.root),
+            ),
+        )
 
+    # `data_config_cls` may be a benchmark-specific preset or the generic
+    # fallback. In both cases, the instantiated object carries the exact view
+    # layout and action/state schema that the rest of the code should trust.
+    data_config = data_config_cls(
+        **common_data_kwargs,
+    )
     backbone_raw = raw.get("backbone", {})
     backbone_defaults = SharedVideoTransformerConfig()
     pretrained_model_name_or_path = backbone_raw.get("pretrained_model_name_or_path")

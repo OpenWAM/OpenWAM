@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 
 from open_wam.configs import DataConfig
 
 from .contracts import WAMSample
+from .lerobot_consortium import build_lerobot_consortium_train_val_datasets
 from .libero_hdf5 import LiberoOfflineWindowDataset, build_libero_offline_train_val_episode_split
 from .lerobot_v2 import LeRobotV2WindowDataset, build_lerobot_train_val_episode_split
 from .synthetic import SyntheticWindowDataset
@@ -15,6 +17,14 @@ from .synthetic import SyntheticWindowDataset
 DatasetPairBuilder = Callable[[DataConfig], tuple[Dataset[WAMSample], Dataset[WAMSample]]]
 
 _DATASET_BUILDERS: dict[str, DatasetPairBuilder] = {}
+
+
+@dataclass(frozen=True)
+class DatasetLoaderSpec:
+    """Optional dataset-provided loader behavior for one split."""
+
+    sampler: Sampler[int] | None
+    shuffle: bool
 
 
 def register_dataset_builder(dataset_type: str, builder: DatasetPairBuilder) -> None:
@@ -40,6 +50,24 @@ def build_train_val_datasets(data_config: DataConfig) -> tuple[Dataset[WAMSample
             f"Registered dataset types: {supported}"
         ) from exc
     return builder(data_config)
+
+
+def resolve_dataset_loader_spec(
+    dataset: Dataset[WAMSample],
+    *,
+    split: str,
+    world_size: int = 1,
+    rank: int = 0,
+) -> DatasetLoaderSpec:
+    if split == "train":
+        build_train_sampler = getattr(dataset, "build_train_sampler", None)
+        if callable(build_train_sampler):
+            return DatasetLoaderSpec(
+                sampler=build_train_sampler(world_size=world_size, rank=rank),
+                shuffle=False,
+            )
+        return DatasetLoaderSpec(sampler=None, shuffle=True)
+    return DatasetLoaderSpec(sampler=None, shuffle=False)
 
 
 def _build_synthetic_datasets(data_config: DataConfig) -> tuple[Dataset[WAMSample], Dataset[WAMSample]]:
@@ -72,3 +100,4 @@ register_dataset_builder("synthetic_robotwin", _build_synthetic_datasets)
 register_dataset_builder("synthetic_multiview", _build_synthetic_datasets)
 register_dataset_builder("lerobot_v2", _build_lerobot_v2_datasets)
 register_dataset_builder("libero_hdf5", _build_libero_hdf5_datasets)
+register_dataset_builder("lerobot_consortium", build_lerobot_consortium_train_val_datasets)

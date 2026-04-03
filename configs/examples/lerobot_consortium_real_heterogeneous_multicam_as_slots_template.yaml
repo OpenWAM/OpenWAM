@@ -1,0 +1,202 @@
+# Heterogeneous real-HF consortium template: `multicam_as_slots`.
+#
+# This companion file shows the same five-repo sanity-check set as the
+# single-slot camera-major example, but keeps the traditional multi-slot
+# semantics:
+# - one dataset timestep -> one model timestep
+# - multiple source cameras -> multiple canonical slots
+#
+# Sanity-check set:
+# - DaivdYuan/exumi-insert-pen-lerobot
+# - DaivdYuan/umi-bimanual-dish-washing-lerobot
+# - lerobot/aloha_static_towel
+# - lerobot/aloha_sim_insertion_human
+# - physical-intelligence/libero
+#
+# Important:
+# - This is still not a directly trainable recipe across all five repos.
+# - They disagree on:
+#   - metadata layout (`v3.0` parquet meta vs `v2.0` jsonl meta)
+#   - action/state keys (`action` + `observation.state` vs `actions` + `state`)
+#   - action/state dims
+#   - image resolution
+# - It is useful as:
+#   - a multi-slot channel-mapping template
+#   - an inspection-script config to edit into a runnable subset
+
+data:
+  dataset_name: lerobot_consortium
+  dataset_type: lerobot_consortium
+
+  repo_id: null
+  local_root: null
+  empty_text_embedding_path: null
+  latent_root: null
+  latent_subdir: latents
+
+  split: train
+  cache_dir: null
+
+  # Multi-slot canonical layout.
+  camera_names:
+    - observation.images.slot0
+    - observation.images.slot1
+    - observation.images.slot2
+    - observation.images.slot3
+  latent_camera_names:
+    - observation.images.slot0
+    - observation.images.slot1
+    - observation.images.slot2
+    - observation.images.slot3
+
+  canonical_height: 960
+  canonical_width: 640
+  view_layout:
+    - source_name: observation.images.slot0
+      canonical_name: observation.images.slot0
+      top: 0
+      left: 0
+      height: 480
+      width: 640
+    - source_name: observation.images.slot1
+      canonical_name: observation.images.slot1
+      top: 480
+      left: 0
+      height: 480
+      width: 320
+    - source_name: observation.images.slot2
+      canonical_name: observation.images.slot2
+      top: 480
+      left: 320
+      height: 240
+      width: 320
+    - source_name: observation.images.slot3
+      canonical_name: observation.images.slot3
+      top: 720
+      left: 320
+      height: 240
+      width: 320
+
+  num_frames: 2
+  frame_stride: 1
+  sample_stride: 1
+  episode_cache_size: 2
+
+  train_fraction: 0.95
+  split_seed: 7
+  max_train_episodes: null
+  max_val_episodes: null
+
+  # Use batch_size 1 for the raw heterogeneous sanity set.
+  train_batch_size: 1
+  val_batch_size: 1
+  num_workers: 0
+
+  action_schema:
+    action_dim: 14
+    action_horizon: 2
+    state_dim: 14
+    state_horizon: 1
+
+  action_target:
+    representation: raw
+    source_key: action
+    pose_source_key: observation.state
+    state_encoding: identity
+    reference_source: anchor_state
+    rotation_representation: axis_angle
+    include_gripper: true
+    gripper_representation: action_command
+    gripper_action_index: -1
+
+  # Traditional multi-slot packing mode.
+  view_packing_mode: multicam_as_slots
+  frame_packing_order: camera_major
+
+  consortium_members:
+    - member_id: exumi_insert_pen
+      repo_id: DaivdYuan/exumi-insert-pen-lerobot
+      local_root: null
+      enabled: true
+      source_group: nmotion_current
+      include_channels: []
+      channel_mappings:
+        - source_name: observation.images.camera0_rgb
+          target_slot: observation.images.slot0
+      sampling_weight: 1.0
+
+    - member_id: umi_bimanual_dish_washing
+      repo_id: DaivdYuan/umi-bimanual-dish-washing-lerobot
+      local_root: null
+      enabled: true
+      source_group: nmotion_current
+      include_channels: []
+      channel_mappings:
+        - source_name: observation.images.camera0_rgb
+          target_slot: observation.images.slot0
+        - source_name: observation.images.camera1_rgb
+          target_slot: observation.images.slot1
+      sampling_weight: 1.0
+
+    - member_id: aloha_static_towel
+      repo_id: lerobot/aloha_static_towel
+      local_root: null
+      enabled: true
+      source_group: official_lerobot
+      include_channels: []
+      channel_mappings:
+        - source_name: observation.images.cam_high
+          target_slot: observation.images.slot0
+        - source_name: observation.images.cam_left_wrist
+          target_slot: observation.images.slot1
+        - source_name: observation.images.cam_low
+          target_slot: observation.images.slot2
+        - source_name: observation.images.cam_right_wrist
+          target_slot: observation.images.slot3
+      sampling_weight: 1.0
+
+    - member_id: aloha_sim_insertion_human
+      repo_id: lerobot/aloha_sim_insertion_human
+      local_root: null
+      enabled: true
+      source_group: official_lerobot
+      include_channels: []
+      channel_mappings:
+        - source_name: observation.images.top
+          target_slot: observation.images.slot0
+      sampling_weight: 1.0
+
+    - member_id: libero
+      repo_id: physical-intelligence/libero
+      local_root: null
+      enabled: true
+      source_group: official_lerobot
+      include_channels: []
+      channel_mappings:
+        - source_name: image
+          target_slot: observation.images.slot0
+        - source_name: wrist_image
+          target_slot: observation.images.slot1
+      sampling_weight: 1.0
+
+  channel_selection_mode: explicit_mapping
+  required_channels: []
+  channel_mappings: []
+  missing_channel_policy: zero_fill
+
+  random_mode: none
+  weight_mode: proportional_then_manual_scale
+  sampling_seed: 11
+
+  split_mode: hash_by_episode
+  explicit_train_episodes: []
+  explicit_val_episodes: []
+
+  local_cache:
+    mode: disabled
+    root: null
+
+  cloud_cache:
+    mode: disabled
+    backend: filesystem
+    root: null

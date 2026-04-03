@@ -57,6 +57,47 @@ def _load_state_dict_options() -> StateDictOptions:
     )
 
 
+def _densify_optimizer_state_dict(
+    *,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    optim_state_dict: dict[str, Any],
+    options: StateDictOptions,
+) -> dict[str, Any]:
+    """Fill missing optimizer-state entries for trainable-but-unused parameters.
+
+    Some runs legitimately save sparse optimizer state because not every
+    trainable parameter receives a gradient before the checkpoint is written.
+    `set_optimizer_state_dict(...)` expects the current optimizer structure,
+    so we rebuild the param-group layout from the current optimizer and overlay
+    whatever state/hyperparameters were present in the checkpoint.
+    """
+
+    current_state_dict = get_optimizer_state_dict(model, optimizer, options=options)
+    current_state = current_state_dict.get("state", {})
+    loaded_state = optim_state_dict.get("state", {})
+    dense_state = {
+        key: loaded_state.get(key, {})
+        for key in current_state
+    }
+
+    loaded_groups = list(optim_state_dict.get("param_groups", []))
+    dense_groups: list[dict[str, Any]] = []
+    for index, current_group in enumerate(current_state_dict.get("param_groups", [])):
+        merged_group = dict(current_group)
+        if index < len(loaded_groups):
+            for key, value in loaded_groups[index].items():
+                if key == "params":
+                    continue
+                merged_group[key] = value
+        dense_groups.append(merged_group)
+
+    return {
+        "state": dense_state,
+        "param_groups": dense_groups,
+    }
+
+
 class CheckpointManager:
     """Own save/load/export behavior for the composable training runtime."""
 
@@ -135,7 +176,13 @@ class CheckpointManager:
         set_model_state_dict(model, payload["model_state_dict"], options=load_options)
         optimizer_state = payload.get("optimizer_state_dict")
         if optimizer is not None and isinstance(optimizer_state, dict):
-            set_optimizer_state_dict(model, optimizer, optim_state_dict=optimizer_state, options=load_options)
+            dense_optimizer_state = _densify_optimizer_state_dict(
+                model=model,
+                optimizer=optimizer,
+                optim_state_dict=optimizer_state,
+                options=load_options,
+            )
+            set_optimizer_state_dict(model, optimizer, optim_state_dict=dense_optimizer_state, options=load_options)
         scheduler_state = payload.get("scheduler_state_dict")
         if scheduler is not None and isinstance(scheduler_state, dict):
             scheduler.load_state_dict(scheduler_state)

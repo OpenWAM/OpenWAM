@@ -16,6 +16,7 @@ from open_wam.data import (
     SyntheticWindowDataset,
     build_train_val_datasets,
     collate_wam_samples,
+    resolve_dataset_loader_spec,
 )
 
 
@@ -46,22 +47,37 @@ else:
         def setup(self, stage: str | None = None) -> None:
             self.train_dataset, self.val_dataset = build_train_val_datasets(self.data_config)
 
+        def _resolve_loader_spec(self, dataset: Dataset[WAMSample], *, split: str):
+            trainer = getattr(self, "_trainer", None)
+            world_size = int(getattr(trainer, "world_size", 1)) if trainer is not None else 1
+            rank = int(getattr(trainer, "global_rank", 0)) if trainer is not None else 0
+            return resolve_dataset_loader_spec(
+                dataset,
+                split=split,
+                world_size=world_size,
+                rank=rank,
+            )
+
         def train_dataloader(self) -> DataLoader:
             assert self.train_dataset is not None
+            loader_spec = self._resolve_loader_spec(self.train_dataset, split="train")
             return DataLoader(
                 self.train_dataset,
                 batch_size=self.data_config.train_batch_size,
-                shuffle=True,
+                shuffle=loader_spec.shuffle,
+                sampler=loader_spec.sampler,
                 num_workers=self.data_config.num_workers,
                 collate_fn=collate_wam_samples,
             )
 
         def val_dataloader(self) -> DataLoader:
             assert self.val_dataset is not None
+            loader_spec = self._resolve_loader_spec(self.val_dataset, split="val")
             return DataLoader(
                 self.val_dataset,
                 batch_size=self.data_config.val_batch_size,
-                shuffle=False,
+                shuffle=loader_spec.shuffle,
+                sampler=loader_spec.sampler,
                 num_workers=self.data_config.num_workers,
                 collate_fn=collate_wam_samples,
             )
