@@ -32,7 +32,11 @@ from .lingbot_exact import LingbotExactRunner
 def _resolve_parallel_stream_model_action_dim(config: ExperimentConfig) -> int:
     if (
         isinstance(config.policy_variant, ParallelStreamPolicyConfig)
-        and config.policy_variant.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT
+        and config.policy_variant.runtime_mode
+        in {
+            ParallelRuntimeMode.LINGBOT_EXACT,
+            ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
+        }
     ):
         return config.action_decoder.action_dim
     return config.data.action_schema.action_dim
@@ -57,7 +61,10 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
                 f"backbone.implementation={config.backbone.implementation!r}."
             )
     if isinstance(config.policy_variant, ParallelStreamPolicyConfig):
-        if config.policy_variant.runtime_mode != ParallelRuntimeMode.LINGBOT_EXACT:
+        if config.policy_variant.runtime_mode not in {
+            ParallelRuntimeMode.LINGBOT_EXACT,
+            ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
+        }:
             raise ValueError(
                 "Parallel-stream method 1 now only supports LingBot-exact semantics, "
                 f"got policy_variant.runtime_mode={config.policy_variant.runtime_mode!r}."
@@ -225,6 +232,8 @@ def build_action_decoder(config: ExperimentConfig):
             training_config=config.training,
             inference_config=config.inference,
             state_dim=config.data.action_schema.state_dim,
+            observation_token_dim=config.backbone.hidden_size,
+            goal_feature_dim=config.backbone.text_dim,
         )
     raise ValueError(f"Unsupported action decoder '{decoder_config.name}'.")
 

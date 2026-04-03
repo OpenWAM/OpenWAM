@@ -69,6 +69,19 @@ class InferenceConfig:
     guidance_scale: float = 1.0
     action_guidance_scale: float = 1.0
     video_exec_step: int = -1
+    # DreamZero-style DiT execution schedule.
+    # - When `joint_dynamic_cache_schedule` is false, the runtime uses the
+    #   fixed 16-step mask selected by `joint_num_dit_steps`.
+    # - When true, the runtime falls back to similarity-based prediction reuse.
+    joint_dynamic_cache_schedule: bool = False
+    joint_num_dit_steps: int | None = 8
+    joint_dit_step_mask: tuple[bool, ...] | None = None
+    # DreamZero-style DIT reuse: skip selected denoising steps when recent
+    # video flow predictions are highly aligned, and reuse the latest flow
+    # estimate instead of rerunning the transformer.
+    joint_enable_prediction_reuse: bool = False
+    joint_prediction_reuse_thresholds: tuple[float, ...] = (0.95, 0.93)
+    joint_prediction_reuse_countdowns: tuple[int, ...] = (4, 2)
 
     def __post_init__(self) -> None:
         coerce_fields(

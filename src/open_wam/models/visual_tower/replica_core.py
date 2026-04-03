@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import torch
 import torch.nn.functional as F
@@ -24,6 +25,7 @@ from open_wam.models.common import (
     resolve_cache_backend_spec,
     restore_slot_pool_slots,
     select_attention_profile_mask,
+    unpatchify_video_tokens,
     update_slot_pool_layer_state,
 )
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig, resolve_stage_attention_mode
@@ -207,6 +209,51 @@ def _prepend_cached_prefix_mask(
     raise ValueError(
         "Expected attention mask with shape [seq, seq], [B, seq, seq], or [B, H, seq, seq], "
         f"got {tuple(attention_mask.shape)}"
+    )
+
+
+def _resolve_slot_pool_prefix_visibility(
+    attention_mask: torch.Tensor | None,
+    *,
+    prefix_len: int,
+    prefix_visibility_mode: str,
+) -> torch.Tensor | None:
+    if attention_mask is None or prefix_len <= 0:
+        return attention_mask
+    if prefix_visibility_mode != "full_history":
+        raise ValueError(f"Unsupported slot-pool prefix_visibility_mode {prefix_visibility_mode!r}.")
+    if attention_mask.ndim == 2:
+        cached_prefix_visibility = torch.ones(
+            attention_mask.shape[0],
+            prefix_len,
+            device=attention_mask.device,
+            dtype=attention_mask.dtype,
+        )
+    elif attention_mask.ndim == 3:
+        cached_prefix_visibility = torch.ones(
+            attention_mask.shape[0],
+            attention_mask.shape[1],
+            prefix_len,
+            device=attention_mask.device,
+            dtype=attention_mask.dtype,
+        )
+    elif attention_mask.ndim == 4:
+        cached_prefix_visibility = torch.ones(
+            attention_mask.shape[0],
+            attention_mask.shape[2],
+            prefix_len,
+            device=attention_mask.device,
+            dtype=attention_mask.dtype,
+        )
+    else:  # pragma: no cover - defensive guard
+        raise ValueError(
+            "Unsupported attention mask rank while resolving slot-pool prefix visibility: "
+            f"{tuple(attention_mask.shape)}"
+        )
+    return _prepend_cached_prefix_mask(
+        attention_mask,
+        cached_prefix_visibility=cached_prefix_visibility,
+        prefix_len=prefix_len,
     )
 
 
@@ -420,6 +467,8 @@ class SharedTransformerAttention(nn.Module):
             if cache_backend_state.slot_mask is None or cache_backend_state.key is None or cache_backend_state.value is None:
                 raise ValueError("LingBot slot-pool backend requires initialized slot mask and KV tensors.")
             valid = cache_backend_state.slot_mask.nonzero(as_tuple=False).squeeze(-1)
+            if cache_backend_state.slot_ids is not None and valid.numel() > 1:
+                valid = valid[torch.argsort(cache_backend_state.slot_ids[valid], stable=True)]
             key = cache_backend_state.key[:, valid].transpose(1, 2).to(device=q.device, dtype=query.dtype)
             value = cache_backend_state.value[:, valid].transpose(1, 2).to(device=q.device, dtype=query.dtype)
         if cached_key_value is not None and cached_key_value.key is not None and cached_key_value.value is not None:
@@ -445,6 +494,21 @@ class SharedTransformerAttention(nn.Module):
             is_cross_attention=is_cross_attention,
         )
         resolved_attention_mask = attention_mask if attention_mask is not None else profile_attention_mask
+        if (
+            use_slot_pool_backend
+            and resolved_attention_mask is not None
+            and key.shape[2] > query.shape[2]
+        ):
+            prefix_len = int(key.shape[2] - query.shape[2])
+            resolved_attention_mask = _resolve_slot_pool_prefix_visibility(
+                resolved_attention_mask,
+                prefix_len=prefix_len,
+                prefix_visibility_mode=str(
+                    cache_backend_state.metadata.get("prefix_visibility_mode", "full_history")
+                )
+                if cache_backend_state is not None
+                else "full_history",
+            )
         sdpa_mask = _prepare_sdpa_mask(resolved_attention_mask, device=query.device)
         hidden_states = apply_attention_backend(
             query=query,
@@ -659,6 +723,88 @@ class SharedVideoTransformerCore(nn.Module):
         )
         self.action_proj_out = nn.Linear(self.config.hidden_size, max(self.action_dim, 1))
         self._exact_runtime_caches: dict[str, CacheState] = {}
+        self._runtime_block_devices: tuple[torch.device, ...] = tuple()
+
+    def configure_runtime_block_devices(
+        self,
+        devices: tuple[torch.device, ...],
+        *,
+        prep_device: torch.device | None = None,
+        output_device: torch.device | None = None,
+    ) -> None:
+        if not devices:
+            self._runtime_block_devices = tuple()
+            return
+        normalized = tuple(torch.device(device) for device in devices)
+        self._runtime_block_devices = normalized
+        input_device = torch.device(prep_device) if prep_device is not None else normalized[0]
+        output_device = torch.device(output_device) if output_device is not None else normalized[-1]
+
+        for module in (
+            self.patch_embedding_mlp,
+            self.action_embedder,
+            self.time_conditioner,
+            self.action_time_conditioner,
+            self.text_proj,
+            self.action_text_proj,
+            self.runtime_stream_adapters,
+            self.rope,
+        ):
+            module.to(device=input_device)
+
+        for layer_index, block in enumerate(self.blocks):
+            block.to(device=normalized[layer_index % len(normalized)])
+
+        self.norm_out.to(device=output_device)
+        self.proj_out.to(device=output_device)
+        self.action_proj_out.to(device=output_device)
+        self.scale_shift_table.data = self.scale_shift_table.data.to(device=output_device)
+
+    @staticmethod
+    def _move_optional_tensor(tensor: torch.Tensor | None, *, device: torch.device, dtype: torch.dtype | None = None):
+        if tensor is None:
+            return None
+        kwargs = {"device": device}
+        if dtype is not None and tensor.is_floating_point():
+            kwargs["dtype"] = dtype
+        return tensor.to(**kwargs)
+
+    def _move_structured_attention_context(
+        self,
+        context: StructuredAttentionContext | None,
+        *,
+        device: torch.device,
+    ) -> StructuredAttentionContext | None:
+        if context is None:
+            return None
+        return replace(
+            context,
+            clean_prefix_grid_ids=self._move_optional_tensor(context.clean_prefix_grid_ids, device=device),
+            video_grid_ids=self._move_optional_tensor(context.video_grid_ids, device=device),
+            action_grid_ids=self._move_optional_tensor(context.action_grid_ids, device=device),
+            state_grid_ids=self._move_optional_tensor(context.state_grid_ids, device=device),
+            clean_prefix_freqs=self._move_optional_tensor(context.clean_prefix_freqs, device=device),
+            video_freqs=self._move_optional_tensor(context.video_freqs, device=device),
+            action_freqs=self._move_optional_tensor(context.action_freqs, device=device),
+            state_freqs=self._move_optional_tensor(context.state_freqs, device=device),
+        )
+
+    def _move_structured_frequency_bundle(
+        self,
+        bundle: StructuredFrequencyBundle | None,
+        *,
+        device: torch.device,
+    ) -> StructuredFrequencyBundle | None:
+        if bundle is None:
+            return None
+        return replace(
+            bundle,
+            clean_prefix_grid_ids=self._move_optional_tensor(bundle.clean_prefix_grid_ids, device=device),
+            video_grid_ids=self._move_optional_tensor(bundle.video_grid_ids, device=device),
+            action_grid_ids=self._move_optional_tensor(bundle.action_grid_ids, device=device),
+            state_grid_ids=self._move_optional_tensor(bundle.state_grid_ids, device=device),
+            shared_grid_ids=self._move_optional_tensor(bundle.shared_grid_ids, device=device),
+        )
 
     def prepare_runtime_stream_inputs(
         self,
@@ -672,6 +818,15 @@ class SharedVideoTransformerCore(nn.Module):
         state_adapter_name: str = "mlp",
         use_state_adapter: bool = True,
     ) -> dict[str, PreparedStreamInput]:
+        adapter_device = self.runtime_stream_adapters.role_embedding.weight.device
+        if action_inputs is not None and action_inputs.device != adapter_device:
+            action_inputs = action_inputs.to(device=adapter_device)
+        if state_inputs is not None and state_inputs.device != adapter_device:
+            state_inputs = state_inputs.to(device=adapter_device)
+        if action_timesteps is not None and action_timesteps.device != adapter_device:
+            action_timesteps = action_timesteps.to(device=adapter_device)
+        if state_timesteps is not None and state_timesteps.device != adapter_device:
+            state_timesteps = state_timesteps.to(device=adapter_device)
         return self.runtime_stream_adapters.prepare_stream_inputs(
             family=family,
             action_inputs=action_inputs,
@@ -696,6 +851,24 @@ class SharedVideoTransformerCore(nn.Module):
             token_layout=token_layout,
             video_projector=self.proj_out,
             action_projector=self.action_proj_out,
+        )
+
+    def project_video_tokens_to_latents(
+        self,
+        *,
+        hidden_states: torch.Tensor,
+        token_grid,
+    ) -> torch.Tensor:
+        if hidden_states.ndim != 3:
+            raise ValueError(
+                "Expected shared-core video tokens with shape [B, seq, hidden], "
+                f"got {tuple(hidden_states.shape)}."
+            )
+        video_patch_prediction = self.proj_out(hidden_states)
+        return unpatchify_video_tokens(
+            video_patch_prediction,
+            token_grid=token_grid,
+            latent_channels=self.config.latent_channels,
         )
 
     def _compose_structured_rotary_grid_ids(
@@ -925,6 +1098,7 @@ class SharedVideoTransformerCore(nn.Module):
         dtype: torch.dtype,
         batch_size: int,
         backend_name: str = "slot_pool_exact",
+        prefix_visibility_mode: str = "full_history",
     ) -> None:
         total_tokens = int((attn_window // 2) * latent_token_per_chunk + (attn_window // 2) * action_token_per_chunk)
         backend_spec = resolve_cache_backend_spec(backend_name)
@@ -942,6 +1116,7 @@ class SharedVideoTransformerCore(nn.Module):
                 "attn_window": attn_window,
                 "latent_token_per_chunk": latent_token_per_chunk,
                 "action_token_per_chunk": action_token_per_chunk,
+                "prefix_visibility_mode": prefix_visibility_mode,
             },
         )
         self._exact_runtime_caches[cache_name] = CacheState(
@@ -975,6 +1150,7 @@ class SharedVideoTransformerCore(nn.Module):
         dtype: torch.dtype,
         batch_size: int,
         backend_name: str = "slot_pool_exact",
+        prefix_visibility_mode: str = "full_history",
     ) -> None:
         self.create_empty_cache(
             cache_name,
@@ -985,6 +1161,7 @@ class SharedVideoTransformerCore(nn.Module):
             dtype=dtype,
             batch_size=batch_size,
             backend_name=backend_name,
+            prefix_visibility_mode=prefix_visibility_mode,
         )
 
     def _resolve_exact_cache_state(self, cache_name: str) -> CacheState | None:
@@ -1157,6 +1334,85 @@ class SharedVideoTransformerCore(nn.Module):
         hidden_states = self.proj_out(hidden_states)
         return rearrange(hidden_states, "b l (n c) -> b (l n) c", n=math.prod(self.patch_size))
 
+    def _forward_exact_dual_stream(
+        self,
+        prepared: PreparedExactTrainSequence,
+        *,
+        update_cache: int,
+        cache_name: str,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        hidden_states = prepared.hidden_states
+        text_hidden_states = prepared.text_hidden_states
+        rotary_emb = prepared.rotary_emb
+        temb = prepared.temb
+        timestep_proj = prepared.timestep_proj
+        split_list = prepared.split_list
+        exact_attention_profile = prepared.attention_profile
+
+        cache_state = self._resolve_exact_cache_state(cache_name)
+        cache_backend_name = cache_state.backend_name if cache_state is not None else None
+        cache_backend_payload = cache_state.backend_payload if cache_state is not None else None
+
+        for layer_index, block in enumerate(self.blocks):
+            hidden_states, current_self_cache_entry, _ = block(
+                hidden_states,
+                encoder_hidden_states=text_hidden_states,
+                temb=timestep_proj,
+                rotary_emb=rotary_emb,
+                attention_profile=exact_attention_profile,
+                self_attention_cache_backend_name=cache_backend_name,
+                self_attention_cache_backend_state=(
+                    cache_backend_payload.layer_states[layer_index]
+                    if cache_backend_uses_slot_pool(cache_backend_name)
+                    and cache_backend_payload is not None
+                    and layer_index < len(cache_backend_payload.layer_states)
+                    else None
+                ),
+                self_attention_cache_update_mode=update_cache,
+            )
+            del current_self_cache_entry
+
+        temb_scale_shift_table = self.scale_shift_table[None] + temb[:, :, None, ...]
+        shift, scale = _select_chunk_slices(temb_scale_shift_table, 2)
+        shift = shift.to(hidden_states.device)
+        scale = scale.to(hidden_states.device)
+        hidden_states = (self.norm_out(hidden_states.float()) * (1.0 + scale) + shift).type_as(hidden_states)
+        latent_hidden_states, _, action_hidden_states, _, _ = _select_split_segments(
+            hidden_states,
+            tuple(int(length) for length in split_list),
+        )
+
+        if cache_state is not None and cache_backend_uses_slot_pool(cache_backend_name):
+            materialized_entries = materialize_cache_backend_entries(cache_backend_payload)
+            self._exact_runtime_caches[cache_name] = CacheState(
+                supported=cache_state.supported,
+                current_start_frame=cache_state.current_start_frame,
+                cached_frames=cache_state.cached_frames,
+                chunk_size=cache_state.chunk_size,
+                capability=cache_state.capability,
+                backend_name=cache_state.backend_name,
+                backend_payload=cache_backend_payload,
+                payload=dict(cache_state.payload),
+                self_attention_kv=materialized_entries,
+                cross_attention_kv=cache_state.cross_attention_kv,
+                update_metadata=cache_state.update_metadata,
+            )
+
+        video_prediction = self.proj_out(latent_hidden_states)
+        video_prediction = rearrange(
+            video_prediction,
+            "1 (b l) (n c) -> b (l n) c",
+            n=math.prod(self.patch_size),
+            b=prepared.batch_size,
+        )
+        action_prediction = self.action_proj_out(action_hidden_states)
+        action_prediction = rearrange(
+            action_prediction,
+            "1 (b l) c -> b l c",
+            b=prepared.batch_size,
+        )
+        return video_prediction, action_prediction
+
     def execute_runtime_step(self, step_input: RuntimeStepInput) -> RuntimeStepOutput:
         prepared = prepare_runtime_sequence(
             step_input,
@@ -1255,6 +1511,25 @@ class SharedVideoTransformerCore(nn.Module):
                     "video_prediction": video_prediction,
                     "action_prediction": action_prediction,
                 },
+                aux={
+                    "runtime_program": step_input.program.name,
+                    "sequence_family": step_input.program.sequence_family,
+                },
+            )
+        if prepared.mode == "exact_inference":
+            if prepared.exact_inference is None:
+                raise ValueError("Exact-inference runtime step requires prepared exact-inference state.")
+            video_prediction, action_prediction = self._forward_exact_dual_stream(
+                prepared.exact_inference,
+                update_cache=prepared.update_cache,
+                cache_name=prepared.cache_name,
+            )
+            return RuntimeStepOutput(
+                projected_outputs={
+                    "video_prediction": video_prediction,
+                    "action_prediction": action_prediction,
+                },
+                cache_state=self._resolve_exact_cache_state(prepared.cache_name),
                 aux={
                     "runtime_program": step_input.program.name,
                     "sequence_family": step_input.program.sequence_family,
@@ -1479,7 +1754,24 @@ class SharedVideoTransformerCore(nn.Module):
             attention_mask = core_input.attention_mask
             stream_ids_tensor = core_input.stream_ids
         batch_size, seq_len, _ = hidden_states.shape
-        device = hidden_states.device
+        prep_device = (
+            self.time_conditioner.time_embedder.linear_1.weight.device
+            if self._runtime_block_devices
+            else hidden_states.device
+        )
+        if hidden_states.device != prep_device:
+            hidden_states = hidden_states.to(device=prep_device)
+        if position_context is not None and position_context.device != prep_device:
+            position_context = position_context.to(device=prep_device, dtype=hidden_states.dtype)
+        if grid_ids is not None and grid_ids.device != prep_device:
+            grid_ids = grid_ids.to(device=prep_device)
+        if timestep_values is not None and timestep_values.device != prep_device:
+            timestep_values = timestep_values.to(device=prep_device)
+        if attention_mask is not None and attention_mask.device != prep_device:
+            attention_mask = attention_mask.to(device=prep_device)
+        if stream_ids_tensor is not None and stream_ids_tensor.device != prep_device:
+            stream_ids_tensor = stream_ids_tensor.to(device=prep_device)
+        device = prep_device
         dtype = hidden_states.dtype
         stream_ids = self._resolve_stream_ids(stream_ids_tensor, batch_size=batch_size, seq_len=seq_len, device=device)
 
@@ -1555,15 +1847,39 @@ class SharedVideoTransformerCore(nn.Module):
         incoming_self_attention_kv = incoming_branch_state.self_attention_kv
         incoming_cross_attention_kv = incoming_branch_state.cross_attention_kv
         for layer_index, block in enumerate(self.blocks):
+            block_device = (
+                self._runtime_block_devices[layer_index % len(self._runtime_block_devices)]
+                if self._runtime_block_devices
+                else hidden_states.device
+            )
+            if hidden_states.device != block_device:
+                hidden_states = hidden_states.to(device=block_device)
+            block_timestep_proj = timestep_proj.to(device=block_device, dtype=hidden_states.dtype)
+            block_encoder_hidden_states = encoder_hidden_states.to(device=block_device, dtype=hidden_states.dtype)
+            block_rotary_emb = self._move_optional_tensor(rotary_emb, device=block_device)
+            block_attention_mask = self._move_optional_tensor(attention_mask, device=block_device)
+            block_cached_prefix_visibility = self._move_optional_tensor(
+                cached_prefix_visibility,
+                device=block_device,
+                dtype=hidden_states.dtype,
+            )
+            block_structured_attention_context = self._move_structured_attention_context(
+                structured_attention_context,
+                device=block_device,
+            )
+            block_structured_frequency_bundle = self._move_structured_frequency_bundle(
+                structured_frequency_bundle,
+                device=block_device,
+            )
             hidden_states, current_self_cache_entry, current_cross_cache_entry = block(
                 hidden_states,
-                encoder_hidden_states=encoder_hidden_states,
-                temb=timestep_proj,
-                rotary_emb=rotary_emb,
-                structured_attention_context=structured_attention_context,
+                encoder_hidden_states=block_encoder_hidden_states,
+                temb=block_timestep_proj,
+                rotary_emb=block_rotary_emb,
+                structured_attention_context=block_structured_attention_context,
                 structured_block_semantics=structured_block_semantics,
-                structured_frequency_bundle=structured_frequency_bundle,
-                attention_mask=attention_mask,
+                structured_frequency_bundle=block_structured_frequency_bundle,
+                attention_mask=block_attention_mask,
                 attention_profile=core_input.attention_profile,
                 self_attention_cache_entry=(
                     incoming_self_attention_kv[layer_index]
@@ -1575,7 +1891,7 @@ class SharedVideoTransformerCore(nn.Module):
                     if layer_index < len(incoming_cross_attention_kv)
                     else None
                 ),
-                cached_prefix_visibility=cached_prefix_visibility,
+                cached_prefix_visibility=block_cached_prefix_visibility,
                 cache_current_token_count=(
                     cacheable_video_tokens if cache_update_metadata.update_kv_cache and cacheable_video_tokens > 0 else 0
                 ),
@@ -1604,6 +1920,10 @@ class SharedVideoTransformerCore(nn.Module):
             else:
                 next_cross_attention_kv.append(AttentionCacheEntry())
 
+        output_device = self.scale_shift_table.device
+        if hidden_states.device != output_device:
+            hidden_states = hidden_states.to(device=output_device)
+        temb = temb.to(device=output_device, dtype=hidden_states.dtype)
         temb_scale_shift_table = self.scale_shift_table[None] + temb[:, :, None, ...]
         shift, scale = _select_chunk_slices(temb_scale_shift_table, 2)
         hidden_states = (self.norm_out(hidden_states.float()) * (1.0 + scale) + shift).type_as(hidden_states)

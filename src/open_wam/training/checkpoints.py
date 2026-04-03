@@ -148,9 +148,13 @@ class CheckpointManager:
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
             self._write_resolved_config(checkpoint_dir)
             if self.checkpoint_mode == CheckpointMode.MODEL_ONLY:
-                torch.save({"model_state_dict": payload["model_state_dict"]}, checkpoint_dir / "model_state.pt")
+                self._write_model_state_checkpoint(checkpoint_dir, payload["model_state_dict"])
             elif self.checkpoint_mode == CheckpointMode.FULL_TRAINING_STATE:
                 torch.save(payload, checkpoint_dir / "full_training_state.pt")
+                # Always write a lightweight model-only checkpoint alongside the
+                # resumable training checkpoint so eval / visualization paths
+                # can skip optimizer-state deserialization.
+                self._write_model_state_checkpoint(checkpoint_dir, payload["model_state_dict"])
             else:
                 raise ValueError(f"Unsupported checkpoint_mode {self.checkpoint_mode!r}.")
 
@@ -221,6 +225,13 @@ class CheckpointManager:
     def _write_resolved_config(self, checkpoint_dir: Path) -> None:
         with (checkpoint_dir / "resolved_config.yaml").open("w", encoding="utf-8") as handle:
             yaml.safe_dump(_serialize_config(self.config), handle, sort_keys=False)
+
+    def _write_model_state_checkpoint(
+        self,
+        checkpoint_dir: Path,
+        model_state_dict: dict[str, torch.Tensor],
+    ) -> None:
+        torch.save({"model_state_dict": model_state_dict}, checkpoint_dir / "model_state.pt")
 
     def _export_runtime_backbone(self, checkpoint_dir: Path, model: nn.Module) -> None:
         pipeline = getattr(model, "pipeline", model)

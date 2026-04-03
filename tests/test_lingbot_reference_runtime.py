@@ -4,7 +4,10 @@ import torch
 from torch import nn
 
 from open_wam.configs import InferenceConfig, ParallelStreamPolicyConfig, TrainingConfig
+from open_wam.models.action_decoders.lingbot_parallel_decoder import LingbotParallelActionDecoder
+from open_wam.models.policy_variants.contracts import PolicyTrainBatch, PolicyTrainOutput
 from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
+    prepare_parallel_action_conditioned_train_artifacts,
     prepare_parallel_exact_train_artifacts,
     run_parallel_exact_cache_warmup,
     run_parallel_exact_inference_rollout,
@@ -387,3 +390,178 @@ def test_reference_single_stream_forward_runs_in_inference_mode() -> None:
 
     assert transformer.grad_enabled_during_forward is False
     assert output.requires_grad is False
+
+
+def test_parallel_exact_train_artifacts_accept_contextual_overrides() -> None:
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=2,
+        patch_size_w=2,
+    )
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode="lingbot_exact",
+        frame_chunk_size=4,
+        action_per_frame=4,
+        attn_window=8,
+    )
+    training_config = TrainingConfig(
+        chunk_size=4,
+        window_size=64,
+        video_num_train_timesteps=10,
+        action_num_train_timesteps=10,
+    )
+    video_latents = torch.randn(1, 48, 8, 8, 16)
+    actions = torch.randn(1, 32, 30)
+
+    artifacts = prepare_parallel_exact_train_artifacts(
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        video_latents=video_latents,
+        actions=actions,
+        action_mask=None,
+        text_emb=torch.randn(1, 512, 16),
+        chunk_size_override=2,
+        window_size_override=4,
+        loss_frame_start=4,
+        loss_frame_end=8,
+        frame_shift=7,
+    )
+
+    assert artifacts.input_dict["chunk_size"] == 2
+    assert artifacts.input_dict["window_size"] == 4
+    assert artifacts.input_dict["loss_frame_start"] == 4
+    assert artifacts.input_dict["loss_frame_end"] == 8
+    assert artifacts.input_dict["frame_shift"] == 7
+    assert artifacts.input_dict["latent_dict"]["loss_mask"][:, :, :4].sum().item() == 0
+    assert torch.all(artifacts.input_dict["latent_dict"]["loss_mask"][:, :, 4:8] == 1)
+    assert artifacts.input_dict["action_dict"]["loss_mask"][:, :, :4].sum().item() == 0
+    assert torch.all(artifacts.input_dict["action_dict"]["loss_mask"][:, :, 4:8] == 1)
+    assert float(artifacts.input_dict["latent_dict"]["grid_id"][0, 0, 0].item()) == 7.0
+    assert torch.isclose(
+        artifacts.input_dict["action_dict"]["grid_id"][0, 0, 0],
+        torch.tensor(7.2),
+    )
+
+
+def test_lingbot_parallel_decoder_ignores_history_frames_outside_loss_mask() -> None:
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=1,
+        patch_size_w=1,
+    )
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode="lingbot_exact",
+        frame_chunk_size=2,
+        action_per_frame=2,
+        attn_window=8,
+    )
+    training_config = TrainingConfig(
+        chunk_size=2,
+        window_size=8,
+        video_num_train_timesteps=10,
+        action_num_train_timesteps=10,
+    )
+    video_latents = torch.randn(1, 3, 2, 1, 1)
+    actions = torch.randn(1, 4, 5)
+    artifacts = prepare_parallel_exact_train_artifacts(
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        video_latents=video_latents,
+        actions=actions,
+        action_mask=None,
+        text_emb=torch.randn(1, 512, 16),
+        loss_frame_start=1,
+        loss_frame_end=2,
+    )
+
+    target_action_pred = artifacts.input_dict["action_dict"]["targets"].squeeze(-1).permute(0, 2, 3, 1).reshape(1, 4, 5)
+    corrupted_action_pred = target_action_pred.clone()
+    corrupted_action_pred[:, :2] += 100.0
+
+    target_latent_pred = (
+        artifacts.input_dict["latent_dict"]["targets"].permute(0, 2, 3, 4, 1).reshape(1, 2, 3)
+    )
+    corrupted_latent_pred = target_latent_pred.clone()
+    corrupted_latent_pred[:, :1] += 100.0
+
+    decoder = LingbotParallelActionDecoder(hidden_size=32, action_dim=5, action_horizon=4)
+    output = decoder.forward_train(
+        PolicyTrainOutput(
+            policy_features=corrupted_action_pred,
+            metrics={},
+            aux={
+                "latent_pred": corrupted_latent_pred,
+                "lingbot_train_artifacts": artifacts,
+                "loss_weights": {"latent": 0.0, "action": 1.0},
+                "patch_size": (1, 1, 1),
+            },
+        ),
+        PolicyTrainBatch(actions=actions),
+    )
+
+    assert torch.isclose(output.loss, torch.tensor(0.0), atol=1e-5)
+    assert torch.isclose(output.metrics["action_mse"], torch.tensor(0.0), atol=1e-5)
+
+
+def test_parallel_action_conditioned_train_artifacts_accept_contextual_overrides() -> None:
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+    )
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode="lingbot_exact_action_conditioned",
+        frame_chunk_size=4,
+        action_per_frame=4,
+        attn_window=8,
+        video_condition_on_action=True,
+        video_action_condition_source="noisy_action",
+    )
+    training_config = TrainingConfig(
+        chunk_size=4,
+        window_size=64,
+        video_num_train_timesteps=10,
+        action_num_train_timesteps=10,
+    )
+
+    artifacts = prepare_parallel_action_conditioned_train_artifacts(
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        video_latents=torch.randn(1, 48, 6, 8, 8),
+        actions=torch.randn(1, 24, 30),
+        action_mask=None,
+        text_emb=torch.randn(1, 512, 16),
+        chunk_size_override=2,
+        window_size_override=5,
+        loss_frame_start=4,
+        loss_frame_end=6,
+        frame_shift=9,
+    )
+
+    assert artifacts.input_dict["chunk_size"] == 2
+    assert artifacts.input_dict["window_size"] == 5
+    assert artifacts.input_dict["loss_frame_start"] == 4
+    assert artifacts.input_dict["loss_frame_end"] == 6
+    assert artifacts.input_dict["frame_shift"] == 9
+    assert artifacts.input_dict["attention_profile_name"] == "chunked_temporal_exact_joint"

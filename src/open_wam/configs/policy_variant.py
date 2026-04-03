@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 
 from .enums import (
     ActionNormMethod,
+    ParallelActionAttentionScope,
+    ParallelActionConditionSource,
     AttachSite,
     DecodeFeatureMode,
     ParallelCacheMode,
@@ -23,7 +25,9 @@ from .enums import (
     StructuredFrequencyMode,
     StructuredTeacherForcingLayout,
     StructuredTimeLayout,
+    TemporalPositionMode,
     TemporalProjection,
+    VisualStateSource,
     coerce_fields,
 )
 
@@ -114,6 +118,8 @@ class VideoSequencePolicyConfig(PolicyVariantConfig):
     hidden_size: int = 256
     attach_site: AttachSite = AttachSite.POST_VISUAL_CORE
     temporal_projection: TemporalProjection = TemporalProjection.INTERPOLATE
+    visual_state_source: VisualStateSource = VisualStateSource.DENOISED_VIDEO_TOKENS
+    visual_denoise_ratio: float = 1.0
     use_state_context: bool = True
     use_goal_context: bool = True
 
@@ -128,8 +134,14 @@ class VideoSequencePolicyConfig(PolicyVariantConfig):
             self,
             enum_fields={
                 "temporal_projection": TemporalProjection,
+                "visual_state_source": VisualStateSource,
             },
         )
+        if not (0.0 < float(self.visual_denoise_ratio) <= 1.0):
+            raise ValueError(
+                "Video-sequence policy requires `0 < visual_denoise_ratio <= 1`, "
+                f"got visual_denoise_ratio={self.visual_denoise_ratio!r}."
+            )
 
 
 @dataclass(frozen=True)
@@ -198,6 +210,11 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
     mask_mode: ParallelMaskMode = ParallelMaskMode.LINGBOT_CHUNKED
     cache_mode: ParallelCacheMode = ParallelCacheMode.METADATA_ONLY
     noisy_video_condition_prob: float = 0.5
+    video_condition_on_action: bool = False
+    video_action_condition_source: ParallelActionConditionSource = ParallelActionConditionSource.NOISY_ACTION
+    video_action_attention_scope: ParallelActionAttentionScope = ParallelActionAttentionScope.BLOCK_LOCAL
+    couple_action_to_video_timesteps: bool = True
+    temporal_position_mode: TemporalPositionMode = TemporalPositionMode.GLOBAL_SHIFTED
     used_action_channel_ids: tuple[int, ...] = field(default_factory=tuple)
     inverse_used_action_channel_ids: tuple[int, ...] = field(default_factory=tuple)
     action_norm_method: ActionNormMethod = ActionNormMethod.NONE
@@ -212,6 +229,9 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
                 "runtime_mode": ParallelRuntimeMode,
                 "mask_mode": ParallelMaskMode,
                 "cache_mode": ParallelCacheMode,
+                "video_action_condition_source": ParallelActionConditionSource,
+                "video_action_attention_scope": ParallelActionAttentionScope,
+                "temporal_position_mode": TemporalPositionMode,
                 "action_norm_method": ActionNormMethod,
             },
             enum_tuple_fields={"sequence_order": ParallelSequenceComponent},

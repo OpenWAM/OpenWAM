@@ -39,6 +39,8 @@ class VPPSequenceActionDecoder(SequenceActionDecoder):
         training_config: TrainingConfig,
         inference_config: InferenceConfig,
         state_dim: int,
+        observation_token_dim: int,
+        goal_feature_dim: int,
     ) -> None:
         super().__init__()
         self.config = config
@@ -58,6 +60,7 @@ class VPPSequenceActionDecoder(SequenceActionDecoder):
         self.temporal_compression = build_temporal_compression_adapter(
             config.temporal_compression_adapter_family,
             hidden_size=config.hidden_size,
+            input_dim=observation_token_dim,
             compressed_tokens_per_frame=config.compressed_tokens_per_frame,
             depth=config.compression_depth,
             num_heads=config.num_heads,
@@ -76,6 +79,7 @@ class VPPSequenceActionDecoder(SequenceActionDecoder):
             config.sequence_denoiser_family,
             hidden_size=config.hidden_size,
             action_dim=config.action_dim,
+            goal_input_dim=goal_feature_dim,
             num_heads=config.num_heads,
             encoder_layers=config.encoder_layers,
             decoder_layers=config.decoder_layers,
@@ -109,7 +113,7 @@ class VPPSequenceActionDecoder(SequenceActionDecoder):
     def forward_train(self, policy_output: PolicyTrainOutput, batch: PolicyTrainBatch) -> ActionDecoderTrainOutput:
         sequence_context = self.require_train_sequence_context(policy_output)
         prepared_context = self._prepare_sequence_memory(sequence_context)
-        loss, denoised_actions, sigmas, noise = self.generation_backend.compute_training_loss(
+        action_diffusion_loss, denoised_actions, sigmas, noise = self.generation_backend.compute_training_loss(
             clean_actions=batch.actions,
             denoiser=lambda noised_actions, sigma: self.sequence_denoiser.denoise_actions(
                 context=prepared_context,
@@ -117,15 +121,33 @@ class VPPSequenceActionDecoder(SequenceActionDecoder):
                 sigma=sigma,
             ),
         )
-        weighted_loss = loss * self.training_config.objective_weight("action")
+        weighted_action_loss = action_diffusion_loss * self.training_config.objective_weight("action")
         action_mse = F.mse_loss(denoised_actions.float(), batch.actions.float())
+        predicted_latents = policy_output.aux.get("predicted_latents")
+        target_latents = batch.extra.get("video_latents")
+        latent_loss = None
+        weighted_latent_loss = None
+        if isinstance(predicted_latents, torch.Tensor) and isinstance(target_latents, torch.Tensor):
+            latent_loss = F.mse_loss(predicted_latents.float(), target_latents.float())
+            weighted_latent_loss = latent_loss * self.training_config.objective_weight("latent")
+        total_loss = weighted_action_loss
+        if weighted_latent_loss is not None:
+            total_loss = total_loss + weighted_latent_loss
         return ActionDecoderTrainOutput(
             action_pred=denoised_actions,
-            loss=weighted_loss,
+            loss=total_loss,
             metrics={
                 "action_mse": action_mse.detach(),
-                "action_diffusion_loss": loss.detach(),
-                "weighted_action_diffusion_loss": weighted_loss.detach(),
+                "action_diffusion_loss": action_diffusion_loss.detach(),
+                "weighted_action_diffusion_loss": weighted_action_loss.detach(),
+                **(
+                    {
+                        "latent_mse": latent_loss.detach(),
+                        "weighted_latent_loss": weighted_latent_loss.detach(),
+                    }
+                    if latent_loss is not None and weighted_latent_loss is not None
+                    else {}
+                ),
             },
             aux={
                 "decoder": self.__class__.__name__,
@@ -135,6 +157,11 @@ class VPPSequenceActionDecoder(SequenceActionDecoder):
                 ),
                 "sampled_sigmas": sigmas.detach(),
                 "sampled_noise": noise.detach(),
+                **(
+                    {"predicted_latents": predicted_latents.detach()}
+                    if isinstance(predicted_latents, torch.Tensor)
+                    else {}
+                ),
             },
         )
 
@@ -170,6 +197,11 @@ class VPPSequenceActionDecoder(SequenceActionDecoder):
                         "decoder": self.__class__.__name__,
                         "sampled_new_chunk": False,
                         "current_action": cached_chunk[:, step_within_chunk],
+                        **(
+                            {"predicted_latents": predicted_latents.detach()}
+                            if isinstance((predicted_latents := policy_output.aux.get("predicted_latents")), torch.Tensor)
+                            else {}
+                        ),
                     },
                 )
 
@@ -205,5 +237,10 @@ class VPPSequenceActionDecoder(SequenceActionDecoder):
                 "decoder": self.__class__.__name__,
                 "sampled_new_chunk": True,
                 "current_action": sampled_chunk[:, 0],
+                **(
+                    {"predicted_latents": predicted_latents.detach()}
+                    if isinstance((predicted_latents := policy_output.aux.get("predicted_latents")), torch.Tensor)
+                    else {}
+                ),
             },
         )

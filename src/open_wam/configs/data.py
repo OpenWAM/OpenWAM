@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .enums import (
+    AnchorPolicy,
     ActionTargetReferenceSource,
     ActionTargetRepresentation,
     ActionTargetStateEncoding,
@@ -17,7 +18,10 @@ from .enums import (
     ConsortiumWeightMode,
     DataSplit,
     GripperRepresentation,
+    LatentWindowProfile,
     RotationRepresentation,
+    TemporalPositionMode,
+    WindowSamplingMode,
     coerce_fields,
 )
 
@@ -113,7 +117,6 @@ class ActionTargetConfig:
             },
         )
 
-
 @dataclass(frozen=True)
 class ConsortiumChannelMappingConfig:
     """Map one source visual key to one canonical consortium slot."""
@@ -178,6 +181,31 @@ class ConsortiumCloudCacheConfig:
 
 
 @dataclass(frozen=True)
+class SampleConstructionConfig:
+    """How one latent training sample is constructed from a source segment."""
+
+    mode: WindowSamplingMode = WindowSamplingMode.FULL_SEGMENT
+    anchor_policy: AnchorPolicy = AnchorPolicy.RANDOM_VALID
+    num_frames: int = 4
+    action_horizon: int = 16
+    state_horizon: int = 1
+    frame_stride: int = 1
+    chunk_size: int = 1
+    window_size: int = 1
+    predict_blocks_per_sample: int = 1
+    randomize_geometry: bool = True
+
+    def __post_init__(self) -> None:
+        coerce_fields(
+            self,
+            enum_fields={
+                "mode": WindowSamplingMode,
+                "anchor_policy": AnchorPolicy,
+            },
+        )
+
+
+@dataclass(frozen=True)
 class DataConfig:
     """Shared data-layer config independent from head choice."""
 
@@ -188,6 +216,7 @@ class DataConfig:
     empty_text_embedding_path: str | None
     latent_root: str | None
     latent_subdir: str
+    latent_window_profile: LatentWindowProfile
     split: DataSplit
     cache_dir: str | None
     camera_names: tuple[str, ...]
@@ -208,9 +237,16 @@ class DataConfig:
     num_workers: int
     action_schema: ActionSchemaConfig
     action_target: ActionTargetConfig
+    sample_construction: SampleConstructionConfig
 
     def __post_init__(self) -> None:
-        coerce_fields(self, enum_fields={"split": DataSplit})
+        coerce_fields(
+            self,
+            enum_fields={
+                "split": DataSplit,
+                "latent_window_profile": LatentWindowProfile,
+            },
+        )
 
 
 @dataclass(frozen=True)
@@ -229,6 +265,7 @@ class GenericDataConfig(DataConfig):
     empty_text_embedding_path: str | None = None
     latent_root: str | None = None
     latent_subdir: str = "latents"
+    latent_window_profile: LatentWindowProfile = LatentWindowProfile.EXACT_CHUNKED_WINDOW
     split: DataSplit = DataSplit.TRAIN
     cache_dir: str | None = None
     camera_names: tuple[str, ...] = ("camera_0",)
@@ -267,6 +304,7 @@ class GenericDataConfig(DataConfig):
         )
     )
     action_target: ActionTargetConfig = field(default_factory=ActionTargetConfig)
+    sample_construction: SampleConstructionConfig = field(default_factory=SampleConstructionConfig)
 
 
 @dataclass(frozen=True)
@@ -280,6 +318,7 @@ class RobotWinDataConfig(DataConfig):
     empty_text_embedding_path: str | None = None
     latent_root: str | None = None
     latent_subdir: str = "latents"
+    latent_window_profile: LatentWindowProfile = LatentWindowProfile.EXACT_CHUNKED_WINDOW
     split: DataSplit = DataSplit.TRAIN
     cache_dir: str | None = None
     camera_names: tuple[str, ...] = (
@@ -342,6 +381,7 @@ class RobotWinDataConfig(DataConfig):
         )
     )
     action_target: ActionTargetConfig = field(default_factory=ActionTargetConfig)
+    sample_construction: SampleConstructionConfig = field(default_factory=SampleConstructionConfig)
 
 
 @dataclass(frozen=True)
@@ -369,6 +409,7 @@ class LiberoDataConfig(DataConfig):
     empty_text_embedding_path: str | None = None
     latent_root: str | None = None
     latent_subdir: str = "latents"
+    latent_window_profile: LatentWindowProfile = LatentWindowProfile.EXACT_CHUNKED_WINDOW
     split: DataSplit = DataSplit.TRAIN
     cache_dir: str | None = None
     camera_names: tuple[str, ...] = (
@@ -433,6 +474,7 @@ class LiberoDataConfig(DataConfig):
             gripper_action_index=-1,
         )
     )
+    sample_construction: SampleConstructionConfig = field(default_factory=SampleConstructionConfig)
 
 
 @dataclass(frozen=True)
@@ -451,6 +493,7 @@ class LeRobotConsortiumDataConfig(DataConfig):
     empty_text_embedding_path: str | None = None
     latent_root: str | None = None
     latent_subdir: str = "latents"
+    latent_window_profile: LatentWindowProfile = LatentWindowProfile.EXACT_CHUNKED_WINDOW
     split: DataSplit = DataSplit.TRAIN
     cache_dir: str | None = None
     camera_names: tuple[str, ...] = (
@@ -513,6 +556,7 @@ class LeRobotConsortiumDataConfig(DataConfig):
         )
     )
     action_target: ActionTargetConfig = field(default_factory=ActionTargetConfig)
+    sample_construction: SampleConstructionConfig = field(default_factory=SampleConstructionConfig)
     consortium_members: tuple[ConsortiumMemberConfig, ...] = ()
     channel_selection_mode: ConsortiumChannelSelectionMode = ConsortiumChannelSelectionMode.ALL_AVAILABLE
     required_channels: tuple[str, ...] = ()

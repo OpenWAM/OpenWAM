@@ -46,6 +46,7 @@ from .flow_matching import (
     sample_timestep_id,
 )
 from .flow_unipc_multistep_scheduler import FlowUniPCMultistepScheduler
+from .joint_runtime import JointInferenceLoopResult, JointTrainFlowResult, resolve_joint_train_flow_result, run_joint_inference_loop
 from .register_sequence import (
     RegisterSequenceLayout,
     build_register_attention_mask,
@@ -81,6 +82,8 @@ __all__ = [
     "FrameAlignedActionFlowMatchTrainArtifacts",
     "FlowMatchScheduler",
     "FlowUniPCMultistepScheduler",
+    "JointInferenceLoopResult",
+    "JointTrainFlowResult",
     "PreparedAttentionProfile",
     "JointRuntimeSchedulers",
     "MergedPrefixCachePayload",
@@ -100,6 +103,8 @@ __all__ = [
     "build_action_flow_match_train_artifacts",
     "build_block_coupled_action_flow_match_train_artifacts",
     "build_joint_runtime_schedulers",
+    "run_joint_inference_loop",
+    "resolve_joint_train_flow_result",
     "build_lingbot_chunked_exact_attention_profile",
     "build_frame_aligned_action_flow_match_train_artifacts",
     "build_flow_unipc_inference_scheduler",

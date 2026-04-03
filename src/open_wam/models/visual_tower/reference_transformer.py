@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 
+from open_wam.configs import ReferenceCoreInitMode
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 
 from .reference_loader import load_wan_transformer_class, resolve_pretrained_component_dir
@@ -25,9 +26,22 @@ def build_reference_transformer(
         backbone_config.transformer_subdir,
     )
     if transformer_dir is not None and transformer_dir.exists():
+        init_mode = getattr(backbone_config, "reference_core_init_mode", ReferenceCoreInitMode.FULL)
+        if init_mode == ReferenceCoreInitMode.VIDEO_ONLY:
+            # Video-only init only needs the checkpoint-native reference model
+            # so we load it with its original config/action dimensions and copy
+            # the shared/video weights out later.
+            return model_cls.from_pretrained(
+                str(transformer_dir),
+                torch_dtype=preferred_dtype,
+            )
+        load_kwargs = {
+            "torch_dtype": preferred_dtype,
+            "action_dim": action_dim,
+        }
         return model_cls.from_pretrained(
             str(transformer_dir),
-            torch_dtype=preferred_dtype,
+            **load_kwargs,
         )
     attention_head_dim = backbone_config.attention_head_dim or (backbone_config.hidden_size // backbone_config.num_heads)
     return model_cls(

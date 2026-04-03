@@ -68,12 +68,21 @@ class RegisterAttachedRuntime:
     def __init__(self, spec: RegisterRuntimeSpec) -> None:
         self.spec = spec
 
+    @staticmethod
+    def _move_tensor_dict(
+        tensor_dict: dict[str, torch.Tensor],
+        *,
+        device: torch.device,
+    ) -> dict[str, torch.Tensor]:
+        return {name: tensor.to(device=device) for name, tensor in tensor_dict.items()}
+
     def build_layout(
         self,
         visual_outputs: VisualStageOutputs,
         *,
         include_clean_video_prefix: bool,
         include_register_tokens: bool = True,
+        require_matching_block_counts: bool = True,
     ) -> RegisterSequenceLayout:
         return build_register_sequence_layout(
             token_grid=visual_outputs.frontend.token_grid,
@@ -84,6 +93,7 @@ class RegisterAttachedRuntime:
             num_state_per_block=self.spec.num_state_per_block,
             include_clean_video_prefix=include_clean_video_prefix,
             include_register_tokens=include_register_tokens,
+            require_matching_block_counts=require_matching_block_counts,
         )
 
     def build_state_timestep_values(self, action_timesteps: torch.Tensor) -> torch.Tensor:
@@ -171,16 +181,19 @@ class RegisterAttachedRuntime:
         conditioning_override: ConditioningState | None = None,
         include_register_tokens: bool = True,
         cache_reference_token_span: tuple[int, int] | None = None,
+        require_matching_block_counts: bool = True,
     ) -> RegisterCoreRuntimeResult:
         # Method 2 describes its structured sequence in terms of semantic
         # components here, then delegates actual materialization/execution to
         # the shared runtime program. The variant should stay at the level of
         # layout, cache policy, and scheduler behavior rather than owning token
         # encoders or flow heads directly.
+        return_device = noisy_video_tokens.device
         layout = self.build_layout(
             visual_outputs,
             include_clean_video_prefix=clean_video_prefix_tokens is not None,
             include_register_tokens=include_register_tokens,
+            require_matching_block_counts=require_matching_block_counts,
         )
         batch_size = noisy_video_tokens.shape[0]
 
@@ -202,6 +215,22 @@ class RegisterAttachedRuntime:
             action_hidden = noisy_video_tokens.new_zeros((batch_size, 0, self.spec.hidden_size))
             state_hidden = noisy_video_tokens.new_zeros((batch_size, 0, self.spec.hidden_size))
             state_timesteps = action_timesteps.new_zeros((batch_size, 0))
+
+        pack_device = action_hidden.device if include_register_tokens else noisy_video_tokens.device
+        if noisy_video_tokens.device != pack_device:
+            noisy_video_tokens = noisy_video_tokens.to(device=pack_device)
+        if clean_video_prefix_tokens is not None and clean_video_prefix_tokens.device != pack_device:
+            clean_video_prefix_tokens = clean_video_prefix_tokens.to(device=pack_device)
+        if action_hidden.device != pack_device:
+            action_hidden = action_hidden.to(device=pack_device)
+        if state_hidden.device != pack_device:
+            state_hidden = state_hidden.to(device=pack_device)
+        if video_timesteps.device != pack_device:
+            video_timesteps = video_timesteps.to(device=pack_device)
+        if action_timesteps.device != pack_device:
+            action_timesteps = action_timesteps.to(device=pack_device)
+        if state_timesteps.device != pack_device:
+            state_timesteps = state_timesteps.to(device=pack_device)
 
         cache_reference_start, cache_reference_end = (
             cache_reference_token_span if cache_reference_token_span is not None else layout.noisy_video_span
@@ -285,16 +314,20 @@ class RegisterAttachedRuntime:
             raise ValueError("Register sequence runtime execution did not return a `core_output`.")
         core_output = step_output.core_output
         noisy_video_start, noisy_video_end = layout.noisy_video_span
+        output_device = return_device
         if layout.action_block_spans:
             action_start = layout.action_block_spans[0][0]
             action_end = layout.action_block_spans[-1][1]
-            action_hidden = core_output.tokens[:, action_start:action_end, :]
+            action_hidden = core_output.tokens[:, action_start:action_end, :].to(device=output_device)
         else:
             action_hidden = core_output.tokens.new_zeros((batch_size, 0, self.spec.hidden_size))
         return RegisterCoreRuntimeResult(
-            video_hidden=core_output.tokens[:, noisy_video_start:noisy_video_end, :],
+            video_hidden=core_output.tokens[:, noisy_video_start:noisy_video_end, :].to(device=output_device),
             action_hidden=action_hidden,
-            projected_outputs=dict(step_output.projected_outputs),
+            projected_outputs=self._move_tensor_dict(
+                dict(step_output.projected_outputs),
+                device=output_device,
+            ),
             layout=layout,
             cache_state=core_output.cache_state,
             aux={**core_output.aux, **step_output.aux},

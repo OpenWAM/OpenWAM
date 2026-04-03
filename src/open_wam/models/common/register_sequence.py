@@ -40,6 +40,7 @@ def build_register_sequence_layout(
     *,
     include_clean_video_prefix: bool,
     include_register_tokens: bool = True,
+    require_matching_block_counts: bool = True,
 ) -> RegisterSequenceLayout:
     if token_grid.num_frames < 1:
         raise ValueError("Register-attached variant requires at least one frame.")
@@ -61,7 +62,11 @@ def build_register_sequence_layout(
     num_image_blocks = (token_grid.num_frames - 1) // num_frame_per_block
     num_action_blocks = action_horizon // num_action_per_block if include_register_tokens else 0
     num_state_blocks = state_horizon // num_state_per_block if include_register_tokens else 0
-    if include_register_tokens and (num_image_blocks != num_action_blocks or num_image_blocks != num_state_blocks):
+    if (
+        include_register_tokens
+        and require_matching_block_counts
+        and (num_image_blocks != num_action_blocks or num_image_blocks != num_state_blocks)
+    ):
         raise ValueError(
             "Expected image, action, and state block counts to match, "
             f"got image={num_image_blocks}, action={num_action_blocks}, state={num_state_blocks}"

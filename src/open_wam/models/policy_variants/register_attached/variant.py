@@ -3,25 +3,17 @@ from __future__ import annotations
 import torch
 
 from open_wam.configs import InferenceConfig, RegisterAttachedPolicyConfig, TrainingConfig
-from open_wam.models.action_decoders import ActionDecoderInferOutput, ActionDecoderTrainOutput
 from open_wam.models.common import (
     build_block_coupled_action_flow_match_train_artifacts,
     build_joint_video_timestep_grid,
+    resolve_joint_train_flow_result,
+    run_joint_inference_loop,
     build_video_flow_match_train_artifacts,
-    build_joint_runtime_schedulers,
-    build_unconditional_conditioning,
-    combine_joint_cfg_predictions,
     denoised_actions_from_flow,
     denoised_video_latents_from_flow,
     preserve_joint_observed_video_prefix,
     reduce_slot_aligned_action_flow_match_loss,
     reduce_video_flow_match_loss,
-    resolve_runtime_cache_policy,
-    resolve_runtime_cache_branch,
-    resolve_runtime_cache_branches,
-    resolve_runtime_guidance,
-    resolve_runtime_warmup_reference,
-    should_update_cache_during_denoise,
 )
 from open_wam.models.common.video_geometry import unpatchify_video_tokens
 from open_wam.models.video_backbone.contracts import CacheState, CacheUpdateMetadata
@@ -112,6 +104,7 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
             * self.backbone_config.patch_size_h
             * self.backbone_config.patch_size_w
         )
+
     def attach_site(self) -> str:
         return self.config.attach_site
 
@@ -183,12 +176,107 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
         *,
         visual_outputs: VisualStageOutputs,
         noisy_video_latents: torch.Tensor,
-    ) -> VisualStageOutputs:
+        ) -> VisualStageOutputs:
         return self.runtime.build_noisy_frontend_outputs(
             visual_tower,
             visual_outputs=visual_outputs,
             noisy_video_latents=noisy_video_latents,
         )
+
+    def _expand_bootstrap_visual_outputs(
+        self,
+        visual_tower: VisualTower,
+        visual_outputs: VisualStageOutputs,
+    ) -> VisualStageOutputs:
+        """Expand a single observed frame into a valid first-step bootstrap window.
+
+        DreamZero serving sends one frame on the first call, but our current
+        shared register-attached layout still expects the train-time block
+        counts implied by `data.num_frames`. We keep the first frame as the only
+        observed-prefix frame and repeat its latent/context to synthesize the
+        remaining bootstrap slots.
+        """
+
+        frontend = visual_outputs.frontend
+        if frontend.video_latents.shape[2] != 1:
+            return visual_outputs
+
+        target_frames = 1 + self.action_horizon // self.config.num_action_per_block
+        repeated_latents = frontend.video_latents.repeat_interleave(target_frames, dim=2)
+        repeated_canonical = None
+        if frontend.canonical_video is not None:
+            repeated_canonical = frontend.canonical_video.repeat_interleave(target_frames, dim=2)
+        bootstrap_frontend = visual_tower.run_frontend_from_latents(
+            repeated_latents,
+            task_text=None,
+            text_context=frontend.conditioning.text_context,
+            negative_text_context=frontend.conditioning.negative_text_context,
+            canonical_video=repeated_canonical,
+        )
+        return VisualStageOutputs(frontend=bootstrap_frontend)
+
+    def _build_rollout_generation_visual_outputs(
+        self,
+        visual_tower: VisualTower,
+        visual_outputs: VisualStageOutputs,
+    ) -> VisualStageOutputs:
+        """Build the inference-time denoising window for only the current future block.
+
+        DreamZero rollout only denoises the currently requested future video
+        block. The observed prefix should warm up the cache separately rather
+        than living inside the denoised tensor itself.
+        """
+
+        frontend = visual_outputs.frontend
+        generation_frames = self.config.num_frame_per_block
+        available_frames = int(frontend.video_latents.shape[2])
+        if available_frames < 1:
+            raise ValueError("Inference rollout requires at least one observed frame.")
+        observed_anchor_latent = frontend.video_latents[:, :, -1:]
+        rollout_latents = observed_anchor_latent.repeat_interleave(max(generation_frames, 1), dim=2)
+
+        rollout_canonical = None
+        if frontend.canonical_video is not None:
+            observed_anchor_canonical = frontend.canonical_video[:, -1:]
+            rollout_canonical = observed_anchor_canonical.repeat_interleave(max(generation_frames, 1), dim=1)
+
+        rollout_frontend = visual_tower.run_frontend_from_latents(
+            rollout_latents,
+            task_text=None,
+            text_context=frontend.conditioning.text_context,
+            negative_text_context=frontend.conditioning.negative_text_context,
+            canonical_video=rollout_canonical,
+        )
+        return VisualStageOutputs(frontend=rollout_frontend)
+
+    def _build_observed_prefix_visual_outputs(
+        self,
+        visual_tower: VisualTower,
+        visual_outputs: VisualStageOutputs,
+    ) -> VisualStageOutputs | None:
+        frontend = visual_outputs.frontend
+        available_frames = int(frontend.video_latents.shape[2])
+        prefix_frames = max(
+            0,
+            min(
+                int(self.inference_config.joint_observed_video_prefix_frames),
+                available_frames,
+            ),
+        )
+        if prefix_frames <= 0:
+            return None
+        prefix_latents = frontend.video_latents[:, :, -prefix_frames:]
+        prefix_canonical = None
+        if frontend.canonical_video is not None:
+            prefix_canonical = frontend.canonical_video[:, -prefix_frames:]
+        prefix_frontend = visual_tower.run_frontend_from_latents(
+            prefix_latents,
+            task_text=None,
+            text_context=frontend.conditioning.text_context,
+            negative_text_context=frontend.conditioning.negative_text_context,
+            canonical_video=prefix_canonical,
+        )
+        return VisualStageOutputs(frontend=prefix_frontend)
 
     def _run_packed_core(
         self,
@@ -207,6 +295,7 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
         conditioning_override=None,
         include_register_tokens: bool = True,
         cache_reference_token_span: tuple[int, int] | None = None,
+        require_matching_block_counts: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor], RegisterSequenceLayout, CacheState, dict[str, object]]:
         # Keep method 2 on the shared runtime surface so future within-core
         # variants can reuse the same tokenization, attention, and cache stack.
@@ -225,6 +314,7 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
             conditioning_override=conditioning_override,
             include_register_tokens=include_register_tokens,
             cache_reference_token_span=cache_reference_token_span,
+            require_matching_block_counts=require_matching_block_counts,
         )
         return (
             runtime_result.video_hidden,
@@ -374,66 +464,43 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
             action_timesteps=action_artifacts.timesteps,
             current_start_frame=0,
         )
-        video_flow_pred = unpatchify_video_tokens(
-            projected_outputs["video_patch_flow"],
-            token_grid=visual_outputs.frontend.token_grid,
-            latent_channels=self.backbone_config.latent_channels,
+        train_result = resolve_joint_train_flow_result(
+            projected_outputs=projected_outputs,
+            video_artifacts=video_artifacts,
+            action_artifacts=action_artifacts,
+            unpatchify_video_prediction=lambda video_patch_flow: unpatchify_video_tokens(
+                video_patch_flow,
+                token_grid=visual_outputs.frontend.token_grid,
+                latent_channels=self.backbone_config.latent_channels,
+            ),
+            denoised_video_latents_from_flow=denoised_video_latents_from_flow,
+            denoised_actions_from_flow=denoised_actions_from_flow,
+            reduce_video_flow_match_loss=reduce_video_flow_match_loss,
+            reduce_slot_aligned_action_flow_match_loss=reduce_slot_aligned_action_flow_match_loss,
         )
-        action_flow_pred = projected_outputs["action_flow"]
-        denoised_video_latents = denoised_video_latents_from_flow(
-            noisy_latents=video_artifacts.noisy_latents,
-            flow_pred=video_flow_pred,
-            timesteps=video_artifacts.timesteps,
-            scheduler=video_artifacts.scheduler,
+        weighted_latent_loss = (
+            train_result.latent_loss * float(self.training_config.objective_weight("latent"))
+            if self.training_config.objective_enabled("latent")
+            else torch.zeros_like(train_result.latent_loss)
         )
-        denoised_actions = denoised_actions_from_flow(
-            noisy_actions=action_artifacts.noisy_actions,
-            flow_pred=action_flow_pred,
-            timesteps=action_artifacts.timesteps,
-            scheduler=action_artifacts.scheduler,
+        weighted_action_loss = (
+            train_result.action_loss * float(self.training_config.objective_weight("action"))
+            if self.training_config.objective_enabled("action")
+            else torch.zeros_like(train_result.action_loss)
         )
-        latent_loss = reduce_video_flow_match_loss(
-            flow_pred=video_flow_pred,
-            targets=video_artifacts.targets,
-            timesteps=video_artifacts.timesteps,
-            scheduler=video_artifacts.scheduler,
-        )
-        action_loss = reduce_slot_aligned_action_flow_match_loss(
-            flow_pred=action_flow_pred,
-            targets=action_artifacts.targets,
-            timesteps=action_artifacts.timesteps,
-            scheduler=action_artifacts.scheduler,
-            action_mask=action_artifacts.action_mask,
-        )
-        total_loss = latent_loss + action_loss
+        total_loss = weighted_latent_loss + weighted_action_loss
         if batch.action_mask is not None:
             action_mse = torch.nn.functional.mse_loss(
-                denoised_actions.float(),
+                train_result.denoised_actions.float(),
                 batch.actions.float(),
                 reduction="none",
             )
             action_mse = action_mse * batch.action_mask.float()
             action_mse_value = action_mse.sum() / batch.action_mask.float().sum().clamp_min(1.0)
         else:
-            action_mse_value = torch.nn.functional.mse_loss(denoised_actions.float(), batch.actions.float())
-        decoder_output = ActionDecoderTrainOutput(
-            action_pred=denoised_actions,
-            loss=total_loss,
-            metrics={
-                "action_mse": action_mse_value.detach(),
-                "video_diffusion_loss": latent_loss.detach(),
-                "action_diffusion_loss": action_loss.detach(),
-                "joint_loss": total_loss.detach(),
-            },
-            aux={
-                "decoder": "RegisterAttachedJointDiffusion",
-                "predicted_video_latents": denoised_video_latents.detach(),
-                "future_video_flow_pred": video_flow_pred.detach(),
-                "action_flow_pred": action_flow_pred.detach(),
-            },
-        )
+            action_mse_value = torch.nn.functional.mse_loss(train_result.denoised_actions.float(), batch.actions.float())
         return PolicyTrainOutput(
-            policy_features=action_hidden,
+            policy_features=train_result.denoised_actions,
             metrics={"num_image_blocks": torch.tensor(float(layout.num_image_blocks), device=action_hidden.device)},
             aux={
                 "variant": self.config.name,
@@ -441,7 +508,24 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
                 "core_aux": core_aux,
                 "video_flow_match_train_artifacts": video_artifacts,
                 "action_flow_match_train_artifacts": action_artifacts,
-                "decoder_output": decoder_output,
+                "predicted_latents": train_result.denoised_video_latents.detach(),
+                "joint_train_decoder_artifacts": {
+                    "action_pred": train_result.denoised_actions,
+                    "loss": total_loss,
+                    "metrics": {
+                        "action_mse": action_mse_value.detach(),
+                        "video_diffusion_loss": train_result.latent_loss.detach(),
+                        "action_diffusion_loss": train_result.action_loss.detach(),
+                        "weighted_video_diffusion_loss": weighted_latent_loss.detach(),
+                        "weighted_action_diffusion_loss": weighted_action_loss.detach(),
+                        "joint_loss": total_loss.detach(),
+                    },
+                    "aux": {
+                        "predicted_video_latents": train_result.denoised_video_latents.detach(),
+                        "future_video_flow_pred": train_result.video_flow_pred.detach(),
+                        "action_flow_pred": train_result.action_flow_pred.detach(),
+                    },
+                },
             },
         )
 
@@ -476,11 +560,27 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
         context: PolicyInferContext,
         infer_state: PolicyInferState,
     ) -> PolicyInferOutput:
-        batch_size = visual_outputs.frontend.video_tokens.shape[0]
-        dtype = visual_outputs.frontend.video_tokens.dtype
-        device = visual_outputs.frontend.video_tokens.device
+        if visual_outputs.frontend.token_grid.num_frames == 1:
+            visual_outputs = self._expand_bootstrap_visual_outputs(visual_tower, visual_outputs)
+        reference_visual_outputs = visual_outputs
+        observed_prefix_visual_outputs = self._build_observed_prefix_visual_outputs(
+            visual_tower,
+            reference_visual_outputs,
+        )
+        rollout_visual_outputs = self._build_rollout_generation_visual_outputs(
+            visual_tower,
+            reference_visual_outputs,
+        )
+        dtype = rollout_visual_outputs.frontend.video_tokens.dtype
+        device = rollout_visual_outputs.frontend.video_tokens.device
         if context.state is None:
-            state_inputs = torch.zeros(batch_size, self.state_horizon, self.state_dim, device=device, dtype=dtype)
+            state_inputs = torch.zeros(
+                rollout_visual_outputs.frontend.video_tokens.shape[0],
+                self.state_horizon,
+                self.state_dim,
+                device=device,
+                dtype=dtype,
+            )
         else:
             state_inputs = context.state.to(device=device, dtype=dtype)
         cache_state = (
@@ -493,249 +593,103 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
                 max_cached_frames=None,
             )
         )
-        observed_video_latents = visual_outputs.frontend.video_latents
-        observed_prefix_frames = max(
-            0,
-            min(
-                int(self.inference_config.joint_observed_video_prefix_frames),
-                observed_video_latents.shape[2],
+        observed_prefix_frames = int(self.inference_config.joint_observed_video_prefix_frames)
+        denoise_start_frame = int(infer_state.cursor.current_start_frame)
+        infer_result = run_joint_inference_loop(
+            visual_tower=visual_tower,
+            visual_outputs=rollout_visual_outputs,
+            reference_visual_outputs=(
+                observed_prefix_visual_outputs
+                if observed_prefix_visual_outputs is not None
+                else reference_visual_outputs
             ),
-        )
-        # In inference there is no clean teacher-forcing prefix in the packed
-        # sequence, so the observed video prefix stays anchored directly in the
-        # latent tensor while only the generated suffix is denoised.
-        noisy_video_latents = self._preserve_observed_video_prefix(
-            rollout_video_latents=torch.randn_like(observed_video_latents),
-            observed_video_latents=observed_video_latents,
-            observed_prefix_frames=observed_prefix_frames,
-        )
-        noisy_actions = torch.randn(
-            batch_size,
-            self.action_horizon,
-            self.action_dim,
-            device=device,
-            dtype=dtype,
-        )
-        scheduler_bundle = build_joint_runtime_schedulers(
             training_config=self.training_config,
             inference_config=self.inference_config,
-            device=device,
-        )
-        cache_policy = resolve_runtime_cache_policy(
-            inference_config=self.inference_config,
-        )
-        guidance = resolve_runtime_guidance(
-            visual_outputs.frontend.conditioning,
-            inference_config=self.inference_config,
-        )
-        unconditional_conditioning = build_unconditional_conditioning(
-            visual_outputs.frontend.conditioning
-        )
-        latest_core_cache = cache_state
-        conditioned_cache_branch = resolve_runtime_cache_branch(guidance, conditioned=True)
-        unconditioned_cache_branch = resolve_runtime_cache_branch(guidance, conditioned=False)
-        latest_core_cache = visual_tower.ensure_runtime_cache_branches(
-            latest_core_cache,
-            branch_names=resolve_runtime_cache_branches(guidance),
-        )
-        video_scheduler = scheduler_bundle.video_scheduler
-        action_scheduler = scheduler_bundle.action_scheduler
-        use_unipc = scheduler_bundle.use_unipc
-        if len(video_scheduler.timesteps) != len(action_scheduler.timesteps):
-            raise ValueError(
-                "Register-attached joint inference expects video/action schedulers with the same number of steps, "
-                f"got video={len(video_scheduler.timesteps)} and action={len(action_scheduler.timesteps)}."
-        )
-        layout: RegisterSequenceLayout | None = None
-        core_aux: dict[str, object] = {}
-        warmup_reference = resolve_runtime_warmup_reference(
-            policy=cache_policy,
-            current_start_frame=int(infer_state.cursor.current_start_frame),
-            num_video_frames=visual_outputs.frontend.token_grid.num_frames,
+            action_horizon=self.action_horizon,
+            action_dim=self.action_dim,
             num_frame_per_block=self.config.num_frame_per_block,
-        )
-        if warmup_reference is not None:
-            tokens_per_frame = visual_outputs.frontend.token_grid.tokens_per_frame
-            warmup_token_span = (
-                warmup_reference.frame_start * tokens_per_frame,
-                (warmup_reference.frame_start + warmup_reference.frame_count) * tokens_per_frame,
-            )
-            latest_core_cache = self._warmup_runtime_cache(
-                visual_tower=visual_tower,
-                visual_outputs=visual_outputs,
-                cache_state=latest_core_cache,
-                state_inputs=state_inputs,
-                guidance_cfg_mode=guidance.cfg_mode,
-                current_start_frame=int(infer_state.cursor.current_start_frame),
-                cache_reference_token_span=warmup_token_span,
-                cache_branch=conditioned_cache_branch,
-            )
-            if guidance.enabled and unconditional_conditioning is not None:
-                latest_core_cache = self._warmup_runtime_cache(
-                    visual_tower=visual_tower,
-                    visual_outputs=visual_outputs,
-                    cache_state=latest_core_cache,
-                    state_inputs=state_inputs,
-                    guidance_cfg_mode=guidance.cfg_mode,
-                    current_start_frame=int(infer_state.cursor.current_start_frame),
-                    cache_reference_token_span=warmup_token_span,
-                    cache_branch=unconditioned_cache_branch,
-                    conditioning_override=unconditional_conditioning,
-                )
-        for step_index, (video_timestep, action_timestep) in enumerate(
-            zip(video_scheduler.timesteps.to(device=device), action_scheduler.timesteps.to(device=device))
-        ):
-            input_cache_state = latest_core_cache
-            noisy_visual_outputs = self._build_noisy_frontend_outputs(
+            cache_state=cache_state,
+            state_inputs=state_inputs,
+            current_start_frame=denoise_start_frame,
+            warmup_current_start_frame=int(infer_state.cursor.current_start_frame),
+            observed_prefix_frames_override=0,
+            build_noisy_visual_outputs=lambda noisy_video_latents: self._build_noisy_frontend_outputs(
                 visual_tower,
-                visual_outputs=visual_outputs,
+                visual_outputs=rollout_visual_outputs,
                 noisy_video_latents=noisy_video_latents,
-            )
-            step_cache_update = visual_tower.build_runtime_cache_update_metadata(
-                input_cache_state,
-                current_start_frame=int(infer_state.cursor.current_start_frame),
-                update_kv_cache=should_update_cache_during_denoise(
-                    cache_policy,
-                    step_index=step_index,
-                    num_steps=len(video_scheduler.timesteps),
-                ),
-                update_cross_attention_cache=cache_policy.update_cross_attention_during_denoise,
-                cfg_mode=guidance.cfg_mode,
-                cache_branch=conditioned_cache_branch,
-            )
-            video_hidden, action_hidden, projected_outputs, layout, latest_core_cache, core_aux = self._run_packed_core(
+            ),
+            preserve_observed_video_prefix=lambda rollout_video_latents, observed_video_latents, observed_prefix_frames: self._preserve_observed_video_prefix(
+                rollout_video_latents=rollout_video_latents,
+                observed_video_latents=observed_video_latents,
+                observed_prefix_frames=observed_prefix_frames,
+            ),
+            constant_future_video_timestep_grid=lambda batch_size, num_video_frames, timestep_value, device, observed_prefix_frames: self._constant_future_video_timestep_grid(
+                batch_size=batch_size,
+                num_video_frames=num_video_frames,
+                timestep_value=timestep_value,
+                device=device,
+                observed_prefix_frames=observed_prefix_frames,
+            ),
+            constant_action_timestep_grid=lambda batch_size, timestep_value, device: self._constant_action_timestep_grid(
+                batch_size=batch_size,
+                timestep_value=timestep_value,
+                device=device,
+            ),
+            warmup_runtime_cache=lambda latest_core_cache, warmup_state_inputs, guidance_cfg_mode, cache_reference_token_span, cache_branch, conditioning_override: self._warmup_runtime_cache(
                 visual_tower=visual_tower,
-                visual_outputs=visual_outputs,
-                noisy_video_tokens=noisy_visual_outputs.frontend.video_tokens,
+                visual_outputs=reference_visual_outputs,
+                cache_state=latest_core_cache,
+                state_inputs=warmup_state_inputs,
+                guidance_cfg_mode=guidance_cfg_mode,
+                current_start_frame=int(infer_state.cursor.current_start_frame),
+                cache_reference_token_span=cache_reference_token_span,
+                cache_branch=cache_branch,
+                conditioning_override=conditioning_override,
+            ),
+            run_conditioned_core=lambda noisy_video_tokens, noisy_actions, video_timestep_grid, action_timestep_grid, input_cache_state, cache_update_metadata: self._run_packed_core(
+                visual_tower=visual_tower,
+                visual_outputs=rollout_visual_outputs,
+                noisy_video_tokens=noisy_video_tokens,
                 clean_video_prefix_tokens=None,
                 action_inputs=noisy_actions,
                 state_inputs=state_inputs,
-                video_timesteps=self._constant_future_video_timestep_grid(
-                    batch_size=batch_size,
-                    num_video_frames=visual_outputs.frontend.token_grid.num_frames,
-                    timestep_value=float(video_timestep),
-                    device=device,
-                    observed_prefix_frames=observed_prefix_frames,
-                ),
-                action_timesteps=self._constant_action_timestep_grid(
-                    batch_size=batch_size,
-                    timestep_value=float(action_timestep),
-                    device=device,
-                ),
-                current_start_frame=int(infer_state.cursor.current_start_frame),
+                video_timesteps=video_timestep_grid,
+                action_timesteps=action_timestep_grid,
+                current_start_frame=denoise_start_frame,
                 cache_state=input_cache_state,
-                cache_update_metadata=step_cache_update,
-            )
-            video_flow_pred = unpatchify_video_tokens(
-                projected_outputs["video_patch_flow"],
-                token_grid=visual_outputs.frontend.token_grid,
+                cache_update_metadata=cache_update_metadata,
+                require_matching_block_counts=False,
+            ),
+            run_unconditioned_core=lambda noisy_video_tokens, noisy_actions, video_timestep_grid, action_timestep_grid, input_cache_state, cache_update_metadata, conditioning_override: self._run_packed_core(
+                visual_tower=visual_tower,
+                visual_outputs=rollout_visual_outputs,
+                noisy_video_tokens=noisy_video_tokens,
+                clean_video_prefix_tokens=None,
+                action_inputs=noisy_actions,
+                state_inputs=state_inputs,
+                video_timesteps=video_timestep_grid,
+                action_timesteps=action_timestep_grid,
+                current_start_frame=denoise_start_frame,
+                cache_state=input_cache_state,
+                cache_update_metadata=cache_update_metadata,
+                conditioning_override=conditioning_override,
+                require_matching_block_counts=False,
+            ),
+            unpatchify_video_prediction=lambda video_patch_flow: unpatchify_video_tokens(
+                video_patch_flow,
+                token_grid=rollout_visual_outputs.frontend.token_grid,
                 latent_channels=self.backbone_config.latent_channels,
-            )
-            action_flow_pred = projected_outputs["action_flow"]
-            if guidance.enabled and unconditional_conditioning is not None:
-                uncond_video_hidden, uncond_action_hidden, uncond_projected_outputs, _, _, _ = self._run_packed_core(
-                    visual_tower=visual_tower,
-                    visual_outputs=visual_outputs,
-                    noisy_video_tokens=noisy_visual_outputs.frontend.video_tokens,
-                    clean_video_prefix_tokens=None,
-                    action_inputs=noisy_actions,
-                    state_inputs=state_inputs,
-                    video_timesteps=self._constant_future_video_timestep_grid(
-                        batch_size=batch_size,
-                        num_video_frames=visual_outputs.frontend.token_grid.num_frames,
-                        timestep_value=float(video_timestep),
-                        device=device,
-                        observed_prefix_frames=observed_prefix_frames,
-                    ),
-                    action_timesteps=self._constant_action_timestep_grid(
-                        batch_size=batch_size,
-                        timestep_value=float(action_timestep),
-                        device=device,
-                    ),
-                    current_start_frame=int(infer_state.cursor.current_start_frame),
-                    cache_state=input_cache_state,
-                    cache_update_metadata=visual_tower.build_runtime_cache_update_metadata(
-                        input_cache_state,
-                        current_start_frame=int(infer_state.cursor.current_start_frame),
-                        update_kv_cache=False,
-                        update_cross_attention_cache=False,
-                        cfg_mode=guidance.cfg_mode,
-                        cache_branch=unconditioned_cache_branch,
-                    ),
-                    conditioning_override=unconditional_conditioning,
-                )
-                uncond_video_flow_pred = unpatchify_video_tokens(
-                    uncond_projected_outputs["video_patch_flow"],
-                    token_grid=visual_outputs.frontend.token_grid,
-                    latent_channels=self.backbone_config.latent_channels,
-                )
-                uncond_action_flow_pred = uncond_projected_outputs["action_flow"]
-                video_flow_pred, action_flow_pred = combine_joint_cfg_predictions(
-                    conditioned_video_prediction=video_flow_pred,
-                    unconditioned_video_prediction=uncond_video_flow_pred,
-                    conditioned_action_prediction=action_flow_pred,
-                    unconditioned_action_prediction=uncond_action_flow_pred,
-                    guidance=guidance,
-                )
-            if use_unipc:
-                noisy_video_latents = video_scheduler.step(
-                    video_flow_pred,
-                    video_timestep,
-                    noisy_video_latents,
-                    step_index=step_index,
-                    return_dict=False,
-                )[0]
-                noisy_video_latents = self._preserve_observed_video_prefix(
-                    rollout_video_latents=noisy_video_latents,
-                    observed_video_latents=observed_video_latents,
-                    observed_prefix_frames=observed_prefix_frames,
-                )
-                noisy_actions = action_scheduler.step(
-                    action_flow_pred,
-                    action_timestep,
-                    noisy_actions,
-                    step_index=step_index,
-                    return_dict=False,
-                )[0]
-            else:
-                noisy_video_latents = video_scheduler.step(
-                    video_flow_pred,
-                    video_timestep,
-                    noisy_video_latents,
-                    to_final=step_index == len(video_scheduler.timesteps) - 1,
-                )
-                noisy_video_latents = self._preserve_observed_video_prefix(
-                    rollout_video_latents=noisy_video_latents,
-                    observed_video_latents=observed_video_latents,
-                    observed_prefix_frames=observed_prefix_frames,
-                )
-                noisy_actions = action_scheduler.step(
-                    action_flow_pred,
-                    action_timestep,
-                    noisy_actions,
-                    to_final=step_index == len(action_scheduler.timesteps) - 1,
-                )
+            ),
+        )
         next_cursor = advance_rollout_cursor(infer_state.cursor)
         next_cache = visual_tower.advance_runtime_cache_state(
-            latest_core_cache,
+            infer_result.latest_core_cache,
             next_cursor=next_cursor,
             payload_updates={"num_frame_per_block": self.config.num_frame_per_block},
-            tokens_per_frame=layout.tokens_per_frame if layout is not None else None,
-        )
-        decoder_output = ActionDecoderInferOutput(
-            action_pred=noisy_actions,
-            aux={
-                "decoder": "RegisterAttachedJointDiffusion",
-                "predicted_latents": noisy_video_latents.detach(),
-                "video_num_inference_steps": torch.tensor(float(len(video_scheduler.timesteps)), device=device),
-                "action_num_inference_steps": torch.tensor(float(len(action_scheduler.timesteps)), device=device),
-                "joint_sampler": self.inference_config.joint_sampler,
-                "joint_cfg_mode": guidance.cfg_mode,
-                "joint_cfg_enabled": guidance.enabled,
-            },
+            tokens_per_frame=infer_result.layout.tokens_per_frame if infer_result.layout is not None else None,
         )
         return PolicyInferOutput(
-            policy_features=noisy_actions,
+            policy_features=infer_result.noisy_actions,
             next_state=PolicyInferState(
                 step_index=infer_state.step_index + 1,
                 cursor=next_cursor,
@@ -743,13 +697,17 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
             ),
             aux={
                 "variant": self.config.name,
-                "layout": layout,
-                "core_aux": core_aux,
-                "structured_attention_full_cache_prefix": core_aux.get(
+                "layout": infer_result.layout,
+                "core_aux": infer_result.core_aux,
+                "structured_attention_full_cache_prefix": infer_result.core_aux.get(
                     "structured_attention_full_cache_prefix",
                     False,
                 ),
-                "predicted_latents": noisy_video_latents.detach(),
-                "decoder_output": decoder_output,
+                "predicted_latents": infer_result.noisy_video_latents.detach(),
+                "video_num_inference_steps": torch.tensor(float(infer_result.video_num_inference_steps), device=device),
+                "action_num_inference_steps": torch.tensor(float(infer_result.action_num_inference_steps), device=device),
+                "joint_sampler": self.inference_config.joint_sampler,
+                "joint_cfg_mode": infer_result.guidance_cfg_mode,
+                "joint_cfg_enabled": infer_result.guidance_enabled,
             },
         )

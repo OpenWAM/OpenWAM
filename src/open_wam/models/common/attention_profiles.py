@@ -62,6 +62,7 @@ class PreparedAttentionProfile:
 
 _ATTENTION_PROFILE_ALIASES: dict[str, str] = {
     "chunked_temporal_exact": "chunked_temporal_exact",
+    "chunked_temporal_exact_joint": "chunked_temporal_exact_joint",
     "lingbot_chunked_exact": "chunked_temporal_exact",
     "none": "none",
 }
@@ -155,6 +156,7 @@ def build_chunked_temporal_exact_attention_profile(
     device: torch.device,
     build_dense_masks: bool = False,
     build_flex_masks: bool = False,
+    allow_joint_noisy_block_attention: bool = False,
 ) -> PreparedAttentionProfile:
     batch_size, _, latent_frames, latent_height, latent_width = latent_shape
     _, _, action_frames, action_height, action_width = action_shape
@@ -211,11 +213,19 @@ def build_chunked_temporal_exact_attention_profile(
         kv_frame = frame_ids[None, :]
         q_noise = noise_ids[:, None]
         kv_noise = noise_ids[None, :]
+        q_block = torch.div(q_frame, 2, rounding_mode="floor")
+        kv_block = torch.div(kv_frame, 2, rounding_mode="floor")
 
         same_seq = (q_seq == kv_seq) & (q_seq >= 0) & (kv_seq >= 0)
         clean_to_clean = (q_noise == 1) & (kv_noise == 1) & (kv_frame <= q_frame)
-        noise_to_clean = (q_noise == 0) & (kv_noise == 1) & (kv_frame < q_frame)
-        noise_to_noise = (q_noise == 0) & (kv_noise == 0) & (kv_frame == q_frame)
+        if allow_joint_noisy_block_attention:
+            noise_to_clean = (q_noise == 0) & (kv_noise == 1) & (kv_block < q_block)
+        else:
+            noise_to_clean = (q_noise == 0) & (kv_noise == 1) & (kv_frame < q_frame)
+        if allow_joint_noisy_block_attention:
+            noise_to_noise = (q_noise == 0) & (kv_noise == 0) & (kv_block == q_block)
+        else:
+            noise_to_noise = (q_noise == 0) & (kv_noise == 0) & (kv_frame == q_frame)
         within_window = (q_frame - kv_frame).abs() <= int(window_size)
         self_attention_mask = same_seq & within_window & (clean_to_clean | noise_to_clean | noise_to_noise)
         cross_attention_mask = (
@@ -249,16 +259,33 @@ def build_chunked_temporal_exact_attention_profile(
                 & (noise_ids_flex[kv_idx] == 1)
                 & (frame_ids_flex[kv_idx] <= frame_ids_flex[q_idx])
             )
-            noise_to_clean = (
-                (noise_ids_flex[q_idx] == 0)
-                & (noise_ids_flex[kv_idx] == 1)
-                & (frame_ids_flex[kv_idx] < frame_ids_flex[q_idx])
-            )
-            noise_to_noise = (
-                (noise_ids_flex[q_idx] == 0)
-                & (noise_ids_flex[kv_idx] == 0)
-                & (frame_ids_flex[kv_idx] == frame_ids_flex[q_idx])
-            )
+            if allow_joint_noisy_block_attention:
+                noise_to_clean = (
+                    (noise_ids_flex[q_idx] == 0)
+                    & (noise_ids_flex[kv_idx] == 1)
+                    & (
+                        torch.div(frame_ids_flex[kv_idx], 2, rounding_mode="floor")
+                        < torch.div(frame_ids_flex[q_idx], 2, rounding_mode="floor")
+                    )
+                )
+            else:
+                noise_to_clean = (
+                    (noise_ids_flex[q_idx] == 0)
+                    & (noise_ids_flex[kv_idx] == 1)
+                    & (frame_ids_flex[kv_idx] < frame_ids_flex[q_idx])
+                )
+            if allow_joint_noisy_block_attention:
+                noise_to_noise = (
+                    (noise_ids_flex[q_idx] == 0)
+                    & (noise_ids_flex[kv_idx] == 0)
+                    & (torch.div(frame_ids_flex[kv_idx], 2, rounding_mode="floor") == torch.div(frame_ids_flex[q_idx], 2, rounding_mode="floor"))
+                )
+            else:
+                noise_to_noise = (
+                    (noise_ids_flex[q_idx] == 0)
+                    & (noise_ids_flex[kv_idx] == 0)
+                    & (frame_ids_flex[kv_idx] == frame_ids_flex[q_idx])
+                )
             within_window = (frame_ids_flex[q_idx] - frame_ids_flex[kv_idx]).abs() <= int(window_size)
             return same_seq & within_window & (clean_to_clean | noise_to_clean | noise_to_noise)
 
@@ -300,7 +327,7 @@ def build_chunked_temporal_exact_attention_profile(
 
     return PreparedAttentionProfile(
         spec=AttentionProfileSpec(
-            name="chunked_temporal_exact",
+            name="chunked_temporal_exact_joint" if allow_joint_noisy_block_attention else "chunked_temporal_exact",
             family="chunked_exact",
             backend="flex_or_sdpa",
         ),
@@ -316,6 +343,7 @@ def build_chunked_temporal_exact_attention_profile(
             "action_shape": tuple(int(v) for v in action_shape),
             "padded_length": int(padded_length),
             "text_token_count": int(text_token_count),
+            "allow_joint_noisy_block_attention": bool(allow_joint_noisy_block_attention),
         },
     )
 

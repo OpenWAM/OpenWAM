@@ -364,11 +364,12 @@ def _execute_branchwise_rollout_action_attention(
     num_action_per_block: int,
     num_state_per_block: int,
     num_video_blocks: int,
+    num_action_blocks: int,
 ) -> torch.Tensor:
     if action_query.shape[1] == 0:
         return action_query.new_zeros(action_query.shape)
     output = torch.empty_like(action_query)
-    for block_index in range(max(num_video_blocks, 1)):
+    for block_index in range(max(num_action_blocks, 1)):
         action_start = block_index * num_action_per_block
         action_end = min(action_start + num_action_per_block, action_query.shape[1])
         if action_end <= action_start:
@@ -516,6 +517,7 @@ def execute_structured_attention(
         num_action_per_block=context.num_action_per_block,
         num_state_per_block=context.num_state_per_block,
         num_video_blocks=context.num_video_blocks,
+        num_action_blocks=context.num_action_blocks,
     )
     state_output = _execute_branchwise_state_attention(
         state_query,

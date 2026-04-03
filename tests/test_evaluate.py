@@ -65,6 +65,7 @@ def test_run_evaluation_on_parallel_stream_robotwin(tmp_path: Path) -> None:
 class _EpisodeWindow:
     episode_index: int
     observation_start: int
+    repo_root: str | None = None
 
 
 class _TrajectoryEvalDataset(Dataset[WAMSample]):
@@ -123,6 +124,20 @@ def test_run_trajectory_evaluation_carries_across_episode_windows(monkeypatch) -
     assert summary.mean_trajectory_action_mse is not None
     assert summary.mean_video_latent_mse is None
     assert summary.mean_trajectory_video_latent_mse is None
+
+
+def test_group_dataset_indices_by_episode_uses_repo_root_identity() -> None:
+    dataset = _TrajectoryEvalDataset()
+    dataset.sample_index = (
+        _EpisodeWindow(episode_index=0, observation_start=0, repo_root="/tmp/repo_a"),
+        _EpisodeWindow(episode_index=0, observation_start=1, repo_root="/tmp/repo_a"),
+        _EpisodeWindow(episode_index=0, observation_start=0, repo_root="/tmp/repo_b"),
+        _EpisodeWindow(episode_index=0, observation_start=1, repo_root="/tmp/repo_b"),
+    )
+
+    groups = evaluate_module._group_dataset_indices_by_episode(dataset)
+
+    assert groups == [[0, 1], [2, 3]]
 
 
 def test_resolve_observation_frame_indices_prefers_metadata_list() -> None:

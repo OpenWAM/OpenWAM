@@ -199,6 +199,7 @@ class TemporalLatentResampler3D(TemporalCompressionAdapter):
         self,
         *,
         hidden_size: int,
+        input_dim: int | None = None,
         compressed_tokens_per_frame: int,
         depth: int,
         num_heads: int,
@@ -209,7 +210,7 @@ class TemporalLatentResampler3D(TemporalCompressionAdapter):
         self.hidden_size = hidden_size
         self.compressed_tokens_per_frame = compressed_tokens_per_frame
         self.max_frames = max_frames
-        self.input_proj = nn.LazyLinear(hidden_size)
+        self.input_proj = nn.Linear(input_dim or hidden_size, hidden_size)
         self.time_pos_emb = nn.Parameter(torch.randn(max_frames, 1, hidden_size) * 0.02)
         self.latents = nn.Parameter(torch.randn(max_frames, compressed_tokens_per_frame, hidden_size) * 0.02)
         self.cross_blocks = nn.ModuleList(
@@ -307,6 +308,7 @@ def build_temporal_compression_adapter(
     family: TemporalCompressionAdapterFamily | str,
     *,
     hidden_size: int | None = None,
+    input_dim: int | None = None,
     compressed_tokens_per_frame: int = 2,
     depth: int = 2,
     num_heads: int = 8,
@@ -322,6 +324,7 @@ def build_temporal_compression_adapter(
             raise ValueError("Temporal latent resampler requires `hidden_size`.")
         return TemporalLatentResampler3D(
             hidden_size=hidden_size,
+            input_dim=input_dim,
             compressed_tokens_per_frame=compressed_tokens_per_frame,
             depth=depth,
             num_heads=num_heads,

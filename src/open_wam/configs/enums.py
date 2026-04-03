@@ -28,6 +28,35 @@ class DataSplit(StrEnum):
     VAL = "val"
 
 
+class WindowSamplingMode(StrEnum):
+    """How one training sample is constructed from a latent source segment."""
+
+    FULL_SEGMENT = "full_segment"
+    RANDOM_SUBWINDOW = "random_subwindow"
+    CONTEXTUAL_SUBWINDOW = "contextual_subwindow"
+    ALIGNED_SUBWINDOW = "aligned_subwindow"
+
+
+class AnchorPolicy(StrEnum):
+    """How one local subwindow anchor is chosen within a valid source segment."""
+
+    RANDOM_VALID = "random_valid"
+
+
+class TemporalPositionMode(StrEnum):
+    """How local windows are mapped onto the transformer temporal position axis."""
+
+    GLOBAL_SHIFTED = "global_shifted"
+    LOCAL_ZERO_BASED = "local_zero_based"
+
+
+class LatentWindowProfile(StrEnum):
+    """High-level latent-window contract for local latent datasets."""
+
+    EXACT_CHUNKED_WINDOW = "exact_chunked_window"
+    STANDARD_POLICY_WINDOW = "standard_policy_window"
+
+
 class ConsortiumChannelSelectionMode(StrEnum):
     """How a consortium dataset selects visual channels from each member repo."""
 
@@ -261,6 +290,13 @@ class TemporalProjection(StrEnum):
     INTERPOLATE = "interpolate"
 
 
+class VisualStateSource(StrEnum):
+    """Which visual-state family a policy variant should consume."""
+
+    CORE_TOKENS = "core_tokens"
+    DENOISED_VIDEO_TOKENS = "denoised_video_tokens"
+
+
 class DecodeFeatureMode(StrEnum):
     """How decoded visual features are surfaced to a decoder."""
 
@@ -337,6 +373,21 @@ class ParallelRuntimeMode(StrEnum):
     """Execution mode for the method-1 parallel-stream variant."""
 
     LINGBOT_EXACT = "lingbot_exact"
+    LINGBOT_EXACT_ACTION_CONDITIONED = "lingbot_exact_action_conditioned"
+
+
+class ParallelActionConditionSource(StrEnum):
+    """Which action stream should be exposed to video denoising."""
+
+    NOISY_ACTION = "noisy_action"
+    CLEAN_ACTION = "clean_action"
+
+
+class ParallelActionAttentionScope(StrEnum):
+    """How broadly video tokens may attend to action tokens."""
+
+    FULL = "full"
+    BLOCK_LOCAL = "block_local"
 
 
 class ParallelSequenceComponent(StrEnum):
@@ -490,6 +541,13 @@ class ReferenceAssetsDevicePolicy(StrEnum):
 
     RUNTIME = "runtime"
     CPU_OFFLOAD = "cpu_offload"
+
+
+class ReferenceCoreInitMode(StrEnum):
+    """How shared-core reference weights should initialize the replica backbone."""
+
+    FULL = "full"
+    VIDEO_ONLY = "video_only"
 
 
 class EvalMode(StrEnum):

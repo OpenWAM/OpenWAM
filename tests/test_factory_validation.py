@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import torch
+
 from open_wam.configs import (
     ActionSchemaConfig,
     ActionTargetConfig,
@@ -17,8 +21,11 @@ from open_wam.configs import (
     TrainingConfig,
     VideoSequencePolicyConfig,
 )
-from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
+from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig, SharedVideoTransformerConfig
+from open_wam.models.visual_tower.reference_loader import load_wan_transformer_class
 from open_wam.pipelines import build_variant_pipeline_from_config
+
+from reference_model_test_utils import reference_model_path_or_skip
 
 
 def test_exact_parallel_stream_uses_vendored_reference_model_by_default() -> None:
@@ -44,16 +51,74 @@ def test_exact_parallel_stream_uses_vendored_reference_model_by_default() -> Non
     assert pipeline.policy_variant.config.runtime_mode == "lingbot_exact"
 
 
-def test_reference_core_weight_loading_uses_vendored_reference_model_by_default() -> None:
+def test_action_conditioned_parallel_stream_builds_with_shared_backbone() -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=2,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=LingbotCompatibleVideoBackboneConfig(implementation="lingbot_replica"),
+        policy_variant=ParallelStreamPolicyConfig(
+            hidden_size=32,
+            runtime_mode="lingbot_exact_action_conditioned",
+            frame_chunk_size=2,
+            action_per_frame=2,
+            attn_window=8,
+            video_condition_on_action=True,
+            video_action_condition_source="noisy_action",
+            video_action_attention_scope="block_local",
+            couple_action_to_video_timesteps=True,
+        ),
+        action_decoder=LingbotParallelActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(chunk_size=2, window_size=8),
+        inference=InferenceConfig(frame_chunk_size=2, use_cache=False),
+    )
+
+    pipeline = build_variant_pipeline_from_config(config)
+    assert pipeline.policy_variant.config.runtime_mode == "lingbot_exact_action_conditioned"
+    assert pipeline.policy_variant.config.video_condition_on_action is True
+
+
+def test_reference_core_weight_loading_uses_vendored_reference_model_by_default(tmp_path: Path) -> None:
+    backbone_config = SharedVideoTransformerConfig(
+        implementation="shared_transformer",
+        hidden_size=32,
+        num_layers=2,
+        num_heads=4,
+        attention_head_dim=8,
+        ffn_dim=64,
+        text_dim=16,
+        freq_dim=8,
+        pretrained_model_name_or_path=str(tmp_path / "lingbot_ckpt"),
+        load_reference_core_weights=True,
+        reference_model_path=reference_model_path_or_skip(),
+    )
+    model_cls = load_wan_transformer_class(backbone_config)
+    reference_model = model_cls(
+        patch_size=[1, 2, 2],
+        num_attention_heads=4,
+        attention_head_dim=8,
+        in_channels=48,
+        out_channels=48,
+        action_dim=4,
+        text_dim=16,
+        freq_dim=8,
+        ffn_dim=64,
+        num_layers=2,
+        cross_attn_norm=True,
+        eps=1e-6,
+        rope_max_seq_len=1024,
+        attn_mode="torch",
+    ).to(dtype=torch.bfloat16)
+    transformer_dir = tmp_path / "lingbot_ckpt" / "transformer"
+    reference_model.save_pretrained(transformer_dir)
+
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=2,
             action_schema=ActionSchemaConfig(action_dim=4, action_horizon=1, state_dim=4, state_horizon=1),
         ),
-        backbone=LingbotCompatibleVideoBackboneConfig(
-            implementation="lingbot_replica",
-            load_reference_core_weights=True,
-        ),
+        backbone=backbone_config,
         policy_variant=RegisterAttachedPolicyConfig(
             hidden_size=32,
             num_frame_per_block=1,

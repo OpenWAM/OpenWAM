@@ -32,6 +32,7 @@ from open_wam.configs import (
     LeRobotConsortiumDataConfig,
     LiberoDataConfig,
     RobotWinDataConfig,
+    SampleConstructionConfig,
     TrainerConfig,
     ViewLayoutConfig,
 )
@@ -194,6 +195,11 @@ def _load_policy_variant_config(
                 config_enums.TemporalProjection,
                 resolved_raw.get("temporal_projection", config_enums.TemporalProjection.INTERPOLATE),
             ),
+            visual_state_source=_coerce_enum(
+                config_enums.VisualStateSource,
+                resolved_raw.get("visual_state_source", config_enums.VisualStateSource.DENOISED_VIDEO_TOKENS),
+            ),
+            visual_denoise_ratio=resolved_raw.get("visual_denoise_ratio", 1.0),
             use_state_context=resolved_raw.get("use_state_context", True),
             use_goal_context=resolved_raw.get("use_goal_context", True),
         )
@@ -306,6 +312,29 @@ def _load_policy_variant_config(
                 resolved_raw.get("cache_mode", config_enums.ParallelCacheMode.METADATA_ONLY),
             ),
             noisy_video_condition_prob=resolved_raw.get("noisy_video_condition_prob", 0.5),
+            video_condition_on_action=resolved_raw.get("video_condition_on_action", False),
+            video_action_condition_source=_coerce_enum(
+                config_enums.ParallelActionConditionSource,
+                resolved_raw.get(
+                    "video_action_condition_source",
+                    config_enums.ParallelActionConditionSource.NOISY_ACTION,
+                ),
+            ),
+            video_action_attention_scope=_coerce_enum(
+                config_enums.ParallelActionAttentionScope,
+                resolved_raw.get(
+                    "video_action_attention_scope",
+                    config_enums.ParallelActionAttentionScope.BLOCK_LOCAL,
+                ),
+            ),
+            couple_action_to_video_timesteps=resolved_raw.get("couple_action_to_video_timesteps", True),
+            temporal_position_mode=_coerce_enum(
+                config_enums.TemporalPositionMode,
+                resolved_raw.get(
+                    "temporal_position_mode",
+                    config_enums.TemporalPositionMode.GLOBAL_SHIFTED,
+                ),
+            ),
             used_action_channel_ids=tuple(resolved_raw.get("used_action_channel_ids", ())),
             inverse_used_action_channel_ids=tuple(resolved_raw.get("inverse_used_action_channel_ids", ())),
             action_norm_method=_coerce_enum(
@@ -447,6 +476,7 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
     data_raw = raw.get("data", {})
     action_schema_raw = data_raw.get("action_schema", {})
     action_target_raw = data_raw.get("action_target", {})
+    sample_construction_raw = data_raw.get("sample_construction", {})
     dataset_name = data_raw.get("dataset_name", "robotwin")
     dataset_type = data_raw.get("dataset_type")
 
@@ -512,6 +542,10 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         ),
         latent_root=data_raw.get("latent_root", data_defaults.latent_root),
         latent_subdir=data_raw.get("latent_subdir", data_defaults.latent_subdir),
+        latent_window_profile=_coerce_enum(
+            config_enums.LatentWindowProfile,
+            data_raw.get("latent_window_profile", data_defaults.latent_window_profile),
+        ),
         split=_coerce_enum(config_enums.DataSplit, data_raw.get("split", data_defaults.split)),
         cache_dir=data_raw.get("cache_dir", data_defaults.cache_dir),
         camera_names=tuple(data_raw.get("camera_names", data_defaults.camera_names)),
@@ -563,6 +597,51 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
             gripper_action_index=action_target_raw.get(
                 "gripper_action_index",
                 data_defaults.action_target.gripper_action_index,
+            ),
+        ),
+        sample_construction=SampleConstructionConfig(
+            mode=_coerce_enum(
+                config_enums.WindowSamplingMode,
+                sample_construction_raw.get("mode", data_defaults.sample_construction.mode),
+            ),
+            anchor_policy=_coerce_enum(
+                config_enums.AnchorPolicy,
+                sample_construction_raw.get(
+                    "anchor_policy",
+                    data_defaults.sample_construction.anchor_policy,
+                ),
+            ),
+            num_frames=sample_construction_raw.get(
+                "num_frames",
+                data_defaults.sample_construction.num_frames,
+            ),
+            action_horizon=sample_construction_raw.get(
+                "action_horizon",
+                data_defaults.sample_construction.action_horizon,
+            ),
+            state_horizon=sample_construction_raw.get(
+                "state_horizon",
+                data_defaults.sample_construction.state_horizon,
+            ),
+            frame_stride=sample_construction_raw.get(
+                "frame_stride",
+                data_defaults.sample_construction.frame_stride,
+            ),
+            chunk_size=sample_construction_raw.get(
+                "chunk_size",
+                data_defaults.sample_construction.chunk_size,
+            ),
+            window_size=sample_construction_raw.get(
+                "window_size",
+                data_defaults.sample_construction.window_size,
+            ),
+            predict_blocks_per_sample=sample_construction_raw.get(
+                "predict_blocks_per_sample",
+                data_defaults.sample_construction.predict_blocks_per_sample,
+            ),
+            randomize_geometry=sample_construction_raw.get(
+                "randomize_geometry",
+                data_defaults.sample_construction.randomize_geometry,
             ),
         ),
     )
@@ -680,6 +759,10 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         load_wan_vae_frontend=load_wan_vae_frontend,
         load_text_conditioning=load_text_conditioning,
         load_reference_core_weights=load_reference_core_weights,
+        reference_core_init_mode=_coerce_enum(
+            config_enums.ReferenceCoreInitMode,
+            backbone_raw.get("reference_core_init_mode", backbone_defaults.reference_core_init_mode),
+        ),
         reference_assets_device_policy=_coerce_enum(
             config_enums.ReferenceAssetsDevicePolicy,
             backbone_raw.get(
@@ -824,6 +907,20 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         guidance_scale=inference_raw.get("guidance_scale", 1.0),
         action_guidance_scale=inference_raw.get("action_guidance_scale", 1.0),
         video_exec_step=inference_raw.get("video_exec_step", -1),
+        joint_dynamic_cache_schedule=inference_raw.get("joint_dynamic_cache_schedule", False),
+        joint_num_dit_steps=inference_raw.get("joint_num_dit_steps", 8),
+        joint_dit_step_mask=(
+            tuple(bool(value) for value in inference_raw["joint_dit_step_mask"])
+            if inference_raw.get("joint_dit_step_mask") is not None
+            else None
+        ),
+        joint_enable_prediction_reuse=inference_raw.get("joint_enable_prediction_reuse", False),
+        joint_prediction_reuse_thresholds=tuple(
+            float(value) for value in inference_raw.get("joint_prediction_reuse_thresholds", (0.95, 0.93))
+        ),
+        joint_prediction_reuse_countdowns=tuple(
+            int(value) for value in inference_raw.get("joint_prediction_reuse_countdowns", (4, 2))
+        ),
     )
 
     # Legacy configs may still provide an `action_head` block. The current

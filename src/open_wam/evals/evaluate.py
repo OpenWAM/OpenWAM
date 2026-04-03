@@ -15,7 +15,18 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from open_wam.configs import DataConfig, DataSplit, EvalMode, EvalPredictionSource, ExperimentConfig, TrainerAccelerator
-from open_wam.data import WAMBatch, WAMSample, build_train_val_datasets, collate_wam_samples, move_wam_batch_to_device
+from open_wam.data import (
+    LatentWAMBatch,
+    LatentWAMSample,
+    WAMBatch,
+    WAMSample,
+    build_train_val_datasets,
+    build_train_val_latent_datasets,
+    collate_latent_wam_samples,
+    collate_wam_samples,
+    move_latent_wam_batch_to_device,
+    move_wam_batch_to_device,
+)
 from open_wam.models.policy_variants import PolicyInferContext
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config
 from open_wam.utils import load_experiment_config, seed_everywhere
@@ -191,8 +202,12 @@ def _build_eval_dataloader(
     *,
     split: DataSplit,
     batch_size_override: int | None,
-) -> DataLoader[WAMBatch]:
-    train_dataset, val_dataset = build_train_val_datasets(data_config)
+) -> DataLoader[WAMBatch | LatentWAMBatch]:
+    uses_latents = _uses_latent_dataset(data_config)
+    if uses_latents:
+        train_dataset, val_dataset = build_train_val_latent_datasets(data_config)
+    else:
+        train_dataset, val_dataset = build_train_val_datasets(data_config)
     dataset: Dataset[WAMSample]
     if split == DataSplit.TRAIN:
         dataset = train_dataset
@@ -207,7 +222,7 @@ def _build_eval_dataloader(
         batch_size=batch_size,
         shuffle=False,
         num_workers=data_config.num_workers,
-        collate_fn=collate_wam_samples,
+        collate_fn=collate_latent_wam_samples if uses_latents else collate_wam_samples,
     )
 
 
@@ -215,8 +230,11 @@ def _select_eval_dataset(
     data_config: DataConfig,
     *,
     split: DataSplit,
-) -> Dataset[WAMSample]:
-    train_dataset, val_dataset = build_train_val_datasets(data_config)
+) -> Dataset[WAMSample] | Dataset[LatentWAMSample]:
+    if _uses_latent_dataset(data_config):
+        train_dataset, val_dataset = build_train_val_latent_datasets(data_config)
+    else:
+        train_dataset, val_dataset = build_train_val_datasets(data_config)
     if split == DataSplit.TRAIN:
         return train_dataset
     if split == DataSplit.VAL:
@@ -224,8 +242,14 @@ def _select_eval_dataset(
     raise ValueError(f"Unsupported eval split '{split}'. Expected 'train' or 'val'.")
 
 
+def _uses_latent_dataset(data_config: DataConfig) -> bool:
+    return str(data_config.dataset_type) == "lerobot_v2_latent_local"
+
+
 def _normalize_checkpoint_state_dict(checkpoint: dict[str, Any]) -> dict[str, torch.Tensor]:
-    state_dict = checkpoint.get("state_dict", checkpoint)
+    state_dict = checkpoint.get("state_dict")
+    if state_dict is None:
+        state_dict = checkpoint.get("model_state_dict", checkpoint)
     if not isinstance(state_dict, dict):
         raise ValueError("Checkpoint must be a raw state_dict or a Lightning checkpoint with `state_dict`.")
     normalized: dict[str, torch.Tensor] = {}
@@ -241,12 +265,12 @@ def _load_pipeline_checkpoint(
     pipeline: torch.nn.Module,
     checkpoint_path: Path,
     *,
-    device: torch.device,
+    map_location: torch.device,
 ) -> None:
     try:
-        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+        checkpoint = torch.load(checkpoint_path, map_location=map_location, weights_only=True)
     except TypeError:
-        checkpoint = torch.load(checkpoint_path, map_location=device)
+        checkpoint = torch.load(checkpoint_path, map_location=map_location)
     state_dict = _normalize_checkpoint_state_dict(checkpoint)
     missing, unexpected = pipeline.load_state_dict(state_dict, strict=False)
     if missing:
@@ -316,7 +340,7 @@ def _select_eval_video_prediction(
     return EvalPredictionSource.UNAVAILABLE, None
 
 
-def _group_dataset_indices_by_episode(dataset: Dataset[WAMSample]) -> list[list[int]]:
+def _group_dataset_indices_by_episode(dataset: Dataset[WAMSample] | Dataset[LatentWAMSample]) -> list[list[int]]:
     """Group one split's windowed samples into episode-ordered trajectories.
 
     Trajectory-mode evaluation needs windows ordered by episode and observation
@@ -332,6 +356,10 @@ def _group_dataset_indices_by_episode(dataset: Dataset[WAMSample]) -> list[list[
         for dataset_index, window in enumerate(sample_index):
             episode_index = getattr(window, "episode_index", None)
             observation_start = getattr(window, "observation_start", None)
+            if observation_start is None:
+                observation_frame_indices = getattr(window, "observation_frame_indices", None)
+                if isinstance(observation_frame_indices, (list, tuple)) and observation_frame_indices:
+                    observation_start = observation_frame_indices[0]
             if episode_index is None or observation_start is None:
                 raise ValueError(
                     "Trajectory evaluation requires dataset sample_index entries with "
@@ -341,6 +369,8 @@ def _group_dataset_indices_by_episode(dataset: Dataset[WAMSample]) -> list[list[
                 getattr(window, "repo_id", None)
                 or getattr(window, "member_id", None)
                 or getattr(window, "dataset_id", None)
+                or getattr(window, "repo_root", None)
+                or getattr(window, "local_root", None)
                 or "__default__"
             )
             grouped.setdefault((str(dataset_identity), int(episode_index)), []).append((int(observation_start), dataset_index))
@@ -356,6 +386,10 @@ def _group_dataset_indices_by_episode(dataset: Dataset[WAMSample]) -> list[list[
         sample = dataset[dataset_index]
         episode_index = sample.metadata.get("episode_index")
         observation_start = sample.metadata.get("observation_start")
+        if observation_start is None:
+            observation_start = sample.metadata.get("window_start_frame")
+        if observation_start is None:
+            observation_start = sample.metadata.get("sample_start_frame")
         if episode_index is None or observation_start is None:
             raise ValueError(
                 "Trajectory evaluation requires either a dataset.sample_index with "
@@ -366,6 +400,8 @@ def _group_dataset_indices_by_episode(dataset: Dataset[WAMSample]) -> list[list[
             sample.metadata.get("repo_id")
             or sample.metadata.get("member_id")
             or sample.metadata.get("dataset_id")
+            or sample.metadata.get("repo_root")
+            or sample.metadata.get("local_root")
             or "__default__"
         )
         grouped.setdefault((str(dataset_identity), int(episode_index)), []).append((int(observation_start), dataset_index))
@@ -396,11 +432,42 @@ def _resolve_observation_frame_indices(
             )
         return tuple(int(value) for value in raw_indices)
 
+    observed_frame_ids = metadata.get("observed_frame_ids")
+    if isinstance(observed_frame_ids, (list, tuple)):
+        resolved_ids = [int(value) for value in observed_frame_ids]
+        if len(resolved_ids) == num_frames:
+            return tuple(resolved_ids)
+        if len(resolved_ids) > num_frames:
+            bucket_boundaries = [
+                (latent_index * len(resolved_ids)) // num_frames
+                for latent_index in range(num_frames + 1)
+            ]
+            bucket_boundaries[-1] = len(resolved_ids)
+            aligned_ids: list[int] = []
+            for latent_index in range(num_frames):
+                start = bucket_boundaries[latent_index]
+                end = bucket_boundaries[latent_index + 1]
+                if start >= len(resolved_ids):
+                    aligned_ids.append(resolved_ids[-1])
+                    continue
+                bucket = resolved_ids[start:end]
+                aligned_ids.append(bucket[-1] if bucket else resolved_ids[start])
+            return tuple(aligned_ids)
+        raise ValueError(
+            "Expected `observed_frame_ids` to contain at least as many entries as the "
+            f"current video window length {num_frames}, got {len(resolved_ids)}."
+        )
+
     observation_start = metadata.get("observation_start")
+    if observation_start is None:
+        observation_start = metadata.get("window_start_frame")
+    if observation_start is None:
+        observation_start = metadata.get("sample_start_frame")
     if observation_start is None:
         raise ValueError(
             "Trajectory-open-loop evaluation requires per-sample metadata with "
-            "`observation_frame_indices` or `observation_start`."
+            "`observation_frame_indices`, `observed_frame_ids`, or "
+            "`observation_start`/`window_start_frame`/`sample_start_frame`."
         )
     return tuple(int(observation_start) + offset for offset in range(num_frames))
 
@@ -443,10 +510,17 @@ def run_evaluation(
     experiment_config = load_experiment_config(request.experiment_config_path)
     seed_everywhere(request.seed)
     device = _resolve_device(request.device, experiment_config)
-    pipeline = build_variant_pipeline_from_config(experiment_config).to(device)
-    pipeline.eval()
+    pipeline = build_variant_pipeline_from_config(experiment_config)
     if request.checkpoint_path is not None:
-        _load_pipeline_checkpoint(pipeline, request.checkpoint_path, device=device)
+        # Load checkpoints on CPU first to avoid doubling GPU memory during
+        # deserialization for large full-model eval checkpoints.
+        _load_pipeline_checkpoint(
+            pipeline,
+            request.checkpoint_path,
+            map_location=torch.device("cpu"),
+        )
+    pipeline = pipeline.to(device)
+    pipeline.eval()
 
     action_mse_values: list[float] = []
     trajectory_mse_values: list[float] = []
@@ -471,7 +545,10 @@ def run_evaluation(
             for batch_index, batch in enumerate(dataloader):
                 if batch_index >= request.max_batches:
                     break
-                batch = move_wam_batch_to_device(batch, device)
+                if isinstance(batch, LatentWAMBatch):
+                    batch = move_latent_wam_batch_to_device(batch, device)
+                else:
+                    batch = move_wam_batch_to_device(batch, device)
                 infer_context = PolicyInferContext(
                     state=batch.state,
                     extra={
@@ -482,7 +559,16 @@ def run_evaluation(
                 # `forward_infer_step` already runs the full denoising loop for
                 # the active variant. Batch mode simply evaluates that one-step
                 # inference path independently on each sampled window.
-                output = pipeline.forward_infer_step(batch.views, infer_context)
+                if isinstance(batch, LatentWAMBatch):
+                    output = pipeline.forward_infer_step_from_latents(
+                        batch.video_latents,
+                        infer_context,
+                        canonical_video=batch.canonical_video,
+                        text_context=batch.text_context,
+                        negative_text_context=batch.negative_text_context,
+                    )
+                else:
+                    output = pipeline.forward_infer_step(batch.views, infer_context)
                 action_prediction_source, action_prediction = _select_eval_action_prediction(
                     target_actions=batch.actions,
                     decoder_action_pred=output.decoder_output.action_pred,
@@ -520,7 +606,23 @@ def run_evaluation(
             if request.max_trajectories is not None:
                 episode_groups = episode_groups[: request.max_trajectories]
 
-            for dataset_indices in episode_groups:
+            for trajectory_index, dataset_indices in enumerate(episode_groups):
+                requested_steps = request.max_steps_per_trajectory
+                planned_steps = (
+                    min(len(dataset_indices), requested_steps)
+                    if requested_steps is not None
+                    else len(dataset_indices)
+                )
+                print(
+                    "eval.trajectory_start",
+                    {
+                        "trajectory_index": trajectory_index,
+                        "num_dataset_steps": len(dataset_indices),
+                        "planned_steps": planned_steps,
+                        "mode": str(request.mode),
+                    },
+                    flush=True,
+                )
                 rollout_runner = VariantRolloutRunner(pipeline)
                 session = None
                 previous_action = None
@@ -532,11 +634,29 @@ def run_evaluation(
                 for step_index, dataset_index in enumerate(dataset_indices):
                     if request.max_steps_per_trajectory is not None and step_index >= request.max_steps_per_trajectory:
                         break
+                    print(
+                        "eval.trajectory_step",
+                        {
+                            "trajectory_index": trajectory_index,
+                            "step_index": step_index,
+                            "dataset_index": dataset_index,
+                        },
+                        flush=True,
+                    )
                     sample = dataset[dataset_index]
-                    batch = move_wam_batch_to_device(collate_wam_samples([sample]), device)
+                    if isinstance(sample, LatentWAMSample):
+                        batch = move_latent_wam_batch_to_device(collate_latent_wam_samples([sample]), device)
+                    else:
+                        batch = move_wam_batch_to_device(collate_wam_samples([sample]), device)
                     if session is None:
                         session = rollout_runner.reset(
                             task_text=batch.task_text,
+                            text_context=(
+                                batch.text_context if isinstance(batch, LatentWAMBatch) else None
+                            ),
+                            negative_text_context=(
+                                batch.negative_text_context if isinstance(batch, LatentWAMBatch) else None
+                            ),
                         )
                     infer_context = PolicyInferContext(
                         state=batch.state,
@@ -547,10 +667,19 @@ def run_evaluation(
                         },
                     )
                     if request.mode == EvalMode.TRAJECTORY_OPEN_LOOP:
-                        target_visual_outputs = pipeline.prepare_visual_outputs(
-                            batch.views,
-                            task_text=batch.task_text,
-                        )
+                        if isinstance(batch, LatentWAMBatch):
+                            target_visual_outputs = pipeline.prepare_visual_outputs_from_latents(
+                                batch.video_latents,
+                                task_text=batch.task_text,
+                                text_context=batch.text_context,
+                                negative_text_context=batch.negative_text_context,
+                                canonical_video=batch.canonical_video,
+                            )
+                        else:
+                            target_visual_outputs = pipeline.prepare_visual_outputs(
+                                batch.views,
+                                task_text=batch.task_text,
+                            )
                         current_frame_indices = _resolve_observation_frame_indices(
                             batch.metadata[0],
                             num_frames=target_visual_outputs.frontend.video_latents.shape[2],
@@ -584,20 +713,36 @@ def run_evaluation(
                             output = step_output.infer_output
                             session = step_output.session
                         else:
+                            if isinstance(batch, LatentWAMBatch):
+                                step_output = rollout_runner.infer_step(
+                                    session=session,
+                                    context=infer_context,
+                                    video_latents=batch.video_latents,
+                                    canonical_video=batch.canonical_video,
+                                )
+                            else:
+                                step_output = rollout_runner.infer_step(
+                                    session=session,
+                                    context=infer_context,
+                                    views=batch.views,
+                                )
+                            output = step_output.infer_output
+                            session = step_output.session
+                        target_video_latents = target_visual_outputs.frontend.video_latents
+                    else:
+                        if isinstance(batch, LatentWAMBatch):
+                            step_output = rollout_runner.infer_step(
+                                session=session,
+                                context=infer_context,
+                                video_latents=batch.video_latents,
+                                canonical_video=batch.canonical_video,
+                            )
+                        else:
                             step_output = rollout_runner.infer_step(
                                 session=session,
                                 context=infer_context,
                                 views=batch.views,
                             )
-                            output = step_output.infer_output
-                            session = step_output.session
-                        target_video_latents = target_visual_outputs.frontend.video_latents
-                    else:
-                        step_output = rollout_runner.infer_step(
-                            session=session,
-                            context=infer_context,
-                            views=batch.views,
-                        )
                         output = step_output.infer_output
                         session = step_output.session
                         target_video_latents = output.visual_outputs.frontend.video_latents
@@ -635,6 +780,25 @@ def run_evaluation(
                         rollout_frame_indices = current_frame_indices
                     rollout_canonical_video = output.visual_outputs.frontend.canonical_video
                     num_batches += 1
+                print(
+                    "eval.trajectory_done",
+                    {
+                        "trajectory_index": trajectory_index,
+                        "num_step_mse": len(step_mse_values),
+                        "num_step_video_mse": len(step_video_mse_values),
+                        "mean_step_action_mse": (
+                            sum(step_mse_values) / len(step_mse_values)
+                            if step_mse_values
+                            else None
+                        ),
+                        "mean_step_video_mse": (
+                            sum(step_video_mse_values) / len(step_video_mse_values)
+                            if step_video_mse_values
+                            else None
+                        ),
+                    },
+                    flush=True,
+                )
                 if step_mse_values:
                     trajectory_mse_values.append(sum(step_mse_values) / len(step_mse_values))
                     if step_video_mse_values:

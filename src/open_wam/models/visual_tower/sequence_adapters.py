@@ -49,6 +49,7 @@ class PreparedRuntimeSequence:
     core_input: VisualCoreInput | None = None
     payload: dict[str, Any] | None = None
     exact_train: PreparedExactTrainSequence | None = None
+    exact_inference: PreparedExactTrainSequence | None = None
     update_cache: int = 0
     cache_name: str = "open_wam_exact"
     action_mode: bool = False
@@ -220,7 +221,7 @@ def _materialize_register_core_input(
                     else "cached_rollout"
                 ),
                 "action_state_index": max(
-                    register_components.current_start_frame
+                    (register_components.current_start_frame - observed_prefix_frames)
                     // max(layout.tokens_per_image_block // max(layout.tokens_per_frame, 1), 1),
                     0,
                 ),
@@ -274,7 +275,7 @@ def _materialize_register_core_input(
                 else "cached_rollout"
             ),
             action_state_index=max(
-                register_components.current_start_frame
+                (register_components.current_start_frame - observed_prefix_frames)
                 // max(
                     max(layout.tokens_per_image_block // max(layout.tokens_per_frame, 1), 1),
                     1,
@@ -406,7 +407,7 @@ def prepare_exact_dual_stream_train_sequence(
         attention_profile_name = "chunked_temporal_exact"
 
     exact_attention_profile = None
-    if attention_profile_name == "chunked_temporal_exact":
+    if attention_profile_name in {"chunked_temporal_exact", "chunked_temporal_exact_joint"}:
         exact_attention_profile = build_chunked_temporal_exact_attention_profile(
             latent_shape=tuple(int(dim) for dim in latent_dict["noisy_latents"].shape),
             action_shape=tuple(int(dim) for dim in action_dict["noisy_latents"].shape),
@@ -418,11 +419,12 @@ def prepare_exact_dual_stream_train_sequence(
             device=hidden_states.device,
             build_dense_masks=hidden_states.device.type != "cuda",
             build_flex_masks=hidden_states.device.type == "cuda",
+            allow_joint_noisy_block_attention=attention_profile_name == "chunked_temporal_exact_joint",
         )
     elif attention_profile_name not in (None, "none"):
         raise ValueError(
             "Exact dual-stream adapter only supports `attention_profile_name` of "
-            f"`None`, `none`, or `chunked_temporal_exact`, got {attention_profile_name!r}."
+            f"`None`, `none`, `chunked_temporal_exact`, or `chunked_temporal_exact_joint`, got {attention_profile_name!r}."
         )
 
     return PreparedExactTrainSequence(
@@ -503,7 +505,7 @@ def prepare_runtime_sequence(
             mode="core_input",
             core_input=core_input,
         )
-    if family == "chunked_dual_stream_exact":
+    if family in {"chunked_dual_stream_exact", "chunked_dual_stream_exact_inference"}:
         if step_input.payload is None:
             raise ValueError(
                 f"Runtime program {step_input.program.name!r} requires exact-train `payload`."
@@ -516,6 +518,14 @@ def prepare_runtime_sequence(
             and payload.get("attention_profile_name") is None
         ):
             payload["attention_profile_name"] = step_input.program.attention_profile_name
+        if family == "chunked_dual_stream_exact_inference":
+            return PreparedRuntimeSequence(
+                mode="exact_inference",
+                payload=payload,
+                exact_inference=exact_train_preparer(payload),
+                update_cache=step_input.update_cache,
+                cache_name=step_input.cache_name,
+            )
         return PreparedRuntimeSequence(
             mode="exact_train",
             payload=payload,

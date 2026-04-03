@@ -128,7 +128,7 @@ def init_cache_backend_payload(
                 slot_ids=slot_ids,
                 slot_mask=slot_mask,
                 prediction_mask=prediction_mask,
-                metadata={},
+                metadata=dict(metadata or {}),
             )
         )
 
@@ -266,6 +266,8 @@ def materialize_slot_pool_layer_entry(layer_state: SlotPoolLayerState) -> Attent
     ):
         return AttentionCacheEntry(metadata=dict(layer_state.metadata))
     valid = layer_state.slot_mask.nonzero(as_tuple=False).squeeze(-1)
+    if layer_state.slot_ids is not None and valid.numel() > 1:
+        valid = valid[torch.argsort(layer_state.slot_ids[valid], stable=True)]
     key = layer_state.key[:, valid].transpose(1, 2).contiguous()
     value = layer_state.value[:, valid].transpose(1, 2).contiguous()
     metadata = dict(layer_state.metadata)

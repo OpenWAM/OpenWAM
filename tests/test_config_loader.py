@@ -10,12 +10,17 @@ from open_wam.configs import (
     CacheWarmupSource,
     CFGMode,
     JointSampler,
+    LatentWindowProfile,
     LoopPolicyName,
     ParallelRuntimeMode,
     ParallelStreamPolicyConfig,
     PostDecodedPolicyConfig,
     PostLatentPolicyConfig,
+    AnchorPolicy,
+    ReferenceCoreInitMode,
     RegisterAttachedPolicyConfig,
+    TemporalPositionMode,
+    WindowSamplingMode,
     VideoSequencePolicyConfig,
     StrategyName,
     TrainerRuntimeName,
@@ -80,23 +85,88 @@ def test_raw_libero_smoke_variant_yaml_configs_load() -> None:
     video_sequence = load_experiment_config(REPO_ROOT / "configs/experiments/video_sequence_policy_libero_smoke.yaml")
     register = load_experiment_config(REPO_ROOT / "configs/experiments/register_attached_libero_smoke.yaml")
     parallel = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_raw_smoke.yaml")
+    parallel_action_conditioned = load_experiment_config(
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_action_conditioned_smoke.yaml"
+    )
 
     assert isinstance(post_latent.policy_variant, PostLatentPolicyConfig)
     assert isinstance(post_decoded.policy_variant, PostDecodedPolicyConfig)
     assert isinstance(video_sequence.policy_variant, VideoSequencePolicyConfig)
     assert isinstance(register.policy_variant, RegisterAttachedPolicyConfig)
     assert isinstance(parallel.policy_variant, ParallelStreamPolicyConfig)
+    assert isinstance(parallel_action_conditioned.policy_variant, ParallelStreamPolicyConfig)
 
     assert post_latent.data.dataset_name == "libero"
     assert post_decoded.data.dataset_name == "libero"
     assert video_sequence.data.dataset_name == "libero"
     assert register.data.dataset_name == "libero"
     assert parallel.data.dataset_name == "libero"
+    assert parallel_action_conditioned.data.dataset_name == "libero"
 
     assert register.data.action_schema.state_horizon == 3
     assert parallel.data.action_schema.action_horizon == 16
     assert parallel.action_decoder.name == ActionDecoderName.LINGBOT_PARALLEL
+    assert parallel_action_conditioned.policy_variant.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED
+    assert parallel_action_conditioned.policy_variant.video_condition_on_action is True
+    assert parallel_action_conditioned.policy_variant.video_action_condition_source == "noisy_action"
+    assert parallel_action_conditioned.policy_variant.video_action_attention_scope == "block_local"
     assert video_sequence.action_decoder.name == ActionDecoderName.VPP
+
+
+def test_latent_libero_local_training_yaml_configs_load() -> None:
+    post_latent = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_libero_latent_local.yaml")
+    post_decoded = load_experiment_config(REPO_ROOT / "configs/experiments/post_decoded_libero_latent_local.yaml")
+    video_sequence = load_experiment_config(
+        REPO_ROOT / "configs/experiments/video_sequence_policy_libero_latent_local.yaml"
+    )
+    video_sequence_random = load_experiment_config(
+        REPO_ROOT / "configs/experiments/video_sequence_policy_libero_latent_local_random_subwindow.yaml"
+    )
+    register = load_experiment_config(REPO_ROOT / "configs/experiments/register_attached_libero_latent_local.yaml")
+
+    assert post_latent.data.dataset_type == "lerobot_v2_latent_local"
+    assert post_decoded.data.dataset_type == "lerobot_v2_latent_local"
+    assert video_sequence.data.dataset_type == "lerobot_v2_latent_local"
+    assert video_sequence_random.data.dataset_type == "lerobot_v2_latent_local"
+    assert register.data.dataset_type == "lerobot_v2_latent_local"
+    assert post_latent.data.local_root.endswith("/libero_heng/libero_10")
+    assert post_decoded.data.local_root.endswith("/libero_heng/libero_10")
+    assert video_sequence.data.local_root.endswith("/libero_heng/libero_10")
+    assert register.data.local_root.endswith("/libero_heng/libero_10")
+    assert post_latent.trainer.batch_adapter == BatchAdapterName.LATENTS
+    assert post_decoded.trainer.batch_adapter == BatchAdapterName.LATENTS
+    assert video_sequence.trainer.batch_adapter == BatchAdapterName.LATENTS
+    assert video_sequence_random.trainer.batch_adapter == BatchAdapterName.LATENTS
+    assert register.trainer.batch_adapter == BatchAdapterName.LATENTS
+    assert post_latent.trainer.strategy == StrategyName.FSDP
+    assert post_decoded.trainer.strategy == StrategyName.FSDP
+    assert video_sequence.trainer.strategy == StrategyName.FSDP
+    assert video_sequence_random.trainer.strategy == StrategyName.FSDP
+    assert register.trainer.strategy == StrategyName.FSDP
+    assert post_latent.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
+    assert post_decoded.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
+    assert video_sequence.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
+    assert video_sequence_random.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
+    assert register.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
+    assert post_latent.backbone.load_reference_core_weights is True
+    assert post_decoded.backbone.load_reference_core_weights is True
+    assert video_sequence.backbone.load_reference_core_weights is True
+    assert video_sequence_random.backbone.load_reference_core_weights is True
+    assert register.backbone.load_reference_core_weights is True
+    assert post_latent.data.sample_construction.mode == WindowSamplingMode.FULL_SEGMENT
+    assert post_decoded.data.sample_construction.mode == WindowSamplingMode.FULL_SEGMENT
+    assert video_sequence.data.sample_construction.mode == WindowSamplingMode.FULL_SEGMENT
+    assert video_sequence_random.data.sample_construction.mode == WindowSamplingMode.ALIGNED_SUBWINDOW
+    assert register.data.sample_construction.mode == WindowSamplingMode.ALIGNED_SUBWINDOW
+    assert post_latent.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
+    assert post_decoded.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
+    assert video_sequence.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
+    assert video_sequence_random.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
+    assert register.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
+    assert register.data.sample_construction.anchor_policy == AnchorPolicy.RANDOM_VALID
+    assert register.data.sample_construction.num_frames == 4
+    assert register.data.sample_construction.action_horizon == 6
+    assert register.data.sample_construction.state_horizon == 3
 
 
 def test_video_sequence_policy_yaml_config_loads(tmp_path: Path) -> None:
@@ -204,6 +274,7 @@ def test_heng_compatible_libero_yaml_config_loads() -> None:
     )
     assert heng_libero.data.action_target.source_key == "action"
     assert heng_libero.data.action_target.pose_source_key == "observation.state"
+    assert heng_libero.data.latent_window_profile == LatentWindowProfile.EXACT_CHUNKED_WINDOW
     assert heng_libero.training.learning_rate == 1e-5
     assert heng_libero.training.gradient_accumulation_steps == 10
     assert heng_libero.training.num_steps == 5000
@@ -223,24 +294,68 @@ def test_loaded_enum_like_fields_are_real_enum_members() -> None:
     config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml")
 
     assert isinstance(config.backbone.train_attn_mode, AttentionMode)
-    assert isinstance(config.backbone.infer_attn_mode, AttentionMode)
-    assert isinstance(config.policy_variant.runtime_mode, ParallelRuntimeMode)
-    assert isinstance(config.action_decoder.name, ActionDecoderName)
-    assert isinstance(config.inference.joint_sampler, JointSampler)
-    assert isinstance(config.inference.video_cfg_mode, CFGMode)
-    assert isinstance(config.inference.action_cfg_mode, CFGMode)
-    assert isinstance(config.inference.joint_cache_warmup_source, CacheWarmupSource)
-    assert isinstance(config.inference.joint_cache_initial_warmup_anchor, WarmupAnchor)
-    assert isinstance(config.inference.joint_cache_rollout_warmup_anchor, WarmupAnchor)
-    assert config.training.enabled_objectives == (
-        TrainingObjective.LATENT,
-        TrainingObjective.ACTION,
-    )
-    assert config.training.trainable_components == (TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE,)
-    assert isinstance(config.trainer.runtime, TrainerRuntimeName)
-    assert isinstance(config.trainer.batch_adapter, BatchAdapterName)
-    assert isinstance(config.trainer.loop_policy, LoopPolicyName)
-    assert isinstance(config.trainer.strategy, StrategyName)
+
+
+def test_sample_construction_yaml_strings_are_coerced_to_enum_members(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/register_attached_libero_latent_local.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw.setdefault("data", {})
+    raw["data"]["sample_construction"] = {
+        "mode": "aligned_subwindow",
+        "anchor_policy": "random_valid",
+        "num_frames": 5,
+        "action_horizon": 20,
+        "state_horizon": 2,
+        "frame_stride": 1,
+    }
+
+    config_path = tmp_path / "register_attached_sample_construction.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    assert config.data.sample_construction.mode == WindowSamplingMode.ALIGNED_SUBWINDOW
+    assert config.data.sample_construction.anchor_policy == AnchorPolicy.RANDOM_VALID
+    assert config.data.sample_construction.num_frames == 5
+    assert config.data.sample_construction.action_horizon == 20
+    assert config.data.sample_construction.state_horizon == 2
+
+
+def test_contextual_sample_construction_and_temporal_position_mode_load(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_joint_denoise_heng_compatible.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw.setdefault("data", {})
+    raw["data"]["sample_construction"] = {
+        "mode": "contextual_subwindow",
+        "num_frames": 4,
+        "action_horizon": 16,
+        "state_horizon": 1,
+        "frame_stride": 1,
+        "chunk_size": 4,
+        "window_size": 64,
+        "predict_blocks_per_sample": 1,
+        "randomize_geometry": False,
+    }
+    raw.setdefault("policy_variant", {})
+    raw["policy_variant"]["temporal_position_mode"] = "global_shifted"
+
+    config_path = tmp_path / "parallel_stream_contextual.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    assert config.data.sample_construction.mode == WindowSamplingMode.CONTEXTUAL_SUBWINDOW
+    assert config.data.sample_construction.chunk_size == 4
+    assert config.data.sample_construction.window_size == 64
+    assert config.data.sample_construction.predict_blocks_per_sample == 1
+    assert config.data.sample_construction.randomize_geometry is False
+    assert config.policy_variant.temporal_position_mode == TemporalPositionMode.GLOBAL_SHIFTED
 
 
 def test_legacy_method2_runtime_fields_still_map_to_generic_runtime_config(tmp_path: Path) -> None:

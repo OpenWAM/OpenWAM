@@ -90,12 +90,29 @@ class FlowMatchScheduler:
         timestep: torch.Tensor,
         t_dim: int = 2,
     ) -> torch.Tensor:
-        timestep = timestep.cpu()
-        timestep = timestep[None]
-        timestep_id = torch.argmin((self.timesteps[:, None] - timestep).abs(), dim=0)
+        if not isinstance(timestep, torch.Tensor):
+            timestep = torch.tensor(timestep, device=original_samples.device)
+        timestep = timestep.to(device=original_samples.device)
+        flat_timestep = timestep.reshape(-1)
+        timestep_id = torch.argmin(
+            (self.timesteps[:, None].to(flat_timestep.device) - flat_timestep[None]).abs(),
+            dim=0,
+        ).reshape(timestep.shape)
+        sigma_values = self.sigmas.to(original_samples.device)[timestep_id].to(original_samples.dtype)
         shape = [1] * noise.ndim
-        shape[t_dim] = timestep_id.shape[0]
-        sigma = self.sigmas[timestep_id].to(original_samples).view(shape)
+        if timestep.ndim == 0:
+            pass
+        elif timestep.ndim == 1:
+            shape[t_dim] = timestep.shape[0]
+        elif timestep.ndim == 2:
+            shape[0] = timestep.shape[0]
+            shape[t_dim] = timestep.shape[1]
+        else:
+            raise ValueError(
+                "Expected timestep to be scalar, [T], or [B, T], "
+                f"got shape {tuple(timestep.shape)}."
+            )
+        sigma = sigma_values.view(shape)
         return (1 - sigma) * original_samples + sigma * noise
 
     def training_target(self, sample: torch.Tensor, noise: torch.Tensor, timestep: torch.Tensor) -> torch.Tensor:
@@ -132,12 +149,14 @@ class FlowMatchScheduler:
 def sample_timestep_id(
     batch_size: int,
     *,
+    sample_shape: tuple[int, ...] | None = None,
     min_timestep_bd: float = 0.0,
     max_timestep_bd: float = 1.0,
     num_train_timesteps: int = 1000,
     device: torch.device | None = None,
 ) -> torch.Tensor:
-    u = torch.rand(size=[batch_size], device=device)
+    shape = (batch_size, *(sample_shape or ()))
+    u = torch.rand(size=shape, device=device)
     u = u * (max_timestep_bd - min_timestep_bd) + min_timestep_bd
     return (u * num_train_timesteps).clamp(min=0, max=num_train_timesteps - 1).to(torch.int64)
 
@@ -286,8 +305,10 @@ def build_video_flow_match_train_artifacts(
         num_train_timesteps=training_config.video_num_train_timesteps,
     )
     scheduler.set_timesteps(training_config.video_num_train_timesteps, training=True)
+    batch_size = video_latents.shape[0]
     timestep_ids = sample_timestep_id(
-        batch_size=num_frames,
+        batch_size=batch_size,
+        sample_shape=(num_frames,),
         num_train_timesteps=training_config.video_num_train_timesteps,
         device=video_latents.device,
     )
@@ -298,7 +319,8 @@ def build_video_flow_match_train_artifacts(
     condition_latents = video_latents
     if noisy_condition_prob > 0.0 and torch.rand(1, device=video_latents.device).item() < noisy_condition_prob:
         condition_timestep_ids = sample_timestep_id(
-            batch_size=num_frames,
+            batch_size=batch_size,
+            sample_shape=(num_frames,),
             min_timestep_bd=0.5,
             max_timestep_bd=1.0,
             num_train_timesteps=training_config.video_num_train_timesteps,
@@ -308,7 +330,7 @@ def build_video_flow_match_train_artifacts(
         condition_noise = torch.randn_like(video_latents)
         condition_latents = scheduler.add_noise(video_latents, condition_noise, condition_timesteps, t_dim=2)
     return VideoFlowMatchTrainArtifacts(
-        timesteps=timesteps[None].repeat(video_latents.shape[0], 1),
+        timesteps=timesteps,
         noisy_latents=noisy_latents,
         targets=targets,
         condition_latents=condition_latents,
@@ -355,7 +377,8 @@ def build_frame_aligned_action_flow_match_train_artifacts(
     if action_mask is not None:
         action_mask_volume = action_mask.view(batch_size, num_frames, action_per_frame, action_dim).permute(0, 3, 1, 2).unsqueeze(-1)
     timestep_ids = sample_timestep_id(
-        batch_size=num_frames,
+        batch_size=batch_size,
+        sample_shape=(num_frames,),
         num_train_timesteps=training_config.action_num_train_timesteps,
         device=actions.device,
     )
@@ -368,9 +391,9 @@ def build_frame_aligned_action_flow_match_train_artifacts(
         targets_volume = targets_volume * action_mask_volume.float()
     noisy_actions = noisy_action_volume.squeeze(-1).permute(0, 2, 3, 1).reshape(batch_size, action_horizon, action_dim)
     targets = targets_volume.squeeze(-1).permute(0, 2, 3, 1).reshape(batch_size, action_horizon, action_dim)
-    slot_timesteps = frame_timesteps[None].repeat(batch_size, 1).repeat_interleave(action_per_frame, dim=1)
+    slot_timesteps = frame_timesteps.repeat_interleave(action_per_frame, dim=1)
     return FrameAlignedActionFlowMatchTrainArtifacts(
-        frame_timesteps=frame_timesteps[None].repeat(batch_size, 1),
+        frame_timesteps=frame_timesteps,
         slot_timesteps=slot_timesteps,
         noisy_actions=noisy_actions,
         targets=targets,
@@ -433,16 +456,11 @@ def build_block_coupled_action_flow_match_train_artifacts(
         num_train_timesteps=training_config.action_num_train_timesteps,
     )
     scheduler.set_timesteps(training_config.action_num_train_timesteps, training=True)
-    # Video artifacts currently share the sampled frame timetable across the
-    # batch, matching LingBot's frame-wise helper. Collapse the future-video
-    # grid to one timetable per block and then broadcast it back across batch.
-    block_timestep_values = future_video_timesteps[0].view(num_blocks, num_frame_per_block)[:, 0]
-    slot_timestep_values = block_timestep_values.repeat_interleave(num_action_per_block)
-    block_timesteps = block_timestep_values[None].repeat(batch_size, 1)
-    slot_timesteps = slot_timestep_values[None].repeat(batch_size, 1)
+    block_timesteps = future_video_timesteps.view(batch_size, num_blocks, num_frame_per_block)[:, :, 0]
+    slot_timesteps = block_timesteps.repeat_interleave(num_action_per_block, dim=1)
     noise = torch.randn_like(actions)
-    noisy_actions = scheduler.add_noise(actions, noise, slot_timestep_values, t_dim=1)
-    targets = scheduler.training_target(actions, noise, slot_timestep_values)
+    noisy_actions = scheduler.add_noise(actions, noise, slot_timesteps, t_dim=1)
+    targets = scheduler.training_target(actions, noise, slot_timesteps)
     if action_mask is not None:
         noisy_actions = noisy_actions * action_mask.float()
         targets = targets * action_mask.float()

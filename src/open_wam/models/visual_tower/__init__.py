@@ -18,6 +18,7 @@ from .runtime_programs import (
     RuntimeProgramSpec,
     RuntimeStepInput,
     RuntimeStepOutput,
+    build_chunked_dual_stream_exact_inference_program,
     build_chunked_dual_stream_exact_train_program,
     build_dense_runtime_program,
     build_register_sequence_runtime_program,
@@ -30,6 +31,7 @@ from .tower import VisualTower
 
 __all__ = [
     "build_reference_transformer",
+    "build_chunked_dual_stream_exact_inference_program",
     "build_chunked_dual_stream_exact_train_program",
     "build_dense_runtime_program",
     "build_register_sequence_runtime_program",

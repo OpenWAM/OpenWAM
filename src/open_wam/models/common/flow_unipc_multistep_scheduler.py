@@ -169,7 +169,10 @@ class FlowUniPCMultistepScheduler(SchedulerMixin, ConfigMixin):
             if order == 2:
                 rhos_p = torch.full((1,), 0.5, dtype=sample.dtype, device=sample.device)
             else:
-                rhos_p = torch.linalg.solve_ex(r_tensor[:-1, :-1], b_tensor[:-1])[0].to(sample.dtype)
+                rhos_p = torch.linalg.solve_ex(
+                    r_tensor[:-1, :-1].to(dtype=torch.float32),
+                    b_tensor[:-1].to(dtype=torch.float32),
+                )[0].to(sample.dtype)
             pred_res = torch.einsum("k,bkc...->bc...", rhos_p, d1_tensor)
         else:
             pred_res = 0
@@ -235,7 +238,10 @@ class FlowUniPCMultistepScheduler(SchedulerMixin, ConfigMixin):
         if order == 1:
             rhos_c = torch.full((1,), 0.5, dtype=x.dtype, device=x.device)
         else:
-            rhos_c = torch.linalg.solve_ex(r_tensor, b_tensor)[0].to(x.dtype)
+            rhos_c = torch.linalg.solve_ex(
+                r_tensor.to(dtype=torch.float32),
+                b_tensor.to(dtype=torch.float32),
+            )[0].to(x.dtype)
 
         x_t_base = sigma_t / sigma_s0 * x - alpha_t * h_phi_1 * m0
         if d1_tensor is not None:

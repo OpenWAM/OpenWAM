@@ -67,11 +67,7 @@ class VisualTower(nn.Module):
                 raise ValueError("`backbone.load_reference_core_weights` requires `backbone.implementation = shared_transformer`.")
             if self.action_dim is None:
                 raise ValueError("VisualTower requires `action_dim` to load reference weights into the shared core.")
-            self.reference_core_load_report = load_reference_weights_into_replica_core(
-                self.core,
-                backbone_config=self.config,
-                action_dim=self.action_dim,
-            )
+            self._ensure_runtime_backbone_initialized()
 
     def run_frontend(
         self,
@@ -176,6 +172,21 @@ class VisualTower(nn.Module):
             use_state_adapter=use_state_adapter,
         )
 
+    def configure_runtime_devices(
+        self,
+        devices: tuple[torch.device, ...],
+        *,
+        prep_device: torch.device | None = None,
+        output_device: torch.device | None = None,
+    ) -> None:
+        configure = getattr(self.core, "configure_runtime_block_devices", None)
+        if callable(configure):
+            configure(
+                tuple(torch.device(device) for device in devices),
+                prep_device=None if prep_device is None else torch.device(prep_device),
+                output_device=None if output_device is None else torch.device(output_device),
+            )
+
     def project_runtime_stream_outputs(
         self,
         *,
@@ -191,6 +202,125 @@ class VisualTower(nn.Module):
             hidden_states=hidden_states,
             token_layout=token_layout,
         )
+
+    def project_video_tokens_to_latents(
+        self,
+        *,
+        hidden_states: torch.Tensor,
+        token_grid,
+    ) -> torch.Tensor:
+        projector = getattr(self.core, "project_video_tokens_to_latents", None)
+        if not callable(projector):
+            raise ValueError("Current visual core does not support direct video-token latent projection.")
+        return projector(
+            hidden_states=hidden_states,
+            token_grid=token_grid,
+        )
+
+    def generate_conditioned_future_latents(
+        self,
+        *,
+        observed_prefix: torch.Tensor,
+        future_template: torch.Tensor,
+        text_context: torch.Tensor,
+        negative_text_context: torch.Tensor | None,
+        frame_start: int,
+        num_inference_steps: int,
+        num_train_timesteps: int,
+        sigma_shift: float,
+        guidance_scale: float,
+        denoise_ratio: float = 1.0,
+        cache_name: str = "visual_tower_future_video_denoise",
+    ) -> torch.Tensor:
+        """Generate future video latents conditioned on a clean observed prefix.
+
+        The visual tower owns the shared visual execution path. Variants can ask
+        for a future-video rollout state, but they should not own the denoising
+        loop itself.
+        """
+
+        from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
+            FlowMatchScheduler,
+            data_seq_to_patch,
+            prepare_reference_single_stream_input,
+            reference_runtime_dtype,
+            run_reference_single_stream_forward,
+        )
+
+        if observed_prefix.ndim != 5 or future_template.ndim != 5:
+            raise ValueError(
+                "Expected observed_prefix and future_template with shape [B, C, T, H, W], "
+                f"got observed_prefix={tuple(observed_prefix.shape)}, future_template={tuple(future_template.shape)}."
+            )
+        if observed_prefix.shape[0] != future_template.shape[0] or observed_prefix.shape[1] != future_template.shape[1]:
+            raise ValueError(
+                "Observed prefix and future template must agree on batch/channel dimensions, "
+                f"got observed_prefix={tuple(observed_prefix.shape)}, future_template={tuple(future_template.shape)}."
+            )
+        if future_template.shape[2] <= 0:
+            raise ValueError("Expected at least one future frame to generate.")
+
+        transformer = self.core
+        model_dtype = reference_runtime_dtype(transformer)
+        batch_size, channels, future_num_frames, latent_height, latent_width = future_template.shape
+        total_num_frames = observed_prefix.shape[2] + future_num_frames
+
+        latents = torch.randn(
+            batch_size,
+            channels,
+            total_num_frames,
+            latent_height,
+            latent_width,
+            device=future_template.device,
+            dtype=model_dtype,
+        )
+        observed_prefix = observed_prefix.to(dtype=model_dtype)
+        latents[:, :, : observed_prefix.shape[2]] = observed_prefix
+
+        scheduler = FlowMatchScheduler(
+            shift=sigma_shift,
+            sigma_min=0.0,
+            extra_one_step=True,
+            num_train_timesteps=num_train_timesteps,
+        )
+        scheduler.set_timesteps(num_inference_steps)
+        total_updates = len(scheduler.timesteps)
+        denoise_updates = max(1, min(total_updates, int(round(total_updates * float(denoise_ratio)))))
+        timesteps = scheduler.timesteps[:denoise_updates].to(device=future_template.device)
+
+        with torch.inference_mode():
+            for timestep in timesteps:
+                video_input = prepare_reference_single_stream_input(
+                    latents=latents,
+                    timestep=timestep,
+                    text_emb=text_context,
+                    frame_st_id=frame_start,
+                    backbone_config=self.config,
+                    action_mode=False,
+                    cond=observed_prefix,
+                )
+                video_noise_pred = run_reference_single_stream_forward(
+                    transformer,
+                    input_dict=video_input,
+                    update_cache=0,
+                    cache_name=cache_name,
+                    action_mode=False,
+                    guidance_scale=guidance_scale,
+                    negative_text_emb=negative_text_context,
+                    force_cfg_batch=False,
+                )
+                video_noise_pred = data_seq_to_patch(
+                    transformer.patch_size,
+                    video_noise_pred,
+                    total_num_frames,
+                    latent_height,
+                    latent_width,
+                    batch_size=batch_size,
+                ).to(dtype=model_dtype)
+                latents = scheduler.step(video_noise_pred, timestep, latents)
+                latents[:, :, : observed_prefix.shape[2]] = observed_prefix
+
+        return latents[:, :, observed_prefix.shape[2] :].to(dtype=future_template.dtype)
 
     def cache_capability(self) -> str:
         if normalize_backbone_implementation(self.config.implementation) == BackboneImplementation.SHARED_TRANSFORMER:
@@ -574,6 +704,43 @@ class VisualTower(nn.Module):
     def run_decode(self, frontend_output, core_output):
         return self.decoder(frontend_output=frontend_output, core_output=core_output)
 
+    def _ensure_runtime_backbone_initialized(self) -> None:
+        if self.reference_core_load_report is not None:
+            return
+        if self.config.pretrained_model_name_or_path is None:
+            return
+        runtime_backbone_dir = resolve_runtime_backbone_dir(self.config)
+        is_exported_runtime_dir = is_open_wam_exported_runtime_backbone_dir(runtime_backbone_dir)
+        print(
+            "[runtime_backbone_load] "
+            f"resolved_dir={runtime_backbone_dir} "
+            f"is_exported_runtime_dir={is_exported_runtime_dir}",
+            flush=True,
+        )
+        if is_exported_runtime_dir:
+            self.reference_core_load_report = load_exported_runtime_backbone_into_replica_core(
+                self.core,
+                backbone_config=self.config,
+            )
+            print(
+                "[runtime_backbone_load] "
+                f"mode=exported_runtime loaded_keys={len(self.reference_core_load_report.loaded_keys)} "
+                f"missing_keys={len(self.reference_core_load_report.missing_reference_keys)}",
+                flush=True,
+            )
+            return
+        self.reference_core_load_report = load_reference_weights_into_replica_core(
+            self.core,
+            backbone_config=self.config,
+            action_dim=self.action_dim,
+        )
+        print(
+            "[runtime_backbone_load] "
+            f"mode=reference loaded_keys={len(self.reference_core_load_report.loaded_keys)} "
+            f"missing_keys={len(self.reference_core_load_report.missing_reference_keys)}",
+            flush=True,
+        )
+
     def get_runtime_backbone(self, *, action_dim: int) -> nn.Module:
         """Return the shared transformer backbone for runtime-driven variants.
 
@@ -591,19 +758,7 @@ class VisualTower(nn.Module):
                 "Shared video-transformer backbone was constructed for a different action_dim, "
                 f"requested={action_dim}, tower_action_dim={self.action_dim}."
             )
-        if self.reference_core_load_report is None and self.config.pretrained_model_name_or_path is not None:
-            runtime_backbone_dir = resolve_runtime_backbone_dir(self.config)
-            if is_open_wam_exported_runtime_backbone_dir(runtime_backbone_dir):
-                self.reference_core_load_report = load_exported_runtime_backbone_into_replica_core(
-                    self.core,
-                    backbone_config=self.config,
-                )
-            else:
-                self.reference_core_load_report = load_reference_weights_into_replica_core(
-                    self.core,
-                    backbone_config=self.config,
-                    action_dim=self.action_dim,
-                )
+        self._ensure_runtime_backbone_initialized()
         return self.core
 
     def ensure_runtime_backbone_device(self, *, action_dim: int, device) -> nn.Module:

@@ -106,8 +106,14 @@ class LingbotExactRunner:
         self.pipeline = pipeline
         if not isinstance(self.pipeline.policy_variant, ParallelStreamPolicyVariant):
             raise TypeError("LingBot exact runner requires a parallel-stream policy variant.")
-        if self.pipeline.policy_variant.config.runtime_mode != ParallelRuntimeMode.LINGBOT_EXACT:
-            raise ValueError("LingBot exact runner requires `parallel_stream.runtime_mode = lingbot_exact`.")
+        if self.pipeline.policy_variant.config.runtime_mode not in {
+            ParallelRuntimeMode.LINGBOT_EXACT,
+            ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
+        }:
+            raise ValueError(
+                "LingBot exact runner requires `parallel_stream.runtime_mode` to be "
+                "`lingbot_exact` or `lingbot_exact_action_conditioned`."
+            )
 
     @property
     def policy_variant(self) -> ParallelStreamPolicyVariant:

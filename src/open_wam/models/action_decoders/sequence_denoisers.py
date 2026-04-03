@@ -81,6 +81,7 @@ class GenericTransformerSequenceDenoiser(SequenceDenoiser):
         *,
         hidden_size: int,
         action_dim: int,
+        goal_input_dim: int | None,
         num_heads: int,
         encoder_layers: int,
         decoder_layers: int,
@@ -89,7 +90,7 @@ class GenericTransformerSequenceDenoiser(SequenceDenoiser):
         super().__init__()
         self.hidden_size = hidden_size
         self.action_dim = action_dim
-        self.goal_token_proj = nn.LazyLinear(hidden_size)
+        self.goal_token_proj = nn.Linear(goal_input_dim or hidden_size, hidden_size)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hidden_size,
             nhead=num_heads,
@@ -334,6 +335,7 @@ def build_sequence_denoiser(
     *,
     hidden_size: int,
     action_dim: int,
+    goal_input_dim: int | None = None,
     num_heads: int,
     encoder_layers: int,
     decoder_layers: int,
@@ -344,6 +346,7 @@ def build_sequence_denoiser(
         return GenericTransformerSequenceDenoiser(
             hidden_size=hidden_size,
             action_dim=action_dim,
+            goal_input_dim=goal_input_dim,
             num_heads=num_heads,
             encoder_layers=encoder_layers,
             decoder_layers=decoder_layers,

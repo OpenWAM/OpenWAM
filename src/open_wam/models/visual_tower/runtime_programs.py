@@ -125,6 +125,23 @@ def build_chunked_dual_stream_exact_train_program(
     )
 
 
+def build_chunked_dual_stream_exact_inference_program(
+    *,
+    attention_profile_name: str | None = None,
+    cache_backend_name: str | None = None,
+) -> RuntimeProgramSpec:
+    return RuntimeProgramSpec(
+        name="chunked_dual_stream_exact_inference",
+        sequence_family="chunked_dual_stream_exact_inference",
+        attention_profile_name=attention_profile_name,
+        cache_backend_name=cache_backend_name,
+        teacher_forcing_layout="chunked_dual_stream",
+        stream_layout="video_then_action_dual",
+        projection_mode="dual_stream_exact",
+        runtime_family="exact",
+    )
+
+
 def build_single_stream_exact_runtime_program(
     *,
     cache_backend_name: str | None = None,

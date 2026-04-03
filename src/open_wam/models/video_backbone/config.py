@@ -7,6 +7,7 @@ from open_wam.configs.enums import (
     AttentionMode,
     BackboneImplementation,
     ReferenceAssetsDevicePolicy,
+    ReferenceCoreInitMode,
     coerce_fields,
 )
 
@@ -76,6 +77,7 @@ class SharedVideoTransformerConfig:
     load_wan_vae_frontend: bool = False
     load_text_conditioning: bool = False
     load_reference_core_weights: bool = False
+    reference_core_init_mode: ReferenceCoreInitMode = ReferenceCoreInitMode.FULL
     # `runtime`: keep reference VAE/text assets on the active runtime device.
     # `cpu_offload`: mirror Heng's eval server and keep them on CPU.
     reference_assets_device_policy: ReferenceAssetsDevicePolicy = ReferenceAssetsDevicePolicy.RUNTIME
@@ -88,6 +90,7 @@ class SharedVideoTransformerConfig:
             enum_fields={
                 "attn_mode": AttentionMode,
                 "reference_assets_device_policy": ReferenceAssetsDevicePolicy,
+                "reference_core_init_mode": ReferenceCoreInitMode,
             },
             optional_enum_fields={
                 "train_attn_mode": AttentionMode,

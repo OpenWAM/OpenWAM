@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 import torch
 
-from open_wam.configs import ActionSpace, InferenceConfig, ParallelRuntimeMode, ParallelStreamPolicyConfig, TrainingConfig
+from open_wam.configs import (
+    ActionSpace,
+    InferenceConfig,
+    ParallelRuntimeMode,
+    ParallelStreamPolicyConfig,
+    TemporalPositionMode,
+    TrainingConfig,
+)
 from open_wam.models.video_backbone.contracts import CacheState
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.policy_variants.common.layouts import expand_previous_action
@@ -19,7 +27,10 @@ from ..contracts import (
     RolloutCursor,
 )
 from .reference_runtime import (
+    prepare_parallel_action_conditioned_train_artifacts,
     prepare_parallel_exact_train_artifacts,
+    run_parallel_action_conditioned_inference_rollout,
+    run_parallel_action_conditioned_train,
     run_parallel_exact_cache_warmup,
     run_parallel_exact_inference_rollout,
     run_parallel_exact_train,
@@ -47,7 +58,10 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         num_frames: int,
     ) -> None:
         super().__init__()
-        if config.runtime_mode != ParallelRuntimeMode.LINGBOT_EXACT:
+        if config.runtime_mode not in {
+            ParallelRuntimeMode.LINGBOT_EXACT,
+            ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
+        }:
             raise ValueError(
                 "Parallel-stream method 1 now only supports LingBot-exact semantics. "
                 f"Got runtime_mode={config.runtime_mode!r}."
@@ -67,6 +81,9 @@ class ParallelStreamPolicyVariant(PolicyVariant):
 
     def attach_site(self) -> str:
         return self.config.attach_site
+
+    def _runtime_mode_label(self) -> str:
+        return str(self.config.runtime_mode)
 
     def required_visual_stages(self) -> tuple[str, ...]:
         return ("frontend",)
@@ -92,16 +109,93 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             device=visual_outputs.frontend.video_latents.device,
             dtype=visual_outputs.frontend.video_latents.dtype,
         )
-        train_artifacts = prepare_parallel_exact_train_artifacts(
-            backbone_config=self.backbone_config,
-            policy_config=self.config,
-            training_config=self.training_config,
-            video_latents=visual_outputs.frontend.video_latents,
-            actions=model_actions,
-            action_mask=model_action_mask,
-            text_emb=visual_outputs.frontend.conditioning.text_context,
-        )
+        sampled_geometry = self._resolve_train_sampling_metadata(batch, observed_num_frames=observed_num_frames)
+        if self.config.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
+            train_artifacts = prepare_parallel_action_conditioned_train_artifacts(
+                backbone_config=self.backbone_config,
+                policy_config=self.config,
+                training_config=self.training_config,
+                video_latents=visual_outputs.frontend.video_latents,
+                actions=model_actions,
+                action_mask=model_action_mask,
+                text_emb=visual_outputs.frontend.conditioning.text_context,
+                chunk_size_override=sampled_geometry["chunk_size"],
+                window_size_override=sampled_geometry["window_size"],
+                loss_frame_start=sampled_geometry["loss_frame_start"],
+                loss_frame_end=sampled_geometry["loss_frame_end"],
+                frame_shift=sampled_geometry["frame_shift"],
+            )
+        else:
+            train_artifacts = prepare_parallel_exact_train_artifacts(
+                backbone_config=self.backbone_config,
+                policy_config=self.config,
+                training_config=self.training_config,
+                video_latents=visual_outputs.frontend.video_latents,
+                actions=model_actions,
+                action_mask=model_action_mask,
+                text_emb=visual_outputs.frontend.conditioning.text_context,
+                chunk_size_override=sampled_geometry["chunk_size"],
+                window_size_override=sampled_geometry["window_size"],
+                loss_frame_start=sampled_geometry["loss_frame_start"],
+                loss_frame_end=sampled_geometry["loss_frame_end"],
+                frame_shift=sampled_geometry["frame_shift"],
+            )
         return PolicyPreparedInputs(batch=batch, variant_inputs={"lingbot_train_artifacts": train_artifacts})
+
+    def _resolve_train_sampling_metadata(
+        self,
+        batch: PolicyTrainBatch,
+        *,
+        observed_num_frames: int,
+    ) -> dict[str, int | None]:
+        metadata_seq = batch.extra.get("metadata")
+        sample_metadata: Mapping[str, object] | None = None
+        if isinstance(metadata_seq, tuple) and len(metadata_seq) == 1 and isinstance(metadata_seq[0], Mapping):
+            sample_metadata = metadata_seq[0]
+        elif isinstance(metadata_seq, list) and len(metadata_seq) == 1 and isinstance(metadata_seq[0], Mapping):
+            sample_metadata = metadata_seq[0]
+
+        chunk_size: int | None = None
+        window_size: int | None = None
+        loss_frame_start: int | None = None
+        loss_frame_end: int | None = None
+        frame_shift = 0
+        if sample_metadata is not None:
+            sampled_chunk_size = sample_metadata.get("sampled_chunk_size")
+            sampled_window_size = sample_metadata.get("sampled_window_size")
+            metadata_loss_frame_start = sample_metadata.get("loss_frame_start")
+            metadata_loss_frame_end = sample_metadata.get("loss_frame_end")
+            metadata_frame_shift = sample_metadata.get("frame_shift")
+            if sampled_chunk_size is not None:
+                chunk_size = int(sampled_chunk_size)
+            if sampled_window_size is not None:
+                window_size = int(sampled_window_size)
+            if metadata_loss_frame_start is not None:
+                loss_frame_start = int(metadata_loss_frame_start)
+            if metadata_loss_frame_end is not None:
+                loss_frame_end = int(metadata_loss_frame_end)
+            if (
+                self.config.temporal_position_mode == TemporalPositionMode.GLOBAL_SHIFTED
+                and metadata_frame_shift is not None
+            ):
+                frame_shift = int(metadata_frame_shift)
+
+        if loss_frame_start is None:
+            loss_frame_start = 0
+        if loss_frame_end is None:
+            loss_frame_end = observed_num_frames
+        if loss_frame_start < 0 or loss_frame_end < loss_frame_start or loss_frame_end > observed_num_frames:
+            raise ValueError(
+                "Invalid train loss-frame metadata for parallel-stream variant, "
+                f"got start={loss_frame_start}, end={loss_frame_end}, observed_num_frames={observed_num_frames}."
+            )
+        return {
+            "chunk_size": chunk_size,
+            "window_size": window_size,
+            "loss_frame_start": loss_frame_start,
+            "loss_frame_end": loss_frame_end,
+            "frame_shift": frame_shift,
+        }
 
     def _prepare_exact_train_actions(
         self,
@@ -170,10 +264,16 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             device=prepared_inputs.batch.actions.device,
         )
         train_artifacts = prepared_inputs.variant_inputs["lingbot_train_artifacts"]
-        latent_pred, action_pred = run_parallel_exact_train(
-            reference_transformer,
-            train_artifacts.input_dict,
-        )
+        if self.config.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
+            latent_pred, action_pred = run_parallel_action_conditioned_train(
+                reference_transformer,
+                train_artifacts.input_dict,
+            )
+        else:
+            latent_pred, action_pred = run_parallel_exact_train(
+                reference_transformer,
+                train_artifacts.input_dict,
+            )
         return PolicyTrainOutput(
             policy_features=action_pred,
             metrics={"packed_sequence_length": torch.tensor(float(action_pred.shape[1]), device=action_pred.device)},
@@ -213,7 +313,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             step_index=0,
             cursor=cursor,
             cache={
-                "runtime_mode": "lingbot_exact",
+                "runtime_mode": self._runtime_mode_label(),
                 "cache_name": "open_wam_exact",
                 "cache_initialized": False,
                 "frame_start": 0,
@@ -238,7 +338,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             step_index=0,
             cursor=cursor,
             cache={
-                "runtime_mode": "lingbot_exact",
+                "runtime_mode": self._runtime_mode_label(),
                 "cache_name": cache_name,
                 "cache_initialized": False,
                 "frame_start": 0,
@@ -337,23 +437,42 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             text_emb = text_context
             negative_text_emb = negative_text_context
             output_dtype = torch.float32 if parameter.device.type == "cpu" else parameter.dtype
-        infer_artifacts = run_parallel_exact_inference_rollout(
-            transformer=reference_transformer,
-            backbone_config=self.backbone_config,
-            policy_config=self.config,
-            training_config=self.training_config,
-            inference_config=self.inference_config,
-            action_dim=self.action_dim,
-            condition_latents=condition_latents,
-            text_emb=text_emb,
-            negative_text_emb=negative_text_emb,
-            action_channel_mask=self._reference_action_channel_mask(
-                device=parameter.device if visual_outputs is None else condition_latents.device,
-                dtype=output_dtype,
-            ),
-            infer_cache=infer_state.cache,
-            advance_frame_start=advance_frame_start,
-        )
+        if self.config.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
+            infer_artifacts = run_parallel_action_conditioned_inference_rollout(
+                transformer=reference_transformer,
+                backbone_config=self.backbone_config,
+                policy_config=self.config,
+                training_config=self.training_config,
+                inference_config=self.inference_config,
+                action_dim=self.action_dim,
+                condition_latents=condition_latents,
+                text_emb=text_emb,
+                negative_text_emb=negative_text_emb,
+                action_channel_mask=self._reference_action_channel_mask(
+                    device=parameter.device if visual_outputs is None else condition_latents.device,
+                    dtype=output_dtype,
+                ),
+                infer_cache=infer_state.cache,
+                advance_frame_start=advance_frame_start,
+            )
+        else:
+            infer_artifacts = run_parallel_exact_inference_rollout(
+                transformer=reference_transformer,
+                backbone_config=self.backbone_config,
+                policy_config=self.config,
+                training_config=self.training_config,
+                inference_config=self.inference_config,
+                action_dim=self.action_dim,
+                condition_latents=condition_latents,
+                text_emb=text_emb,
+                negative_text_emb=negative_text_emb,
+                action_channel_mask=self._reference_action_channel_mask(
+                    device=parameter.device if visual_outputs is None else condition_latents.device,
+                    dtype=output_dtype,
+                ),
+                infer_cache=infer_state.cache,
+                advance_frame_start=advance_frame_start,
+            )
         next_cursor = RolloutCursor(
             current_start_frame=int(
                 infer_artifacts.next_cache.get("frame_start", infer_state.cursor.current_start_frame)
@@ -466,18 +585,19 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 "Exact LingBot reference profile action_guidance_scale does not match the inference config, "
                 f"profile={self.reference_profile.action_guidance_scale}, config={self.inference_config.action_guidance_scale}."
             )
-        if self.reference_profile.video_num_inference_steps != self.inference_config.video_num_inference_steps:
-            raise ValueError(
-                "Exact LingBot reference profile video_num_inference_steps does not match the inference config, "
-                f"profile={self.reference_profile.video_num_inference_steps}, "
-                f"config={self.inference_config.video_num_inference_steps}."
-            )
-        if self.reference_profile.action_num_inference_steps != self.inference_config.action_num_inference_steps:
-            raise ValueError(
-                "Exact LingBot reference profile action_num_inference_steps does not match the inference config, "
-                f"profile={self.reference_profile.action_num_inference_steps}, "
-                f"config={self.inference_config.action_num_inference_steps}."
-            )
+        if self.config.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT:
+            if self.reference_profile.video_num_inference_steps != self.inference_config.video_num_inference_steps:
+                raise ValueError(
+                    "Exact LingBot reference profile video_num_inference_steps does not match the inference config, "
+                    f"profile={self.reference_profile.video_num_inference_steps}, "
+                    f"config={self.inference_config.video_num_inference_steps}."
+                )
+            if self.reference_profile.action_num_inference_steps != self.inference_config.action_num_inference_steps:
+                raise ValueError(
+                    "Exact LingBot reference profile action_num_inference_steps does not match the inference config, "
+                    f"profile={self.reference_profile.action_num_inference_steps}, "
+                    f"config={self.inference_config.action_num_inference_steps}."
+                )
         if self.reference_profile.video_exec_step != self.inference_config.video_exec_step:
             raise ValueError(
                 "Exact LingBot reference profile video_exec_step does not match the inference config, "

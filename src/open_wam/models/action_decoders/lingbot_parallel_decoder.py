@@ -61,9 +61,15 @@ class LingbotParallelActionDecoder(ActionDecoder):
             reduction="none",
         )
         latent_loss = latent_loss * latent_scheduler_weight[:, None, :, None, None]
+        latent_loss_mask = input_dict["latent_dict"].get("loss_mask")
+        if latent_loss_mask is None:
+            latent_loss_mask = torch.ones_like(input_dict["latent_dict"]["targets"])
+        latent_loss = latent_loss * latent_loss_mask.float()
         latent_loss = latent_loss.permute(0, 2, 3, 4, 1).flatten(0, 1).flatten(1)
         latent_loss_per_frame = latent_loss.sum(dim=1)
-        latent_mask_per_frame = torch.ones_like(latent_loss).sum(dim=1)
+        latent_mask_per_frame = (
+            latent_loss_mask.float().permute(0, 2, 3, 4, 1).flatten(0, 1).flatten(1).sum(dim=1)
+        )
         latent_loss = (latent_loss_per_frame / (latent_mask_per_frame + 1e-6)).mean()
 
         action_loss = F.mse_loss(
@@ -72,9 +78,13 @@ class LingbotParallelActionDecoder(ActionDecoder):
             reduction="none",
         )
         action_loss = action_loss * action_scheduler_weight[:, None, :, None, None]
-        action_loss = action_loss * input_dict["action_dict"]["actions_mask"].float()
+        action_loss_mask = input_dict["action_dict"].get("loss_mask")
+        if action_loss_mask is None:
+            action_loss_mask = torch.ones_like(input_dict["action_dict"]["targets"])
+        effective_action_mask = input_dict["action_dict"]["actions_mask"].float() * action_loss_mask.float()
+        action_loss = action_loss * effective_action_mask
         action_loss = action_loss.permute(0, 2, 3, 4, 1).flatten(0, 1).flatten(1)
-        action_mask = input_dict["action_dict"]["actions_mask"].float().permute(0, 2, 3, 4, 1).flatten(0, 1).flatten(1)
+        action_mask = effective_action_mask.permute(0, 2, 3, 4, 1).flatten(0, 1).flatten(1)
         action_loss_per_frame = action_loss.sum(dim=1)
         action_mask_per_frame = action_mask.sum(dim=1)
         action_loss = (action_loss_per_frame / (action_mask_per_frame + 1e-6)).mean()
