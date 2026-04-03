@@ -9,7 +9,9 @@ import math
 from pathlib import Path
 import random
 import shutil
+import sys
 from typing import Any, Iterable, Iterator
+import warnings
 
 import pyarrow.parquet as pq
 import torch
@@ -35,6 +37,29 @@ from open_wam.configs.enums import serialize_enum_values
 
 from .action_transforms import build_relative_pose_targets, expected_pose_target_dim
 from .contracts import WAMSample
+from .lerobot_consortium_contracts import (
+    build_lerobot_consortium_contract_catalog_from_inventory_rows,
+    write_lerobot_consortium_contract_catalog,
+)
+from .lerobot_consortium_index import (
+    LeRobotConsortiumInventoryRow,
+    LeRobotConsortiumRepoTarget,
+    build_lerobot_consortium_inventory,
+    infer_lerobot_consortium_source_group,
+    load_lerobot_consortium_inventory_rows,
+    load_lerobot_consortium_repo_targets,
+    write_lerobot_consortium_inventory_csv,
+    write_lerobot_consortium_inventory_markdown,
+    write_lerobot_consortium_repo_targets,
+)
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_CONSORTIUM_INDEX_REPO_IDS_PATH = _REPO_ROOT / "notes" / "index" / "lerobot_consortium_hf_repo_ids.txt"
+_CONSORTIUM_INDEX_INVENTORY_CSV_PATH = _REPO_ROOT / "notes" / "index" / "lerobot_consortium_hf_dataset_inventory.csv"
+_CONSORTIUM_INDEX_INVENTORY_MD_PATH = _REPO_ROOT / "notes" / "index" / "lerobot_consortium_hf_dataset_inventory.md"
+_CONSORTIUM_INDEX_CONTRACTS_JSON_PATH = _REPO_ROOT / "notes" / "index" / "lerobot_consortium_hf_dataset_contracts.json"
+_CONSORTIUM_INDEX_SANITY_CACHE: set[tuple[str, ...]] = set()
 
 
 def _resolve_row_key(row: dict[str, Any], key: str) -> str:
@@ -375,7 +400,198 @@ def _resolve_source_group(
     return None
 
 
+def _configured_remote_repo_ids(data_config: LeRobotConsortiumDataConfig) -> tuple[str, ...]:
+    repo_ids = sorted({source.repo_id for source in _resolve_member_sources(data_config) if source.repo_id is not None})
+    return tuple(repo_ids)
+
+
+def _configured_remote_repo_targets(data_config: LeRobotConsortiumDataConfig) -> tuple[LeRobotConsortiumRepoTarget, ...]:
+    deduped: dict[str, LeRobotConsortiumRepoTarget] = {}
+    for source in _resolve_member_sources(data_config):
+        if source.repo_id is None:
+            continue
+        source_group = _resolve_source_group(data_config, member_id=source.member_id) or infer_lerobot_consortium_source_group(
+            source.repo_id,
+            default_source_group="manual",
+        )
+        deduped.setdefault(
+            source.repo_id,
+            LeRobotConsortiumRepoTarget(
+                repo_id=source.repo_id,
+                source_group=source_group,
+            ),
+        )
+    return tuple(sorted(deduped.values(), key=lambda target: (target.source_group, target.repo_id)))
+
+
+def _consortium_index_prompt_available() -> bool:
+    try:
+        return bool(sys.stdin.isatty() and sys.stdout.isatty())
+    except Exception:  # pragma: no cover - defensive tty guard
+        return False
+
+
+def _refresh_lerobot_consortium_index_snapshots(
+    data_config: LeRobotConsortiumDataConfig,
+) -> None:
+    configured_targets = _configured_remote_repo_targets(data_config)
+
+    target_by_repo_id: dict[str, LeRobotConsortiumRepoTarget] = {}
+    if _CONSORTIUM_INDEX_REPO_IDS_PATH.exists():
+        for target in load_lerobot_consortium_repo_targets(
+            _CONSORTIUM_INDEX_REPO_IDS_PATH,
+            default_source_group="manual",
+        ):
+            target_by_repo_id[target.repo_id] = target
+
+    existing_inventory_rows: list[LeRobotConsortiumInventoryRow] = []
+    if _CONSORTIUM_INDEX_INVENTORY_CSV_PATH.exists():
+        existing_inventory_rows = load_lerobot_consortium_inventory_rows(_CONSORTIUM_INDEX_INVENTORY_CSV_PATH)
+
+    for target in configured_targets:
+        target_by_repo_id[target.repo_id] = target
+
+    inventory_by_repo_id = {row.repo_id: row for row in existing_inventory_rows}
+    repo_targets_to_refresh = [
+        target
+        for repo_id, target in sorted(target_by_repo_id.items())
+        if repo_id not in inventory_by_repo_id
+    ]
+    if repo_targets_to_refresh:
+        refreshed_rows = build_lerobot_consortium_inventory(repo_targets_to_refresh)
+        for row in refreshed_rows:
+            inventory_by_repo_id[row.repo_id] = row
+
+    retained_repo_ids = set(target_by_repo_id)
+    merged_inventory_rows = sorted(
+        (row for repo_id, row in inventory_by_repo_id.items() if repo_id in retained_repo_ids),
+        key=lambda row: (row.source_group, row.repo_id),
+    )
+    merged_repo_targets = tuple(sorted(target_by_repo_id.values(), key=lambda target: (target.source_group, target.repo_id)))
+    contracts = build_lerobot_consortium_contract_catalog_from_inventory_rows(merged_inventory_rows)
+
+    write_lerobot_consortium_repo_targets(_CONSORTIUM_INDEX_REPO_IDS_PATH, merged_repo_targets)
+    write_lerobot_consortium_inventory_csv(_CONSORTIUM_INDEX_INVENTORY_CSV_PATH, merged_inventory_rows)
+    write_lerobot_consortium_inventory_markdown(_CONSORTIUM_INDEX_INVENTORY_MD_PATH, merged_inventory_rows)
+    write_lerobot_consortium_contract_catalog(_CONSORTIUM_INDEX_CONTRACTS_JSON_PATH, contracts)
+
+
+def validate_lerobot_consortium_index_snapshot(data_config: LeRobotConsortiumDataConfig) -> None:
+    configured_repo_ids = _configured_remote_repo_ids(data_config)
+    if not configured_repo_ids:
+        return
+    if configured_repo_ids in _CONSORTIUM_INDEX_SANITY_CACHE:
+        return
+
+    issues: list[str] = []
+    repo_list_ids: tuple[str, ...] = ()
+    inventory_repo_ids: tuple[str, ...] = ()
+    contract_repo_ids: tuple[str, ...] = ()
+    contract_count: int | None = None
+
+    if not _CONSORTIUM_INDEX_REPO_IDS_PATH.exists():
+        issues.append(f"missing repo-id list: {_CONSORTIUM_INDEX_REPO_IDS_PATH}")
+    else:
+        repo_list_ids = tuple(target.repo_id for target in load_lerobot_consortium_repo_targets(_CONSORTIUM_INDEX_REPO_IDS_PATH))
+
+    if not _CONSORTIUM_INDEX_INVENTORY_CSV_PATH.exists():
+        issues.append(f"missing inventory CSV: {_CONSORTIUM_INDEX_INVENTORY_CSV_PATH}")
+    else:
+        inventory_rows = load_lerobot_consortium_inventory_rows(_CONSORTIUM_INDEX_INVENTORY_CSV_PATH)
+        inventory_repo_ids = tuple(row.repo_id for row in inventory_rows)
+
+    if not _CONSORTIUM_INDEX_CONTRACTS_JSON_PATH.exists():
+        issues.append(f"missing contracts JSON: {_CONSORTIUM_INDEX_CONTRACTS_JSON_PATH}")
+    else:
+        contracts_payload = json.loads(_CONSORTIUM_INDEX_CONTRACTS_JSON_PATH.read_text(encoding="utf-8"))
+        contract_repo_ids = tuple(dataset["repo_id"] for dataset in contracts_payload.get("datasets", ()))
+        contract_count = int(contracts_payload.get("dataset_count", len(contract_repo_ids)))
+
+    repo_list_set = set(repo_list_ids)
+    inventory_set = set(inventory_repo_ids)
+    contract_set = set(contract_repo_ids)
+
+    if repo_list_ids and inventory_repo_ids and len(repo_list_ids) != len(inventory_repo_ids):
+        issues.append(
+            "repo-id list and inventory CSV row count differ: "
+            f"{len(repo_list_ids)} vs {len(inventory_repo_ids)}"
+        )
+    if inventory_repo_ids and contract_repo_ids and len(inventory_repo_ids) != len(contract_repo_ids):
+        issues.append(
+            "inventory CSV and contracts dataset count differ: "
+            f"{len(inventory_repo_ids)} vs {len(contract_repo_ids)}"
+        )
+    if contract_count is not None and contract_count != len(contract_repo_ids):
+        issues.append(
+            "contracts JSON dataset_count does not match contained dataset rows: "
+            f"{contract_count} vs {len(contract_repo_ids)}"
+        )
+    if repo_list_ids and inventory_repo_ids and repo_list_set != inventory_set:
+        missing_from_inventory = sorted(repo_list_set - inventory_set)
+        missing_from_repo_list = sorted(inventory_set - repo_list_set)
+        issues.append(
+            "repo-id list and inventory CSV repo sets differ"
+            + (f"; missing_from_inventory={missing_from_inventory}" if missing_from_inventory else "")
+            + (f"; missing_from_repo_list={missing_from_repo_list}" if missing_from_repo_list else "")
+        )
+    if inventory_repo_ids and contract_repo_ids and inventory_set != contract_set:
+        missing_from_contracts = sorted(inventory_set - contract_set)
+        missing_from_inventory = sorted(contract_set - inventory_set)
+        issues.append(
+            "inventory CSV and contracts JSON repo sets differ"
+            + (f"; missing_from_contracts={missing_from_contracts}" if missing_from_contracts else "")
+            + (f"; missing_from_inventory={missing_from_inventory}" if missing_from_inventory else "")
+        )
+
+    missing_for_current_loader = sorted(
+        repo_id
+        for repo_id in configured_repo_ids
+        if repo_id not in repo_list_set or repo_id not in inventory_set or repo_id not in contract_set
+    )
+    if missing_for_current_loader:
+        issues.append(
+            "current consortium config uses repo ids not fully represented in the local snapshots: "
+            f"{missing_for_current_loader}"
+        )
+
+    if not issues:
+        _CONSORTIUM_INDEX_SANITY_CACHE.add(configured_repo_ids)
+        return
+
+    message = (
+        "Detected discrepancy between the configured LeRobot consortium repo ids and the local parsed inventory/contracts. "
+        "This usually means the repo-id list, inventory CSV, and contract JSON are out of sync.\n"
+        + "\n".join(f"- {issue}" for issue in issues)
+        + "\nRefresh command: "
+        + "PYTHONPATH=src python scripts/build_lerobot_consortium_index.py "
+          "--repo-list notes/index/lerobot_consortium_hf_repo_ids.txt"
+    )
+
+    if _consortium_index_prompt_available():
+        prompt = (
+            f"{message}\n"
+            "Refresh the local consortium inventory/contracts now? "
+            "(HF metadata only; no dataset data/video download) [y/N]: "
+        )
+        try:
+            answer = input(prompt).strip().lower()
+        except EOFError:
+            answer = ""
+        if answer in {"y", "yes"}:
+            try:
+                _refresh_lerobot_consortium_index_snapshots(data_config)
+            except Exception as exc:  # pragma: no cover - defensive refresh guard
+                warnings.warn(f"{message}\nAutomatic refresh failed: {exc}", stacklevel=2)
+            else:
+                _CONSORTIUM_INDEX_SANITY_CACHE.add(configured_repo_ids)
+            return
+
+    warnings.warn(message, stacklevel=2)
+    _CONSORTIUM_INDEX_SANITY_CACHE.add(configured_repo_ids)
+
+
 def build_lerobot_consortium_catalog(data_config: LeRobotConsortiumDataConfig) -> ConsortiumCatalog:
+    validate_lerobot_consortium_index_snapshot(data_config)
     resolver = ConsortiumSourceResolver(data_config)
     members: list[ConsortiumMemberContract] = []
     for source in _resolve_member_sources(data_config):

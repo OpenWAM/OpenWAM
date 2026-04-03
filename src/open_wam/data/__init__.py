@@ -33,6 +33,25 @@ from .lerobot_consortium_report import (
     build_lerobot_consortium_report,
     format_lerobot_consortium_report,
 )
+from .lerobot_consortium_index import (
+    LeRobotConsortiumInventoryRow,
+    LeRobotConsortiumRepoTarget,
+    build_lerobot_consortium_inventory,
+    build_lerobot_consortium_inventory_row,
+    infer_lerobot_consortium_source_group,
+    load_lerobot_consortium_inventory_rows,
+    load_lerobot_consortium_repo_targets,
+    render_lerobot_consortium_inventory_markdown,
+    write_lerobot_consortium_inventory_csv,
+    write_lerobot_consortium_inventory_json,
+    write_lerobot_consortium_inventory_markdown,
+    write_lerobot_consortium_repo_targets,
+)
+from .lerobot_consortium_contracts import (
+    build_lerobot_consortium_contract_catalog,
+    build_lerobot_consortium_contract_catalog_from_inventory_rows,
+    write_lerobot_consortium_contract_catalog,
+)
 from .libero_hdf5 import LiberoOfflineWindowDataset, build_libero_offline_train_val_episode_split, load_libero_offline_metadata
 from .lerobot_v2 import LeRobotV2WindowDataset, build_lerobot_train_val_episode_split, load_lerobot_v2_metadata
 from .raw_video import (
@@ -52,6 +71,8 @@ __all__ = [
     "LatentWAMBatch",
     "LatentWAMSample",
     "LeRobotConsortiumWindowDataset",
+    "LeRobotConsortiumInventoryRow",
+    "LeRobotConsortiumRepoTarget",
     "LeRobotV2WindowDataset",
     "LocalLeRobotLatentWindowDataset",
     "PoseSequence",
@@ -62,6 +83,10 @@ __all__ = [
     "WAMSample",
     "build_canonical_video_preprocessor",
     "build_lerobot_consortium_catalog",
+    "build_lerobot_consortium_contract_catalog",
+    "build_lerobot_consortium_contract_catalog_from_inventory_rows",
+    "build_lerobot_consortium_inventory",
+    "build_lerobot_consortium_inventory_row",
     "build_lerobot_consortium_report",
     "build_lerobot_consortium_train_val_datasets",
     "build_local_lerobot_latent_train_val_datasets",
@@ -77,7 +102,10 @@ __all__ = [
     "collate_wam_samples",
     "discover_local_lerobot_consortium_members",
     "format_lerobot_consortium_report",
+    "infer_lerobot_consortium_source_group",
     "discover_local_lerobot_repo_bundles",
+    "load_lerobot_consortium_inventory_rows",
+    "load_lerobot_consortium_repo_targets",
     "load_libero_offline_metadata",
     "load_lerobot_v2_metadata",
     "move_latent_wam_batch_to_device",
@@ -87,5 +115,11 @@ __all__ = [
     "register_dataset_builder",
     "resolve_dataset_loader_spec",
     "resolve_lerobot_consortium_train_val_split",
+    "render_lerobot_consortium_inventory_markdown",
     "state_sequence_to_pose_sequence",
+    "write_lerobot_consortium_contract_catalog",
+    "write_lerobot_consortium_inventory_csv",
+    "write_lerobot_consortium_inventory_json",
+    "write_lerobot_consortium_inventory_markdown",
+    "write_lerobot_consortium_repo_targets",
 ]

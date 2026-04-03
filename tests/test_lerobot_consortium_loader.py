@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import csv
 from dataclasses import replace
 import json
 import os
@@ -15,6 +16,7 @@ import torch
 import yaml
 
 import open_wam.data.lerobot_consortium_report as consortium_report_module
+import open_wam.data.lerobot_consortium as consortium_module
 from open_wam.configs import (
     ActionSchemaConfig,
     ActionTargetConfig,
@@ -28,6 +30,7 @@ from open_wam.configs import (
 )
 from open_wam.data import (
     DatasetLoaderSpec,
+    LeRobotConsortiumInventoryRow,
     build_lerobot_consortium_catalog,
     build_lerobot_consortium_report,
     build_lerobot_consortium_train_val_datasets,
@@ -99,6 +102,146 @@ REAL_HETEROGENEOUS_SANITY_SET = (
         "jsonl_meta",
     ),
 )
+
+
+def _make_inventory_row(repo_id: str, *, source_group: str = "manual") -> LeRobotConsortiumInventoryRow:
+    return LeRobotConsortiumInventoryRow(
+        source_group=source_group,
+        repo_id=repo_id,
+        private=False,
+        domain_type="unknown",
+        total_size_mb=None,
+        data_size_mb=None,
+        video_size_mb=None,
+        total_episodes=None,
+        total_frames=None,
+        total_tasks=None,
+        total_hours=None,
+        avg_seconds_per_episode=None,
+        fps=None,
+        observation_fps=None,
+        action_fps=None,
+        robot_type=None,
+        embodiment_type="unknown",
+        embodiment_confidence="low",
+        embodiment_reason="",
+        action_dim=None,
+        action_shape=None,
+        state_dim=None,
+        state_shape=None,
+        visual_stream_count=0,
+        visual_stream_keys="",
+        visual_dimensions="",
+        visual_dtypes="",
+        text_annotation_extent="none",
+        task_text_present=False,
+        task_text_count=0,
+        task_text_examples="",
+        temporal_dense_present=False,
+        temporal_sparse_present=False,
+        language_feature_keys="",
+        readme_url=f"https://huggingface.co/datasets/{repo_id}/blob/main/README.md",
+        dataset_url=f"https://huggingface.co/datasets/{repo_id}",
+        generation_error=None,
+    )
+
+
+def _write_inventory_snapshot_csv(path: Path, repo_ids: tuple[str, ...]) -> None:
+    fieldnames = [
+        "source_group",
+        "repo_id",
+        "private",
+        "domain_type",
+        "total_size_mb",
+        "data_size_mb",
+        "video_size_mb",
+        "total_episodes",
+        "total_frames",
+        "total_tasks",
+        "total_hours",
+        "avg_seconds_per_episode",
+        "fps",
+        "observation_fps",
+        "action_fps",
+        "robot_type",
+        "embodiment_type",
+        "embodiment_confidence",
+        "embodiment_reason",
+        "action_dim",
+        "action_shape",
+        "state_dim",
+        "state_shape",
+        "visual_stream_count",
+        "visual_stream_keys",
+        "visual_dimensions",
+        "visual_dtypes",
+        "text_annotation_extent",
+        "task_text_present",
+        "task_text_count",
+        "task_text_examples",
+        "temporal_dense_present",
+        "temporal_sparse_present",
+        "language_feature_keys",
+        "readme_url",
+        "dataset_url",
+        "generation_error",
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for repo_id in repo_ids:
+            writer.writerow(
+                {
+                    "source_group": "manual",
+                    "repo_id": repo_id,
+                    "private": "False",
+                    "domain_type": "unknown",
+                    "total_size_mb": "",
+                    "data_size_mb": "",
+                    "video_size_mb": "",
+                    "total_episodes": "",
+                    "total_frames": "",
+                    "total_tasks": "",
+                    "total_hours": "",
+                    "avg_seconds_per_episode": "",
+                    "fps": "",
+                    "observation_fps": "",
+                    "action_fps": "",
+                    "robot_type": "",
+                    "embodiment_type": "unknown",
+                    "embodiment_confidence": "low",
+                    "embodiment_reason": "",
+                    "action_dim": "",
+                    "action_shape": "",
+                    "state_dim": "",
+                    "state_shape": "",
+                    "visual_stream_count": "0",
+                    "visual_stream_keys": "",
+                    "visual_dimensions": "",
+                    "visual_dtypes": "",
+                    "text_annotation_extent": "none",
+                    "task_text_present": "False",
+                    "task_text_count": "0",
+                    "task_text_examples": "",
+                    "temporal_dense_present": "False",
+                    "temporal_sparse_present": "False",
+                    "language_feature_keys": "",
+                    "readme_url": f"https://huggingface.co/datasets/{repo_id}/blob/main/README.md",
+                    "dataset_url": f"https://huggingface.co/datasets/{repo_id}",
+                    "generation_error": "",
+                }
+            )
+
+
+def _write_contract_snapshot_json(path: Path, repo_ids: tuple[str, ...], *, dataset_count: int | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "contract_version": "hf_dataset_contracts.v1",
+        "dataset_count": len(repo_ids) if dataset_count is None else dataset_count,
+        "datasets": [{"repo_id": repo_id} for repo_id in repo_ids],
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -294,6 +437,136 @@ def test_consortium_config_loader_loads_nested_data_config(tmp_path: Path) -> No
     assert config.data.local_cache.mode == ConsortiumCacheMode.DISABLED
     assert config.data.cloud_cache.backend == "filesystem"
     assert config.data.consortium_members[0].local_root == str(repo_a)
+
+
+def test_consortium_snapshot_sanity_warns_on_mismatch(monkeypatch, tmp_path: Path) -> None:
+    repo_ids_path = tmp_path / "repo_ids.txt"
+    inventory_csv_path = tmp_path / "inventory.csv"
+    contracts_json_path = tmp_path / "contracts.json"
+    inventory_md_path = tmp_path / "inventory.md"
+    repo_ids_path.write_text("other-org/repo_b\n", encoding="utf-8")
+    _write_inventory_snapshot_csv(inventory_csv_path, ("other-org/repo_b",))
+    _write_contract_snapshot_json(contracts_json_path, ("other-org/repo_b",), dataset_count=2)
+    inventory_md_path.write_text("# stub\n", encoding="utf-8")
+
+    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_REPO_IDS_PATH", repo_ids_path)
+    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_INVENTORY_CSV_PATH", inventory_csv_path)
+    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_INVENTORY_MD_PATH", inventory_md_path)
+    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_CONTRACTS_JSON_PATH", contracts_json_path)
+    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_SANITY_CACHE", set())
+    monkeypatch.setattr(consortium_module, "_consortium_index_prompt_available", lambda: False)
+
+    config = _make_consortium_config(
+        members=(ConsortiumMemberConfig(member_id="repo_a", repo_id="other-org/repo_a"),),
+    )
+    with pytest.warns(UserWarning, match="Detected discrepancy between the configured LeRobot consortium repo ids"):
+        consortium_module.validate_lerobot_consortium_index_snapshot(config)
+
+
+def test_consortium_snapshot_sanity_can_prompt_and_refresh(monkeypatch, tmp_path: Path) -> None:
+    repo_ids_path = tmp_path / "repo_ids.txt"
+    inventory_csv_path = tmp_path / "inventory.csv"
+    contracts_json_path = tmp_path / "contracts.json"
+    inventory_md_path = tmp_path / "inventory.md"
+    repo_ids_path.write_text("other-org/repo_a\n", encoding="utf-8")
+    _write_inventory_snapshot_csv(inventory_csv_path, ("other-org/repo_b",))
+    _write_contract_snapshot_json(contracts_json_path, ("other-org/repo_b",))
+    inventory_md_path.write_text("# stub\n", encoding="utf-8")
+
+    refreshed: dict[str, bool] = {"called": False}
+
+    def _fake_refresh(data_config: LeRobotConsortiumDataConfig) -> None:
+        refreshed["called"] = True
+        _write_inventory_snapshot_csv(inventory_csv_path, ("other-org/repo_a",))
+        _write_contract_snapshot_json(contracts_json_path, ("other-org/repo_a",))
+
+    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_REPO_IDS_PATH", repo_ids_path)
+    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_INVENTORY_CSV_PATH", inventory_csv_path)
+    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_INVENTORY_MD_PATH", inventory_md_path)
+    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_CONTRACTS_JSON_PATH", contracts_json_path)
+    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_SANITY_CACHE", set())
+    monkeypatch.setattr(consortium_module, "_consortium_index_prompt_available", lambda: True)
+    monkeypatch.setattr(consortium_module, "_refresh_lerobot_consortium_index_snapshots", _fake_refresh)
+    monkeypatch.setattr("builtins.input", lambda _: "y")
+
+    config = _make_consortium_config(
+        members=(ConsortiumMemberConfig(member_id="repo_a", repo_id="other-org/repo_a"),),
+    )
+    consortium_module.validate_lerobot_consortium_index_snapshot(config)
+
+    assert refreshed["called"] is True
+
+
+def test_consortium_snapshot_incremental_refresh_only_fetches_missing_repo_metadata(monkeypatch, tmp_path: Path) -> None:
+    repo_ids_path = tmp_path / "repo_ids.txt"
+    inventory_csv_path = tmp_path / "inventory.csv"
+    contracts_json_path = tmp_path / "contracts.json"
+    inventory_md_path = tmp_path / "inventory.md"
+    repo_ids_path.write_text("manual,other-org/repo_a\nmanual,other-org/repo_b\n", encoding="utf-8")
+    _write_inventory_snapshot_csv(inventory_csv_path, ("other-org/repo_b",))
+    _write_contract_snapshot_json(contracts_json_path, ("other-org/repo_b",))
+    inventory_md_path.write_text("# stub\n", encoding="utf-8")
+
+    fetched_repo_ids: list[str] = []
+
+    def _fake_build_inventory(repo_targets, *, token=None, workers=8):
+        del token, workers
+        fetched_repo_ids.extend(target.repo_id for target in repo_targets)
+        return [_make_inventory_row(target.repo_id, source_group=target.source_group) for target in repo_targets]
+
+    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_REPO_IDS_PATH", repo_ids_path)
+    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_INVENTORY_CSV_PATH", inventory_csv_path)
+    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_INVENTORY_MD_PATH", inventory_md_path)
+    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_CONTRACTS_JSON_PATH", contracts_json_path)
+    monkeypatch.setattr(consortium_module, "build_lerobot_consortium_inventory", _fake_build_inventory)
+
+    config = _make_consortium_config(
+        members=(ConsortiumMemberConfig(member_id="repo_a", repo_id="other-org/repo_a"),),
+    )
+    consortium_module._refresh_lerobot_consortium_index_snapshots(config)
+
+    assert fetched_repo_ids == ["other-org/repo_a"]
+    refreshed_inventory_repo_ids = [row.repo_id for row in consortium_module.load_lerobot_consortium_inventory_rows(inventory_csv_path)]
+    assert refreshed_inventory_repo_ids == ["other-org/repo_a", "other-org/repo_b"]
+    refreshed_contracts = json.loads(contracts_json_path.read_text(encoding="utf-8"))
+    assert refreshed_contracts["dataset_count"] == 2
+    assert [dataset["repo_id"] for dataset in refreshed_contracts["datasets"]] == ["other-org/repo_a", "other-org/repo_b"]
+
+
+def test_consortium_snapshot_incremental_refresh_drops_removed_repo_ids(monkeypatch, tmp_path: Path) -> None:
+    repo_ids_path = tmp_path / "repo_ids.txt"
+    inventory_csv_path = tmp_path / "inventory.csv"
+    contracts_json_path = tmp_path / "contracts.json"
+    inventory_md_path = tmp_path / "inventory.md"
+    repo_ids_path.write_text("manual,other-org/repo_a\n", encoding="utf-8")
+    _write_inventory_snapshot_csv(inventory_csv_path, ("other-org/repo_a", "other-org/repo_b"))
+    _write_contract_snapshot_json(contracts_json_path, ("other-org/repo_a", "other-org/repo_b"))
+    inventory_md_path.write_text("# stub\n", encoding="utf-8")
+
+    fetched_repo_ids: list[str] = []
+
+    def _fake_build_inventory(repo_targets, *, token=None, workers=8):
+        del token, workers
+        fetched_repo_ids.extend(target.repo_id for target in repo_targets)
+        return [_make_inventory_row(target.repo_id, source_group=target.source_group) for target in repo_targets]
+
+    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_REPO_IDS_PATH", repo_ids_path)
+    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_INVENTORY_CSV_PATH", inventory_csv_path)
+    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_INVENTORY_MD_PATH", inventory_md_path)
+    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_CONTRACTS_JSON_PATH", contracts_json_path)
+    monkeypatch.setattr(consortium_module, "build_lerobot_consortium_inventory", _fake_build_inventory)
+
+    config = _make_consortium_config(
+        members=(ConsortiumMemberConfig(member_id="repo_a", repo_id="other-org/repo_a"),),
+    )
+    consortium_module._refresh_lerobot_consortium_index_snapshots(config)
+
+    assert fetched_repo_ids == []
+    refreshed_inventory_repo_ids = [row.repo_id for row in consortium_module.load_lerobot_consortium_inventory_rows(inventory_csv_path)]
+    assert refreshed_inventory_repo_ids == ["other-org/repo_a"]
+    refreshed_contracts = json.loads(contracts_json_path.read_text(encoding="utf-8"))
+    assert refreshed_contracts["dataset_count"] == 1
+    assert [dataset["repo_id"] for dataset in refreshed_contracts["datasets"]] == ["other-org/repo_a"]
 
 
 def test_consortium_catalog_preserves_member_contracts(tmp_path: Path) -> None:
