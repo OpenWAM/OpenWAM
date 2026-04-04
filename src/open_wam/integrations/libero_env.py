@@ -458,40 +458,50 @@ def _resolve_libero_paths() -> tuple[Path, Path]:
     path so the current uv environment can still import `libero.libero`.
     """
 
+    import_error: Exception | None = None
     try:
         libero_pkg = importlib.import_module("libero.libero")
+    except EOFError as exc:
+        # Upstream LIBERO can prompt on import when its config file has not
+        # been bootstrapped yet, which raises EOFError in non-interactive
+        # contexts. Fall back to a checkout path without importing so
+        # `ensure_local_libero_config(...)` can write the config first.
+        import_error = exc
+        libero_pkg = None
     except ModuleNotFoundError as exc:
-        fallback_repo_roots: list[Path] = []
+        if exc.name not in {"libero", "libero.libero"}:
+            raise
+        import_error = exc
+        libero_pkg = None
 
-        env_repo_root = os.environ.get("LIBERO_REPO_ROOT")
-        if env_repo_root:
-            fallback_repo_roots.append(Path(env_repo_root).expanduser())
+    if libero_pkg is not None:
+        package_root = Path(libero_pkg.__file__).resolve().parent
+        repo_root = package_root.parents[1]
+        return repo_root, package_root
 
-        project_root = _project_root(None)
-        fallback_repo_roots.append(project_root.parent / "LIBERO")
+    fallback_repo_roots: list[Path] = []
 
-        for repo_root in fallback_repo_roots:
-            package_root = repo_root / "libero" / "libero"
-            if not (package_root / "__init__.py").exists():
-                continue
-            repo_root_resolved = repo_root.resolve()
-            repo_root_str = str(repo_root_resolved)
-            if repo_root_str not in sys.path:
-                sys.path.insert(0, repo_root_str)
-            try:
-                libero_pkg = importlib.import_module("libero.libero")
-                break
-            except ModuleNotFoundError:
-                continue
-        else:
-            raise ImportError(
-                "LIBERO could not be imported. Either install an importable LIBERO package into the uv environment "
-                "or set LIBERO_REPO_ROOT to a checkout whose structure contains `libero/libero/__init__.py`."
-            ) from exc
+    env_repo_root = os.environ.get("LIBERO_REPO_ROOT")
+    if env_repo_root:
+        fallback_repo_roots.append(Path(env_repo_root).expanduser())
 
-    package_root = Path(libero_pkg.__file__).resolve().parent
-    repo_root = package_root.parents[1]
-    return repo_root, package_root
+    project_root = _project_root(None)
+    fallback_repo_roots.append(project_root.parent / "LIBERO")
+
+    for repo_root in fallback_repo_roots:
+        package_root = repo_root / "libero" / "libero"
+        if not (package_root / "__init__.py").exists():
+            continue
+        repo_root_resolved = repo_root.resolve()
+        repo_root_str = str(repo_root_resolved)
+        if repo_root_str not in sys.path:
+            sys.path.insert(0, repo_root_str)
+        return repo_root_resolved, package_root.resolve()
+
+    raise ImportError(
+        "LIBERO could not be imported. Either install an importable LIBERO package into the uv environment "
+        "or set LIBERO_REPO_ROOT to a checkout whose structure contains `libero/libero/__init__.py`."
+    ) from import_error
 
 
 def _project_gripper_state(gripper_state: torch.Tensor, *, gripper_representation: str) -> torch.Tensor:
