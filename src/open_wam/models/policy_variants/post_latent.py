@@ -6,11 +6,21 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from open_wam.configs import InferenceConfig, PoolingMode, PostLatentPolicyConfig, TrainingConfig
-from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
+from open_wam.configs import (
+    InferenceConfig,
+    PoolingMode,
+    PostLatentPolicyConfig,
+    TrainingConfig,
+    VisualReadoutSourceFamily,
+)
+from open_wam.models.visual_tower import VisualReadoutRequest, VisualStageOutputs, VisualTower
 
 from .base import PolicyVariant
-from .common import advance_default_runtime_infer_state, prepare_default_runtime_infer_state
+from .common import (
+    SharedVisualReadout,
+    advance_default_runtime_infer_state,
+    prepare_default_runtime_infer_state,
+)
 from .common.layouts import align_sequence_length, pool_frame_tokens, tokens_to_frame_major
 from .contracts import (
     DecoderSequenceContext,
@@ -43,12 +53,25 @@ class PostLatentPolicyVariant(PolicyVariant):
         self.state_proj = nn.Linear(state_dim, config.hidden_size) if config.use_state_projection else None
         self.query_tokens = nn.Parameter(torch.randn(config.query_count, config.hidden_size)) if config.query_count > 0 else None
         self.query_norm = nn.LayerNorm(config.hidden_size) if config.query_count > 0 else None
+        self.visual_readout = SharedVisualReadout(config.visual_readout, hidden_size=config.hidden_size)
+        if config.visual_readout is not None and config.visual_readout.source_family not in {
+            VisualReadoutSourceFamily.FINAL_CORE_TOKENS,
+            VisualReadoutSourceFamily.CORE_LAYER_TOKENS,
+            VisualReadoutSourceFamily.CORE_MULTI_LAYER_TOKENS,
+        }:
+            raise ValueError(
+                "Post-latent currently supports only core-based shared visual readout families, "
+                f"got {config.visual_readout.source_family!r}."
+            )
 
     def attach_site(self) -> str:
         return self.config.attach_site
 
     def required_visual_stages(self) -> tuple[str, ...]:
         return ("frontend", "core")
+
+    def requested_visual_readout(self) -> VisualReadoutRequest | None:
+        return self.visual_readout.requested_capture()
 
     def prepare_train_inputs(
         self,
@@ -62,13 +85,14 @@ class PostLatentPolicyVariant(PolicyVariant):
             )
         return PolicyPreparedInputs(batch=batch)
 
-    def _select_video_tokens(self, visual_outputs: VisualStageOutputs) -> torch.Tensor:
+    def _resolve_visual_readout(self, visual_outputs: VisualStageOutputs):
         if visual_outputs.core is None:
             raise ValueError("Post-latent variant requires core outputs for post-visual-core attachment.")
-        return visual_outputs.core.tokens
+        return self.visual_readout.resolve_from_core(visual_outputs.core)
 
     def _extract_policy_features(self, visual_outputs: VisualStageOutputs) -> torch.Tensor:
-        tokens = self._select_video_tokens(visual_outputs)
+        resolved_readout = self._resolve_visual_readout(visual_outputs)
+        tokens = resolved_readout.tokens
         if self.config.pooling_mode == PoolingMode.COMPAT_GLOBAL_MEAN:
             return tokens.mean(dim=1, keepdim=True).expand(-1, self.action_horizon, -1)
         frame_tokens = tokens_to_frame_major(tokens, visual_outputs.frontend.token_grid)
@@ -88,7 +112,8 @@ class PostLatentPolicyVariant(PolicyVariant):
         *,
         state: torch.Tensor | None,
     ) -> DecoderSequenceContext:
-        tokens = self._select_video_tokens(visual_outputs)
+        resolved_readout = self._resolve_visual_readout(visual_outputs)
+        tokens = resolved_readout.tokens
         frame_tokens = tokens_to_frame_major(tokens, visual_outputs.frontend.token_grid)
         return DecoderSequenceContext(
             sequence_tokens=frame_tokens,
@@ -97,10 +122,11 @@ class PostLatentPolicyVariant(PolicyVariant):
                 "kind": "frame_token_grid",
                 "attach_site": str(self.config.attach_site),
                 "pooling_mode": str(self.config.pooling_mode),
+                **resolved_readout.metadata,
             },
             token_grid=visual_outputs.frontend.token_grid,
             frame_count=frame_tokens.shape[1],
-            source_stage="core",
+            source_stage=resolved_readout.source_stage,
             state_sequence=state,
         )
 

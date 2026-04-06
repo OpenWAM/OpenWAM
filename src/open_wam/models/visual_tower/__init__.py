@@ -11,6 +11,8 @@ from .contracts import (
     VisualCoreOutput,
     VisualDecodeOutput,
     VisualFrontendOutput,
+    VisualIntermediateReadout,
+    VisualReadoutRequest,
     VisualSequenceMetadata,
     VisualStageOutputs,
 )
@@ -54,6 +56,8 @@ __all__ = [
     "VisualCoreOutput",
     "VisualDecodeOutput",
     "VisualFrontendOutput",
+    "VisualIntermediateReadout",
+    "VisualReadoutRequest",
     "VisualSequenceMetadata",
     "VisualStageOutputs",
     "VisualTower",

@@ -2,11 +2,20 @@ from __future__ import annotations
 
 from torch import nn
 
-from open_wam.configs import InferenceConfig, PostDecodedPolicyConfig, TrainingConfig
-from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
+from open_wam.configs import (
+    InferenceConfig,
+    PostDecodedPolicyConfig,
+    TrainingConfig,
+    VisualReadoutSourceFamily,
+)
+from open_wam.models.visual_tower import VisualReadoutRequest, VisualStageOutputs, VisualTower
 
 from .base import PolicyVariant
-from .common import advance_default_runtime_infer_state, prepare_default_runtime_infer_state
+from .common import (
+    SharedVisualReadout,
+    advance_default_runtime_infer_state,
+    prepare_default_runtime_infer_state,
+)
 from .common.layouts import align_sequence_length
 from .contracts import (
     DecoderSequenceContext,
@@ -36,26 +45,54 @@ class PostDecodedPolicyVariant(PolicyVariant):
         self.inference_config = inference_config
         self.action_horizon = action_horizon
         self.state_proj = nn.Linear(state_dim, config.hidden_size) if config.use_state_projection else None
+        self.visual_readout = SharedVisualReadout(config.visual_readout, hidden_size=config.hidden_size)
+        if config.visual_readout is not None and config.visual_readout.source_family not in {
+            VisualReadoutSourceFamily.FINAL_CORE_TOKENS,
+            VisualReadoutSourceFamily.CORE_LAYER_TOKENS,
+            VisualReadoutSourceFamily.CORE_MULTI_LAYER_TOKENS,
+        }:
+            raise ValueError(
+                "Post-decoded currently supports only core-based shared visual readout families, "
+                f"got {config.visual_readout.source_family!r}."
+            )
 
     def attach_site(self) -> str:
         return self.config.attach_site
 
     def required_visual_stages(self) -> tuple[str, ...]:
-        return ("frontend", "core", "decode")
+        if self.config.visual_readout is None:
+            return ("frontend", "core", "decode")
+        return ("frontend", "core")
+
+    def requested_visual_readout(self) -> VisualReadoutRequest | None:
+        return self.visual_readout.requested_capture()
 
     def prepare_train_inputs(
         self,
         visual_outputs: VisualStageOutputs,
         batch: PolicyTrainBatch,
     ) -> PolicyPreparedInputs:
-        if visual_outputs.decode is None:
+        if self.config.visual_readout is None and visual_outputs.decode is None:
             raise ValueError("Post-decoded variant requires decode outputs.")
         return PolicyPreparedInputs(batch=batch)
 
-    def _extract_policy_features(self, visual_outputs: VisualStageOutputs):
-        if visual_outputs.decode is None:
-            raise ValueError("Post-decoded variant requires decode outputs.")
-        decoded_features = visual_outputs.decode.decoded_features
+    def _resolve_decode_output(self, visual_tower: VisualTower, visual_outputs: VisualStageOutputs):
+        if self.config.visual_readout is None:
+            if visual_outputs.decode is None:
+                raise ValueError("Post-decoded variant requires decode outputs.")
+            return visual_outputs.decode, "decode", {}
+        if visual_outputs.core is None:
+            raise ValueError("Post-decoded variant requires core outputs for configured visual readout.")
+        resolved_readout = self.visual_readout.resolve_from_core(visual_outputs.core)
+        decode_output = visual_tower.decode_tokens(
+            visual_outputs.frontend,
+            tokens=resolved_readout.tokens,
+            token_layout=resolved_readout.token_layout,
+        )
+        return decode_output, resolved_readout.source_stage, resolved_readout.metadata
+
+    def _extract_policy_features(self, decode_output):
+        decoded_features = decode_output.decoded_features
         if decoded_features.ndim == 4:
             frame_features = decoded_features.mean(dim=2)
         elif decoded_features.ndim == 3:
@@ -72,10 +109,11 @@ class PostDecodedPolicyVariant(PolicyVariant):
         visual_outputs: VisualStageOutputs,
         *,
         state,
+        source_stage: str,
+        readout_metadata: dict[str, object],
+        decode_output,
     ) -> DecoderSequenceContext:
-        if visual_outputs.decode is None:
-            raise ValueError("Post-decoded variant requires decode outputs.")
-        decoded_features = visual_outputs.decode.decoded_features
+        decoded_features = decode_output.decoded_features
         return DecoderSequenceContext(
             sequence_tokens=decoded_features,
             sequence_layout={
@@ -84,10 +122,11 @@ class PostDecodedPolicyVariant(PolicyVariant):
                 "attach_site": str(self.config.attach_site),
                 "decode_feature_mode": str(self.config.decode_feature_mode),
                 "pooling_mode": str(self.config.pooling_mode),
+                **readout_metadata,
             },
             token_grid=visual_outputs.frontend.token_grid,
             frame_count=int(decoded_features.shape[1]),
-            source_stage="decode",
+            source_stage=source_stage,
             state_sequence=state,
         )
 
@@ -102,7 +141,8 @@ class PostDecodedPolicyVariant(PolicyVariant):
         visual_outputs: VisualStageOutputs,
         prepared_inputs: PolicyPreparedInputs,
     ) -> PolicyTrainOutput:
-        policy_features = self._extract_policy_features(visual_outputs)
+        decode_output, source_stage, readout_metadata = self._resolve_decode_output(visual_tower, visual_outputs)
+        policy_features = self._extract_policy_features(decode_output)
         policy_features = self._fuse_state(policy_features, prepared_inputs.batch.state)
         return PolicyTrainOutput(
             policy_features=policy_features,
@@ -110,6 +150,9 @@ class PostDecodedPolicyVariant(PolicyVariant):
             decoder_sequence_context=self._build_decoder_sequence_context(
                 visual_outputs,
                 state=prepared_inputs.batch.state,
+                source_stage=source_stage,
+                readout_metadata=readout_metadata,
+                decode_output=decode_output,
             ),
             aux={"variant": self.config.name},
         )
@@ -135,7 +178,8 @@ class PostDecodedPolicyVariant(PolicyVariant):
         context: PolicyInferContext,
         infer_state: PolicyInferState,
     ) -> PolicyInferOutput:
-        policy_features = self._extract_policy_features(visual_outputs)
+        decode_output, source_stage, readout_metadata = self._resolve_decode_output(visual_tower, visual_outputs)
+        policy_features = self._extract_policy_features(decode_output)
         policy_features = self._fuse_state(policy_features, context.state)
         return PolicyInferOutput(
             policy_features=policy_features,
@@ -147,6 +191,9 @@ class PostDecodedPolicyVariant(PolicyVariant):
             decoder_sequence_context=self._build_decoder_sequence_context(
                 visual_outputs,
                 state=context.state,
+                source_stage=source_stage,
+                readout_metadata=readout_metadata,
+                decode_output=decode_output,
             ),
             aux={"variant": self.config.name},
         )

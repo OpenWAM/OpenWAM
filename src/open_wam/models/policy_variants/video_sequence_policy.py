@@ -7,12 +7,17 @@ from open_wam.configs import (
     TrainingConfig,
     TrainingComponentSelector,
     VideoSequencePolicyConfig,
+    VisualReadoutSourceFamily,
     VisualStateSource,
 )
-from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
+from open_wam.models.visual_tower import VisualReadoutRequest, VisualStageOutputs, VisualTower
 
 from .base import PolicyVariant
-from .common import advance_default_runtime_infer_state, prepare_default_runtime_infer_state
+from .common import (
+    SharedVisualReadout,
+    advance_default_runtime_infer_state,
+    prepare_default_runtime_infer_state,
+)
 from .common.layouts import align_sequence_length, pool_frame_tokens, tokens_to_frame_major
 from .contracts import (
     DecoderSequenceContext,
@@ -42,14 +47,26 @@ class VideoSequencePolicyVariant(PolicyVariant):
         self.inference_config = inference_config
         self.action_horizon = action_horizon
         self.state_dim = state_dim
+        self.visual_readout = SharedVisualReadout(config.visual_readout, hidden_size=config.hidden_size)
 
     def attach_site(self) -> str:
         return self.config.attach_site
 
     def required_visual_stages(self) -> tuple[str, ...]:
+        if self.config.visual_readout is not None:
+            if self.config.visual_readout.source_family in {
+                VisualReadoutSourceFamily.FINAL_CORE_TOKENS,
+                VisualReadoutSourceFamily.CORE_LAYER_TOKENS,
+                VisualReadoutSourceFamily.CORE_MULTI_LAYER_TOKENS,
+            }:
+                return ("frontend", "core")
+            return ("frontend",)
         if self.config.visual_state_source == VisualStateSource.CORE_TOKENS:
             return ("frontend", "core")
         return ("frontend",)
+
+    def requested_visual_readout(self) -> VisualReadoutRequest | None:
+        return self.visual_readout.requested_capture()
 
     def prepare_train_inputs(
         self,
@@ -98,7 +115,57 @@ class VideoSequencePolicyVariant(PolicyVariant):
         visual_outputs: VisualStageOutputs,
         *,
         infer_state: PolicyInferState | None = None,
-    ) -> tuple[torch.Tensor, object, torch.Tensor]:
+    ) -> tuple[torch.Tensor, object, torch.Tensor, str, dict[str, object]]:
+        if self.config.visual_readout is not None:
+            source_family = self.config.visual_readout.source_family
+            if source_family in {
+                VisualReadoutSourceFamily.FINAL_CORE_TOKENS,
+                VisualReadoutSourceFamily.CORE_LAYER_TOKENS,
+                VisualReadoutSourceFamily.CORE_MULTI_LAYER_TOKENS,
+            }:
+                if visual_outputs.core is None:
+                    raise ValueError("Configured visual readout requires shared core outputs.")
+                resolved_readout = self.visual_readout.resolve_from_core(visual_outputs.core)
+                frame_tokens = tokens_to_frame_major(resolved_readout.tokens, visual_outputs.frontend.token_grid)
+                predicted_latents = visual_tower.project_video_tokens_to_latents(
+                    hidden_states=resolved_readout.tokens,
+                    token_grid=visual_outputs.frontend.token_grid,
+                )
+                return (
+                    frame_tokens,
+                    visual_outputs.frontend.token_grid,
+                    predicted_latents,
+                    resolved_readout.source_stage,
+                    resolved_readout.metadata,
+                )
+            if source_family == VisualReadoutSourceFamily.GENERATED_FUTURE_TOKENS:
+                denoised_latents = self._run_video_denoise(
+                    visual_tower,
+                    visual_outputs,
+                    frame_start=0 if infer_state is None else int(infer_state.cursor.current_start_frame),
+                )
+                denoised_tokens, denoised_token_grid = visual_tower.frontend.tokenize_video_latents(denoised_latents)
+                frame_tokens = tokens_to_frame_major(denoised_tokens, denoised_token_grid)
+                return (
+                    frame_tokens,
+                    denoised_token_grid,
+                    denoised_latents,
+                    "generated_future",
+                    {"source_family": source_family},
+                )
+            if source_family == VisualReadoutSourceFamily.DIFFUSION_FEATURE_TOKENS:
+                frame_tokens, token_grid, predicted_latents = visual_tower.extract_diffusion_feature_readout(
+                    frontend_output=visual_outputs.frontend,
+                    readout_config=self.config.visual_readout,
+                )
+                return (
+                    frame_tokens,
+                    token_grid,
+                    predicted_latents,
+                    "diffusion_feature",
+                    {"source_family": source_family},
+                )
+            raise ValueError(f"Unsupported visual readout source family {source_family!r}.")
         if self.config.visual_state_source == VisualStateSource.CORE_TOKENS:
             if visual_outputs.core is None:
                 raise ValueError("Video-sequence policy requires shared core outputs when `visual_state_source=core_tokens`.")
@@ -107,10 +174,21 @@ class VideoSequencePolicyVariant(PolicyVariant):
                 hidden_states=visual_outputs.core.tokens,
                 token_grid=visual_outputs.frontend.token_grid,
             )
-            return frame_tokens, visual_outputs.frontend.token_grid, predicted_latents
+            return frame_tokens, visual_outputs.frontend.token_grid, predicted_latents, "core", {
+                "source_family": VisualReadoutSourceFamily.FINAL_CORE_TOKENS,
+            }
 
         if infer_state is None and not self._backbone_trainable():
-            return self._clean_future_visual_state(visual_tower, visual_outputs)
+            frame_tokens, token_grid, predicted_latents = self._clean_future_visual_state(visual_tower, visual_outputs)
+            return frame_tokens, token_grid, predicted_latents, "clean_future", {
+                "source_family": VisualStateSource.DENOISED_VIDEO_TOKENS,
+            }
+        if visual_outputs.frontend.conditioning.text_context is None and not self._backbone_trainable():
+            frame_tokens, token_grid, predicted_latents = self._clean_future_visual_state(visual_tower, visual_outputs)
+            return frame_tokens, token_grid, predicted_latents, "clean_future", {
+                "source_family": VisualStateSource.DENOISED_VIDEO_TOKENS,
+                "fallback_reason": "missing_text_context",
+            }
 
         denoised_latents = self._run_video_denoise(
             visual_tower,
@@ -119,7 +197,9 @@ class VideoSequencePolicyVariant(PolicyVariant):
         )
         denoised_tokens, denoised_token_grid = visual_tower.frontend.tokenize_video_latents(denoised_latents)
         frame_tokens = tokens_to_frame_major(denoised_tokens, denoised_token_grid)
-        return frame_tokens, denoised_token_grid, denoised_latents
+        return frame_tokens, denoised_token_grid, denoised_latents, "denoised_future", {
+            "source_family": VisualStateSource.DENOISED_VIDEO_TOKENS,
+        }
 
     def _run_video_denoise(
         self,
@@ -167,6 +247,7 @@ class VideoSequencePolicyVariant(PolicyVariant):
         visual_outputs: VisualStageOutputs,
         state,
         source_stage: str,
+        readout_metadata: dict[str, object],
     ) -> DecoderSequenceContext:
         return DecoderSequenceContext(
             sequence_tokens=frame_tokens,
@@ -177,6 +258,7 @@ class VideoSequencePolicyVariant(PolicyVariant):
                 "temporal_projection": str(self.config.temporal_projection),
                 "visual_state_source": str(self.config.visual_state_source),
                 "visual_denoise_ratio": float(self.config.visual_denoise_ratio),
+                **readout_metadata,
             },
             token_grid=token_grid,
             frame_count=int(frame_tokens.shape[1]),
@@ -194,13 +276,11 @@ class VideoSequencePolicyVariant(PolicyVariant):
         visual_outputs: VisualStageOutputs,
         prepared_inputs: PolicyPreparedInputs,
     ) -> PolicyTrainOutput:
-        frame_tokens, token_grid, predicted_latents = self._resolve_visual_state(visual_tower, visual_outputs)
-        policy_features = self._build_policy_features(frame_tokens)
-        source_stage = (
-            "core"
-            if self.config.visual_state_source == VisualStateSource.CORE_TOKENS
-            else ("clean_future" if not self._backbone_trainable() else "denoised_future")
+        frame_tokens, token_grid, predicted_latents, source_stage, readout_metadata = self._resolve_visual_state(
+            visual_tower,
+            visual_outputs,
         )
+        policy_features = self._build_policy_features(frame_tokens)
         return PolicyTrainOutput(
             policy_features=policy_features,
             metrics={
@@ -213,11 +293,13 @@ class VideoSequencePolicyVariant(PolicyVariant):
                 visual_outputs=visual_outputs,
                 state=prepared_inputs.batch.state,
                 source_stage=source_stage,
+                readout_metadata=readout_metadata,
             ),
             aux={
                 "variant": self.config.name,
                 "method_family": "video_sequence_policy",
                 "predicted_latents": predicted_latents,
+                "visual_readout": readout_metadata,
             },
         )
 
@@ -242,15 +324,12 @@ class VideoSequencePolicyVariant(PolicyVariant):
         context: PolicyInferContext,
         infer_state: PolicyInferState,
     ) -> PolicyInferOutput:
-        frame_tokens, token_grid, predicted_latents = self._resolve_visual_state(
+        frame_tokens, token_grid, predicted_latents, source_stage, readout_metadata = self._resolve_visual_state(
             visual_tower,
             visual_outputs,
             infer_state=infer_state,
         )
         policy_features = self._build_policy_features(frame_tokens)
-        source_stage = (
-            "core" if self.config.visual_state_source == VisualStateSource.CORE_TOKENS else "generated_future"
-        )
         return PolicyInferOutput(
             policy_features=policy_features,
             next_state=advance_default_runtime_infer_state(
@@ -264,10 +343,12 @@ class VideoSequencePolicyVariant(PolicyVariant):
                 visual_outputs=visual_outputs,
                 state=context.state,
                 source_stage=source_stage,
+                readout_metadata=readout_metadata,
             ),
             aux={
                 "variant": self.config.name,
                 "method_family": "video_sequence_policy",
                 "predicted_latents": predicted_latents,
+                "visual_readout": readout_metadata,
             },
         )

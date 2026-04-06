@@ -195,6 +195,7 @@ def test_video_sequence_policy_pipeline_emits_core_token_sequence_context(tmp_pa
     raw["name"] = "video_sequence_policy_robotwin"
     raw["policy_variant"]["name"] = "video_sequence_policy"
     raw["policy_variant"]["attach_site"] = "post_visual_core"
+    raw["policy_variant"]["visual_state_source"] = "core_tokens"
     raw["policy_variant"].pop("pooling_mode", None)
     raw["policy_variant"].pop("query_count", None)
     raw["policy_variant"].pop("use_state_projection", None)
@@ -287,3 +288,99 @@ def test_video_sequence_policy_exact_vpp_knobs_pipeline_runs(tmp_path: Path) -> 
     assert infer_output.decoder_output.action_pred.shape == (2, 6, config.action_decoder.action_dim)
     assert infer_output.policy_output.decoder_sequence_context is not None
     assert infer_output.decoder_output.aux["sampled_new_chunk"] is True
+
+
+def test_video_sequence_policy_core_layer_visual_readout_pipeline_runs(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    raw["name"] = "video_sequence_policy_core_layer"
+    raw["policy_variant"]["name"] = "video_sequence_policy"
+    raw["policy_variant"]["attach_site"] = "post_visual_core"
+    raw["policy_variant"]["visual_readout"] = {
+        "source_family": "core_layer_tokens",
+        "layer_index": 0,
+    }
+    raw["policy_variant"].pop("pooling_mode", None)
+    raw["policy_variant"].pop("query_count", None)
+    raw["policy_variant"].pop("use_state_projection", None)
+    raw["action_decoder"]["name"] = "vpp_decoder"
+    raw["action_decoder"]["num_sampling_steps"] = 2
+    raw["action_decoder"]["rollout_chunk_steps"] = 2
+    raw["backbone"]["num_layers"] = 2
+
+    config_path = tmp_path / "video_sequence_policy_core_layer.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    _, pipeline, batch, train_batch = _build_pipeline(config_path)
+    sequence_train_batch = PolicyTrainBatch(
+        actions=train_batch.actions,
+        action_mask=train_batch.action_mask,
+        state=train_batch.state,
+        extra={"task_text": batch.task_text},
+    )
+    train_output = pipeline.forward_train(batch.views, sequence_train_batch)
+    infer_output = pipeline.forward_infer_step(
+        batch.views,
+        PolicyInferContext(state=batch.state, extra={"task_text": batch.task_text}),
+    )
+
+    assert train_output.policy_output.decoder_sequence_context is not None
+    assert infer_output.policy_output.decoder_sequence_context is not None
+    assert train_output.policy_output.decoder_sequence_context.source_stage == "core_layer_0"
+    assert infer_output.policy_output.decoder_sequence_context.source_stage == "core_layer_0"
+    assert train_output.policy_output.decoder_sequence_context.sequence_layout["source_family"] == "core_layer_tokens"
+
+
+def test_post_latent_core_layer_visual_readout_pipeline_runs(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    raw["name"] = "post_latent_core_layer"
+    raw["policy_variant"]["visual_readout"] = {
+        "source_family": "core_layer_tokens",
+        "layer_index": 0,
+    }
+    raw["backbone"]["num_layers"] = 2
+
+    config_path = tmp_path / "post_latent_core_layer.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    _, pipeline, batch, train_batch = _build_pipeline(config_path)
+    train_output = pipeline.forward_train(batch.views, train_batch)
+    infer_output = pipeline.forward_infer_step(batch.views, PolicyInferContext(state=batch.state))
+
+    assert train_output.policy_output.decoder_sequence_context is not None
+    assert infer_output.policy_output.decoder_sequence_context is not None
+    assert train_output.policy_output.decoder_sequence_context.source_stage == "core_layer_0"
+    assert infer_output.policy_output.decoder_sequence_context.source_stage == "core_layer_0"
+    assert train_output.policy_output.decoder_sequence_context.sequence_layout["source_family"] == "core_layer_tokens"
+
+
+def test_post_decoded_multi_layer_visual_readout_pipeline_runs(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/post_decoded_robotwin.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    raw["name"] = "post_decoded_multi_layer"
+    raw["policy_variant"]["visual_readout"] = {
+        "source_family": "core_multi_layer_tokens",
+        "layer_indices": [0, 1],
+        "fusion_mode": "concat_project",
+    }
+    raw["backbone"]["num_layers"] = 2
+
+    config_path = tmp_path / "post_decoded_multi_layer.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    _, pipeline, batch, train_batch = _build_pipeline(config_path)
+    train_output = pipeline.forward_train(batch.views, train_batch)
+    infer_output = pipeline.forward_infer_step(batch.views, PolicyInferContext(state=batch.state))
+
+    assert train_output.policy_output.decoder_sequence_context is not None
+    assert infer_output.policy_output.decoder_sequence_context is not None
+    assert train_output.policy_output.decoder_sequence_context.source_stage == "core_multi_layer"
+    assert infer_output.policy_output.decoder_sequence_context.source_stage == "core_multi_layer"
+    assert train_output.policy_output.decoder_sequence_context.sequence_layout["source_family"] == "core_multi_layer_tokens"

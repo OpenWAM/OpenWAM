@@ -6,7 +6,7 @@ from torch import nn
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.video_backbone.contracts import AttentionCacheEntry, CacheState, CacheUpdateMetadata
 
-from .contracts import VisualCoreInput, VisualCoreOutput
+from .contracts import VisualCoreInput, VisualCoreOutput, VisualIntermediateReadout
 from .runtime_programs import RuntimeStepInput, RuntimeStepOutput
 from .sequence_adapters import prepare_runtime_sequence
 
@@ -106,12 +106,27 @@ class PackedSequenceVisualCore(nn.Module):
 
     def forward(self, core_input: VisualCoreInput) -> VisualCoreOutput:
         hidden_states = core_input.tokens
+        captured_readouts: list[VisualIntermediateReadout] = []
+        requested_layers = (
+            set(core_input.readout_request.capture_layer_indices)
+            if core_input.readout_request is not None
+            else set()
+        )
         if core_input.position_context is not None:
             hidden_states = hidden_states + core_input.position_context
         if core_input.timestep_context is not None:
             hidden_states = hidden_states + core_input.timestep_context
-        for block in self.blocks:
+        for layer_index, block in enumerate(self.blocks):
             hidden_states = block(hidden_states, attention_mask=core_input.attention_mask)
+            if layer_index in requested_layers:
+                captured_readouts.append(
+                    VisualIntermediateReadout(
+                        layer_index=layer_index,
+                        tokens=hidden_states,
+                        token_layout=core_input.token_layout,
+                        aux={"implementation": "packed_sequence_core"},
+                    )
+                )
         hidden_states = self.final_norm(hidden_states)
         cache_update_metadata = core_input.cache_update_metadata or CacheUpdateMetadata()
         has_runtime_sequence = core_input.sequence_metadata is not None
@@ -170,6 +185,7 @@ class PackedSequenceVisualCore(nn.Module):
             tokens=hidden_states,
             token_layout=core_input.token_layout,
             cache_state=cache_state,
+            intermediate_readouts=tuple(captured_readouts),
             aux={
                 "used_attention_mask": core_input.attention_mask is not None,
                 "has_sequence_metadata": core_input.sequence_metadata is not None,

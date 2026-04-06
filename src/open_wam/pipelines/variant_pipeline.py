@@ -96,13 +96,14 @@ class VariantPipeline(nn.Module):
 
     def _complete_visual_outputs(self, frontend_output) -> VisualStageOutputs:
         requested_stages = set(self.policy_variant.required_visual_stages())
+        requested_readout = self.policy_variant.requested_visual_readout()
         core_output = None
         decode_output = None
         if "core" in requested_stages:
-            core_output = self.visual_tower.run_default_core(frontend_output)
+            core_output = self.visual_tower.run_default_core(frontend_output, readout_request=requested_readout)
         if "decode" in requested_stages:
             if core_output is None:
-                core_output = self.visual_tower.run_default_core(frontend_output)
+                core_output = self.visual_tower.run_default_core(frontend_output, readout_request=requested_readout)
             decode_output = self.visual_tower.run_decode(frontend_output, core_output)
         return VisualStageOutputs(frontend=frontend_output, core=core_output, decode=decode_output)
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .visual_readout import VisualReadoutConfig
 from .enums import (
     ActionNormMethod,
     ParallelActionAttentionScope,
@@ -39,6 +40,7 @@ class PolicyVariantConfig:
     name: PolicyVariantName
     hidden_size: int
     attach_site: AttachSite
+    visual_readout: VisualReadoutConfig | None = None
 
     def __post_init__(self) -> None:
         coerce_fields(

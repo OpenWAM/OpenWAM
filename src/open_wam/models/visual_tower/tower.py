@@ -5,7 +5,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from open_wam.configs import BackboneImplementation
+from open_wam.configs import BackboneImplementation, VisualReadoutConfig
 from open_wam.data.raw_video import ViewPlacement
 from open_wam.models.common import (
     RolloutCursor,
@@ -17,7 +17,7 @@ from open_wam.models.video_backbone.config import SharedVideoTransformerConfig, 
 from open_wam.models.video_backbone.contracts import AttentionCacheEntry, CacheState, CacheUpdateMetadata
 from open_wam.models.video_backbone.contracts import CacheBranchState
 
-from .contracts import VisualCoreInput, VisualStageOutputs
+from .contracts import VisualCoreInput, VisualReadoutRequest, VisualStageOutputs
 from .core import PackedSequenceVisualCore
 from .decoder import VisualFeatureDecoder
 from .exported_runtime_backbone import (
@@ -678,7 +678,7 @@ class VisualTower(nn.Module):
             },
         )
 
-    def run_default_core(self, frontend_output):
+    def run_default_core(self, frontend_output, *, readout_request: VisualReadoutRequest | None = None):
         batch_size, seq_len, _ = frontend_output.video_tokens.shape
         step_output = self.execute_runtime_step(
             RuntimeStepInput(
@@ -694,6 +694,7 @@ class VisualTower(nn.Module):
                 stream_ids=frontend_output.video_tokens.new_zeros((batch_size, seq_len), dtype=frontend_output.video_tokens.dtype).long(),
                 text_context=frontend_output.conditioning.text_context,
                 conditioning=frontend_output.conditioning,
+                readout_request=readout_request,
                 ),
             )
         )
@@ -702,7 +703,29 @@ class VisualTower(nn.Module):
         return step_output.core_output
 
     def run_decode(self, frontend_output, core_output):
-        return self.decoder(frontend_output=frontend_output, core_output=core_output)
+        return self.decode_tokens(
+            frontend_output,
+            tokens=core_output.tokens,
+            token_layout=core_output.token_layout,
+        )
+
+    def decode_tokens(self, frontend_output, *, tokens: torch.Tensor, token_layout):
+        return self.decoder.forward_tokens(
+            frontend_output=frontend_output,
+            tokens=tokens,
+            token_layout=token_layout,
+        )
+
+    def extract_diffusion_feature_readout(
+        self,
+        *,
+        frontend_output,
+        readout_config: VisualReadoutConfig,
+    ) -> tuple[torch.Tensor, object, torch.Tensor]:
+        raise NotImplementedError(
+            "The `diffusion_feature_tokens` visual readout family requires an external diffusion-feature "
+            "extractor path and is not available on the shared backbone-only runtime yet."
+        )
 
     def _ensure_runtime_backbone_initialized(self) -> None:
         if self.reference_core_load_report is not None:

@@ -16,6 +16,23 @@ from open_wam.models.video_backbone.contracts import (
 
 
 @dataclass(frozen=True)
+class VisualReadoutRequest:
+    """Opt-in intermediate readout capture requested from the visual core."""
+
+    capture_layer_indices: tuple[int, ...] = field(default_factory=tuple)
+
+
+@dataclass
+class VisualIntermediateReadout:
+    """One captured intermediate visual-core layer output."""
+
+    layer_index: int
+    tokens: torch.Tensor
+    token_layout: Any | None = None
+    aux: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class DecodedFeatureLayout:
     """Layout metadata for decoded visual features."""
 
@@ -188,6 +205,7 @@ class VisualCoreInput:
     cache_state: CacheState | None = None
     cache_update_metadata: CacheUpdateMetadata | None = None
     conditioning: ConditioningState | None = None
+    readout_request: VisualReadoutRequest | None = None
     sequence_metadata: VisualSequenceMetadata | None = None
     register_components: RegisterSequenceComponents | None = None
     structured_block_semantics: StructuredBlockSemantics | None = None
@@ -202,6 +220,7 @@ class VisualCoreOutput:
     tokens: torch.Tensor
     token_layout: Any | None
     cache_state: CacheState
+    intermediate_readouts: tuple[VisualIntermediateReadout, ...] = field(default_factory=tuple)
     aux: dict[str, Any] = field(default_factory=dict)
 
 

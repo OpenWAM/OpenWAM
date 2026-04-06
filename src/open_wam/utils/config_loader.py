@@ -35,6 +35,7 @@ from open_wam.configs import (
     SampleConstructionConfig,
     TrainerConfig,
     ViewLayoutConfig,
+    VisualReadoutConfig,
 )
 import open_wam.configs.enums as config_enums
 from open_wam.configs.inference import InferenceConfig
@@ -115,6 +116,36 @@ def _load_consortium_members(raw_value: Any) -> tuple[ConsortiumMemberConfig, ..
     return tuple(members)
 
 
+def _load_visual_readout_config(raw_value: Any) -> VisualReadoutConfig | None:
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, dict):
+        raise ValueError("Expected `policy_variant.visual_readout` to be a mapping.")
+    layer_indices_raw = raw_value.get("layer_indices", ())
+    if layer_indices_raw is None:
+        layer_indices = ()
+    else:
+        if not isinstance(layer_indices_raw, (list, tuple)):
+            raise ValueError(
+                "Expected `policy_variant.visual_readout.layer_indices` to be a list or tuple when provided."
+            )
+        layer_indices = tuple(int(value) for value in layer_indices_raw)
+    return VisualReadoutConfig(
+        source_family=_coerce_enum(
+            config_enums.VisualReadoutSourceFamily,
+            raw_value["source_family"],
+        ),
+        layer_index=raw_value.get("layer_index"),
+        layer_indices=layer_indices,
+        fusion_mode=_coerce_enum(
+            config_enums.VisualReadoutFusionMode,
+            raw_value.get("fusion_mode", config_enums.VisualReadoutFusionMode.NONE),
+        ),
+        diffusion_extract_timestep=raw_value.get("diffusion_extract_timestep", 20),
+        diffusion_extract_step_time=raw_value.get("diffusion_extract_step_time", 1),
+    )
+
+
 def _load_policy_variant_config(
     policy_variant_raw: dict[str, Any],
     action_head_raw: dict[str, Any],
@@ -141,9 +172,11 @@ def _load_policy_variant_config(
         resolved_raw.get("name", config_enums.PolicyVariantName.POST_LATENT),
     )
     hidden_size = resolved_raw.get("hidden_size", backbone_config.hidden_size)
+    visual_readout = _load_visual_readout_config(resolved_raw.get("visual_readout"))
     if name == config_enums.PolicyVariantName.POST_LATENT:
         return PostLatentPolicyConfig(
             hidden_size=hidden_size,
+            visual_readout=visual_readout,
             attach_site=_coerce_enum(
                 config_enums.AttachSite,
                 resolved_raw.get("attach_site", config_enums.AttachSite.POST_VISUAL_CORE),
@@ -170,6 +203,7 @@ def _load_policy_variant_config(
     if name == config_enums.PolicyVariantName.POST_DECODED:
         return PostDecodedPolicyConfig(
             hidden_size=hidden_size,
+            visual_readout=visual_readout,
             decode_feature_mode=_coerce_enum(
                 config_enums.DecodeFeatureMode,
                 resolved_raw.get("decode_feature_mode", config_enums.DecodeFeatureMode.FRAME_TOKEN_SEQUENCE),
@@ -187,6 +221,7 @@ def _load_policy_variant_config(
     if name == config_enums.PolicyVariantName.VIDEO_SEQUENCE_POLICY:
         return VideoSequencePolicyConfig(
             hidden_size=hidden_size,
+            visual_readout=visual_readout,
             attach_site=_coerce_enum(
                 config_enums.AttachSite,
                 resolved_raw.get("attach_site", config_enums.AttachSite.POST_VISUAL_CORE),
@@ -206,6 +241,7 @@ def _load_policy_variant_config(
     if name == config_enums.PolicyVariantName.REGISTER_ATTACHED:
         return RegisterAttachedPolicyConfig(
             hidden_size=hidden_size,
+            visual_readout=visual_readout,
             num_frame_per_block=resolved_raw.get("num_frame_per_block", 1),
             num_action_per_block=resolved_raw.get("num_action_per_block", 1),
             num_state_per_block=resolved_raw.get("num_state_per_block", 1),
@@ -294,6 +330,7 @@ def _load_policy_variant_config(
         )
         return ParallelStreamPolicyConfig(
             hidden_size=hidden_size,
+            visual_readout=visual_readout,
             runtime_mode=_coerce_enum(
                 config_enums.ParallelRuntimeMode,
                 resolved_raw.get("runtime_mode", config_enums.ParallelRuntimeMode.LINGBOT_EXACT),

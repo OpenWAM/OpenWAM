@@ -70,6 +70,10 @@ class ViewBatchAdapter:
         return move_wam_batch_to_device(batch, device)
 
     def prepare(self, batch: WAMBatch) -> PreparedTrainInput:
+        # Raw RGB batches do not carry latent tensors by contract. Keep the
+        # policy-batch extras additive for the rare cases where a view batch
+        # subtype chooses to include them.
+        video_latents = getattr(batch, "video_latents", None)
         return PreparedTrainInput(
             views=batch.views,
             policy_batch=build_policy_train_batch(
@@ -79,7 +83,7 @@ class ViewBatchAdapter:
                 state_mask=batch.state_mask,
                 task_text=batch.task_text,
                 metadata=batch.metadata,
-                video_latents=batch.video_latents,
+                video_latents=video_latents,
             ),
         )
 

@@ -45,6 +45,7 @@ from .contracts import (
     StructuredFrequencyBundle,
     VisualCoreInput,
     VisualCoreOutput,
+    VisualIntermediateReadout,
 )
 from .grid_ids import build_sequence_grid_ids, build_video_grid_ids
 from .runtime_programs import RuntimeStepInput, RuntimeStepOutput
@@ -1753,6 +1754,12 @@ class SharedVideoTransformerCore(nn.Module):
             timestep_values = core_input.timestep_values
             attention_mask = core_input.attention_mask
             stream_ids_tensor = core_input.stream_ids
+        captured_readouts: list[VisualIntermediateReadout] = []
+        requested_layers = (
+            set(core_input.readout_request.capture_layer_indices)
+            if core_input.readout_request is not None
+            else set()
+        )
         batch_size, seq_len, _ = hidden_states.shape
         prep_device = (
             self.time_conditioner.time_embedder.linear_1.weight.device
@@ -1901,6 +1908,15 @@ class SharedVideoTransformerCore(nn.Module):
                     else None
                 ),
             )
+            if layer_index in requested_layers:
+                captured_readouts.append(
+                    VisualIntermediateReadout(
+                        layer_index=layer_index,
+                        tokens=hidden_states,
+                        token_layout=token_layout,
+                        aux={"implementation": "shared_transformer"},
+                    )
+                )
             existing_self_entry = incoming_self_attention_kv[layer_index] if layer_index < len(incoming_self_attention_kv) else None
             if cache_update_metadata.update_kv_cache and current_self_cache_entry is not None:
                 next_self_attention_kv.append(
@@ -2023,6 +2039,7 @@ class SharedVideoTransformerCore(nn.Module):
             tokens=hidden_states,
             token_layout=token_layout,
             cache_state=cache_state,
+            intermediate_readouts=tuple(captured_readouts),
             aux={
                 "implementation": "shared_transformer",
                 "used_rotary": rotary_grid_ids is not None,

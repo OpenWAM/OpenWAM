@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import pytest
 import yaml
 
 from open_wam.configs import (
@@ -26,6 +27,8 @@ from open_wam.configs import (
     TrainerRuntimeName,
     TrainingComponentSelector,
     TrainingObjective,
+    VisualReadoutFusionMode,
+    VisualReadoutSourceFamily,
     WarmupAnchor,
 )
 from open_wam.utils.config_loader import load_experiment_config
@@ -223,6 +226,95 @@ def test_video_sequence_policy_exact_vpp_knobs_load(tmp_path: Path) -> None:
     assert config.action_decoder.name == ActionDecoderName.VPP
     assert config.action_decoder.temporal_compression_adapter_family == "video_former_3d"
     assert config.action_decoder.sequence_denoiser_family == "film_diffusion_transformer"
+
+
+def test_shared_visual_readout_knobs_load_for_method3_and_method4(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw["policy_variant"]["visual_readout"] = {
+        "source_family": "core_multi_layer_tokens",
+        "layer_indices": [0, 1],
+        "fusion_mode": "concat_project",
+    }
+    raw["backbone"]["num_layers"] = 2
+
+    method4_path = tmp_path / "post_latent_visual_readout.yaml"
+    with method4_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    method4_config = load_experiment_config(method4_path)
+    assert isinstance(method4_config.policy_variant, PostLatentPolicyConfig)
+    assert method4_config.policy_variant.visual_readout is not None
+    assert method4_config.policy_variant.visual_readout.source_family == VisualReadoutSourceFamily.CORE_MULTI_LAYER_TOKENS
+    assert method4_config.policy_variant.visual_readout.layer_indices == (0, 1)
+    assert method4_config.policy_variant.visual_readout.fusion_mode == VisualReadoutFusionMode.CONCAT_PROJECT
+
+    raw["name"] = "video_sequence_policy_visual_readout"
+    raw["policy_variant"]["name"] = "video_sequence_policy"
+    raw["policy_variant"].pop("pooling_mode", None)
+    raw["policy_variant"].pop("query_count", None)
+    raw["policy_variant"].pop("use_state_projection", None)
+    raw["action_decoder"]["name"] = "vpp_decoder"
+    raw["policy_variant"]["visual_readout"] = {
+        "source_family": "core_layer_tokens",
+        "layer_index": 0,
+    }
+
+    method3_path = tmp_path / "video_sequence_policy_visual_readout.yaml"
+    with method3_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    method3_config = load_experiment_config(method3_path)
+    assert isinstance(method3_config.policy_variant, VideoSequencePolicyConfig)
+    assert method3_config.policy_variant.visual_readout is not None
+    assert method3_config.policy_variant.visual_readout.source_family == VisualReadoutSourceFamily.CORE_LAYER_TOKENS
+    assert method3_config.policy_variant.visual_readout.layer_index == 0
+
+
+def test_visual_readout_loader_accepts_null_layer_indices_for_unused_families(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw["policy_variant"]["visual_readout"] = {
+        "source_family": "final_core_tokens",
+        "layer_indices": None,
+    }
+
+    config_path = tmp_path / "post_latent_visual_readout_null_indices.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    assert isinstance(config.policy_variant, PostLatentPolicyConfig)
+    assert config.policy_variant.visual_readout is not None
+    assert config.policy_variant.visual_readout.source_family == VisualReadoutSourceFamily.FINAL_CORE_TOKENS
+    assert config.policy_variant.visual_readout.layer_indices == ()
+
+
+def test_visual_readout_loader_rejects_non_iterable_layer_indices(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw["policy_variant"]["visual_readout"] = {
+        "source_family": "core_multi_layer_tokens",
+        "layer_indices": 3,
+        "fusion_mode": "concat_project",
+    }
+
+    config_path = tmp_path / "post_latent_visual_readout_bad_indices.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    with pytest.raises(
+        ValueError,
+        match="policy_variant\\.visual_readout\\.layer_indices",
+    ):
+        load_experiment_config(config_path)
 
 
 def test_local_libero_yaml_config_loads() -> None:
