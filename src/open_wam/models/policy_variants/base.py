@@ -37,6 +37,11 @@ class PolicyVariant(nn.Module, ABC):
     def required_visual_stages(self) -> tuple[str, ...]:
         """Return the visual stages the pipeline must prepare eagerly."""
 
+    def requested_visual_readout(self) -> VisualReadoutRequest | None:
+        """Optionally request one shared visual-core readout capture."""
+
+        return None
+
     @abstractmethod
     def prepare_train_inputs(
         self,
