@@ -217,7 +217,14 @@ class VideoSequencePolicyVariant(PolicyVariant):
         observed_prefix, target_future_latents = self._split_window_latents(visual_outputs.frontend.video_latents)
         text_emb = visual_outputs.frontend.conditioning.text_context
         if text_emb is None:
-            raise ValueError("Video-sequence denoise state requires text conditioning from the visual frontend.")
+            batch_size = visual_outputs.frontend.video_latents.shape[0]
+            text_emb = torch.zeros(
+                batch_size,
+                visual_tower.config.max_text_tokens,
+                visual_tower.config.text_dim,
+                device=visual_outputs.frontend.video_latents.device,
+                dtype=visual_outputs.frontend.video_latents.dtype,
+            )
         return visual_tower.generate_conditioned_future_latents(
             observed_prefix=observed_prefix,
             future_template=target_future_latents,

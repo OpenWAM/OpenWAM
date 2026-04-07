@@ -11,6 +11,8 @@ from open_wam.configs import (
     DecodedFeatureActionDecoderConfig,
     LingbotParallelActionDecoderConfig,
     MLPActionDecoderConfig,
+    CausalPrefixSuffixBucketConfig,
+    CausalVideoPredictionPolicyConfig,
     ParallelStreamPolicyConfig,
     PolicyVariantConfig,
     PostDecodedPolicyConfig,
@@ -18,6 +20,7 @@ from open_wam.configs import (
     RegisterActionDecoderConfig,
     RegisterAttachedPolicyConfig,
     VPPActionDecoderConfig,
+    VideoOnlyActionDecoderConfig,
     VideoSequencePolicyConfig,
     ConsortiumChannelMappingConfig,
     ConsortiumCloudCacheConfig,
@@ -238,6 +241,14 @@ def _load_policy_variant_config(
             use_state_context=resolved_raw.get("use_state_context", True),
             use_goal_context=resolved_raw.get("use_goal_context", True),
         )
+    if name == config_enums.PolicyVariantName.CAUSAL_VIDEO_PREDICTION:
+        return CausalVideoPredictionPolicyConfig(
+            hidden_size=hidden_size,
+            attach_site=_coerce_enum(
+                config_enums.AttachSite,
+                resolved_raw.get("attach_site", config_enums.AttachSite.POST_VISUAL_CORE),
+            ),
+        )
     if name == config_enums.PolicyVariantName.REGISTER_ATTACHED:
         return RegisterAttachedPolicyConfig(
             hidden_size=hidden_size,
@@ -393,6 +404,8 @@ def _load_action_decoder_config(
     if not resolved_raw:
         if policy_variant_config.name == config_enums.PolicyVariantName.REGISTER_ATTACHED:
             resolved_raw["name"] = config_enums.ActionDecoderName.REGISTER
+        elif policy_variant_config.name == config_enums.PolicyVariantName.CAUSAL_VIDEO_PREDICTION:
+            resolved_raw["name"] = config_enums.ActionDecoderName.VIDEO_ONLY
         elif policy_variant_config.name == config_enums.PolicyVariantName.VIDEO_SEQUENCE_POLICY:
             resolved_raw["name"] = config_enums.ActionDecoderName.VPP
         elif policy_variant_config.name == config_enums.PolicyVariantName.POST_DECODED:
@@ -498,6 +511,13 @@ def _load_action_decoder_config(
         )
     if name == config_enums.ActionDecoderName.LINGBOT_PARALLEL:
         return LingbotParallelActionDecoderConfig(
+            hidden_size=hidden_size,
+            action_dim=action_dim,
+            action_horizon=action_horizon,
+            dropout=dropout,
+        )
+    if name == config_enums.ActionDecoderName.VIDEO_ONLY:
+        return VideoOnlyActionDecoderConfig(
             hidden_size=hidden_size,
             action_dim=action_dim,
             action_horizon=action_horizon,
@@ -679,6 +699,22 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
             randomize_geometry=sample_construction_raw.get(
                 "randomize_geometry",
                 data_defaults.sample_construction.randomize_geometry,
+            ),
+            causal_prefix_suffix_buckets=tuple(
+                CausalPrefixSuffixBucketConfig(
+                    observed_frames=int(bucket["observed_frames"]),
+                    future_frames=int(bucket["future_frames"]),
+                )
+                for bucket in sample_construction_raw.get(
+                    "causal_prefix_suffix_buckets",
+                    tuple(
+                        {
+                            "observed_frames": bucket.observed_frames,
+                            "future_frames": bucket.future_frames,
+                        }
+                        for bucket in data_defaults.sample_construction.causal_prefix_suffix_buckets
+                    ),
+                )
             ),
         ),
     )

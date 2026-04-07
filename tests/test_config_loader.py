@@ -9,7 +9,9 @@ from open_wam.configs import (
     AttentionMode,
     BatchAdapterName,
     CacheWarmupSource,
+    CausalPrefixSuffixBucketConfig,
     CFGMode,
+    CausalVideoPredictionPolicyConfig,
     JointSampler,
     LatentWindowProfile,
     LoopPolicyName,
@@ -557,3 +559,19 @@ def test_composable_runtime_fields_load(tmp_path: Path) -> None:
     assert config.data.latent_root == "/tmp/open-wam-test/latents"
     assert config.data.latent_subdir == "custom_latents"
     assert config.data.latent_camera_names == ("latent_cam_0", "latent_cam_1")
+
+
+def test_causal_video_prediction_config_loads() -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/causal_video_prediction_libero_latent_local.yaml"
+    )
+
+    assert isinstance(config.policy_variant, CausalVideoPredictionPolicyConfig)
+    assert config.action_decoder.name == ActionDecoderName.VIDEO_ONLY
+    assert config.data.sample_construction.mode == WindowSamplingMode.CAUSAL_PREFIX_SUFFIX
+    assert config.training.enabled_objectives == ("latent",)
+    assert config.data.sample_construction.causal_prefix_suffix_buckets == (
+        CausalPrefixSuffixBucketConfig(observed_frames=1, future_frames=3),
+        CausalPrefixSuffixBucketConfig(observed_frames=2, future_frames=6),
+        CausalPrefixSuffixBucketConfig(observed_frames=5, future_frames=10),
+    )

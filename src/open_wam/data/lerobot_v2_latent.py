@@ -1174,6 +1174,170 @@ class AlignedSubwindowLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset)
             "state_indices": tuple(state_indices),
         }
 
+
+class CausalPrefixSuffixLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
+    """Bucketed causal prefix/suffix video-only samples over local latent exports."""
+
+    def __getitem__(self, index: int) -> LatentWAMSample:
+        window = self.windows[index]
+        repo_bundle = self._repo_bundles[str(window.repo_root)]
+        rows = self._load_episode_rows(window.repo_root, window.episode_index, repo_bundle.metadata)
+        latent_payloads = self._load_window_latents(window, repo_bundle.metadata)
+        full_video_latents, latent_layout_metadata = self._assemble_canonical_latents(latent_payloads)
+        primary_payload = latent_payloads[self.data_config.latent_camera_names[0]]
+
+        subwindow = self._sample_causal_prefix_suffix_subwindow(
+            video_latents=full_video_latents,
+            rows=rows,
+            primary_payload=primary_payload,
+            window=window,
+            index=index,
+        )
+        task_index = int(rows[min(subwindow["sample_start_frame"], len(rows) - 1)].get("task_index", 0)) if rows else 0
+        episode_record = repo_bundle.episodes_by_index.get(window.episode_index)
+        task_text = repo_bundle.metadata.tasks_by_index.get(task_index)
+        if task_text is None and episode_record is not None and episode_record.tasks:
+            task_text = episode_record.tasks[0]
+
+        text_context = primary_payload.get("text_emb")
+        if isinstance(text_context, torch.Tensor):
+            text_context = text_context.to(dtype=torch.float32)
+        else:
+            text_context = None
+        negative_text_context = self.empty_text_embedding.clone() if self.empty_text_embedding is not None else None
+
+        return LatentWAMSample(
+            video_latents=subwindow["video_latents"],
+            actions=subwindow["actions"],
+            action_mask=subwindow["action_mask"],
+            state=subwindow["state"],
+            state_mask=subwindow["state_mask"],
+            task_text=task_text,
+            text_context=text_context,
+            negative_text_context=negative_text_context,
+            metadata={
+                "repo_root": str(window.repo_root),
+                "dataset_id": str(window.repo_root),
+                "episode_index": window.episode_index,
+                "segment_start_frame": window.start_frame,
+                "segment_end_frame": window.end_frame,
+                "sample_start_frame": subwindow["sample_start_frame"],
+                "sample_end_frame": subwindow["sample_end_frame"],
+                "observation_start": subwindow["sample_start_frame"],
+                "observation_frame_indices": subwindow["observed_frame_ids"],
+                "window_sampling_mode": WindowSamplingMode.CAUSAL_PREFIX_SUFFIX,
+                "window_start_frame": subwindow["sample_start_frame"],
+                "window_end_frame": subwindow["sample_end_frame"],
+                "anchor_frame_index": subwindow["sample_start_frame"],
+                "observed_frame_ids": subwindow["observed_frame_ids"],
+                "task_index": task_index,
+                "latent_layout": latent_layout_metadata,
+                "action_representation": self.data_config.action_target.representation,
+                "subwindow_latent_start": subwindow["latent_start_index"],
+                "subwindow_latent_end": subwindow["latent_end_index"],
+                "observed_prefix_frames": subwindow["observed_prefix_frames"],
+                "future_suffix_frames": subwindow["future_suffix_frames"],
+                "valid_video_frames": subwindow["valid_video_frames"],
+                "padded_video_frames": int(subwindow["video_latents"].shape[1]),
+            },
+        )
+
+    def _sample_causal_prefix_suffix_subwindow(
+        self,
+        *,
+        video_latents: torch.Tensor,
+        rows: list[dict[str, Any]],
+        primary_payload: dict[str, Any],
+        window: LocalEpisodeWindow,
+        index: int,
+    ) -> dict[str, Any]:
+        sample_cfg = self.data_config.sample_construction
+        padded_num_frames = int(sample_cfg.num_frames)
+        buckets = tuple(sample_cfg.causal_prefix_suffix_buckets)
+        if not buckets:
+            raise ValueError(
+                "Causal prefix/suffix sampling requires non-empty `sample_construction.causal_prefix_suffix_buckets`."
+            )
+        raw_frame_ids = [int(value) for value in list(primary_payload.get("frame_ids", []))]
+        if not raw_frame_ids:
+            raw_frame_ids = list(window.observation_frame_indices)
+        raw_bucket_boundaries = self._build_raw_bucket_boundaries(
+            raw_frame_count=len(raw_frame_ids),
+            latent_num_frames=int(video_latents.shape[1]),
+        )
+        valid_candidates: list[tuple[int, int]] = []
+        for bucket_index, bucket in enumerate(buckets):
+            total_frames = int(bucket.total_frames)
+            if total_frames > int(video_latents.shape[1]):
+                continue
+            max_latent_start = int(video_latents.shape[1]) - total_frames
+            for latent_start in range(max_latent_start + 1):
+                latent_end = latent_start + total_frames
+                raw_start_position = raw_bucket_boundaries[latent_start]
+                raw_end_position = raw_bucket_boundaries[latent_end]
+                if raw_start_position >= len(raw_frame_ids) or raw_end_position <= raw_start_position:
+                    continue
+                sample_end_frame = raw_frame_ids[max(raw_start_position, raw_end_position - 1)] + 1
+                if sample_end_frame > len(rows):
+                    continue
+                valid_candidates.append((latent_start, bucket_index))
+        if not valid_candidates:
+            raise ValueError(
+                "No valid causal prefix/suffix sample could be drawn from the local latent segment. "
+                f"episode_index={window.episode_index}, latent_frames={video_latents.shape[1]}, "
+                f"configured_buckets={[(bucket.observed_frames, bucket.future_frames) for bucket in buckets]}."
+            )
+
+        if self.data_config.split == DataSplit.TRAIN:
+            rng = random.Random(random.randrange(1 << 30) + index)
+        else:
+            rng = random.Random(self.data_config.split_seed + index)
+        latent_start, bucket_index = valid_candidates[rng.randrange(len(valid_candidates))]
+        bucket = buckets[bucket_index]
+        total_frames = int(bucket.total_frames)
+        latent_end = latent_start + total_frames
+        raw_start_position = raw_bucket_boundaries[latent_start]
+        raw_end_position = raw_bucket_boundaries[latent_end]
+        sample_start_frame = raw_frame_ids[raw_start_position]
+        sample_end_frame = raw_frame_ids[max(raw_start_position, raw_end_position - 1)] + 1
+        observed_frame_ids = raw_frame_ids[raw_start_position:raw_end_position]
+        padded_latents = torch.zeros(
+            video_latents.shape[0],
+            padded_num_frames,
+            video_latents.shape[2],
+            video_latents.shape[3],
+            dtype=video_latents.dtype,
+        )
+        padded_latents[:, :total_frames] = video_latents[:, latent_start:latent_end]
+        actions = torch.zeros(
+            self.data_config.action_schema.action_horizon,
+            self.data_config.action_schema.action_dim,
+            dtype=torch.float32,
+        )
+        action_mask = torch.zeros_like(actions)
+        state = torch.zeros(
+            self.data_config.action_schema.state_horizon,
+            self.data_config.action_schema.state_dim,
+            dtype=torch.float32,
+        )
+        state_mask = torch.zeros_like(state)
+        return {
+            "video_latents": padded_latents.contiguous(),
+            "actions": actions,
+            "action_mask": action_mask,
+            "state": state,
+            "state_mask": state_mask,
+            "sample_start_frame": sample_start_frame,
+            "sample_end_frame": sample_end_frame,
+            "observed_frame_ids": observed_frame_ids,
+            "latent_start_index": latent_start,
+            "latent_end_index": latent_end,
+            "observed_prefix_frames": int(bucket.observed_frames),
+            "future_suffix_frames": int(bucket.future_frames),
+            "valid_video_frames": total_frames,
+        }
+
+
 def build_local_lerobot_latent_train_val_datasets(
     data_config: DataConfig,
 ) -> tuple[Dataset[LatentWAMSample], Dataset[LatentWAMSample]]:
@@ -1213,6 +1377,8 @@ def build_local_lerobot_latent_train_val_datasets(
         dataset_cls = ContextualSubwindowLocalLeRobotLatentDataset
     elif data_config.sample_construction.mode == WindowSamplingMode.ALIGNED_SUBWINDOW:
         dataset_cls = AlignedSubwindowLocalLeRobotLatentDataset
+    elif data_config.sample_construction.mode == WindowSamplingMode.CAUSAL_PREFIX_SUFFIX:
+        dataset_cls = CausalPrefixSuffixLocalLeRobotLatentDataset
     else:
         raise ValueError(
             f"Unsupported sample_construction.mode for local latent datasets: "

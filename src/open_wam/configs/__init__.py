@@ -7,10 +7,12 @@ from .action_decoder import (
     MLPActionDecoderConfig,
     RegisterActionDecoderConfig,
     VPPActionDecoderConfig,
+    VideoOnlyActionDecoderConfig,
 )
 from .data import (
     ActionTargetConfig,
     ActionSchemaConfig,
+    CausalPrefixSuffixBucketConfig,
     ConsortiumChannelMappingConfig,
     ConsortiumCloudCacheConfig,
     ConsortiumEpisodeSelectionConfig,
@@ -107,6 +109,7 @@ from .enums import (
 from .experiment import ExperimentConfig
 from .inference import InferenceConfig
 from .policy_variant import (
+    CausalVideoPredictionPolicyConfig,
     ParallelStreamPolicyConfig,
     PolicyVariantConfig,
     PostDecodedPolicyConfig,
@@ -137,6 +140,8 @@ __all__ = [
     "CFGMode",
     "CacheUpdateMode",
     "CacheWarmupSource",
+    "CausalPrefixSuffixBucketConfig",
+    "CausalVideoPredictionPolicyConfig",
     "CheckpointMode",
     "ConsortiumCacheMode",
     "ConsortiumChannelMappingConfig",
@@ -223,6 +228,7 @@ __all__ = [
     "TrainingComponentSelector",
     "TrainingObjective",
     "VPPActionDecoderConfig",
+    "VideoOnlyActionDecoderConfig",
     "VideoSequencePolicyConfig",
     "ViewLayoutConfig",
     "WandBMode",

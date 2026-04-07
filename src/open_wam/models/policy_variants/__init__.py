@@ -15,6 +15,7 @@ from .contracts import (
 )
 
 if TYPE_CHECKING:
+    from .causal_video_prediction import CausalVideoPredictionPolicyVariant
     from .parallel_stream import ParallelStreamPolicyVariant
     from .post_decoded import PostDecodedPolicyVariant
     from .post_latent import PostLatentPolicyVariant
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ParallelStreamPolicyVariant",
+    "CausalVideoPredictionPolicyVariant",
     "DecoderSequenceContext",
     "PolicyInferContext",
     "PolicyInferOutput",
@@ -40,6 +42,10 @@ __all__ = [
 
 
 def __getattr__(name: str):
+    if name == "CausalVideoPredictionPolicyVariant":
+        from .causal_video_prediction import CausalVideoPredictionPolicyVariant
+
+        return CausalVideoPredictionPolicyVariant
     if name == "ParallelStreamPolicyVariant":
         from .parallel_stream import ParallelStreamPolicyVariant
 

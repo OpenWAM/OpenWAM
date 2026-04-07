@@ -30,7 +30,12 @@ from .grid_ids import build_video_grid_ids
 from .reference_core_weights import BackboneLoadReport, load_reference_weights_into_replica_core
 from .replica_core import SharedVideoTransformerCore
 from .reference_transformer import preferred_reference_dtype
-from .runtime_programs import RuntimeStepInput, RuntimeStepOutput, build_dense_runtime_program
+from .runtime_programs import (
+    RuntimeStepInput,
+    RuntimeStepOutput,
+    build_dense_runtime_program,
+    build_single_stream_exact_runtime_program,
+)
 
 _MAX_CACHED_FRAMES_UNSET = object()
 
@@ -216,6 +221,77 @@ class VisualTower(nn.Module):
             hidden_states=hidden_states,
             token_grid=token_grid,
         )
+
+    def predict_video_flow(
+        self,
+        *,
+        noisy_latents: torch.Tensor,
+        timesteps: torch.Tensor,
+        text_context: torch.Tensor | None,
+        frame_start: int = 0,
+    ) -> torch.Tensor:
+        """Run the shared exact single-stream video path without variant-specific logic."""
+
+        from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
+            data_seq_to_patch,
+            get_mesh_id,
+            reference_runtime_dtype,
+        )
+
+        if noisy_latents.ndim != 5:
+            raise ValueError(
+                "Expected `noisy_latents` with shape [B, C, T, H, W], "
+                f"got {tuple(noisy_latents.shape)}."
+            )
+        batch_size, _, num_frames, latent_height, latent_width = noisy_latents.shape
+        if timesteps.shape != (batch_size, num_frames):
+            raise ValueError(
+                "Video-flow prediction expects `timesteps` with shape [B, T], "
+                f"got {tuple(timesteps.shape)} for latents {tuple(noisy_latents.shape)}."
+            )
+        model_dtype = reference_runtime_dtype(self.core)
+        if text_context is None:
+            text_context = torch.zeros(
+                batch_size,
+                self.config.max_text_tokens,
+                self.config.text_dim,
+                device=noisy_latents.device,
+                dtype=model_dtype,
+            )
+        else:
+            text_context = text_context.to(device=noisy_latents.device, dtype=model_dtype)
+        grid_id = get_mesh_id(
+            num_frames // self.config.patch_size_t,
+            latent_height // self.config.patch_size_h,
+            latent_width // self.config.patch_size_w,
+            t=0,
+            f_w=1,
+            f_shift=frame_start,
+            action=False,
+            device=noisy_latents.device,
+        )[None].repeat(batch_size, 1, 1)
+        step_output = self.execute_runtime_step(
+            RuntimeStepInput(
+                program=build_single_stream_exact_runtime_program(),
+                payload={
+                    "noisy_latents": noisy_latents.to(dtype=model_dtype),
+                    "timesteps": timesteps.to(device=noisy_latents.device, dtype=torch.float32),
+                    "grid_id": grid_id,
+                    "text_emb": text_context,
+                },
+                action_mode=False,
+            )
+        )
+        if step_output.tokens is None:
+            raise ValueError("Exact single-stream runtime step did not return video flow tokens.")
+        return data_seq_to_patch(
+            self.core.patch_size,
+            step_output.tokens,
+            num_frames,
+            latent_height,
+            latent_width,
+            batch_size=batch_size,
+        ).to(dtype=noisy_latents.dtype)
 
     def generate_conditioned_future_latents(
         self,

@@ -181,6 +181,18 @@ class ConsortiumCloudCacheConfig:
 
 
 @dataclass(frozen=True)
+class CausalPrefixSuffixBucketConfig:
+    """One `(observed_prefix, future_suffix)` bucket for causal video training."""
+
+    observed_frames: int
+    future_frames: int
+
+    @property
+    def total_frames(self) -> int:
+        return int(self.observed_frames) + int(self.future_frames)
+
+
+@dataclass(frozen=True)
 class SampleConstructionConfig:
     """How one latent training sample is constructed from a source segment."""
 
@@ -194,6 +206,7 @@ class SampleConstructionConfig:
     window_size: int = 1
     predict_blocks_per_sample: int = 1
     randomize_geometry: bool = True
+    causal_prefix_suffix_buckets: tuple[CausalPrefixSuffixBucketConfig, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         coerce_fields(
@@ -203,6 +216,17 @@ class SampleConstructionConfig:
                 "anchor_policy": AnchorPolicy,
             },
         )
+        for bucket in self.causal_prefix_suffix_buckets:
+            if bucket.observed_frames <= 0 or bucket.future_frames <= 0:
+                raise ValueError(
+                    "Causal prefix/suffix buckets require positive observed/future lengths, "
+                    f"got observed_frames={bucket.observed_frames}, future_frames={bucket.future_frames}."
+                )
+            if bucket.total_frames > self.num_frames:
+                raise ValueError(
+                    "Causal prefix/suffix bucket total must not exceed `sample_construction.num_frames`, "
+                    f"got bucket_total={bucket.total_frames}, num_frames={self.num_frames}."
+                )
 
 
 @dataclass(frozen=True)

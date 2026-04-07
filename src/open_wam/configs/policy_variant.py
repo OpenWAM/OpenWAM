@@ -147,6 +147,23 @@ class VideoSequencePolicyConfig(PolicyVariantConfig):
 
 
 @dataclass(frozen=True)
+class CausalVideoPredictionPolicyConfig(PolicyVariantConfig):
+    """Standalone causal video-only pretraining variant."""
+
+    name: PolicyVariantName = PolicyVariantName.CAUSAL_VIDEO_PREDICTION
+    hidden_size: int = 256
+    attach_site: AttachSite = AttachSite.POST_VISUAL_CORE
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.attach_site != AttachSite.POST_VISUAL_CORE:
+            raise ValueError(
+                "Causal video prediction requires `attach_site = post_visual_core`, "
+                f"got attach_site={self.attach_site!r}."
+            )
+
+
+@dataclass(frozen=True)
 class RegisterAttachedPolicyConfig(PolicyVariantConfig):
     name: PolicyVariantName = PolicyVariantName.REGISTER_ATTACHED
     hidden_size: int = 256

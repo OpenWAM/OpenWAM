@@ -3,6 +3,7 @@ from __future__ import annotations
 from open_wam.configs import (
     ActionDecoderName,
     BackboneImplementation,
+    CausalVideoPredictionPolicyConfig,
     ExperimentConfig,
     ParallelRuntimeMode,
     ParallelStreamPolicyConfig,
@@ -13,8 +14,9 @@ from open_wam.configs import (
 )
 from open_wam.data import build_canonical_video_preprocessor
 from open_wam.models.action_decoders import DecodedFeatureActionDecoder, MLPActionDecoder, RegisterActionDecoder
-from open_wam.models.action_decoders import LingbotParallelActionDecoder, VPPSequenceActionDecoder
+from open_wam.models.action_decoders import LingbotParallelActionDecoder, VPPSequenceActionDecoder, VideoOnlyActionDecoder
 from open_wam.models.policy_variants import (
+    CausalVideoPredictionPolicyVariant,
     ParallelStreamPolicyVariant,
     PostDecodedPolicyVariant,
     PostLatentPolicyVariant,
@@ -52,6 +54,7 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
             PostLatentPolicyConfig,
             PostDecodedPolicyConfig,
             VideoSequencePolicyConfig,
+            CausalVideoPredictionPolicyConfig,
         ),
     ):
         if normalize_backbone_implementation(config.backbone.implementation) != BackboneImplementation.SHARED_TRANSFORMER:
@@ -166,6 +169,12 @@ def build_policy_variant(config: ExperimentConfig):
             action_horizon=action_schema.action_horizon,
             state_dim=action_schema.state_dim,
         )
+    if isinstance(policy_config, CausalVideoPredictionPolicyConfig):
+        return CausalVideoPredictionPolicyVariant(
+            config=policy_config,
+            training_config=config.training,
+            inference_config=config.inference,
+        )
     if isinstance(policy_config, RegisterAttachedPolicyConfig):
         return RegisterAttachedPolicyVariant(
             config=policy_config,
@@ -234,6 +243,15 @@ def build_action_decoder(config: ExperimentConfig):
             state_dim=config.data.action_schema.state_dim,
             observation_token_dim=config.backbone.hidden_size,
             goal_feature_dim=config.backbone.text_dim,
+        )
+    if decoder_config.name == ActionDecoderName.VIDEO_ONLY:
+        return VideoOnlyActionDecoder(
+            hidden_size=decoder_config.hidden_size,
+            action_dim=decoder_config.action_dim,
+            action_horizon=decoder_config.action_horizon,
+            training_config=config.training,
+            inference_config=config.inference,
+            dropout=decoder_config.dropout,
         )
     raise ValueError(f"Unsupported action decoder '{decoder_config.name}'.")
 

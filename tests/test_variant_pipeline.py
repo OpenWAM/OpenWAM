@@ -384,3 +384,58 @@ def test_post_decoded_multi_layer_visual_readout_pipeline_runs(tmp_path: Path) -
     assert train_output.policy_output.decoder_sequence_context.source_stage == "core_multi_layer"
     assert infer_output.policy_output.decoder_sequence_context.source_stage == "core_multi_layer"
     assert train_output.policy_output.decoder_sequence_context.sequence_layout["source_family"] == "core_multi_layer_tokens"
+
+
+def test_causal_video_prediction_pipeline_trains_from_latents(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    raw["name"] = "causal_video_prediction_robotwin"
+    raw["policy_variant"] = {
+        "name": "causal_video_prediction",
+        "attach_site": "post_visual_core",
+        "hidden_size": 256,
+    }
+    raw["action_decoder"] = {
+        "name": "video_only_decoder",
+        "hidden_size": 256,
+        "action_dim": 4,
+        "action_horizon": 0,
+    }
+    raw["data"]["action_schema"]["action_horizon"] = 0
+    raw["data"]["action_schema"]["state_horizon"] = 0
+    raw["training"]["enabled_objectives"] = ["latent"]
+    raw["training"]["action_loss_weight"] = 0.0
+
+    config_path = tmp_path / "causal_video_prediction_robotwin.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+    pipeline = build_variant_pipeline_from_config(config)
+    latent_batch = build_synthetic_latent_batch(config.data, batch_size=2)
+    train_batch = PolicyTrainBatch(
+        actions=torch.zeros(2, 0, config.action_decoder.action_dim),
+        action_mask=torch.zeros(2, 0, config.action_decoder.action_dim),
+        state=torch.zeros(2, 0, config.data.action_schema.state_dim),
+        extra={
+            "task_text": latent_batch.task_text,
+            "metadata": (
+                {"observed_prefix_frames": 1, "future_suffix_frames": 1, "valid_video_frames": 2},
+                {"observed_prefix_frames": 1, "future_suffix_frames": 1, "valid_video_frames": 2},
+            ),
+            "state_mask": torch.zeros(2, 0, config.data.action_schema.state_dim),
+        },
+    )
+
+    train_output = pipeline.forward_train_from_latents(
+        latent_batch.video_latents[:, :, :2],
+        train_batch,
+        canonical_video=None,
+        text_context=latent_batch.text_context,
+        negative_text_context=latent_batch.negative_text_context,
+    )
+
+    assert train_output.decoder_output.action_pred.shape == (2, 0, config.action_decoder.action_dim)
+    assert "latent_mse" in train_output.decoder_output.metrics
+    assert "predicted_latents" in train_output.decoder_output.aux

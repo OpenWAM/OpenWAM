@@ -19,6 +19,7 @@ class ActionDecoderName(StrEnum):
     DECODED_FEATURE = "decoded_feature_decoder"
     VPP = "vpp_decoder"
     LINGBOT_PARALLEL = "lingbot_parallel_decoder"
+    VIDEO_ONLY = "video_only_decoder"
 
 
 class DataSplit(StrEnum):
@@ -35,6 +36,7 @@ class WindowSamplingMode(StrEnum):
     RANDOM_SUBWINDOW = "random_subwindow"
     CONTEXTUAL_SUBWINDOW = "contextual_subwindow"
     ALIGNED_SUBWINDOW = "aligned_subwindow"
+    CAUSAL_PREFIX_SUFFIX = "causal_prefix_suffix"
 
 
 class AnchorPolicy(StrEnum):
@@ -214,6 +216,7 @@ class PolicyVariantName(StrEnum):
     POST_LATENT = "post_latent"
     POST_DECODED = "post_decoded"
     VIDEO_SEQUENCE_POLICY = "video_sequence_policy"
+    CAUSAL_VIDEO_PREDICTION = "causal_video_prediction"
     REGISTER_ATTACHED = "register_attached"
     PARALLEL_STREAM = "parallel_stream"
 

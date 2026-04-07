@@ -17,6 +17,7 @@ from .sequence_denoisers import (
 )
 from .state_sequence import StateSequenceAdapter, build_state_sequence_adapter
 from .temporal_compression import TemporalCompressionAdapter, build_temporal_compression_adapter
+from .video_only_decoder import VideoOnlyActionDecoder
 from .vpp_decoder import VPPSequenceActionDecoder
 
 __all__ = [
@@ -37,6 +38,7 @@ __all__ = [
     "SequenceDenoiser",
     "StateSequenceAdapter",
     "TemporalCompressionAdapter",
+    "VideoOnlyActionDecoder",
     "VPPSequenceActionDecoder",
     "build_goal_conditioning_adapter",
     "build_sequence_denoiser",

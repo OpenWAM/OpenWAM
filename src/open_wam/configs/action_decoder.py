@@ -103,3 +103,13 @@ class VPPActionDecoderConfig(ActionDecoderConfig):
                 "diffusion_sampler": DiffusionSampler,
             },
         )
+
+
+@dataclass(frozen=True)
+class VideoOnlyActionDecoderConfig(ActionDecoderConfig):
+    """Video-only decoder config for future-latent supervision without action loss."""
+
+    name: ActionDecoderName = ActionDecoderName.VIDEO_ONLY
+    hidden_size: int = 256
+    action_dim: int = 0
+    action_horizon: int = 0

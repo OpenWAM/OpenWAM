@@ -506,6 +506,53 @@ def test_aligned_subwindow_sampling_uses_sample_construction_horizons_and_stride
     )
 
 
+def test_local_lerobot_latent_dataset_supports_causal_prefix_suffix_sampling(tmp_path: Path) -> None:
+    repo_root = tmp_path / "libero_local_latent_causal"
+    _build_local_robotwin_latent_repo(
+        repo_root,
+        state_key="observation.state",
+        action_dim=7,
+        state_dim=8,
+        camera_names=("observation.images.agentview_rgb", "observation.images.eye_in_hand_rgb"),
+        total_rows=48,
+        latent_num_frames=10,
+    )
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/causal_video_prediction_libero_latent_local.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            num_frames=10,
+            sample_construction=replace(
+                config.data.sample_construction,
+                num_frames=8,
+                causal_prefix_suffix_buckets=(
+                    config.data.sample_construction.causal_prefix_suffix_buckets[0],
+                    type(config.data.sample_construction.causal_prefix_suffix_buckets[0])(observed_frames=2, future_frames=4),
+                ),
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    sample = train_dataset[0]
+
+    assert sample.video_latents.shape == (48, 8, 8, 16)
+    assert sample.actions.shape == (0, 7)
+    assert sample.state.shape == (0, 8)
+    assert sample.metadata["window_sampling_mode"] == WindowSamplingMode.CAUSAL_PREFIX_SUFFIX
+    assert sample.metadata["valid_video_frames"] in {4, 6}
+    assert sample.metadata["observed_prefix_frames"] in {1, 2}
+    assert sample.metadata["future_suffix_frames"] in {3, 4}
+    assert sample.metadata["observed_prefix_frames"] + sample.metadata["future_suffix_frames"] == sample.metadata["valid_video_frames"]
+
+
 def test_parallel_stream_runtime_runs_on_local_lerobot_latent_dataset(tmp_path: Path) -> None:
     repo_root = tmp_path / "robotwin_local_latent"
     _build_local_robotwin_latent_repo(repo_root)
