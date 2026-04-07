@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import pytest
 import yaml
 
 from open_wam.configs import (
@@ -15,6 +14,9 @@ from open_wam.configs import (
     JointSampler,
     LatentWindowProfile,
     LoopPolicyName,
+    MoTPolicyConfig,
+    MoTRuntimeMode,
+    MoTPreset,
     ParallelRuntimeMode,
     ParallelStreamPolicyConfig,
     PostDecodedPolicyConfig,
@@ -29,8 +31,6 @@ from open_wam.configs import (
     TrainerRuntimeName,
     TrainingComponentSelector,
     TrainingObjective,
-    VisualReadoutFusionMode,
-    VisualReadoutSourceFamily,
     WarmupAnchor,
 )
 from open_wam.utils.config_loader import load_experiment_config
@@ -49,14 +49,20 @@ def test_legacy_contract_only_maps_to_post_latent() -> None:
 
 def test_new_variant_yaml_configs_load() -> None:
     post_decoded = load_experiment_config(REPO_ROOT / "configs/experiments/post_decoded_robotwin.yaml")
+    mot = load_experiment_config(REPO_ROOT / "configs/experiments/mot_robotwin_smoke.yaml")
     register = load_experiment_config(REPO_ROOT / "configs/experiments/register_attached_robotwin.yaml")
     parallel = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin.yaml")
     smoke_parallel = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
 
     assert isinstance(post_decoded.policy_variant, PostDecodedPolicyConfig)
+    assert isinstance(mot.policy_variant, MoTPolicyConfig)
     assert isinstance(register.policy_variant, RegisterAttachedPolicyConfig)
     assert isinstance(parallel.policy_variant, ParallelStreamPolicyConfig)
     assert isinstance(smoke_parallel.policy_variant, ParallelStreamPolicyConfig)
+    assert mot.policy_variant.preset == MoTPreset.FASTWAM
+    assert mot.policy_variant.runtime_mode == MoTRuntimeMode.VIDEO_PREFILL_ACTION_DENOISE
+    assert mot.policy_variant.condition_mode == "first_frame"
+    assert mot.training.trainable_components == (TrainingComponentSelector.POLICY_VARIANT_ACTION_EXPERT,)
     assert register.backbone.implementation == "shared_transformer"
     assert parallel.backbone.implementation == "shared_transformer"
     assert smoke_parallel.backbone.implementation == "shared_transformer"
@@ -119,6 +125,9 @@ def test_raw_libero_smoke_variant_yaml_configs_load() -> None:
 
 
 def test_latent_libero_local_training_yaml_configs_load() -> None:
+    mot = load_experiment_config(REPO_ROOT / "configs/experiments/mot_libero_latent_local.yaml")
+    mot_idm = load_experiment_config(REPO_ROOT / "configs/experiments/mot_libero_latent_local_idm.yaml")
+    mot_joint = load_experiment_config(REPO_ROOT / "configs/experiments/mot_libero_latent_local_joint.yaml")
     post_latent = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_libero_latent_local.yaml")
     post_decoded = load_experiment_config(REPO_ROOT / "configs/experiments/post_decoded_libero_latent_local.yaml")
     video_sequence = load_experiment_config(
@@ -129,45 +138,94 @@ def test_latent_libero_local_training_yaml_configs_load() -> None:
     )
     register = load_experiment_config(REPO_ROOT / "configs/experiments/register_attached_libero_latent_local.yaml")
 
+    assert isinstance(mot.policy_variant, MoTPolicyConfig)
+    assert isinstance(mot_idm.policy_variant, MoTPolicyConfig)
+    assert isinstance(mot_joint.policy_variant, MoTPolicyConfig)
+    assert mot.data.dataset_type == "lerobot_v2_latent_local"
+    assert mot_idm.data.dataset_type == "lerobot_v2_latent_local"
+    assert mot_joint.data.dataset_type == "lerobot_v2_latent_local"
     assert post_latent.data.dataset_type == "lerobot_v2_latent_local"
     assert post_decoded.data.dataset_type == "lerobot_v2_latent_local"
     assert video_sequence.data.dataset_type == "lerobot_v2_latent_local"
     assert video_sequence_random.data.dataset_type == "lerobot_v2_latent_local"
     assert register.data.dataset_type == "lerobot_v2_latent_local"
+    assert mot.data.local_root.endswith("/libero_heng/libero_10")
+    assert mot_idm.data.local_root.endswith("/libero_heng/libero_10")
+    assert mot_joint.data.local_root.endswith("/libero_heng/libero_10")
     assert post_latent.data.local_root.endswith("/libero_heng/libero_10")
     assert post_decoded.data.local_root.endswith("/libero_heng/libero_10")
     assert video_sequence.data.local_root.endswith("/libero_heng/libero_10")
     assert register.data.local_root.endswith("/libero_heng/libero_10")
+    assert mot.trainer.batch_adapter == BatchAdapterName.LATENTS
+    assert mot_idm.trainer.batch_adapter == BatchAdapterName.LATENTS
+    assert mot_joint.trainer.batch_adapter == BatchAdapterName.LATENTS
     assert post_latent.trainer.batch_adapter == BatchAdapterName.LATENTS
     assert post_decoded.trainer.batch_adapter == BatchAdapterName.LATENTS
     assert video_sequence.trainer.batch_adapter == BatchAdapterName.LATENTS
     assert video_sequence_random.trainer.batch_adapter == BatchAdapterName.LATENTS
     assert register.trainer.batch_adapter == BatchAdapterName.LATENTS
+    assert mot.trainer.strategy == StrategyName.FSDP
+    assert mot_idm.trainer.strategy == StrategyName.FSDP
+    assert mot_joint.trainer.strategy == StrategyName.FSDP
     assert post_latent.trainer.strategy == StrategyName.FSDP
     assert post_decoded.trainer.strategy == StrategyName.FSDP
     assert video_sequence.trainer.strategy == StrategyName.FSDP
     assert video_sequence_random.trainer.strategy == StrategyName.FSDP
     assert register.trainer.strategy == StrategyName.FSDP
+    assert mot.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
+    assert mot_idm.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
+    assert mot_joint.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
     assert post_latent.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
     assert post_decoded.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
     assert video_sequence.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
     assert video_sequence_random.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
     assert register.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
+    assert mot.backbone.load_reference_core_weights is True
+    assert mot_idm.backbone.load_reference_core_weights is True
+    assert mot_joint.backbone.load_reference_core_weights is True
     assert post_latent.backbone.load_reference_core_weights is True
     assert post_decoded.backbone.load_reference_core_weights is True
     assert video_sequence.backbone.load_reference_core_weights is True
     assert video_sequence_random.backbone.load_reference_core_weights is True
     assert register.backbone.load_reference_core_weights is True
+    assert mot.data.sample_construction.mode == WindowSamplingMode.ALIGNED_SUBWINDOW
+    assert mot_idm.data.sample_construction.mode == WindowSamplingMode.ALIGNED_SUBWINDOW
+    assert mot_joint.data.sample_construction.mode == WindowSamplingMode.ALIGNED_SUBWINDOW
     assert post_latent.data.sample_construction.mode == WindowSamplingMode.FULL_SEGMENT
     assert post_decoded.data.sample_construction.mode == WindowSamplingMode.FULL_SEGMENT
     assert video_sequence.data.sample_construction.mode == WindowSamplingMode.FULL_SEGMENT
     assert video_sequence_random.data.sample_construction.mode == WindowSamplingMode.ALIGNED_SUBWINDOW
     assert register.data.sample_construction.mode == WindowSamplingMode.ALIGNED_SUBWINDOW
+    assert mot.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
+    assert mot_idm.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
+    assert mot_joint.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
     assert post_latent.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
     assert post_decoded.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
     assert video_sequence.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
     assert video_sequence_random.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
     assert register.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
+    assert mot.policy_variant.preset == MoTPreset.FASTWAM
+    assert mot.policy_variant.condition_mode == "first_frame"
+    assert mot.policy_variant.action_hidden_size == 2048
+    assert mot.policy_variant.action_ffn_dim == 8192
+    assert mot.training.enabled_objectives == (TrainingObjective.ACTION,)
+    assert mot.training.trainable_components == (TrainingComponentSelector.POLICY_VARIANT_ACTION_EXPERT,)
+    assert mot_idm.policy_variant.preset == MoTPreset.FASTWAM_IDM
+    assert mot_idm.policy_variant.condition_mode == "teacher_forcing_cond_video"
+    assert mot_idm.policy_variant.action_hidden_size == 2048
+    assert mot_idm.policy_variant.action_ffn_dim == 8192
+    assert mot_idm.policy_variant.teacher_forcing_video_noise_prob == 0.5
+    assert mot_idm.training.enabled_objectives == (TrainingObjective.ACTION,)
+    assert mot_idm.training.trainable_components == (TrainingComponentSelector.POLICY_VARIANT_ACTION_EXPERT,)
+    assert mot_joint.policy_variant.preset == MoTPreset.FASTWAM_JOINT
+    assert mot_joint.policy_variant.condition_mode == "full_video"
+    assert mot_joint.policy_variant.action_hidden_size == 2048
+    assert mot_joint.policy_variant.action_ffn_dim == 8192
+    assert mot_joint.training.enabled_objectives == (TrainingObjective.ACTION, TrainingObjective.LATENT)
+    assert mot_joint.training.trainable_components == (
+        TrainingComponentSelector.POLICY_VARIANT_ACTION_EXPERT,
+        TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE,
+    )
     assert register.data.sample_construction.anchor_policy == AnchorPolicy.RANDOM_VALID
     assert register.data.sample_construction.num_frames == 4
     assert register.data.sample_construction.action_horizon == 6
@@ -230,93 +288,84 @@ def test_video_sequence_policy_exact_vpp_knobs_load(tmp_path: Path) -> None:
     assert config.action_decoder.sequence_denoiser_family == "film_diffusion_transformer"
 
 
-def test_shared_visual_readout_knobs_load_for_method3_and_method4(tmp_path: Path) -> None:
+def test_mot_policy_yaml_config_loads(tmp_path: Path) -> None:
     source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
+    raw["name"] = "mot_robotwin"
+    raw["policy_variant"]["name"] = "mot"
+    raw["policy_variant"]["attach_site"] = "post_visual_core"
+    raw["policy_variant"]["runtime_mode"] = "video_prefill_action_denoise"
+    raw["policy_variant"]["video_prefix_frames"] = 1
+    raw["policy_variant"]["num_action_layers"] = 4
+    raw["policy_variant"]["action_hidden_size"] = 768
+    raw["policy_variant"]["action_ffn_dim"] = 1024
+    raw["policy_variant"]["use_state_conditioning"] = True
+    raw["action_decoder"]["name"] = "mlp_decoder"
 
-    raw["policy_variant"]["visual_readout"] = {
-        "source_family": "core_multi_layer_tokens",
-        "layer_indices": [0, 1],
-        "fusion_mode": "concat_project",
-    }
-    raw["backbone"]["num_layers"] = 2
-
-    method4_path = tmp_path / "post_latent_visual_readout.yaml"
-    with method4_path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(raw, handle, sort_keys=False)
-
-    method4_config = load_experiment_config(method4_path)
-    assert isinstance(method4_config.policy_variant, PostLatentPolicyConfig)
-    assert method4_config.policy_variant.visual_readout is not None
-    assert method4_config.policy_variant.visual_readout.source_family == VisualReadoutSourceFamily.CORE_MULTI_LAYER_TOKENS
-    assert method4_config.policy_variant.visual_readout.layer_indices == (0, 1)
-    assert method4_config.policy_variant.visual_readout.fusion_mode == VisualReadoutFusionMode.CONCAT_PROJECT
-
-    raw["name"] = "video_sequence_policy_visual_readout"
-    raw["policy_variant"]["name"] = "video_sequence_policy"
-    raw["policy_variant"].pop("pooling_mode", None)
-    raw["policy_variant"].pop("query_count", None)
-    raw["policy_variant"].pop("use_state_projection", None)
-    raw["action_decoder"]["name"] = "vpp_decoder"
-    raw["policy_variant"]["visual_readout"] = {
-        "source_family": "core_layer_tokens",
-        "layer_index": 0,
-    }
-
-    method3_path = tmp_path / "video_sequence_policy_visual_readout.yaml"
-    with method3_path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(raw, handle, sort_keys=False)
-
-    method3_config = load_experiment_config(method3_path)
-    assert isinstance(method3_config.policy_variant, VideoSequencePolicyConfig)
-    assert method3_config.policy_variant.visual_readout is not None
-    assert method3_config.policy_variant.visual_readout.source_family == VisualReadoutSourceFamily.CORE_LAYER_TOKENS
-    assert method3_config.policy_variant.visual_readout.layer_index == 0
-
-
-def test_visual_readout_loader_accepts_null_layer_indices_for_unused_families(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
-    with source_path.open("r", encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle)
-
-    raw["policy_variant"]["visual_readout"] = {
-        "source_family": "final_core_tokens",
-        "layer_indices": None,
-    }
-
-    config_path = tmp_path / "post_latent_visual_readout_null_indices.yaml"
+    config_path = tmp_path / "mot_robotwin.yaml"
     with config_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(raw, handle, sort_keys=False)
 
     config = load_experiment_config(config_path)
 
-    assert isinstance(config.policy_variant, PostLatentPolicyConfig)
-    assert config.policy_variant.visual_readout is not None
-    assert config.policy_variant.visual_readout.source_family == VisualReadoutSourceFamily.FINAL_CORE_TOKENS
-    assert config.policy_variant.visual_readout.layer_indices == ()
+    assert isinstance(config.policy_variant, MoTPolicyConfig)
+    assert config.policy_variant.name == "mot"
+    assert config.policy_variant.runtime_mode == MoTRuntimeMode.VIDEO_PREFILL_ACTION_DENOISE
+    assert config.policy_variant.video_prefix_frames == 1
+    assert config.policy_variant.num_action_layers == 4
+    assert config.policy_variant.action_hidden_size == 768
+    assert config.policy_variant.action_ffn_dim == 1024
+    assert config.policy_variant.use_state_conditioning is True
 
 
-def test_visual_readout_loader_rejects_non_iterable_layer_indices(tmp_path: Path) -> None:
+def test_mot_policy_preset_applies_fastwam_joint_defaults(tmp_path: Path) -> None:
     source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
+    raw["name"] = "mot_fastwam_joint_robotwin"
+    raw["policy_variant"]["name"] = "mot"
+    raw["policy_variant"]["attach_site"] = "post_visual_core"
+    raw["policy_variant"]["preset"] = "fastwam_joint"
+    raw["action_decoder"]["name"] = "mlp_decoder"
 
-    raw["policy_variant"]["visual_readout"] = {
-        "source_family": "core_multi_layer_tokens",
-        "layer_indices": 3,
-        "fusion_mode": "concat_project",
-    }
-
-    config_path = tmp_path / "post_latent_visual_readout_bad_indices.yaml"
+    config_path = tmp_path / "mot_fastwam_joint_robotwin.yaml"
     with config_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(raw, handle, sort_keys=False)
 
-    with pytest.raises(
-        ValueError,
-        match="policy_variant\\.visual_readout\\.layer_indices",
-    ):
-        load_experiment_config(config_path)
+    config = load_experiment_config(config_path)
+
+    assert isinstance(config.policy_variant, MoTPolicyConfig)
+    assert config.policy_variant.preset == MoTPreset.FASTWAM_JOINT
+    assert config.policy_variant.condition_mode == "full_video"
+    assert config.policy_variant.teacher_forcing_video_noise_prob == 0.0
+    assert config.policy_variant.video_prefix_frames == 1
+
+
+def test_mot_policy_preset_allows_explicit_overrides(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    raw["name"] = "mot_fastwam_override_robotwin"
+    raw["policy_variant"]["name"] = "mot"
+    raw["policy_variant"]["attach_site"] = "post_visual_core"
+    raw["policy_variant"]["preset"] = "fastwam"
+    raw["policy_variant"]["condition_mode"] = "teacher_forcing_cond_video"
+    raw["policy_variant"]["teacher_forcing_video_noise_prob"] = 0.2
+    raw["policy_variant"]["video_prefix_frames"] = 3
+    raw["action_decoder"]["name"] = "mlp_decoder"
+
+    config_path = tmp_path / "mot_fastwam_override_robotwin.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    assert isinstance(config.policy_variant, MoTPolicyConfig)
+    assert config.policy_variant.preset == MoTPreset.FASTWAM
+    assert config.policy_variant.condition_mode == "teacher_forcing_cond_video"
+    assert config.policy_variant.teacher_forcing_video_noise_prob == 0.2
+    assert config.policy_variant.video_prefix_frames == 3
 
 
 def test_local_libero_yaml_config_loads() -> None:
@@ -496,7 +545,7 @@ def test_composable_runtime_fields_load(tmp_path: Path) -> None:
     raw["training"]["enabled_objectives"] = ["latent"]
     raw["training"]["latent_loss_weight"] = 0.75
     raw["training"]["action_loss_weight"] = 0.2
-    raw["training"]["trainable_components"] = ["visual_tower.core", "action_decoder"]
+    raw["training"]["trainable_components"] = ["visual_tower.core", "policy_variant.action_expert", "action_decoder"]
     raw["training"]["frozen_components"] = ["visual_tower.frontend"]
     raw["trainer"]["runtime"] = "composable"
     raw["trainer"]["batch_adapter"] = "latents"
@@ -537,7 +586,11 @@ def test_composable_runtime_fields_load(tmp_path: Path) -> None:
     assert config.training.enabled_objectives == ("latent",)
     assert config.training.latent_loss_weight == 0.75
     assert config.training.action_loss_weight == 0.2
-    assert config.training.trainable_components == ("visual_tower.core", "action_decoder")
+    assert config.training.trainable_components == (
+        "visual_tower.core",
+        "policy_variant.action_expert",
+        "action_decoder",
+    )
     assert config.training.frozen_components == ("visual_tower.frontend",)
     assert config.trainer.runtime == "composable"
     assert config.trainer.batch_adapter == "latents"

@@ -13,7 +13,8 @@ from open_wam.configs.data import DataConfig, ViewLayoutConfig
 class ViewPlacement:
     """Placement of a resized camera view inside the canonical canvas."""
 
-    name: str
+    source_name: str
+    canonical_name: str
     top: int
     left: int
     height: int
@@ -60,7 +61,7 @@ class ConfiguredCanonicalVideoPreprocessor(torch.nn.Module):
 
     def forward(self, views: Mapping[str, torch.Tensor]) -> CanonicalVideoBatch:
         resolved_keys = {
-            placement.name: self._resolve_view_key(views, placement.name)
+            placement.source_name: self._resolve_view_key(views, placement.source_name)
             for placement in self.placements
         }
         missing = [name for name, key in resolved_keys.items() if key is None]
@@ -74,7 +75,7 @@ class ConfiguredCanonicalVideoPreprocessor(torch.nn.Module):
         dtype: torch.dtype | None = None
 
         for placement in self.placements:
-            canonical = self._to_bcthw(views[resolved_keys[placement.name]])
+            canonical = self._to_bcthw(views[resolved_keys[placement.source_name]])
             if batch_size is None:
                 batch_size = canonical.shape[0]
                 num_frames = canonical.shape[2]
@@ -86,7 +87,7 @@ class ConfiguredCanonicalVideoPreprocessor(torch.nn.Module):
                         "All camera views must share the same batch and time dimensions: "
                         f"expected [B={batch_size}, T={num_frames}], got {canonical.shape}"
                     )
-            canonical_views[placement.name] = self._resize_video(
+            canonical_views[placement.source_name] = self._resize_video(
                 canonical,
                 target_height=placement.height,
                 target_width=placement.width,
@@ -116,14 +117,15 @@ class ConfiguredCanonicalVideoPreprocessor(torch.nn.Module):
                 :,
                 placement.top : placement.top + placement.height,
                 placement.left : placement.left + placement.width,
-            ] = canonical_views[placement.name]
+            ] = canonical_views[placement.source_name]
 
         metadata = {
             "canvas_height": self.canvas_height,
             "canvas_width": self.canvas_width,
             "num_frames": num_frames,
-            "view_names": tuple(placement.name for placement in self.placements),
-            "resolved_view_names": tuple(resolved_keys[placement.name] for placement in self.placements),
+            "view_names": tuple(placement.source_name for placement in self.placements),
+            "canonical_view_names": tuple(placement.canonical_name for placement in self.placements),
+            "resolved_view_names": tuple(resolved_keys[placement.source_name] for placement in self.placements),
         }
         return CanonicalVideoBatch(video=canvas, placements=self.placements, metadata=metadata)
 
@@ -195,9 +197,9 @@ class RobotWinCanonicalVideoPreprocessor(ConfiguredCanonicalVideoPreprocessor):
     def __init__(self) -> None:
         super().__init__(
             placements=(
-                ViewPlacement("cam_high", top=0, left=0, height=256, width=320),
-                ViewPlacement("cam_left_wrist", top=256, left=0, height=128, width=160),
-                ViewPlacement("cam_right_wrist", top=256, left=160, height=128, width=160),
+                ViewPlacement("cam_high", "cam_high", top=0, left=0, height=256, width=320),
+                ViewPlacement("cam_left_wrist", "cam_left_wrist", top=256, left=0, height=128, width=160),
+                ViewPlacement("cam_right_wrist", "cam_right_wrist", top=256, left=160, height=128, width=160),
             ),
             canvas_height=384,
             canvas_width=320,
@@ -222,7 +224,8 @@ def build_canonical_video_preprocessor(data_config: DataConfig) -> ConfiguredCan
 
 def _view_layout_to_placement(view: ViewLayoutConfig) -> ViewPlacement:
     return ViewPlacement(
-        name=view.source_name,
+        source_name=view.source_name,
+        canonical_name=view.canonical_name,
         top=view.top,
         left=view.left,
         height=view.height,

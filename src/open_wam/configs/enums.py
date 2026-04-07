@@ -217,8 +217,40 @@ class PolicyVariantName(StrEnum):
     POST_DECODED = "post_decoded"
     VIDEO_SEQUENCE_POLICY = "video_sequence_policy"
     CAUSAL_VIDEO_PREDICTION = "causal_video_prediction"
+    MOT = "mot"
     REGISTER_ATTACHED = "register_attached"
     PARALLEL_STREAM = "parallel_stream"
+
+
+class MoTRuntimeMode(StrEnum):
+    """Execution mode for the MoT policy family."""
+
+    VIDEO_PREFILL_ACTION_DENOISE = "video_prefill_action_denoise"
+    JOINT_DENOISE = "joint_denoise"
+
+
+class MoTActionExpertInitMode(StrEnum):
+    """How the MoT action expert should initialize from the video expert."""
+
+    RANDOM = "random"
+    VIDEO_WEIGHT_COPY = "video_weight_copy"
+    VIDEO_WEIGHT_INTERPOLATE = "video_weight_interpolate"
+
+
+class MoTConditionMode(StrEnum):
+    """Which video branch the MoT action expert conditions on."""
+
+    FIRST_FRAME = "first_frame"
+    FULL_VIDEO = "full_video"
+    TEACHER_FORCING_COND_VIDEO = "teacher_forcing_cond_video"
+
+
+class MoTPreset(StrEnum):
+    """High-level FastWAM-style preset families for MoT policy defaults."""
+
+    FASTWAM = "fastwam"
+    FASTWAM_JOINT = "fastwam_joint"
+    FASTWAM_IDM = "fastwam_idm"
 
 
 class GoalConditioningAdapterFamily(StrEnum):
@@ -298,25 +330,6 @@ class VisualStateSource(StrEnum):
 
     CORE_TOKENS = "core_tokens"
     DENOISED_VIDEO_TOKENS = "denoised_video_tokens"
-
-
-class VisualReadoutSourceFamily(StrEnum):
-    """Shared visual-readout source family exposed to policy variants."""
-
-    FINAL_CORE_TOKENS = "final_core_tokens"
-    CORE_LAYER_TOKENS = "core_layer_tokens"
-    CORE_MULTI_LAYER_TOKENS = "core_multi_layer_tokens"
-    GENERATED_FUTURE_TOKENS = "generated_future_tokens"
-    DIFFUSION_FEATURE_TOKENS = "diffusion_feature_tokens"
-
-
-class VisualReadoutFusionMode(StrEnum):
-    """How multiple visual readout sources should be fused."""
-
-    NONE = "none"
-    CONCAT_PROJECT = "concat_project"
-    LEARNED_WEIGHTED_SUM = "learned_weighted_sum"
-    MEAN = "mean"
 
 
 class DecodeFeatureMode(StrEnum):
@@ -540,6 +553,7 @@ class TrainingComponentSelector(StrEnum):
     VISUAL_TOWER_RUNTIME_BACKBONE = "visual_tower.runtime_backbone"
     VISUAL_TOWER_DECODER = "visual_tower.decoder"
     POLICY_VARIANT = "policy_variant"
+    POLICY_VARIANT_ACTION_EXPERT = "policy_variant.action_expert"
     ACTION_DECODER = "action_decoder"
 
 

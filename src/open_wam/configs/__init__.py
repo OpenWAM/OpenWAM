@@ -64,6 +64,10 @@ from .enums import (
     JointSampler,
     LatentWindowProfile,
     LoopPolicyName,
+    MoTConditionMode,
+    MoTActionExpertInitMode,
+    MoTPreset,
+    MoTRuntimeMode,
     OptimizerName,
     ParallelActionAttentionScope,
     ParallelActionConditionSource,
@@ -94,8 +98,6 @@ from .enums import (
     TemporalPositionMode,
     TemporalProjection,
     TemporalCompressionAdapterFamily,
-    VisualReadoutFusionMode,
-    VisualReadoutSourceFamily,
     VisualStateSource,
     TrainerAccelerator,
     TrainerPrecision,
@@ -110,6 +112,7 @@ from .experiment import ExperimentConfig
 from .inference import InferenceConfig
 from .policy_variant import (
     CausalVideoPredictionPolicyConfig,
+    MoTPolicyConfig,
     ParallelStreamPolicyConfig,
     PolicyVariantConfig,
     PostDecodedPolicyConfig,
@@ -119,7 +122,6 @@ from .policy_variant import (
 )
 from .trainer import TrainerConfig
 from .training import TrainingConfig
-from .visual_readout import VisualReadoutConfig
 
 __all__ = [
     "ActionDecoderConfig",
@@ -177,6 +179,11 @@ __all__ = [
     "LingbotParallelActionDecoderConfig",
     "LiberoDataConfig",
     "LoopPolicyName",
+    "MoTConditionMode",
+    "MoTActionExpertInitMode",
+    "MoTPreset",
+    "MoTRuntimeMode",
+    "MoTPolicyConfig",
     "MLPActionDecoderConfig",
     "OptimizerName",
     "ParallelActionAttentionScope",
@@ -216,9 +223,6 @@ __all__ = [
     "TemporalPositionMode",
     "TemporalProjection",
     "TemporalCompressionAdapterFamily",
-    "VisualReadoutConfig",
-    "VisualReadoutFusionMode",
-    "VisualReadoutSourceFamily",
     "VisualStateSource",
     "TrainerAccelerator",
     "TrainerConfig",

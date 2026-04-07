@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .visual_readout import VisualReadoutConfig
 from .enums import (
     ActionNormMethod,
     ParallelActionAttentionScope,
     ParallelActionConditionSource,
     AttachSite,
     DecodeFeatureMode,
+    MoTConditionMode,
+    MoTActionExpertInitMode,
+    MoTPreset,
+    MoTRuntimeMode,
     ParallelCacheMode,
     ParallelMaskMode,
     ParallelRuntimeMode,
@@ -40,7 +43,6 @@ class PolicyVariantConfig:
     name: PolicyVariantName
     hidden_size: int
     attach_site: AttachSite
-    visual_readout: VisualReadoutConfig | None = None
 
     def __post_init__(self) -> None:
         coerce_fields(
@@ -161,6 +163,75 @@ class CausalVideoPredictionPolicyConfig(PolicyVariantConfig):
                 "Causal video prediction requires `attach_site = post_visual_core`, "
                 f"got attach_site={self.attach_site!r}."
             )
+
+
+@dataclass(frozen=True)
+class MoTPolicyConfig(PolicyVariantConfig):
+    """Method-5 MoT scaffold config.
+
+    The first Open-WAM version only wires the config/build surface and reserves
+    the runtime modes for the later action-expert implementation stages.
+    """
+
+    name: PolicyVariantName = PolicyVariantName.MOT
+    hidden_size: int = 256
+    attach_site: AttachSite = AttachSite.POST_VISUAL_CORE
+    preset: MoTPreset | None = None
+    runtime_mode: MoTRuntimeMode = MoTRuntimeMode.VIDEO_PREFILL_ACTION_DENOISE
+    condition_mode: MoTConditionMode = MoTConditionMode.FIRST_FRAME
+    action_expert_init_mode: MoTActionExpertInitMode = MoTActionExpertInitMode.VIDEO_WEIGHT_COPY
+    video_prefix_frames: int = 1
+    teacher_forcing_video_noise_prob: float = 0.5
+    num_action_layers: int = 30
+    action_hidden_size: int | None = None
+    action_ffn_dim: int | None = None
+    video_can_attend_action: bool = True
+    use_text_conditioning: bool = True
+    use_state_conditioning: bool = False
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.attach_site != AttachSite.POST_VISUAL_CORE:
+            raise ValueError(
+                "MoT policy requires `attach_site = post_visual_core`, "
+                f"got attach_site={self.attach_site!r}."
+            )
+        if int(self.video_prefix_frames) <= 0:
+            raise ValueError(
+                "MoT policy requires `video_prefix_frames > 0`, "
+                f"got video_prefix_frames={self.video_prefix_frames!r}."
+            )
+        if not (0.0 <= float(self.teacher_forcing_video_noise_prob) <= 1.0):
+            raise ValueError(
+                "MoT policy requires `0 <= teacher_forcing_video_noise_prob <= 1`, "
+                f"got teacher_forcing_video_noise_prob={self.teacher_forcing_video_noise_prob!r}."
+            )
+        if int(self.num_action_layers) <= 0:
+            raise ValueError(
+                "MoT policy requires `num_action_layers > 0`, "
+                f"got num_action_layers={self.num_action_layers!r}."
+            )
+        if self.action_hidden_size is not None and int(self.action_hidden_size) <= 0:
+            raise ValueError(
+                "MoT policy requires `action_hidden_size > 0` when provided, "
+                f"got action_hidden_size={self.action_hidden_size!r}."
+            )
+        if self.action_ffn_dim is not None and int(self.action_ffn_dim) <= 0:
+            raise ValueError(
+                "MoT policy requires `action_ffn_dim > 0` when provided, "
+                f"got action_ffn_dim={self.action_ffn_dim!r}."
+            )
+        coerce_fields(
+            self,
+            enum_fields={
+                "runtime_mode": MoTRuntimeMode,
+                "condition_mode": MoTConditionMode,
+                "action_expert_init_mode": MoTActionExpertInitMode,
+            },
+            optional_enum_fields={
+                "preset": MoTPreset,
+            },
+        )
 
 
 @dataclass(frozen=True)

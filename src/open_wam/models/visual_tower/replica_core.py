@@ -45,7 +45,6 @@ from .contracts import (
     StructuredFrequencyBundle,
     VisualCoreInput,
     VisualCoreOutput,
-    VisualIntermediateReadout,
 )
 from .grid_ids import build_sequence_grid_ids, build_video_grid_ids
 from .runtime_programs import RuntimeStepInput, RuntimeStepOutput
@@ -353,7 +352,10 @@ class SharedTransformerAttention(nn.Module):
         q = q.contiguous().clone()
         k = k.contiguous().clone()
         v = v.contiguous().clone()
-        query = self.norm_q(self.to_q(q)).unflatten(2, (self.heads, -1))
+        query = _rms_norm_with_materialized_weight(
+            self.norm_q,
+            _linear_with_materialized_params(self.to_q, q),
+        ).unflatten(2, (self.heads, -1))
         use_slot_pool_backend = cache_backend_uses_slot_pool(cache_backend_name) and cache_backend_state is not None
         current_cache_entry = None
         if kv_cache_override is not None and kv_cache_override.key is not None and kv_cache_override.value is not None:
@@ -361,8 +363,11 @@ class SharedTransformerAttention(nn.Module):
             value = kv_cache_override.value.to(device=q.device, dtype=q.dtype)
             current_cache_entry = kv_cache_override
         else:
-            key = self.norm_k(self.to_k(k)).unflatten(2, (self.heads, -1))
-            value = self.to_v(v).unflatten(2, (self.heads, -1))
+            key = _rms_norm_with_materialized_weight(
+                self.norm_k,
+                _linear_with_materialized_params(self.to_k, k),
+            ).unflatten(2, (self.heads, -1))
+            value = _linear_with_materialized_params(self.to_v, v).unflatten(2, (self.heads, -1))
             structured_rotary_emb = (
                 structured_attention_plan.rotary_freqs if structured_attention_plan is not None else None
             )
@@ -444,7 +449,7 @@ class SharedTransformerAttention(nn.Module):
             )
             if structured_hidden_states is not None and not use_slot_pool_backend:
                 hidden_states = structured_hidden_states.flatten(2, 3)
-                hidden_states = self.to_out[0](hidden_states)
+                hidden_states = _linear_with_materialized_params(self.to_out[0], hidden_states)
                 hidden_states = self.to_out[1](hidden_states)
                 return hidden_states, current_cache_entry
             query = query.transpose(1, 2)
@@ -529,7 +534,7 @@ class SharedTransformerAttention(nn.Module):
             else None,
         )
         hidden_states = hidden_states.transpose(1, 2).flatten(2, 3)
-        hidden_states = self.to_out[0](hidden_states)
+        hidden_states = _linear_with_materialized_params(self.to_out[0], hidden_states)
         hidden_states = self.to_out[1](hidden_states)
         if use_slot_pool_backend and cache_backend_update_mode == 0:
             restore_slot_pool_slots(cache_backend_state, temporary_slot_allocation)
@@ -568,6 +573,97 @@ class SharedTransformerBlock(nn.Module):
         self.ffn = FeedForward(dim, inner_dim=ffn_dim, activation_fn="gelu-approximate")
         self.norm3 = FP32LayerNorm(dim, eps, elementwise_affine=False)
         self.scale_shift_table = nn.Parameter(torch.randn(1, 6, dim) / dim**0.5)
+
+    def prepare_self_attention_inputs(
+        self,
+        hidden_states: torch.Tensor,
+        *,
+        temb: torch.Tensor,
+        rotary_emb: torch.Tensor | None,
+    ) -> dict[str, torch.Tensor]:
+        """Build self-attention Q/K/V plus post-attention modulation state.
+
+        This helper is used by method-5 MoT runtime paths that need to mix
+        cached video K/V with action K/V without changing the existing block
+        `forward()` contract used by other policy families.
+        """
+
+        temb_scale_shift_table = _materialize_runtime_parameter(
+            self.scale_shift_table,
+            device=temb.device,
+            dtype=temb.dtype,
+        )[None] + temb.float()
+        shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = _select_chunk_slices(
+            temb_scale_shift_table,
+            6,
+        )
+        norm_hidden_states = (self.norm1(hidden_states.float()) * (1.0 + scale_msa) + shift_msa).type_as(hidden_states)
+        query = _rms_norm_with_materialized_weight(
+            self.attn1.norm_q,
+            _linear_with_materialized_params(self.attn1.to_q, norm_hidden_states),
+        ).unflatten(2, (self.attn1.heads, -1))
+        key = _rms_norm_with_materialized_weight(
+            self.attn1.norm_k,
+            _linear_with_materialized_params(self.attn1.to_k, norm_hidden_states),
+        ).unflatten(2, (self.attn1.heads, -1))
+        value = _linear_with_materialized_params(self.attn1.to_v, norm_hidden_states).unflatten(
+            2,
+            (self.attn1.heads, -1),
+        )
+        if rotary_emb is not None:
+            query = _apply_rotary_emb(query, rotary_emb)
+            key = _apply_rotary_emb(key, rotary_emb)
+        return {
+            "query": query.transpose(1, 2).contiguous(),
+            "key": key.transpose(1, 2).contiguous(),
+            "value": value.transpose(1, 2).contiguous(),
+            "gate_msa": gate_msa,
+            "c_shift_msa": c_shift_msa,
+            "c_scale_msa": c_scale_msa,
+            "c_gate_msa": c_gate_msa,
+            "hidden_states": hidden_states,
+        }
+
+    def apply_post_attention(
+        self,
+        hidden_states: torch.Tensor,
+        *,
+        mixed_attn_output: torch.Tensor,
+        encoder_hidden_states: torch.Tensor,
+        gate_msa: torch.Tensor,
+        c_shift_msa: torch.Tensor,
+        c_scale_msa: torch.Tensor,
+        c_gate_msa: torch.Tensor,
+        attention_profile: PreparedAttentionProfile | None = None,
+        cross_attention_cache_entry: AttentionCacheEntry | None = None,
+    ) -> tuple[torch.Tensor, AttentionCacheEntry | None]:
+        """Apply residual, cross-attention, and FFN after external self-attn."""
+
+        hidden_states = (hidden_states.float() + mixed_attn_output.float() * gate_msa).type_as(hidden_states)
+        norm_hidden_states = (
+            _layer_norm_with_materialized_params(self.norm2, hidden_states.float())
+            if isinstance(self.norm2, nn.LayerNorm)
+            else self.norm2(hidden_states.float())
+        ).type_as(hidden_states)
+        attn_output, cross_cache_entry = self.attn2(
+            norm_hidden_states,
+            encoder_hidden_states,
+            encoder_hidden_states,
+            rotary_emb=None,
+            attention_mask=None,
+            attention_profile=attention_profile,
+            is_cross_attention=True,
+            kv_cache_override=cross_attention_cache_entry,
+            cache_current_token_count=encoder_hidden_states.shape[1] if cross_attention_cache_entry is None else 0,
+        )
+        hidden_states = hidden_states + attn_output
+
+        norm_hidden_states = (
+            _layer_norm_with_materialized_params(self.norm3, hidden_states.float()) * (1.0 + c_scale_msa) + c_shift_msa
+        ).type_as(hidden_states)
+        ff_output = _feed_forward_with_materialized_params(self.ffn, norm_hidden_states)
+        hidden_states = (hidden_states.float() + ff_output.float() * c_gate_msa).type_as(hidden_states)
+        return hidden_states, cross_cache_entry
 
     def forward(
         self,
@@ -662,6 +758,101 @@ class SharedTransformerBlock(nn.Module):
         hidden_states = (hidden_states.float() + ff_output.float() * c_gate_msa).type_as(hidden_states)
         del structured_attention_context, structured_attention_plan, structured_block_semantics, structured_frequency_bundle
         return hidden_states, self_cache_entry, cross_cache_entry
+
+
+def _materialize_runtime_parameter(
+    parameter: torch.Tensor,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Return a dense tensor for helper paths that bypass FSDP pre-forward hooks."""
+
+    if hasattr(parameter, "full_tensor"):
+        return parameter.full_tensor().to(device=device, dtype=dtype)
+    return parameter.to(device=device, dtype=dtype)
+
+
+def _linear_with_materialized_params(
+    linear: nn.Linear,
+    inputs: torch.Tensor,
+) -> torch.Tensor:
+    weight = _materialize_runtime_parameter(
+        linear.weight,
+        device=inputs.device,
+        dtype=inputs.dtype,
+    )
+    bias = None
+    if linear.bias is not None:
+        bias = _materialize_runtime_parameter(
+            linear.bias,
+            device=inputs.device,
+            dtype=inputs.dtype,
+        )
+    return F.linear(inputs, weight, bias)
+
+
+def _rms_norm_with_materialized_weight(
+    norm: nn.RMSNorm,
+    inputs: torch.Tensor,
+) -> torch.Tensor:
+    weight = None
+    if norm.weight is not None:
+        weight = _materialize_runtime_parameter(
+            norm.weight,
+            device=inputs.device,
+            dtype=inputs.dtype,
+        )
+    return F.rms_norm(
+        inputs,
+        list(norm.normalized_shape),
+        weight=weight,
+        eps=norm.eps,
+    )
+
+
+def _layer_norm_with_materialized_params(
+    norm: nn.LayerNorm,
+    inputs: torch.Tensor,
+) -> torch.Tensor:
+    weight = None
+    bias = None
+    if getattr(norm, "weight", None) is not None:
+        weight = _materialize_runtime_parameter(
+            norm.weight,
+            device=inputs.device,
+            dtype=inputs.dtype,
+        )
+    if getattr(norm, "bias", None) is not None:
+        bias = _materialize_runtime_parameter(
+            norm.bias,
+            device=inputs.device,
+            dtype=inputs.dtype,
+        )
+    return F.layer_norm(
+        inputs,
+        list(norm.normalized_shape),
+        weight=weight,
+        bias=bias,
+        eps=norm.eps,
+    )
+
+
+def _feed_forward_with_materialized_params(
+    ffn: FeedForward,
+    inputs: torch.Tensor,
+) -> torch.Tensor:
+    if len(ffn.net) != 3:
+        raise ValueError(f"Unsupported FeedForward layout for materialized helper: {ffn.net!r}")
+    act = ffn.net[0]
+    dropout = ffn.net[1]
+    proj_out = ffn.net[2]
+    if not hasattr(act, "proj"):
+        raise ValueError(f"Unsupported FeedForward activation module for materialized helper: {act!r}")
+    hidden = _linear_with_materialized_params(act.proj, inputs)
+    hidden = F.gelu(hidden, approximate="tanh")
+    hidden = dropout(hidden)
+    return _linear_with_materialized_params(proj_out, hidden)
 
 
 class SharedVideoTransformerCore(nn.Module):
@@ -1171,6 +1362,33 @@ class SharedVideoTransformerCore(nn.Module):
     def _exact_text_hidden_states(self, text_emb: torch.Tensor, *, dtype: torch.dtype) -> torch.Tensor:
         return self.text_proj(text_emb.clone()).to(dtype=dtype)
 
+    def prepare_exact_single_stream_inputs(
+        self,
+        input_dict: dict[str, torch.Tensor],
+        *,
+        action_mode: bool,
+    ) -> dict[str, torch.Tensor]:
+        """Prepare exact-runtime embeddings without executing transformer blocks."""
+
+        noisy_latents = input_dict["noisy_latents"]
+        hidden_states = self._input_embed(noisy_latents, input_type="action" if action_mode else "latent")
+        text_hidden_states = self._exact_text_hidden_states(input_dict["text_emb"], dtype=hidden_states.dtype)
+        rotary_emb = self.rope(input_dict["grid_id"])[:, :, None]
+        temb, timestep_proj = self._time_embed(
+            input_dict["timesteps"],
+            int(noisy_latents.shape[-2]),
+            int(noisy_latents.shape[-1]),
+            dtype=hidden_states.dtype,
+            action_mode=action_mode,
+        )
+        return {
+            "hidden_states": hidden_states,
+            "text_hidden_states": text_hidden_states,
+            "rotary_emb": rotary_emb,
+            "temb": temb,
+            "timestep_proj": timestep_proj,
+        }
+
     def _input_embed(self, latents: torch.Tensor, input_type: str = "latent") -> torch.Tensor:
         if input_type == "latent":
             hidden_states = rearrange(
@@ -1275,20 +1493,27 @@ class SharedVideoTransformerCore(nn.Module):
         cache_name: str,
         action_mode: bool,
     ) -> torch.Tensor:
-        noisy_latents = input_dict["noisy_latents"]
-        hidden_states = self._input_embed(noisy_latents, input_type="action" if action_mode else "latent")
-        text_hidden_states = self._exact_text_hidden_states(input_dict["text_emb"], dtype=hidden_states.dtype)
-        rotary_emb = self.rope(input_dict["grid_id"])[:, :, None]
-        temb, timestep_proj = self._time_embed(
-            input_dict["timesteps"],
-            int(noisy_latents.shape[-2]),
-            int(noisy_latents.shape[-1]),
-            dtype=hidden_states.dtype,
-            action_mode=action_mode,
-        )
+        prepared = self.prepare_exact_single_stream_inputs(input_dict, action_mode=action_mode)
+        hidden_states = prepared["hidden_states"]
+        text_hidden_states = prepared["text_hidden_states"]
+        rotary_emb = prepared["rotary_emb"]
+        temb = prepared["temb"]
+        timestep_proj = prepared["timestep_proj"]
         cache_state = self._resolve_exact_cache_state(cache_name)
         cache_backend_name = cache_state.backend_name if cache_state is not None else None
         cache_backend_payload = cache_state.backend_payload if cache_state is not None else None
+        cache_current_token_count = 0
+        if cache_state is not None and cache_state.update_metadata.update_kv_cache:
+            # Exact single-stream cache writes are prefix-style: cache the visible
+            # sequence being prefed unless the cache metadata narrows that span.
+            tokens_per_frame = int(cache_state.payload.get("tokens_per_frame", 0))
+            cached_frames = int(cache_state.cached_frames)
+            if tokens_per_frame > 0 and cached_frames > 0:
+                cache_current_token_count = tokens_per_frame * cached_frames
+            else:
+                cache_current_token_count = int(hidden_states.shape[1])
+            cache_current_token_count = max(0, min(cache_current_token_count, int(hidden_states.shape[1])))
+        next_self_attention_kv: list[AttentionCacheEntry] = []
 
         for layer_index, block in enumerate(self.blocks):
             hidden_states, current_self_cache_entry, _ = block(
@@ -1304,9 +1529,10 @@ class SharedVideoTransformerCore(nn.Module):
                     and layer_index < len(cache_backend_payload.layer_states)
                     else None
                 ),
+                cache_current_token_count=cache_current_token_count,
                 self_attention_cache_update_mode=update_cache,
             )
-            del current_self_cache_entry
+            next_self_attention_kv.append(current_self_cache_entry or AttentionCacheEntry())
 
         temb_scale_shift_table = self.scale_shift_table[None] + temb[:, :, None, ...]
         shift, scale = _select_chunk_slices(temb_scale_shift_table, 2)
@@ -1314,8 +1540,12 @@ class SharedVideoTransformerCore(nn.Module):
         scale = scale.to(hidden_states.device)
         hidden_states = (self.norm_out(hidden_states.float()) * (1.0 + scale) + shift).type_as(hidden_states)
 
-        if cache_state is not None and cache_backend_uses_slot_pool(cache_backend_name):
-            materialized_entries = materialize_cache_backend_entries(cache_backend_payload)
+        if cache_state is not None:
+            materialized_entries = (
+                materialize_cache_backend_entries(cache_backend_payload)
+                if cache_backend_uses_slot_pool(cache_backend_name)
+                else tuple(next_self_attention_kv)
+            )
             self._exact_runtime_caches[cache_name] = CacheState(
                 supported=cache_state.supported,
                 current_start_frame=cache_state.current_start_frame,
@@ -1353,6 +1583,7 @@ class SharedVideoTransformerCore(nn.Module):
         cache_state = self._resolve_exact_cache_state(cache_name)
         cache_backend_name = cache_state.backend_name if cache_state is not None else None
         cache_backend_payload = cache_state.backend_payload if cache_state is not None else None
+        next_self_attention_kv: list[AttentionCacheEntry] = []
 
         for layer_index, block in enumerate(self.blocks):
             hidden_states, current_self_cache_entry, _ = block(
@@ -1371,7 +1602,7 @@ class SharedVideoTransformerCore(nn.Module):
                 ),
                 self_attention_cache_update_mode=update_cache,
             )
-            del current_self_cache_entry
+            next_self_attention_kv.append(current_self_cache_entry or AttentionCacheEntry())
 
         temb_scale_shift_table = self.scale_shift_table[None] + temb[:, :, None, ...]
         shift, scale = _select_chunk_slices(temb_scale_shift_table, 2)
@@ -1383,8 +1614,12 @@ class SharedVideoTransformerCore(nn.Module):
             tuple(int(length) for length in split_list),
         )
 
-        if cache_state is not None and cache_backend_uses_slot_pool(cache_backend_name):
-            materialized_entries = materialize_cache_backend_entries(cache_backend_payload)
+        if cache_state is not None:
+            materialized_entries = (
+                materialize_cache_backend_entries(cache_backend_payload)
+                if cache_backend_uses_slot_pool(cache_backend_name)
+                else tuple(next_self_attention_kv)
+            )
             self._exact_runtime_caches[cache_name] = CacheState(
                 supported=cache_state.supported,
                 current_start_frame=cache_state.current_start_frame,
@@ -1754,12 +1989,6 @@ class SharedVideoTransformerCore(nn.Module):
             timestep_values = core_input.timestep_values
             attention_mask = core_input.attention_mask
             stream_ids_tensor = core_input.stream_ids
-        captured_readouts: list[VisualIntermediateReadout] = []
-        requested_layers = (
-            set(core_input.readout_request.capture_layer_indices)
-            if core_input.readout_request is not None
-            else set()
-        )
         batch_size, seq_len, _ = hidden_states.shape
         prep_device = (
             self.time_conditioner.time_embedder.linear_1.weight.device
@@ -1908,15 +2137,6 @@ class SharedVideoTransformerCore(nn.Module):
                     else None
                 ),
             )
-            if layer_index in requested_layers:
-                captured_readouts.append(
-                    VisualIntermediateReadout(
-                        layer_index=layer_index,
-                        tokens=hidden_states,
-                        token_layout=token_layout,
-                        aux={"implementation": "shared_transformer"},
-                    )
-                )
             existing_self_entry = incoming_self_attention_kv[layer_index] if layer_index < len(incoming_self_attention_kv) else None
             if cache_update_metadata.update_kv_cache and current_self_cache_entry is not None:
                 next_self_attention_kv.append(
@@ -2039,7 +2259,6 @@ class SharedVideoTransformerCore(nn.Module):
             tokens=hidden_states,
             token_layout=token_layout,
             cache_state=cache_state,
-            intermediate_readouts=tuple(captured_readouts),
             aux={
                 "implementation": "shared_transformer",
                 "used_rotary": rotary_grid_ids is not None,

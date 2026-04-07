@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 
 from torch import nn
 
-from open_wam.models.visual_tower import VisualReadoutRequest, VisualStageOutputs, VisualTower
+from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
 from .contracts import (
     PolicyInferContext,
@@ -19,6 +19,11 @@ from .contracts import (
 class PolicyVariant(nn.Module, ABC):
     """Attachment-aware policy variant interface."""
 
+    def initialize_for_training(self, visual_tower: VisualTower) -> None:
+        """Optional pre-wrap initialization hook for distributed training."""
+
+        del visual_tower
+
     @abstractmethod
     def attach_site(self) -> str:
         """Return the declared attachment site."""
@@ -26,11 +31,6 @@ class PolicyVariant(nn.Module, ABC):
     @abstractmethod
     def required_visual_stages(self) -> tuple[str, ...]:
         """Return the visual stages the pipeline must prepare eagerly."""
-
-    def requested_visual_readout(self) -> VisualReadoutRequest | None:
-        """Return one optional shared visual-readout capture request."""
-
-        return None
 
     @abstractmethod
     def prepare_train_inputs(

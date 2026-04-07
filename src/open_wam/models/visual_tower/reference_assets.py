@@ -361,7 +361,7 @@ class LingbotReferenceAssets:
     ) -> bool:
         if placements is None or len(placements) != 3:
             return False
-        names = tuple(placement.name for placement in placements)
+        names = tuple(placement.canonical_name for placement in placements)
         expected_names = ("cam_high", "cam_left_wrist", "cam_right_wrist")
         if names != expected_names:
             return False
@@ -376,9 +376,8 @@ class LingbotReferenceAssets:
     ) -> bool:
         if placements is None or len(placements) != 2:
             return False
-        names = tuple(placement.name for placement in placements)
-        expected_names = ("image", "wrist_image")
-        if names != expected_names:
+        names = tuple(placement.canonical_name for placement in placements)
+        if names != ("image", "wrist_image"):
             return False
         height = canonical_video.shape[-2]
         width = canonical_video.shape[-1]

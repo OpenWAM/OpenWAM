@@ -12,6 +12,7 @@ from open_wam.configs import (
     LingbotParallelActionDecoderConfig,
     LiberoDataConfig,
     MLPActionDecoderConfig,
+    MoTPolicyConfig,
     ParallelStreamPolicyConfig,
     PostLatentPolicyConfig,
     PostDecodedPolicyConfig,
@@ -21,6 +22,7 @@ from open_wam.configs import (
     TrainingConfig,
     VideoSequencePolicyConfig,
 )
+from open_wam.models.policy_variants import MoTPolicyVariant
 from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig, SharedVideoTransformerConfig
 from open_wam.models.visual_tower.reference_loader import load_wan_transformer_class
 from open_wam.pipelines import build_variant_pipeline_from_config
@@ -257,6 +259,57 @@ def test_video_sequence_policy_requires_shared_transformer_backbone() -> None:
         assert "shared transformer backbone" in str(exc)
     else:  # pragma: no cover - defensive guard
         raise AssertionError("Expected video-sequence validation to reject a non-shared backbone.")
+
+
+def test_mot_policy_builds_with_shared_transformer_backbone() -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=LingbotCompatibleVideoBackboneConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=2,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+        ),
+        policy_variant=MoTPolicyConfig(hidden_size=32, video_prefix_frames=1, num_action_layers=2),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(chunk_size=2, window_size=8),
+        inference=InferenceConfig(frame_chunk_size=2),
+    )
+
+    pipeline = build_variant_pipeline_from_config(config)
+    assert isinstance(pipeline.policy_variant, MoTPolicyVariant)
+    assert pipeline.policy_variant.config.runtime_mode == "video_prefill_action_denoise"
+    assert pipeline.policy_variant.action_expert.num_layers == 2
+    assert pipeline.policy_variant.action_expert.action_dim == 4
+
+
+def test_mot_policy_requires_shared_transformer_backbone() -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=LingbotCompatibleVideoBackboneConfig(implementation="dummy"),
+        policy_variant=MoTPolicyConfig(hidden_size=32, video_prefix_frames=1, num_action_layers=2),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(chunk_size=2, window_size=8),
+        inference=InferenceConfig(frame_chunk_size=2),
+    )
+
+    try:
+        build_variant_pipeline_from_config(config)
+    except ValueError as exc:
+        assert "shared transformer backbone" in str(exc)
+    else:  # pragma: no cover - defensive guard
+        raise AssertionError("Expected MoT validation to reject a non-shared backbone.")
 
 
 def test_post_latent_rejects_frontend_only_attachment() -> None:

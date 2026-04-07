@@ -5,6 +5,7 @@ from open_wam.configs import (
     BackboneImplementation,
     CausalVideoPredictionPolicyConfig,
     ExperimentConfig,
+    MoTPolicyConfig,
     ParallelRuntimeMode,
     ParallelStreamPolicyConfig,
     PostDecodedPolicyConfig,
@@ -17,6 +18,7 @@ from open_wam.models.action_decoders import DecodedFeatureActionDecoder, MLPActi
 from open_wam.models.action_decoders import LingbotParallelActionDecoder, VPPSequenceActionDecoder, VideoOnlyActionDecoder
 from open_wam.models.policy_variants import (
     CausalVideoPredictionPolicyVariant,
+    MoTPolicyVariant,
     ParallelStreamPolicyVariant,
     PostDecodedPolicyVariant,
     PostLatentPolicyVariant,
@@ -55,6 +57,7 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
             PostDecodedPolicyConfig,
             VideoSequencePolicyConfig,
             CausalVideoPredictionPolicyConfig,
+            MoTPolicyConfig,
         ),
     ):
         if normalize_backbone_implementation(config.backbone.implementation) != BackboneImplementation.SHARED_TRANSFORMER:
@@ -140,6 +143,22 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
                 "For raw LIBERO this usually means increasing `data.action_schema.state_horizon` so the "
                 "state register blocks align with the future image/action blocks."
             )
+    if isinstance(config.policy_variant, MoTPolicyConfig):
+        if action_schema.action_horizon <= 0:
+            raise ValueError("MoT method 5 requires `data.action_schema.action_horizon > 0`.")
+        if config.policy_variant.video_prefix_frames >= config.data.num_frames:
+            raise ValueError(
+                "MoT method 5 requires `video_prefix_frames < data.num_frames`, "
+                f"got video_prefix_frames={config.policy_variant.video_prefix_frames}, "
+                f"data.num_frames={config.data.num_frames}."
+            )
+        if config.policy_variant.num_action_layers != config.backbone.num_layers:
+            raise ValueError(
+                "MoT method 5 currently requires `policy_variant.num_action_layers == backbone.num_layers` "
+                "so the action expert stays layer-aligned with the video expert, "
+                f"got num_action_layers={config.policy_variant.num_action_layers}, "
+                f"backbone.num_layers={config.backbone.num_layers}."
+            )
 
 
 def build_policy_variant(config: ExperimentConfig):
@@ -174,6 +193,16 @@ def build_policy_variant(config: ExperimentConfig):
             config=policy_config,
             training_config=config.training,
             inference_config=config.inference,
+        )
+    if isinstance(policy_config, MoTPolicyConfig):
+        return MoTPolicyVariant(
+            config=policy_config,
+            backbone_config=config.backbone,
+            training_config=config.training,
+            inference_config=config.inference,
+            action_dim=action_schema.action_dim,
+            action_horizon=action_schema.action_horizon,
+            state_dim=action_schema.state_dim,
         )
     if isinstance(policy_config, RegisterAttachedPolicyConfig):
         return RegisterAttachedPolicyVariant(

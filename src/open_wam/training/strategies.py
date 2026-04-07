@@ -47,11 +47,12 @@ def _apply_composable_fsdp_sharding(
 ) -> nn.Module:
     from torch.distributed.fsdp import fully_shard
 
-    visual_tower = getattr(model, "visual_tower", None)
-    core = getattr(visual_tower, "core", None) if visual_tower is not None else None
-    blocks = getattr(core, "blocks", None) if core is not None else None
-
-    if isinstance(blocks, nn.ModuleList):
+    def _shard_block_stack(owner: nn.Module | None) -> None:
+        if owner is None:
+            return
+        blocks = getattr(owner, "blocks", None)
+        if not isinstance(blocks, nn.ModuleList):
+            return
         shard_kwargs = {
             "mesh": mesh,
             "mp_policy": mp_policy,
@@ -65,6 +66,14 @@ def _apply_composable_fsdp_sharding(
             if hasattr(block, "ffn"):
                 fully_shard(block.ffn, **shard_kwargs)
             fully_shard(block, **shard_kwargs)
+
+    visual_tower = getattr(model, "visual_tower", None)
+    core = getattr(visual_tower, "core", None) if visual_tower is not None else None
+    policy_variant = getattr(model, "policy_variant", None)
+    action_expert = getattr(policy_variant, "action_expert", None) if policy_variant is not None else None
+
+    _shard_block_stack(core)
+    _shard_block_stack(action_expert)
 
     return model
 

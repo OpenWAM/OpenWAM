@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 
 from open_wam.models.common import RolloutCursor
-from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
+from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig, SharedVideoTransformerConfig
 from open_wam.models.video_backbone.contracts import AttentionCacheEntry, CacheState, CacheUpdateMetadata
 from open_wam.models.visual_tower import VisualTower
 
@@ -63,3 +63,38 @@ def test_visual_tower_truncate_runtime_cache_state_applies_shared_retention_poli
     assert truncated.self_attention_kv[0].key.shape[2] == 4
     assert truncated.self_attention_kv[0].value is not None
     assert truncated.self_attention_kv[0].value.shape[2] == 4
+
+
+def test_prefill_exact_video_cache_materializes_self_attention_kv_for_single_stream_runtime() -> None:
+    tower = VisualTower(
+        SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=2,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            max_text_tokens=4,
+            load_wan_vae_frontend=False,
+            load_text_conditioning=False,
+            load_reference_core_weights=False,
+        ),
+        action_dim=4,
+    )
+    observed_prefix = torch.randn(1, 48, 2, 2, 2)
+    text_context = torch.zeros(1, 4, 16)
+
+    cache = tower.prefill_exact_video_cache(
+        observed_prefix=observed_prefix,
+        text_context=text_context,
+        frame_start=0,
+        cache_name="unit_test_prefill",
+    )
+
+    assert len(cache.self_attention_kv) == 2
+    assert cache.self_attention_kv[0].key is not None
+    assert cache.self_attention_kv[0].value is not None
+    assert cache.self_attention_kv[0].key.shape[2] == 2
+    assert cache.self_attention_kv[0].value.shape[2] == 2
