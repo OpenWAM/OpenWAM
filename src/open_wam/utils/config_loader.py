@@ -11,6 +11,7 @@ from open_wam.configs import (
     DecodedFeatureActionDecoderConfig,
     LingbotParallelActionDecoderConfig,
     MLPActionDecoderConfig,
+    MoTActionDecoderConfig,
     CausalPrefixSuffixBucketConfig,
     CausalVideoPredictionPolicyConfig,
     MoTPolicyConfig,
@@ -39,6 +40,7 @@ from open_wam.configs import (
     SampleConstructionConfig,
     TrainerConfig,
     ViewLayoutConfig,
+    VisualReadoutConfig,
 )
 import open_wam.configs.enums as config_enums
 from open_wam.configs.inference import InferenceConfig
@@ -119,6 +121,35 @@ def _load_consortium_members(raw_value: Any) -> tuple[ConsortiumMemberConfig, ..
     return tuple(members)
 
 
+def _load_visual_readout_config(raw_value: Any) -> VisualReadoutConfig | None:
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, dict):
+        raise ValueError("Expected `visual_readout` to be a mapping.")
+    layer_index = raw_value.get("layer_index")
+    layer_indices_raw = raw_value.get("layer_indices")
+    if layer_indices_raw is None:
+        layer_indices: tuple[int, ...] = ()
+    elif isinstance(layer_indices_raw, (list, tuple)):
+        layer_indices = tuple(int(value) for value in layer_indices_raw)
+    else:
+        raise ValueError("Expected `visual_readout.layer_indices` to be a list or tuple.")
+    return VisualReadoutConfig(
+        source_family=_coerce_enum(
+            config_enums.VisualReadoutSourceFamily,
+            raw_value["source_family"],
+        ),
+        layer_index=(None if layer_index is None else int(layer_index)),
+        layer_indices=layer_indices,
+        fusion_mode=_coerce_enum(
+            config_enums.VisualReadoutFusionMode,
+            raw_value.get("fusion_mode", config_enums.VisualReadoutFusionMode.NONE),
+        ),
+        diffusion_extract_timestep=int(raw_value.get("diffusion_extract_timestep", 20)),
+        diffusion_extract_step_time=int(raw_value.get("diffusion_extract_step_time", 1)),
+    )
+
+
 def _load_policy_variant_config(
     policy_variant_raw: dict[str, Any],
     action_head_raw: dict[str, Any],
@@ -170,6 +201,7 @@ def _load_policy_variant_config(
             ),
             use_state_projection=resolved_raw.get("use_state_projection", True),
             compatibility_mode=resolved_raw.get("compatibility_mode", compatibility_mode),
+            visual_readout=_load_visual_readout_config(resolved_raw.get("visual_readout")),
         )
     if name == config_enums.PolicyVariantName.POST_DECODED:
         return PostDecodedPolicyConfig(
@@ -187,6 +219,7 @@ def _load_policy_variant_config(
                 resolved_raw.get("temporal_projection", config_enums.TemporalProjection.INTERPOLATE),
             ),
             use_state_projection=resolved_raw.get("use_state_projection", True),
+            visual_readout=_load_visual_readout_config(resolved_raw.get("visual_readout")),
         )
     if name == config_enums.PolicyVariantName.VIDEO_SEQUENCE_POLICY:
         return VideoSequencePolicyConfig(
@@ -199,6 +232,7 @@ def _load_policy_variant_config(
                 config_enums.TemporalProjection,
                 resolved_raw.get("temporal_projection", config_enums.TemporalProjection.INTERPOLATE),
             ),
+            visual_readout=_load_visual_readout_config(resolved_raw.get("visual_readout")),
             visual_state_source=_coerce_enum(
                 config_enums.VisualStateSource,
                 resolved_raw.get("visual_state_source", config_enums.VisualStateSource.DENOISED_VIDEO_TOKENS),
@@ -435,6 +469,8 @@ def _load_action_decoder_config(
     if not resolved_raw:
         if policy_variant_config.name == config_enums.PolicyVariantName.REGISTER_ATTACHED:
             resolved_raw["name"] = config_enums.ActionDecoderName.REGISTER
+        elif policy_variant_config.name == config_enums.PolicyVariantName.MOT:
+            resolved_raw["name"] = config_enums.ActionDecoderName.MOT
         elif policy_variant_config.name == config_enums.PolicyVariantName.CAUSAL_VIDEO_PREDICTION:
             resolved_raw["name"] = config_enums.ActionDecoderName.VIDEO_ONLY
         elif policy_variant_config.name == config_enums.PolicyVariantName.VIDEO_SEQUENCE_POLICY:
@@ -451,6 +487,9 @@ def _load_action_decoder_config(
             resolved_raw["name"] = config_enums.ActionDecoderName.MLP
 
     name = _coerce_enum(config_enums.ActionDecoderName, resolved_raw["name"])
+    if name == config_enums.ActionDecoderName.MLP and policy_variant_config.name == config_enums.PolicyVariantName.MOT:
+        # Compatibility path for early MoT YAMLs that used `mlp_decoder` as a placeholder.
+        name = config_enums.ActionDecoderName.MOT
     hidden_size = resolved_raw.get("hidden_size", policy_variant_config.hidden_size)
     action_dim = resolved_raw.get("action_dim", data_config.action_schema.action_dim)
     action_horizon = resolved_raw.get("action_horizon", data_config.action_schema.action_horizon)
@@ -542,6 +581,13 @@ def _load_action_decoder_config(
         )
     if name == config_enums.ActionDecoderName.LINGBOT_PARALLEL:
         return LingbotParallelActionDecoderConfig(
+            hidden_size=hidden_size,
+            action_dim=action_dim,
+            action_horizon=action_horizon,
+            dropout=dropout,
+        )
+    if name == config_enums.ActionDecoderName.MOT:
+        return MoTActionDecoderConfig(
             hidden_size=hidden_size,
             action_dim=action_dim,
             action_horizon=action_horizon,

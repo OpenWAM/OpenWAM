@@ -27,6 +27,18 @@ from .runtime_programs import (
     build_single_stream_exact_runtime_program,
 )
 from .reference_transformer import build_reference_transformer, preferred_reference_dtype
+from .shared_transformer_support import (
+    SharedTransformerAttention,
+    SharedTransformerRotaryPositionalEmbedding,
+    SharedTransformerTimeEmbedding,
+    apply_rotary_emb,
+    feed_forward_with_materialized_params,
+    layer_norm_with_materialized_params,
+    linear_with_materialized_params,
+    materialize_runtime_parameter,
+    rms_norm_with_materialized_weight,
+    select_chunk_slices,
+)
 from .stream_adapters import PreparedStreamInput, SharedRuntimeStreamAdapters, StreamInputAdapterSpec
 from .stream_heads import StreamOutputHeadSpec
 from .tower import VisualTower
@@ -49,9 +61,19 @@ __all__ = [
     "StructuredAttentionContext",
     "StructuredBlockSemantics",
     "StructuredFrequencyBundle",
+    "SharedTransformerAttention",
+    "SharedTransformerRotaryPositionalEmbedding",
+    "SharedTransformerTimeEmbedding",
     "RuntimeProgramSpec",
     "RuntimeStepInput",
     "RuntimeStepOutput",
+    "apply_rotary_emb",
+    "feed_forward_with_materialized_params",
+    "layer_norm_with_materialized_params",
+    "linear_with_materialized_params",
+    "materialize_runtime_parameter",
+    "rms_norm_with_materialized_weight",
+    "select_chunk_slices",
     "VisualCoreInput",
     "VisualCoreOutput",
     "VisualDecodeOutput",

@@ -19,6 +19,7 @@ class ActionDecoderName(StrEnum):
     DECODED_FEATURE = "decoded_feature_decoder"
     VPP = "vpp_decoder"
     LINGBOT_PARALLEL = "lingbot_parallel_decoder"
+    MOT = "mot_decoder"
     VIDEO_ONLY = "video_only_decoder"
 
 
@@ -330,6 +331,24 @@ class VisualStateSource(StrEnum):
 
     CORE_TOKENS = "core_tokens"
     DENOISED_VIDEO_TOKENS = "denoised_video_tokens"
+
+
+class VisualReadoutSourceFamily(StrEnum):
+    """Which shared visual readout family a post-visual variant should consume."""
+
+    FINAL_CORE_TOKENS = "final_core_tokens"
+    CORE_LAYER_TOKENS = "core_layer_tokens"
+    CORE_MULTI_LAYER_TOKENS = "core_multi_layer_tokens"
+    DIFFUSION_FEATURE_TOKENS = "diffusion_feature_tokens"
+
+
+class VisualReadoutFusionMode(StrEnum):
+    """How multiple shared-core readouts should be fused."""
+
+    NONE = "none"
+    CONCAT_PROJECT = "concat_project"
+    LEARNED_WEIGHTED_SUM = "learned_weighted_sum"
+    MEAN = "mean"
 
 
 class DecodeFeatureMode(StrEnum):

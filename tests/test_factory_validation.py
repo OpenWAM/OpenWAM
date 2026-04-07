@@ -22,6 +22,7 @@ from open_wam.configs import (
     TrainingConfig,
     VideoSequencePolicyConfig,
 )
+from open_wam.models.action_decoders import MoTActionDecoder
 from open_wam.models.policy_variants import MoTPolicyVariant
 from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig, SharedVideoTransformerConfig
 from open_wam.models.visual_tower.reference_loader import load_wan_transformer_class
@@ -286,6 +287,7 @@ def test_mot_policy_builds_with_shared_transformer_backbone() -> None:
 
     pipeline = build_variant_pipeline_from_config(config)
     assert isinstance(pipeline.policy_variant, MoTPolicyVariant)
+    assert isinstance(pipeline.action_decoder, MoTActionDecoder)
     assert pipeline.policy_variant.config.runtime_mode == "video_prefill_action_denoise"
     assert pipeline.policy_variant.action_expert.num_layers == 2
     assert pipeline.policy_variant.action_expert.action_dim == 4

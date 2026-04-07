@@ -112,11 +112,13 @@ class VariantPipeline(nn.Module):
         policy_output: PolicyTrainOutput,
         train_batch: PolicyTrainBatch,
     ) -> ActionDecoderTrainOutput:
-        # Joint variants may compute their own train loss/predictions inside the
-        # policy variant and expose them through `policy_output.aux`. Simpler
-        # variants still rely on the shared action decoder. Centralizing that
-        # choice here keeps the pipeline behavior uniform.
-        direct_decoder_output = policy_output.aux.get("decoder_output")
+        # Variants may optionally own the full decoder contract themselves.
+        # Keep a temporary `aux["decoder_output"]` fallback for compatibility
+        # with older branches while the explicit `owned_decoder_output` field
+        # becomes the canonical path.
+        direct_decoder_output = policy_output.owned_decoder_output
+        if direct_decoder_output is None:
+            direct_decoder_output = policy_output.aux.get("decoder_output")
         if isinstance(direct_decoder_output, ActionDecoderTrainOutput):
             return direct_decoder_output
         return self.action_decoder.forward_train(policy_output, train_batch)
@@ -127,10 +129,10 @@ class VariantPipeline(nn.Module):
         *,
         previous_decoder_state: object | None = None,
     ) -> ActionDecoderInferOutput:
-        # The infer-side rule mirrors the train-side rule above: variants may
-        # either return a complete decoder output directly or only provide
-        # policy features for the shared decoder.
-        direct_decoder_output = policy_output.aux.get("decoder_output")
+        # The infer-side rule mirrors the train-side rule above.
+        direct_decoder_output = policy_output.owned_decoder_output
+        if direct_decoder_output is None:
+            direct_decoder_output = policy_output.aux.get("decoder_output")
         if isinstance(direct_decoder_output, ActionDecoderInferOutput):
             return direct_decoder_output
         return self.action_decoder.forward_infer(policy_output, previous_state=previous_decoder_state)

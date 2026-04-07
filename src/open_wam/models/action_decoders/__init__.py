@@ -6,6 +6,7 @@ from .action_generation import EDMActionGenerationBackend
 from .goal_conditioning import GoalConditioningAdapter, build_goal_conditioning_adapter
 from .lingbot_parallel_decoder import LingbotParallelActionDecoder
 from .mlp_decoder import MLPActionDecoder
+from .mot_decoder import MoTActionDecoder
 from .register_decoder import RegisterActionDecoder
 from .sequence_base import SequenceActionDecoder
 from .sequence_denoisers import (
@@ -32,6 +33,7 @@ __all__ = [
     "GoalConditioningAdapter",
     "LingbotParallelActionDecoder",
     "MLPActionDecoder",
+    "MoTActionDecoder",
     "PreparedSequenceMemory",
     "RegisterActionDecoder",
     "SequenceActionDecoder",

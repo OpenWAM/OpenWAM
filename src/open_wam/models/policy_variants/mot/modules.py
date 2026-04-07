@@ -9,17 +9,17 @@ from diffusers.models.normalization import FP32LayerNorm
 from torch import nn
 
 from open_wam.models.visual_tower.grid_ids import build_sequence_grid_ids
-from open_wam.models.visual_tower.replica_core import (
+from open_wam.models.visual_tower.shared_transformer_support import (
     SharedTransformerAttention,
     SharedTransformerRotaryPositionalEmbedding,
     SharedTransformerTimeEmbedding,
-    _feed_forward_with_materialized_params,
-    _layer_norm_with_materialized_params,
-    _linear_with_materialized_params,
-    _materialize_runtime_parameter,
-    _rms_norm_with_materialized_weight,
-    _apply_rotary_emb,
-    _select_chunk_slices,
+    apply_rotary_emb,
+    feed_forward_with_materialized_params,
+    layer_norm_with_materialized_params,
+    linear_with_materialized_params,
+    materialize_runtime_parameter,
+    rms_norm_with_materialized_weight,
+    select_chunk_slices,
 )
 
 
@@ -76,31 +76,31 @@ class MoTActionTransformerBlock(nn.Module):
         temb: torch.Tensor,
         rotary_emb: torch.Tensor | None,
     ) -> dict[str, torch.Tensor]:
-        temb_scale_shift_table = _materialize_runtime_parameter(
+        temb_scale_shift_table = materialize_runtime_parameter(
             self.scale_shift_table,
             device=temb.device,
             dtype=temb.dtype,
         )[None] + temb.float()
-        shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = _select_chunk_slices(
+        shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = select_chunk_slices(
             temb_scale_shift_table,
             6,
         )
         norm_hidden_states = (self.norm1(hidden_states.float()) * (1.0 + scale_msa) + shift_msa).type_as(hidden_states)
-        query = _rms_norm_with_materialized_weight(
+        query = rms_norm_with_materialized_weight(
             self.attn1.norm_q,
-            _linear_with_materialized_params(self.attn1.to_q, norm_hidden_states),
+            linear_with_materialized_params(self.attn1.to_q, norm_hidden_states),
         ).unflatten(2, (self.attn1.heads, -1))
-        key = _rms_norm_with_materialized_weight(
+        key = rms_norm_with_materialized_weight(
             self.attn1.norm_k,
-            _linear_with_materialized_params(self.attn1.to_k, norm_hidden_states),
+            linear_with_materialized_params(self.attn1.to_k, norm_hidden_states),
         ).unflatten(2, (self.attn1.heads, -1))
-        value = _linear_with_materialized_params(self.attn1.to_v, norm_hidden_states).unflatten(
+        value = linear_with_materialized_params(self.attn1.to_v, norm_hidden_states).unflatten(
             2,
             (self.attn1.heads, -1),
         )
         if rotary_emb is not None:
-            query = _apply_rotary_emb(query, rotary_emb)
-            key = _apply_rotary_emb(key, rotary_emb)
+            query = apply_rotary_emb(query, rotary_emb)
+            key = apply_rotary_emb(key, rotary_emb)
         return {
             "query": query.transpose(1, 2).contiguous(),
             "key": key.transpose(1, 2).contiguous(),
@@ -125,7 +125,7 @@ class MoTActionTransformerBlock(nn.Module):
     ) -> tuple[torch.Tensor, None]:
         hidden_states = (hidden_states.float() + mixed_attn_output.float() * gate_msa).type_as(hidden_states)
         norm_hidden_states = (
-            _layer_norm_with_materialized_params(self.norm2, hidden_states.float())
+            layer_norm_with_materialized_params(self.norm2, hidden_states.float())
             if isinstance(self.norm2, nn.LayerNorm)
             else self.norm2(hidden_states.float())
         ).type_as(hidden_states)
@@ -140,9 +140,9 @@ class MoTActionTransformerBlock(nn.Module):
         )
         hidden_states = hidden_states + attn_output
         norm_hidden_states = (
-            _layer_norm_with_materialized_params(self.norm3, hidden_states.float()) * (1.0 + c_scale_msa) + c_shift_msa
+            layer_norm_with_materialized_params(self.norm3, hidden_states.float()) * (1.0 + c_scale_msa) + c_shift_msa
         ).type_as(hidden_states)
-        ff_output = _feed_forward_with_materialized_params(self.ffn, norm_hidden_states)
+        ff_output = feed_forward_with_materialized_params(self.ffn, norm_hidden_states)
         hidden_states = (hidden_states.float() + ff_output.float() * c_gate_msa).type_as(hidden_states)
         return hidden_states, None
 
@@ -294,8 +294,8 @@ class MoTActionExpert(nn.Module):
                 "MoT action expert post_dit requires sequence shape to match pre_dit output, "
                 f"got hidden_states={tuple(hidden_states.shape)}, preprocessed={tuple(preprocessed.tokens.shape)}."
             )
-        shift, scale = _select_chunk_slices(
-            _materialize_runtime_parameter(
+        shift, scale = select_chunk_slices(
+            materialize_runtime_parameter(
                 self.scale_shift_table,
                 device=preprocessed.t_mod.device,
                 dtype=preprocessed.t_mod.dtype,
@@ -304,9 +304,9 @@ class MoTActionExpert(nn.Module):
             2,
         )
         hidden_states = (
-            _layer_norm_with_materialized_params(self.norm_out, hidden_states.float()) * (1.0 + scale) + shift
+            layer_norm_with_materialized_params(self.norm_out, hidden_states.float()) * (1.0 + scale) + shift
         ).type_as(hidden_states)
-        return _linear_with_materialized_params(self.action_proj_out, hidden_states)
+        return linear_with_materialized_params(self.action_proj_out, hidden_states)
 
 
 def init_action_expert_from_video_core(

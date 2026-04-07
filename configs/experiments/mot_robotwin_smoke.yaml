@@ -34,8 +34,8 @@ policy_variant:
   num_action_layers: 1
 
 action_decoder:
-  # Decoder stays lightweight because MoT predicts actions directly
-  name: mlp_decoder
+  # Dedicated MoT decoder owns final loss/output packaging
+  name: mot_decoder
   hidden_size: 256
   action_dim: 30
   action_horizon: 8

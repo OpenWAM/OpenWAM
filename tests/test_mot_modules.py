@@ -16,6 +16,7 @@ from open_wam.configs import (
     TrainingConfig,
 )
 from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
+from open_wam.models.policy_variants.mot.contracts import MoTRuntimeState
 from open_wam.models.policy_variants.mot.modules import (
     MoTActionExpert,
     init_action_expert_from_video_core,
@@ -292,6 +293,7 @@ def test_mot_variant_infer_from_latents_smoke(
 
     assert output.decoder_output.action_pred.shape == (1, 4, 4)
     assert torch.isfinite(output.decoder_output.action_pred).all()
+    assert isinstance(output.policy_output.next_state.variant_state, MoTRuntimeState)
 
 
 def test_mot_variant_train_from_latents_supports_joint_action_and_video_objectives() -> None:
@@ -391,4 +393,8 @@ def test_mot_variant_builds_with_interpolated_action_expert_ffn() -> None:
     )
 
     assert pipeline.policy_variant.action_expert.hidden_size == 24
-    assert pipeline.policy_variant.action_expert.blocks[0].ffn.net[0].proj.weight.shape[-1] == 32
+    first_ffn_proj = pipeline.policy_variant.action_expert.blocks[0].ffn.net[0].proj.weight
+    second_ffn_proj = pipeline.policy_variant.action_expert.blocks[0].ffn.net[2].weight
+    assert first_ffn_proj.shape[0] == 32
+    assert second_ffn_proj.shape[-1] == 32
+    assert torch.isfinite(first_ffn_proj).all()

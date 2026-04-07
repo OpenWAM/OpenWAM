@@ -15,7 +15,12 @@ from open_wam.configs import (
 )
 from open_wam.data import build_canonical_video_preprocessor
 from open_wam.models.action_decoders import DecodedFeatureActionDecoder, MLPActionDecoder, RegisterActionDecoder
-from open_wam.models.action_decoders import LingbotParallelActionDecoder, VPPSequenceActionDecoder, VideoOnlyActionDecoder
+from open_wam.models.action_decoders import (
+    LingbotParallelActionDecoder,
+    MoTActionDecoder,
+    VPPSequenceActionDecoder,
+    VideoOnlyActionDecoder,
+)
 from open_wam.models.policy_variants import (
     CausalVideoPredictionPolicyVariant,
     MoTPolicyVariant,
@@ -230,7 +235,20 @@ def build_policy_variant(config: ExperimentConfig):
 
 def build_action_decoder(config: ExperimentConfig):
     decoder_config = config.action_decoder
+    mot_compat_decoder = (
+        isinstance(config.policy_variant, MoTPolicyConfig)
+        and decoder_config.name == ActionDecoderName.MLP
+    )
     if decoder_config.name == ActionDecoderName.MLP:
+        if mot_compat_decoder:
+            return MoTActionDecoder(
+                hidden_size=decoder_config.hidden_size,
+                action_dim=decoder_config.action_dim,
+                action_horizon=decoder_config.action_horizon,
+                training_config=config.training,
+                inference_config=config.inference,
+                dropout=decoder_config.dropout,
+            )
         return MLPActionDecoder(
             hidden_size=decoder_config.hidden_size,
             action_dim=decoder_config.action_dim,
@@ -262,6 +280,15 @@ def build_action_decoder(config: ExperimentConfig):
             hidden_size=decoder_config.hidden_size,
             action_dim=decoder_config.action_dim,
             action_horizon=decoder_config.action_horizon,
+            dropout=decoder_config.dropout,
+        )
+    if decoder_config.name == ActionDecoderName.MOT:
+        return MoTActionDecoder(
+            hidden_size=decoder_config.hidden_size,
+            action_dim=decoder_config.action_dim,
+            action_horizon=decoder_config.action_horizon,
+            training_config=config.training,
+            inference_config=config.inference,
             dropout=decoder_config.dropout,
         )
     if decoder_config.name == ActionDecoderName.VPP:

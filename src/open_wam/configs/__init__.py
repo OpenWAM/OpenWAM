@@ -5,6 +5,7 @@ from .action_decoder import (
     DecodedFeatureActionDecoderConfig,
     LingbotParallelActionDecoderConfig,
     MLPActionDecoderConfig,
+    MoTActionDecoderConfig,
     RegisterActionDecoderConfig,
     VPPActionDecoderConfig,
     VideoOnlyActionDecoderConfig,
@@ -99,6 +100,8 @@ from .enums import (
     TemporalProjection,
     TemporalCompressionAdapterFamily,
     VisualStateSource,
+    VisualReadoutFusionMode,
+    VisualReadoutSourceFamily,
     TrainerAccelerator,
     TrainerPrecision,
     TrainerRuntimeName,
@@ -122,6 +125,7 @@ from .policy_variant import (
 )
 from .trainer import TrainerConfig
 from .training import TrainingConfig
+from .visual_readout import VisualReadoutConfig
 
 __all__ = [
     "ActionDecoderConfig",
@@ -181,6 +185,7 @@ __all__ = [
     "LoopPolicyName",
     "MoTConditionMode",
     "MoTActionExpertInitMode",
+    "MoTActionDecoderConfig",
     "MoTPreset",
     "MoTRuntimeMode",
     "MoTPolicyConfig",
@@ -234,6 +239,9 @@ __all__ = [
     "VPPActionDecoderConfig",
     "VideoOnlyActionDecoderConfig",
     "VideoSequencePolicyConfig",
+    "VisualReadoutConfig",
+    "VisualReadoutFusionMode",
+    "VisualReadoutSourceFamily",
     "ViewLayoutConfig",
     "WandBMode",
     "WindowSamplingMode",

@@ -205,12 +205,14 @@ def test_latent_libero_local_training_yaml_configs_load() -> None:
     assert video_sequence_random.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
     assert register.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
     assert mot.policy_variant.preset == MoTPreset.FASTWAM
+    assert mot.action_decoder.name == ActionDecoderName.MOT
     assert mot.policy_variant.condition_mode == "first_frame"
     assert mot.policy_variant.action_hidden_size == 2048
     assert mot.policy_variant.action_ffn_dim == 8192
     assert mot.training.enabled_objectives == (TrainingObjective.ACTION,)
     assert mot.training.trainable_components == (TrainingComponentSelector.POLICY_VARIANT_ACTION_EXPERT,)
     assert mot_idm.policy_variant.preset == MoTPreset.FASTWAM_IDM
+    assert mot_idm.action_decoder.name == ActionDecoderName.MOT
     assert mot_idm.policy_variant.condition_mode == "teacher_forcing_cond_video"
     assert mot_idm.policy_variant.action_hidden_size == 2048
     assert mot_idm.policy_variant.action_ffn_dim == 8192
@@ -218,6 +220,7 @@ def test_latent_libero_local_training_yaml_configs_load() -> None:
     assert mot_idm.training.enabled_objectives == (TrainingObjective.ACTION,)
     assert mot_idm.training.trainable_components == (TrainingComponentSelector.POLICY_VARIANT_ACTION_EXPERT,)
     assert mot_joint.policy_variant.preset == MoTPreset.FASTWAM_JOINT
+    assert mot_joint.action_decoder.name == ActionDecoderName.MOT
     assert mot_joint.policy_variant.condition_mode == "full_video"
     assert mot_joint.policy_variant.action_hidden_size == 2048
     assert mot_joint.policy_variant.action_ffn_dim == 8192
@@ -317,6 +320,7 @@ def test_mot_policy_yaml_config_loads(tmp_path: Path) -> None:
     assert config.policy_variant.action_hidden_size == 768
     assert config.policy_variant.action_ffn_dim == 1024
     assert config.policy_variant.use_state_conditioning is True
+    assert config.action_decoder.name == ActionDecoderName.MOT
 
 
 def test_mot_policy_preset_applies_fastwam_joint_defaults(tmp_path: Path) -> None:
@@ -338,6 +342,7 @@ def test_mot_policy_preset_applies_fastwam_joint_defaults(tmp_path: Path) -> Non
     assert isinstance(config.policy_variant, MoTPolicyConfig)
     assert config.policy_variant.preset == MoTPreset.FASTWAM_JOINT
     assert config.policy_variant.condition_mode == "full_video"
+    assert config.action_decoder.name == ActionDecoderName.MOT
     assert config.policy_variant.teacher_forcing_video_noise_prob == 0.0
     assert config.policy_variant.video_prefix_frames == 1
 

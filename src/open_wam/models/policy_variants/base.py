@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 
 from torch import nn
 
-from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
+from open_wam.models.visual_tower import VisualReadoutRequest, VisualStageOutputs, VisualTower
 
 from .contracts import (
     PolicyInferContext,
@@ -23,6 +23,11 @@ class PolicyVariant(nn.Module, ABC):
         """Optional pre-wrap initialization hook for distributed training."""
 
         del visual_tower
+
+    def requested_visual_readout(self) -> VisualReadoutRequest | None:
+        """Return an optional visual-readout capture request for the shared core."""
+
+        return None
 
     @abstractmethod
     def attach_site(self) -> str:

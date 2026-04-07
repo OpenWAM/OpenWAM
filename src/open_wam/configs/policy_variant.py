@@ -34,6 +34,7 @@ from .enums import (
     VisualStateSource,
     coerce_fields,
 )
+from .visual_readout import VisualReadoutConfig
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,7 @@ class PostLatentPolicyConfig(PolicyVariantConfig):
     temporal_projection: TemporalProjection = TemporalProjection.INTERPOLATE
     use_state_projection: bool = True
     compatibility_mode: bool = False
+    visual_readout: VisualReadoutConfig | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -90,6 +92,7 @@ class PostDecodedPolicyConfig(PolicyVariantConfig):
     pooling_mode: PoolingMode = PoolingMode.PER_FRAME_MEAN
     temporal_projection: TemporalProjection = TemporalProjection.INTERPOLATE
     use_state_projection: bool = True
+    visual_readout: VisualReadoutConfig | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -122,6 +125,7 @@ class VideoSequencePolicyConfig(PolicyVariantConfig):
     hidden_size: int = 256
     attach_site: AttachSite = AttachSite.POST_VISUAL_CORE
     temporal_projection: TemporalProjection = TemporalProjection.INTERPOLATE
+    visual_readout: VisualReadoutConfig | None = None
     visual_state_source: VisualStateSource = VisualStateSource.DENOISED_VIDEO_TOKENS
     visual_denoise_ratio: float = 1.0
     use_state_context: bool = True

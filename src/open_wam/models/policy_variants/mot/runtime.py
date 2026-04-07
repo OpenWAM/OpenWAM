@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 from contextlib import ExitStack
-from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
@@ -11,31 +10,20 @@ from einops import rearrange
 from open_wam.configs import MoTConditionMode
 from open_wam.models.visual_tower.grid_ids import build_video_grid_ids
 from open_wam.models.policy_variants.parallel_stream.reference_runtime import data_seq_to_patch
-from open_wam.models.visual_tower.replica_core import (
-    _layer_norm_with_materialized_params,
-    _linear_with_materialized_params,
-    _materialize_runtime_parameter,
-    _select_chunk_slices,
+from open_wam.models.visual_tower.shared_transformer_support import (
+    layer_norm_with_materialized_params,
+    linear_with_materialized_params,
+    materialize_runtime_parameter,
+    select_chunk_slices,
 )
 
+from .contracts import MoTVideoCache, MoTVideoLayerCache
 from .modules import MoTActionExpert, MoTActionPreprocessOutput
 
 try:  # pragma: no cover - import surface depends on torch build
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 except Exception:  # pragma: no cover - CPU-only or non-FSDP env
     FSDP = None
-
-
-@dataclass(frozen=True)
-class MoTVideoLayerCache:
-    key: torch.Tensor
-    value: torch.Tensor
-
-
-@dataclass(frozen=True)
-class MoTVideoCache:
-    layers: tuple[MoTVideoLayerCache, ...]
-    video_seq_len: int
 
 
 def move_mot_video_cache(
@@ -219,7 +207,7 @@ def forward_action_with_video_cache(
             ).transpose(1, 2).flatten(2, 3)
             hidden_states, _ = block.apply_post_attention(
                 attn_inputs["hidden_states"],
-                mixed_attn_output=block.attn1.to_out[1](_linear_with_materialized_params(block.attn1.to_out[0], mixed)),
+                mixed_attn_output=block.attn1.to_out[1](linear_with_materialized_params(block.attn1.to_out[0], mixed)),
                 encoder_hidden_states=action_pre.context,
                 gate_msa=attn_inputs["gate_msa"],
                 c_shift_msa=attn_inputs["c_shift_msa"],
@@ -322,7 +310,7 @@ def forward_joint_video_action_denoise(
             video_hidden_states, _ = video_block.apply_post_attention(
                 video_attn_inputs["hidden_states"],
                 mixed_attn_output=video_block.attn1.to_out[1](
-                    _linear_with_materialized_params(video_block.attn1.to_out[0], mixed_video)
+                    linear_with_materialized_params(video_block.attn1.to_out[0], mixed_video)
                 ),
                 encoder_hidden_states=video_text_hidden_states,
                 gate_msa=video_attn_inputs["gate_msa"],
@@ -333,7 +321,7 @@ def forward_joint_video_action_denoise(
             action_hidden_states, _ = action_block.apply_post_attention(
                 action_attn_inputs["hidden_states"],
                 mixed_attn_output=action_block.attn1.to_out[1](
-                    _linear_with_materialized_params(action_block.attn1.to_out[0], mixed_action)
+                    linear_with_materialized_params(action_block.attn1.to_out[0], mixed_action)
                 ),
                 encoder_hidden_states=action_pre.context,
                 gate_msa=action_attn_inputs["gate_msa"],
@@ -342,8 +330,8 @@ def forward_joint_video_action_denoise(
                 c_gate_msa=action_attn_inputs["c_gate_msa"],
             )
 
-        shift, scale = _select_chunk_slices(
-            _materialize_runtime_parameter(
+        shift, scale = select_chunk_slices(
+            materialize_runtime_parameter(
                 visual_tower.core.scale_shift_table,
                 device=video_temb.device,
                 dtype=video_temb.dtype,
@@ -354,11 +342,11 @@ def forward_joint_video_action_denoise(
         shift = shift.to(video_hidden_states.device)
         scale = scale.to(video_hidden_states.device)
         video_hidden_states = (
-            _layer_norm_with_materialized_params(visual_tower.core.norm_out, video_hidden_states.float())
+            layer_norm_with_materialized_params(visual_tower.core.norm_out, video_hidden_states.float())
             * (1.0 + scale)
             + shift
         ).type_as(video_hidden_states)
-        video_flow = _linear_with_materialized_params(visual_tower.core.proj_out, video_hidden_states)
+        video_flow = linear_with_materialized_params(visual_tower.core.proj_out, video_hidden_states)
         video_flow = data_seq_to_patch(
             visual_tower.core.patch_size,
             video_flow,

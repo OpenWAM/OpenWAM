@@ -56,6 +56,7 @@ class PolicyTrainOutput:
     policy_features: torch.Tensor
     metrics: dict[str, torch.Tensor]
     decoder_sequence_context: DecoderSequenceContext | None = None
+    owned_decoder_output: Any | None = None
     aux: dict[str, Any] = field(default_factory=dict)
 
 
@@ -66,6 +67,7 @@ class PolicyInferState:
     step_index: int = 0
     cursor: RolloutCursor = field(default_factory=RolloutCursor)
     cache: Any = field(default_factory=dict)
+    variant_state: Any | None = None
     decoder_state: Any | None = None
 
 
@@ -85,4 +87,5 @@ class PolicyInferOutput:
     policy_features: torch.Tensor
     next_state: PolicyInferState
     decoder_sequence_context: DecoderSequenceContext | None = None
+    owned_decoder_output: Any | None = None
     aux: dict[str, Any] = field(default_factory=dict)

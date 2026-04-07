@@ -17,7 +17,7 @@ from open_wam.models.video_backbone.config import SharedVideoTransformerConfig, 
 from open_wam.models.video_backbone.contracts import AttentionCacheEntry, CacheState, CacheUpdateMetadata
 from open_wam.models.video_backbone.contracts import CacheBranchState
 
-from .contracts import VisualCoreInput, VisualStageOutputs
+from .contracts import VisualCoreInput, VisualReadoutRequest, VisualStageOutputs
 from .core import PackedSequenceVisualCore
 from .decoder import VisualFeatureDecoder
 from .exported_runtime_backbone import (
@@ -836,22 +836,34 @@ class VisualTower(nn.Module):
             },
         )
 
-    def run_default_core(self, frontend_output):
+    def run_default_core(
+        self,
+        frontend_output,
+        *,
+        readout_request: VisualReadoutRequest | None = None,
+    ):
         batch_size, seq_len, _ = frontend_output.video_tokens.shape
         step_output = self.execute_runtime_step(
             RuntimeStepInput(
                 program=build_dense_runtime_program(),
                 core_input=VisualCoreInput(
-                tokens=frontend_output.video_tokens,
-                token_layout=frontend_output.token_grid,
-                grid_ids=build_video_grid_ids(
-                    frontend_output.token_grid,
-                    device=frontend_output.video_tokens.device,
-                ),
-                timestep_values=frontend_output.video_tokens.new_zeros((batch_size, seq_len), dtype=frontend_output.video_tokens.dtype),
-                stream_ids=frontend_output.video_tokens.new_zeros((batch_size, seq_len), dtype=frontend_output.video_tokens.dtype).long(),
-                text_context=frontend_output.conditioning.text_context,
-                conditioning=frontend_output.conditioning,
+                    tokens=frontend_output.video_tokens,
+                    token_layout=frontend_output.token_grid,
+                    grid_ids=build_video_grid_ids(
+                        frontend_output.token_grid,
+                        device=frontend_output.video_tokens.device,
+                    ),
+                    timestep_values=frontend_output.video_tokens.new_zeros(
+                        (batch_size, seq_len),
+                        dtype=frontend_output.video_tokens.dtype,
+                    ),
+                    stream_ids=frontend_output.video_tokens.new_zeros(
+                        (batch_size, seq_len),
+                        dtype=frontend_output.video_tokens.dtype,
+                    ).long(),
+                    text_context=frontend_output.conditioning.text_context,
+                    conditioning=frontend_output.conditioning,
+                    readout_request=readout_request,
                 ),
             )
         )
@@ -861,6 +873,19 @@ class VisualTower(nn.Module):
 
     def run_decode(self, frontend_output, core_output):
         return self.decoder(frontend_output=frontend_output, core_output=core_output)
+
+    def decode_tokens(
+        self,
+        frontend_output,
+        *,
+        tokens: torch.Tensor,
+        token_layout,
+    ):
+        return self.decoder.forward_tokens(
+            frontend_output=frontend_output,
+            tokens=tokens,
+            token_layout=token_layout,
+        )
 
     def _ensure_runtime_backbone_initialized(self) -> None:
         if self.reference_core_load_report is not None:

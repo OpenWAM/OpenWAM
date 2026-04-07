@@ -483,6 +483,7 @@ def prepare_runtime_sequence(
                 cache_state=core_input.cache_state,
                 cache_update_metadata=core_input.cache_update_metadata,
                 conditioning=core_input.conditioning,
+                readout_request=core_input.readout_request,
                 sequence_metadata=core_input.sequence_metadata,
                 register_components=core_input.register_components,
                 structured_block_semantics=(

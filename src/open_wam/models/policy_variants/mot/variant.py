@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from open_wam.models.action_decoders import ActionDecoderInferOutput, ActionDecoderTrainOutput
 from open_wam.models.common.flow_matching import (
-    FlowMatchScheduler,
     build_video_flow_match_train_artifacts,
     build_video_flow_match_inference_scheduler,
     build_action_flow_match_inference_scheduler,
@@ -24,6 +22,13 @@ from ..contracts import (
     PolicyPreparedInputs,
     PolicyTrainBatch,
     PolicyTrainOutput,
+)
+from .contracts import (
+    MoTActionTrainArtifacts,
+    MoTInferArtifacts,
+    MoTRuntimeState,
+    MoTTrainArtifacts,
+    MoTVideoTrainArtifacts,
 )
 from .modules import MoTActionExpert, init_action_expert_from_video_core
 from .runtime import (
@@ -90,7 +95,7 @@ class MoTPolicyVariant(PolicyVariant):
         *,
         visual_tower: VisualTower,
         visual_outputs: VisualStageOutputs,
-    ) -> dict[str, torch.Tensor | FlowMatchScheduler]:
+    ) -> MoTVideoTrainArtifacts:
         video_latents = visual_outputs.frontend.video_latents
         observed_prefix_frames = int(self.config.video_prefix_frames)
         if video_latents.shape[2] <= observed_prefix_frames:
@@ -128,51 +133,15 @@ class MoTPolicyVariant(PolicyVariant):
             timesteps=timesteps,
             scheduler=video_artifacts.scheduler,
         )
-        return {
-            "flow_pred": flow_pred,
-            "flow_targets": video_artifacts.targets,
-            "predicted_latents": predicted_latents,
-            "target_latents": video_latents,
-            "timesteps": timesteps,
-            "scheduler": video_artifacts.scheduler,
-            "future_loss_mask": future_loss_mask,
-        }
-
-    @staticmethod
-    def _masked_video_flow_match_loss(
-        *,
-        flow_pred: torch.Tensor,
-        targets: torch.Tensor,
-        timesteps: torch.Tensor,
-        scheduler: FlowMatchScheduler,
-        future_loss_mask: torch.Tensor,
-    ) -> torch.Tensor:
-        per_token_loss = torch.nn.functional.mse_loss(flow_pred.float(), targets.float().detach(), reduction="none")
-        timestep_weight = scheduler.training_weight(timesteps.flatten()).reshape(timesteps.shape)
-        per_token_loss = per_token_loss * timestep_weight[:, None, :, None, None]
-        per_token_loss = per_token_loss * future_loss_mask.float()
-        denom = future_loss_mask.float().sum().clamp_min(1.0) * float(
-            flow_pred.shape[1] * flow_pred.shape[3] * flow_pred.shape[4]
+        return MoTVideoTrainArtifacts(
+            flow_pred=flow_pred,
+            targets=video_artifacts.targets,
+            timesteps=timesteps,
+            scheduler=video_artifacts.scheduler,
+            predicted_latents=predicted_latents,
+            target_latents=video_latents,
+            future_loss_mask=future_loss_mask,
         )
-        return per_token_loss.sum() / denom
-
-    @staticmethod
-    def _masked_video_latent_mse(
-        *,
-        predicted_latents: torch.Tensor,
-        target_latents: torch.Tensor,
-        future_loss_mask: torch.Tensor,
-    ) -> torch.Tensor:
-        per_token = torch.nn.functional.mse_loss(
-            predicted_latents.float(),
-            target_latents.float(),
-            reduction="none",
-        )
-        per_token = per_token * future_loss_mask.float()
-        denom = future_loss_mask.float().sum().clamp_min(1.0) * float(
-            predicted_latents.shape[1] * predicted_latents.shape[3] * predicted_latents.shape[4]
-        )
-        return per_token.sum() / denom
 
     def _maybe_initialize_action_expert(self, visual_tower: VisualTower) -> None:
         if self._action_expert_initialized:
@@ -289,68 +258,16 @@ class MoTPolicyVariant(PolicyVariant):
             timesteps=train_artifacts.timesteps,
             scheduler=train_artifacts.scheduler,
         )
-        timestep_weight = train_artifacts.scheduler.training_weight(train_artifacts.timesteps.flatten()).reshape(
-            train_artifacts.timesteps.shape
-        )
-        per_token_loss = torch.nn.functional.mse_loss(
-            flow_pred.float(),
-            train_artifacts.targets.float().detach(),
-            reduction="none",
-        )
-        per_token_loss = per_token_loss * timestep_weight[:, :, None]
-        if train_artifacts.action_mask is not None:
-            per_token_loss = per_token_loss * train_artifacts.action_mask.float()
-            denom = train_artifacts.action_mask.float().sum(dim=-1).clamp_min(1.0)
-        else:
-            denom = torch.full(
-                train_artifacts.timesteps.shape,
-                fill_value=float(self.action_dim),
-                device=per_token_loss.device,
-        )
-        diffusion_loss = (per_token_loss.sum(dim=-1) / denom).mean()
-        weighted_loss = diffusion_loss * self.training_config.objective_weight("action")
-        video_rollout = None
+        video_rollout: MoTVideoTrainArtifacts | None = None
         if self.training_config.objective_enabled("latent"):
             video_rollout = self._build_video_train_rollout(
                 visual_tower=visual_tower,
                 visual_outputs=visual_outputs,
             )
-            latent_loss = self._masked_video_flow_match_loss(
-                flow_pred=video_rollout["flow_pred"],
-                targets=video_rollout["flow_targets"],
-                timesteps=video_rollout["timesteps"],
-                scheduler=video_rollout["scheduler"],
-                future_loss_mask=video_rollout["future_loss_mask"],
-            )
-            latent_mse = self._masked_video_latent_mse(
-                predicted_latents=video_rollout["predicted_latents"],
-                target_latents=video_rollout["target_latents"],
-                future_loss_mask=video_rollout["future_loss_mask"],
-            )
-            weighted_latent_loss = latent_loss * self.training_config.objective_weight("latent")
-        else:
-            latent_loss = diffusion_loss.new_zeros(())
-            latent_mse = diffusion_loss.new_zeros(())
-            weighted_latent_loss = diffusion_loss.new_zeros(())
-        total_loss = weighted_loss + weighted_latent_loss
-        action_mse = torch.nn.functional.mse_loss(
-            denoised_actions.float(),
-            prepared_inputs.batch.actions.float(),
-            reduction="none",
-        )
-        if prepared_inputs.batch.action_mask is not None:
-            action_mse = action_mse * prepared_inputs.batch.action_mask.float()
-            action_denom = prepared_inputs.batch.action_mask.float().sum().clamp_min(1.0)
-        else:
-            action_denom = torch.tensor(float(action_mse.numel()), device=action_mse.device)
-        action_mse_value = action_mse.sum() / action_denom
         batch_size = condition_latents.shape[0]
         return PolicyTrainOutput(
             policy_features=condition_latents.new_zeros(batch_size, 0, self.action_expert.hidden_size),
             metrics={
-                "mot_action_mse": action_mse_value.detach(),
-                "mot_action_diffusion_loss": diffusion_loss.detach(),
-                "mot_video_diffusion_loss": latent_loss.detach(),
                 "mot_video_prefix_frames": condition_latents.new_tensor(float(self.config.video_prefix_frames)),
             },
             aux={
@@ -358,30 +275,21 @@ class MoTPolicyVariant(PolicyVariant):
                 "method_family": "mot",
                 "condition_mode": str(self.config.condition_mode),
                 "video_cache_seq_len": video_cache.video_seq_len,
-                "decoder_output": ActionDecoderTrainOutput(
-                    action_pred=denoised_actions,
-                    loss=total_loss,
-                    metrics={
-                        "action_mse": action_mse_value.detach(),
-                        "action_diffusion_loss": diffusion_loss.detach(),
-                        "weighted_action_diffusion_loss": weighted_loss.detach(),
-                        "latent_mse": latent_mse.detach(),
-                        "video_diffusion_loss": latent_loss.detach(),
-                        "weighted_video_diffusion_loss": weighted_latent_loss.detach(),
-                        "joint_loss": total_loss.detach(),
-                    },
-                    aux={
-                        "flow_pred": flow_pred.detach(),
-                        **(
-                            {
-                                "predicted_latents": video_rollout["predicted_latents"].detach(),
-                                "predicted_video_latents": video_rollout["predicted_latents"].detach(),
-                                "future_video_flow_pred": video_rollout["flow_pred"].detach(),
-                            }
-                            if video_rollout is not None
-                            else {}
-                        ),
-                    },
+                "runtime_mode": str(self.config.runtime_mode),
+                "mot_train_artifacts": MoTTrainArtifacts(
+                    action=MoTActionTrainArtifacts(
+                        flow_pred=flow_pred,
+                        targets=train_artifacts.targets,
+                        timesteps=train_artifacts.timesteps,
+                        scheduler=train_artifacts.scheduler,
+                        denoised_actions=denoised_actions,
+                        action_mask=train_artifacts.action_mask,
+                    ),
+                    video=video_rollout,
+                    condition_mode=str(self.config.condition_mode),
+                    runtime_mode=str(self.config.runtime_mode),
+                    video_prefix_frames=int(self.config.video_prefix_frames),
+                    video_cache_seq_len=video_cache.video_seq_len,
                 ),
             },
         )
@@ -466,62 +374,10 @@ class MoTPolicyVariant(PolicyVariant):
             timesteps=video_timesteps,
             scheduler=video_artifacts.scheduler,
         )
-        timestep_weight = train_artifacts.scheduler.training_weight(train_artifacts.timesteps.flatten()).reshape(
-            train_artifacts.timesteps.shape
-        )
-        per_token_loss = torch.nn.functional.mse_loss(
-            flow_pred.float(),
-            train_artifacts.targets.float().detach(),
-            reduction="none",
-        )
-        per_token_loss = per_token_loss * timestep_weight[:, :, None]
-        if train_artifacts.action_mask is not None:
-            per_token_loss = per_token_loss * train_artifacts.action_mask.float()
-            denom = train_artifacts.action_mask.float().sum(dim=-1).clamp_min(1.0)
-        else:
-            denom = torch.full(
-                train_artifacts.timesteps.shape,
-                fill_value=float(self.action_dim),
-                device=per_token_loss.device,
-            )
-        diffusion_loss = (per_token_loss.sum(dim=-1) / denom).mean()
-        weighted_loss = diffusion_loss * self.training_config.objective_weight("action")
-        latent_loss = self._masked_video_flow_match_loss(
-            flow_pred=video_flow_pred,
-            targets=video_artifacts.targets,
-            timesteps=video_timesteps,
-            scheduler=video_artifacts.scheduler,
-            future_loss_mask=future_loss_mask,
-        )
-        latent_mse = self._masked_video_latent_mse(
-            predicted_latents=predicted_latents,
-            target_latents=video_latents,
-            future_loss_mask=future_loss_mask,
-        )
-        weighted_latent_loss = (
-            latent_loss * self.training_config.objective_weight("latent")
-            if self.training_config.objective_enabled("latent")
-            else diffusion_loss.new_zeros(())
-        )
-        total_loss = weighted_loss + weighted_latent_loss
-        action_mse = torch.nn.functional.mse_loss(
-            denoised_actions.float(),
-            prepared_inputs.batch.actions.float(),
-            reduction="none",
-        )
-        if prepared_inputs.batch.action_mask is not None:
-            action_mse = action_mse * prepared_inputs.batch.action_mask.float()
-            action_denom = prepared_inputs.batch.action_mask.float().sum().clamp_min(1.0)
-        else:
-            action_denom = torch.tensor(float(action_mse.numel()), device=action_mse.device)
-        action_mse_value = action_mse.sum() / action_denom
         batch_size = video_latents.shape[0]
         return PolicyTrainOutput(
             policy_features=video_latents.new_zeros(batch_size, 0, self.action_expert.hidden_size),
             metrics={
-                "mot_action_mse": action_mse_value.detach(),
-                "mot_action_diffusion_loss": diffusion_loss.detach(),
-                "mot_video_diffusion_loss": latent_loss.detach(),
                 "mot_video_prefix_frames": video_latents.new_tensor(float(self.config.video_prefix_frames)),
             },
             aux={
@@ -529,24 +385,27 @@ class MoTPolicyVariant(PolicyVariant):
                 "method_family": "mot",
                 "condition_mode": str(self.config.condition_mode),
                 "runtime_mode": str(self.config.runtime_mode),
-                "decoder_output": ActionDecoderTrainOutput(
-                    action_pred=denoised_actions,
-                    loss=total_loss,
-                    metrics={
-                        "action_mse": action_mse_value.detach(),
-                        "action_diffusion_loss": diffusion_loss.detach(),
-                        "weighted_action_diffusion_loss": weighted_loss.detach(),
-                        "latent_mse": latent_mse.detach(),
-                        "video_diffusion_loss": latent_loss.detach(),
-                        "weighted_video_diffusion_loss": weighted_latent_loss.detach(),
-                        "joint_loss": total_loss.detach(),
-                    },
-                    aux={
-                        "flow_pred": flow_pred.detach(),
-                        "predicted_latents": predicted_latents.detach(),
-                        "predicted_video_latents": predicted_latents.detach(),
-                        "future_video_flow_pred": video_flow_pred.detach(),
-                    },
+                "mot_train_artifacts": MoTTrainArtifacts(
+                    action=MoTActionTrainArtifacts(
+                        flow_pred=flow_pred,
+                        targets=train_artifacts.targets,
+                        timesteps=train_artifacts.timesteps,
+                        scheduler=train_artifacts.scheduler,
+                        denoised_actions=denoised_actions,
+                        action_mask=train_artifacts.action_mask,
+                    ),
+                    video=MoTVideoTrainArtifacts(
+                        flow_pred=video_flow_pred,
+                        targets=video_artifacts.targets,
+                        timesteps=video_timesteps,
+                        scheduler=video_artifacts.scheduler,
+                        predicted_latents=predicted_latents,
+                        target_latents=video_latents,
+                        future_loss_mask=future_loss_mask,
+                    ),
+                    condition_mode=str(self.config.condition_mode),
+                    runtime_mode=str(self.config.runtime_mode),
+                    video_prefix_frames=int(self.config.video_prefix_frames),
                 ),
             },
         )
@@ -560,6 +419,7 @@ class MoTPolicyVariant(PolicyVariant):
     ) -> PolicyInferState:
         self._maybe_initialize_action_expert(visual_tower)
         state = previous_state or PolicyInferState()
+        runtime_state = state.variant_state if isinstance(state.variant_state, MoTRuntimeState) else MoTRuntimeState()
         action_device_raw = context.extra.get("action_device")
         action_device = (
             next(self.action_expert.parameters()).device
@@ -574,11 +434,12 @@ class MoTPolicyVariant(PolicyVariant):
                     "MoT joint_denoise inference currently requires video and action to run on the same device, "
                     f"got runtime_device={runtime_device}, action_device={action_device}."
                 )
-            state.cache["text_context"] = visual_outputs.frontend.conditioning.text_context
-            state.cache["action_device"] = str(action_device)
+            runtime_state.text_context = visual_outputs.frontend.conditioning.text_context
+            runtime_state.action_device = str(action_device)
+            state.variant_state = runtime_state
             del context
             return state
-        if "video_cache" not in state.cache:
+        if runtime_state.video_cache is None:
             condition_latents = resolve_mot_condition_latents(
                 video_latents=visual_outputs.frontend.video_latents,
                 condition_mode=self.config.condition_mode,
@@ -592,22 +453,23 @@ class MoTPolicyVariant(PolicyVariant):
                 text_context=visual_outputs.frontend.conditioning.text_context,
                 frame_start=int(state.cursor.current_start_frame),
             )
-            state.cache["video_cache"] = move_mot_video_cache(
+            runtime_state.video_cache = move_mot_video_cache(
                 prefetched_video_cache,
                 device=action_device,
                 dtype=action_dtype,
             )
             resolved_text_context = visual_outputs.frontend.conditioning.text_context
-            state.cache["text_context"] = (
+            runtime_state.text_context = (
                 None
                 if resolved_text_context is None
                 else resolved_text_context.to(device=action_device, dtype=action_dtype)
             )
-            state.cache["video_tokens_per_frame"] = max(
+            runtime_state.video_tokens_per_frame = max(
                 1,
                 visual_outputs.frontend.token_grid.tokens_per_frame * condition_latents.shape[2] // max(1, visual_outputs.frontend.video_latents.shape[2]),
             )
-        state.cache["action_device"] = str(action_device)
+        runtime_state.action_device = str(action_device)
+        state.variant_state = runtime_state
         del context
         return state
 
@@ -618,6 +480,9 @@ class MoTPolicyVariant(PolicyVariant):
         context: PolicyInferContext,
         infer_state: PolicyInferState,
     ) -> PolicyInferOutput:
+        runtime_state = (
+            infer_state.variant_state if isinstance(infer_state.variant_state, MoTRuntimeState) else MoTRuntimeState()
+        )
         self._maybe_initialize_action_expert(visual_tower)
         if self.config.runtime_mode == MoTRuntimeMode.JOINT_DENOISE:
             device = next(visual_tower.core.parameters()).device
@@ -666,7 +531,7 @@ class MoTPolicyVariant(PolicyVariant):
                 device=device,
                 dtype=dtype,
             )
-            text_context = infer_state.cache.get("text_context")
+            text_context = runtime_state.text_context
             if text_context is None:
                 text_context = torch.zeros(
                     batch_size,
@@ -721,6 +586,7 @@ class MoTPolicyVariant(PolicyVariant):
             predicted_latents = noisy_video_latents[:, :, observed_prefix_frames:].detach()
             next_state = infer_state
             next_state.step_index += 1
+            next_state.variant_state = runtime_state
             return PolicyInferOutput(
                 policy_features=sample.new_zeros(batch_size, 0, self.action_expert.hidden_size),
                 next_state=next_state,
@@ -730,13 +596,11 @@ class MoTPolicyVariant(PolicyVariant):
                     "condition_mode": str(self.config.condition_mode),
                     "predicted_latents": predicted_latents,
                     "predicted_video_latents": predicted_latents,
-                    "decoder_output": ActionDecoderInferOutput(
+                    "mot_infer_artifacts": MoTInferArtifacts(
                         action_pred=sample,
-                        next_state=None,
-                        aux={
-                            "predicted_latents": predicted_latents,
-                            "predicted_video_latents": predicted_latents,
-                        },
+                        predicted_latents=predicted_latents,
+                        condition_mode=str(self.config.condition_mode),
+                        runtime_mode=str(self.config.runtime_mode),
                     ),
                 },
             )
@@ -781,7 +645,7 @@ class MoTPolicyVariant(PolicyVariant):
             device=device,
             dtype=dtype,
         )
-        text_context = infer_state.cache.get("text_context")
+        text_context = runtime_state.text_context
         if text_context is None:
             text_context = torch.zeros(
                 batch_size,
@@ -790,13 +654,15 @@ class MoTPolicyVariant(PolicyVariant):
                 device=device,
                 dtype=dtype,
             )
-        video_cache = infer_state.cache["video_cache"]
+        if runtime_state.video_cache is None:
+            raise ValueError("MoT cached-action inference expected `MoTRuntimeState.video_cache` to be populated.")
+        video_cache = runtime_state.video_cache
         attention_mask = build_mot_attention_mask(
             video_seq_len=video_cache.video_seq_len,
             action_seq_len=self.action_horizon,
             device=device,
             condition_mode=self.config.condition_mode,
-            video_tokens_per_frame=infer_state.cache.get("video_tokens_per_frame"),
+            video_tokens_per_frame=runtime_state.video_tokens_per_frame,
         )
         for timestep in scheduler.timesteps:
             dense_timestep = torch.full(
@@ -820,6 +686,7 @@ class MoTPolicyVariant(PolicyVariant):
             sample = scheduler.step(flow_pred, timestep, sample)
         next_state = infer_state
         next_state.step_index += 1
+        next_state.variant_state = runtime_state
         return PolicyInferOutput(
             policy_features=sample.new_zeros(batch_size, 0, self.action_expert.hidden_size),
             next_state=next_state,
@@ -832,17 +699,11 @@ class MoTPolicyVariant(PolicyVariant):
                     if isinstance(predicted_latents, torch.Tensor)
                     else {}
                 ),
-                "decoder_output": ActionDecoderInferOutput(
+                "mot_infer_artifacts": MoTInferArtifacts(
                     action_pred=sample,
-                    next_state=None,
-                    aux=(
-                        {
-                            "predicted_latents": predicted_latents.detach(),
-                            "predicted_video_latents": predicted_latents.detach(),
-                        }
-                        if isinstance(predicted_latents, torch.Tensor)
-                        else {}
-                    ),
+                    predicted_latents=predicted_latents.detach() if isinstance(predicted_latents, torch.Tensor) else None,
+                    condition_mode=str(self.config.condition_mode),
+                    runtime_mode=str(self.config.runtime_mode),
                 ),
             },
         )

@@ -62,6 +62,16 @@ class LingbotParallelActionDecoderConfig(ActionDecoderConfig):
 
 
 @dataclass(frozen=True)
+class MoTActionDecoderConfig(ActionDecoderConfig):
+    """MoT decoder config for action/video flow supervision and infer packaging."""
+
+    name: ActionDecoderName = ActionDecoderName.MOT
+    hidden_size: int = 256
+    action_dim: int = 0
+    action_horizon: int = 0
+
+
+@dataclass(frozen=True)
 class VPPActionDecoderConfig(ActionDecoderConfig):
     """Sequence-native action decoder configuration closest to VPP semantics."""
 
