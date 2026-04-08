@@ -14,6 +14,7 @@ from .base import PolicyVariant
 from .common import (
     SharedVisualReadout,
     advance_default_runtime_infer_state,
+    build_local_video_condition_window,
     prepare_default_runtime_infer_state,
 )
 from .common.layouts import align_sequence_length
@@ -128,6 +129,15 @@ class PostDecodedPolicyVariant(PolicyVariant):
             frame_count=int(decoded_features.shape[1]),
             source_stage=source_stage,
             state_sequence=state,
+            goal_features=visual_outputs.frontend.conditioning.text_context,
+            video_condition_window=build_local_video_condition_window(
+                visual_outputs=visual_outputs,
+                input_space=self.config.video_condition_input_space,
+                local_window_frames=self.config.local_video_window_frames,
+                current_frame_index=self.config.current_video_frame_index,
+                action_chunk_anchor_mode=self.config.action_chunk_anchor_mode,
+                source_stage="frontend",
+            ),
         )
 
     def _fuse_state(self, policy_features, state):

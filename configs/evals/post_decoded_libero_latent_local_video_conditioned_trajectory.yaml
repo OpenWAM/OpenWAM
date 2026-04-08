@@ -1,0 +1,7 @@
+name: post_decoded_libero_latent_local_video_conditioned_trajectory_eval
+experiment_config: configs/experiments/post_decoded_libero_latent_local_video_conditioned.yaml
+mode: trajectory
+split: val
+batch_size: 1
+max_trajectories: 1
+max_steps_per_trajectory: 8

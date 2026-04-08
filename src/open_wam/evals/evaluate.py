@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 import torch
-import yaml
 from torch.utils.data import DataLoader, Dataset
 
 SRC_ROOT = Path(__file__).resolve().parents[2]
@@ -29,6 +28,7 @@ from open_wam.data import (
 )
 from open_wam.models.policy_variants import PolicyInferContext
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config
+from open_wam.utils.local_paths import read_yaml_with_local_paths
 from open_wam.utils import load_experiment_config, seed_everywhere
 
 
@@ -72,11 +72,7 @@ class EvaluationSummary:
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
-        loaded = yaml.safe_load(handle) or {}
-    if not isinstance(loaded, dict):
-        raise ValueError(f"Expected YAML mapping in {path}, got {type(loaded).__name__}.")
-    return loaded
+    return read_yaml_with_local_paths(path)
 
 
 def _resolve_relative_path(base_path: Path, value: str | None) -> Path | None:

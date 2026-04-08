@@ -7,11 +7,13 @@ umask 007
 NGPU=${NGPU:-"1"}
 MASTER_PORT=${MASTER_PORT:-"29501"}
 LOG_RANK=${LOG_RANK:-"0"}
-CONFIG_NAME=${CONFIG_NAME:-"post_decoded_libero_latent_local"}
+# Maintained method-4 launcher defaults to the new video-conditioned config.
+# Override CONFIG_NAME to run an explicit legacy baseline instead.
+CONFIG_NAME=${CONFIG_NAME:-"post_decoded_libero_latent_local_video_conditioned"}
 
 export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-false}
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-"expandable_segments:True"}
-export WANDB_PROJECT=${WANDB_PROJECT:-"openwam-method4-post-decoded-libero"}
+export WANDB_PROJECT=${WANDB_PROJECT:-"openwam-method4-post-decoded-libero-video-conditioned"}
 export WANDB_MODE=${WANDB_MODE:-"online"}
 
 if [ "${NGPU}" -gt 1 ]; then

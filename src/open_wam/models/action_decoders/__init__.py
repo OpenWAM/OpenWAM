@@ -1,6 +1,12 @@
 """Action decoders used by policy variants."""
 
-from .base import ActionDecoder, ActionDecoderInferOutput, ActionDecoderTrainOutput, DecoderRolloutState
+from .base import (
+    ActionDecoder,
+    ActionDecoderInferOutput,
+    ActionDecoderTrainOutput,
+    DecoderRolloutState,
+    DirectActionDecoderTrainInputs,
+)
 from .decoded_feature_decoder import DecodedFeatureActionDecoder
 from .action_generation import EDMActionGenerationBackend
 from .goal_conditioning import GoalConditioningAdapter, build_goal_conditioning_adapter
@@ -19,6 +25,8 @@ from .sequence_denoisers import (
 from .state_sequence import StateSequenceAdapter, build_state_sequence_adapter
 from .temporal_compression import TemporalCompressionAdapter, build_temporal_compression_adapter
 from .video_only_decoder import VideoOnlyActionDecoder
+from .video_conditioned_action_decoder import VideoConditionedActionDecoder
+from .video_conditioned_expert import VideoConditionedActionExpert
 from .vpp_decoder import VPPSequenceActionDecoder
 
 __all__ = [
@@ -26,6 +34,7 @@ __all__ = [
     "ActionDecoderInferOutput",
     "ActionDecoderTrainOutput",
     "DecoderRolloutState",
+    "DirectActionDecoderTrainInputs",
     "DecodedFeatureActionDecoder",
     "EDMActionGenerationBackend",
     "FiLMDiffusionTransformerSequenceDenoiser",
@@ -40,6 +49,8 @@ __all__ = [
     "SequenceDenoiser",
     "StateSequenceAdapter",
     "TemporalCompressionAdapter",
+    "VideoConditionedActionDecoder",
+    "VideoConditionedActionExpert",
     "VideoOnlyActionDecoder",
     "VPPSequenceActionDecoder",
     "build_goal_conditioning_adapter",

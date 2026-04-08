@@ -8,6 +8,7 @@ from .action_decoder import (
     MoTActionDecoderConfig,
     RegisterActionDecoderConfig,
     VPPActionDecoderConfig,
+    VideoConditionedActionDecoderConfig,
     VideoOnlyActionDecoderConfig,
 )
 from .data import (
@@ -30,6 +31,8 @@ from .data import (
 from .enums import (
     AnchorPolicy,
     ActionDecoderName,
+    ActionChunkAnchorMode,
+    ActionExpertInitMode,
     ActionGenerationBackendFamily,
     ActionNormMethod,
     ActionSpace,
@@ -99,6 +102,8 @@ from .enums import (
     TemporalPositionMode,
     TemporalProjection,
     TemporalCompressionAdapterFamily,
+    VideoConditionInputSpace,
+    VideoConditionTrainMode,
     VisualReadoutFusionMode,
     VisualReadoutSourceFamily,
     VisualStateSource,
@@ -132,6 +137,8 @@ from .visual_readout import VisualReadoutConfig
 __all__ = [
     "ActionDecoderConfig",
     "ActionDecoderName",
+    "ActionChunkAnchorMode",
+    "ActionExpertInitMode",
     "ActionGenerationBackendFamily",
     "AnchorPolicy",
     "ActionSchemaConfig",
@@ -230,6 +237,8 @@ __all__ = [
     "TemporalPositionMode",
     "TemporalProjection",
     "TemporalCompressionAdapterFamily",
+    "VideoConditionInputSpace",
+    "VideoConditionTrainMode",
     "VisualReadoutConfig",
     "VisualReadoutFusionMode",
     "VisualReadoutSourceFamily",
@@ -243,6 +252,7 @@ __all__ = [
     "TrainingObjective",
     "VPPActionDecoderConfig",
     "VideoOnlyActionDecoderConfig",
+    "VideoConditionedActionDecoderConfig",
     "VideoSequencePolicyConfig",
     "VisualReadoutConfig",
     "VisualReadoutFusionMode",

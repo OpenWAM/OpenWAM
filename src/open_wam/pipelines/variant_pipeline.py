@@ -7,7 +7,12 @@ import torch
 from torch import nn
 
 from open_wam.data import CanonicalVideoBatch, ConfiguredCanonicalVideoPreprocessor, RobotWinCanonicalVideoPreprocessor
-from open_wam.models.action_decoders import ActionDecoder, ActionDecoderInferOutput, ActionDecoderTrainOutput
+from open_wam.models.action_decoders import (
+    ActionDecoder,
+    ActionDecoderInferOutput,
+    ActionDecoderTrainOutput,
+    DirectActionDecoderTrainInputs,
+)
 from open_wam.models.policy_variants import (
     PolicyInferContext,
     PolicyInferOutput,
@@ -23,7 +28,7 @@ from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 class VariantPipelineTrainOutput:
     """Combined outputs for one train-time variant pipeline step."""
 
-    visual_outputs: VisualStageOutputs
+    visual_outputs: VisualStageOutputs | None
     policy_output: PolicyTrainOutput
     decoder_output: ActionDecoderTrainOutput
 
@@ -123,6 +128,98 @@ class VariantPipeline(nn.Module):
             return direct_decoder_output
         return self.action_decoder.forward_train(policy_output, train_batch)
 
+    def _supports_direct_train_inputs(self) -> bool:
+        return bool(getattr(self.action_decoder, "supports_direct_train_inputs", lambda: False)())
+
+    def _resolve_current_video_frame_index(self) -> int:
+        current_index = getattr(self.policy_variant.config, "current_video_frame_index", 0)
+        return int(current_index)
+
+    def _build_direct_train_inputs(
+        self,
+        *,
+        batch: PolicyTrainBatch,
+        views: Mapping[str, torch.Tensor] | None,
+        video_latents: torch.Tensor | None,
+        canonical_video: torch.Tensor | None,
+        text_context: torch.Tensor | None,
+    ) -> DirectActionDecoderTrainInputs:
+        input_space = str(getattr(self.action_decoder, "input_space", "video_latent"))
+        current_action_index = 0
+        current_frame_index = self._resolve_current_video_frame_index()
+        if input_space == "video_latent":
+            if video_latents is None:
+                raise ValueError(
+                    "Direct current-frame regression with `video_latent` input requires latent batches. "
+                    "Use the latent batch adapter or choose `rgb_video` input."
+                )
+            current_frame = video_latents[:, :, current_frame_index]
+        elif input_space == "rgb_video":
+            resolved_canonical = canonical_video
+            if resolved_canonical is None:
+                if views is None:
+                    raise ValueError(
+                        "Direct current-frame regression with `rgb_video` input requires either raw views or "
+                        "`canonical_video`."
+                    )
+                resolved_canonical = self.canonicalize(views).video
+            current_frame = resolved_canonical[:, :, current_frame_index]
+        else:
+            raise ValueError(f"Unsupported direct-train method-4 input space {input_space!r}.")
+        return DirectActionDecoderTrainInputs(
+            current_frame=current_frame,
+            input_space=input_space,
+            current_action_index=current_action_index,
+            state=batch.state,
+            text_context=text_context,
+            metadata={
+                "current_frame_index": current_frame_index,
+                "task_text": batch.extra.get("task_text"),
+            },
+        )
+
+    def _forward_train_direct(
+        self,
+        *,
+        batch: PolicyTrainBatch,
+        views: Mapping[str, torch.Tensor] | None,
+        video_latents: torch.Tensor | None,
+        canonical_video: torch.Tensor | None,
+        text_context: torch.Tensor | None,
+    ) -> VariantPipelineTrainOutput:
+        direct_inputs = self._build_direct_train_inputs(
+            batch=batch,
+            views=views,
+            video_latents=video_latents,
+            canonical_video=canonical_video,
+            text_context=text_context,
+        )
+        batch_size = int(batch.actions.shape[0])
+        device = direct_inputs.current_frame.device
+        decoder_param = next(self.action_decoder.parameters(), None)
+        policy_feature_dim = max(int(getattr(self.action_decoder, "hidden_size", 0)), 1)
+        policy_feature_dtype = decoder_param.dtype if decoder_param is not None else torch.float32
+        policy_output = PolicyTrainOutput(
+            policy_features=torch.zeros(
+                batch_size,
+                0,
+                policy_feature_dim,
+                device=device,
+                dtype=policy_feature_dtype,
+            ),
+            metrics={},
+            aux={
+                "variant": getattr(self.policy_variant.config, "name", "unknown"),
+                "direct_train_mode": "current_frame_regression",
+            },
+        )
+        decoder_output = self.action_decoder.forward_train_direct(direct_inputs, batch)
+        return VariantPipelineTrainOutput(
+            visual_outputs=None,
+            policy_output=policy_output,
+            decoder_output=decoder_output,
+        )
+
     def resolve_infer_decoder_output(
         self,
         policy_output: PolicyInferOutput,
@@ -158,8 +255,24 @@ class VariantPipeline(nn.Module):
         if views is not None:
             if video_latents is not None:
                 raise ValueError("Pass either `views` or `video_latents` to VariantPipeline.forward, not both.")
+            if self._supports_direct_train_inputs():
+                return self._forward_train_direct(
+                    batch=batch,
+                    views=views,
+                    video_latents=None,
+                    canonical_video=canonical_video,
+                    text_context=text_context,
+                )
             return self.forward_train(views, batch)
         if video_latents is not None:
+            if self._supports_direct_train_inputs():
+                return self._forward_train_direct(
+                    batch=batch,
+                    views=None,
+                    video_latents=video_latents,
+                    canonical_video=canonical_video,
+                    text_context=text_context,
+                )
             return self.forward_train_from_latents(
                 video_latents,
                 batch,
@@ -174,6 +287,14 @@ class VariantPipeline(nn.Module):
         views: Mapping[str, torch.Tensor],
         batch: PolicyTrainBatch,
     ) -> VariantPipelineTrainOutput:
+        if self._supports_direct_train_inputs():
+            return self._forward_train_direct(
+                batch=batch,
+                views=views,
+                video_latents=None,
+                canonical_video=None,
+                text_context=None,
+            )
         visual_outputs = self.prepare_visual_outputs(
             views,
             task_text=batch.extra.get("task_text"),
@@ -189,6 +310,14 @@ class VariantPipeline(nn.Module):
         text_context: torch.Tensor | None = None,
         negative_text_context: torch.Tensor | None = None,
     ) -> VariantPipelineTrainOutput:
+        if self._supports_direct_train_inputs():
+            return self._forward_train_direct(
+                batch=batch,
+                views=None,
+                video_latents=video_latents,
+                canonical_video=canonical_video,
+                text_context=text_context,
+            )
         visual_outputs = self.prepare_visual_outputs_from_latents(
             video_latents,
             task_text=batch.extra.get("task_text"),

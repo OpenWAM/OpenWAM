@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .enums import (
+    ActionChunkAnchorMode,
     ActionNormMethod,
     ParallelActionAttentionScope,
     ParallelActionConditionSource,
@@ -31,6 +32,7 @@ from .enums import (
     StructuredTimeLayout,
     TemporalPositionMode,
     TemporalProjection,
+    VideoConditionInputSpace,
     VisualStateSource,
     coerce_fields,
 )
@@ -65,6 +67,10 @@ class PostLatentPolicyConfig(PolicyVariantConfig):
     temporal_projection: TemporalProjection = TemporalProjection.INTERPOLATE
     use_state_projection: bool = True
     compatibility_mode: bool = False
+    video_condition_input_space: VideoConditionInputSpace = VideoConditionInputSpace.VIDEO_LATENT
+    action_chunk_anchor_mode: ActionChunkAnchorMode = ActionChunkAnchorMode.CURRENT_PLUS_FUTURE
+    local_video_window_frames: int = 4
+    current_video_frame_index: int = 0
     visual_readout: VisualReadoutConfig | None = None
 
     def __post_init__(self) -> None:
@@ -79,8 +85,21 @@ class PostLatentPolicyConfig(PolicyVariantConfig):
             enum_fields={
                 "pooling_mode": PoolingMode,
                 "temporal_projection": TemporalProjection,
+                "video_condition_input_space": VideoConditionInputSpace,
+                "action_chunk_anchor_mode": ActionChunkAnchorMode,
             },
         )
+        if int(self.local_video_window_frames) <= 0:
+            raise ValueError(
+                "Post-latent policy requires `local_video_window_frames > 0`, "
+                f"got local_video_window_frames={self.local_video_window_frames!r}."
+            )
+        if not (0 <= int(self.current_video_frame_index) < int(self.local_video_window_frames)):
+            raise ValueError(
+                "Post-latent policy requires `0 <= current_video_frame_index < local_video_window_frames`, "
+                f"got current_video_frame_index={self.current_video_frame_index!r}, "
+                f"local_video_window_frames={self.local_video_window_frames!r}."
+            )
 
 
 @dataclass(frozen=True)
@@ -92,6 +111,10 @@ class PostDecodedPolicyConfig(PolicyVariantConfig):
     pooling_mode: PoolingMode = PoolingMode.PER_FRAME_MEAN
     temporal_projection: TemporalProjection = TemporalProjection.INTERPOLATE
     use_state_projection: bool = True
+    video_condition_input_space: VideoConditionInputSpace = VideoConditionInputSpace.RGB_VIDEO
+    action_chunk_anchor_mode: ActionChunkAnchorMode = ActionChunkAnchorMode.CURRENT_PLUS_FUTURE
+    local_video_window_frames: int = 4
+    current_video_frame_index: int = 0
     visual_readout: VisualReadoutConfig | None = None
 
     def __post_init__(self) -> None:
@@ -107,8 +130,21 @@ class PostDecodedPolicyConfig(PolicyVariantConfig):
                 "decode_feature_mode": DecodeFeatureMode,
                 "pooling_mode": PoolingMode,
                 "temporal_projection": TemporalProjection,
+                "video_condition_input_space": VideoConditionInputSpace,
+                "action_chunk_anchor_mode": ActionChunkAnchorMode,
             },
         )
+        if int(self.local_video_window_frames) <= 0:
+            raise ValueError(
+                "Post-decoded policy requires `local_video_window_frames > 0`, "
+                f"got local_video_window_frames={self.local_video_window_frames!r}."
+            )
+        if not (0 <= int(self.current_video_frame_index) < int(self.local_video_window_frames)):
+            raise ValueError(
+                "Post-decoded policy requires `0 <= current_video_frame_index < local_video_window_frames`, "
+                f"got current_video_frame_index={self.current_video_frame_index!r}, "
+                f"local_video_window_frames={self.local_video_window_frames!r}."
+            )
 
 
 @dataclass(frozen=True)

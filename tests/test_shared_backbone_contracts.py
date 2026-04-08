@@ -42,15 +42,35 @@ def test_post_latent_and_post_decoded_share_video_conditioner_path() -> None:
         assert infer_output.visual_outputs.core.aux["used_action_conditioner"] is False
 
 
-def test_register_and_parallel_variants_use_action_conditioner_path() -> None:
-    for config_name in ("register_attached_robotwin.yaml", "parallel_stream_robotwin.yaml"):
-        _, pipeline, batch, train_batch = _build_train_batch(REPO_ROOT / "configs/experiments" / config_name)
-        train_output = pipeline.forward_train(batch.views, train_batch)
-        infer_output = pipeline.forward_infer_step(
-            batch.views,
-            PolicyInferContext(state=batch.state, extra={"task_text": batch.task_text}),
-        )
+def test_video_sequence_policy_can_request_shared_core_outputs() -> None:
+    config_path = REPO_ROOT / "configs/experiments/video_sequence_policy_robotwin_smoke.yaml"
+    config, _, batch, train_batch = _build_train_batch(config_path)
+    config = replace(config, policy_variant=replace(config.policy_variant, visual_state_source="core_tokens"))
+    pipeline = build_variant_pipeline_from_config(config)
 
-        assert train_output.policy_output.aux["core_aux"]["weight_source"] == "local_init"
-        assert train_output.policy_output.aux["core_aux"]["used_action_conditioner"] is True
-        assert infer_output.policy_output.aux["core_aux"]["used_action_conditioner"] is True
+    train_output = pipeline.forward_train(batch.views, train_batch)
+    infer_output = pipeline.forward_infer_step(
+        batch.views,
+        PolicyInferContext(state=batch.state, extra={"task_text": batch.task_text}),
+    )
+
+    assert train_output.visual_outputs.core is not None
+    assert train_output.visual_outputs.core.aux["weight_source"] == "local_init"
+    assert train_output.visual_outputs.core.aux["used_action_conditioner"] is False
+    assert infer_output.visual_outputs.core is not None
+    assert infer_output.visual_outputs.core.aux["used_action_conditioner"] is False
+
+
+def test_register_attached_variant_uses_action_conditioner_path() -> None:
+    _, pipeline, batch, train_batch = _build_train_batch(
+        REPO_ROOT / "configs/experiments/register_attached_robotwin_smoke.yaml"
+    )
+    train_output = pipeline.forward_train(batch.views, train_batch)
+    infer_output = pipeline.forward_infer_step(
+        batch.views,
+        PolicyInferContext(state=batch.state, extra={"task_text": batch.task_text}),
+    )
+
+    assert train_output.policy_output.aux["core_aux"]["weight_source"] == "local_init"
+    assert train_output.policy_output.aux["core_aux"]["used_action_conditioner"] is True
+    assert infer_output.policy_output.aux["core_aux"]["used_action_conditioner"] is True

@@ -4,14 +4,13 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, TypeVar
 
-import yaml
-
 from open_wam.configs import (
     ActionDecoderConfig,
     DecodedFeatureActionDecoderConfig,
     LingbotParallelActionDecoderConfig,
     MLPActionDecoderConfig,
     MoTActionDecoderConfig,
+    VideoConditionedActionDecoderConfig,
     CausalPrefixSuffixBucketConfig,
     CausalVideoPredictionPolicyConfig,
     MoTPolicyConfig,
@@ -46,16 +45,13 @@ import open_wam.configs.enums as config_enums
 from open_wam.configs.inference import InferenceConfig
 from open_wam.configs.training import TrainingConfig
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig, normalize_backbone_implementation
+from .local_paths import read_yaml_with_local_paths
 
 EnumT = TypeVar("EnumT", bound=StrEnum)
 
 
 def _read_yaml(path: str | Path) -> dict[str, Any]:
-    with Path(path).open("r", encoding="utf-8") as handle:
-        data = yaml.safe_load(handle) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"Expected YAML mapping in {path}, got {type(data).__name__}")
-    return data
+    return read_yaml_with_local_paths(path)
 
 
 def _coerce_enum(enum_cls: type[EnumT], value: EnumT | str) -> EnumT:
@@ -201,6 +197,19 @@ def _load_policy_variant_config(
             ),
             use_state_projection=resolved_raw.get("use_state_projection", True),
             compatibility_mode=resolved_raw.get("compatibility_mode", compatibility_mode),
+            video_condition_input_space=_coerce_enum(
+                config_enums.VideoConditionInputSpace,
+                resolved_raw.get("video_condition_input_space", config_enums.VideoConditionInputSpace.VIDEO_LATENT),
+            ),
+            action_chunk_anchor_mode=_coerce_enum(
+                config_enums.ActionChunkAnchorMode,
+                resolved_raw.get(
+                    "action_chunk_anchor_mode",
+                    config_enums.ActionChunkAnchorMode.CURRENT_PLUS_FUTURE,
+                ),
+            ),
+            local_video_window_frames=resolved_raw.get("local_video_window_frames", 4),
+            current_video_frame_index=resolved_raw.get("current_video_frame_index", 0),
             visual_readout=_load_visual_readout_config(resolved_raw.get("visual_readout")),
         )
     if name == config_enums.PolicyVariantName.POST_DECODED:
@@ -219,6 +228,19 @@ def _load_policy_variant_config(
                 resolved_raw.get("temporal_projection", config_enums.TemporalProjection.INTERPOLATE),
             ),
             use_state_projection=resolved_raw.get("use_state_projection", True),
+            video_condition_input_space=_coerce_enum(
+                config_enums.VideoConditionInputSpace,
+                resolved_raw.get("video_condition_input_space", config_enums.VideoConditionInputSpace.RGB_VIDEO),
+            ),
+            action_chunk_anchor_mode=_coerce_enum(
+                config_enums.ActionChunkAnchorMode,
+                resolved_raw.get(
+                    "action_chunk_anchor_mode",
+                    config_enums.ActionChunkAnchorMode.CURRENT_PLUS_FUTURE,
+                ),
+            ),
+            local_video_window_frames=resolved_raw.get("local_video_window_frames", 4),
+            current_video_frame_index=resolved_raw.get("current_video_frame_index", 0),
             visual_readout=_load_visual_readout_config(resolved_raw.get("visual_readout")),
         )
     if name == config_enums.PolicyVariantName.VIDEO_SEQUENCE_POLICY:
@@ -464,6 +486,7 @@ def _load_action_decoder_config(
     action_decoder_raw: dict[str, Any],
     policy_variant_config: PolicyVariantConfig,
     data_config: DataConfig,
+    backbone_config: SharedVideoTransformerConfig,
 ) -> ActionDecoderConfig:
     resolved_raw = dict(action_decoder_raw)
     if not resolved_raw:
@@ -476,7 +499,13 @@ def _load_action_decoder_config(
         elif policy_variant_config.name == config_enums.PolicyVariantName.VIDEO_SEQUENCE_POLICY:
             resolved_raw["name"] = config_enums.ActionDecoderName.VPP
         elif policy_variant_config.name == config_enums.PolicyVariantName.POST_DECODED:
-            resolved_raw["name"] = config_enums.ActionDecoderName.DECODED_FEATURE
+            resolved_raw["name"] = config_enums.ActionDecoderName.VIDEO_CONDITIONED
+        elif (
+            policy_variant_config.name == config_enums.PolicyVariantName.POST_LATENT
+            and isinstance(policy_variant_config, PostLatentPolicyConfig)
+            and not policy_variant_config.compatibility_mode
+        ):
+            resolved_raw["name"] = config_enums.ActionDecoderName.VIDEO_CONDITIONED
         elif (
             policy_variant_config.name == config_enums.PolicyVariantName.PARALLEL_STREAM
             and isinstance(policy_variant_config, ParallelStreamPolicyConfig)
@@ -490,7 +519,14 @@ def _load_action_decoder_config(
     if name == config_enums.ActionDecoderName.MLP and policy_variant_config.name == config_enums.PolicyVariantName.MOT:
         # Compatibility path for early MoT YAMLs that used `mlp_decoder` as a placeholder.
         name = config_enums.ActionDecoderName.MOT
-    hidden_size = resolved_raw.get("hidden_size", policy_variant_config.hidden_size)
+    hidden_size = resolved_raw.get(
+        "hidden_size",
+        (
+            backbone_config.hidden_size
+            if name == config_enums.ActionDecoderName.VIDEO_CONDITIONED
+            else policy_variant_config.hidden_size
+        ),
+    )
     action_dim = resolved_raw.get("action_dim", data_config.action_schema.action_dim)
     action_horizon = resolved_raw.get("action_horizon", data_config.action_schema.action_horizon)
     dropout = resolved_raw.get("dropout", 0.0)
@@ -515,6 +551,62 @@ def _load_action_decoder_config(
             action_dim=action_dim,
             action_horizon=action_horizon,
             dropout=dropout,
+        )
+    if name == config_enums.ActionDecoderName.VIDEO_CONDITIONED:
+        if isinstance(policy_variant_config, (PostLatentPolicyConfig, PostDecodedPolicyConfig)):
+            input_space = policy_variant_config.video_condition_input_space
+            anchor_mode = policy_variant_config.action_chunk_anchor_mode
+        else:
+            input_space = config_enums.VideoConditionInputSpace.VIDEO_LATENT
+            anchor_mode = config_enums.ActionChunkAnchorMode.CURRENT_PLUS_FUTURE
+        return VideoConditionedActionDecoderConfig(
+            hidden_size=hidden_size,
+            action_dim=action_dim,
+            action_horizon=action_horizon,
+            dropout=dropout,
+            context_dim=resolved_raw.get("context_dim", backbone_config.hidden_size),
+            text_context_dim=resolved_raw.get("text_context_dim", backbone_config.text_dim),
+            state_dim=resolved_raw.get("state_dim", data_config.action_schema.state_dim),
+            freq_dim=resolved_raw.get("freq_dim", backbone_config.freq_dim),
+            num_layers=resolved_raw.get("num_layers", backbone_config.num_layers),
+            num_heads=resolved_raw.get("num_heads", backbone_config.num_heads),
+            attention_head_dim=resolved_raw.get(
+                "attention_head_dim",
+                backbone_config.attention_head_dim or (backbone_config.hidden_size // backbone_config.num_heads),
+            ),
+            ffn_dim=resolved_raw.get(
+                "ffn_dim",
+                backbone_config.ffn_dim or (backbone_config.hidden_size * backbone_config.mlp_ratio),
+            ),
+            cross_attn_norm=resolved_raw.get("cross_attn_norm", backbone_config.cross_attn_norm),
+            eps=resolved_raw.get("eps", backbone_config.latent_norm_eps),
+            input_space=_coerce_enum(
+                config_enums.VideoConditionInputSpace,
+                resolved_raw.get("input_space", input_space),
+            ),
+            train_mode=_coerce_enum(
+                config_enums.VideoConditionTrainMode,
+                resolved_raw.get(
+                    "train_mode",
+                    config_enums.VideoConditionTrainMode.ROLLOUT_WINDOW_DIFFUSION,
+                ),
+            ),
+            action_chunk_anchor_mode=_coerce_enum(
+                config_enums.ActionChunkAnchorMode,
+                resolved_raw.get("action_chunk_anchor_mode", anchor_mode),
+            ),
+            action_expert_init_mode=_coerce_enum(
+                config_enums.ActionExpertInitMode,
+                resolved_raw.get(
+                    "action_expert_init_mode",
+                    config_enums.ActionExpertInitMode.VIDEO_WEIGHT_COPY,
+                ),
+            ),
+            rollout_chunk_steps=resolved_raw.get("rollout_chunk_steps", 1),
+            direct_latent_channels=resolved_raw.get("direct_latent_channels", backbone_config.latent_channels),
+            direct_rgb_patch_size=resolved_raw.get("direct_rgb_patch_size", 16),
+            use_text_conditioning=resolved_raw.get("use_text_conditioning", True),
+            use_state_conditioning=resolved_raw.get("use_state_conditioning", True),
         )
     if name == config_enums.ActionDecoderName.VPP:
         return VPPActionDecoderConfig(
@@ -1089,6 +1181,7 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         action_decoder_raw=raw.get("action_decoder", {}),
         policy_variant_config=policy_variant_config,
         data_config=data_config,
+        backbone_config=backbone_config,
     )
 
     trainer_raw = raw.get("trainer", {})

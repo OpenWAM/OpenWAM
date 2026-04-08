@@ -1,0 +1,6 @@
+name: video_sequence_policy_robotwin_smoke_eval
+experiment_config: configs/experiments/video_sequence_policy_robotwin_smoke.yaml
+mode: batch
+split: val
+batch_size: 1
+max_batches: 1

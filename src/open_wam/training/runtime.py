@@ -27,6 +27,14 @@ from .controls import TrainabilityReport, apply_training_component_controls
 from .logging import CompositeLogSink, ConsoleLogSink, JsonlLogSink, NoopLogSink, WandBLogSink
 from .loop_policies import EpochLoopPolicy, StepLoopPolicy
 from .optim import build_optimizer, build_scheduler
+from .run_tracking import (
+    build_run_title,
+    build_run_tracking_metadata,
+    build_wandb_group,
+    build_wandb_job_type,
+    build_wandb_tags,
+    resolve_wandb_project,
+)
 from .state import TrainState
 from .step_executor import PipelineTrainStepExecutor, build_batch_adapter
 from .strategies import build_training_strategy
@@ -95,11 +103,16 @@ class TrainingRuntime:
         strategy = build_training_strategy(config.trainer)
         model = build_variant_pipeline_from_config(config)
         visual_tower = getattr(model, "visual_tower", None)
+        policy_variant = getattr(model, "policy_variant", None)
         action_dim = getattr(visual_tower, "action_dim", None)
         if visual_tower is not None and action_dim is not None:
             # Initialize reference runtime weights before FSDP/DDP wrapping so
             # shared-core state dict keys stay in the replica module namespace.
             visual_tower.get_runtime_backbone(action_dim=action_dim)
+        if visual_tower is not None and policy_variant is not None:
+            # Variant-owned warm starts must happen before strategy wrapping so
+            # replicated modules all inherit the same initialized weights.
+            policy_variant.initialize_for_training(visual_tower)
         trainability_report = apply_training_component_controls(model, config.training)
         model = strategy.prepare_model(model)
         batch_adapter = build_batch_adapter(config.trainer.batch_adapter)
@@ -417,16 +430,30 @@ def build_log_sink(*, config: ExperimentConfig, output_dir: Path, run_name: str,
     if strategy is not None and not strategy.is_main_process:
         return CompositeLogSink([NoopLogSink()])
     sinks = [ConsoleLogSink()]
+    tracking_metadata = build_run_tracking_metadata(config, run_name=run_name, output_dir=output_dir)
+    resolved_project = resolve_wandb_project(config, tracking_metadata)
+    resolved_group = build_wandb_group(tracking_metadata)
+    resolved_job_type = build_wandb_job_type(tracking_metadata)
+    resolved_tags = build_wandb_tags(tracking_metadata)
+    tracking_metadata["wandb_project"] = resolved_project
+    tracking_metadata["wandb_group"] = resolved_group
+    tracking_metadata["wandb_job_type"] = resolved_job_type
+    tracking_metadata["wandb_tags"] = list(resolved_tags)
     if config.trainer.enable_jsonl_logging:
         sinks.append(JsonlLogSink(output_dir / config.trainer.metrics_filename))
     if config.trainer.enable_wandb:
+        config_payload = serialize_enum_values(asdict(config))
+        config_payload["tracking"] = tracking_metadata
         sinks.append(
             WandBLogSink(
-                project=config.trainer.wandb_project,
+                project=resolved_project,
                 entity=config.trainer.wandb_entity,
                 mode=config.trainer.wandb_mode,
-                run_name=run_name,
-                config_payload=serialize_enum_values(asdict(config)),
+                run_name=build_run_title(tracking_metadata),
+                group=resolved_group,
+                job_type=resolved_job_type,
+                tags=resolved_tags,
+                config_payload=config_payload,
             )
         )
     return CompositeLogSink(sinks)

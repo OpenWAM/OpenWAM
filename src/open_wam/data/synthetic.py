@@ -3,9 +3,35 @@ from __future__ import annotations
 import torch
 from torch.utils.data import Dataset
 
-from open_wam.configs import DataConfig
+from open_wam.configs import DataConfig, WindowSamplingMode
 
 from .contracts import WAMBatch, WAMSample, collate_wam_samples
+
+
+def build_synthetic_metadata(data_config: DataConfig, *, index: int) -> dict[str, int | str]:
+    """Emit synthetic metadata that matches the active sample-construction mode."""
+
+    metadata: dict[str, int | str] = {
+        "sample_index": index,
+        "dataset_name": data_config.dataset_name,
+    }
+    sample_cfg = data_config.sample_construction
+    if sample_cfg.mode == WindowSamplingMode.CAUSAL_PREFIX_SUFFIX:
+        buckets = tuple(sample_cfg.causal_prefix_suffix_buckets)
+        if not buckets:
+            raise ValueError(
+                "Synthetic causal prefix/suffix data requires non-empty "
+                "`sample_construction.causal_prefix_suffix_buckets`."
+            )
+        bucket = buckets[index % len(buckets)]
+        metadata.update(
+            {
+                "observed_prefix_frames": int(bucket.observed_frames),
+                "future_suffix_frames": int(bucket.future_frames),
+                "valid_video_frames": int(bucket.total_frames),
+            }
+        )
+    return metadata
 
 
 class SyntheticWindowDataset(Dataset[WAMSample]):
@@ -36,7 +62,7 @@ class SyntheticWindowDataset(Dataset[WAMSample]):
             state=torch.randn(action_schema.state_horizon, action_schema.state_dim),
             state_mask=torch.ones(action_schema.state_horizon, action_schema.state_dim),
             task_text=self.task_text,
-            metadata={"sample_index": index, "dataset_name": self.data_config.dataset_name},
+            metadata=build_synthetic_metadata(self.data_config, index=index),
         )
 
 

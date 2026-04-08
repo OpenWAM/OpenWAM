@@ -87,6 +87,9 @@ class WandBLogSink:
         entity: str | None,
         mode: str,
         run_name: str,
+        group: str | None,
+        job_type: str | None,
+        tags: tuple[str, ...] | list[str],
         config_payload: dict[str, Any],
     ) -> None:
         try:
@@ -99,6 +102,9 @@ class WandBLogSink:
             entity=entity,
             mode=mode,
             name=run_name,
+            group=group,
+            job_type=job_type,
+            tags=list(tags),
             config=config_payload,
         )
 

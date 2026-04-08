@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
 import torch
 import yaml
 from torch.utils.data import Dataset
@@ -22,6 +23,81 @@ def test_eval_wrapper_resolves_experiment_config() -> None:
     assert request.experiment_config_path == (REPO_ROOT / "configs/experiments/contract_only_robotwin.yaml").resolve()
     assert request.mode == "batch"
     assert request.split == "val"
+    assert request.max_batches == 1
+
+
+def test_eval_wrapper_resolves_checkpoint_path_placeholder(monkeypatch, tmp_path: Path) -> None:
+    local_paths_path = tmp_path / "local_paths.yaml"
+    with local_paths_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(
+            {"paths": {"tests": {"eval_checkpoint": "/tmp/eval_checkpoint.ckpt"}}},
+            handle,
+            sort_keys=False,
+        )
+    monkeypatch.setenv("OPEN_WAM_LOCAL_PATHS", str(local_paths_path))
+
+    wrapper_path = tmp_path / "eval_wrapper.yaml"
+    with wrapper_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(
+            {
+                "experiment_config": str(REPO_ROOT / "configs/experiments/contract_only_robotwin.yaml"),
+                "checkpoint_path": "${paths.tests.eval_checkpoint}",
+                "mode": "batch",
+                "split": "val",
+            },
+            handle,
+            sort_keys=False,
+        )
+
+    request = resolve_evaluation_request(wrapper_path)
+
+    assert request.checkpoint_path == Path("/tmp/eval_checkpoint.ckpt")
+
+
+def test_method4_video_conditioned_eval_wrappers_resolve_experiment_configs() -> None:
+    post_latent_request = resolve_evaluation_request(
+        REPO_ROOT / "configs/evals/post_latent_libero_latent_local_video_conditioned_trajectory.yaml"
+    )
+    post_decoded_request = resolve_evaluation_request(
+        REPO_ROOT / "configs/evals/post_decoded_libero_latent_local_video_conditioned_trajectory.yaml"
+    )
+
+    assert post_latent_request.experiment_config_path == (
+        REPO_ROOT / "configs/experiments/post_latent_libero_latent_local_video_conditioned.yaml"
+    ).resolve()
+    assert post_decoded_request.experiment_config_path == (
+        REPO_ROOT / "configs/experiments/post_decoded_libero_latent_local_video_conditioned.yaml"
+    ).resolve()
+    assert post_latent_request.mode == "trajectory"
+    assert post_decoded_request.mode == "trajectory"
+    assert post_latent_request.split == "val"
+    assert post_decoded_request.split == "val"
+    assert post_latent_request.batch_size == 1
+    assert post_decoded_request.batch_size == 1
+    assert post_latent_request.max_trajectories == 1
+    assert post_decoded_request.max_trajectories == 1
+
+
+@pytest.mark.parametrize(
+    ("wrapper_name", "experiment_name"),
+    [
+        ("parallel_stream_robotwin_smoke.yaml", "parallel_stream_robotwin_smoke.yaml"),
+        ("register_attached_robotwin_smoke.yaml", "register_attached_robotwin_smoke.yaml"),
+        ("video_sequence_policy_robotwin_smoke.yaml", "video_sequence_policy_robotwin_smoke.yaml"),
+        ("mot_robotwin_smoke.yaml", "mot_robotwin_smoke.yaml"),
+        ("causal_video_prediction_robotwin_smoke.yaml", "causal_video_prediction_robotwin_smoke.yaml"),
+    ],
+)
+def test_robotwin_smoke_eval_wrappers_resolve_experiment_configs(
+    wrapper_name: str,
+    experiment_name: str,
+) -> None:
+    request = resolve_evaluation_request(REPO_ROOT / "configs/evals" / wrapper_name)
+
+    assert request.experiment_config_path == (REPO_ROOT / "configs/experiments" / experiment_name).resolve()
+    assert request.mode == "batch"
+    assert request.split == "val"
+    assert request.batch_size == 1
     assert request.max_batches == 1
 
 
@@ -59,6 +135,45 @@ def test_run_evaluation_on_parallel_stream_robotwin(tmp_path: Path) -> None:
     assert summary.num_batches == 1
     assert summary.action_prediction_shape == summary.target_action_shape
     assert summary.mean_action_mse is not None
+
+
+@pytest.mark.parametrize(
+    ("config_path", "expected_name"),
+    [
+        (REPO_ROOT / "configs/evals/parallel_stream_robotwin_smoke.yaml", "parallel_stream_robotwin_smoke"),
+        (REPO_ROOT / "configs/evals/register_attached_robotwin_smoke.yaml", "register_attached_robotwin_smoke"),
+        (REPO_ROOT / "configs/evals/video_sequence_policy_robotwin_smoke.yaml", "video_sequence_policy_robotwin_smoke"),
+        (REPO_ROOT / "configs/evals/mot_robotwin_smoke.yaml", "mot_robotwin_smoke"),
+        (REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml", "post_latent_robotwin_video_conditioned"),
+        (REPO_ROOT / "configs/experiments/post_decoded_robotwin_video_conditioned.yaml", "post_decoded_robotwin_video_conditioned"),
+    ],
+)
+def test_run_evaluation_on_action_policy_robotwin_variants(config_path: Path, expected_name: str) -> None:
+    request = resolve_evaluation_request(
+        config_path,
+        max_batches_override=1,
+        device_override="cpu",
+    )
+    summary = run_evaluation(request)
+
+    assert summary.experiment_name == expected_name
+    assert summary.num_batches == 1
+    assert summary.action_prediction_shape == summary.target_action_shape
+    assert summary.mean_action_mse is not None
+
+
+def test_run_evaluation_on_causal_video_prediction_robotwin_wrapper() -> None:
+    request = resolve_evaluation_request(
+        REPO_ROOT / "configs/evals/causal_video_prediction_robotwin_smoke.yaml",
+        device_override="cpu",
+    )
+    summary = run_evaluation(request)
+
+    assert summary.experiment_name == "causal_video_prediction_robotwin_smoke"
+    assert summary.num_batches == 1
+    assert summary.action_prediction_shape == summary.target_action_shape
+    assert summary.mean_action_mse is not None
+    assert summary.mean_video_latent_mse is not None
 
 
 @dataclass(frozen=True)

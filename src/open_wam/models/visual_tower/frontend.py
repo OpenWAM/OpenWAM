@@ -77,6 +77,7 @@ class SharedVideoFrontend(nn.Module):
         return self._build_output(
             canonical_video=canonical_video,
             video_latents=video_latents,
+            input_source="canonical_rgb",
             text_context=resolved_text_context,
             negative_text_context=resolved_negative_text_context,
         )
@@ -121,6 +122,7 @@ class SharedVideoFrontend(nn.Module):
         return self._build_output(
             canonical_video=canonical,
             video_latents=video_latents,
+            input_source="video_latents",
             text_context=resolved_text_context,
             negative_text_context=resolved_negative_text_context,
         )
@@ -133,6 +135,7 @@ class SharedVideoFrontend(nn.Module):
         *,
         canonical_video: torch.Tensor,
         video_latents: torch.Tensor,
+        input_source: str,
         text_context: torch.Tensor | None,
         negative_text_context: torch.Tensor | None,
     ) -> VisualFrontendOutput:
@@ -141,6 +144,7 @@ class SharedVideoFrontend(nn.Module):
             canonical_video=canonical_video,
             video_latents=video_latents,
             video_tokens=video_tokens,
+            input_source=str(input_source),
             token_grid=token_grid,
             chunk=ChunkMetadata(
                 chunk_start_frame=0,

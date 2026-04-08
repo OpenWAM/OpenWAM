@@ -1,0 +1,70 @@
+name: causal_video_prediction_robotwin_smoke
+
+data:
+  # Minimal latent-first causal video smoke dataset knobs
+  dataset_name: robotwin
+  camera_names: [cam_high, cam_left_wrist, cam_right_wrist]
+  latent_camera_names: [cam_high, cam_left_wrist, cam_right_wrist]
+  canonical_height: 384
+  canonical_width: 320
+  num_frames: 4
+  action_schema:
+    action_dim: 30
+    action_horizon: 0
+    state_dim: 30
+    state_horizon: 0
+  sample_construction:
+    mode: causal_prefix_suffix
+    num_frames: 4
+    action_horizon: 0
+    state_horizon: 0
+    frame_stride: 1
+    causal_prefix_suffix_buckets:
+      - observed_frames: 1
+        future_frames: 3
+
+backbone:
+  # Small shared backbone geometry for fast local verification
+  implementation: shared_transformer
+  hidden_size: 256
+  num_layers: 1
+  num_heads: 8
+  attention_head_dim: 32
+  ffn_dim: 1024
+
+policy_variant:
+  # Video-only causal prefix/suffix prediction over the shared core
+  name: causal_video_prediction
+  attach_site: post_visual_core
+  hidden_size: 256
+
+action_decoder:
+  name: video_only_decoder
+  hidden_size: 256
+  action_dim: 30
+  action_horizon: 0
+
+training:
+  video_num_train_timesteps: 1000
+  video_sigma_shift: 5.0
+  enabled_objectives: [latent]
+  latent_loss_weight: 1.0
+  action_loss_weight: 0.0
+
+inference:
+  video_num_inference_steps: 4
+  guidance_scale: 1.0
+  use_cache: false
+  frame_chunk_size: 1
+
+trainer:
+  max_epochs: 1
+  limit_train_batches: 2
+  limit_val_batches: 1
+  log_every_n_steps: 1
+  accelerator: cpu
+  devices: 1
+  precision: 32-true
+  enable_checkpointing: false
+  enable_model_summary: false
+  batch_adapter: latents

@@ -13,6 +13,7 @@ def _build_frontend_output(*, num_frames: int, tokens_per_frame: int, sequence_l
         canonical_video=torch.zeros(1, 3, num_frames, 8, 8),
         video_latents=torch.zeros(1, 4, num_frames, 4, 4),
         video_tokens=torch.zeros(1, sequence_length, 16),
+        input_source="canonical_rgb",
         token_grid=TokenGridMetadata(
             num_frames=num_frames,
             latent_height=4,

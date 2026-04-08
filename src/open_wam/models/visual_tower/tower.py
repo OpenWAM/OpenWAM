@@ -138,17 +138,17 @@ class VisualTower(nn.Module):
                 cache_state=core_output.cache_state,
                 aux=dict(core_output.aux),
             )
-        step_output.aux.setdefault(
-            "weight_source",
-            "reference_initialized" if self.reference_core_load_report is not None else "local_init",
+        resolved_weight_source = (
+            "reference_initialized" if self.reference_core_load_report is not None else "local_init"
         )
+        step_output.aux.setdefault("weight_source", resolved_weight_source)
+        if step_output.core_output is not None:
+            step_output.core_output.aux.setdefault("weight_source", step_output.aux["weight_source"])
         if self.reference_core_load_report is not None:
-            step_output.aux.setdefault("reference_core_loaded_keys", len(self.reference_core_load_report.loaded_keys))
+            loaded_key_count = len(self.reference_core_load_report.loaded_keys)
+            step_output.aux.setdefault("reference_core_loaded_keys", loaded_key_count)
             if step_output.core_output is not None:
-                step_output.core_output.aux.setdefault(
-                    "reference_core_loaded_keys",
-                    len(self.reference_core_load_report.loaded_keys),
-                )
+                step_output.core_output.aux.setdefault("reference_core_loaded_keys", loaded_key_count)
         return step_output
 
     def prepare_runtime_stream_inputs(
@@ -380,7 +380,7 @@ class VisualTower(nn.Module):
         *,
         observed_prefix: torch.Tensor,
         future_template: torch.Tensor,
-        text_context: torch.Tensor,
+        text_context: torch.Tensor | None,
         negative_text_context: torch.Tensor | None,
         frame_start: int,
         num_inference_steps: int,
@@ -422,6 +422,17 @@ class VisualTower(nn.Module):
         model_dtype = reference_runtime_dtype(transformer)
         batch_size, channels, future_num_frames, latent_height, latent_width = future_template.shape
         total_num_frames = observed_prefix.shape[2] + future_num_frames
+        resolved_text_context = text_context
+        if resolved_text_context is None:
+            resolved_text_context = torch.zeros(
+                batch_size,
+                self.config.max_text_tokens,
+                self.config.text_dim,
+                device=future_template.device,
+                dtype=model_dtype,
+            )
+        else:
+            resolved_text_context = resolved_text_context.to(device=future_template.device, dtype=model_dtype)
 
         latents = torch.randn(
             batch_size,
@@ -451,7 +462,7 @@ class VisualTower(nn.Module):
                 video_input = prepare_reference_single_stream_input(
                     latents=latents,
                     timestep=timestep,
-                    text_emb=text_context,
+                    text_emb=resolved_text_context,
                     frame_st_id=frame_start,
                     backbone_config=self.config,
                     action_mode=False,

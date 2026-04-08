@@ -12,6 +12,7 @@ from .contracts import (
     PolicyTrainBatch,
     PolicyTrainOutput,
     RolloutCursor,
+    VideoConditionWindowContext,
 )
 
 if TYPE_CHECKING:
@@ -35,6 +36,7 @@ __all__ = [
     "PolicyTrainBatch",
     "PolicyTrainOutput",
     "RolloutCursor",
+    "VideoConditionWindowContext",
     "PolicyVariant",
     "PostDecodedPolicyVariant",
     "PostLatentPolicyVariant",

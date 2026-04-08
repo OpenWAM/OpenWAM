@@ -1,0 +1,34 @@
+paths:
+  datasets:
+    # Maintained LIBERO latent-local dataset root.
+    libero_heng_root: /path/to/private-resource
+    # Public/local LIBERO checkout used by the local exact config.
+    libero_public_root: /path/to/datasets
+    # Shared negative prompt embedding used by latent-local datasets.
+    empty_text_embedding: /path/to/private-resource
+
+  models:
+    # Base LingBot-compatible WAN visual model root.
+    lingbot_va_base: /path/to/private-resource
+
+  checkpoints:
+    # Method-1 exact and joint exports.
+    parallel_stream_exact_libero_latest: /path/to/private-resource
+    parallel_stream_joint_libero_step_400: /path/to/private-resource
+    parallel_stream_joint_libero_step_600: /path/to/private-resource
+    parallel_stream_joint_libero_contextual_fixed_geometry_step_800: /path/to/private-resource
+
+    # Shared video-only export used by method-3 / method-4 LIBERO variants.
+    libero_videoonly_step_600: /path/to/private-resource
+    libero_videoonly_step_850: /path/to/private-resource
+
+    # Method-2 register-attached export.
+    register_attached_libero_step_1000: /path/to/private-resource
+
+    # Method-5 eval checkpoints.
+    mot_libero_idm_step_1900: /path/to/private-resource
+    mot_libero_joint_step_900: /path/to/private-resource
+
+  outputs:
+    # Default parent directory for new local training runs.
+    train_runs_root: /path/to/private-resource

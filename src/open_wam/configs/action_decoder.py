@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 from .enums import (
     ActionDecoderName,
+    ActionChunkAnchorMode,
+    ActionExpertInitMode,
     ActionGenerationBackendFamily,
     DiffusionNoiseSchedule,
     DiffusionSampler,
@@ -11,6 +13,8 @@ from .enums import (
     SequenceDenoiserFamily,
     StateSequenceAdapterFamily,
     TemporalCompressionAdapterFamily,
+    VideoConditionInputSpace,
+    VideoConditionTrainMode,
     coerce_fields,
 )
 
@@ -51,6 +55,70 @@ class DecodedFeatureActionDecoderConfig(ActionDecoderConfig):
     hidden_size: int = 256
     action_dim: int = 0
     action_horizon: int = 0
+
+
+@dataclass(frozen=True)
+class VideoConditionedActionDecoderConfig(ActionDecoderConfig):
+    """Generic current-action decoder over a local video-conditioned window."""
+
+    name: ActionDecoderName = ActionDecoderName.VIDEO_CONDITIONED
+    hidden_size: int = 256
+    action_dim: int = 0
+    action_horizon: int = 0
+    context_dim: int = 256
+    text_context_dim: int = 0
+    state_dim: int = 0
+    freq_dim: int = 256
+    num_layers: int = 1
+    num_heads: int = 8
+    attention_head_dim: int = 32
+    ffn_dim: int = 1024
+    cross_attn_norm: bool = True
+    eps: float = 1e-6
+    input_space: VideoConditionInputSpace = VideoConditionInputSpace.VIDEO_LATENT
+    train_mode: VideoConditionTrainMode = VideoConditionTrainMode.ROLLOUT_WINDOW_DIFFUSION
+    action_chunk_anchor_mode: ActionChunkAnchorMode = ActionChunkAnchorMode.CURRENT_PLUS_FUTURE
+    action_expert_init_mode: ActionExpertInitMode = ActionExpertInitMode.VIDEO_WEIGHT_COPY
+    rollout_chunk_steps: int = 1
+    direct_latent_channels: int = 48
+    direct_rgb_patch_size: int = 16
+    use_text_conditioning: bool = True
+    use_state_conditioning: bool = True
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        coerce_fields(
+            self,
+            enum_fields={
+                "input_space": VideoConditionInputSpace,
+                "train_mode": VideoConditionTrainMode,
+                "action_chunk_anchor_mode": ActionChunkAnchorMode,
+                "action_expert_init_mode": ActionExpertInitMode,
+            },
+        )
+        if (
+            self.train_mode == VideoConditionTrainMode.CURRENT_FRAME_REGRESSION
+            and self.action_chunk_anchor_mode != ActionChunkAnchorMode.CURRENT_PLUS_FUTURE
+        ):
+            raise ValueError(
+                "Current-frame regression mode requires `action_chunk_anchor_mode = current_plus_future`, "
+                f"got action_chunk_anchor_mode={self.action_chunk_anchor_mode!r}."
+            )
+        if int(self.rollout_chunk_steps) <= 0:
+            raise ValueError(
+                "Video-conditioned action decoder requires `rollout_chunk_steps > 0`, "
+                f"got rollout_chunk_steps={self.rollout_chunk_steps!r}."
+            )
+        if int(self.direct_latent_channels) <= 0:
+            raise ValueError(
+                "Video-conditioned action decoder requires `direct_latent_channels > 0`, "
+                f"got direct_latent_channels={self.direct_latent_channels!r}."
+            )
+        if int(self.direct_rgb_patch_size) <= 0:
+            raise ValueError(
+                "Video-conditioned action decoder requires `direct_rgb_patch_size > 0`, "
+                f"got direct_rgb_patch_size={self.direct_rgb_patch_size!r}."
+            )
 
 
 @dataclass(frozen=True)

@@ -631,7 +631,7 @@ class MoTPolicyVariant(PolicyVariant):
                 guidance_scale=self.inference_config.guidance_scale,
                 cache_name="mot_infer_predicted_video_latents",
             )
-        batch_size = 1 if context.previous_action is None else context.previous_action.shape[0]
+        batch_size = int(visual_outputs.frontend.video_latents.shape[0])
         device = next(self.action_expert.parameters()).device
         dtype = next(self.action_expert.parameters()).dtype
         scheduler = build_action_flow_match_inference_scheduler(
@@ -657,6 +657,12 @@ class MoTPolicyVariant(PolicyVariant):
         if runtime_state.video_cache is None:
             raise ValueError("MoT cached-action inference expected `MoTRuntimeState.video_cache` to be populated.")
         video_cache = runtime_state.video_cache
+        cached_batch_size = int(video_cache.layers[0].key.shape[0])
+        if cached_batch_size != batch_size:
+            raise ValueError(
+                "MoT cached-action inference requires the current observation batch to match the cached video batch, "
+                f"got current_batch_size={batch_size}, cached_batch_size={cached_batch_size}."
+            )
         attention_mask = build_mot_attention_mask(
             video_seq_len=video_cache.video_seq_len,
             action_seq_len=self.action_horizon,

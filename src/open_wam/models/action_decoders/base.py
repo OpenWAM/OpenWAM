@@ -54,6 +54,18 @@ class DecoderRolloutState:
     aux: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class DirectActionDecoderTrainInputs:
+    """Optional train-only decoder inputs that bypass the shared visual core."""
+
+    current_frame: torch.Tensor
+    input_space: str
+    current_action_index: int = 0
+    state: torch.Tensor | None = None
+    text_context: torch.Tensor | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 def align_policy_features(policy_features: torch.Tensor, target_length: int) -> torch.Tensor:
     """Interpolate `[B, T, D]` features to the action horizon."""
 
@@ -81,6 +93,20 @@ class ActionDecoder(nn.Module, ABC):
         previous_state: Any | None = None,
     ) -> ActionDecoderInferOutput:
         """Decode actions for one inference step."""
+
+    def supports_direct_train_inputs(self) -> bool:
+        """Whether this decoder can train directly from dataset visual inputs."""
+
+        return False
+
+    def forward_train_direct(
+        self,
+        direct_inputs: DirectActionDecoderTrainInputs,
+        batch: PolicyTrainBatch,
+    ) -> ActionDecoderTrainOutput:
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement direct train-time conditioning inputs."
+        )
 
 
 class LinearActionDecoder(ActionDecoder):

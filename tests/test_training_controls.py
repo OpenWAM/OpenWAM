@@ -71,3 +71,15 @@ def test_parallel_stream_enabled_objectives_can_disable_action_loss() -> None:
     assert train_output.decoder_output.loss.item() == pytest.approx(
         train_output.decoder_output.metrics["weighted_latent_loss"].item()
     )
+
+
+def test_apply_training_component_controls_supports_mot_action_expert_selector() -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/mot_robotwin_smoke.yaml")
+    pipeline = build_variant_pipeline_from_config(config)
+
+    report = apply_training_component_controls(pipeline, config.training)
+
+    assert report.trainable_components == ("policy_variant.action_expert",)
+    assert all(not parameter.requires_grad for parameter in pipeline.visual_tower.frontend.parameters())
+    assert all(not parameter.requires_grad for parameter in pipeline.visual_tower.core.parameters())
+    assert all(parameter.requires_grad for parameter in pipeline.policy_variant.action_expert.parameters())

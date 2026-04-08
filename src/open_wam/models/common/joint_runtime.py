@@ -152,8 +152,6 @@ def _record_joint_prediction(
     video_flow_pred: torch.Tensor,
     action_flow_pred: torch.Tensor,
 ) -> None:
-    if not reuse_state.enabled:
-        return
     reuse_state.previous_predictions.append(
         (
             timestep.detach().clone(),

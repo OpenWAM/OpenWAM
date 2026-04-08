@@ -27,6 +27,24 @@ class PolicyPreparedInputs:
 
 
 @dataclass
+class VideoConditionWindowContext:
+    """Typed decoder-facing local video-conditioning window."""
+
+    local_window_tokens: torch.Tensor
+    previous_context_tokens: torch.Tensor | None = None
+    token_grid: Any | None = None
+    source_stage: str | None = None
+    input_space: str | None = None
+    local_window_frames: int | None = None
+    current_frame_index: int = 0
+    current_action_index: int = 0
+    action_chunk_anchor_mode: str | None = None
+    observed_frame_count: int = 1
+    previous_context_frames: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class DecoderSequenceContext:
     """Structured decoder-facing visual sequence context.
 
@@ -46,6 +64,7 @@ class DecoderSequenceContext:
     source_stage: str | None = None
     state_sequence: torch.Tensor | None = None
     goal_features: torch.Tensor | None = None
+    video_condition_window: VideoConditionWindowContext | None = None
     aux_features: dict[str, Any] = field(default_factory=dict)
 
 

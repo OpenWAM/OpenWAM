@@ -6,6 +6,7 @@ from torch.utils.data import Dataset
 from open_wam.configs import DataConfig
 
 from .latent_contracts import LatentWAMBatch, LatentWAMSample, collate_latent_wam_samples
+from .synthetic import build_synthetic_metadata
 
 
 class SyntheticLatentWindowDataset(Dataset[LatentWAMSample]):
@@ -30,7 +31,7 @@ class SyntheticLatentWindowDataset(Dataset[LatentWAMSample]):
             state=torch.randn(action_schema.state_horizon, action_schema.state_dim),
             state_mask=torch.ones(action_schema.state_horizon, action_schema.state_dim),
             task_text=self.task_text,
-            metadata={"sample_index": index, "dataset_name": self.data_config.dataset_name},
+            metadata=build_synthetic_metadata(self.data_config, index=index),
         )
 
 

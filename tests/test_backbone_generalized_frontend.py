@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 from types import MethodType
+from types import SimpleNamespace
 
 import torch
 
@@ -24,8 +25,8 @@ def test_backbone_encode_video_forwards_multiview_placements() -> None:
     backbone = LingbotCompatibleVideoBackbone(LingbotCompatibleVideoBackboneConfig())
     canonical_video = torch.zeros(1, 3, 2, 128, 256)
     placements = (
-        ViewPlacement(name="image", top=0, left=0, height=128, width=128),
-        ViewPlacement(name="wrist_image", top=0, left=128, height=128, width=128),
+        ViewPlacement(source_name="image", canonical_name="image", top=0, left=0, height=128, width=128),
+        ViewPlacement(source_name="wrist_image", canonical_name="wrist_image", top=0, left=128, height=128, width=128),
     )
     recorded: dict[str, object] = {}
     sentinel = torch.full((1, 48, 2, 8, 16), 3.0)
@@ -50,8 +51,8 @@ def test_backbone_forward_preserves_frontend_context_inputs() -> None:
     backbone = LingbotCompatibleVideoBackbone(LingbotCompatibleVideoBackboneConfig(hidden_size=32))
     canonical_video = torch.zeros(1, 3, 2, 128, 256)
     placements = (
-        ViewPlacement(name="image", top=0, left=0, height=128, width=128),
-        ViewPlacement(name="wrist_image", top=0, left=128, height=128, width=128),
+        ViewPlacement(source_name="image", canonical_name="image", top=0, left=0, height=128, width=128),
+        ViewPlacement(source_name="wrist_image", canonical_name="wrist_image", top=0, left=128, height=128, width=128),
     )
     task_text = ("stack the cups",)
     text_context = torch.randn(1, 8, 32)
@@ -61,6 +62,7 @@ def test_backbone_forward_preserves_frontend_context_inputs() -> None:
         canonical_video=canonical_video,
         video_latents=torch.randn(1, 48, 2, 8, 16),
         video_tokens=torch.randn(1, 16, 32),
+        input_source="canonical_rgb",
         token_grid=TokenGridMetadata(
             num_frames=2,
             latent_height=8,
@@ -99,6 +101,13 @@ def test_backbone_forward_preserves_frontend_context_inputs() -> None:
         return frontend_output
 
     backbone.tower.run_frontend = MethodType(fake_run_frontend, backbone.tower)  # type: ignore[method-assign]
+    backbone.tower.run_default_core = MethodType(
+        lambda self, frontend_output: SimpleNamespace(
+            tokens=frontend_output.video_tokens,
+            cache_state=CacheState(supported=False, current_start_frame=0, cached_frames=0, chunk_size=0),
+        ),
+        backbone.tower,
+    )  # type: ignore[method-assign]
 
     output = backbone(
         canonical_video,

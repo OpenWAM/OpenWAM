@@ -3,8 +3,8 @@ name: causal_video_prediction_libero_latent_local
 data:
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
-  local_root: /path/to/private-resource
-  empty_text_embedding_path: /path/to/private-resource
+  local_root: "${paths.datasets.libero_heng_root}"
+  empty_text_embedding_path: "${paths.datasets.empty_text_embedding}"
   latent_subdir: latents
   camera_names:
     - observation.images.agentview_rgb
@@ -60,7 +60,7 @@ data:
 
 backbone:
   implementation: shared_transformer
-  pretrained_model_name_or_path: /path/to/private-resource #/path/to/private-resource
+  pretrained_model_name_or_path: "${paths.models.lingbot_va_base}"
   hidden_size: 3072
   num_layers: 30
   num_heads: 24
@@ -116,8 +116,8 @@ trainer:
   strategy: fsdp
   accelerator: gpu
   precision: bf16-mixed
-  default_root_dir: /path/to/private-resource
+  default_root_dir: "${paths.outputs.train_runs_root}"
   save_interval: 100
   export_runtime_backbone: true
   enable_wandb: true
-  wandb_project: lingbot-va-posttrain-libero_openwam
+  wandb_project: openwam-libero-video-pretrain

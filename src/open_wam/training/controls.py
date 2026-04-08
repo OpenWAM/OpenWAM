@@ -25,6 +25,7 @@ COMPONENT_ALIASES = {
     "policy": TrainingComponentSelector.POLICY_VARIANT,
     "variant": TrainingComponentSelector.POLICY_VARIANT,
     "policy_variant": TrainingComponentSelector.POLICY_VARIANT,
+    "policy_variant.action_expert": TrainingComponentSelector.POLICY_VARIANT_ACTION_EXPERT,
     "head": TrainingComponentSelector.ACTION_DECODER,
     "action_decoder": TrainingComponentSelector.ACTION_DECODER,
 }
@@ -98,11 +99,16 @@ def normalize_component_selectors(
 ) -> tuple[TrainingComponentSelector, ...]:
     normalized: list[TrainingComponentSelector] = []
     for value in values:
-        try:
-            resolved = COMPONENT_ALIASES[value]
-        except KeyError as exc:
-            supported = ", ".join(sorted(COMPONENT_ALIASES))
-            raise ValueError(f"Unsupported training component selector {value!r}. Supported values: {supported}.") from exc
+        if isinstance(value, TrainingComponentSelector):
+            resolved = value
+        else:
+            try:
+                resolved = COMPONENT_ALIASES[value]
+            except KeyError as exc:
+                supported = ", ".join(sorted(COMPONENT_ALIASES))
+                raise ValueError(
+                    f"Unsupported training component selector {value!r}. Supported values: {supported}."
+                ) from exc
         if resolved not in normalized:
             normalized.append(resolved)
     return tuple(normalized)
@@ -126,6 +132,15 @@ def _set_component_requires_grad(
 
 
 def _resolve_component_modules(pipeline: nn.Module, selector: TrainingComponentSelector) -> list[nn.Module]:
+    def _resolve_policy_action_expert(module: nn.Module) -> list[nn.Module]:
+        action_expert = getattr(module.policy_variant, "action_expert", None)
+        if action_expert is None:
+            raise ValueError(
+                "Training component selector `policy_variant.action_expert` requires "
+                "`pipeline.policy_variant.action_expert`."
+            )
+        return [action_expert]
+
     resolvers: dict[TrainingComponentSelector, ComponentResolver] = {
         TrainingComponentSelector.VISUAL_TOWER: lambda module: [module.visual_tower],
         TrainingComponentSelector.VISUAL_TOWER_FRONTEND: lambda module: [module.visual_tower.frontend],
@@ -133,6 +148,7 @@ def _resolve_component_modules(pipeline: nn.Module, selector: TrainingComponentS
         TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE: lambda module: [module.visual_tower.core],
         TrainingComponentSelector.VISUAL_TOWER_DECODER: lambda module: [module.visual_tower.decoder],
         TrainingComponentSelector.POLICY_VARIANT: lambda module: [module.policy_variant],
+        TrainingComponentSelector.POLICY_VARIANT_ACTION_EXPERT: _resolve_policy_action_expert,
         TrainingComponentSelector.ACTION_DECODER: lambda module: [module.action_decoder],
     }
     if selector == TrainingComponentSelector.ALL:

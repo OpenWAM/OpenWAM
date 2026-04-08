@@ -1,0 +1,65 @@
+name: video_sequence_policy_robotwin_smoke
+
+data:
+  # Minimal smoke-test dataset knobs
+  dataset_name: robotwin
+  camera_names: [cam_high, cam_left_wrist, cam_right_wrist]
+  canonical_height: 384
+  canonical_width: 320
+  num_frames: 4
+  action_schema:
+    action_dim: 30
+    action_horizon: 6
+    state_dim: 30
+    state_horizon: 1
+
+backbone:
+  # Small shared backbone geometry for fast local verification
+  implementation: shared_transformer
+  hidden_size: 256
+  num_layers: 1
+  num_heads: 8
+  attention_head_dim: 32
+  ffn_dim: 1024
+
+policy_variant:
+  # Method-3 sequence-preserving post-core policy knobs
+  name: video_sequence_policy
+  hidden_size: 256
+  attach_site: post_visual_core
+  temporal_projection: interpolate
+  use_state_context: true
+  use_goal_context: true
+
+action_decoder:
+  # VPP-style decoder smoke path for method 3
+  name: vpp_decoder
+  hidden_size: 256
+  action_dim: 30
+  action_horizon: 6
+  num_sampling_steps: 2
+  rollout_chunk_steps: 2
+
+training:
+  video_num_train_timesteps: 1000
+  action_num_train_timesteps: 1000
+  video_sigma_shift: 5.0
+  action_sigma_shift: 1.0
+  use_teacher_forcing: false
+
+inference:
+  video_num_inference_steps: 4
+  action_num_inference_steps: 4
+  use_cache: true
+  guidance_scale: 1.0
+
+trainer:
+  max_epochs: 1
+  limit_train_batches: 2
+  limit_val_batches: 1
+  log_every_n_steps: 1
+  accelerator: cpu
+  devices: 1
+  precision: 32-true
+  enable_checkpointing: false
+  enable_model_summary: false

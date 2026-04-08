@@ -49,6 +49,7 @@ class VisualFrontendOutput:
     canonical_video: torch.Tensor
     video_latents: torch.Tensor
     video_tokens: torch.Tensor
+    input_source: str
     token_grid: TokenGridMetadata
     chunk: ChunkMetadata
     conditioning: ConditioningState

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from open_wam.configs import (
     ActionDecoderName,
+    BatchAdapterName,
     BackboneImplementation,
     CausalVideoPredictionPolicyConfig,
     ExperimentConfig,
@@ -11,6 +12,8 @@ from open_wam.configs import (
     PostDecodedPolicyConfig,
     PostLatentPolicyConfig,
     RegisterAttachedPolicyConfig,
+    VideoConditionInputSpace,
+    VideoConditionTrainMode,
     VideoSequencePolicyConfig,
 )
 from open_wam.data import build_canonical_video_preprocessor
@@ -19,6 +22,7 @@ from open_wam.models.action_decoders import (
     LingbotParallelActionDecoder,
     MoTActionDecoder,
     VPPSequenceActionDecoder,
+    VideoConditionedActionDecoder,
     VideoOnlyActionDecoder,
 )
 from open_wam.models.policy_variants import (
@@ -164,6 +168,73 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
                 f"got num_action_layers={config.policy_variant.num_action_layers}, "
                 f"backbone.num_layers={config.backbone.num_layers}."
             )
+    if (
+        isinstance(config.policy_variant, (PostLatentPolicyConfig, PostDecodedPolicyConfig))
+        and config.action_decoder.name == ActionDecoderName.VIDEO_CONDITIONED
+    ):
+        direct_train_mode = config.action_decoder.train_mode == VideoConditionTrainMode.CURRENT_FRAME_REGRESSION
+        if config.policy_variant.local_video_window_frames > config.data.num_frames:
+            raise ValueError(
+                "Method-4 video-conditioned decoding requires `policy_variant.local_video_window_frames <= data.num_frames`, "
+                f"got local_video_window_frames={config.policy_variant.local_video_window_frames}, "
+                f"data.num_frames={config.data.num_frames}."
+            )
+        if config.action_decoder.action_horizon <= 0:
+            raise ValueError("Method-4 video-conditioned decoding requires `action_horizon > 0`.")
+        if not direct_train_mode and int(config.policy_variant.current_video_frame_index) != 0:
+            raise ValueError(
+                "Method-4 rollout-window decoding currently supports only `current_video_frame_index = 0`. "
+                "Non-zero sliding-window alignment is not implemented yet."
+            )
+        if direct_train_mode:
+            if config.policy_variant.video_condition_input_space == VideoConditionInputSpace.VIDEO_LATENT:
+                if config.trainer.batch_adapter != BatchAdapterName.LATENTS:
+                    raise ValueError(
+                        "Method-4 `current_frame_regression` with `video_latent` input requires the latent batch "
+                        "adapter so training sees dataset video latents directly, "
+                        f"got trainer.batch_adapter={config.trainer.batch_adapter!r}."
+                    )
+                if config.data.dataset_type != "lerobot_v2_latent_local":
+                    raise ValueError(
+                        "Method-4 `current_frame_regression` with `video_latent` input is currently maintained "
+                        "only for latent-local datasets, "
+                        f"got data.dataset_type={config.data.dataset_type!r}."
+                    )
+            if config.policy_variant.video_condition_input_space == VideoConditionInputSpace.RGB_VIDEO:
+                if config.trainer.batch_adapter != BatchAdapterName.VIEWS:
+                    raise ValueError(
+                        "Method-4 `current_frame_regression` with `rgb_video` input requires the view batch "
+                        "adapter so training sees raw RGB frames directly, "
+                        f"got trainer.batch_adapter={config.trainer.batch_adapter!r}."
+                    )
+                if config.data.dataset_type == "lerobot_v2_latent_local":
+                    raise ValueError(
+                        "Method-4 `current_frame_regression` with `rgb_video` input requires raw RGB dataset "
+                        "windows. Latent-local datasets enter through precomputed latents, so use "
+                        "`video_latent` there."
+                    )
+                if config.action_decoder.use_text_conditioning:
+                    raise ValueError(
+                        "Method-4 `current_frame_regression` with `rgb_video` input and the view batch adapter "
+                        "does not currently provide text embeddings. Set `action_decoder.use_text_conditioning=false` "
+                        "for this mode."
+                    )
+        elif (
+            config.policy_variant.video_condition_input_space == VideoConditionInputSpace.RGB_VIDEO
+            and config.data.dataset_type == "lerobot_v2_latent_local"
+        ):
+            raise ValueError(
+                "Method-4 `rgb_video` conditioning requires raw RGB to enter through the shared frontend/VAE path. "
+                "Latent-local datasets enter from precomputed latents, so use `video_latent` conditioning there."
+            )
+        if not direct_train_mode and config.data.dataset_type in {"lerobot_v2", "libero_hdf5"}:
+            raise ValueError(
+                "Method-4 video-conditioned current-action decoding is currently aligned only for latent-local "
+                "`standard_policy_window` style data. Raw LIBERO / raw LeRobot adapters anchor actions at the "
+                "last observed frame, so apples-to-apples current-action method-4 runs need a deliberate raw-data "
+                "alignment pass first. Use the latent-local method-4 configs or keep the explicit legacy "
+                "method-4 decoders on raw LIBERO for now."
+            )
 
 
 def build_policy_variant(config: ExperimentConfig):
@@ -275,6 +346,34 @@ def build_action_decoder(config: ExperimentConfig):
             inference_config=config.inference,
             dropout=decoder_config.dropout,
         )
+    if decoder_config.name == ActionDecoderName.VIDEO_CONDITIONED:
+        return VideoConditionedActionDecoder(
+            hidden_size=decoder_config.hidden_size,
+            action_dim=decoder_config.action_dim,
+            action_horizon=decoder_config.action_horizon,
+            context_dim=decoder_config.context_dim,
+            text_context_dim=decoder_config.text_context_dim,
+            state_dim=decoder_config.state_dim,
+            freq_dim=decoder_config.freq_dim,
+            num_layers=decoder_config.num_layers,
+            num_heads=decoder_config.num_heads,
+            attention_head_dim=decoder_config.attention_head_dim,
+            ffn_dim=decoder_config.ffn_dim,
+            cross_attn_norm=decoder_config.cross_attn_norm,
+            eps=decoder_config.eps,
+            input_space=decoder_config.input_space,
+            train_mode=decoder_config.train_mode,
+            action_chunk_anchor_mode=decoder_config.action_chunk_anchor_mode,
+            action_expert_init_mode=decoder_config.action_expert_init_mode,
+            rollout_chunk_steps=decoder_config.rollout_chunk_steps,
+            direct_latent_channels=decoder_config.direct_latent_channels,
+            direct_rgb_patch_size=decoder_config.direct_rgb_patch_size,
+            use_text_conditioning=decoder_config.use_text_conditioning,
+            use_state_conditioning=decoder_config.use_state_conditioning,
+            training_config=config.training,
+            inference_config=config.inference,
+            dropout=decoder_config.dropout,
+        )
     if decoder_config.name == ActionDecoderName.LINGBOT_PARALLEL:
         return LingbotParallelActionDecoder(
             hidden_size=decoder_config.hidden_size,
@@ -315,14 +414,22 @@ def build_action_decoder(config: ExperimentConfig):
 def build_variant_pipeline_from_config(config: ExperimentConfig) -> VariantPipeline:
     validate_experiment_config(config)
     policy_action_dim = _resolve_parallel_stream_model_action_dim(config)
+    visual_tower = VisualTower(
+        config.backbone,
+        action_dim=policy_action_dim,
+        state_dim=config.data.action_schema.state_dim,
+    )
+    policy_variant = build_policy_variant(config)
+    action_decoder = build_action_decoder(config)
+    if (
+        config.action_decoder.name == ActionDecoderName.VIDEO_CONDITIONED
+        and hasattr(action_decoder, "initialize_from_video_core")
+    ):
+        action_decoder.initialize_from_video_core(visual_tower.core)
     return VariantPipeline(
-        visual_tower=VisualTower(
-            config.backbone,
-            action_dim=policy_action_dim,
-            state_dim=config.data.action_schema.state_dim,
-        ),
-        policy_variant=build_policy_variant(config),
-        action_decoder=build_action_decoder(config),
+        visual_tower=visual_tower,
+        policy_variant=policy_variant,
+        action_decoder=action_decoder,
         preprocessor=build_canonical_video_preprocessor(config.data),
     )
 

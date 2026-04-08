@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 import yaml
 
 from open_wam.training import TrainingRuntime
@@ -24,7 +25,12 @@ def _write_temp_config(tmp_path: Path, *, source_name: str, output_name: str, mu
     return config_path
 
 
-def _build_step_runtime_config(config_path: Path, *, tmp_path: Path):
+def _build_step_runtime_config(
+    config_path: Path,
+    *,
+    tmp_path: Path,
+    batch_adapter: str = "views",
+):
     config = load_experiment_config(config_path)
     return replace(
         config,
@@ -35,7 +41,7 @@ def _build_step_runtime_config(config_path: Path, *, tmp_path: Path):
         trainer=replace(
             config.trainer,
             runtime="composable",
-            batch_adapter="views",
+            batch_adapter=batch_adapter,
             loop_policy="steps",
             strategy="single_device",
             default_root_dir=str(tmp_path),
@@ -44,6 +50,45 @@ def _build_step_runtime_config(config_path: Path, *, tmp_path: Path):
             enable_checkpointing=False,
         ),
     )
+
+
+@pytest.mark.parametrize(
+    "config_name",
+    [
+        "parallel_stream_robotwin_smoke.yaml",
+        "register_attached_robotwin_smoke.yaml",
+        "video_sequence_policy_robotwin_smoke.yaml",
+        "mot_robotwin_smoke.yaml",
+    ],
+)
+def test_composable_runtime_trains_shared_core_method_smokes(tmp_path: Path, config_name: str) -> None:
+    config_path = REPO_ROOT / "configs/experiments" / config_name
+    config = _build_step_runtime_config(config_path, tmp_path=tmp_path)
+
+    runtime = TrainingRuntime.from_config(config)
+    final_state = runtime.run()
+
+    assert final_state.optimizer_step == 1
+
+
+def test_composable_runtime_trains_causal_video_prediction_smoke(tmp_path: Path) -> None:
+    config_path = REPO_ROOT / "configs/experiments/causal_video_prediction_robotwin_smoke.yaml"
+    config = _build_step_runtime_config(config_path, tmp_path=tmp_path, batch_adapter="latents")
+
+    runtime = TrainingRuntime.from_config(config)
+    final_state = runtime.run()
+
+    assert final_state.optimizer_step == 1
+
+
+def test_training_runtime_initializes_mot_variant_before_strategy_wrap(tmp_path: Path) -> None:
+    config_path = REPO_ROOT / "configs/experiments/mot_robotwin_smoke.yaml"
+    config = _build_step_runtime_config(config_path, tmp_path=tmp_path)
+
+    runtime = TrainingRuntime.from_config(config)
+    pipeline = runtime.strategy.unwrap_model(runtime.model)
+
+    assert pipeline.policy_variant._action_expert_initialized is True
 
 
 def test_composable_runtime_logs_checkpoints_and_resume(tmp_path: Path) -> None:
@@ -175,6 +220,30 @@ def test_composable_runtime_trains_post_decoded_with_multi_layer_visual_readout(
         output_name="post_decoded_multi_layer_runtime",
         mutate=_mutate,
     )
+    config = _build_step_runtime_config(config_path, tmp_path=tmp_path)
+
+    runtime = TrainingRuntime.from_config(config)
+    final_state = runtime.run()
+
+    assert final_state.optimizer_step == 1
+
+
+def test_composable_runtime_trains_method4_with_implicit_video_conditioned_decoder(tmp_path: Path) -> None:
+    post_latent_path = REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml"
+    post_latent_config = _build_step_runtime_config(post_latent_path, tmp_path=tmp_path)
+    post_latent_runtime = TrainingRuntime.from_config(post_latent_config)
+    post_latent_state = post_latent_runtime.run()
+    assert post_latent_state.optimizer_step == 1
+
+    post_decoded_path = REPO_ROOT / "configs/experiments/post_decoded_robotwin_video_conditioned.yaml"
+    post_decoded_config = _build_step_runtime_config(post_decoded_path, tmp_path=tmp_path)
+    post_decoded_runtime = TrainingRuntime.from_config(post_decoded_config)
+    post_decoded_state = post_decoded_runtime.run()
+    assert post_decoded_state.optimizer_step == 1
+
+
+def test_composable_runtime_trains_method4_current_frame_regression_mode(tmp_path: Path) -> None:
+    config_path = REPO_ROOT / "configs/experiments/post_decoded_robotwin_current_frame_regression.yaml"
     config = _build_step_runtime_config(config_path, tmp_path=tmp_path)
 
     runtime = TrainingRuntime.from_config(config)

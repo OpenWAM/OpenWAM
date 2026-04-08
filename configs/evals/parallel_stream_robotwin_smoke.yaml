@@ -1,0 +1,6 @@
+name: parallel_stream_robotwin_smoke_eval
+experiment_config: configs/experiments/parallel_stream_robotwin_smoke.yaml
+mode: batch
+split: val
+batch_size: 1
+max_batches: 1

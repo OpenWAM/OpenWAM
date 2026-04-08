@@ -17,10 +17,40 @@ class ActionDecoderName(StrEnum):
     MLP = "mlp_decoder"
     REGISTER = "register_decoder"
     DECODED_FEATURE = "decoded_feature_decoder"
+    VIDEO_CONDITIONED = "video_conditioned_action_decoder"
     VPP = "vpp_decoder"
     LINGBOT_PARALLEL = "lingbot_parallel_decoder"
     MOT = "mot_decoder"
     VIDEO_ONLY = "video_only_decoder"
+
+
+class ActionChunkAnchorMode(StrEnum):
+    """How an action chunk is anchored relative to the local video window."""
+
+    FUTURE_ONLY = "future_only"
+    CURRENT_PLUS_FUTURE = "current_plus_future"
+
+
+class ActionExpertInitMode(StrEnum):
+    """How a reusable action expert should initialize from the shared video core."""
+
+    RANDOM = "random"
+    VIDEO_WEIGHT_COPY = "video_weight_copy"
+    VIDEO_WEIGHT_INTERPOLATE = "video_weight_interpolate"
+
+
+class VideoConditionInputSpace(StrEnum):
+    """Which video-space family a method-4 action decoder should treat as input."""
+
+    VIDEO_LATENT = "video_latent"
+    RGB_VIDEO = "rgb_video"
+
+
+class VideoConditionTrainMode(StrEnum):
+    """How a method-4 video-conditioned decoder is trained."""
+
+    ROLLOUT_WINDOW_DIFFUSION = "rollout_window_diffusion"
+    CURRENT_FRAME_REGRESSION = "current_frame_regression"
 
 
 class DataSplit(StrEnum):
