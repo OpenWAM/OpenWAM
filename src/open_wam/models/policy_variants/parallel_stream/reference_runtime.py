@@ -998,7 +998,6 @@ def run_parallel_exact_cache_warmup(
         "batch_size": cache_context.batch_size,
         "step_index": int(infer_cache.get("step_index", 0)),
         "use_cfg": cache_context.use_cfg,
-        "joint_condition_latents": observed_video_latents[:, :, -inference_config.frame_chunk_size :].detach().clone(),
         "debug_last_warmup": debug,
     }
 
@@ -1032,9 +1031,6 @@ def run_parallel_exact_inference_rollout(
         batch_size = int(infer_cache["batch_size"])
         latent_height = int(infer_cache["latent_height"])
         latent_width = int(infer_cache["latent_width"])
-        cached_condition_latents = infer_cache.get("joint_condition_latents")
-        if isinstance(cached_condition_latents, torch.Tensor):
-            condition_latents = cached_condition_latents.to(device=device)
     cache_context, text_emb, negative_text_emb = _resolve_exact_cache_context(
         transformer=transformer,
         backbone_config=backbone_config,
@@ -1341,19 +1337,33 @@ def _run_parallel_exact_joint_forward_manual(
         tuple(int(length) for length in split_list),
         dim=1,
     )
+    effective_batch_size = int(input_dict["latent_dict"]["noisy_latents"].shape[0])  # type: ignore[index]
     latent_hidden_states = transformer.proj_out(latent_hidden_states)
-    latent_hidden_states = rearrange(
-        latent_hidden_states,
-        "1 (b l) (n c) -> b (l n) c",
-        n=math.prod(transformer.patch_size),
-        b=batch_size,
-    )
+    if latent_hidden_states.shape[0] == 1:
+        latent_hidden_states = rearrange(
+            latent_hidden_states,
+            "1 (b l) c -> b l c",
+            b=effective_batch_size,
+        )
+    elif latent_hidden_states.shape[0] == effective_batch_size:
+        latent_hidden_states = latent_hidden_states.contiguous()
+    else:
+        raise ValueError(
+            "Unexpected exact joint latent output layout: expected leading dimension to be 1 "
+            f"or effective_batch_size={effective_batch_size}, got {latent_hidden_states.shape[0]}."
+        )
     action_hidden_states = transformer.action_proj_out(action_hidden_states)
-    action_hidden_states = rearrange(
-        action_hidden_states,
-        "1 (b l) c -> b l c",
-        b=batch_size,
-    )
+    if action_hidden_states.shape[0] == 1:
+        action_hidden_states = rearrange(
+            action_hidden_states,
+            "1 (b l) c -> b l c",
+            b=effective_batch_size,
+        )
+    elif action_hidden_states.shape[0] != effective_batch_size:
+        raise ValueError(
+            "Unexpected exact joint action output layout: expected leading dimension to be 1 "
+            f"or effective_batch_size={effective_batch_size}, got {action_hidden_states.shape[0]}."
+        )
     return latent_hidden_states, action_hidden_states
 
 
@@ -1367,7 +1377,58 @@ def _run_parallel_action_conditioned_forward(
     update_cache: int = 0,
     cache_name: str = "open_wam_exact",
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    def _split_cfg_prediction(
+        prediction: torch.Tensor,
+        *,
+        logical_batch_size: int,
+        expected_tokens: int,
+        name: str,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if prediction.ndim != 3:
+            raise ValueError(f"Expected {name} prediction rank 3, got shape {tuple(prediction.shape)}.")
+        if prediction.shape[0] == logical_batch_size * 2 and prediction.shape[1] == expected_tokens:
+            return prediction[:logical_batch_size], prediction[logical_batch_size:]
+        if prediction.shape[0] == logical_batch_size * 2 and prediction.shape[1] == logical_batch_size * 2 * expected_tokens:
+            packed = rearrange(
+                prediction,
+                "(g b_row) (h b_seq l) c -> g b_row h b_seq l c",
+                g=2,
+                h=2,
+                b_row=logical_batch_size,
+                b_seq=logical_batch_size,
+                l=expected_tokens,
+            )
+            batch_index = torch.arange(logical_batch_size, device=prediction.device)
+            cond = packed[0, batch_index, 0, batch_index]
+            uncond = packed[1, batch_index, 1, batch_index]
+            return cond.contiguous(), uncond.contiguous()
+        if prediction.shape[0] == logical_batch_size and prediction.shape[1] == expected_tokens * 2:
+            return prediction[:, :expected_tokens], prediction[:, expected_tokens:]
+        if prediction.shape[0] == 1 and prediction.shape[1] == logical_batch_size * expected_tokens * 2:
+            unpacked = rearrange(
+                prediction,
+                "1 (g b l) c -> (g b) l c",
+                g=2,
+                b=logical_batch_size,
+                l=expected_tokens,
+            )
+            return unpacked[:logical_batch_size], unpacked[logical_batch_size:]
+        raise ValueError(
+            f"Unable to split CFG {name} prediction with shape {tuple(prediction.shape)}; "
+            f"expected logical_batch_size={logical_batch_size}, expected_tokens={expected_tokens}."
+        )
+
     batch_size = input_dict["latent_dict"]["noisy_latents"].shape[0]  # type: ignore[index]
+    latent_noisy = input_dict["latent_dict"]["noisy_latents"]  # type: ignore[index]
+    action_noisy = input_dict["action_dict"]["noisy_latents"]  # type: ignore[index]
+    expected_video_tokens = (
+        int(latent_noisy.shape[2]) // transformer.patch_size[0]
+    ) * (
+        int(latent_noisy.shape[3]) // transformer.patch_size[1]
+    ) * (
+        int(latent_noisy.shape[4]) // transformer.patch_size[2]
+    )
+    expected_action_tokens = int(action_noisy.shape[2]) * int(action_noisy.shape[3])
     use_cfg = negative_text_emb is not None and (video_guidance_scale > 1.0 or action_guidance_scale > 1.0)
     effective_input = input_dict
     if use_cfg:
@@ -1381,10 +1442,18 @@ def _run_parallel_action_conditioned_forward(
         )
     if not use_cfg:
         return video_pred, action_pred
-    cond_video_pred = video_pred[:batch_size]
-    uncond_video_pred = video_pred[batch_size:]
-    cond_action_pred = action_pred[:batch_size]
-    uncond_action_pred = action_pred[batch_size:]
+    cond_video_pred, uncond_video_pred = _split_cfg_prediction(
+        video_pred,
+        logical_batch_size=batch_size,
+        expected_tokens=expected_video_tokens,
+        name="video",
+    )
+    cond_action_pred, uncond_action_pred = _split_cfg_prediction(
+        action_pred,
+        logical_batch_size=batch_size,
+        expected_tokens=expected_action_tokens,
+        name="action",
+    )
     combined_video_pred = uncond_video_pred + video_guidance_scale * (cond_video_pred - uncond_video_pred)
     combined_action_pred = uncond_action_pred + action_guidance_scale * (cond_action_pred - uncond_action_pred)
     return combined_video_pred, combined_action_pred
@@ -1751,22 +1820,17 @@ def run_parallel_action_conditioned_inference_rollout(
         device=device,
         dtype=model_dtype,
     )
-    # Keep the LingBot clean/noise layout, but change only the denoising loop:
-    # - the clean video branch carries the currently available visual context
-    # - the clean action branch stays as the LingBot-style null/zero condition
-    # - both noisy branches are updated together inside one joint solver loop
-    if condition_latents is not None:
-        condition_video_latents = _expand_condition_video_latents(
-            condition_latents.to(dtype=model_dtype),
-            target_frames=inference_config.frame_chunk_size,
-        )
-    else:
-        condition_video_latents = torch.zeros_like(latents)
-    condition_action_latents = _build_action_condition_volume(
-        batch_size=batch_size,
-        action_dim=action_dim,
-        frame_chunk_size=inference_config.frame_chunk_size,
-        action_per_frame=policy_config.action_per_frame,
+    # Keep the packed four-branch sequence contract for compatibility with the
+    # trained backbone, but do not provide any explicit clean conditioning
+    # signal at inference time. History should come only from the runtime
+    # cache; the clean branches are zero placeholders.
+    condition_video_latents = torch.zeros_like(latents)
+    condition_action_latents = torch.zeros(
+        batch_size,
+        action_dim,
+        inference_config.frame_chunk_size,
+        policy_config.action_per_frame,
+        1,
         device=device,
         dtype=model_dtype,
     )
@@ -1911,11 +1975,6 @@ def run_parallel_action_conditioned_inference_rollout(
         "batch_size": batch_size,
         "step_index": int(infer_cache.get("step_index", 0) + 1),
         "use_cfg": cache_context.use_cfg,
-        "joint_condition_latents": (
-            condition_latents[:, :, -inference_config.frame_chunk_size :].detach().clone()
-            if condition_latents is not None
-            else infer_cache.get("joint_condition_latents")
-        ),
     }
     debug = {
         "runtime_mode": "lingbot_exact_action_conditioned",
@@ -1928,6 +1987,7 @@ def run_parallel_action_conditioned_inference_rollout(
         "video_action_attention_scope": str(policy_config.video_action_attention_scope),
         "couple_action_to_video_timesteps": bool(policy_config.couple_action_to_video_timesteps),
         "joint_denoise": True,
+        "uses_explicit_clean_condition": False,
         "use_cache": bool(inference_config.use_cache),
         "cache_commit_mode": cache_spec.write_mode,
         "use_cfg": cache_context.use_cfg,
