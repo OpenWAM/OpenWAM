@@ -160,6 +160,7 @@ class VPPActionDecoderConfig(ActionDecoderConfig):
     rollout_chunk_steps: int | None = None
     compressed_tokens_per_frame: int = 2
     compression_depth: int = 2
+    temporal_compression_max_frames: int = 32
     num_heads: int = 8
     encoder_layers: int = 2
     decoder_layers: int = 2
@@ -181,6 +182,11 @@ class VPPActionDecoderConfig(ActionDecoderConfig):
                 "diffusion_sampler": DiffusionSampler,
             },
         )
+        if int(self.temporal_compression_max_frames) <= 0:
+            raise ValueError(
+                "VPP action decoder requires `temporal_compression_max_frames > 0`, "
+                f"got {self.temporal_compression_max_frames!r}."
+            )
 
 
 @dataclass(frozen=True)

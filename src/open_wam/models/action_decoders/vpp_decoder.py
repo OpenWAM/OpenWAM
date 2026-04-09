@@ -65,6 +65,7 @@ class VPPSequenceActionDecoder(SequenceActionDecoder):
             depth=config.compression_depth,
             num_heads=config.num_heads,
             dropout=config.dropout,
+            max_frames=config.temporal_compression_max_frames,
         )
         self.goal_conditioning = build_goal_conditioning_adapter(
             config.goal_conditioning_adapter_family,

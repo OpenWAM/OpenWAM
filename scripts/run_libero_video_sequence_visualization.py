@@ -53,8 +53,9 @@ def main() -> None:
     parser.add_argument(
         "--checkpoint",
         type=str,
-        required=True,
-        help="Checkpoint file, checkpoint_step_* directory, or run directory.",
+        default=None,
+        help="Checkpoint file, checkpoint_step_* directory, or run directory. "
+        "If omitted, infer from `backbone.transformer_subdir` in the config.",
     )
     parser.add_argument("--benchmark", type=str, default="libero_10")
     parser.add_argument("--task-id", type=int, default=0)
@@ -96,7 +97,10 @@ def main() -> None:
     if args.action_steps is not None:
         object.__setattr__(config.inference, "action_num_inference_steps", int(args.action_steps))
 
-    checkpoint_path = _resolve_checkpoint_file(Path(args.checkpoint))
+    checkpoint_path = _resolve_checkpoint_path_from_args_or_config(
+        checkpoint_arg=args.checkpoint,
+        transformer_subdir=str(config.backbone.transformer_subdir),
+    )
     checkpoint_step_dir = checkpoint_path.parent
     transformer_dir = checkpoint_step_dir / "transformer"
     if transformer_dir.is_dir():
@@ -424,6 +428,37 @@ def _resolve_checkpoint_file(path: Path) -> Path:
         if full_state.is_file():
             return full_state
     raise FileNotFoundError(f"Could not resolve model_state.pt or full_training_state.pt from {path}.")
+
+
+def _resolve_checkpoint_path_from_args_or_config(
+    *,
+    checkpoint_arg: str | None,
+    transformer_subdir: str | None,
+) -> Path:
+    if checkpoint_arg is not None:
+        return _resolve_checkpoint_file(Path(checkpoint_arg))
+    if transformer_subdir is None:
+        raise ValueError("Either `--checkpoint` must be provided or `backbone.transformer_subdir` must be set.")
+
+    transformer_dir = Path(transformer_subdir).expanduser().resolve()
+    checkpoint_step_dir = _resolve_checkpoint_step_dir_from_transformer_dir(transformer_dir)
+    return _resolve_checkpoint_file(checkpoint_step_dir)
+
+
+def _resolve_checkpoint_step_dir_from_transformer_dir(transformer_dir: Path) -> Path:
+    candidate = transformer_dir
+    if candidate.name != "transformer":
+        raise FileNotFoundError(
+            "Expected `backbone.transformer_subdir` to point at a `.../checkpoint_step_*/transformer` directory, "
+            f"got {transformer_dir}."
+        )
+    checkpoint_step_dir = candidate.parent
+    if not checkpoint_step_dir.name.startswith("checkpoint_step_"):
+        raise FileNotFoundError(
+            "Unable to infer checkpoint directory from `backbone.transformer_subdir`; expected parent directory "
+            f"named `checkpoint_step_*`, got {checkpoint_step_dir}."
+        )
+    return checkpoint_step_dir
 
 
 def _resolve_task_spec(benchmark_name: str, task_id: int) -> tuple[LiberoTaskSpec, str]:

@@ -313,6 +313,7 @@ def build_temporal_compression_adapter(
     depth: int = 2,
     num_heads: int = 8,
     dropout: float = 0.0,
+    max_frames: int = 32,
 ) -> TemporalCompressionAdapter:
     resolved = TemporalCompressionAdapterFamily(family)
     if resolved == TemporalCompressionAdapterFamily.IDENTITY:
@@ -329,6 +330,7 @@ def build_temporal_compression_adapter(
             depth=depth,
             num_heads=num_heads,
             dropout=dropout,
+            max_frames=max_frames,
         )
     if resolved == TemporalCompressionAdapterFamily.VIDEO_FORMER_3D:
         if hidden_size is None:
@@ -339,5 +341,6 @@ def build_temporal_compression_adapter(
             depth=depth,
             num_heads=num_heads,
             dropout=dropout,
+            max_frames=max_frames,
         )
     raise ValueError(f"Unsupported temporal compression adapter family '{resolved}'.")

@@ -664,6 +664,7 @@ def _load_action_decoder_config(
             rollout_chunk_steps=resolved_raw.get("rollout_chunk_steps"),
             compressed_tokens_per_frame=resolved_raw.get("compressed_tokens_per_frame", 2),
             compression_depth=resolved_raw.get("compression_depth", 2),
+            temporal_compression_max_frames=resolved_raw.get("temporal_compression_max_frames", 32),
             num_heads=resolved_raw.get("num_heads", 8),
             encoder_layers=resolved_raw.get("encoder_layers", 2),
             decoder_layers=resolved_raw.get("decoder_layers", 2),
