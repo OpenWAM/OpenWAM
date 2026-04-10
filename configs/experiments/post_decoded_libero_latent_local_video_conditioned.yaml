@@ -81,8 +81,13 @@ policy_variant:
   local_video_window_frames: 4
   current_video_frame_index: 0
 
-# Intentionally omit `action_decoder` so method 4 uses the new
-# `video_conditioned_action_decoder` default path.
+action_decoder:
+  name: video_conditioned_action_decoder
+  # Use a shallow action expert initialized from the trained 30-layer video
+  # backbone. This keeps the method-4 run launchable on a single L40S while
+  # preserving the video-backbone warm start.
+  num_layers: 4
+  action_expert_init_mode: video_weight_interpolate
 
 training:
   video_num_train_timesteps: 1000
@@ -104,7 +109,9 @@ training:
   enabled_objectives: [action]
   latent_loss_weight: 0.0
   action_loss_weight: 1.0
-  trainable_components: [visual_tower.runtime_backbone, policy_variant, action_decoder]
+  # Start from the trained video-only backbone and copied action expert blocks.
+  # Train only the small method-4 policy surface plus action decoder adapters.
+  trainable_components: [policy_variant, action_decoder.adapters]
 
 inference:
   video_num_inference_steps: 20

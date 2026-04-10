@@ -357,10 +357,15 @@ def init_conditioned_action_expert_from_video_core(
         return
     if mode not in {"video_weight_copy", "video_weight_interpolate"}:
         raise ValueError(f"Unsupported action expert init mode {mode!r}.")
-    if len(action_expert.blocks) != len(video_core.blocks):
+    video_blocks = _select_video_blocks_for_action_expert(
+        video_blocks=video_core.blocks,
+        target_layer_count=len(action_expert.blocks),
+        mode=mode,
+    )
+    if len(action_expert.blocks) != len(video_blocks):
         raise ValueError(
-            "Action expert initialization requires matching layer counts, "
-            f"got action={len(action_expert.blocks)}, video={len(video_core.blocks)}."
+            "Action expert initialization resolved the wrong number of source layers, "
+            f"got action={len(action_expert.blocks)}, selected_video={len(video_blocks)}."
         )
     if action_expert.num_heads != int(video_core.config.num_heads):
         raise ValueError(
@@ -379,7 +384,7 @@ def init_conditioned_action_expert_from_video_core(
     with torch.no_grad():
         _load_resized_state_dict(
             action_expert.time_conditioner,
-            video_core.action_time_conditioner.state_dict(),
+            video_core.time_conditioner.state_dict(),
             allow_resize=(mode == "video_weight_interpolate"),
         )
         if tuple(action_expert.scale_shift_table.shape) == tuple(video_core.scale_shift_table.shape):
@@ -397,12 +402,46 @@ def init_conditioned_action_expert_from_video_core(
                 f"got action={tuple(action_expert.scale_shift_table.shape)}, "
                 f"video={tuple(video_core.scale_shift_table.shape)}."
             )
-        for action_block, video_block in zip(action_expert.blocks, video_core.blocks, strict=True):
+        for action_block, video_block in zip(action_expert.blocks, video_blocks, strict=True):
             _load_resized_state_dict(
                 action_block,
                 video_block.state_dict(),
                 allow_resize=(mode == "video_weight_interpolate"),
             )
+
+
+def _select_video_blocks_for_action_expert(
+    *,
+    video_blocks: nn.ModuleList,
+    target_layer_count: int,
+    mode: str,
+) -> list[nn.Module]:
+    source_layer_count = len(video_blocks)
+    target_layer_count = int(target_layer_count)
+    if target_layer_count <= 0:
+        raise ValueError("Action expert initialization requires at least one action layer.")
+    if source_layer_count == target_layer_count:
+        return list(video_blocks)
+    if mode != "video_weight_interpolate":
+        raise ValueError(
+            "Action expert copy initialization requires matching layer counts. "
+            "Use `action_expert_init_mode = video_weight_interpolate` for a shallower action expert, "
+            f"got action={target_layer_count}, video={source_layer_count}."
+        )
+    if source_layer_count <= 0:
+        raise ValueError("Action expert initialization requires at least one source video layer.")
+    if target_layer_count > source_layer_count:
+        raise ValueError(
+            "`action_expert_init_mode = video_weight_interpolate` supports matching or shallower action experts only, "
+            f"got action={target_layer_count}, video={source_layer_count}."
+        )
+    if target_layer_count == 1:
+        return [video_blocks[-1]]
+    selected_indices = [
+        round(index * (source_layer_count - 1) / (target_layer_count - 1))
+        for index in range(target_layer_count)
+    ]
+    return [video_blocks[int(index)] for index in selected_indices]
 
 
 def _interpolate_last_dim(tensor: torch.Tensor, new_size: int) -> torch.Tensor:

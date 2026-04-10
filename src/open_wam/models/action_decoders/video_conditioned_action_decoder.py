@@ -130,6 +130,23 @@ class VideoConditionedActionDecoder(SequenceActionDecoder):
         )
         self._action_expert_initialized = True
 
+    def trainable_adapter_modules(self) -> list[nn.Module]:
+        """Return the lightweight trainable surface for frozen-backbone warm starts."""
+
+        modules: list[nn.Module] = [
+            self.action_expert.action_embedder,
+            self.action_expert.context_proj,
+            self.action_expert.action_proj_out,
+            self.direct_latent_proj,
+            self.direct_rgb_proj,
+            self.direct_current_action_head,
+        ]
+        if self.goal_proj is not None:
+            modules.append(self.goal_proj)
+        if self.state_proj is not None:
+            modules.append(self.state_proj)
+        return modules
+
     @staticmethod
     def _require_video_condition_window(sequence_context: DecoderSequenceContext) -> VideoConditionWindowContext:
         if sequence_context.video_condition_window is None:

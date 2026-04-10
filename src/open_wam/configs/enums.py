@@ -623,6 +623,7 @@ class TrainingComponentSelector(StrEnum):
     POLICY_VARIANT = "policy_variant"
     POLICY_VARIANT_ACTION_EXPERT = "policy_variant.action_expert"
     ACTION_DECODER = "action_decoder"
+    ACTION_DECODER_ADAPTERS = "action_decoder.adapters"
 
 
 # Backbone/evaluation enums.

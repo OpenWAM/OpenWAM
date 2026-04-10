@@ -105,7 +105,9 @@ training:
   enabled_objectives: [action]
   latent_loss_weight: 0.0
   action_loss_weight: 1.0
-  trainable_components: [action_decoder]
+  # Current-frame regression uses only the direct adapter/head path; keep the
+  # copied transformer action expert frozen.
+  trainable_components: [action_decoder.adapters]
 
 inference:
   video_num_inference_steps: 20

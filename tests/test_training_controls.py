@@ -83,3 +83,26 @@ def test_apply_training_component_controls_supports_mot_action_expert_selector()
     assert all(not parameter.requires_grad for parameter in pipeline.visual_tower.frontend.parameters())
     assert all(not parameter.requires_grad for parameter in pipeline.visual_tower.core.parameters())
     assert all(parameter.requires_grad for parameter in pipeline.policy_variant.action_expert.parameters())
+
+
+def test_apply_training_component_controls_supports_action_decoder_adapter_selector() -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml")
+    config = replace(
+        config,
+        training=replace(
+            config.training,
+            trainable_components=("action_decoder.adapters",),
+        ),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+
+    report = apply_training_component_controls(pipeline, config.training)
+
+    assert report.trainable_components == ("action_decoder.adapters",)
+    assert report.trainable_parameters > 0
+    assert report.trainable_parameters < report.total_parameters
+    assert all(not parameter.requires_grad for parameter in pipeline.visual_tower.core.parameters())
+    assert all(not parameter.requires_grad for parameter in pipeline.action_decoder.action_expert.blocks.parameters())
+    assert all(parameter.requires_grad for parameter in pipeline.action_decoder.action_expert.action_embedder.parameters())
+    assert all(parameter.requires_grad for parameter in pipeline.action_decoder.action_expert.context_proj.parameters())
+    assert all(parameter.requires_grad for parameter in pipeline.action_decoder.action_expert.action_proj_out.parameters())

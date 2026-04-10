@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import pytest
 import torch
 from torch import nn
 
 from open_wam.configs import InferenceConfig, TrainingConfig
 from open_wam.models.action_decoders import VideoConditionedActionDecoder
 from open_wam.models.action_decoders.base import DecoderRolloutState, DirectActionDecoderTrainInputs
+from open_wam.models.action_decoders.video_conditioned_expert import (
+    VideoConditionedActionExpert,
+    init_conditioned_action_expert_from_video_core,
+)
 from open_wam.models.policy_variants.contracts import (
     DecoderSequenceContext,
     PolicyInferOutput,
@@ -192,3 +199,127 @@ def test_video_conditioned_decoder_uses_configured_dropout() -> None:
 
     assert isinstance(decoder.context_dropout, nn.Dropout)
     assert decoder.context_dropout.p == 0.25
+
+
+def test_video_conditioned_action_expert_initializes_time_conditioning_from_video_side() -> None:
+    source_core = VideoConditionedActionExpert(
+        hidden_size=32,
+        action_dim=3,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        ffn_dim=64,
+        freq_dim=8,
+        context_dim=32,
+    )
+    source_core.config = SimpleNamespace(num_heads=4, attention_head_dim=8, hidden_size=32)
+    source_core.action_time_conditioner = VideoConditionedActionExpert(
+        hidden_size=32,
+        action_dim=3,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        ffn_dim=64,
+        freq_dim=8,
+        context_dim=32,
+    ).time_conditioner
+    target_expert = VideoConditionedActionExpert(
+        hidden_size=32,
+        action_dim=3,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        ffn_dim=64,
+        freq_dim=8,
+        context_dim=32,
+    )
+
+    with torch.no_grad():
+        for parameter in source_core.time_conditioner.parameters():
+            parameter.fill_(0.25)
+        for parameter in source_core.action_time_conditioner.parameters():
+            parameter.fill_(0.75)
+
+    init_conditioned_action_expert_from_video_core(
+        action_expert=target_expert,
+        video_core=source_core,
+        mode="video_weight_copy",
+    )
+
+    for target, source in zip(
+        target_expert.time_conditioner.parameters(),
+        source_core.time_conditioner.parameters(),
+        strict=True,
+    ):
+        assert torch.allclose(target, source)
+
+
+def test_video_conditioned_action_expert_can_interpolate_from_deeper_video_core() -> None:
+    source_core = VideoConditionedActionExpert(
+        hidden_size=32,
+        action_dim=3,
+        num_layers=3,
+        num_heads=4,
+        attention_head_dim=8,
+        ffn_dim=64,
+        freq_dim=8,
+        context_dim=32,
+    )
+    source_core.config = SimpleNamespace(num_heads=4, attention_head_dim=8, hidden_size=32)
+    target_expert = VideoConditionedActionExpert(
+        hidden_size=32,
+        action_dim=3,
+        num_layers=2,
+        num_heads=4,
+        attention_head_dim=8,
+        ffn_dim=64,
+        freq_dim=8,
+        context_dim=32,
+    )
+
+    with torch.no_grad():
+        for layer_index, block in enumerate(source_core.blocks):
+            for parameter in block.parameters():
+                parameter.fill_(float(layer_index + 1))
+
+    init_conditioned_action_expert_from_video_core(
+        action_expert=target_expert,
+        video_core=source_core,
+        mode="video_weight_interpolate",
+    )
+
+    first_target_weight = next(target_expert.blocks[0].parameters())
+    last_target_weight = next(target_expert.blocks[1].parameters())
+    assert torch.allclose(first_target_weight, torch.full_like(first_target_weight, 1.0))
+    assert torch.allclose(last_target_weight, torch.full_like(last_target_weight, 3.0))
+
+
+def test_video_conditioned_action_expert_rejects_deeper_action_expert_interpolation() -> None:
+    source_core = VideoConditionedActionExpert(
+        hidden_size=32,
+        action_dim=3,
+        num_layers=2,
+        num_heads=4,
+        attention_head_dim=8,
+        ffn_dim=64,
+        freq_dim=8,
+        context_dim=32,
+    )
+    source_core.config = SimpleNamespace(num_heads=4, attention_head_dim=8, hidden_size=32)
+    target_expert = VideoConditionedActionExpert(
+        hidden_size=32,
+        action_dim=3,
+        num_layers=3,
+        num_heads=4,
+        attention_head_dim=8,
+        ffn_dim=64,
+        freq_dim=8,
+        context_dim=32,
+    )
+
+    with pytest.raises(ValueError, match="shallower action experts only"):
+        init_conditioned_action_expert_from_video_core(
+            action_expert=target_expert,
+            video_core=source_core,
+            mode="video_weight_interpolate",
+        )

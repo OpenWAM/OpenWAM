@@ -305,7 +305,6 @@ class TrainingRuntime:
         should_write = (
             self.config.trainer.enable_checkpointing
             or self.config.trainer.save_interval is not None
-            or self.config.trainer.export_runtime_backbone
         )
         if not should_write:
             return

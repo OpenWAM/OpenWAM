@@ -1,7 +1,8 @@
 # Open-WAM
 
-Open-WAM is a research codebase for studying **where to attach the action head**
-in a world action model while keeping the **video backbone fixed**.
+Open-WAM is a research codebase for studying **where and how to attach action
+policy logic** in a world action model while keeping the **video backbone
+fixed**.
 
 The current implementation is organized around one constraint:
 
@@ -13,8 +14,8 @@ The current implementation is organized around one constraint:
 The repo currently includes:
 
 - a stage-aware `VisualTower + PolicyVariant + ActionDecoder` stack
-- runnable `parallel_stream`, `register_attached`, `post_latent`, and
-  `post_decoded` policy variants
+- runnable `parallel_stream`, `register_attached`, `video_sequence_policy`,
+  `post_latent`, `post_decoded`, `mot`, and `causal_video_prediction` variants
 - a LingBot replica backbone as the default shared-core family for real
   multimodal variants
 - a shared runtime backbone knob under `backbone.implementation`:
@@ -54,8 +55,9 @@ Important source packages:
 - `src/open_wam/data`: dataset adapters, collation, and canonical RGB preprocessing
 - `src/open_wam/models/visual_tower`: shared visual frontend, core, decode
   boundary, and exact LingBot reference loader
-- `src/open_wam/models/policy_variants`: `parallel_stream`,
-  `register_attached`, `post_latent`, and `post_decoded` attachment paths
+- `src/open_wam/models/policy_variants`: method-specific train/infer behavior
+  for `parallel_stream`, `register_attached`, `video_sequence_policy`,
+  `post_latent`, `post_decoded`, `mot`, and `causal_video_prediction`
 - `src/open_wam/models/action_decoders`: action decoders and losses
 - `src/open_wam/models/video_backbone`: backbone config and compatibility contracts
 - `src/open_wam/pipelines`: variant pipeline, exact LingBot runner, and rollout helpers
@@ -71,7 +73,7 @@ Important source packages:
 - Camera names, camera count, layout, action dimension, action horizon, and state dimension should be configurable from YAML.
 - Dataset-specific parsing should stay inside dataset adapters registered by `data.dataset_type`.
 - Dataset adapters may expose transformed action supervision, not just raw controller deltas.
-- All four methodologies should continue to share the same top-level `VariantPipeline -> VisualTower` boundary even when their within-core runtimes differ.
+- All method families should continue to share the same top-level `VariantPipeline -> VisualTower` boundary even when their within-core runtimes differ.
 - For the canonical multimodal methods, differences should come from runtime
   programs, sequence semantics, cache policy, and decoders rather than from
   swapping out the transformer object underneath them.
@@ -398,7 +400,7 @@ Start here for collaborator-facing context:
 - [notes/collaboration_guide.md](notes/collaboration_guide.md)
 - [notes/architecture.md](notes/architecture.md)
 - [notes/current_all_variant_execution_status.md](notes/current_all_variant_execution_status.md)
-- [notes/current_four_method_architecture.md](notes/current_four_method_architecture.md)
+- [notes/current_method_architecture.md](notes/current_method_architecture.md)
 - [notes/libero_exact_rendering.md](notes/libero_exact_rendering.md)
 - [notes/lingbot_reference_usage.md](notes/lingbot_reference_usage.md)
 - [notes/libero_lerobot.md](notes/libero_lerobot.md)

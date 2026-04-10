@@ -162,6 +162,32 @@ def test_composable_runtime_exports_runtime_backbone(tmp_path: Path) -> None:
     assert (checkpoint_dir / "config.json").exists()
 
 
+def test_composable_runtime_disable_checkpointing_suppresses_export_runtime_backbone(tmp_path: Path) -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
+    config = replace(
+        config,
+        training=replace(config.training, num_steps=1),
+        trainer=replace(
+            config.trainer,
+            runtime="composable",
+            batch_adapter="latents",
+            loop_policy="steps",
+            strategy="single_device",
+            default_root_dir=str(tmp_path),
+            enable_checkpointing=False,
+            save_interval=None,
+            checkpoint_mode="model_only",
+            export_runtime_backbone=True,
+        ),
+    )
+
+    runtime = TrainingRuntime.from_config(config)
+    runtime.run()
+
+    checkpoint_root = tmp_path / config.name / "checkpoints"
+    assert not list(checkpoint_root.glob("checkpoint_step_*"))
+
+
 def test_composable_runtime_ddp_strategy_degrades_cleanly_to_single_process(tmp_path: Path) -> None:
     config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
     config = replace(
