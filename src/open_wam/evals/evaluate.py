@@ -306,9 +306,38 @@ def _select_eval_action_prediction(
     if decoder_action_pred.shape == target_actions.shape:
         return EvalPredictionSource.DECODER_ACTION_PRED, decoder_action_pred
     raw_chunk_action_pred = policy_aux.get("raw_chunk_action_pred")
-    if isinstance(raw_chunk_action_pred, torch.Tensor) and raw_chunk_action_pred.shape == target_actions.shape:
+    if (
+        isinstance(raw_chunk_action_pred, torch.Tensor)
+        and raw_chunk_action_pred.ndim == target_actions.ndim
+        and raw_chunk_action_pred.shape[0] == target_actions.shape[0]
+        and raw_chunk_action_pred.shape[-1] == target_actions.shape[-1]
+        and target_actions.shape[1] >= raw_chunk_action_pred.shape[1]
+    ):
         return EvalPredictionSource.RAW_CHUNK_ACTION_PRED, raw_chunk_action_pred
     return EvalPredictionSource.DECODER_ACTION_PRED_UNMATCHED, decoder_action_pred
+
+
+def _align_eval_action_tensors(
+    *,
+    source: EvalPredictionSource,
+    prediction: torch.Tensor,
+    target_actions: torch.Tensor,
+    action_mask: torch.Tensor | None,
+) -> tuple[EvalPredictionSource, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    if prediction.shape == target_actions.shape:
+        return source, prediction, target_actions, action_mask
+    if (
+        source == EvalPredictionSource.RAW_CHUNK_ACTION_PRED
+        and prediction.ndim == target_actions.ndim
+        and prediction.shape[0] == target_actions.shape[0]
+        and prediction.shape[-1] == target_actions.shape[-1]
+        and target_actions.shape[1] >= prediction.shape[1]
+    ):
+        target_start = int(target_actions.shape[1] - prediction.shape[1])
+        aligned_target = target_actions[:, target_start:]
+        aligned_mask = None if action_mask is None else action_mask[:, target_start:]
+        return EvalPredictionSource.RAW_CHUNK_ACTION_PRED_TAIL_ALIGNED, prediction, aligned_target, aligned_mask
+    return source, prediction, target_actions, action_mask
 
 
 def _select_eval_video_prediction(
@@ -570,22 +599,33 @@ def run_evaluation(
                     decoder_action_pred=output.decoder_output.action_pred,
                     policy_aux=output.policy_output.aux,
                 )
+                (
+                    action_prediction_source,
+                    action_prediction,
+                    aligned_target_actions,
+                    aligned_action_mask,
+                ) = _align_eval_action_tensors(
+                    source=action_prediction_source,
+                    prediction=action_prediction,
+                    target_actions=batch.actions,
+                    action_mask=batch.action_mask,
+                )
                 video_prediction_source, video_prediction = _select_eval_video_prediction(
                     target_video_latents=output.visual_outputs.frontend.video_latents,
                     decoder_aux=output.decoder_output.aux,
                     policy_aux=output.policy_output.aux,
                 )
                 action_prediction_shape = tuple(action_prediction.shape)
-                target_action_shape = tuple(batch.actions.shape)
+                target_action_shape = tuple(aligned_target_actions.shape)
                 target_video_shape = tuple(output.visual_outputs.frontend.video_latents.shape)
                 if video_prediction is not None:
                     video_prediction_shape = tuple(video_prediction.shape)
-                if action_prediction.shape == batch.actions.shape:
+                if action_prediction.shape == aligned_target_actions.shape:
                     action_mse_values.append(
                         _masked_action_mse(
                             action_prediction,
-                            batch.actions,
-                            batch.action_mask,
+                            aligned_target_actions,
+                            aligned_action_mask,
                         )
                     )
                 if video_prediction is not None and video_prediction.shape == output.visual_outputs.frontend.video_latents.shape:
@@ -747,21 +787,32 @@ def run_evaluation(
                         decoder_action_pred=output.decoder_output.action_pred,
                         policy_aux=output.policy_output.aux,
                     )
+                    (
+                        action_prediction_source,
+                        action_prediction,
+                        aligned_target_actions,
+                        aligned_action_mask,
+                    ) = _align_eval_action_tensors(
+                        source=action_prediction_source,
+                        prediction=action_prediction,
+                        target_actions=batch.actions,
+                        action_mask=batch.action_mask,
+                    )
                     video_prediction_source, video_prediction = _select_eval_video_prediction(
                         target_video_latents=target_video_latents,
                         decoder_aux=output.decoder_output.aux,
                         policy_aux=output.policy_output.aux,
                     )
                     action_prediction_shape = tuple(action_prediction.shape)
-                    target_action_shape = tuple(batch.actions.shape)
+                    target_action_shape = tuple(aligned_target_actions.shape)
                     target_video_shape = tuple(target_video_latents.shape)
                     if video_prediction is not None:
                         video_prediction_shape = tuple(video_prediction.shape)
-                    if action_prediction.shape == batch.actions.shape:
+                    if action_prediction.shape == aligned_target_actions.shape:
                         step_mse = _masked_action_mse(
                             action_prediction,
-                            batch.actions,
-                            batch.action_mask,
+                            aligned_target_actions,
+                            aligned_action_mask,
                         )
                         action_mse_values.append(step_mse)
                         step_mse_values.append(step_mse)

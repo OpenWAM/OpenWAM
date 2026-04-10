@@ -12,6 +12,11 @@ paths:
     lingbot_va_base: /path/to/private-resource
 
   checkpoints:
+    # Full checkpoint roots for the current Heng comparison set.
+    parallel_stream_exact_libero_step_1100_0402: /path/to/private-resource
+    parallel_stream_joint_libero_step_600_0402: /path/to/private-resource
+    video_sequence_policy_libero_random_subwindow_step_800_0402: /path/to/private-resource
+
     # Method-1 exact and joint exports.
     parallel_stream_exact_libero_latest: /path/to/private-resource
     parallel_stream_joint_libero_step_400: /path/to/private-resource

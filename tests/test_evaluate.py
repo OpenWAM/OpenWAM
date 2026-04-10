@@ -79,6 +79,42 @@ def test_method4_video_conditioned_eval_wrappers_resolve_experiment_configs() ->
 
 
 @pytest.mark.parametrize(
+    ("wrapper_name", "experiment_name", "checkpoint_alias_suffix"),
+    [
+        (
+            "parallel_stream_libero_lingbot_exact_heng_eval.yaml",
+            "parallel_stream_libero_lingbot_exact_heng_compatible.yaml",
+            "parallel_stream_libero_lingbot_exact_heng_compatible_0402/checkpoints/checkpoint_step_1100/full_training_state.pt",
+        ),
+        (
+            "parallel_stream_libero_lingbot_joint_denoise_heng_eval.yaml",
+            "parallel_stream_libero_lingbot_joint_denoise_heng_compatible.yaml",
+            "parallel_stream_libero_lingbot_joint_denoise_heng_compatible_0402/checkpoints/checkpoint_step_600/full_training_state.pt",
+        ),
+        (
+            "video_sequence_policy_libero_heng_eval.yaml",
+            "video_sequence_policy_libero_latent_local_random_subwindow.yaml",
+            "video_sequence_policy_libero_latent_local_random_subwindow_0402/checkpoints/checkpoint_step_800/model_state.pt",
+        ),
+    ],
+)
+def test_libero_heng_eval_wrappers_resolve_experiment_configs_and_checkpoints(
+    wrapper_name: str,
+    experiment_name: str,
+    checkpoint_alias_suffix: str,
+) -> None:
+    request = resolve_evaluation_request(REPO_ROOT / "configs/evals" / wrapper_name)
+
+    assert request.experiment_config_path == (REPO_ROOT / "configs/experiments" / experiment_name).resolve()
+    assert request.mode == "batch"
+    assert request.split == "val"
+    assert request.batch_size == 1
+    assert request.max_batches == 1
+    assert request.checkpoint_path is not None
+    assert request.checkpoint_path.as_posix().endswith(checkpoint_alias_suffix)
+
+
+@pytest.mark.parametrize(
     ("wrapper_name", "experiment_name"),
     [
         ("parallel_stream_robotwin_smoke.yaml", "parallel_stream_robotwin_smoke.yaml"),
@@ -113,6 +149,26 @@ def test_run_evaluation_on_contract_only_robotwin() -> None:
     assert summary.action_prediction_shape == summary.target_action_shape
     assert summary.mean_action_mse is not None
     assert summary.mean_video_latent_mse is None
+
+
+def test_align_eval_action_tensors_tail_aligns_exact_raw_chunk_predictions() -> None:
+    prediction = torch.arange(1 * 16 * 7, dtype=torch.float32).view(1, 16, 7)
+    target = torch.arange(1 * 180 * 7, dtype=torch.float32).view(1, 180, 7)
+    action_mask = torch.ones_like(target)
+
+    source, aligned_prediction, aligned_target, aligned_mask = evaluate_module._align_eval_action_tensors(
+        source="raw_chunk_action_pred",
+        prediction=prediction,
+        target_actions=target,
+        action_mask=action_mask,
+    )
+
+    assert source == "raw_chunk_action_pred_tail_aligned"
+    assert aligned_prediction.shape == (1, 16, 7)
+    assert aligned_target.shape == (1, 16, 7)
+    assert aligned_mask is not None
+    assert torch.equal(aligned_target, target[:, -16:])
+    assert torch.equal(aligned_mask, action_mask[:, -16:])
 
 
 def test_run_evaluation_on_parallel_stream_robotwin(tmp_path: Path) -> None:

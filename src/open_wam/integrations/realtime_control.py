@@ -117,6 +117,21 @@ def build_live_rollout_summary(
     fallback_actions = total_actions - planned_actions
     action_lateness = [float(record["lateness_s"]) for record in action_records]
     env_step_times = [float(record["env_step_s"]) for record in action_records]
+    action_indices = [
+        int(record["absolute_action_index"])
+        for record in action_records
+        if record.get("absolute_action_index") is not None
+    ]
+    frame_indices = [
+        int(record["absolute_frame_index"])
+        for record in action_records
+        if record.get("absolute_frame_index") is not None
+    ]
+    generation_lag_actions = [
+        int(record["generation_lag_actions"])
+        for record in action_records
+        if record.get("generation_lag_actions") is not None
+    ]
     generation_lag_frames = [
         int(record["generation_lag_frames"])
         for record in action_records
@@ -127,7 +142,8 @@ def build_live_rollout_summary(
     replan_warmup = [float(record["warmup_s"]) for record in replan_records]
     replan_infer = [float(record["infer_s"]) for record in replan_records]
     deadline_hits = sum(1 for value in action_lateness if value <= float(deadline_tolerance_s))
-    unique_frames = {int(record["absolute_frame_index"]) for record in action_records}
+    unique_frames = set(frame_indices)
+    unique_action_steps = set(action_indices)
 
     return {
         "target_action_hz": float(target_action_hz),
@@ -137,6 +153,7 @@ def build_live_rollout_summary(
         "startup_infer_s": float(startup_infer_s),
         "total_actions": int(total_actions),
         "total_frames": int(len(unique_frames)),
+        "total_action_steps": int(len(unique_action_steps)) if unique_action_steps else int(total_actions),
         "planned_actions": int(planned_actions),
         "startup_plan_actions": int(startup_plan_actions),
         "history_replan_actions": int(history_replan_actions),
@@ -160,6 +177,7 @@ def build_live_rollout_summary(
         "deadline_hit_rate": float(deadline_hits / total_actions) if total_actions > 0 else 0.0,
         "action_lateness_s": summarize_scalars(action_lateness),
         "env_step_s": summarize_scalars(env_step_times),
+        "generation_lag_actions": summarize_scalars(generation_lag_actions),
         "generation_lag_frames": summarize_scalars(generation_lag_frames),
         "replan_total_latency_s": summarize_scalars(replan_latencies),
         "replan_prepare_s": summarize_scalars(replan_prepare),

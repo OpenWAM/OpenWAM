@@ -125,15 +125,55 @@ def test_build_live_rollout_summary_reports_rates_and_stage_stats() -> None:
     assert summary["open_loop_extension_actions"] == 1
     assert summary["fallback_actions"] == 1
     assert summary["total_frames"] == 2
+    assert summary["total_action_steps"] == 4
     assert summary["achieved_action_hz"] == 10.0
     assert summary["planned_action_hz"] == 7.5
     assert summary["observation_conditioned_action_hz"] == 5.0
     assert summary["open_loop_extension_action_hz"] == 2.5
     assert summary["deadline_hit_rate"] == 0.75
     assert summary["action_lateness_s"]["count"] == 4
+    assert summary["generation_lag_actions"]["count"] == 0
     assert summary["generation_lag_frames"]["count"] == 3
     assert summary["replan_total_latency_s"]["count"] == 2
     assert summary["replan_infer_s"]["max"] == 0.031
+
+
+def test_build_live_rollout_summary_accepts_action_aligned_records() -> None:
+    action_records = [
+        {
+            "absolute_action_index": 0,
+            "absolute_frame_index": None,
+            "source": "startup_plan",
+            "lateness_s": 0.001,
+            "env_step_s": 0.020,
+            "generation_lag_actions": 0,
+            "generation_lag_frames": None,
+        },
+        {
+            "absolute_action_index": 1,
+            "absolute_frame_index": None,
+            "source": "history_replan",
+            "lateness_s": 0.001,
+            "env_step_s": 0.021,
+            "generation_lag_actions": 1,
+            "generation_lag_frames": None,
+        },
+    ]
+
+    summary = build_live_rollout_summary(
+        action_records=action_records,
+        replan_records=[],
+        target_action_hz=10.0,
+        live_wall_time_s=0.2,
+        startup_prepare_s=1.0,
+        startup_infer_s=0.1,
+    )
+
+    assert summary["total_actions"] == 2
+    assert summary["total_frames"] == 0
+    assert summary["total_action_steps"] == 2
+    assert summary["generation_lag_actions"]["count"] == 2
+    assert summary["generation_lag_frames"]["count"] == 0
 
 
 def test_summarize_scalars_accepts_numpy_arrays() -> None:

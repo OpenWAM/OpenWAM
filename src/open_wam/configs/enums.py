@@ -668,6 +668,7 @@ class EvalPredictionSource(StrEnum):
     UNAVAILABLE = "unavailable"
     DECODER_ACTION_PRED = "decoder_action_pred"
     RAW_CHUNK_ACTION_PRED = "raw_chunk_action_pred"
+    RAW_CHUNK_ACTION_PRED_TAIL_ALIGNED = "raw_chunk_action_pred_tail_aligned"
     DECODER_ACTION_PRED_UNMATCHED = "decoder_action_pred_unmatched"
     DECODER_PREDICTED_LATENTS = "decoder_predicted_latents"
     DECODER_PREDICTED_VIDEO_LATENTS = "decoder_predicted_video_latents"
