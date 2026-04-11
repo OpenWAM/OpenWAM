@@ -52,7 +52,10 @@ class PlannedControlStep:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run one trained LIBERO policy in a fixed-rate realtime sandbox across exact/joint/method-3 variants."
+        description=(
+            "Run one trained LIBERO policy in a fixed-rate realtime sandbox across exact/joint, "
+            "method-3, and method-4 video-conditioned variants."
+        )
     )
     parser.add_argument(
         "--cfg",
@@ -66,7 +69,7 @@ def main() -> None:
         type=str,
         default=None,
         help="Checkpoint file, checkpoint_step_* directory, or run directory. "
-        "If omitted, exact/joint variants use `backbone.transformer_subdir`; method-3 infers from that directory.",
+        "If omitted, exact/joint variants use `backbone.transformer_subdir`; sequence-style variants infer from that directory.",
     )
     parser.add_argument("--benchmark", type=str, default="libero_10")
     parser.add_argument("--task-id", type=int, default=1)
@@ -156,6 +159,36 @@ def main() -> None:
         summary = _run_sequence_policy_realtime_rollout(
             config=config,
             checkpoint_path=checkpoint_path,
+            rollout_label="method3",
+            benchmark=args.benchmark,
+            task_id=args.task_id,
+            episode_idx=args.episode_idx,
+            max_actions=args.max_actions,
+            target_action_hz=args.target_action_hz,
+            video_fps=args.video_fps,
+            planner_mode=args.planner_mode,
+            deadline_miss_policy=args.deadline_miss_policy,
+            deadline_tolerance_ms=args.deadline_tolerance_ms,
+            output_dir=Path(args.output_dir),
+            suffix=args.suffix,
+            seed=args.seed,
+            runtime_device=runtime_device,
+            runtime_devices=runtime_devices,
+            runtime_prep_device=runtime_prep_device,
+            runtime_output_device=runtime_output_device,
+            frontend_device=frontend_device,
+            decode_device=decode_device,
+            sequence_buffer_threshold=args.sequence_buffer_threshold,
+            video_num_inference_steps=args.video_num_inference_steps,
+            action_num_inference_steps=args.action_num_inference_steps,
+            guidance_scale=args.guidance_scale,
+            action_guidance_scale=args.action_guidance_scale,
+        )
+    elif policy_name in {"post_latent", "post_decoded"}:
+        summary = _run_sequence_policy_realtime_rollout(
+            config=config,
+            checkpoint_path=checkpoint_path,
+            rollout_label="method4",
             benchmark=args.benchmark,
             task_id=args.task_id,
             episode_idx=args.episode_idx,
@@ -182,7 +215,8 @@ def main() -> None:
         )
     else:
         raise ValueError(
-            "The realtime sandbox currently supports exact/joint `parallel_stream` and `video_sequence_policy`, "
+            "The realtime sandbox currently supports exact/joint `parallel_stream`, `video_sequence_policy`, "
+            "`post_latent`, and `post_decoded`, "
             f"got policy_variant={policy_name!r}."
         )
     print(json.dumps(summary, indent=2))
@@ -700,6 +734,7 @@ def _run_sequence_policy_realtime_rollout(
     *,
     config,
     checkpoint_path: Path | None,
+    rollout_label: str,
     benchmark: str,
     task_id: int,
     episode_idx: int,
@@ -732,28 +767,31 @@ def _run_sequence_policy_realtime_rollout(
         action_guidance_scale=action_guidance_scale,
     )
     if checkpoint_path is None:
-        raise ValueError("Method-3 realtime rollout requires a full checkpoint via `--checkpoint` or config-backed inference.")
-    _print_stage("method3_build_pipeline_start")
+        raise ValueError(
+            f"{rollout_label} realtime rollout requires a full checkpoint via `--checkpoint` or config-backed inference."
+        )
+    _print_stage(f"{rollout_label}_build_pipeline_start")
     pipeline = build_variant_pipeline_from_config(config)
-    _print_stage("method3_build_pipeline_done")
-    _print_stage("method3_load_checkpoint_start", checkpoint=str(checkpoint_path))
+    _print_stage(f"{rollout_label}_build_pipeline_done")
+    _print_stage(f"{rollout_label}_load_checkpoint_start", checkpoint=str(checkpoint_path))
     video_viz._load_pipeline_checkpoint(pipeline, checkpoint_path)
-    _print_stage("method3_load_checkpoint_done")
-    _print_stage("method3_move_pipeline_start", runtime_device=str(runtime_device))
+    _print_stage(f"{rollout_label}_load_checkpoint_done")
+    _print_stage(f"{rollout_label}_move_pipeline_start", runtime_device=str(runtime_device))
     pipeline = pipeline.to(runtime_device)
-    _print_stage("method3_move_pipeline_done")
-    _print_stage("method3_configure_runtime_devices_start")
+    _print_stage(f"{rollout_label}_move_pipeline_done")
+    _print_stage(f"{rollout_label}_configure_runtime_devices_start")
     pipeline.eval()
     pipeline.visual_tower.configure_runtime_devices(
         runtime_devices,
         prep_device=runtime_prep_device,
         output_device=runtime_output_device,
     )
-    _print_stage("method3_configure_runtime_devices_done")
+    _print_stage(f"{rollout_label}_configure_runtime_devices_done")
     runner = VariantRolloutRunner(pipeline)
     load_report = {
-        "pipeline": "open_wam_video_sequence",
+        "pipeline": "open_wam_variant_sequence_rollout",
         "policy_variant": str(config.policy_variant.name),
+        "rollout_label": str(rollout_label),
         "checkpoint_file": str(checkpoint_path.resolve()),
         "transformer_dir": str(config.backbone.transformer_subdir),
         "runtime_device": str(runtime_device),
@@ -767,13 +805,13 @@ def _run_sequence_policy_realtime_rollout(
         "action_horizon": int(config.data.action_schema.action_horizon),
     }
 
-    _print_stage("method3_resolve_task_start", benchmark=benchmark, task_id=task_id)
+    _print_stage(f"{rollout_label}_resolve_task_start", benchmark=benchmark, task_id=task_id)
     task_spec, prompt = video_viz._resolve_task_spec(benchmark, task_id)
-    _print_stage("method3_resolve_task_done", prompt=prompt)
+    _print_stage(f"{rollout_label}_resolve_task_done", prompt=prompt)
     init_states = video_viz.load_libero_task_init_states(task_spec)
-    _print_stage("method3_load_init_states_done", num_init_states=len(init_states))
+    _print_stage(f"{rollout_label}_load_init_states_done", num_init_states=len(init_states))
     env = video_viz._construct_single_env(task_spec)
-    _print_stage("method3_construct_env_done", env_created=env is not None)
+    _print_stage(f"{rollout_label}_construct_env_done", env_created=env is not None)
     if env is None:
         raise RuntimeError("Failed to construct LIBERO OffScreenRenderEnv after 5 retries.")
 
@@ -790,7 +828,7 @@ def _run_sequence_policy_realtime_rollout(
                 init_states[episode_idx % len(init_states)],
                 num_frames=raw_window_frames,
             )
-            _print_stage("method3_init_env_done", initial_window=len(initial_obs_window))
+            _print_stage(f"{rollout_label}_init_env_done", initial_window=len(initial_obs_window))
             startup_prepare_t0 = time.perf_counter()
             initial_inputs = video_viz._prepare_rollout_inputs(
                 pipeline,
@@ -822,7 +860,7 @@ def _run_sequence_policy_realtime_rollout(
             exact_sandbox._synchronize_devices(runtime_device)
             startup_infer_s = time.perf_counter() - startup_infer_t0
             _print_stage(
-                "method3_startup_done",
+                f"{rollout_label}_startup_done",
                 startup_prepare_s=float(startup_prepare_s),
                 startup_infer_s=float(startup_infer_s),
             )
@@ -900,7 +938,7 @@ def _run_sequence_policy_realtime_rollout(
                 action_record = {
                     "action_index": int(next_action_index),
                     "absolute_action_index": int(next_action_index),
-                    "absolute_frame_index": None,
+                    "absolute_frame_index": int(next_action_index + 1),
                     "action_offset": 0,
                     "source": source,
                     "scheduled_start_s": float(scheduled_monotonic - live_start_monotonic),
@@ -913,8 +951,16 @@ def _run_sequence_policy_realtime_rollout(
                         if generation_action_start is None
                         else int(next_action_index - generation_action_start)
                     ),
-                    "generation_frame_start": None,
-                    "generation_lag_frames": None,
+                    "generation_frame_start": (
+                        None
+                        if generation_action_start is None
+                        else int(generation_action_start + 1)
+                    ),
+                    "generation_lag_frames": (
+                        None
+                        if generation_action_start is None
+                        else int((next_action_index + 1) - (generation_action_start + 1))
+                    ),
                     "planner_step_index": planner_step_index,
                     "plan_ready_delay_s": (
                         None
@@ -952,7 +998,7 @@ def _run_sequence_policy_realtime_rollout(
                 elif planner_mode == "async_buffer":
                     should_submit = remaining_buffer <= int(sequence_buffer_threshold)
                 else:
-                    raise ValueError(f"Unsupported planner_mode={planner_mode!r} for video_sequence_policy.")
+                    raise ValueError(f"Unsupported planner_mode={planner_mode!r} for policy_variant={config.policy_variant.name!r}.")
                 if replan_future is None and should_submit:
                     obs_snapshot = [
                         {key: np.array(value, copy=True) for key, value in obs.items()}
@@ -1020,6 +1066,7 @@ def _run_sequence_policy_realtime_rollout(
                 "history_replan_count": int(len(replan_records)),
                 "open_loop_extension_count": 0,
                 "policy_variant": str(config.policy_variant.name),
+                "startup_plan_trace": startup["trace"],
             }
         )
         return _finalize_rollout_outputs(
@@ -1069,6 +1116,9 @@ def _run_sequence_replan_job(
         prepare_s = time.perf_counter() - prepare_t0
 
         infer_t0 = time.perf_counter()
+        infer_extra = {"task_text": (prompt,)}
+        if str(config.policy_variant.name) in {"post_latent", "post_decoded"}:
+            infer_extra["video_condition_observed_prefix_anchor"] = "end"
         step_output = runner.infer_step(
             session=session,
             context=PolicyInferContext(
@@ -1077,7 +1127,7 @@ def _run_sequence_replan_job(
                     state_horizon=int(config.data.action_schema.state_horizon),
                     state_encoding=str(config.data.action_target.state_encoding),
                 ).unsqueeze(0).to(device=runtime_device),
-                extra={"task_text": (prompt,)},
+                extra=infer_extra,
             ),
             video_latents=rollout_inputs["video_latents"],
             canonical_video=None,
@@ -1085,6 +1135,11 @@ def _run_sequence_replan_job(
         exact_sandbox._synchronize_devices(runtime_device)
         infer_s = time.perf_counter() - infer_t0
 
+    policy_aux = step_output.infer_output.policy_output.aux
+    sequence_context = step_output.infer_output.policy_output.decoder_sequence_context
+    video_condition_window = None if sequence_context is None else sequence_context.video_condition_window
+    video_condition_metadata = {} if video_condition_window is None else dict(video_condition_window.metadata)
+    predicted_latents = policy_aux.get("predicted_latents")
     action_pred = step_output.infer_output.decoder_output.action_pred[0].detach().to(dtype=torch.float32).cpu().numpy()
     ready_monotonic_s = time.perf_counter()
     planned_steps = _sequence_chunk_to_planned_steps(
@@ -1116,6 +1171,15 @@ def _run_sequence_replan_job(
             "infer_s": float(infer_s),
             "total_latency_s": float(prepare_s + infer_s),
             "ready_monotonic_s": float(ready_monotonic_s),
+            "video_condition_source": policy_aux.get("video_condition_source"),
+            "video_condition_uses_future_ground_truth": policy_aux.get("video_condition_uses_future_ground_truth"),
+            "video_condition_observed_prefix_anchor": video_condition_metadata.get("observed_prefix_anchor"),
+            "video_condition_observed_prefix_start_index": video_condition_metadata.get("observed_prefix_start_index"),
+            "predicted_video_latents_shape": (
+                list(predicted_latents.shape)
+                if isinstance(predicted_latents, torch.Tensor)
+                else None
+            ),
         },
     }
 
@@ -1164,7 +1228,7 @@ def _materialize_sequence_control_action(
     gripper_representation: str,
 ) -> np.ndarray:
     if planned_step.desired_position is None or planned_step.desired_quaternion is None:
-        raise RuntimeError("Method-3 rollout step is missing absolute pose targets.")
+        raise RuntimeError("Sequence rollout step is missing absolute pose targets.")
     desired_pose = video_viz.PoseSequence(
         position=torch.from_numpy(np.asarray(planned_step.desired_position, dtype=np.float32)),
         quaternion=torch.from_numpy(np.asarray(planned_step.desired_quaternion, dtype=np.float32)),

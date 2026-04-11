@@ -19,6 +19,7 @@ from .base import PolicyVariant
 from .common import (
     SharedVisualReadout,
     advance_default_runtime_infer_state,
+    build_generated_video_condition_window,
     build_local_video_condition_window,
     prepare_default_runtime_infer_state,
 )
@@ -31,6 +32,7 @@ from .contracts import (
     PolicyPreparedInputs,
     PolicyTrainBatch,
     PolicyTrainOutput,
+    VideoConditionWindowContext,
 )
 
 
@@ -112,10 +114,20 @@ class PostLatentPolicyVariant(PolicyVariant):
         visual_outputs: VisualStageOutputs,
         *,
         state: torch.Tensor | None,
+        video_condition_window: VideoConditionWindowContext | None = None,
     ) -> DecoderSequenceContext:
         resolved_readout = self._resolve_visual_readout(visual_outputs)
         tokens = resolved_readout.tokens
         frame_tokens = tokens_to_frame_major(tokens, visual_outputs.frontend.token_grid)
+        if video_condition_window is None:
+            video_condition_window = build_local_video_condition_window(
+                visual_outputs=visual_outputs,
+                input_space=self.config.video_condition_input_space,
+                local_window_frames=self.config.local_video_window_frames,
+                current_frame_index=self.config.current_video_frame_index,
+                action_chunk_anchor_mode=self.config.action_chunk_anchor_mode,
+                source_stage="frontend",
+            )
         return DecoderSequenceContext(
             sequence_tokens=frame_tokens,
             sequence_layout={
@@ -130,14 +142,31 @@ class PostLatentPolicyVariant(PolicyVariant):
             source_stage=resolved_readout.source_stage,
             state_sequence=state,
             goal_features=visual_outputs.frontend.conditioning.text_context,
-            video_condition_window=build_local_video_condition_window(
-                visual_outputs=visual_outputs,
-                input_space=self.config.video_condition_input_space,
-                local_window_frames=self.config.local_video_window_frames,
-                current_frame_index=self.config.current_video_frame_index,
-                action_chunk_anchor_mode=self.config.action_chunk_anchor_mode,
-                source_stage="frontend",
-            ),
+            video_condition_window=video_condition_window,
+        )
+
+    def _build_generated_video_condition_window(
+        self,
+        visual_tower: VisualTower,
+        visual_outputs: VisualStageOutputs,
+        infer_state: PolicyInferState,
+        *,
+        observed_prefix_anchor: str = "start",
+    ) -> tuple[VideoConditionWindowContext, dict[str, object]]:
+        return build_generated_video_condition_window(
+            visual_tower=visual_tower,
+            visual_outputs=visual_outputs,
+            input_space=self.config.video_condition_input_space,
+            local_window_frames=self.config.local_video_window_frames,
+            current_frame_index=self.config.current_video_frame_index,
+            action_chunk_anchor_mode=self.config.action_chunk_anchor_mode,
+            frame_start=int(infer_state.cursor.current_start_frame),
+            num_inference_steps=self.inference_config.video_num_inference_steps,
+            num_train_timesteps=self.training_config.video_num_train_timesteps,
+            sigma_shift=self.training_config.video_sigma_shift,
+            guidance_scale=self.inference_config.guidance_scale,
+            cache_name="post_latent_video_condition_future",
+            observed_prefix_anchor=observed_prefix_anchor,
         )
 
     def _fuse_state(self, policy_features: torch.Tensor, state: torch.Tensor | None) -> torch.Tensor:
@@ -187,6 +216,15 @@ class PostLatentPolicyVariant(PolicyVariant):
     ) -> PolicyInferOutput:
         policy_features = self._extract_policy_features(visual_outputs)
         policy_features = self._fuse_state(policy_features, context.state)
+        video_condition_window = None
+        video_condition_aux: dict[str, object] = {}
+        if context.extra.get("video_condition_source") == "generated_future":
+            video_condition_window, video_condition_aux = self._build_generated_video_condition_window(
+                visual_tower,
+                visual_outputs,
+                infer_state,
+                observed_prefix_anchor=str(context.extra.get("video_condition_observed_prefix_anchor", "start")),
+            )
         return PolicyInferOutput(
             policy_features=policy_features,
             next_state=advance_default_runtime_infer_state(
@@ -197,6 +235,11 @@ class PostLatentPolicyVariant(PolicyVariant):
             decoder_sequence_context=self._build_decoder_sequence_context(
                 visual_outputs,
                 state=context.state,
+                video_condition_window=video_condition_window,
             ),
-            aux={"variant": self.config.name, "attach_site": self.config.attach_site},
+            aux={
+                "variant": self.config.name,
+                "attach_site": self.config.attach_site,
+                **video_condition_aux,
+            },
         )

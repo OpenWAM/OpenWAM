@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from typing import Any
+
+import torch
+
 from open_wam.configs import VideoConditionInputSpace
-from open_wam.models.visual_tower import VisualStageOutputs
+from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
 from ..contracts import VideoConditionWindowContext
 from .layouts import tokens_to_frame_major
@@ -77,3 +81,133 @@ def build_local_video_condition_window(
             **source_metadata,
         },
     )
+
+
+def build_generated_video_condition_window(
+    *,
+    visual_tower: VisualTower,
+    visual_outputs: VisualStageOutputs,
+    input_space: str,
+    local_window_frames: int,
+    current_frame_index: int,
+    action_chunk_anchor_mode: str,
+    frame_start: int,
+    num_inference_steps: int,
+    num_train_timesteps: int,
+    sigma_shift: float,
+    guidance_scale: float,
+    cache_name: str,
+    source_stage: str = "generated_future",
+    observed_frame_count: int = 1,
+    observed_prefix_anchor: str = "start",
+) -> tuple[VideoConditionWindowContext, dict[str, Any]]:
+    """Build a method-4 video-condition window from observed RGB/latents plus predicted future video."""
+
+    input_space = VideoConditionInputSpace(str(input_space))
+    if int(current_frame_index) != 0:
+        raise ValueError(
+            "Generated method-4 video-condition windows currently support only "
+            "`current_frame_index = 0`. Non-zero rollout-window alignment is not implemented yet."
+        )
+    local_window_frames = int(local_window_frames)
+    observed_frame_count = int(observed_frame_count)
+    if local_window_frames <= 0:
+        raise ValueError(f"Expected local_window_frames > 0, got {local_window_frames}.")
+    if observed_frame_count <= 0:
+        raise ValueError(f"Expected observed_frame_count > 0, got {observed_frame_count}.")
+    if observed_frame_count > local_window_frames:
+        raise ValueError(
+            "Observed prefix cannot be longer than the local video-condition window, "
+            f"got observed_frame_count={observed_frame_count}, local_window_frames={local_window_frames}."
+        )
+
+    if input_space == VideoConditionInputSpace.RGB_VIDEO and visual_outputs.frontend.input_source != "canonical_rgb":
+        raise ValueError(
+            "Generated method-4 `rgb_video` conditioning requires an RGB-backed frontend prefix. "
+            "This run entered the frontend from precomputed latents instead. Use `video_latent` "
+            "conditioning for latent-first inference."
+        )
+
+    video_latents = visual_outputs.frontend.video_latents
+    if video_latents.ndim != 5:
+        raise ValueError(
+            "Expected frontend video latents with shape [B, C, T, H, W], "
+            f"got {tuple(video_latents.shape)}."
+        )
+    if video_latents.shape[2] < observed_frame_count:
+        raise ValueError(
+            "Generated method-4 video conditioning requires enough observed frontend frames, "
+            f"got observed_frame_count={observed_frame_count}, available_frames={video_latents.shape[2]}."
+        )
+
+    if observed_prefix_anchor == "start":
+        observed_start = 0
+    elif observed_prefix_anchor == "end":
+        observed_start = int(video_latents.shape[2]) - observed_frame_count
+    else:
+        raise ValueError(
+            "Generated method-4 video conditioning expected observed_prefix_anchor to be 'start' or 'end', "
+            f"got {observed_prefix_anchor!r}."
+        )
+    observed_prefix = video_latents[:, :, observed_start : observed_start + observed_frame_count]
+    future_frame_count = local_window_frames - observed_frame_count
+    predicted_future_latents: torch.Tensor | None
+    if future_frame_count > 0:
+        future_template = video_latents.new_zeros(
+            video_latents.shape[0],
+            video_latents.shape[1],
+            future_frame_count,
+            video_latents.shape[3],
+            video_latents.shape[4],
+        )
+        predicted_future_latents = visual_tower.generate_conditioned_future_latents(
+            observed_prefix=observed_prefix,
+            future_template=future_template,
+            text_context=visual_outputs.frontend.conditioning.text_context,
+            negative_text_context=visual_outputs.frontend.conditioning.negative_text_context,
+            frame_start=int(frame_start),
+            num_inference_steps=int(num_inference_steps),
+            num_train_timesteps=int(num_train_timesteps),
+            sigma_shift=float(sigma_shift),
+            guidance_scale=float(guidance_scale),
+            cache_name=str(cache_name),
+        )
+        condition_latents = torch.cat([observed_prefix, predicted_future_latents], dim=2)
+    else:
+        predicted_future_latents = None
+        condition_latents = observed_prefix
+
+    condition_tokens, token_grid = visual_tower.frontend.tokenize_video_latents(condition_latents)
+    local_tokens = tokens_to_frame_major(condition_tokens, token_grid)
+    metadata = {
+        "source_family": "generated_future_video_tokens",
+        "encoded_prefix_from": visual_outputs.frontend.input_source,
+        "generator": "shared_visual_tower",
+        "observed_prefix_frames": observed_frame_count,
+        "observed_prefix_anchor": str(observed_prefix_anchor),
+        "observed_prefix_start_index": int(observed_start),
+        "generated_future_frames": future_frame_count,
+        "uses_future_ground_truth": False,
+    }
+    window = VideoConditionWindowContext(
+        local_window_tokens=local_tokens,
+        token_grid=token_grid,
+        source_stage=source_stage,
+        input_space=str(input_space),
+        local_window_frames=local_window_frames,
+        current_frame_index=int(current_frame_index),
+        current_action_index=0,
+        action_chunk_anchor_mode=str(action_chunk_anchor_mode),
+        observed_frame_count=observed_frame_count,
+        previous_context_frames=0,
+        metadata=metadata,
+    )
+    aux: dict[str, Any] = {
+        "video_condition_source": metadata["source_family"],
+        "video_condition_uses_future_ground_truth": False,
+        "observed_video_prefix_latents": observed_prefix.detach(),
+    }
+    if predicted_future_latents is not None:
+        aux["predicted_latents"] = predicted_future_latents.detach()
+        aux["predicted_video_latents"] = predicted_future_latents.detach()
+    return window, aux

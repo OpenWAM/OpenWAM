@@ -209,6 +209,9 @@ class VideoConditionedActionDecoder(SequenceActionDecoder):
     def supports_direct_train_inputs(self) -> bool:
         return self.train_mode == "current_frame_regression"
 
+    def uses_video_condition_window(self) -> bool:
+        return not self.supports_direct_train_inputs()
+
     def _encode_direct_current_frame(self, direct_inputs: DirectActionDecoderTrainInputs) -> torch.Tensor:
         current_frame = direct_inputs.current_frame
         if direct_inputs.input_space == "video_latent":

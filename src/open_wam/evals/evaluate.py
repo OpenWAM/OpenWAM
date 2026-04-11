@@ -27,6 +27,7 @@ from open_wam.data import (
     move_wam_batch_to_device,
 )
 from open_wam.models.policy_variants import PolicyInferContext
+from open_wam.models.policy_variants.contracts import DecoderSequenceContext
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config
 from open_wam.utils.local_paths import read_yaml_with_local_paths
 from open_wam.utils import load_experiment_config, seed_everywhere
@@ -345,24 +346,70 @@ def _select_eval_video_prediction(
     target_video_latents: torch.Tensor,
     decoder_aux: dict[str, Any],
     policy_aux: dict[str, Any],
-) -> tuple[EvalPredictionSource, torch.Tensor | None]:
+    sequence_context: DecoderSequenceContext | None = None,
+) -> tuple[EvalPredictionSource, torch.Tensor | None, torch.Tensor]:
     for source_name in ("predicted_latents", "predicted_video_latents"):
         candidate = decoder_aux.get(source_name)
         if isinstance(candidate, torch.Tensor) and candidate.shape == target_video_latents.shape:
             return (
                 EvalPredictionSource.DECODER_PREDICTED_LATENTS
                 if source_name == "predicted_latents"
-                else EvalPredictionSource.DECODER_PREDICTED_VIDEO_LATENTS
-            ), candidate
+                else EvalPredictionSource.DECODER_PREDICTED_VIDEO_LATENTS,
+                candidate,
+                target_video_latents,
+            )
+        aligned_target = _align_local_future_video_prediction(
+            candidate,
+            target_video_latents=target_video_latents,
+            sequence_context=sequence_context,
+        )
+        if aligned_target is not None:
+            return EvalPredictionSource.DECODER_PREDICTED_LOCAL_FUTURE_LATENTS, candidate, aligned_target
     for source_name in ("predicted_latents", "predicted_video_latents"):
         candidate = policy_aux.get(source_name)
         if isinstance(candidate, torch.Tensor) and candidate.shape == target_video_latents.shape:
             return (
                 EvalPredictionSource.POLICY_PREDICTED_LATENTS
                 if source_name == "predicted_latents"
-                else EvalPredictionSource.POLICY_PREDICTED_VIDEO_LATENTS
-            ), candidate
-    return EvalPredictionSource.UNAVAILABLE, None
+                else EvalPredictionSource.POLICY_PREDICTED_VIDEO_LATENTS,
+                candidate,
+                target_video_latents,
+            )
+        aligned_target = _align_local_future_video_prediction(
+            candidate,
+            target_video_latents=target_video_latents,
+            sequence_context=sequence_context,
+        )
+        if aligned_target is not None:
+            return EvalPredictionSource.POLICY_PREDICTED_LOCAL_FUTURE_LATENTS, candidate, aligned_target
+    return EvalPredictionSource.UNAVAILABLE, None, target_video_latents
+
+
+def _align_local_future_video_prediction(
+    candidate: Any,
+    *,
+    target_video_latents: torch.Tensor,
+    sequence_context: DecoderSequenceContext | None,
+) -> torch.Tensor | None:
+    if not isinstance(candidate, torch.Tensor):
+        return None
+    if candidate.ndim != target_video_latents.ndim or candidate.ndim != 5:
+        return None
+    if candidate.shape[0:2] != target_video_latents.shape[0:2] or candidate.shape[3:] != target_video_latents.shape[3:]:
+        return None
+    if sequence_context is None or sequence_context.video_condition_window is None:
+        return None
+    window = sequence_context.video_condition_window
+    metadata = window.metadata
+    if metadata.get("source_family") != "generated_future_video_tokens":
+        return None
+    observed_frames = int(metadata.get("observed_prefix_frames", window.observed_frame_count))
+    observed_start = int(metadata.get("observed_prefix_start_index", 0))
+    target_start = observed_start + observed_frames
+    target_end = target_start + int(candidate.shape[2])
+    if target_end > int(target_video_latents.shape[2]):
+        return None
+    return target_video_latents[:, :, target_start:target_end]
 
 
 def _group_dataset_indices_by_episode(dataset: Dataset[WAMSample] | Dataset[LatentWAMSample]) -> list[list[int]]:
@@ -610,14 +657,15 @@ def run_evaluation(
                     target_actions=batch.actions,
                     action_mask=batch.action_mask,
                 )
-                video_prediction_source, video_prediction = _select_eval_video_prediction(
+                video_prediction_source, video_prediction, aligned_target_video_latents = _select_eval_video_prediction(
                     target_video_latents=output.visual_outputs.frontend.video_latents,
                     decoder_aux=output.decoder_output.aux,
                     policy_aux=output.policy_output.aux,
+                    sequence_context=output.policy_output.decoder_sequence_context,
                 )
                 action_prediction_shape = tuple(action_prediction.shape)
                 target_action_shape = tuple(aligned_target_actions.shape)
-                target_video_shape = tuple(output.visual_outputs.frontend.video_latents.shape)
+                target_video_shape = tuple(aligned_target_video_latents.shape)
                 if video_prediction is not None:
                     video_prediction_shape = tuple(video_prediction.shape)
                 if action_prediction.shape == aligned_target_actions.shape:
@@ -628,11 +676,11 @@ def run_evaluation(
                             aligned_action_mask,
                         )
                     )
-                if video_prediction is not None and video_prediction.shape == output.visual_outputs.frontend.video_latents.shape:
+                if video_prediction is not None and video_prediction.shape == aligned_target_video_latents.shape:
                     video_mse_values.append(
                         _video_latent_mse(
                             video_prediction,
-                            output.visual_outputs.frontend.video_latents,
+                            aligned_target_video_latents,
                         )
                     )
                 num_batches += 1
@@ -798,14 +846,15 @@ def run_evaluation(
                         target_actions=batch.actions,
                         action_mask=batch.action_mask,
                     )
-                    video_prediction_source, video_prediction = _select_eval_video_prediction(
+                    video_prediction_source, video_prediction, aligned_target_video_latents = _select_eval_video_prediction(
                         target_video_latents=target_video_latents,
                         decoder_aux=output.decoder_output.aux,
                         policy_aux=output.policy_output.aux,
+                        sequence_context=output.policy_output.decoder_sequence_context,
                     )
                     action_prediction_shape = tuple(action_prediction.shape)
                     target_action_shape = tuple(aligned_target_actions.shape)
-                    target_video_shape = tuple(target_video_latents.shape)
+                    target_video_shape = tuple(aligned_target_video_latents.shape)
                     if video_prediction is not None:
                         video_prediction_shape = tuple(video_prediction.shape)
                     if action_prediction.shape == aligned_target_actions.shape:
@@ -816,8 +865,8 @@ def run_evaluation(
                         )
                         action_mse_values.append(step_mse)
                         step_mse_values.append(step_mse)
-                    if video_prediction is not None and video_prediction.shape == target_video_latents.shape:
-                        step_video_mse = _video_latent_mse(video_prediction, target_video_latents)
+                    if video_prediction is not None and video_prediction.shape == aligned_target_video_latents.shape:
+                        step_video_mse = _video_latent_mse(video_prediction, aligned_target_video_latents)
                         video_mse_values.append(step_video_mse)
                         step_video_mse_values.append(step_video_mse)
                     previous_action = action_prediction.detach()

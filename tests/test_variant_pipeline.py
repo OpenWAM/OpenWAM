@@ -259,14 +259,19 @@ def test_method4_video_conditioned_decoder_runs_when_action_decoder_is_omitted(
     assert infer_context.video_condition_window.current_action_index == 0
     assert train_context.video_condition_window.action_chunk_anchor_mode == "current_plus_future"
     assert infer_context.video_condition_window.action_chunk_anchor_mode == "current_plus_future"
+    assert infer_context.video_condition_window.source_stage == "generated_future"
+    assert infer_context.video_condition_window.metadata["source_family"] == "generated_future_video_tokens"
+    assert infer_context.video_condition_window.metadata["uses_future_ground_truth"] is False
+    assert infer_context.video_condition_window.metadata["observed_prefix_anchor"] == "start"
+    assert infer_output.policy_output.aux["video_condition_source"] == "generated_future_video_tokens"
+    assert infer_output.policy_output.aux["video_condition_uses_future_ground_truth"] is False
+    assert infer_output.policy_output.aux["predicted_latents"].shape[2] == 3
     if config.policy_variant.video_condition_input_space == "rgb_video":
         assert train_context.video_condition_window.metadata["source_family"] == "encoded_rgb_frontend_video_tokens"
-        assert infer_context.video_condition_window.metadata["source_family"] == "encoded_rgb_frontend_video_tokens"
         assert train_output.visual_outputs.frontend.input_source == "canonical_rgb"
         assert infer_output.visual_outputs.frontend.input_source == "canonical_rgb"
     else:
         assert train_context.video_condition_window.metadata["source_family"] == "frontend_video_tokens"
-        assert infer_context.video_condition_window.metadata["source_family"] == "frontend_video_tokens"
     train_frontend_frame_tokens = tokens_to_frame_major(
         train_output.visual_outputs.frontend.video_tokens,
         train_output.visual_outputs.frontend.token_grid,

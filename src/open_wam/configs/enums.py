@@ -673,8 +673,10 @@ class EvalPredictionSource(StrEnum):
     DECODER_ACTION_PRED_UNMATCHED = "decoder_action_pred_unmatched"
     DECODER_PREDICTED_LATENTS = "decoder_predicted_latents"
     DECODER_PREDICTED_VIDEO_LATENTS = "decoder_predicted_video_latents"
+    DECODER_PREDICTED_LOCAL_FUTURE_LATENTS = "decoder_predicted_local_future_latents"
     POLICY_PREDICTED_LATENTS = "policy_predicted_latents"
     POLICY_PREDICTED_VIDEO_LATENTS = "policy_predicted_video_latents"
+    POLICY_PREDICTED_LOCAL_FUTURE_LATENTS = "policy_predicted_local_future_latents"
 
 
 def coerce_enum_value(enum_cls: type[EnumT], value: EnumT | str) -> EnumT:

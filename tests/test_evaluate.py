@@ -11,6 +11,7 @@ from torch.utils.data import Dataset
 import open_wam.evals.evaluate as evaluate_module
 from open_wam.data import WAMSample
 from open_wam.evals.evaluate import resolve_evaluation_request, run_evaluation
+from open_wam.models.policy_variants.contracts import DecoderSequenceContext, VideoConditionWindowContext
 from open_wam.pipelines import build_variant_pipeline_from_config
 from open_wam.utils import load_experiment_config
 
@@ -169,6 +170,34 @@ def test_align_eval_action_tensors_tail_aligns_exact_raw_chunk_predictions() -> 
     assert aligned_mask is not None
     assert torch.equal(aligned_target, target[:, -16:])
     assert torch.equal(aligned_mask, action_mask[:, -16:])
+
+
+def test_select_eval_video_prediction_aligns_generated_local_future_latents() -> None:
+    target = torch.arange(1 * 2 * 6 * 1 * 1, dtype=torch.float32).view(1, 2, 6, 1, 1)
+    predicted = target[:, :, 2:5] + 0.5
+    sequence_context = DecoderSequenceContext(
+        sequence_tokens=torch.zeros(1, 1, 1),
+        video_condition_window=VideoConditionWindowContext(
+            local_window_tokens=torch.zeros(1, 4, 1, 1),
+            observed_frame_count=1,
+            metadata={
+                "source_family": "generated_future_video_tokens",
+                "observed_prefix_frames": 1,
+                "observed_prefix_start_index": 1,
+            },
+        ),
+    )
+
+    source, aligned_prediction, aligned_target = evaluate_module._select_eval_video_prediction(
+        target_video_latents=target,
+        decoder_aux={},
+        policy_aux={"predicted_latents": predicted},
+        sequence_context=sequence_context,
+    )
+
+    assert source == "policy_predicted_local_future_latents"
+    assert aligned_prediction is predicted
+    assert torch.equal(aligned_target, target[:, :, 2:5])
 
 
 def test_run_evaluation_on_parallel_stream_robotwin(tmp_path: Path) -> None:

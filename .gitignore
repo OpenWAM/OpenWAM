@@ -1,5 +1,6 @@
 previous_works/
 outputs/
+wandb/
 configs/local_paths.yaml
 
 # Byte-compiled / optimized / DLL files

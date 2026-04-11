@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Mapping
 
 import torch
@@ -373,6 +373,7 @@ class VariantPipeline(nn.Module):
         # orchestration once `VisualStageOutputs` already exist. Keep this
         # helper as the single infer-side execution body so rollout behavior
         # does not drift between RGB-driven and latent-driven evaluation paths.
+        context = self._prepare_infer_context_for_decoder(context)
         resolved_state = self.policy_variant.prepare_infer_state(
             visual_tower=self.visual_tower,
             visual_outputs=visual_outputs,
@@ -395,6 +396,14 @@ class VariantPipeline(nn.Module):
             policy_output=policy_output,
             decoder_output=decoder_output,
         )
+
+    def _prepare_infer_context_for_decoder(self, context: PolicyInferContext) -> PolicyInferContext:
+        uses_video_condition_window = getattr(self.action_decoder, "uses_video_condition_window", None)
+        if not callable(uses_video_condition_window) or not bool(uses_video_condition_window()):
+            return context
+        extra = dict(context.extra)
+        extra.setdefault("video_condition_source", "generated_future")
+        return replace(context, extra=extra)
 
     def forward_infer_step_from_latents(
         self,
