@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
-from enum import StrEnum
+from enum import Enum, StrEnum
 from typing import Any, Callable, Mapping, TypeAlias, TypeVar
 
 
