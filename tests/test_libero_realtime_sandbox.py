@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 import uuid
 
 
@@ -53,3 +54,54 @@ def test_merge_future_step_actions_drops_stale_steps_and_prefers_newer_future() 
     assert merged[1].source == "new"
     assert merged[2].source == "old"
     assert merged[3].source == "new"
+
+
+def test_mot_realtime_replan_resets_observation_conditioned_session() -> None:
+    sandbox = _load_sandbox_module()
+    calls = []
+
+    class Runner:
+        def reset(self, *, task_text=None, text_context=None, negative_text_context=None):
+            calls.append(
+                {
+                    "task_text": task_text,
+                    "text_context": text_context,
+                    "negative_text_context": negative_text_context,
+                }
+            )
+            return SimpleNamespace(
+                task_text=task_text,
+                text_context=text_context,
+                negative_text_context=negative_text_context,
+            )
+
+    session = SimpleNamespace(
+        task_text=("task",),
+        text_context="text",
+        negative_text_context="negative",
+    )
+    mot_config = SimpleNamespace(policy_variant=SimpleNamespace(name="mot"))
+    method4_config = SimpleNamespace(policy_variant=SimpleNamespace(name="post_latent"))
+
+    resolved = sandbox._resolve_observation_conditioned_replan_session(
+        runner=Runner(),
+        session=session,
+        config=mot_config,
+    )
+
+    assert resolved is not session
+    assert calls == [
+        {
+            "task_text": ("task",),
+            "text_context": "text",
+            "negative_text_context": "negative",
+        }
+    ]
+    assert (
+        sandbox._resolve_observation_conditioned_replan_session(
+            runner=Runner(),
+            session=session,
+            config=method4_config,
+        )
+        is session
+    )

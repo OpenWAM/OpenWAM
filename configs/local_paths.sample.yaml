@@ -31,6 +31,8 @@ paths:
     register_attached_libero_step_1000: /path/to/private-resource
 
     # Method-5 eval checkpoints.
+    mot_libero_idm_step_1900_root: /path/to/private-resource
+    mot_libero_joint_step_900_root: /path/to/private-resource
     mot_libero_idm_step_1900: /path/to/private-resource
     mot_libero_joint_step_900: /path/to/private-resource
 

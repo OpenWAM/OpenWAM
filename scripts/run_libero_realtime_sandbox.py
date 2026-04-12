@@ -8,7 +8,7 @@ import math
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import imageio.v2 as imageio
 import numpy as np
@@ -50,11 +50,22 @@ class PlannedControlStep:
     desired_gripper: np.ndarray | None = None
 
 
+class _RolloutRunnerLike(Protocol):
+    def reset(
+        self,
+        *,
+        task_text: tuple[str | None, ...] | None = None,
+        text_context: torch.Tensor | None = None,
+        negative_text_context: torch.Tensor | None = None,
+    ):
+        ...
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Run one trained LIBERO policy in a fixed-rate realtime sandbox across exact/joint, "
-            "method-3, and method-4 video-conditioned variants."
+            "method-3, method-4 video-conditioned, and method-5 MoT variants."
         )
     )
     parser.add_argument(
@@ -213,10 +224,39 @@ def main() -> None:
             guidance_scale=args.guidance_scale,
             action_guidance_scale=args.action_guidance_scale,
         )
+    elif policy_name == "mot":
+        summary = _run_sequence_policy_realtime_rollout(
+            config=config,
+            checkpoint_path=checkpoint_path,
+            rollout_label="method5",
+            benchmark=args.benchmark,
+            task_id=args.task_id,
+            episode_idx=args.episode_idx,
+            max_actions=args.max_actions,
+            target_action_hz=args.target_action_hz,
+            video_fps=args.video_fps,
+            planner_mode=args.planner_mode,
+            deadline_miss_policy=args.deadline_miss_policy,
+            deadline_tolerance_ms=args.deadline_tolerance_ms,
+            output_dir=Path(args.output_dir),
+            suffix=args.suffix,
+            seed=args.seed,
+            runtime_device=runtime_device,
+            runtime_devices=runtime_devices,
+            runtime_prep_device=runtime_prep_device,
+            runtime_output_device=runtime_output_device,
+            frontend_device=frontend_device,
+            decode_device=decode_device,
+            sequence_buffer_threshold=args.sequence_buffer_threshold,
+            video_num_inference_steps=args.video_num_inference_steps,
+            action_num_inference_steps=args.action_num_inference_steps,
+            guidance_scale=args.guidance_scale,
+            action_guidance_scale=args.action_guidance_scale,
+        )
     else:
         raise ValueError(
             "The realtime sandbox currently supports exact/joint `parallel_stream`, `video_sequence_policy`, "
-            "`post_latent`, and `post_decoded`, "
+            "`post_latent`, `post_decoded`, and `mot`, "
             f"got policy_variant={policy_name!r}."
         )
     print(json.dumps(summary, indent=2))
@@ -799,6 +839,7 @@ def _run_sequence_policy_realtime_rollout(
         "runtime_output_device": str(runtime_output_device),
         "frontend_device": str(frontend_device),
         "decode_device": str(decode_device),
+        "action_device": str(runtime_device) if str(config.policy_variant.name) == "mot" else None,
         "runtime_devices": [str(device) for device in runtime_devices],
         "video_steps": int(config.inference.video_num_inference_steps),
         "action_steps": int(config.inference.action_num_inference_steps),
@@ -1119,8 +1160,15 @@ def _run_sequence_replan_job(
         infer_extra = {"task_text": (prompt,)}
         if str(config.policy_variant.name) in {"post_latent", "post_decoded"}:
             infer_extra["video_condition_observed_prefix_anchor"] = "end"
-        step_output = runner.infer_step(
+        if str(config.policy_variant.name) == "mot":
+            infer_extra["action_device"] = str(runtime_device)
+        inference_session = _resolve_observation_conditioned_replan_session(
+            runner=runner,
             session=session,
+            config=config,
+        )
+        step_output = runner.infer_step(
+            session=inference_session,
             context=PolicyInferContext(
                 state=video_viz._build_state_inputs_from_obs_window(
                     obs_window,
@@ -1182,6 +1230,24 @@ def _run_sequence_replan_job(
             ),
         },
     }
+
+
+def _resolve_observation_conditioned_replan_session(
+    *,
+    runner: _RolloutRunnerLike,
+    session,
+    config,
+):
+    if str(config.policy_variant.name) != "mot":
+        return session
+    # MoT's video-prefill cache is tied to the current observation window.
+    # Rebuild it for every live replan instead of carrying the startup cache
+    # across later observation-conditioned replans.
+    return runner.reset(
+        task_text=session.task_text,
+        text_context=session.text_context,
+        negative_text_context=session.negative_text_context,
+    )
 
 
 def _sequence_chunk_to_planned_steps(

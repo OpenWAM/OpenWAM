@@ -121,6 +121,34 @@ def test_libero_heng_eval_wrappers_resolve_experiment_configs_and_checkpoints(
 
 
 @pytest.mark.parametrize(
+    ("config_name", "checkpoint_suffix"),
+    [
+        (
+            "mot_libero_latent_local_idm_eval.yaml",
+            "mot_libero_latent_local_idm/checkpoints/checkpoint_step_1900/model_state.pt",
+        ),
+        (
+            "mot_libero_latent_local_joint_eval.yaml",
+            "mot_libero_latent_local_joint/checkpoints/checkpoint_step_900/model_state.pt",
+        ),
+    ],
+)
+def test_mot_libero_eval_configs_resolve_model_checkpoints(
+    config_name: str,
+    checkpoint_suffix: str,
+) -> None:
+    config_path = REPO_ROOT / "configs/evals" / config_name
+    request = resolve_evaluation_request(config_path)
+
+    assert request.experiment_config_path == config_path.resolve()
+    assert request.mode == "batch"
+    assert request.split == "val"
+    assert request.batch_size is None
+    assert request.checkpoint_path is not None
+    assert request.checkpoint_path.as_posix().endswith(checkpoint_suffix)
+
+
+@pytest.mark.parametrize(
     ("wrapper_name", "experiment_name"),
     [
         ("parallel_stream_robotwin_smoke.yaml", "parallel_stream_robotwin_smoke.yaml"),
@@ -274,7 +302,8 @@ class _EpisodeWindow:
 
 
 class _TrajectoryEvalDataset(Dataset[WAMSample]):
-    def __init__(self) -> None:
+    def __init__(self, *, action_horizon: int = 6) -> None:
+        self.action_horizon = action_horizon
         self.sample_index = (
             _EpisodeWindow(episode_index=0, observation_start=0),
             _EpisodeWindow(episode_index=0, observation_start=1),
@@ -294,8 +323,8 @@ class _TrajectoryEvalDataset(Dataset[WAMSample]):
                 "cam_left_wrist": torch.full((4, 128, 160, 3), fill_value=base_value, dtype=torch.uint8),
                 "cam_right_wrist": torch.full((4, 128, 160, 3), fill_value=base_value, dtype=torch.uint8),
             },
-            actions=torch.zeros(6, 30, dtype=torch.float32),
-            action_mask=torch.ones(6, 30, dtype=torch.float32),
+            actions=torch.zeros(self.action_horizon, 30, dtype=torch.float32),
+            action_mask=torch.ones(self.action_horizon, 30, dtype=torch.float32),
             state=torch.zeros(1, 30, dtype=torch.float32),
             state_mask=torch.ones(1, 30, dtype=torch.float32),
             task_text="synthetic trajectory eval",
@@ -329,6 +358,49 @@ def test_run_trajectory_evaluation_carries_across_episode_windows(monkeypatch) -
     assert summary.mean_trajectory_action_mse is not None
     assert summary.mean_video_latent_mse is None
     assert summary.mean_trajectory_video_latent_mse is None
+
+
+@pytest.mark.parametrize(
+    ("config_path", "action_horizon", "expected_reset_calls"),
+    [
+        (REPO_ROOT / "configs/experiments/mot_robotwin_smoke.yaml", 8, 2),
+        (REPO_ROOT / "configs/experiments/video_sequence_policy_robotwin_smoke.yaml", 6, 1),
+    ],
+)
+def test_run_trajectory_evaluation_resets_only_mot_observation_conditioned_sessions(
+    monkeypatch,
+    config_path: Path,
+    action_horizon: int,
+    expected_reset_calls: int,
+) -> None:
+    dataset = _TrajectoryEvalDataset(action_horizon=action_horizon)
+    monkeypatch.setattr(
+        evaluate_module,
+        "build_train_val_datasets",
+        lambda data_config: (dataset, dataset),
+    )
+    reset_calls: list[tuple[str | None, ...] | None] = []
+    original_rollout_runner = evaluate_module.VariantRolloutRunner
+
+    class _RecordingRolloutRunner(original_rollout_runner):
+        def reset(self, **kwargs):
+            reset_calls.append(kwargs.get("task_text"))
+            return super().reset(**kwargs)
+
+    monkeypatch.setattr(evaluate_module, "VariantRolloutRunner", _RecordingRolloutRunner)
+
+    request = resolve_evaluation_request(
+        config_path,
+        mode_override="trajectory",
+        max_trajectories_override=1,
+        max_steps_per_trajectory_override=2,
+        device_override="cpu",
+    )
+    summary = run_evaluation(request)
+
+    assert summary.mode == "trajectory"
+    assert summary.num_batches == 2
+    assert len(reset_calls) == expected_reset_calls
 
 
 def test_group_dataset_indices_by_episode_uses_repo_root_identity() -> None:
@@ -370,6 +442,16 @@ def test_align_rollout_window_tensor_shifts_overlap_and_seeds_new_frames() -> No
     )
 
     assert torch.equal(aligned, torch.tensor([[[20.0, 30.0, 300.0]]]))
+
+
+def test_mot_trajectory_eval_marks_session_reset_boundary() -> None:
+    mot_config = load_experiment_config(REPO_ROOT / "configs/experiments/mot_robotwin_smoke.yaml")
+    method4_config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml"
+    )
+
+    assert evaluate_module._mot_requires_observation_conditioned_session_reset(mot_config)
+    assert not evaluate_module._mot_requires_observation_conditioned_session_reset(method4_config)
 
 
 def test_run_evaluation_loads_pipeline_prefixed_checkpoint(tmp_path: Path) -> None:

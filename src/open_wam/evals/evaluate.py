@@ -574,6 +574,10 @@ def _align_rollout_window_tensor(
     return aligned
 
 
+def _mot_requires_observation_conditioned_session_reset(experiment_config: ExperimentConfig) -> bool:
+    return str(experiment_config.policy_variant.name) == "mot"
+
+
 def run_evaluation(
     request: EvaluationRequest,
 ) -> EvaluationSummary:
@@ -740,6 +744,21 @@ def run_evaluation(
                             ),
                             negative_text_context=(
                                 batch.negative_text_context if isinstance(batch, LatentWAMBatch) else None
+                            ),
+                        )
+                    elif _mot_requires_observation_conditioned_session_reset(experiment_config):
+                        # MoT's video-prefill cache is built from the current
+                        # observation window. Trajectory eval advances windows,
+                        # so reuse text conditioning but rebuild MoT cache.
+                        session = rollout_runner.reset(
+                            task_text=batch.task_text,
+                            text_context=(
+                                batch.text_context if isinstance(batch, LatentWAMBatch) else session.text_context
+                            ),
+                            negative_text_context=(
+                                batch.negative_text_context
+                                if isinstance(batch, LatentWAMBatch)
+                                else session.negative_text_context
                             ),
                         )
                     infer_context = PolicyInferContext(
