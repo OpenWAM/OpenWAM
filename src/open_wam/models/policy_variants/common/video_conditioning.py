@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import torch
@@ -7,8 +8,44 @@ import torch
 from open_wam.configs import VideoConditionInputSpace
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
-from ..contracts import VideoConditionWindowContext
+from ..contracts import PolicyTrainBatch, VideoConditionWindowContext
 from .layouts import tokens_to_frame_major
+
+
+_FRAME_START_METADATA_KEYS = (
+    "window_start_frame",
+    "sample_start_frame",
+    "observation_start",
+    "segment_start_frame",
+    "frame_shift",
+)
+
+
+def resolve_video_condition_frame_start(batch: PolicyTrainBatch) -> int:
+    """Resolve a scalar absolute frame start for generated condition-window training."""
+
+    metadata = batch.extra.get("metadata")
+    if not isinstance(metadata, (tuple, list)):
+        return 0
+    frame_starts: list[int] = []
+    for sample_metadata in metadata:
+        if not isinstance(sample_metadata, Mapping):
+            continue
+        for key in _FRAME_START_METADATA_KEYS:
+            value = sample_metadata.get(key)
+            if value is not None:
+                frame_starts.append(int(value))
+                break
+    if not frame_starts:
+        return 0
+    first_frame_start = frame_starts[0]
+    if any(frame_start != first_frame_start for frame_start in frame_starts):
+        raise ValueError(
+            "Generated video-condition training currently requires every sample in a batch to share one "
+            "absolute frame start because the shared visual runtime accepts a scalar frame offset. "
+            f"Got frame_starts={frame_starts!r}."
+        )
+    return int(first_frame_start)
 
 
 def build_local_video_condition_window(
@@ -183,6 +220,7 @@ def build_generated_video_condition_window(
         "source_family": "generated_future_video_tokens",
         "encoded_prefix_from": visual_outputs.frontend.input_source,
         "generator": "shared_visual_tower",
+        "frame_start": int(frame_start),
         "observed_prefix_frames": observed_frame_count,
         "observed_prefix_anchor": str(observed_prefix_anchor),
         "observed_prefix_start_index": int(observed_start),

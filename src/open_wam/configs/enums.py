@@ -46,6 +46,13 @@ class VideoConditionInputSpace(StrEnum):
     RGB_VIDEO = "rgb_video"
 
 
+class VideoConditionSource(StrEnum):
+    """Source used to build method-4 local video-conditioning windows."""
+
+    LOCAL_WINDOW = "local_window"
+    GENERATED_FUTURE = "generated_future"
+
+
 class VideoConditionTrainMode(StrEnum):
     """How a method-4 video-conditioned decoder is trained."""
 

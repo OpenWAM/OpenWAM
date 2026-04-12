@@ -33,6 +33,7 @@ from .enums import (
     TemporalPositionMode,
     TemporalProjection,
     VideoConditionInputSpace,
+    VideoConditionSource,
     VisualStateSource,
     coerce_fields,
 )
@@ -68,6 +69,7 @@ class PostLatentPolicyConfig(PolicyVariantConfig):
     use_state_projection: bool = True
     compatibility_mode: bool = False
     video_condition_input_space: VideoConditionInputSpace = VideoConditionInputSpace.VIDEO_LATENT
+    train_video_condition_source: VideoConditionSource = VideoConditionSource.LOCAL_WINDOW
     action_chunk_anchor_mode: ActionChunkAnchorMode = ActionChunkAnchorMode.CURRENT_PLUS_FUTURE
     local_video_window_frames: int = 4
     current_video_frame_index: int = 0
@@ -86,6 +88,7 @@ class PostLatentPolicyConfig(PolicyVariantConfig):
                 "pooling_mode": PoolingMode,
                 "temporal_projection": TemporalProjection,
                 "video_condition_input_space": VideoConditionInputSpace,
+                "train_video_condition_source": VideoConditionSource,
                 "action_chunk_anchor_mode": ActionChunkAnchorMode,
             },
         )
@@ -112,6 +115,7 @@ class PostDecodedPolicyConfig(PolicyVariantConfig):
     temporal_projection: TemporalProjection = TemporalProjection.INTERPOLATE
     use_state_projection: bool = True
     video_condition_input_space: VideoConditionInputSpace = VideoConditionInputSpace.RGB_VIDEO
+    train_video_condition_source: VideoConditionSource = VideoConditionSource.LOCAL_WINDOW
     action_chunk_anchor_mode: ActionChunkAnchorMode = ActionChunkAnchorMode.CURRENT_PLUS_FUTURE
     local_video_window_frames: int = 4
     current_video_frame_index: int = 0
@@ -131,6 +135,7 @@ class PostDecodedPolicyConfig(PolicyVariantConfig):
                 "pooling_mode": PoolingMode,
                 "temporal_projection": TemporalProjection,
                 "video_condition_input_space": VideoConditionInputSpace,
+                "train_video_condition_source": VideoConditionSource,
                 "action_chunk_anchor_mode": ActionChunkAnchorMode,
             },
         )

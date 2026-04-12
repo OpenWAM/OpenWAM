@@ -13,6 +13,7 @@ from open_wam.configs import (
     PostLatentPolicyConfig,
     RegisterAttachedPolicyConfig,
     VideoConditionInputSpace,
+    VideoConditionSource,
     VideoConditionTrainMode,
     VideoSequencePolicyConfig,
 )
@@ -185,6 +186,14 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
             raise ValueError(
                 "Method-4 rollout-window decoding currently supports only `current_video_frame_index = 0`. "
                 "Non-zero sliding-window alignment is not implemented yet."
+            )
+        if (
+            direct_train_mode
+            and config.policy_variant.train_video_condition_source == VideoConditionSource.GENERATED_FUTURE
+        ):
+            raise ValueError(
+                "Method-4 generated-future video conditioning is only supported for rollout-window diffusion "
+                "training. `current_frame_regression` bypasses the policy-variant window builder."
             )
         if direct_train_mode:
             if config.policy_variant.video_condition_input_space == VideoConditionInputSpace.VIDEO_LATENT:

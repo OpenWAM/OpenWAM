@@ -1,0 +1,138 @@
+name: post_latent_libero_latent_local_generated_video_conditioned
+
+data:
+  dataset_name: libero
+  dataset_type: lerobot_v2_latent_local
+  local_root: "${paths.datasets.libero_heng_root}"
+  empty_text_embedding_path: "${paths.datasets.empty_text_embedding}"
+  latent_window_profile: standard_policy_window
+  split: train
+  camera_names: [observation.images.agentview_rgb, observation.images.eye_in_hand_rgb]
+  latent_camera_names: [observation.images.agentview_rgb, observation.images.eye_in_hand_rgb]
+  canonical_height: 128
+  canonical_width: 256
+  num_frames: 4
+  frame_stride: 1
+  sample_stride: 1
+  episode_cache_size: 2
+  train_fraction: 0.95
+  split_seed: 0
+  train_batch_size: 1
+  val_batch_size: 1
+  num_workers: 8
+  view_layout:
+    - source_name: observation.images.agentview_rgb
+      canonical_name: image
+      top: 0
+      left: 0
+      height: 128
+      width: 128
+    - source_name: observation.images.eye_in_hand_rgb
+      canonical_name: wrist_image
+      top: 0
+      left: 128
+      height: 128
+      width: 128
+  action_schema:
+    action_dim: 7
+    action_horizon: 6
+    state_dim: 8
+    state_horizon: 1
+  action_target:
+    representation: raw
+    source_key: action
+    pose_source_key: observation.state
+    state_encoding: eef_pos_axisangle_gripper_2d
+    reference_source: anchor_state
+    rotation_representation: axis_angle
+    include_gripper: true
+    gripper_representation: action_command
+    gripper_action_index: -1
+
+backbone:
+  implementation: shared_transformer
+  train_attn_mode: flex
+  infer_attn_mode: torch
+  hidden_size: 3072
+  num_layers: 30
+  num_heads: 24
+  attention_head_dim: 128
+  ffn_dim: 14336
+  pretrained_model_name_or_path: "${paths.models.lingbot_va_base}"
+  transformer_subdir: "${paths.checkpoints.libero_videoonly_step_850}"
+  max_text_tokens: 512
+  load_wan_vae_frontend: true
+  load_text_conditioning: true
+  load_reference_core_weights: true
+  reference_core_init_mode: video_only
+  reference_assets_device_policy: cpu_offload
+
+policy_variant:
+  name: post_latent
+  hidden_size: 3072
+  attach_site: post_visual_core
+  pooling_mode: per_frame_mean
+  use_state_projection: true
+  video_condition_input_space: video_latent
+  train_video_condition_source: generated_future
+  action_chunk_anchor_mode: current_plus_future
+  local_video_window_frames: 4
+  current_video_frame_index: 0
+
+action_decoder:
+  name: video_conditioned_action_decoder
+  # Use a shallow action expert initialized from the trained 30-layer video
+  # backbone. This keeps the method-4 run launchable on a single L40S while
+  # preserving the video-backbone warm start.
+  num_layers: 4
+  action_expert_init_mode: video_weight_interpolate
+
+training:
+  video_num_train_timesteps: 1000
+  action_num_train_timesteps: 1000
+  video_sigma_shift: 5.0
+  action_sigma_shift: 1.0
+  use_teacher_forcing: false
+  optimizer_name: adamw
+  scheduler_name: constant_with_warmup
+  learning_rate: 1.0e-5
+  beta1: 0.9
+  beta2: 0.95
+  weight_decay: 0.1
+  warmup_steps: 10
+  gradient_accumulation_steps: 10
+  max_grad_norm: 2.0
+  num_steps: 5000
+  text_condition_dropout_prob: 0.1
+  enabled_objectives: [action]
+  latent_loss_weight: 0.0
+  action_loss_weight: 1.0
+  # Freeze the video backbone and train only the method-4 policy/action surface.
+  trainable_components: [policy_variant, action_decoder.adapters]
+
+inference:
+  video_num_inference_steps: 20
+  action_num_inference_steps: 20
+  use_cache: true
+  guidance_scale: 5.0
+
+trainer:
+  training_profile: feature_policy_train
+  max_epochs: 1
+  limit_train_batches: null
+  limit_val_batches: 0
+  log_every_n_steps: 1
+  accelerator: gpu
+  devices: 1
+  precision: bf16-mixed
+  enable_checkpointing: true
+  enable_model_summary: false
+  runtime: composable
+  batch_adapter: latents
+  loop_policy: steps
+  strategy: fsdp
+  save_interval: 100
+  checkpoint_mode: full_training_state
+  export_runtime_backbone: true
+  enable_jsonl_logging: true
+  enable_wandb: true

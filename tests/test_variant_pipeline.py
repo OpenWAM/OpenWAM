@@ -7,9 +7,10 @@ import pytest
 import torch
 import yaml
 
-from open_wam.configs import ParallelStreamPolicyConfig
+from open_wam.configs import ParallelStreamPolicyConfig, VideoConditionSource
 from open_wam.data import build_synthetic_batch, build_synthetic_latent_batch
 from open_wam.models.policy_variants.common.layouts import tokens_to_frame_major
+from open_wam.models.policy_variants.common.video_conditioning import resolve_video_condition_frame_start
 from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
 from open_wam.pipelines import build_variant_pipeline_from_config
 from open_wam.utils.config_loader import load_experiment_config
@@ -292,6 +293,63 @@ def test_method4_video_conditioned_decoder_runs_when_action_decoder_is_omitted(
     assert infer_output.decoder_output.aux["action_chunk_anchor_mode"] == "current_plus_future"
     assert infer_output.decoder_output.aux["current_frame_index"].item() == 0.0
     assert infer_output.decoder_output.aux["current_action_index"].item() == 0.0
+
+
+def test_method4_generated_video_condition_training_uses_predicted_latents(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    raw["name"] = "post_latent_video_conditioned_generated_train"
+    raw["policy_variant"]["train_video_condition_source"] = "generated_future"
+    raw["training"]["video_num_train_timesteps"] = 10
+    raw["inference"]["video_num_inference_steps"] = 1
+
+    config_path = tmp_path / "post_latent_video_conditioned_generated_train.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config, pipeline, batch, train_batch = _build_pipeline(config_path)
+    generated_train_batch = PolicyTrainBatch(
+        actions=train_batch.actions,
+        action_mask=train_batch.action_mask,
+        state=train_batch.state,
+        extra={
+            "metadata": (
+                {"window_start_frame": 7},
+                {"window_start_frame": 7},
+            ),
+        },
+    )
+
+    train_output = pipeline.forward_train(batch.views, generated_train_batch)
+
+    assert config.policy_variant.train_video_condition_source == VideoConditionSource.GENERATED_FUTURE
+    train_context = train_output.policy_output.decoder_sequence_context
+    assert train_context is not None and train_context.video_condition_window is not None
+    assert train_context.video_condition_window.source_stage == "generated_future"
+    assert train_context.video_condition_window.metadata["source_family"] == "generated_future_video_tokens"
+    assert train_context.video_condition_window.metadata["uses_future_ground_truth"] is False
+    assert train_context.video_condition_window.metadata["frame_start"] == 7
+    assert train_context.video_condition_window.metadata["observed_prefix_anchor"] == "start"
+    assert train_context.video_condition_window.local_window_tokens.requires_grad is False
+    assert train_output.policy_output.aux["video_condition_source"] == "generated_future_video_tokens"
+    assert train_output.policy_output.aux["video_condition_uses_future_ground_truth"] is False
+    assert train_output.policy_output.aux["predicted_latents"].shape[2] == 3
+
+
+def test_generated_video_condition_frame_start_rejects_mixed_batch_offsets() -> None:
+    batch = PolicyTrainBatch(
+        actions=torch.zeros(2, 1, 1),
+        extra={
+            "metadata": (
+                {"window_start_frame": 3},
+                {"window_start_frame": 4},
+            ),
+        },
+    )
+
+    with pytest.raises(ValueError, match="share one absolute frame start"):
+        resolve_video_condition_frame_start(batch)
 
 
 def test_method4_video_conditioned_decoder_reuses_chunk_when_configured(tmp_path: Path) -> None:

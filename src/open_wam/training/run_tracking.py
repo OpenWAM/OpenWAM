@@ -77,6 +77,7 @@ def build_run_tracking_metadata(
     method_label = _resolve_method_label(method_family)
     workload_family = _resolve_workload_family(config)
     attach_site = getattr(config.policy_variant, "attach_site", None)
+    train_video_condition_source = getattr(config.policy_variant, "train_video_condition_source", None)
     checkpoint_dir = Path(config.trainer.checkpoint_dir) if config.trainer.checkpoint_dir else output_dir / "checkpoints"
     metadata: dict[str, Any] = {
         "tracking_schema_version": 1,
@@ -106,6 +107,9 @@ def build_run_tracking_metadata(
         "enabled_objectives": [str(value) for value in config.training.enabled_objectives],
         "trainable_components": [str(value) for value in config.training.trainable_components],
         "frozen_components": [str(value) for value in config.training.frozen_components],
+        "train_video_condition_source": (
+            str(train_video_condition_source) if train_video_condition_source is not None else None
+        ),
         "output_dir": str(output_dir),
         "checkpoint_dir": str(checkpoint_dir),
         "resume_from": config.trainer.resume_from,
@@ -159,6 +163,8 @@ def build_wandb_tags(tracking_metadata: dict[str, Any]) -> tuple[str, ...]:
     ]
     if tracking_metadata.get("git_dirty") is True:
         ordered_tags.append("dirty_worktree")
+    if tracking_metadata.get("train_video_condition_source"):
+        ordered_tags.append(f"train_video_condition:{tracking_metadata['train_video_condition_source']}")
     deduped: list[str] = []
     for tag in ordered_tags:
         if tag not in deduped:

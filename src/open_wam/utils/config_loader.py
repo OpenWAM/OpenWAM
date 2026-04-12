@@ -201,6 +201,10 @@ def _load_policy_variant_config(
                 config_enums.VideoConditionInputSpace,
                 resolved_raw.get("video_condition_input_space", config_enums.VideoConditionInputSpace.VIDEO_LATENT),
             ),
+            train_video_condition_source=_coerce_enum(
+                config_enums.VideoConditionSource,
+                resolved_raw.get("train_video_condition_source", config_enums.VideoConditionSource.LOCAL_WINDOW),
+            ),
             action_chunk_anchor_mode=_coerce_enum(
                 config_enums.ActionChunkAnchorMode,
                 resolved_raw.get(
@@ -231,6 +235,10 @@ def _load_policy_variant_config(
             video_condition_input_space=_coerce_enum(
                 config_enums.VideoConditionInputSpace,
                 resolved_raw.get("video_condition_input_space", config_enums.VideoConditionInputSpace.RGB_VIDEO),
+            ),
+            train_video_condition_source=_coerce_enum(
+                config_enums.VideoConditionSource,
+                resolved_raw.get("train_video_condition_source", config_enums.VideoConditionSource.LOCAL_WINDOW),
             ),
             action_chunk_anchor_mode=_coerce_enum(
                 config_enums.ActionChunkAnchorMode,

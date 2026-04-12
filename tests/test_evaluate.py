@@ -56,27 +56,32 @@ def test_eval_wrapper_resolves_checkpoint_path_placeholder(monkeypatch, tmp_path
 
 
 def test_method4_video_conditioned_eval_wrappers_resolve_experiment_configs() -> None:
-    post_latent_request = resolve_evaluation_request(
-        REPO_ROOT / "configs/evals/post_latent_libero_latent_local_video_conditioned_trajectory.yaml"
-    )
-    post_decoded_request = resolve_evaluation_request(
-        REPO_ROOT / "configs/evals/post_decoded_libero_latent_local_video_conditioned_trajectory.yaml"
-    )
+    cases = [
+        (
+            "post_latent_libero_latent_local_video_conditioned_trajectory.yaml",
+            "post_latent_libero_latent_local_video_conditioned.yaml",
+        ),
+        (
+            "post_decoded_libero_latent_local_video_conditioned_trajectory.yaml",
+            "post_decoded_libero_latent_local_video_conditioned.yaml",
+        ),
+        (
+            "post_latent_libero_latent_local_generated_video_conditioned_trajectory.yaml",
+            "post_latent_libero_latent_local_generated_video_conditioned.yaml",
+        ),
+        (
+            "post_decoded_libero_latent_local_generated_video_conditioned_trajectory.yaml",
+            "post_decoded_libero_latent_local_generated_video_conditioned.yaml",
+        ),
+    ]
 
-    assert post_latent_request.experiment_config_path == (
-        REPO_ROOT / "configs/experiments/post_latent_libero_latent_local_video_conditioned.yaml"
-    ).resolve()
-    assert post_decoded_request.experiment_config_path == (
-        REPO_ROOT / "configs/experiments/post_decoded_libero_latent_local_video_conditioned.yaml"
-    ).resolve()
-    assert post_latent_request.mode == "trajectory"
-    assert post_decoded_request.mode == "trajectory"
-    assert post_latent_request.split == "val"
-    assert post_decoded_request.split == "val"
-    assert post_latent_request.batch_size == 1
-    assert post_decoded_request.batch_size == 1
-    assert post_latent_request.max_trajectories == 1
-    assert post_decoded_request.max_trajectories == 1
+    for wrapper_name, experiment_name in cases:
+        request = resolve_evaluation_request(REPO_ROOT / "configs/evals" / wrapper_name)
+        assert request.experiment_config_path == (REPO_ROOT / "configs/experiments" / experiment_name).resolve()
+        assert request.mode == "trajectory"
+        assert request.split == "val"
+        assert request.batch_size == 1
+        assert request.max_trajectories == 1
 
 
 @pytest.mark.parametrize(

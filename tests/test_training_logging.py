@@ -146,6 +146,16 @@ def test_wandb_group_job_type_and_tags_follow_tracking_metadata(tmp_path: Path) 
     assert "method:m5" in tags
 
 
+def test_method4_generated_video_condition_source_is_tracked(tmp_path: Path) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/post_latent_libero_latent_local_generated_video_conditioned.yaml"
+    )
+    metadata = build_run_tracking_metadata(config, run_name=config.name, output_dir=tmp_path / config.name)
+
+    assert metadata["train_video_condition_source"] == "generated_future"
+    assert "train_video_condition:generated_future" in build_wandb_tags(metadata)
+
+
 def test_wandb_project_defaults_to_dataset_and_workload_bin(tmp_path: Path) -> None:
     config = load_experiment_config(REPO_ROOT / "configs/experiments/mot_robotwin_smoke.yaml")
     config = replace(config, trainer=replace(config.trainer, enable_wandb=True, wandb_project=None))
