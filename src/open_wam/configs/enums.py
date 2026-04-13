@@ -521,6 +521,13 @@ class ParallelCacheMode(StrEnum):
     METADATA_ONLY = "metadata_only"
 
 
+class ParallelExactCacheWriteMode(StrEnum):
+    """How exact-runtime video/action chunks are committed to rollout cache."""
+
+    SINGLE_STREAM_STAGED = "single_stream_staged"
+    JOINT_PACKED = "joint_packed"
+
+
 class ActionNormMethod(StrEnum):
     """Raw-to-model action normalization strategy for exact method-1 paths."""
 

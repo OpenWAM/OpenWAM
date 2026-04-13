@@ -6,6 +6,8 @@ import sys
 from types import SimpleNamespace
 import uuid
 
+import pytest
+
 
 def _load_sandbox_module():
     module_path = Path(__file__).resolve().parents[1] / "scripts" / "run_libero_realtime_sandbox.py"
@@ -105,3 +107,154 @@ def test_mot_realtime_replan_resets_observation_conditioned_session() -> None:
         )
         is session
     )
+
+
+def test_realtime_common_inference_overrides_preserve_config_values_by_default() -> None:
+    sandbox = _load_sandbox_module()
+    config = SimpleNamespace(
+        inference=SimpleNamespace(
+            video_num_inference_steps=20,
+            action_num_inference_steps=50,
+            guidance_scale=5.0,
+            action_guidance_scale=1.0,
+        )
+    )
+
+    sandbox._apply_common_inference_overrides(
+        config,
+        video_num_inference_steps=None,
+        action_num_inference_steps=None,
+        guidance_scale=None,
+        action_guidance_scale=None,
+    )
+
+    assert config.inference.video_num_inference_steps == 20
+    assert config.inference.action_num_inference_steps == 50
+    assert config.inference.guidance_scale == 5.0
+    assert config.inference.action_guidance_scale == 1.0
+
+
+def test_realtime_common_inference_overrides_apply_explicit_smoke_values() -> None:
+    sandbox = _load_sandbox_module()
+    config = SimpleNamespace(
+        inference=SimpleNamespace(
+            video_num_inference_steps=20,
+            action_num_inference_steps=50,
+            guidance_scale=5.0,
+            action_guidance_scale=1.0,
+        )
+    )
+
+    sandbox._apply_common_inference_overrides(
+        config,
+        video_num_inference_steps=2,
+        action_num_inference_steps=3,
+        guidance_scale=1.5,
+        action_guidance_scale=0.75,
+    )
+
+    assert config.inference.video_num_inference_steps == 2
+    assert config.inference.action_num_inference_steps == 3
+    assert config.inference.guidance_scale == 1.5
+    assert config.inference.action_guidance_scale == 0.75
+
+
+@pytest.mark.parametrize(
+    ("video_steps", "action_steps"),
+    [
+        (0, None),
+        (None, 0),
+        (-1, None),
+        (None, -1),
+    ],
+)
+def test_realtime_common_inference_overrides_reject_nonpositive_step_values(
+    video_steps: int | None,
+    action_steps: int | None,
+) -> None:
+    sandbox = _load_sandbox_module()
+    config = SimpleNamespace(
+        inference=SimpleNamespace(
+            video_num_inference_steps=20,
+            action_num_inference_steps=50,
+            guidance_scale=5.0,
+            action_guidance_scale=1.0,
+        )
+    )
+
+    with pytest.raises(ValueError, match="must be positive"):
+        sandbox._apply_common_inference_overrides(
+            config,
+            video_num_inference_steps=video_steps,
+            action_num_inference_steps=action_steps,
+            guidance_scale=None,
+            action_guidance_scale=None,
+        )
+
+    assert config.inference.video_num_inference_steps == 20
+    assert config.inference.action_num_inference_steps == 50
+
+
+def test_exact_realtime_inference_overrides_preserve_config_values_by_default() -> None:
+    sandbox = _load_sandbox_module()
+    runner = SimpleNamespace(
+        policy_variant=SimpleNamespace(
+            inference_config=SimpleNamespace(
+                video_num_inference_steps=20,
+                action_num_inference_steps=50,
+                guidance_scale=5.0,
+                action_guidance_scale=1.0,
+            )
+        )
+    )
+
+    sandbox.exact_sandbox._apply_inference_overrides(
+        runner,
+        video_num_inference_steps=None,
+        action_num_inference_steps=None,
+        guidance_scale=None,
+        action_guidance_scale=None,
+    )
+
+    assert runner.policy_variant.inference_config.video_num_inference_steps == 20
+    assert runner.policy_variant.inference_config.action_num_inference_steps == 50
+    assert runner.policy_variant.inference_config.guidance_scale == 5.0
+    assert runner.policy_variant.inference_config.action_guidance_scale == 1.0
+
+
+@pytest.mark.parametrize(
+    ("video_steps", "action_steps"),
+    [
+        (0, None),
+        (None, 0),
+        (-1, None),
+        (None, -1),
+    ],
+)
+def test_exact_realtime_inference_overrides_reject_nonpositive_step_values(
+    video_steps: int | None,
+    action_steps: int | None,
+) -> None:
+    sandbox = _load_sandbox_module()
+    runner = SimpleNamespace(
+        policy_variant=SimpleNamespace(
+            inference_config=SimpleNamespace(
+                video_num_inference_steps=20,
+                action_num_inference_steps=50,
+                guidance_scale=5.0,
+                action_guidance_scale=1.0,
+            )
+        )
+    )
+
+    with pytest.raises(ValueError, match="must be positive"):
+        sandbox.exact_sandbox._apply_inference_overrides(
+            runner,
+            video_num_inference_steps=video_steps,
+            action_num_inference_steps=action_steps,
+            guidance_scale=None,
+            action_guidance_scale=None,
+        )
+
+    assert runner.policy_variant.inference_config.video_num_inference_steps == 20
+    assert runner.policy_variant.inference_config.action_num_inference_steps == 50

@@ -6,6 +6,7 @@ import torch
 from open_wam.configs import (
     ActionSpace,
     InferenceConfig,
+    ParallelExactCacheWriteMode,
     ParallelRuntimeMode,
     ParallelStreamPolicyConfig,
     TemporalPositionMode,
@@ -84,6 +85,13 @@ class ParallelStreamPolicyVariant(PolicyVariant):
 
     def _runtime_mode_label(self) -> str:
         return str(self.config.runtime_mode)
+
+    def exact_cache_write_mode(self) -> ParallelExactCacheWriteMode:
+        """Cache write contract selected by the exact runtime program."""
+
+        if self.config.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
+            return ParallelExactCacheWriteMode.JOINT_PACKED
+        return ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED
 
     def required_visual_stages(self) -> tuple[str, ...]:
         return ("frontend",)
@@ -389,6 +397,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 dtype=observed_video_latents.dtype,
             ),
             infer_cache=infer_state.cache,
+            cache_write_mode=self.exact_cache_write_mode(),
         )
         next_cache["backbone_cache"] = visual_tower.resolve_runtime_cache_state(
             next_cache.get("backbone_cache") if isinstance(next_cache.get("backbone_cache"), CacheState) else None,

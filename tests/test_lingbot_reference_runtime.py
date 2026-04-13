@@ -3,7 +3,13 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from open_wam.configs import InferenceConfig, ParallelStreamPolicyConfig, TrainingConfig
+from open_wam.configs import (
+    InferenceConfig,
+    ParallelExactCacheWriteMode,
+    ParallelRuntimeMode,
+    ParallelStreamPolicyConfig,
+    TrainingConfig,
+)
 from open_wam.models.action_decoders.lingbot_parallel_decoder import LingbotParallelActionDecoder
 from open_wam.models.policy_variants.contracts import PolicyTrainBatch, PolicyTrainOutput
 from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
@@ -13,6 +19,7 @@ from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
     run_parallel_exact_inference_rollout,
     run_reference_single_stream_forward,
 )
+from open_wam.models.policy_variants.parallel_stream.variant import ParallelStreamPolicyVariant
 from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
 
 
@@ -43,8 +50,9 @@ class _FakeReferenceTransformer(nn.Module):
         dtype: torch.dtype,
         batch_size: int,
         backend_name: str = "lingbot_slot_pool",
+        prefix_visibility_mode: str = "full_history",
     ) -> None:
-        del attn_window, device, dtype, backend_name
+        del attn_window, device, dtype, backend_name, prefix_visibility_mode
         self.cache_batch_sizes[cache_name] = batch_size
         self.cache_layouts[cache_name] = (latent_token_per_chunk, action_token_per_chunk)
 
@@ -145,6 +153,7 @@ def test_exact_runtime_forces_cfg_batch_when_cache_is_shared() -> None:
 
     assert warm_cache["cache_initialized"] is True
     assert warm_cache["use_cfg"] is True
+    assert warm_cache["debug_last_warmup"]["cache_write_mode"] == "single_stream_staged"
     assert transformer.cache_batch_sizes[warm_cache["cache_name"]] == 4
 
     rollout = run_parallel_exact_inference_rollout(
@@ -163,6 +172,54 @@ def test_exact_runtime_forces_cfg_batch_when_cache_is_shared() -> None:
 
     assert rollout.action_pred.shape == (2, 4, 4)
     assert rollout.predicted_latents.shape == (2, 48, 2, 24, 20)
+
+
+def test_parallel_stream_variant_selects_exact_cache_write_contract() -> None:
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+    )
+    training_config = TrainingConfig(chunk_size=2, window_size=8)
+    inference_config = InferenceConfig(frame_chunk_size=2)
+
+    canonical = ParallelStreamPolicyVariant(
+        ParallelStreamPolicyConfig(
+            hidden_size=32,
+            runtime_mode=ParallelRuntimeMode.LINGBOT_EXACT,
+            frame_chunk_size=2,
+            action_per_frame=2,
+            attn_window=8,
+        ),
+        backbone_config=backbone_config,
+        training_config=training_config,
+        inference_config=inference_config,
+        action_dim=4,
+        action_horizon=4,
+        num_frames=2,
+    )
+    action_conditioned = ParallelStreamPolicyVariant(
+        ParallelStreamPolicyConfig(
+            hidden_size=32,
+            runtime_mode=ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
+            frame_chunk_size=2,
+            action_per_frame=2,
+            attn_window=8,
+            video_condition_on_action=True,
+        ),
+        backbone_config=backbone_config,
+        training_config=training_config,
+        inference_config=inference_config,
+        action_dim=4,
+        action_horizon=4,
+        num_frames=2,
+    )
+
+    assert canonical.exact_cache_write_mode() == ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED
+    assert action_conditioned.exact_cache_write_mode() == ParallelExactCacheWriteMode.JOINT_PACKED
 
 
 def test_exact_cache_warmup_allows_shorter_video_history_than_action_history() -> None:

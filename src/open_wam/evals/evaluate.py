@@ -59,6 +59,11 @@ class EvaluationSummary:
     num_batches: int
     num_trajectories: int
     device: str
+    video_num_inference_steps: int
+    action_num_inference_steps: int
+    joint_num_inference_steps: int | None
+    guidance_scale: float
+    action_guidance_scale: float
     action_prediction_source: EvalPredictionSource
     action_prediction_shape: tuple[int, ...]
     target_action_shape: tuple[int, ...]
@@ -937,6 +942,15 @@ def run_evaluation(
         num_batches=num_batches,
         num_trajectories=num_trajectories,
         device=str(device),
+        video_num_inference_steps=int(experiment_config.inference.video_num_inference_steps),
+        action_num_inference_steps=int(experiment_config.inference.action_num_inference_steps),
+        joint_num_inference_steps=(
+            None
+            if experiment_config.inference.joint_num_inference_steps is None
+            else int(experiment_config.inference.joint_num_inference_steps)
+        ),
+        guidance_scale=float(experiment_config.inference.guidance_scale),
+        action_guidance_scale=float(experiment_config.inference.action_guidance_scale),
         action_prediction_source=action_prediction_source,
         action_prediction_shape=action_prediction_shape or tuple(),
         target_action_shape=target_action_shape or tuple(),
@@ -990,6 +1004,11 @@ def main() -> None:
     print("eval.num_batches", summary.num_batches)
     print("eval.num_trajectories", summary.num_trajectories)
     print("eval.device", summary.device)
+    print("eval.video_num_inference_steps", summary.video_num_inference_steps)
+    print("eval.action_num_inference_steps", summary.action_num_inference_steps)
+    print("eval.joint_num_inference_steps", summary.joint_num_inference_steps)
+    print("eval.guidance_scale", summary.guidance_scale)
+    print("eval.action_guidance_scale", summary.action_guidance_scale)
     print("eval.action_prediction_source", summary.action_prediction_source)
     print("eval.action_prediction_shape", summary.action_prediction_shape)
     print("eval.target_action_shape", summary.target_action_shape)

@@ -9,6 +9,7 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange
 
+from open_wam.configs.enums import ParallelExactCacheWriteMode
 from open_wam.configs.inference import InferenceConfig
 from open_wam.configs.policy_variant import ParallelStreamPolicyConfig
 from open_wam.configs.training import TrainingConfig
@@ -158,7 +159,7 @@ def sample_timestep_id(
 class ExactCacheInterfaceSpec:
     """Unified exact-runtime cache interface independent of rollout style."""
 
-    write_mode: str
+    write_mode: ParallelExactCacheWriteMode
     cache_batch_size_override: int | None = None
     token_batch_factor: int = 1
     prefix_visibility_mode: str = "full_history"
@@ -576,11 +577,12 @@ def _resolve_exact_cache_context(
 
 def _build_exact_cache_spec(
     *,
-    write_mode: str,
+    write_mode: ParallelExactCacheWriteMode | str,
     batch_size: int,
     use_cfg: bool,
 ) -> ExactCacheInterfaceSpec:
-    if write_mode == "joint_packed":
+    write_mode = ParallelExactCacheWriteMode(write_mode)
+    if write_mode == ParallelExactCacheWriteMode.JOINT_PACKED:
         # The shared exact runtime keeps batch as the cache batch dimension.
         # Overriding cache batch to 1 and folding batch into token count no
         # longer matches the runtime-step execution path after the shared-core
@@ -916,6 +918,7 @@ def run_parallel_exact_cache_warmup(
     negative_text_emb: torch.Tensor | None,
     action_channel_mask: torch.Tensor | None,
     infer_cache: dict[str, Any],
+    cache_write_mode: ParallelExactCacheWriteMode | str = ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED,
 ) -> dict[str, Any]:
     device = observed_video_latents.device
     batch_size, _, observed_frames, latent_height, latent_width = observed_video_latents.shape
@@ -932,7 +935,7 @@ def run_parallel_exact_cache_warmup(
         negative_text_emb=negative_text_emb,
     )
     cache_spec = _build_exact_cache_spec(
-        write_mode="joint_packed",
+        write_mode=cache_write_mode,
         batch_size=batch_size,
         use_cfg=cache_context.use_cfg,
     )
@@ -985,7 +988,7 @@ def run_parallel_exact_cache_warmup(
         "observed_frames": observed_frames,
         "frame_start_before": int(infer_cache.get("frame_start", 0)),
         "frame_start_after": current_frame_start + observed_frames,
-        "cache_write_mode": cache_spec.write_mode,
+        "cache_write_mode": str(cache_spec.write_mode),
     }
     return {
         "runtime_mode": "lingbot_exact",
@@ -1048,7 +1051,7 @@ def run_parallel_exact_inference_rollout(
     cache_backend_name = cache_context.cache_backend_name
     current_frame_start = int(infer_cache.get("frame_start", 0))
     cache_spec = _build_exact_cache_spec(
-        write_mode="single_stream_staged",
+        write_mode=ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED,
         batch_size=batch_size,
         use_cfg=cache_context.use_cfg,
     )
@@ -1216,7 +1219,7 @@ def run_parallel_exact_inference_rollout(
         "action_timesteps": action_timesteps.tolist(),
         "video_guidance_scale": float(inference_config.guidance_scale),
         "action_guidance_scale": float(inference_config.action_guidance_scale),
-        "cache_write_mode": cache_spec.write_mode,
+        "cache_write_mode": str(cache_spec.write_mode),
     }
     output_dtype = condition_latents.dtype if condition_latents is not None else model_dtype
     action_pred = rearrange(actions, "b c f n 1 -> b (f n) c").to(dtype=output_dtype)
@@ -1617,7 +1620,7 @@ def _write_exact_cache_chunk(
     action_channel_mask: torch.Tensor | None,
     update_cache: int,
 ) -> None:
-    if cache_spec.write_mode == "joint_packed":
+    if cache_spec.write_mode == ParallelExactCacheWriteMode.JOINT_PACKED:
         _write_joint_clean_tokens_to_exact_cache(
             transformer=transformer,
             cache_name=cache_name,
@@ -1632,7 +1635,7 @@ def _write_exact_cache_chunk(
             backbone_config=backbone_config,
         )
         return
-    if cache_spec.write_mode == "single_stream_staged":
+    if cache_spec.write_mode == ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED:
         video_cache_input = prepare_reference_single_stream_input(
             latents=video_latents,
             timestep=0.0,
@@ -1786,7 +1789,7 @@ def run_parallel_action_conditioned_inference_rollout(
     cache_name = cache_context.cache_name
     cache_backend_name = cache_context.cache_backend_name
     cache_spec = _build_exact_cache_spec(
-        write_mode="joint_packed",
+        write_mode=ParallelExactCacheWriteMode.JOINT_PACKED,
         batch_size=batch_size,
         use_cfg=cache_context.use_cfg,
     )
@@ -1989,7 +1992,7 @@ def run_parallel_action_conditioned_inference_rollout(
         "joint_denoise": True,
         "uses_explicit_clean_condition": False,
         "use_cache": bool(inference_config.use_cache),
-        "cache_commit_mode": cache_spec.write_mode,
+        "cache_commit_mode": str(cache_spec.write_mode),
         "use_cfg": cache_context.use_cfg,
         "video_num_inference_steps": int(inference_config.video_num_inference_steps),
         "action_num_inference_steps": int(inference_config.action_num_inference_steps),

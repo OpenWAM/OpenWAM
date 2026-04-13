@@ -28,7 +28,11 @@ from open_wam.integrations import (  # noqa: E402
 )
 from open_wam.models.visual_tower.reference_loader import resolve_pretrained_component_dir  # noqa: E402
 from open_wam.pipelines import build_exact_runtime_runner_from_config  # noqa: E402
-from open_wam.utils import load_experiment_config, seed_everywhere  # noqa: E402
+from open_wam.utils import (  # noqa: E402
+    load_experiment_config,
+    resolve_transformer_dir_override,
+    seed_everywhere,
+)
 
 LIBERO_OBS_KEYS = (
     "observation.images.agentview_rgb",
@@ -59,12 +63,24 @@ def main() -> None:
     parser.add_argument("--runtime-device", type=str, default=None)
     parser.add_argument("--frontend-device", type=str, default=None)
     parser.add_argument("--decode-device", type=str, default=None)
+    parser.add_argument(
+        "--transformer-dir",
+        type=str,
+        default=None,
+        help="Optional checkpoint transformer export override. Defaults to backbone.transformer_subdir from the config.",
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config)
     if not config_path.is_absolute():
         config_path = (REPO_ROOT / config_path).resolve()
     config = load_experiment_config(config_path)
+    if args.transformer_dir is not None:
+        object.__setattr__(
+            config.backbone,
+            "transformer_subdir",
+            str(resolve_transformer_dir_override(args.transformer_dir)),
+        )
     runner = build_exact_runtime_runner_from_config(config)
     runtime_device = _resolve_device(args.runtime_device)
     frontend_device = _resolve_device(args.frontend_device, fallback=runtime_device)

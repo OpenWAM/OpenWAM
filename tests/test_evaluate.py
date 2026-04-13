@@ -180,6 +180,8 @@ def test_run_evaluation_on_contract_only_robotwin() -> None:
     summary = run_evaluation(request)
     assert summary.experiment_name == "contract_only_robotwin"
     assert summary.num_batches == 1
+    assert summary.video_num_inference_steps == 25
+    assert summary.action_num_inference_steps == 50
     assert summary.action_prediction_shape == summary.target_action_shape
     assert summary.mean_action_mse is not None
     assert summary.mean_video_latent_mse is None
@@ -251,6 +253,8 @@ def test_run_evaluation_on_parallel_stream_robotwin(tmp_path: Path) -> None:
     summary = run_evaluation(request)
     assert summary.experiment_name == "parallel_stream_robotwin_smoke"
     assert summary.num_batches == 1
+    assert summary.video_num_inference_steps == 2
+    assert summary.action_num_inference_steps == 2
     assert summary.action_prediction_shape == summary.target_action_shape
     assert summary.mean_action_mse is not None
 

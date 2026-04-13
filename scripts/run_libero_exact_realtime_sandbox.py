@@ -32,7 +32,12 @@ from open_wam.integrations.realtime_control import (  # noqa: E402
 )
 from open_wam.models.policy_variants import PolicyInferState, RolloutCursor  # noqa: E402
 from open_wam.pipelines import build_exact_runtime_runner_from_config  # noqa: E402
-from open_wam.utils import load_experiment_config, seed_everywhere  # noqa: E402
+from open_wam.utils import (  # noqa: E402
+    load_experiment_config,
+    resolve_transformer_dir_override,
+    seed_everywhere,
+    validate_positive_step_override,
+)
 
 
 def main() -> None:
@@ -56,15 +61,44 @@ def main() -> None:
     parser.add_argument("--runtime-device", type=str, default=None)
     parser.add_argument("--frontend-device", type=str, default=None)
     parser.add_argument("--reference-assets-device-policy", type=str, choices=("cpu_offload", "runtime"), default="runtime")
-    parser.add_argument("--video-num-inference-steps", type=int, default=1)
-    parser.add_argument("--action-num-inference-steps", type=int, default=1)
-    parser.add_argument("--guidance-scale", type=float, default=1.0)
-    parser.add_argument("--action-guidance-scale", type=float, default=1.0)
+    parser.add_argument(
+        "--video-num-inference-steps",
+        type=int,
+        default=None,
+        help="Optional override for inference.video_num_inference_steps. Defaults to the experiment config.",
+    )
+    parser.add_argument(
+        "--action-num-inference-steps",
+        type=int,
+        default=None,
+        help="Optional override for inference.action_num_inference_steps. Defaults to the experiment config.",
+    )
+    parser.add_argument(
+        "--guidance-scale",
+        type=float,
+        default=None,
+        help="Optional override for inference.guidance_scale. Defaults to the experiment config.",
+    )
+    parser.add_argument(
+        "--action-guidance-scale",
+        type=float,
+        default=None,
+        help="Optional override for inference.action_guidance_scale. Defaults to the experiment config.",
+    )
     parser.add_argument(
         "--planner-mode",
         type=str,
         choices=("history_only", "async_buffer", "async_mix"),
-        default="history_only",
+        default="async_buffer",
+    )
+    parser.add_argument(
+        "--startup-open-loop-chunks",
+        type=int,
+        default=0,
+        help=(
+            "Precompute this many model open-loop chunks before the live clock starts. "
+            "This avoids fallback without future observations, but it is not observation-conditioned replanning."
+        ),
     )
     parser.add_argument("--deadline-miss-policy", type=str, choices=("hold_last", "zero"), default="hold_last")
     parser.add_argument("--deadline-tolerance-ms", type=float, default=2.0)
@@ -77,6 +111,8 @@ def main() -> None:
         raise ValueError("--max-frames must be positive.")
     if args.target_action_hz <= 0:
         raise ValueError("--target-action-hz must be positive.")
+    if args.startup_open_loop_chunks < 0:
+        raise ValueError("--startup-open-loop-chunks must be non-negative.")
 
     seed_everywhere(args.seed)
 
@@ -85,7 +121,11 @@ def main() -> None:
         config_path = (REPO_ROOT / config_path).resolve()
     config = load_experiment_config(config_path)
     if args.transformer_dir is not None:
-        object.__setattr__(config.backbone, "transformer_subdir", str(Path(args.transformer_dir).resolve()))
+        object.__setattr__(
+            config.backbone,
+            "transformer_subdir",
+            str(resolve_transformer_dir_override(args.transformer_dir)),
+        )
     object.__setattr__(config.backbone, "reference_assets_device_policy", args.reference_assets_device_policy)
 
     runner = build_exact_runtime_runner_from_config(config)
@@ -174,8 +214,6 @@ def main() -> None:
         current_obs = first_obs
         last_action = np.zeros((action_dim,), dtype=np.float32)
         next_action_index = 0
-        live_start_monotonic = time.perf_counter()
-        last_action_end_monotonic = live_start_monotonic
         skipped_replan_submissions = 0
         pending_history: list[dict[str, Any]] = []
         frame_chunk_size = int(config.inference.frame_chunk_size)
@@ -184,6 +222,28 @@ def main() -> None:
             next_frame_start=int(first_chunk.debug.get("generation_frame_start", 0)) + frame_chunk_size,
             frame_chunk_size=frame_chunk_size,
         )
+        startup_open_loop_s = 0.0
+        if args.startup_open_loop_chunks > 0:
+            startup_open_loop_t0 = time.perf_counter()
+            for _ in range(int(args.startup_open_loop_chunks)):
+                if buffer_tail_session is None:
+                    break
+                extension_result = _run_extension_job(
+                    runner=runner,
+                    session=buffer_tail_session,
+                    config=config,
+                )
+                extension_records.append(extension_result["trace"])
+                buffer_tail_session = extension_result["buffer_tail_session"]
+                plan_by_frame = merge_future_frame_actions(
+                    plan_by_frame,
+                    extension_result["planned_frames"],
+                    next_frame_to_execute=next_frame_to_execute,
+                )
+            startup_open_loop_s = time.perf_counter() - startup_open_loop_t0
+            startup_infer_s += startup_open_loop_s
+        live_start_monotonic = time.perf_counter()
+        last_action_end_monotonic = live_start_monotonic
 
         with ThreadPoolExecutor(max_workers=1) as executor:
             replan_future: Future[dict[str, Any]] | None = None
@@ -382,6 +442,8 @@ def main() -> None:
                 "action_guidance_scale": float(runner.policy_variant.inference_config.action_guidance_scale),
                 "planner_mode": args.planner_mode,
                 "deadline_miss_policy": args.deadline_miss_policy,
+                "startup_open_loop_chunks": int(args.startup_open_loop_chunks),
+                "startup_open_loop_s": float(startup_open_loop_s),
                 "skipped_replan_submissions": int(skipped_replan_submissions),
                 "history_replan_count": int(len(replan_records)),
                 "open_loop_extension_count": int(len(extension_records)),
@@ -434,16 +496,39 @@ def main() -> None:
 def _apply_inference_overrides(
     runner,
     *,
-    video_num_inference_steps: int,
-    action_num_inference_steps: int,
-    guidance_scale: float,
-    action_guidance_scale: float,
+    video_num_inference_steps: int | None,
+    action_num_inference_steps: int | None,
+    guidance_scale: float | None,
+    action_guidance_scale: float | None,
 ) -> None:
-    object.__setattr__(runner.policy_variant.inference_config, "video_num_inference_steps", int(video_num_inference_steps))
-    object.__setattr__(runner.policy_variant.inference_config, "action_num_inference_steps", int(action_num_inference_steps))
-    object.__setattr__(runner.policy_variant.inference_config, "guidance_scale", float(guidance_scale))
-    object.__setattr__(runner.policy_variant.inference_config, "action_guidance_scale", float(action_guidance_scale))
-
+    video_steps = validate_positive_step_override(
+        "video_num_inference_steps",
+        video_num_inference_steps,
+    )
+    action_steps = validate_positive_step_override(
+        "action_num_inference_steps",
+        action_num_inference_steps,
+    )
+    if video_steps is not None:
+        object.__setattr__(
+            runner.policy_variant.inference_config,
+            "video_num_inference_steps",
+            video_steps,
+        )
+    if action_steps is not None:
+        object.__setattr__(
+            runner.policy_variant.inference_config,
+            "action_num_inference_steps",
+            action_steps,
+        )
+    if guidance_scale is not None:
+        object.__setattr__(runner.policy_variant.inference_config, "guidance_scale", float(guidance_scale))
+    if action_guidance_scale is not None:
+        object.__setattr__(
+            runner.policy_variant.inference_config,
+            "action_guidance_scale",
+            float(action_guidance_scale),
+        )
 
 def _chunk_to_planned_frames(
     *,

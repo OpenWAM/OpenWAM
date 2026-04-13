@@ -31,7 +31,11 @@ from open_wam.integrations import LiberoControlConfig, compute_osc_pose_action  
 from open_wam.integrations.realtime_control import build_live_rollout_summary  # noqa: E402
 from open_wam.models.policy_variants import PolicyInferContext  # noqa: E402
 from open_wam.pipelines import LingbotExactRunner, VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
-from open_wam.utils import load_experiment_config, seed_everywhere  # noqa: E402
+from open_wam.utils import (  # noqa: E402
+    load_experiment_config,
+    seed_everywhere,
+    validate_positive_step_override,
+)
 
 VERBOSE = False
 
@@ -95,10 +99,30 @@ def main() -> None:
     parser.add_argument("--frontend-device", type=str, default=None)
     parser.add_argument("--decode-device", type=str, default=None)
     parser.add_argument("--reference-assets-device-policy", type=str, choices=("cpu_offload", "runtime"), default="runtime")
-    parser.add_argument("--video-num-inference-steps", type=int, default=1)
-    parser.add_argument("--action-num-inference-steps", type=int, default=1)
-    parser.add_argument("--guidance-scale", type=float, default=1.0)
-    parser.add_argument("--action-guidance-scale", type=float, default=1.0)
+    parser.add_argument(
+        "--video-num-inference-steps",
+        type=int,
+        default=None,
+        help="Optional override for inference.video_num_inference_steps. Defaults to the experiment config.",
+    )
+    parser.add_argument(
+        "--action-num-inference-steps",
+        type=int,
+        default=None,
+        help="Optional override for inference.action_num_inference_steps. Defaults to the experiment config.",
+    )
+    parser.add_argument(
+        "--guidance-scale",
+        type=float,
+        default=None,
+        help="Optional override for inference.guidance_scale. Defaults to the experiment config.",
+    )
+    parser.add_argument(
+        "--action-guidance-scale",
+        type=float,
+        default=None,
+        help="Optional override for inference.action_guidance_scale. Defaults to the experiment config.",
+    )
     parser.add_argument(
         "--planner-mode",
         type=str,
@@ -106,6 +130,15 @@ def main() -> None:
         default="async_buffer",
     )
     parser.add_argument("--sequence-buffer-threshold", type=int, default=3)
+    parser.add_argument(
+        "--startup-open-loop-chunks",
+        type=int,
+        default=0,
+        help=(
+            "Exact-runtime ablation: precompute this many model open-loop chunks before the live clock starts. "
+            "This avoids fallback without using future observations, but it is not observation-conditioned replanning."
+        ),
+    )
     parser.add_argument("--deadline-miss-policy", type=str, choices=("hold_last", "zero"), default="hold_last")
     parser.add_argument("--deadline-tolerance-ms", type=float, default=2.0)
     parser.add_argument("--output-dir", type=str, default="outputs/libero_realtime_validation")
@@ -120,6 +153,8 @@ def main() -> None:
         raise ValueError("--target-action-hz must be positive.")
     if args.sequence_buffer_threshold < 0:
         raise ValueError("--sequence-buffer-threshold must be non-negative.")
+    if args.startup_open_loop_chunks < 0:
+        raise ValueError("--startup-open-loop-chunks must be non-negative.")
 
     global VERBOSE
     VERBOSE = bool(args.verbose)
@@ -165,6 +200,7 @@ def main() -> None:
             action_num_inference_steps=args.action_num_inference_steps,
             guidance_scale=args.guidance_scale,
             action_guidance_scale=args.action_guidance_scale,
+            startup_open_loop_chunks=args.startup_open_loop_chunks,
         )
     elif policy_name == "video_sequence_policy":
         summary = _run_sequence_policy_realtime_rollout(
@@ -302,16 +338,27 @@ def _apply_checkpoint_backbone_override(config, *, checkpoint_path: Path | None)
 def _apply_common_inference_overrides(
     config,
     *,
-    video_num_inference_steps: int,
-    action_num_inference_steps: int,
-    guidance_scale: float,
-    action_guidance_scale: float,
+    video_num_inference_steps: int | None,
+    action_num_inference_steps: int | None,
+    guidance_scale: float | None,
+    action_guidance_scale: float | None,
 ) -> None:
-    object.__setattr__(config.inference, "video_num_inference_steps", int(video_num_inference_steps))
-    object.__setattr__(config.inference, "action_num_inference_steps", int(action_num_inference_steps))
-    object.__setattr__(config.inference, "guidance_scale", float(guidance_scale))
-    object.__setattr__(config.inference, "action_guidance_scale", float(action_guidance_scale))
-
+    video_steps = validate_positive_step_override(
+        "video_num_inference_steps",
+        video_num_inference_steps,
+    )
+    action_steps = validate_positive_step_override(
+        "action_num_inference_steps",
+        action_num_inference_steps,
+    )
+    if video_steps is not None:
+        object.__setattr__(config.inference, "video_num_inference_steps", video_steps)
+    if action_steps is not None:
+        object.__setattr__(config.inference, "action_num_inference_steps", action_steps)
+    if guidance_scale is not None:
+        object.__setattr__(config.inference, "guidance_scale", float(guidance_scale))
+    if action_guidance_scale is not None:
+        object.__setattr__(config.inference, "action_guidance_scale", float(action_guidance_scale))
 
 def _run_exact_like_realtime_rollout(
     *,
@@ -332,10 +379,11 @@ def _run_exact_like_realtime_rollout(
     runtime_device: torch.device,
     frontend_device: torch.device,
     decode_device: torch.device,
-    video_num_inference_steps: int,
-    action_num_inference_steps: int,
-    guidance_scale: float,
-    action_guidance_scale: float,
+    video_num_inference_steps: int | None,
+    action_num_inference_steps: int | None,
+    guidance_scale: float | None,
+    action_guidance_scale: float | None,
+    startup_open_loop_chunks: int,
 ) -> dict[str, Any]:
     pipeline = build_variant_pipeline_from_config(config)
     pipeline.eval()
@@ -360,10 +408,14 @@ def _run_exact_like_realtime_rollout(
         "runtime_device": str(runtime_device),
         "frontend_device": str(frontend_device),
         "decode_device": str(decode_device),
-        "video_steps": int(video_num_inference_steps),
-        "action_steps": int(action_num_inference_steps),
-        "guidance_scale": float(guidance_scale),
-        "action_guidance_scale": float(action_guidance_scale),
+        "video_steps": int(runner.policy_variant.inference_config.video_num_inference_steps),
+        "action_steps": int(runner.policy_variant.inference_config.action_num_inference_steps),
+        "guidance_scale": float(runner.policy_variant.inference_config.guidance_scale),
+        "action_guidance_scale": float(runner.policy_variant.inference_config.action_guidance_scale),
+        "video_steps_override": video_num_inference_steps,
+        "action_steps_override": action_num_inference_steps,
+        "guidance_scale_override": guidance_scale,
+        "action_guidance_scale_override": action_guidance_scale,
         "reference_assets_device_policy": str(config.backbone.reference_assets_device_policy),
     }
 
@@ -431,6 +483,34 @@ def _run_exact_like_realtime_rollout(
         replan_records: list[dict[str, Any]] = []
         extension_records: list[dict[str, Any]] = []
         pending_history: list[dict[str, Any]] = []
+        startup_open_loop_s = 0.0
+        if startup_open_loop_chunks > 0:
+            startup_open_loop_t0 = time.perf_counter()
+            for _ in range(int(startup_open_loop_chunks)):
+                if buffer_tail_session is None:
+                    break
+                extension_result = exact_sandbox._run_extension_job(
+                    runner=runner,
+                    session=buffer_tail_session,
+                    config=config,
+                )
+                (
+                    current_chunk_session,
+                    buffer_tail_session,
+                    plan_by_action,
+                    pending_history,
+                ) = _consume_exact_future_result(
+                    extension_result,
+                    plan_by_action=plan_by_action,
+                    next_action_to_execute=0,
+                    pending_history=pending_history,
+                    current_chunk_session=current_chunk_session,
+                    buffer_tail_session=buffer_tail_session,
+                    replan_records=replan_records,
+                    extension_records=extension_records,
+                )
+            startup_open_loop_s = time.perf_counter() - startup_open_loop_t0
+            startup_infer_s += startup_open_loop_s
         done = False
         current_obs = first_obs
         last_action = np.zeros((action_dim,), dtype=np.float32)
@@ -651,6 +731,8 @@ def _run_exact_like_realtime_rollout(
                 "action_guidance_scale": float(runner.policy_variant.inference_config.action_guidance_scale),
                 "planner_mode": planner_mode,
                 "deadline_miss_policy": deadline_miss_policy,
+                "startup_open_loop_chunks": int(startup_open_loop_chunks),
+                "startup_open_loop_s": float(startup_open_loop_s),
                 "skipped_replan_submissions": int(skipped_replan_submissions),
                 "history_replan_count": int(len(replan_records)),
                 "open_loop_extension_count": int(len(extension_records)),
@@ -794,10 +876,10 @@ def _run_sequence_policy_realtime_rollout(
     frontend_device: torch.device,
     decode_device: torch.device,
     sequence_buffer_threshold: int,
-    video_num_inference_steps: int,
-    action_num_inference_steps: int,
-    guidance_scale: float,
-    action_guidance_scale: float,
+    video_num_inference_steps: int | None,
+    action_num_inference_steps: int | None,
+    guidance_scale: float | None,
+    action_guidance_scale: float | None,
 ) -> dict[str, Any]:
     _apply_common_inference_overrides(
         config,
@@ -843,6 +925,12 @@ def _run_sequence_policy_realtime_rollout(
         "runtime_devices": [str(device) for device in runtime_devices],
         "video_steps": int(config.inference.video_num_inference_steps),
         "action_steps": int(config.inference.action_num_inference_steps),
+        "guidance_scale": float(config.inference.guidance_scale),
+        "action_guidance_scale": float(config.inference.action_guidance_scale),
+        "video_steps_override": video_num_inference_steps,
+        "action_steps_override": action_num_inference_steps,
+        "guidance_scale_override": guidance_scale,
+        "action_guidance_scale_override": action_guidance_scale,
         "action_horizon": int(config.data.action_schema.action_horizon),
     }
 
@@ -1100,6 +1188,10 @@ def _run_sequence_policy_realtime_rollout(
                 "runtime_devices": [str(device) for device in runtime_devices],
                 "checkpoint_file": str(checkpoint_path.resolve()),
                 "transformer_dir": str(config.backbone.transformer_subdir),
+                "video_num_inference_steps": int(config.inference.video_num_inference_steps),
+                "action_num_inference_steps": int(config.inference.action_num_inference_steps),
+                "guidance_scale": float(config.inference.guidance_scale),
+                "action_guidance_scale": float(config.inference.action_guidance_scale),
                 "planner_mode": planner_mode,
                 "sequence_buffer_threshold": int(sequence_buffer_threshold),
                 "deadline_miss_policy": deadline_miss_policy,
