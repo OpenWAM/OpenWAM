@@ -19,7 +19,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from open_wam.configs import ReferenceCoreInitMode  # noqa: E402
+from open_wam.configs import ActionTargetRepresentation, ReferenceCoreInitMode  # noqa: E402
 from open_wam.data import reconstruct_absolute_pose_targets  # noqa: E402
 from open_wam.data.action_transforms import PoseSequence, normalize_quaternion, quaternion_to_axis_angle  # noqa: E402
 from open_wam.integrations import (  # noqa: E402
@@ -96,6 +96,7 @@ def main() -> None:
         object.__setattr__(config.inference, "video_num_inference_steps", int(args.video_steps))
     if args.action_steps is not None:
         object.__setattr__(config.inference, "action_num_inference_steps", int(args.action_steps))
+    action_target_representation = ActionTargetRepresentation(config.data.action_target.representation)
 
     checkpoint_path = _resolve_checkpoint_path_from_args_or_config(
         checkpoint_arg=args.checkpoint,
@@ -281,29 +282,40 @@ def main() -> None:
                     },
                 )
 
-                desired_pose_targets = _reconstruct_chunk_pose_targets(
-                    action_pred,
-                    reference_obs=obs_window[-1],
-                    rotation_representation=str(config.data.action_target.rotation_representation),
-                )
+                desired_pose_targets = None
+                if action_target_representation == ActionTargetRepresentation.EEF_POSE_RELATIVE_TO_REFERENCE:
+                    desired_pose_targets = _reconstruct_chunk_pose_targets(
+                        action_pred,
+                        reference_obs=obs_window[-1],
+                        rotation_representation=str(config.data.action_target.rotation_representation),
+                    )
+                elif action_target_representation != ActionTargetRepresentation.RAW:
+                    raise ValueError(
+                        f"Unsupported action target representation for LIBERO rollout: {action_target_representation!r}."
+                    )
                 control_config = LiberoControlConfig()
                 key_frame_list: list[dict[str, np.ndarray]] = []
                 for action_index in range(action_pred.shape[0]):
                     current_obs_record = obs_window[-1]
-                    control_action = compute_osc_pose_action(
-                        current_pose=_pose_from_obs_record(current_obs_record),
-                        desired_pose=PoseSequence(
-                            position=desired_pose_targets.position[action_index],
-                            quaternion=desired_pose_targets.quaternion[action_index],
-                            gripper=(
-                                None
-                                if desired_pose_targets.gripper is None
-                                else desired_pose_targets.gripper[action_index]
+                    if action_target_representation == ActionTargetRepresentation.RAW:
+                        control_action = np.asarray(action_pred[action_index], dtype=np.float32)
+                    else:
+                        if desired_pose_targets is None:
+                            raise RuntimeError("Relative-pose rollout is missing reconstructed pose targets.")
+                        control_action = compute_osc_pose_action(
+                            current_pose=_pose_from_obs_record(current_obs_record),
+                            desired_pose=PoseSequence(
+                                position=desired_pose_targets.position[action_index],
+                                quaternion=desired_pose_targets.quaternion[action_index],
+                                gripper=(
+                                    None
+                                    if desired_pose_targets.gripper is None
+                                    else desired_pose_targets.gripper[action_index]
+                                ),
                             ),
-                        ),
-                        control_config=control_config,
-                        gripper_representation=str(config.data.action_target.gripper_representation),
-                    )
+                            control_config=control_config,
+                            gripper_representation=str(config.data.action_target.gripper_representation),
+                        )
                     obs, _, done, _ = env.step(control_action.astype(np.float32))
                     current_obs = _extract_obs(obs)
                     if not done:
@@ -395,10 +407,30 @@ def _load_pipeline_checkpoint(pipeline: torch.nn.Module, checkpoint_path: Path) 
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
     state_dict = _normalize_checkpoint_state_dict(checkpoint)
     missing, unexpected = pipeline.load_state_dict(state_dict, strict=False)
+    _mark_loaded_lazy_components_initialized(pipeline, state_dict, missing_keys=missing)
     if missing:
         print(f"viz.checkpoint_missing_keys {len(missing)}")
     if unexpected:
         print(f"viz.checkpoint_unexpected_keys {len(unexpected)}")
+
+
+def _mark_loaded_lazy_components_initialized(
+    pipeline: torch.nn.Module,
+    state_dict: dict[str, torch.Tensor],
+    *,
+    missing_keys: list[str] | tuple[str, ...] = (),
+) -> None:
+    policy_variant = getattr(pipeline, "policy_variant", None)
+    if policy_variant is None:
+        return
+    has_action_expert_weights = any(key.startswith("policy_variant.action_expert.") for key in state_dict)
+    missing_action_expert_weights = any(key.startswith("policy_variant.action_expert.") for key in missing_keys)
+    if (
+        hasattr(policy_variant, "_action_expert_initialized")
+        and has_action_expert_weights
+        and not missing_action_expert_weights
+    ):
+        policy_variant._action_expert_initialized = True
 
 
 def _resolve_checkpoint_file(path: Path) -> Path:

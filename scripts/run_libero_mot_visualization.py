@@ -20,7 +20,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import run_libero_video_sequence_visualization as video_viz  # noqa: E402
+
+from open_wam.configs import ReferenceCoreInitMode  # noqa: E402
 from open_wam.integrations import (  # noqa: E402
     LiberoTaskSpec,
     ensure_local_libero_config,
@@ -28,6 +33,7 @@ from open_wam.integrations import (  # noqa: E402
 )
 from open_wam.models.policy_variants import PolicyInferContext  # noqa: E402
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
+from open_wam.utils.local_paths import read_yaml_with_local_paths  # noqa: E402
 from open_wam.utils import load_experiment_config, seed_everywhere  # noqa: E402
 
 LIBERO_OBS_KEYS = (
@@ -48,6 +54,15 @@ def main() -> None:
         default="configs/experiments/mot_libero_latent_local_idm.yaml",
     )
     parser.add_argument("--benchmark", type=str, default="libero_10")
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help=(
+            "Checkpoint file, checkpoint_step_* directory, or run directory. "
+            "If omitted, use top-level checkpoint_path in the config, then infer from backbone.transformer_subdir."
+        ),
+    )
     parser.add_argument("--task-id", type=int, default=1)
     parser.add_argument("--episode-idx", type=int, default=0)
     parser.add_argument("--max-timestep", type=int, default=800)
@@ -69,6 +84,20 @@ def main() -> None:
         config_path = (REPO_ROOT / config_path).resolve()
     config = load_experiment_config(config_path)
     _validate_mot_config(config)
+    checkpoint_path = _resolve_mot_checkpoint_path(
+        config_path=config_path,
+        checkpoint_arg=args.checkpoint,
+        transformer_subdir=str(config.backbone.transformer_subdir),
+    )
+    if checkpoint_path is None:
+        raise ValueError(
+            "MoT visualization requires a trained checkpoint. Pass `--checkpoint`, set top-level "
+            "`checkpoint_path` in the config, or point `backbone.transformer_subdir` at an exported checkpoint."
+        )
+    transformer_dir = checkpoint_path.parent / "transformer"
+    if transformer_dir.is_dir():
+        object.__setattr__(config.backbone, "transformer_subdir", str(transformer_dir.resolve()))
+        object.__setattr__(config.backbone, "reference_core_init_mode", ReferenceCoreInitMode.FULL)
 
     runtime_device = _resolve_device(args.runtime_device)
     action_device = _resolve_device(args.action_device, fallback=runtime_device)
@@ -81,6 +110,7 @@ def main() -> None:
     )
 
     pipeline = build_variant_pipeline_from_config(config)
+    video_viz._load_pipeline_checkpoint(pipeline, checkpoint_path)
     pipeline.to(device=runtime_device)
     if hasattr(pipeline.policy_variant, "_maybe_initialize_action_expert"):
         pipeline.policy_variant._maybe_initialize_action_expert(pipeline.visual_tower)
@@ -96,6 +126,7 @@ def main() -> None:
         decode_device=decode_device,
         raw_window_frames=raw_window_frames,
     )
+    component_report["checkpoint_file"] = str(checkpoint_path.resolve())
     _print_log("load_report", component_report)
 
     task_spec, prompt = _resolve_task_spec(args.benchmark, args.task_id)
@@ -260,6 +291,7 @@ def main() -> None:
             "runtime_mode": str(config.policy_variant.runtime_mode),
             "condition_mode": str(config.policy_variant.condition_mode),
             "action_count": len(action_trace),
+            "checkpoint_file": str(checkpoint_path.resolve()),
         }
         summary_path = output_path.with_suffix(".json")
         summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -279,6 +311,29 @@ def _validate_mot_config(config) -> None:
             "run_libero_mot_visualization.py requires a `mot` policy variant, "
             f"got policy_variant.name={config.policy_variant.name!r}."
         )
+
+
+def _resolve_mot_checkpoint_path(
+    *,
+    config_path: Path,
+    checkpoint_arg: str | None,
+    transformer_subdir: str | None,
+) -> Path | None:
+    if checkpoint_arg is not None:
+        return video_viz._resolve_checkpoint_file(Path(checkpoint_arg))
+    raw = read_yaml_with_local_paths(config_path)
+    raw_checkpoint = raw.get("checkpoint_path")
+    if raw_checkpoint is not None:
+        return video_viz._resolve_checkpoint_file(Path(str(raw_checkpoint)))
+    if transformer_subdir is None:
+        return None
+    try:
+        return video_viz._resolve_checkpoint_path_from_args_or_config(
+            checkpoint_arg=None,
+            transformer_subdir=transformer_subdir,
+        )
+    except (FileNotFoundError, ValueError):
+        return None
 
 
 def _build_infer_context(prompt: str, *, action_device: torch.device):

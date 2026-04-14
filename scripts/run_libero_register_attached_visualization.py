@@ -17,8 +17,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from open_wam.configs import ReferenceCoreInitMode  # noqa: E402
+import run_libero_video_sequence_visualization as video_viz  # noqa: E402
+
+from open_wam.configs import ActionTargetRepresentation, ReferenceCoreInitMode  # noqa: E402
 from open_wam.data import reconstruct_absolute_pose_targets  # noqa: E402
 from open_wam.integrations import (  # noqa: E402
     LiberoTaskSpec,
@@ -86,14 +90,17 @@ def main() -> None:
         object.__setattr__(config.inference, "action_num_inference_steps", int(args.action_steps))
     if args.joint_steps is not None:
         object.__setattr__(config.inference, "joint_num_inference_steps", int(args.joint_steps))
+    action_target_representation = ActionTargetRepresentation(config.data.action_target.representation)
 
     checkpoint_step_dir = _resolve_checkpoint_step_dir(Path(args.checkpoint))
+    checkpoint_path = video_viz._resolve_checkpoint_file(checkpoint_step_dir)
     object.__setattr__(config.backbone, "transformer_subdir", str((checkpoint_step_dir / "transformer").resolve()))
     object.__setattr__(config.backbone, "reference_core_init_mode", ReferenceCoreInitMode.FULL)
     print(
         json.dumps(
             {
                 "phase": "config_override",
+                "checkpoint_file": str(checkpoint_path),
                 "checkpoint_step_dir": str(checkpoint_step_dir),
                 "effective_transformer_subdir": str(config.backbone.transformer_subdir),
                 "effective_reference_core_init_mode": str(config.backbone.reference_core_init_mode),
@@ -107,7 +114,9 @@ def main() -> None:
     runtime_devices = _resolve_runtime_devices(args.runtime_devices, fallback=runtime_device)
     runtime_prep_device = _resolve_device(args.runtime_prep_device, fallback=runtime_device)
     runtime_output_device = _resolve_device(args.runtime_output_device, fallback=runtime_device)
-    pipeline = build_variant_pipeline_from_config(config).to(runtime_device)
+    pipeline = build_variant_pipeline_from_config(config)
+    video_viz._load_pipeline_checkpoint(pipeline, checkpoint_path)
+    pipeline = pipeline.to(runtime_device)
     pipeline.visual_tower.configure_runtime_devices(
         runtime_devices,
         prep_device=runtime_prep_device,
@@ -119,6 +128,7 @@ def main() -> None:
     load_report = {
         "pipeline": "open_wam",
         "policy_variant": config.policy_variant.name,
+        "checkpoint_file": str(checkpoint_path),
         "checkpoint_step_dir": str(checkpoint_step_dir),
         "transformer_dir": str((checkpoint_step_dir / "transformer").resolve()),
         "runtime_device": str(runtime_device),
@@ -260,29 +270,40 @@ def main() -> None:
                     },
                 )
 
-                desired_pose_targets = _reconstruct_chunk_pose_targets(
-                    action_pred,
-                    reference_obs=rollout_obs[0],
-                    rotation_representation=str(config.data.action_target.rotation_representation),
-                )
+                desired_pose_targets = None
+                if action_target_representation == ActionTargetRepresentation.EEF_POSE_RELATIVE_TO_REFERENCE:
+                    desired_pose_targets = _reconstruct_chunk_pose_targets(
+                        action_pred,
+                        reference_obs=rollout_obs[0],
+                        rotation_representation=str(config.data.action_target.rotation_representation),
+                    )
+                elif action_target_representation != ActionTargetRepresentation.RAW:
+                    raise ValueError(
+                        f"Unsupported action target representation for LIBERO rollout: {action_target_representation!r}."
+                    )
                 control_config = LiberoControlConfig()
                 key_frame_list: list[dict[str, np.ndarray]] = []
                 for action_index in range(action_pred.shape[0]):
                     current_obs_record = obs_window[-1]
-                    control_action = compute_osc_pose_action(
-                        current_pose=_pose_from_obs_record(current_obs_record),
-                        desired_pose=PoseSequence(
-                            position=desired_pose_targets.position[action_index],
-                            quaternion=desired_pose_targets.quaternion[action_index],
-                            gripper=(
-                                None
-                                if desired_pose_targets.gripper is None
-                                else desired_pose_targets.gripper[action_index]
+                    if action_target_representation == ActionTargetRepresentation.RAW:
+                        control_action = np.asarray(action_pred[action_index], dtype=np.float32)
+                    else:
+                        if desired_pose_targets is None:
+                            raise RuntimeError("Relative-pose rollout is missing reconstructed pose targets.")
+                        control_action = compute_osc_pose_action(
+                            current_pose=_pose_from_obs_record(current_obs_record),
+                            desired_pose=PoseSequence(
+                                position=desired_pose_targets.position[action_index],
+                                quaternion=desired_pose_targets.quaternion[action_index],
+                                gripper=(
+                                    None
+                                    if desired_pose_targets.gripper is None
+                                    else desired_pose_targets.gripper[action_index]
+                                ),
                             ),
-                        ),
-                        control_config=control_config,
-                        gripper_representation=str(config.data.action_target.gripper_representation),
-                    )
+                            control_config=control_config,
+                            gripper_representation=str(config.data.action_target.gripper_representation),
+                        )
                     obs, _, done, _ = env.step(control_action.astype(np.float32))
                     if done:
                         break

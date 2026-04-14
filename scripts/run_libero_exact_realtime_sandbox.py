@@ -232,6 +232,7 @@ def main() -> None:
                     runner=runner,
                     session=buffer_tail_session,
                     config=config,
+                    job_seed=_job_seed_for_session(args.seed, buffer_tail_session),
                 )
                 extension_records.append(extension_result["trace"])
                 buffer_tail_session = extension_result["buffer_tail_session"]
@@ -398,6 +399,7 @@ def main() -> None:
                         frontend_device=frontend_device,
                         runtime_device=runtime_device,
                         buffer_tail_session=buffer_tail_session,
+                        seed_base=args.seed,
                     )
                 elif replan_future is not None:
                     skipped_replan_submissions += 1
@@ -578,6 +580,7 @@ def _maybe_submit_planner_job(
     frontend_device: torch.device,
     runtime_device: torch.device,
     buffer_tail_session,
+    seed_base: int | None = None,
 ) -> Future[dict[str, Any]] | None:
     history_payload = [
         {
@@ -602,6 +605,7 @@ def _maybe_submit_planner_job(
             config=config,
             frontend_device=frontend_device,
             runtime_device=runtime_device,
+            job_seed=_job_seed_for_session(seed_base, current_chunk_session),
         )
     if planner_mode == "async_buffer":
         if buffer_tail_session is not None and future_buffer_depth <= 3:
@@ -610,6 +614,7 @@ def _maybe_submit_planner_job(
                 runner=runner,
                 session=buffer_tail_session,
                 config=config,
+                job_seed=_job_seed_for_session(seed_base, buffer_tail_session),
             )
         if history_payload:
             return executor.submit(
@@ -621,6 +626,7 @@ def _maybe_submit_planner_job(
                 config=config,
                 frontend_device=frontend_device,
                 runtime_device=runtime_device,
+                job_seed=_job_seed_for_session(seed_base, current_chunk_session),
             )
         if buffer_tail_session is not None and future_buffer_depth <= 6:
             return executor.submit(
@@ -628,6 +634,7 @@ def _maybe_submit_planner_job(
                 runner=runner,
                 session=buffer_tail_session,
                 config=config,
+                job_seed=_job_seed_for_session(seed_base, buffer_tail_session),
             )
         return None
     if planner_mode == "async_mix":
@@ -641,6 +648,7 @@ def _maybe_submit_planner_job(
                 config=config,
                 frontend_device=frontend_device,
                 runtime_device=runtime_device,
+                job_seed=_job_seed_for_session(seed_base, current_chunk_session),
             )
         if buffer_tail_session is not None and future_buffer_depth <= 3:
             return executor.submit(
@@ -648,6 +656,7 @@ def _maybe_submit_planner_job(
                 runner=runner,
                 session=buffer_tail_session,
                 config=config,
+                job_seed=_job_seed_for_session(seed_base, buffer_tail_session),
             )
         if history_payload:
             return executor.submit(
@@ -659,6 +668,7 @@ def _maybe_submit_planner_job(
                 config=config,
                 frontend_device=frontend_device,
                 runtime_device=runtime_device,
+                job_seed=_job_seed_for_session(seed_base, current_chunk_session),
             )
         if buffer_tail_session is not None and future_buffer_depth <= 6:
             return executor.submit(
@@ -666,9 +676,16 @@ def _maybe_submit_planner_job(
                 runner=runner,
                 session=buffer_tail_session,
                 config=config,
+                job_seed=_job_seed_for_session(seed_base, buffer_tail_session),
             )
         return None
     raise ValueError(f"Unsupported planner_mode={planner_mode!r}.")
+
+
+def _job_seed_for_session(seed_base: int | None, session) -> int | None:
+    if seed_base is None:
+        return None
+    return int(seed_base) + int(session.policy_state.step_index)
 
 
 def _session_for_next_chunk(
@@ -706,9 +723,12 @@ def _run_replan_job(
     config,
     frontend_device: torch.device,
     runtime_device: torch.device,
+    job_seed: int | None = None,
 ) -> dict[str, Any]:
     if not history_records:
         raise ValueError("Realtime replan requires at least one observed history frame.")
+    if job_seed is not None:
+        seed_everywhere(int(job_seed))
     observed_frame_index = int(history_records[-1]["absolute_frame_index"])
     history_views = [
         {
@@ -795,7 +815,10 @@ def _run_extension_job(
     runner,
     session,
     config,
+    job_seed: int | None = None,
 ) -> dict[str, Any]:
+    if job_seed is not None:
+        seed_everywhere(int(job_seed))
     with torch.inference_mode():
         infer_t0 = time.perf_counter()
         chunk = runner.infer_chunk(session=session, advance_frame_start=True)
