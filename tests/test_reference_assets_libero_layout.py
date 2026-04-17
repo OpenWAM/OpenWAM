@@ -48,8 +48,15 @@ def test_libero_layout_encodes_views_separately_and_concatenates_latents() -> No
     canonical_video[:, :, :, :, :128] = 1.0
     canonical_video[:, :, :, :, 128:] = 3.0
     placements = (
-        ViewPlacement(name="image", top=0, left=0, height=128, width=128),
-        ViewPlacement(name="wrist_image", top=0, left=128, height=128, width=128),
+        ViewPlacement(source_name="image", canonical_name="image", top=0, left=0, height=128, width=128),
+        ViewPlacement(
+            source_name="wrist_image",
+            canonical_name="wrist_image",
+            top=0,
+            left=128,
+            height=128,
+            width=128,
+        ),
     )
 
     encoded = assets.encode_video(canonical_video, placements=placements, reset_cache=True)
@@ -107,8 +114,15 @@ def test_encode_video_moves_reference_vae_to_runtime_device() -> None:
 
     canonical_video = torch.zeros(1, 3, 1, 128, 256, dtype=torch.float32)
     placements = (
-        ViewPlacement(name="image", top=0, left=0, height=128, width=128),
-        ViewPlacement(name="wrist_image", top=0, left=128, height=128, width=128),
+        ViewPlacement(source_name="image", canonical_name="image", top=0, left=0, height=128, width=128),
+        ViewPlacement(
+            source_name="wrist_image",
+            canonical_name="wrist_image",
+            top=0,
+            left=128,
+            height=128,
+            width=128,
+        ),
     )
 
     encoded = assets.encode_video(canonical_video, placements=placements, reset_cache=True)

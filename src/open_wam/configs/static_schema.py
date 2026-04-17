@@ -1,0 +1,404 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import StrEnum
+from pathlib import Path
+import re
+from typing import Any, Iterable, Mapping
+
+import yaml
+
+from open_wam.configs.enums import (
+    ActionDecoderName,
+    ActionMappingLossMaskMode,
+    ActionMappingMode,
+    ActionMappingSamplerMaskMode,
+    ActionTargetReferenceSource,
+    ActionTargetRepresentation,
+    ActionTargetStateEncoding,
+    AttachSite,
+    AttentionMode,
+    BackboneImplementation,
+    DataSplit,
+    EvalMode,
+    PolicyVariantName,
+    TrainerAccelerator,
+    TrainerPrecision,
+)
+
+
+LOCAL_PATH_PATTERN = re.compile(r"\$\{paths\.([A-Za-z0-9_.-]+)\}")
+ENUM_VALUE_ALIASES: dict[type[StrEnum], dict[str, str]] = {
+    BackboneImplementation: {
+        "lingbot_replica": BackboneImplementation.SHARED_TRANSFORMER.value,
+    }
+}
+
+
+@dataclass(frozen=True)
+class StaticConfigIssue:
+    level: str
+    path: str
+    message: str
+
+
+@dataclass(frozen=True)
+class StaticConfigReport:
+    source_path: Path
+    errors: tuple[StaticConfigIssue, ...]
+    warnings: tuple[StaticConfigIssue, ...]
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+
+def validate_config_file(path: str | Path, *, repo_root: str | Path | None = None) -> StaticConfigReport:
+    """Validate one Open-WAM YAML config without importing model/runtime code."""
+
+    source_path = Path(path).expanduser().resolve()
+    root = Path(repo_root).expanduser().resolve() if repo_root is not None else _find_repo_root(source_path)
+    raw = _read_yaml_mapping(source_path)
+    builder = _IssueBuilder(source_path=source_path, repo_root=root)
+    if "experiment_config" in raw:
+        _validate_eval_config(raw, builder)
+    else:
+        _validate_experiment_config(raw, builder, relaxed=source_path.parent.name == "examples")
+    _validate_local_path_placeholders(raw, builder)
+    return StaticConfigReport(
+        source_path=source_path,
+        errors=tuple(builder.errors),
+        warnings=tuple(builder.warnings),
+    )
+
+
+def validate_config_files(
+    paths: Iterable[str | Path],
+    *,
+    repo_root: str | Path | None = None,
+) -> tuple[StaticConfigReport, ...]:
+    return tuple(validate_config_file(path, repo_root=repo_root) for path in paths)
+
+
+def reports_to_exit_code(reports: Iterable[StaticConfigReport]) -> int:
+    return 1 if any(not report.ok for report in reports) else 0
+
+
+def format_report(report: StaticConfigReport, *, repo_root: str | Path | None = None) -> str:
+    root = Path(repo_root).expanduser().resolve() if repo_root is not None else _find_repo_root(report.source_path)
+    try:
+        source = str(report.source_path.relative_to(root))
+    except ValueError:
+        source = str(report.source_path)
+    lines = [f"{source}: {'ok' if report.ok else 'failed'}"]
+    for issue in (*report.errors, *report.warnings):
+        lines.append(f"  {issue.level}: {issue.path}: {issue.message}")
+    return "\n".join(lines)
+
+
+def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder", *, relaxed: bool) -> None:
+    required = ("data",) if relaxed else ("data", "backbone", "trainer")
+    for key in required:
+        if key not in raw:
+            issues.error(key, "Missing required top-level section.")
+
+    data = _mapping(raw.get("data"))
+    if data is None:
+        return
+    if not data.get("dataset_type") and not data.get("dataset_name"):
+        issues.error("data", "Expected `dataset_type` or `dataset_name`.")
+    _validate_positive_ints(
+        data,
+        issues,
+        "data",
+        ("canonical_height", "canonical_width", "num_frames", "train_batch_size", "val_batch_size"),
+    )
+    action_schema = _mapping(data.get("action_schema"))
+    if action_schema is not None:
+        _validate_positive_ints(action_schema, issues, "data.action_schema", ("action_dim", "state_dim"))
+    action_target = _mapping(data.get("action_target"))
+    if action_target is not None:
+        _validate_enum(action_target, "representation", ActionTargetRepresentation, issues, "data.action_target")
+        _validate_enum(action_target, "state_encoding", ActionTargetStateEncoding, issues, "data.action_target")
+        _validate_enum(action_target, "reference_source", ActionTargetReferenceSource, issues, "data.action_target")
+    action_mapping = _mapping(data.get("action_mapping"))
+    if action_mapping is not None:
+        _validate_enum(action_mapping, "mode", ActionMappingMode, issues, "data.action_mapping")
+        _validate_enum(action_mapping, "loss_mask_mode", ActionMappingLossMaskMode, issues, "data.action_mapping")
+        _validate_enum(
+            action_mapping,
+            "sampler_mask_mode",
+            ActionMappingSamplerMaskMode,
+            issues,
+            "data.action_mapping",
+        )
+        _validate_action_mapping(action_mapping, action_schema, issues)
+
+    backbone = _mapping(raw.get("backbone"))
+    if backbone is not None:
+        _validate_enum(backbone, "implementation", BackboneImplementation, issues, "backbone")
+        _validate_enum(backbone, "attn_mode", AttentionMode, issues, "backbone")
+        _validate_enum(backbone, "train_attn_mode", AttentionMode, issues, "backbone")
+        _validate_enum(backbone, "infer_attn_mode", AttentionMode, issues, "backbone")
+        _validate_positive_ints(backbone, issues, "backbone", ("hidden_size", "num_layers", "num_heads"))
+
+    policy_variant = _mapping(raw.get("policy_variant"))
+    action_decoder = _mapping(raw.get("action_decoder"))
+    action_head = _mapping(raw.get("action_head"))
+    if not relaxed and policy_variant is None and action_head is None:
+        issues.error("policy_variant", "Expected `policy_variant` or legacy `action_head`.")
+    if action_head is not None:
+        issues.warning("action_head", "Legacy compatibility section; prefer `policy_variant` + `action_decoder`.")
+        _validate_positive_ints(action_head, issues, "action_head", ("hidden_size", "action_dim", "action_horizon"))
+    if policy_variant is not None:
+        _validate_enum(policy_variant, "name", PolicyVariantName, issues, "policy_variant")
+        _validate_enum(policy_variant, "attach_site", AttachSite, issues, "policy_variant")
+        _validate_positive_ints(policy_variant, issues, "policy_variant", ("hidden_size",))
+    if action_decoder is not None:
+        _validate_enum(action_decoder, "name", ActionDecoderName, issues, "action_decoder")
+        _validate_positive_ints(action_decoder, issues, "action_decoder", ("hidden_size", "action_dim"))
+    _validate_action_horizons(action_schema, policy_variant, action_decoder, issues)
+    _validate_action_schema_compatibility(action_schema, action_decoder, action_head, issues)
+
+    trainer = _mapping(raw.get("trainer"))
+    if trainer is not None:
+        _validate_enum(trainer, "accelerator", TrainerAccelerator, issues, "trainer")
+        _validate_enum(trainer, "precision", TrainerPrecision, issues, "trainer")
+        _validate_positive_ints(trainer, issues, "trainer", ("max_epochs", "devices", "log_every_n_steps"))
+
+
+def _validate_eval_config(raw: Mapping[str, Any], issues: "_IssueBuilder") -> None:
+    experiment_config = raw.get("experiment_config")
+    if experiment_config is None:
+        issues.error("experiment_config", "Eval configs must point at an experiment config.")
+    elif not isinstance(experiment_config, str):
+        issues.error("experiment_config", "Expected a string path.")
+    else:
+        target = _resolve_relative(issues.source_path, experiment_config)
+        if not target.exists():
+            issues.error("experiment_config", f"Referenced config does not exist: {experiment_config}")
+    _validate_enum(raw, "mode", EvalMode, issues, "")
+    _validate_enum(raw, "split", DataSplit, issues, "")
+    _validate_positive_ints(
+        raw,
+        issues,
+        "",
+        ("max_batches", "max_trajectories", "max_steps_per_trajectory", "batch_size"),
+    )
+
+
+def _validate_action_mapping(
+    action_mapping: Mapping[str, Any],
+    action_schema: Mapping[str, Any] | None,
+    issues: "_IssueBuilder",
+) -> None:
+    mode = action_mapping.get("mode", "none")
+    if mode == "none":
+        return
+    source_dim = _optional_int(action_mapping.get("source_dim"))
+    target_dim = _optional_int(action_mapping.get("target_dim"))
+    if source_dim is None or source_dim <= 0:
+        issues.error("data.action_mapping.source_dim", "Expected a positive integer when action mapping is active.")
+    if target_dim is None or target_dim <= 0:
+        issues.error("data.action_mapping.target_dim", "Expected a positive integer when action mapping is active.")
+    indices = action_mapping.get("source_to_target_indices", ())
+    if not isinstance(indices, list):
+        issues.error("data.action_mapping.source_to_target_indices", "Expected a list of integer target indices.")
+        return
+    if source_dim is not None and len(indices) != source_dim:
+        issues.error(
+            "data.action_mapping.source_to_target_indices",
+            f"Expected {source_dim} indices for source_dim={source_dim}, got {len(indices)}.",
+        )
+    if target_dim is not None:
+        invalid = [value for value in indices if not isinstance(value, int) or value < 0 or value >= target_dim]
+        if invalid:
+            issues.error(
+                "data.action_mapping.source_to_target_indices",
+                f"Target indices outside target_dim={target_dim}: {invalid}.",
+            )
+    if len(set(indices)) != len(indices):
+        issues.error("data.action_mapping.source_to_target_indices", "Target indices must be unique.")
+    if action_schema is not None and target_dim is not None:
+        schema_dim = _optional_int(action_schema.get("action_dim"))
+        if schema_dim is not None and schema_dim != target_dim:
+            issues.error(
+                "data.action_mapping.target_dim",
+                f"Expected target_dim to match data.action_schema.action_dim={schema_dim}.",
+            )
+
+
+def _validate_action_schema_compatibility(
+    action_schema: Mapping[str, Any] | None,
+    action_decoder: Mapping[str, Any] | None,
+    action_head: Mapping[str, Any] | None,
+    issues: "_IssueBuilder",
+) -> None:
+    if action_schema is None:
+        return
+    schema_dim = _optional_int(action_schema.get("action_dim"))
+    schema_horizon = _optional_int(action_schema.get("action_horizon"))
+    for section_name, section in (("action_decoder", action_decoder), ("action_head", action_head)):
+        if section is None:
+            continue
+        decoder_dim = _optional_int(section.get("action_dim"))
+        decoder_horizon = _optional_int(section.get("action_horizon"))
+        if schema_dim is not None and decoder_dim is not None and decoder_dim != schema_dim:
+            issues.warning(
+                f"{section_name}.action_dim",
+                f"Expected {section_name}.action_dim={decoder_dim} to match "
+                f"data.action_schema.action_dim={schema_dim}.",
+            )
+        if schema_horizon is not None and decoder_horizon is not None and decoder_horizon != schema_horizon:
+            issues.error(
+                f"{section_name}.action_horizon",
+                "Expected "
+                f"{section_name}.action_horizon={decoder_horizon} to match "
+                f"data.action_schema.action_horizon={schema_horizon}.",
+            )
+
+
+def _validate_action_horizons(
+    action_schema: Mapping[str, Any] | None,
+    policy_variant: Mapping[str, Any] | None,
+    action_decoder: Mapping[str, Any] | None,
+    issues: "_IssueBuilder",
+) -> None:
+    video_only = False
+    if action_decoder is not None and action_decoder.get("name") == ActionDecoderName.VIDEO_ONLY.value:
+        video_only = True
+    if policy_variant is not None and policy_variant.get("name") == PolicyVariantName.CAUSAL_VIDEO_PREDICTION.value:
+        video_only = True
+    if action_schema is not None:
+        for key in ("action_horizon", "state_horizon"):
+            value = _optional_int(action_schema.get(key))
+            if value is None:
+                continue
+            if value < 0 or (value == 0 and not video_only):
+                issues.error(
+                    f"data.action_schema.{key}",
+                    "Expected a positive integer except for video-only configs, where zero is allowed.",
+                )
+    if action_decoder is not None:
+        value = _optional_int(action_decoder.get("action_horizon"))
+        if value is not None and (value < 0 or (value == 0 and not video_only)):
+            issues.error(
+                "action_decoder.action_horizon",
+                "Expected a positive integer except for video-only configs, where zero is allowed.",
+            )
+
+
+def _validate_local_path_placeholders(value: Any, issues: "_IssueBuilder", *, path: str = "") -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            child_path = str(key) if not path else f"{path}.{key}"
+            _validate_local_path_placeholders(item, issues, path=child_path)
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_local_path_placeholders(item, issues, path=f"{path}[{index}]")
+        return
+    if not isinstance(value, str) or "${paths." not in value:
+        return
+    matches = LOCAL_PATH_PATTERN.findall(value)
+    if not matches:
+        issues.error(path, "Malformed local path placeholder. Expected `${paths.alias}`.")
+    for alias in matches:
+        if ".." in alias or alias.startswith(".") or alias.endswith("."):
+            issues.error(path, f"Invalid local path alias syntax: {alias!r}.")
+
+
+def _validate_enum(
+    mapping: Mapping[str, Any],
+    key: str,
+    enum_cls: type[StrEnum],
+    issues: "_IssueBuilder",
+    path_prefix: str,
+) -> None:
+    if key not in mapping or mapping[key] is None:
+        return
+    value = mapping[key]
+    if isinstance(value, enum_cls):
+        return
+    if not isinstance(value, str):
+        issues.error(_join_path(path_prefix, key), f"Expected a string enum value for {enum_cls.__name__}.")
+        return
+    value = ENUM_VALUE_ALIASES.get(enum_cls, {}).get(value, value)
+    valid = {item.value for item in enum_cls}
+    if value not in valid:
+        issues.error(
+            _join_path(path_prefix, key),
+            f"Invalid {enum_cls.__name__} value {value!r}. Expected one of {sorted(valid)}.",
+        )
+
+
+def _validate_positive_ints(
+    mapping: Mapping[str, Any],
+    issues: "_IssueBuilder",
+    path_prefix: str,
+    keys: tuple[str, ...],
+) -> None:
+    for key in keys:
+        if key not in mapping or mapping[key] is None:
+            continue
+        value = _optional_int(mapping[key])
+        if value is None or value <= 0:
+            issues.error(_join_path(path_prefix, key), "Expected a positive integer.")
+
+
+def _mapping(value: Any) -> Mapping[str, Any] | None:
+    return value if isinstance(value, Mapping) else None
+
+
+def _optional_int(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _join_path(prefix: str, key: str) -> str:
+    return key if not prefix else f"{prefix}.{key}"
+
+
+def _read_yaml_mapping(path: Path) -> Mapping[str, Any]:
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"Expected YAML mapping in {path}.")
+    return raw
+
+
+def _resolve_relative(source_path: Path, value: str) -> Path:
+    candidate = Path(value)
+    if candidate.is_absolute():
+        return candidate
+    local_candidate = (source_path.parent / candidate).resolve()
+    if local_candidate.exists():
+        return local_candidate
+    return (_find_repo_root(source_path) / candidate).resolve()
+
+
+def _find_repo_root(start: Path) -> Path:
+    start = start.resolve()
+    if start.is_file():
+        start = start.parent
+    for candidate in (start, *start.parents):
+        if (candidate / "pyproject.toml").is_file() or (candidate / ".git").exists():
+            return candidate
+    return Path.cwd().resolve()
+
+
+class _IssueBuilder:
+    def __init__(self, *, source_path: Path, repo_root: Path) -> None:
+        self.source_path = source_path
+        self.repo_root = repo_root
+        self.errors: list[StaticConfigIssue] = []
+        self.warnings: list[StaticConfigIssue] = []
+
+    def error(self, path: str, message: str) -> None:
+        self.errors.append(StaticConfigIssue(level="error", path=path or "<root>", message=message))
+
+    def warning(self, path: str, message: str) -> None:
+        self.warnings.append(StaticConfigIssue(level="warning", path=path or "<root>", message=message))

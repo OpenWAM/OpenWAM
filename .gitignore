@@ -3,6 +3,7 @@ external/
 outputs/
 wandb/
 configs/local_paths.yaml
+configs/artifacts.yaml
 
 # Runtime logs written at the repo root by some scripts.
 Log/

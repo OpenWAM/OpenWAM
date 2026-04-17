@@ -1,0 +1,58 @@
+artifacts:
+  - artifact_id: method1-libero-exact-step400
+    method_family: method1
+    variant: parallel_stream_lingbot_exact
+    benchmark: libero_10
+    config: configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml
+    local_path_alias: checkpoints.parallel_stream_exact_libero_step_1100_0402
+    expected_layout:
+      root_files:
+        - full_training_state.pt
+      directories:
+        - transformer
+      transformer_files:
+        - transformer/config.json
+    download_url: null
+    checksum: null
+    license: null
+    source: "private_or_pending_public_export"
+    notes: "Replace with a public URL/checksum before documenting as reproducible."
+
+  - artifact_id: method3-libero-video-sequence-step800
+    method_family: method3
+    variant: video_sequence_policy
+    benchmark: libero_10
+    config: configs/experiments/video_sequence_policy_libero_latent_local_random_subwindow.yaml
+    local_path_alias: checkpoints.video_sequence_policy_libero_random_subwindow_step_800_0402
+    expected_layout:
+      root_files:
+        - model_state.pt
+      directories:
+        - transformer
+      transformer_files:
+        - transformer/config.json
+    download_url: null
+    checksum: null
+    license: null
+    source: "private_or_pending_public_export"
+    notes: "Manifest entry documents layout only until public hosting is chosen."
+
+  - artifact_id: public-tiny-synthetic-contract
+    method_family: fixture
+    variant: public_tiny_synthetic_contract
+    benchmark: synthetic
+    config: configs/examples/public_tiny_synthetic_contract.yaml
+    local_path_alias: null
+    expected_layout:
+      root_files:
+        - model_state.pt
+        - full_training_state.pt
+      directories:
+        - transformer
+      transformer_files:
+        - transformer/config.json
+    download_url: null
+    checksum: null
+    license: MIT
+    source: "tests/fixtures/public_tiny/artifacts/checkpoint_step_1"
+    notes: "Structural placeholder artifact for public CI and docs; not a real model checkpoint."

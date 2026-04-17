@@ -1,0 +1,22 @@
+name: release-checks
+
+on:
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install packaging tools
+        run: python -m pip install --upgrade build twine
+      - name: Check release metadata
+        run: python scripts/check_release_metadata.py
+      - name: Build source and wheel distributions
+        run: python -m build
+      - name: Validate distributions
+        run: python -m twine check dist/*

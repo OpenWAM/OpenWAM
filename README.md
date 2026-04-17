@@ -41,6 +41,7 @@ The first real dataset path is:
 
 ```text
 configs/         runnable experiment and eval YAMLs
+docs/            public quickstart, CLI, testing, artifact, and deployment docs
 notes/           research and engineering notes
 deployment/      compatibility workspace for real-robot and sim deployment tooling
                  (FR3 ROS2 impedance teleop + recording — see
@@ -66,6 +67,23 @@ Important source packages:
 - `src/open_wam/lightning`: Lightning module and datamodule
 - `src/open_wam/training`: train entrypoint
 - `src/open_wam/evals`: eval entrypoint
+
+## Public Docs
+
+- [Quickstart](docs/quickstart.md): fresh clone to CPU smoke, local path setup,
+  and resource matrix
+- [CLI reference](docs/cli.md): package-owned commands and legacy script policy
+- [Testing](docs/testing.md): pytest markers and CI tiers
+- [Artifacts](docs/artifacts.md): local path registry, checkpoint manifests, and
+  layout conventions
+- [Deployment namespace](docs/deployment_namespace.md): `open_wam` research
+  package vs deployment `openwam`
+- [Reproducibility](docs/reproducibility.md): result schemas, experiment cards,
+  and WandB naming
+- [Extension SDK](docs/extension_sdk.md): dataset, policy-variant, and decoder
+  registry extension points
+- [Experiment cards](docs/experiment_cards.md): method-family result card
+  template and current public-card status
 
 ## Design Rules
 
@@ -175,31 +193,59 @@ These still use LingBot-style action flow matching:
 
 ## Quick Start
 
-Set up the `uv` environment used for current CUDA runs:
+Set up the minimal development environment. This installs the core package
+surface only; it does not install Torch, Lightning, simulator packages, or
+video codecs:
 
 ```bash
 uv sync --group dev
-uv run python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu')"
+uv run python -c "import open_wam; print(open_wam.__version__)"
 ```
 
-Install MuJoCo-backed visualization extras only when you need the viewer scripts:
+Run static config validation without launching model code:
 
 ```bash
+uv run open-wam-validate-config configs/examples/public_tiny_synthetic_contract.yaml
+```
+
+Inspect a config through the stable package CLI:
+
+```bash
+uv run open-wam-inspect-config --cfg configs/experiments/parallel_stream_robotwin_smoke.yaml
+```
+
+For real datasets/checkpoints, create a local path registry:
+
+```bash
+cp configs/local_paths.sample.yaml configs/local_paths.yaml
+```
+
+Replace the `/path/to/...` placeholders. `configs/local_paths.yaml` is
+gitignored. See [docs/quickstart.md](docs/quickstart.md) and
+[docs/artifacts.md](docs/artifacts.md) for the public path workflow.
+
+Install optional extras only when needed:
+
+```bash
+uv sync --extra torch
+uv sync --extra train
+uv sync --extra eval
+uv sync --extra tracking
 uv sync --extra viz
+uv sync --extra libero
+uv sync --extra robotwin
+uv sync --extra calvin
+uv sync --extra deployment
+uv sync --extra full
 ```
 
-Inspect the current LIBERO adapter:
+Use the lightweight smoke configs after installing Torch/runtime extras when
+you want fast CPU checks of method 1 and method 2 without instantiating the full
+LingBot-scale backbone:
 
 ```bash
-python scripts/inspect_libero_adapter.py --cfg configs/experiments/contract_only_libero.yaml
-```
-
-Use the lightweight smoke configs when you want fast CPU checks of method 1 and
-method 2 without instantiating the full LingBot-scale backbone:
-
-```bash
-python -m open_wam.evals.evaluate --cfg configs/experiments/parallel_stream_robotwin_smoke.yaml --device cpu
-python -m open_wam.evals.evaluate --cfg configs/experiments/register_attached_robotwin_smoke.yaml --device cpu
+uv run --extra eval open-wam-eval --cfg configs/experiments/parallel_stream_robotwin_smoke.yaml --device cpu
+uv run --extra eval open-wam-eval --cfg configs/experiments/register_attached_robotwin_smoke.yaml --device cpu
 ```
 
 Visualize the default LIBERO reference-relative EEF target in MuJoCo:

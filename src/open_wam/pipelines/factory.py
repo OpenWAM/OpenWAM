@@ -40,6 +40,7 @@ from open_wam.models.policy_variants.parallel_stream.action_adapter import build
 from open_wam.models.visual_tower import VisualTower
 from open_wam.models.video_backbone import normalize_backbone_implementation
 
+from .registries import ACTION_DECODER_BUILDERS, POLICY_VARIANT_BUILDERS
 from .variant_pipeline import VariantPipeline
 from .lingbot_exact import LingbotExactRunner
 
@@ -251,151 +252,115 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
             )
 
 
-def build_policy_variant(config: ExperimentConfig):
+def _build_post_latent_policy_variant(config: ExperimentConfig):
     action_schema = config.data.action_schema
     policy_config = config.policy_variant
-    if isinstance(policy_config, PostLatentPolicyConfig):
-        return PostLatentPolicyVariant(
-            config=policy_config,
-            training_config=config.training,
-            inference_config=config.inference,
-            action_horizon=action_schema.action_horizon,
-            state_dim=action_schema.state_dim,
-        )
-    if isinstance(policy_config, PostDecodedPolicyConfig):
-        return PostDecodedPolicyVariant(
-            config=policy_config,
-            training_config=config.training,
-            inference_config=config.inference,
-            action_horizon=action_schema.action_horizon,
-            state_dim=action_schema.state_dim,
-        )
-    if isinstance(policy_config, VideoSequencePolicyConfig):
-        return VideoSequencePolicyVariant(
-            config=policy_config,
-            training_config=config.training,
-            inference_config=config.inference,
-            action_horizon=action_schema.action_horizon,
-            state_dim=action_schema.state_dim,
-        )
-    if isinstance(policy_config, CausalVideoPredictionPolicyConfig):
-        return CausalVideoPredictionPolicyVariant(
-            config=policy_config,
-            training_config=config.training,
-            inference_config=config.inference,
-        )
-    if isinstance(policy_config, MoTPolicyConfig):
-        return MoTPolicyVariant(
-            config=policy_config,
-            backbone_config=config.backbone,
-            training_config=config.training,
-            inference_config=config.inference,
-            action_dim=action_schema.action_dim,
-            action_horizon=action_schema.action_horizon,
-            state_dim=action_schema.state_dim,
-        )
-    if isinstance(policy_config, RegisterAttachedPolicyConfig):
-        return RegisterAttachedPolicyVariant(
-            config=policy_config,
-            backbone_config=config.backbone,
-            training_config=config.training,
-            inference_config=config.inference,
-            action_dim=action_schema.action_dim,
-            action_horizon=action_schema.action_horizon,
-            state_dim=action_schema.state_dim,
-            state_horizon=action_schema.state_horizon,
-        )
-    if isinstance(policy_config, ParallelStreamPolicyConfig):
-        return ParallelStreamPolicyVariant(
-            config=policy_config,
-            backbone_config=config.backbone,
-            training_config=config.training,
-            inference_config=config.inference,
-            action_dim=_resolve_parallel_stream_model_action_dim(config),
-            action_horizon=action_schema.action_horizon,
-            num_frames=config.data.num_frames,
-        )
-    raise ValueError(f"Unsupported policy variant config '{type(policy_config).__name__}'.")
+    assert isinstance(policy_config, PostLatentPolicyConfig)
+    return PostLatentPolicyVariant(
+        config=policy_config,
+        training_config=config.training,
+        inference_config=config.inference,
+        action_horizon=action_schema.action_horizon,
+        state_dim=action_schema.state_dim,
+    )
 
 
-def build_action_decoder(config: ExperimentConfig):
+def _build_post_decoded_policy_variant(config: ExperimentConfig):
+    action_schema = config.data.action_schema
+    policy_config = config.policy_variant
+    assert isinstance(policy_config, PostDecodedPolicyConfig)
+    return PostDecodedPolicyVariant(
+        config=policy_config,
+        training_config=config.training,
+        inference_config=config.inference,
+        action_horizon=action_schema.action_horizon,
+        state_dim=action_schema.state_dim,
+    )
+
+
+def _build_video_sequence_policy_variant(config: ExperimentConfig):
+    action_schema = config.data.action_schema
+    policy_config = config.policy_variant
+    assert isinstance(policy_config, VideoSequencePolicyConfig)
+    return VideoSequencePolicyVariant(
+        config=policy_config,
+        training_config=config.training,
+        inference_config=config.inference,
+        action_horizon=action_schema.action_horizon,
+        state_dim=action_schema.state_dim,
+    )
+
+
+def _build_causal_video_prediction_policy_variant(config: ExperimentConfig):
+    policy_config = config.policy_variant
+    assert isinstance(policy_config, CausalVideoPredictionPolicyConfig)
+    return CausalVideoPredictionPolicyVariant(
+        config=policy_config,
+        training_config=config.training,
+        inference_config=config.inference,
+    )
+
+
+def _build_mot_policy_variant(config: ExperimentConfig):
+    action_schema = config.data.action_schema
+    policy_config = config.policy_variant
+    assert isinstance(policy_config, MoTPolicyConfig)
+    return MoTPolicyVariant(
+        config=policy_config,
+        backbone_config=config.backbone,
+        training_config=config.training,
+        inference_config=config.inference,
+        action_dim=action_schema.action_dim,
+        action_horizon=action_schema.action_horizon,
+        state_dim=action_schema.state_dim,
+    )
+
+
+def _build_register_attached_policy_variant(config: ExperimentConfig):
+    action_schema = config.data.action_schema
+    policy_config = config.policy_variant
+    assert isinstance(policy_config, RegisterAttachedPolicyConfig)
+    return RegisterAttachedPolicyVariant(
+        config=policy_config,
+        backbone_config=config.backbone,
+        training_config=config.training,
+        inference_config=config.inference,
+        action_dim=action_schema.action_dim,
+        action_horizon=action_schema.action_horizon,
+        state_dim=action_schema.state_dim,
+        state_horizon=action_schema.state_horizon,
+    )
+
+
+def _build_parallel_stream_policy_variant(config: ExperimentConfig):
+    action_schema = config.data.action_schema
+    policy_config = config.policy_variant
+    assert isinstance(policy_config, ParallelStreamPolicyConfig)
+    return ParallelStreamPolicyVariant(
+        config=policy_config,
+        backbone_config=config.backbone,
+        training_config=config.training,
+        inference_config=config.inference,
+        action_dim=_resolve_parallel_stream_model_action_dim(config),
+        action_horizon=action_schema.action_horizon,
+        num_frames=config.data.num_frames,
+    )
+
+
+def build_policy_variant(config: ExperimentConfig):
+    builder = POLICY_VARIANT_BUILDERS.get(type(config.policy_variant))
+    if builder is None:
+        raise ValueError(f"Unsupported policy variant config '{type(config.policy_variant).__name__}'.")
+    return builder(config)
+
+
+def _build_mlp_action_decoder(config: ExperimentConfig):
     decoder_config = config.action_decoder
     mot_compat_decoder = (
         isinstance(config.policy_variant, MoTPolicyConfig)
         and decoder_config.name == ActionDecoderName.MLP
     )
-    if decoder_config.name == ActionDecoderName.MLP:
-        if mot_compat_decoder:
-            return MoTActionDecoder(
-                hidden_size=decoder_config.hidden_size,
-                action_dim=decoder_config.action_dim,
-                action_horizon=decoder_config.action_horizon,
-                training_config=config.training,
-                inference_config=config.inference,
-                dropout=decoder_config.dropout,
-            )
-        return MLPActionDecoder(
-            hidden_size=decoder_config.hidden_size,
-            action_dim=decoder_config.action_dim,
-            action_horizon=decoder_config.action_horizon,
-            training_config=config.training,
-            inference_config=config.inference,
-            dropout=decoder_config.dropout,
-        )
-    if decoder_config.name == ActionDecoderName.REGISTER:
-        return RegisterActionDecoder(
-            hidden_size=decoder_config.hidden_size,
-            action_dim=decoder_config.action_dim,
-            action_horizon=decoder_config.action_horizon,
-            training_config=config.training,
-            inference_config=config.inference,
-            dropout=decoder_config.dropout,
-        )
-    if decoder_config.name == ActionDecoderName.DECODED_FEATURE:
-        return DecodedFeatureActionDecoder(
-            hidden_size=decoder_config.hidden_size,
-            action_dim=decoder_config.action_dim,
-            action_horizon=decoder_config.action_horizon,
-            training_config=config.training,
-            inference_config=config.inference,
-            dropout=decoder_config.dropout,
-        )
-    if decoder_config.name == ActionDecoderName.VIDEO_CONDITIONED:
-        return VideoConditionedActionDecoder(
-            hidden_size=decoder_config.hidden_size,
-            action_dim=decoder_config.action_dim,
-            action_horizon=decoder_config.action_horizon,
-            context_dim=decoder_config.context_dim,
-            text_context_dim=decoder_config.text_context_dim,
-            state_dim=decoder_config.state_dim,
-            freq_dim=decoder_config.freq_dim,
-            num_layers=decoder_config.num_layers,
-            num_heads=decoder_config.num_heads,
-            attention_head_dim=decoder_config.attention_head_dim,
-            ffn_dim=decoder_config.ffn_dim,
-            cross_attn_norm=decoder_config.cross_attn_norm,
-            eps=decoder_config.eps,
-            input_space=decoder_config.input_space,
-            train_mode=decoder_config.train_mode,
-            action_chunk_anchor_mode=decoder_config.action_chunk_anchor_mode,
-            action_expert_init_mode=decoder_config.action_expert_init_mode,
-            rollout_chunk_steps=decoder_config.rollout_chunk_steps,
-            direct_latent_channels=decoder_config.direct_latent_channels,
-            direct_rgb_patch_size=decoder_config.direct_rgb_patch_size,
-            use_text_conditioning=decoder_config.use_text_conditioning,
-            use_state_conditioning=decoder_config.use_state_conditioning,
-            training_config=config.training,
-            inference_config=config.inference,
-            dropout=decoder_config.dropout,
-        )
-    if decoder_config.name == ActionDecoderName.LINGBOT_PARALLEL:
-        return LingbotParallelActionDecoder(
-            hidden_size=decoder_config.hidden_size,
-            action_dim=decoder_config.action_dim,
-            action_horizon=decoder_config.action_horizon,
-            dropout=decoder_config.dropout,
-        )
-    if decoder_config.name == ActionDecoderName.MOT:
+    if mot_compat_decoder:
         return MoTActionDecoder(
             hidden_size=decoder_config.hidden_size,
             action_dim=decoder_config.action_dim,
@@ -404,25 +369,191 @@ def build_action_decoder(config: ExperimentConfig):
             inference_config=config.inference,
             dropout=decoder_config.dropout,
         )
-    if decoder_config.name == ActionDecoderName.VPP:
-        return VPPSequenceActionDecoder(
-            decoder_config,
-            training_config=config.training,
-            inference_config=config.inference,
-            state_dim=config.data.action_schema.state_dim,
-            observation_token_dim=config.backbone.hidden_size,
-            goal_feature_dim=config.backbone.text_dim,
-        )
-    if decoder_config.name == ActionDecoderName.VIDEO_ONLY:
-        return VideoOnlyActionDecoder(
-            hidden_size=decoder_config.hidden_size,
-            action_dim=decoder_config.action_dim,
-            action_horizon=decoder_config.action_horizon,
-            training_config=config.training,
-            inference_config=config.inference,
-            dropout=decoder_config.dropout,
-        )
-    raise ValueError(f"Unsupported action decoder '{decoder_config.name}'.")
+    return MLPActionDecoder(
+        hidden_size=decoder_config.hidden_size,
+        action_dim=decoder_config.action_dim,
+        action_horizon=decoder_config.action_horizon,
+        training_config=config.training,
+        inference_config=config.inference,
+        dropout=decoder_config.dropout,
+    )
+
+
+def _build_register_action_decoder(config: ExperimentConfig):
+    decoder_config = config.action_decoder
+    return RegisterActionDecoder(
+        hidden_size=decoder_config.hidden_size,
+        action_dim=decoder_config.action_dim,
+        action_horizon=decoder_config.action_horizon,
+        training_config=config.training,
+        inference_config=config.inference,
+        dropout=decoder_config.dropout,
+    )
+
+
+def _build_decoded_feature_action_decoder(config: ExperimentConfig):
+    decoder_config = config.action_decoder
+    return DecodedFeatureActionDecoder(
+        hidden_size=decoder_config.hidden_size,
+        action_dim=decoder_config.action_dim,
+        action_horizon=decoder_config.action_horizon,
+        training_config=config.training,
+        inference_config=config.inference,
+        dropout=decoder_config.dropout,
+    )
+
+
+def _build_video_conditioned_action_decoder(config: ExperimentConfig):
+    decoder_config = config.action_decoder
+    return VideoConditionedActionDecoder(
+        hidden_size=decoder_config.hidden_size,
+        action_dim=decoder_config.action_dim,
+        action_horizon=decoder_config.action_horizon,
+        context_dim=decoder_config.context_dim,
+        text_context_dim=decoder_config.text_context_dim,
+        state_dim=decoder_config.state_dim,
+        freq_dim=decoder_config.freq_dim,
+        num_layers=decoder_config.num_layers,
+        num_heads=decoder_config.num_heads,
+        attention_head_dim=decoder_config.attention_head_dim,
+        ffn_dim=decoder_config.ffn_dim,
+        cross_attn_norm=decoder_config.cross_attn_norm,
+        eps=decoder_config.eps,
+        input_space=decoder_config.input_space,
+        train_mode=decoder_config.train_mode,
+        action_chunk_anchor_mode=decoder_config.action_chunk_anchor_mode,
+        action_expert_init_mode=decoder_config.action_expert_init_mode,
+        rollout_chunk_steps=decoder_config.rollout_chunk_steps,
+        direct_latent_channels=decoder_config.direct_latent_channels,
+        direct_rgb_patch_size=decoder_config.direct_rgb_patch_size,
+        use_text_conditioning=decoder_config.use_text_conditioning,
+        use_state_conditioning=decoder_config.use_state_conditioning,
+        training_config=config.training,
+        inference_config=config.inference,
+        dropout=decoder_config.dropout,
+    )
+
+
+def _build_lingbot_parallel_action_decoder(config: ExperimentConfig):
+    decoder_config = config.action_decoder
+    return LingbotParallelActionDecoder(
+        hidden_size=decoder_config.hidden_size,
+        action_dim=decoder_config.action_dim,
+        action_horizon=decoder_config.action_horizon,
+        dropout=decoder_config.dropout,
+    )
+
+
+def _build_mot_action_decoder(config: ExperimentConfig):
+    decoder_config = config.action_decoder
+    return MoTActionDecoder(
+        hidden_size=decoder_config.hidden_size,
+        action_dim=decoder_config.action_dim,
+        action_horizon=decoder_config.action_horizon,
+        training_config=config.training,
+        inference_config=config.inference,
+        dropout=decoder_config.dropout,
+    )
+
+
+def _build_vpp_action_decoder(config: ExperimentConfig):
+    decoder_config = config.action_decoder
+    return VPPSequenceActionDecoder(
+        decoder_config,
+        training_config=config.training,
+        inference_config=config.inference,
+        state_dim=config.data.action_schema.state_dim,
+        observation_token_dim=config.backbone.hidden_size,
+        goal_feature_dim=config.backbone.text_dim,
+    )
+
+
+def _build_video_only_action_decoder(config: ExperimentConfig):
+    decoder_config = config.action_decoder
+    return VideoOnlyActionDecoder(
+        hidden_size=decoder_config.hidden_size,
+        action_dim=decoder_config.action_dim,
+        action_horizon=decoder_config.action_horizon,
+        training_config=config.training,
+        inference_config=config.inference,
+        dropout=decoder_config.dropout,
+    )
+
+
+def build_action_decoder(config: ExperimentConfig):
+    builder = ACTION_DECODER_BUILDERS.get(config.action_decoder.name)
+    if builder is None:
+        raise ValueError(f"Unsupported action decoder '{config.action_decoder.name}'.")
+    return builder(config)
+
+
+def _register_builtin_pipeline_builders() -> None:
+    POLICY_VARIANT_BUILDERS.register(
+        PostLatentPolicyConfig,
+        _build_post_latent_policy_variant,
+        description="Post-latent policy variant.",
+        replace=True,
+    )
+    POLICY_VARIANT_BUILDERS.register(
+        PostDecodedPolicyConfig,
+        _build_post_decoded_policy_variant,
+        description="Post-decoded policy variant.",
+        replace=True,
+    )
+    POLICY_VARIANT_BUILDERS.register(
+        VideoSequencePolicyConfig,
+        _build_video_sequence_policy_variant,
+        description="Sequence-native video-policy policy variant.",
+        replace=True,
+    )
+    POLICY_VARIANT_BUILDERS.register(
+        CausalVideoPredictionPolicyConfig,
+        _build_causal_video_prediction_policy_variant,
+        description="Video-only causal prediction policy variant.",
+        replace=True,
+    )
+    POLICY_VARIANT_BUILDERS.register(
+        MoTPolicyConfig,
+        _build_mot_policy_variant,
+        description="Mixture-of-transformers policy variant.",
+        replace=True,
+    )
+    POLICY_VARIANT_BUILDERS.register(
+        RegisterAttachedPolicyConfig,
+        _build_register_attached_policy_variant,
+        description="Register-attached policy variant.",
+        replace=True,
+    )
+    POLICY_VARIANT_BUILDERS.register(
+        ParallelStreamPolicyConfig,
+        _build_parallel_stream_policy_variant,
+        description="Parallel-stream LingBot-compatible policy variant.",
+        replace=True,
+    )
+
+    ACTION_DECODER_BUILDERS.register(ActionDecoderName.MLP, _build_mlp_action_decoder, replace=True)
+    ACTION_DECODER_BUILDERS.register(ActionDecoderName.REGISTER, _build_register_action_decoder, replace=True)
+    ACTION_DECODER_BUILDERS.register(
+        ActionDecoderName.DECODED_FEATURE,
+        _build_decoded_feature_action_decoder,
+        replace=True,
+    )
+    ACTION_DECODER_BUILDERS.register(
+        ActionDecoderName.VIDEO_CONDITIONED,
+        _build_video_conditioned_action_decoder,
+        replace=True,
+    )
+    ACTION_DECODER_BUILDERS.register(
+        ActionDecoderName.LINGBOT_PARALLEL,
+        _build_lingbot_parallel_action_decoder,
+        replace=True,
+    )
+    ACTION_DECODER_BUILDERS.register(ActionDecoderName.MOT, _build_mot_action_decoder, replace=True)
+    ACTION_DECODER_BUILDERS.register(ActionDecoderName.VPP, _build_vpp_action_decoder, replace=True)
+    ACTION_DECODER_BUILDERS.register(ActionDecoderName.VIDEO_ONLY, _build_video_only_action_decoder, replace=True)
+
+
+_register_builtin_pipeline_builders()
 
 
 def build_variant_pipeline_from_config(config: ExperimentConfig) -> VariantPipeline:

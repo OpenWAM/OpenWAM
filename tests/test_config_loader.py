@@ -473,7 +473,7 @@ def test_local_libero_yaml_config_loads() -> None:
     assert local_libero.data.dataset_name == "libero"
     assert local_libero.data.dataset_type == "libero_hdf5"
     assert local_libero.data.repo_id is None
-    assert local_libero.data.local_root == "/path/to/datasets"
+    assert local_libero.data.local_root.endswith("libero/libero_10")
 
 
 def test_exact_local_libero_yaml_config_loads() -> None:
@@ -503,10 +503,8 @@ def test_heng_compatible_libero_yaml_config_loads() -> None:
 
     assert isinstance(heng_libero.policy_variant, ParallelStreamPolicyConfig)
     assert heng_libero.data.dataset_type == "lerobot_v2_latent_local"
-    assert heng_libero.data.local_root == "/path/to/private-resource"
-    assert heng_libero.data.empty_text_embedding_path == (
-        "/path/to/private-resource"
-    )
+    assert heng_libero.data.local_root.endswith("libero_heng/libero_10")
+    assert heng_libero.data.empty_text_embedding_path.endswith("empty_emb.pt")
     assert heng_libero.data.camera_names == (
         "observation.images.agentview_rgb",
         "observation.images.eye_in_hand_rgb",
@@ -552,9 +550,7 @@ def test_local_path_registry_overrides_sample_aliases(monkeypatch, tmp_path: Pat
     config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_libero_latent_local.yaml")
 
     assert config.data.local_root == "/tmp/custom_libero_root"
-    assert config.data.empty_text_embedding_path == (
-        "/path/to/private-resource"
-    )
+    assert config.data.empty_text_embedding_path.endswith("empty_emb.pt")
     assert config.backbone.pretrained_model_name_or_path == "/tmp/custom_model_root"
     assert config.backbone.transformer_subdir == "/tmp/custom_videoonly_transformer"
 
@@ -597,12 +593,10 @@ def test_local_path_registry_override_can_reference_sample_aliases(monkeypatch, 
 
     resolved = read_yaml_with_local_paths(config_path)
 
-    assert resolved["data"]["local_root"] == "/path/to/private-resource"
-    assert resolved["backbone"]["pretrained_model_name_or_path"] == (
-        "/path/to/private-resource"
-    )
-    assert resolved["tests"]["derived_checkpoint"] == (
-        "/path/to/private-resource"
+    assert resolved["data"]["local_root"].endswith("libero_heng/libero_10")
+    assert resolved["backbone"]["pretrained_model_name_or_path"].endswith("lingbot-va-base")
+    assert resolved["tests"]["derived_checkpoint"].endswith(
+        "libero_heng/libero_10/derived/checkpoint_step_1/transformer"
     )
 
 

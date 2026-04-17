@@ -1,9 +1,35 @@
-"""Open-WAM stage-1 package.
+"""Open-WAM research package.
 
-This package hosts the new unified WAM codebase. Stage 1 establishes:
+The stable runtime boundary is:
 
-- raw-video ingestion
-- a protected LingBot-compatible video backbone boundary
-- a backbone-only pipeline that produces common outputs for future action heads
+``ExperimentConfig -> VariantPipeline -> VisualTower -> PolicyVariant -> ActionDecoder``
 """
 
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
+import tomllib
+
+
+def _resolve_version() -> str:
+    try:
+        return version("open-wam")
+    except PackageNotFoundError:
+        pass
+
+    for root in Path(__file__).resolve().parents:
+        pyproject_path = root / "pyproject.toml"
+        if not pyproject_path.is_file():
+            continue
+        try:
+            pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        project = pyproject.get("project", {})
+        if project.get("name") == "open-wam" and isinstance(project.get("version"), str):
+            return project["version"]
+    return "0+unknown"
+
+
+__version__ = _resolve_version()
+
+__all__ = ["__version__"]

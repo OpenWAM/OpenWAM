@@ -8,9 +8,8 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from open_wam.evals.evaluate import main
+from open_wam.cli.eval import main
 
 
 if __name__ == "__main__":
     main()
-

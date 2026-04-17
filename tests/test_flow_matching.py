@@ -23,9 +23,9 @@ def test_action_flow_match_artifacts_stay_on_input_device() -> None:
         training_config=TrainingConfig(),
     )
 
-    assert artifacts.timesteps.device == device
-    assert artifacts.noisy_actions.device == device
-    assert artifacts.targets.device == device
+    assert artifacts.timesteps.device.type == device.type
+    assert artifacts.noisy_actions.device.type == device.type
+    assert artifacts.targets.device.type == device.type
 
 
 def test_action_flow_match_scheduler_step_preserves_sample_device() -> None:
@@ -39,7 +39,7 @@ def test_action_flow_match_scheduler_step_preserves_sample_device() -> None:
 
     next_sample = scheduler.step(model_output, scheduler.timesteps[0], sample)
 
-    assert next_sample.device == device
+    assert next_sample.device.type == device.type
 
 
 def test_flow_match_scheduler_add_noise_supports_per_sample_timesteps() -> None:

@@ -1,0 +1,66 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  basic-pathways:
+    runs-on: ubuntu-latest
+    env:
+      OPEN_WAM_CI_NO_TORCH: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Lockfile is current
+        run: uv lock --check
+      - name: Whitespace check
+        run: git diff --check
+      - name: Basic package, config, registry, and CLI pathway checks
+        # Static stdlib-only checks. Do not install project deps, run pytest, import open_wam, or install Torch here.
+        run: python scripts/ci_basic_sanity.py
+
+  minimal-package:
+    runs-on: ubuntu-latest
+    env:
+      OPEN_WAM_CI_NO_TORCH: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install minimal package
+        run: |
+          python -m venv .ci-minimal
+          .ci-minimal/bin/python -m pip install --upgrade pip
+          .ci-minimal/bin/pip install .
+      - name: Import and CLI parser safety
+        run: |
+          .ci-minimal/bin/python - <<'PY'
+          import importlib.util
+          import open_wam
+          import open_wam.configs
+          import open_wam.runtime
+          import open_wam.pipelines
+          assert importlib.util.find_spec("torch") is None
+          assert open_wam.__version__
+          PY
+          .ci-minimal/bin/open-wam-train --help
+          .ci-minimal/bin/open-wam-eval --help
+          .ci-minimal/bin/open-wam-sanity --help
+          .ci-minimal/bin/open-wam-sim-rollout --help
+          .ci-minimal/bin/open-wam-validate-config --help
+      - name: Static config validation from installed package
+        run: |
+          .ci-minimal/bin/open-wam-validate-config \
+            configs/experiments/contract_only_robotwin.yaml \
+            configs/evals/contract_only_robotwin.yaml \
+            configs/examples/calvin_npz_raw7_sanity.yaml

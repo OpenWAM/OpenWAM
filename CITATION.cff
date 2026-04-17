@@ -1,0 +1,15 @@
+cff-version: 1.2.0
+message: "If you use Open-WAM in research, please cite this software record."
+title: "Open-WAM"
+version: "0.1.0"
+date-released: "2026-04-17"
+authors:
+  - name: "Open-WAM contributors"
+repository-code: "https://github.com/DaivdYuan/Open-WAM"
+license: "MIT"
+keywords:
+  - world action models
+  - robotics
+  - imitation learning
+  - video prediction
+  - action diffusion

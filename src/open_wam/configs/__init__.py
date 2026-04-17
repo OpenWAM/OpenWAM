@@ -137,6 +137,7 @@ from .policy_variant import (
     RegisterAttachedPolicyConfig,
     VideoSequencePolicyConfig,
 )
+from .static_schema import StaticConfigIssue, StaticConfigReport, validate_config_file, validate_config_files
 from .trainer import TrainerConfig
 from .training import TrainingConfig
 from .visual_readout import VisualReadoutConfig
@@ -243,6 +244,8 @@ __all__ = [
     "StreamEncoderType",
     "StreamInputAdapterFamily",
     "StreamOutputHeadFamily",
+    "StaticConfigIssue",
+    "StaticConfigReport",
     "StructuredAttentionKernel",
     "StructuredBlockMode",
     "StructuredCacheKernel",
@@ -274,4 +277,6 @@ __all__ = [
     "WandBMode",
     "WindowSamplingMode",
     "WarmupAnchor",
+    "validate_config_file",
+    "validate_config_files",
 ]

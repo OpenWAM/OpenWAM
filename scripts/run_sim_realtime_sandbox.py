@@ -22,6 +22,7 @@ from open_wam.integrations.sim_benchmark import (  # noqa: E402
     summarize_sim_rollout,
 )
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
+from open_wam.runtime import build_result_envelope  # noqa: E402
 from open_wam.utils import load_experiment_config, seed_everywhere  # noqa: E402
 from open_wam.utils.local_paths import load_local_path_registry  # noqa: E402
 
@@ -116,14 +117,29 @@ def main() -> None:
         imageio.mimsave(video_path, list(result.video_frames), fps=float(args.video_fps), macro_block_size=1)
         saved_video_path = str(video_path)
 
-    summary = summarize_sim_rollout(result, video_path=saved_video_path)
-    summary.update(
+    legacy_summary = summarize_sim_rollout(result, video_path=saved_video_path)
+    legacy_summary.update(
         {
             "config": str(config_path),
             "checkpoint_path": None if checkpoint_path is None else str(checkpoint_path),
             "zero_policy": bool(args.zero_policy),
             "device": str(device),
         }
+    )
+    summary = build_result_envelope(
+        command="open-wam-sim-rollout",
+        config=str(config_path),
+        metrics={
+            "success": bool(result.success),
+            "steps": int(result.steps),
+            "achieved_action_hz": float(result.achieved_action_hz),
+        },
+        artifacts={"video_path": saved_video_path, "summary_path": str(summary_path)},
+        checkpoint=None if checkpoint_path is None else str(checkpoint_path),
+        benchmark=args.benchmark,
+        device=str(device),
+        seed=int(args.seed),
+        extra=legacy_summary,
     )
     rendered = json.dumps(summary, indent=2, sort_keys=True)
     summary_path.write_text(rendered + "\n", encoding="utf-8")

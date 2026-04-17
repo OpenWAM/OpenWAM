@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from open_wam.data import build_synthetic_batch
+from open_wam.models.policy_variants import PolicyTrainBatch
 from open_wam.models.visual_tower import (
     RuntimeStepInput,
     build_chunked_dual_stream_exact_train_program,
@@ -24,7 +25,13 @@ def test_exact_runtime_program_executes_on_shared_backbone() -> None:
     assert not hasattr(pipeline.policy_variant, "action_flow_head")
     batch = build_synthetic_batch(config.data, batch_size=2)
     visual_outputs = pipeline.prepare_visual_outputs(batch.views)
-    prepared_inputs = pipeline.policy_variant.prepare_train_inputs(visual_outputs, batch)
+    train_batch = PolicyTrainBatch(
+        actions=batch.actions,
+        action_mask=batch.action_mask,
+        state=batch.state,
+        extra={"task_text": batch.task_text, "metadata": batch.metadata},
+    )
+    prepared_inputs = pipeline.policy_variant.prepare_train_inputs(visual_outputs, train_batch)
     train_artifacts = prepared_inputs.variant_inputs["lingbot_train_artifacts"]
 
     runtime_backbone = pipeline.visual_tower.get_runtime_backbone(

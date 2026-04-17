@@ -7,8 +7,10 @@ from typing import Any, Mapping
 
 import yaml
 
+from open_wam.runtime.paths import find_repo_root
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+
+REPO_ROOT = find_repo_root(Path(__file__))
 LOCAL_PATHS_ENV_VAR = "OPEN_WAM_LOCAL_PATHS"
 LOCAL_PATHS_SAMPLE_PATH = REPO_ROOT / "configs" / "local_paths.sample.yaml"
 LOCAL_PATHS_PATH = REPO_ROOT / "configs" / "local_paths.yaml"

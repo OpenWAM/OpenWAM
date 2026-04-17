@@ -1,54 +1,55 @@
-"""External environment integrations used for evaluation and visualization."""
+"""Optional external environment integrations.
 
-from .calvin_env import CalvinBenchmarkAdapter, CalvinEnvConfig, OpenWAMCalvinCustomModel
-from .libero_env import (
-    LiberoControlConfig,
-    LiberoTaskSpec,
-    LiberoTrackingResult,
-    build_libero_offscreen_env,
-    compute_osc_pose_action,
-    ensure_local_libero_config,
-    extract_pose_from_obs,
-    infer_task_local_episode_rank,
-    load_libero_task_init_states,
-    resolve_libero_task,
-    track_relative_targets_in_libero_env,
-)
-from .robotwin_env import RobotwinBenchmarkAdapter, RobotwinEnvConfig
-from .sim_benchmark import (
-    SimBenchmarkAdapter,
-    SimRolloutResult,
-    SimStepResult,
-    build_state_history_tensor,
-    build_view_history_batch,
-    run_closed_loop_sim_rollout,
-    source_action_from_model_action,
-    summarize_sim_rollout,
-)
+Importing `open_wam.integrations` should not eagerly import simulator-specific
+modules. Attributes are loaded lazily so basic package imports work without
+LIBERO, RoboTwin, or CALVIN extras installed.
+"""
 
-__all__ = [
-    "CalvinBenchmarkAdapter",
-    "CalvinEnvConfig",
-    "LiberoControlConfig",
-    "LiberoTaskSpec",
-    "LiberoTrackingResult",
-    "OpenWAMCalvinCustomModel",
-    "RobotwinBenchmarkAdapter",
-    "RobotwinEnvConfig",
-    "SimBenchmarkAdapter",
-    "SimRolloutResult",
-    "SimStepResult",
-    "build_libero_offscreen_env",
-    "build_state_history_tensor",
-    "build_view_history_batch",
-    "compute_osc_pose_action",
-    "ensure_local_libero_config",
-    "extract_pose_from_obs",
-    "infer_task_local_episode_rank",
-    "load_libero_task_init_states",
-    "resolve_libero_task",
-    "run_closed_loop_sim_rollout",
-    "source_action_from_model_action",
-    "summarize_sim_rollout",
-    "track_relative_targets_in_libero_env",
-]
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
+
+
+_EXPORTS: dict[str, str] = {
+    "BenchmarkActionSchema": "open_wam.integrations.contracts",
+    "BenchmarkAdapterContract": "open_wam.integrations.contracts",
+    "BenchmarkObservationSchema": "open_wam.integrations.contracts",
+    "CalvinBenchmarkAdapter": "open_wam.integrations.calvin_env",
+    "CalvinEnvConfig": "open_wam.integrations.calvin_env",
+    "OpenWAMCalvinCustomModel": "open_wam.integrations.calvin_env",
+    "LiberoControlConfig": "open_wam.integrations.libero_env",
+    "LiberoTaskSpec": "open_wam.integrations.libero_env",
+    "LiberoTrackingResult": "open_wam.integrations.libero_env",
+    "build_libero_offscreen_env": "open_wam.integrations.libero_env",
+    "compute_osc_pose_action": "open_wam.integrations.libero_env",
+    "ensure_local_libero_config": "open_wam.integrations.libero_env",
+    "extract_pose_from_obs": "open_wam.integrations.libero_env",
+    "infer_task_local_episode_rank": "open_wam.integrations.libero_env",
+    "load_libero_task_init_states": "open_wam.integrations.libero_env",
+    "resolve_libero_task": "open_wam.integrations.libero_env",
+    "track_relative_targets_in_libero_env": "open_wam.integrations.libero_env",
+    "RobotwinBenchmarkAdapter": "open_wam.integrations.robotwin_env",
+    "RobotwinEnvConfig": "open_wam.integrations.robotwin_env",
+    "SimBenchmarkAdapter": "open_wam.integrations.sim_benchmark",
+    "SimRolloutResult": "open_wam.integrations.sim_benchmark",
+    "SimStepResult": "open_wam.integrations.sim_benchmark",
+    "build_state_history_tensor": "open_wam.integrations.sim_benchmark",
+    "build_view_history_batch": "open_wam.integrations.sim_benchmark",
+    "run_closed_loop_sim_rollout": "open_wam.integrations.sim_benchmark",
+    "source_action_from_model_action": "open_wam.integrations.sim_benchmark",
+    "summarize_sim_rollout": "open_wam.integrations.sim_benchmark",
+}
+
+__all__ = sorted(_EXPORTS)
+
+
+def __getattr__(name: str) -> Any:
+    try:
+        module_name = _EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+    module = import_module(module_name)
+    value = getattr(module, name)
+    globals()[name] = value
+    return value

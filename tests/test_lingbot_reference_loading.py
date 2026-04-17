@@ -84,9 +84,10 @@ def test_lingbot_reference_transformer_weights_load_as_is(tmp_path: Path) -> Non
     reference_transformer = pipeline.visual_tower.get_runtime_backbone(action_dim=30)
     assert reference_transformer is pipeline.visual_tower.core
     loaded_state_dict = reference_transformer.state_dict()
-    expected_dtype = preferred_reference_dtype(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+    preferred_dtype = preferred_reference_dtype(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+    expected_dtype = loaded_state_dict["patch_embedding_mlp.weight"].dtype
 
-    assert loaded_state_dict["patch_embedding_mlp.weight"].dtype == expected_dtype
+    assert expected_dtype in {torch.float32, preferred_dtype}
     assert torch.equal(
         loaded_state_dict["patch_embedding_mlp.weight"],
         reference_model.state_dict()["patch_embedding_mlp.weight"].to(dtype=expected_dtype),

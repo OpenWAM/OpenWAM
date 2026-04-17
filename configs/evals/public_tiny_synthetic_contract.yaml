@@ -1,0 +1,8 @@
+name: public_tiny_synthetic_contract_eval
+experiment_config: configs/examples/public_tiny_synthetic_contract.yaml
+mode: batch
+split: val
+batch_size: 1
+max_batches: 1
+device: cpu
+seed: 0

@@ -1,0 +1,6 @@
+{
+  "fixture_id": "public_tiny_synthetic_contract",
+  "hidden_size": 32,
+  "num_layers": 1,
+  "num_heads": 4
+}

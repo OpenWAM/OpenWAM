@@ -31,6 +31,7 @@ from open_wam.data import (  # noqa: E402
 )
 from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch  # noqa: E402
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
+from open_wam.runtime import build_result_envelope  # noqa: E402
 from open_wam.utils import load_experiment_config, seed_everywhere  # noqa: E402
 
 
@@ -99,7 +100,7 @@ def main() -> None:
         latent=_is_latent_dataset(config.data.dataset_type),
     )
 
-    summary = {
+    legacy_summary = {
         "config": str(config_path),
         "dataset_type": config.data.dataset_type,
         "dataset_name": config.data.dataset_name,
@@ -111,6 +112,19 @@ def main() -> None:
         "batch_infer": infer_report,
         "rollout_style_infer": rollout_report,
     }
+    summary = build_result_envelope(
+        command="open-wam-sanity",
+        config=str(config_path),
+        metrics={
+            "train_loss": train_report["loss"],
+            "rollout_steps": rollout_report["steps"],
+        },
+        checkpoint=None,
+        benchmark=str(config.data.dataset_name),
+        device=str(device),
+        seed=int(args.seed),
+        extra=legacy_summary,
+    )
     rendered = json.dumps(summary, indent=2, sort_keys=True)
     print(rendered)
     if args.output_json is not None:
