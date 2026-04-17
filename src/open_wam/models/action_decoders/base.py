@@ -82,6 +82,50 @@ def align_policy_features(policy_features: torch.Tensor, target_length: int) -> 
 class ActionDecoder(nn.Module, ABC):
     """Action decoder interface shared across policy variants."""
 
+    def configure_action_sampler_mask(
+        self,
+        sampler_mask: torch.Tensor | None,
+        *,
+        inactive_value: float = 0.0,
+    ) -> None:
+        """Configure optional inference-time channel pinning for mapped action spaces."""
+
+        if sampler_mask is None:
+            self._buffers.pop("_action_sampler_mask", None)
+            self._action_sampler_inactive_value = float(inactive_value)
+            return
+        if sampler_mask.ndim != 2:
+            raise ValueError(f"Action sampler mask must have shape [H, D], got {tuple(sampler_mask.shape)}.")
+        mask = sampler_mask.detach().to(dtype=torch.float32).unsqueeze(0)
+        if "_action_sampler_mask" in self._buffers:
+            self._buffers["_action_sampler_mask"] = mask
+        else:
+            self.register_buffer("_action_sampler_mask", mask, persistent=False)
+        self._action_sampler_inactive_value = float(inactive_value)
+
+    def _apply_action_sampler_mask(self, actions: torch.Tensor, *, start_index: int = 0) -> torch.Tensor:
+        sampler_mask = getattr(self, "_action_sampler_mask", None)
+        if sampler_mask is None:
+            return actions
+        if actions.ndim not in {2, 3}:
+            raise ValueError(f"Action sampler mask supports [B, D] or [B, H, D], got {tuple(actions.shape)}.")
+        if actions.shape[-1] != sampler_mask.shape[-1]:
+            raise ValueError(
+                f"Action sampler mask dim {sampler_mask.shape[-1]} does not match action dim {actions.shape[-1]}."
+            )
+        horizon = actions.shape[-2] if actions.ndim == 3 else 1
+        end_index = int(start_index) + int(horizon)
+        if end_index > sampler_mask.shape[1]:
+            raise ValueError(
+                "Action sampler mask horizon is shorter than the requested action slice, "
+                f"got mask_horizon={sampler_mask.shape[1]}, start_index={start_index}, horizon={horizon}."
+            )
+        mask = sampler_mask[:, int(start_index) : end_index].to(device=actions.device, dtype=actions.dtype)
+        if actions.ndim == 2:
+            mask = mask[:, 0]
+        inactive = actions.new_full((), float(getattr(self, "_action_sampler_inactive_value", 0.0)))
+        return actions * mask + inactive * (1.0 - mask)
+
     @abstractmethod
     def forward_train(self, policy_output: PolicyTrainOutput, batch: PolicyTrainBatch) -> ActionDecoderTrainOutput:
         """Decode actions and compute loss."""
@@ -284,6 +328,7 @@ class LinearActionDecoder(ActionDecoder):
             device=policy_output.policy_features.device,
             dtype=policy_output.policy_features.dtype,
         )
+        sample = self._apply_action_sampler_mask(sample)
         for timestep_idx, timestep in enumerate(scheduler.timesteps.to(device=sample.device)):
             timestep_values = torch.full(
                 (sample.shape[0], self.action_horizon),
@@ -298,6 +343,7 @@ class LinearActionDecoder(ActionDecoder):
                 sample,
                 to_final=timestep_idx == len(scheduler.timesteps) - 1,
             )
+            sample = self._apply_action_sampler_mask(sample)
         return ActionDecoderInferOutput(
             action_pred=sample,
             aux={

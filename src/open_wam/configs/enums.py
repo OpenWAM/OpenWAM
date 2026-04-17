@@ -67,6 +67,35 @@ class DataSplit(StrEnum):
     VAL = "val"
 
 
+class ActionMappingMode(StrEnum):
+    """How data-layer action targets are mapped into model-facing dimensions."""
+
+    NONE = "none"
+    PAD_AND_REORDER = "pad_and_reorder"
+    SPARSE_CANVAS = "sparse_canvas"
+
+
+class ActionMappingLossMaskMode(StrEnum):
+    """How mapped action dimensions contribute to supervised losses."""
+
+    SOURCE_MASK = "source_mask"
+    ACTIVE_TARGET_INDICES = "active_target_indices"
+
+
+class ActionMappingSamplerMaskMode(StrEnum):
+    """How inactive mapped action dimensions should be treated by samplers."""
+
+    NONE = "none"
+    PIN_INACTIVE_CHANNELS = "pin_inactive_channels"
+
+
+class ActionNormalizationMode(StrEnum):
+    """Optional data-layer normalization applied around action mappings."""
+
+    NONE = "none"
+    QUANTILES = "quantiles"
+
+
 class WindowSamplingMode(StrEnum):
     """How one training sample is constructed from a latent source segment."""
 

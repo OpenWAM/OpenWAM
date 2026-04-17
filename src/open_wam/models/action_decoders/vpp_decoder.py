@@ -183,6 +183,7 @@ class VPPSequenceActionDecoder(SequenceActionDecoder):
         if cached_chunk is not None and previous_state is not None:
             step_within_chunk = previous_state.step_within_chunk
             if step_within_chunk < self.rollout_chunk_steps:
+                cached_chunk = self._apply_action_sampler_mask(cached_chunk)
                 next_state = DecoderRolloutState(
                     action_chunk=cached_chunk,
                     chunk_index=previous_state.chunk_index,
@@ -218,6 +219,7 @@ class VPPSequenceActionDecoder(SequenceActionDecoder):
                 noised_actions=noised_actions,
                 sigma=sigma,
             ),
+            sample_transform=self._apply_action_sampler_mask,
         )
         next_state = DecoderRolloutState(
             action_chunk=sampled_chunk.detach(),

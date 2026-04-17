@@ -115,6 +115,7 @@ class EDMActionGenerationBackend:
         device: torch.device,
         dtype: torch.dtype,
         denoiser: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+        sample_transform: Callable[[torch.Tensor], torch.Tensor] | None = None,
     ) -> torch.Tensor:
         sigmas = _build_sigmas(
             num_steps=self.num_sampling_steps,
@@ -124,6 +125,8 @@ class EDMActionGenerationBackend:
             schedule=self.noise_schedule,
         )
         sample = torch.randn(batch_size, action_horizon, action_dim, device=device, dtype=dtype) * sigmas[0]
+        if sample_transform is not None:
+            sample = sample_transform(sample)
         for step_index in range(len(sigmas) - 1):
             sigma = sigmas[step_index]
             next_sigma = sigmas[step_index + 1]
@@ -133,6 +136,8 @@ class EDMActionGenerationBackend:
             denoised = model_output * c_out[:, None, None].to(dtype) + sample * c_skip[:, None, None].to(dtype)
             if next_sigma.item() == 0.0:
                 sample = denoised
+                if sample_transform is not None:
+                    sample = sample_transform(sample)
                 continue
             if self.sampler == DiffusionSampler.DDIM:
                 sample = denoised + (sample - denoised) * (next_sigma / sigma)
@@ -141,4 +146,6 @@ class EDMActionGenerationBackend:
                 sample = sample + derivative * (next_sigma - sigma)
             else:
                 raise ValueError(f"Unsupported diffusion sampler '{self.sampler}'.")
+            if sample_transform is not None:
+                sample = sample_transform(sample)
         return sample

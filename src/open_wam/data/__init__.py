@@ -7,7 +7,17 @@ from .action_transforms import (
     reconstruct_absolute_pose_targets,
     state_sequence_to_pose_sequence,
 )
+from .action_mapping import (
+    ActionMappingResult,
+    action_mapping_is_active,
+    apply_action_mapping,
+    inverse_action_mapping,
+    resolve_action_source_dim,
+    resolve_action_target_dim,
+    validate_action_mapping_preflight,
+)
 from .contracts import WAMBatch, WAMSample, collate_wam_samples, move_wam_batch_to_device
+from .calvin_npz import CalvinNPZWindowDataset, build_calvin_npz_train_val_datasets, discover_calvin_npz_episodes
 from .factory import DatasetLoaderSpec, build_train_val_datasets, register_dataset_builder, resolve_dataset_loader_spec
 from .latent_contracts import (
     LatentWAMBatch,
@@ -54,6 +64,11 @@ from .lerobot_consortium_contracts import (
 )
 from .libero_hdf5 import LiberoOfflineWindowDataset, build_libero_offline_train_val_episode_split, load_libero_offline_metadata
 from .lerobot_v2 import LeRobotV2WindowDataset, build_lerobot_train_val_episode_split, load_lerobot_v2_metadata
+from .lerobot_video import (
+    LeRobotV2VideoWindowDataset,
+    build_lerobot_v2_video_train_val_datasets,
+    load_lerobot_v2_video_metadata,
+)
 from .raw_video import (
     CanonicalVideoBatch,
     ConfiguredCanonicalVideoPreprocessor,
@@ -64,8 +79,10 @@ from .synthetic import SyntheticWindowDataset, build_synthetic_batch, build_synt
 
 __all__ = [
     "CanonicalVideoBatch",
+    "CalvinNPZWindowDataset",
     "ConfiguredCanonicalVideoPreprocessor",
     "DatasetLoaderSpec",
+    "ActionMappingResult",
     "expected_pose_target_dim",
     "LiberoOfflineWindowDataset",
     "LatentWAMBatch",
@@ -74,6 +91,7 @@ __all__ = [
     "LeRobotConsortiumInventoryRow",
     "LeRobotConsortiumRepoTarget",
     "LeRobotV2WindowDataset",
+    "LeRobotV2VideoWindowDataset",
     "LocalLeRobotLatentWindowDataset",
     "PoseSequence",
     "RobotWinCanonicalVideoPreprocessor",
@@ -81,7 +99,10 @@ __all__ = [
     "SyntheticWindowDataset",
     "WAMBatch",
     "WAMSample",
+    "action_mapping_is_active",
+    "apply_action_mapping",
     "build_canonical_video_preprocessor",
+    "build_calvin_npz_train_val_datasets",
     "build_lerobot_consortium_catalog",
     "build_lerobot_consortium_contract_catalog",
     "build_lerobot_consortium_contract_catalog_from_inventory_rows",
@@ -92,6 +113,7 @@ __all__ = [
     "build_local_lerobot_latent_train_val_datasets",
     "build_libero_offline_train_val_episode_split",
     "build_lerobot_train_val_episode_split",
+    "build_lerobot_v2_video_train_val_datasets",
     "build_relative_pose_targets",
     "build_synthetic_batch",
     "build_synthetic_latent_batch",
@@ -101,6 +123,7 @@ __all__ = [
     "collate_latent_wam_samples",
     "collate_wam_samples",
     "discover_local_lerobot_consortium_members",
+    "discover_calvin_npz_episodes",
     "format_lerobot_consortium_report",
     "infer_lerobot_consortium_source_group",
     "discover_local_lerobot_repo_bundles",
@@ -108,15 +131,20 @@ __all__ = [
     "load_lerobot_consortium_repo_targets",
     "load_libero_offline_metadata",
     "load_lerobot_v2_metadata",
+    "load_lerobot_v2_video_metadata",
     "move_latent_wam_batch_to_device",
     "move_wam_batch_to_device",
     "register_latent_dataset_builder",
     "reconstruct_absolute_pose_targets",
     "register_dataset_builder",
+    "inverse_action_mapping",
+    "resolve_action_source_dim",
+    "resolve_action_target_dim",
     "resolve_dataset_loader_spec",
     "resolve_lerobot_consortium_train_val_split",
     "render_lerobot_consortium_inventory_markdown",
     "state_sequence_to_pose_sequence",
+    "validate_action_mapping_preflight",
     "write_lerobot_consortium_contract_catalog",
     "write_lerobot_consortium_inventory_csv",
     "write_lerobot_consortium_inventory_json",

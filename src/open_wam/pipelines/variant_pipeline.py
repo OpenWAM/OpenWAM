@@ -11,6 +11,7 @@ from open_wam.models.action_decoders import (
     ActionDecoder,
     ActionDecoderInferOutput,
     ActionDecoderTrainOutput,
+    DecoderRolloutState,
     DirectActionDecoderTrainInputs,
 )
 from open_wam.models.policy_variants import (
@@ -51,12 +52,27 @@ class VariantPipeline(nn.Module):
         policy_variant: PolicyVariant,
         action_decoder: ActionDecoder,
         preprocessor: ConfiguredCanonicalVideoPreprocessor | None = None,
+        action_sampler_mask: torch.Tensor | None = None,
+        action_sampler_inactive_value: float = 0.0,
     ) -> None:
         super().__init__()
         self.visual_tower = visual_tower
         self.policy_variant = policy_variant
         self.action_decoder = action_decoder
         self.preprocessor = preprocessor or RobotWinCanonicalVideoPreprocessor()
+        self.action_sampler_inactive_value = float(action_sampler_inactive_value)
+        if action_sampler_mask is not None:
+            self.register_buffer(
+                "_action_sampler_mask",
+                action_sampler_mask.detach().to(dtype=torch.float32),
+                persistent=False,
+            )
+        else:
+            self._action_sampler_mask = None
+        self.action_decoder.configure_action_sampler_mask(
+            self._action_sampler_mask,
+            inactive_value=self.action_sampler_inactive_value,
+        )
 
     def canonicalize(self, views: Mapping[str, torch.Tensor]) -> CanonicalVideoBatch:
         return self.preprocessor(views)
@@ -231,8 +247,69 @@ class VariantPipeline(nn.Module):
         if direct_decoder_output is None:
             direct_decoder_output = policy_output.aux.get("decoder_output")
         if isinstance(direct_decoder_output, ActionDecoderInferOutput):
-            return direct_decoder_output
-        return self.action_decoder.forward_infer(policy_output, previous_state=previous_decoder_state)
+            return self._apply_action_sampler_mask_to_infer_output(direct_decoder_output)
+        return self._apply_action_sampler_mask_to_infer_output(
+            self.action_decoder.forward_infer(policy_output, previous_state=previous_decoder_state)
+        )
+
+    def _apply_action_sampler_mask_to_infer_output(
+        self,
+        output: ActionDecoderInferOutput,
+    ) -> ActionDecoderInferOutput:
+        if self._action_sampler_mask is None:
+            return output
+        masked_action_pred = self._apply_action_sampler_mask(output.action_pred)
+        aux = dict(output.aux)
+        current_action = aux.get("current_action")
+        if isinstance(current_action, torch.Tensor):
+            aux["current_action"] = self._apply_action_sampler_mask(
+                current_action,
+                start_index=self._current_action_index_from_aux(aux),
+            )
+        next_state = output.next_state
+        if isinstance(next_state, DecoderRolloutState) and next_state.action_chunk is not None:
+            next_state = replace(
+                next_state,
+                action_chunk=self._apply_action_sampler_mask(next_state.action_chunk),
+            )
+        return ActionDecoderInferOutput(
+            action_pred=masked_action_pred,
+            next_state=next_state,
+            aux=aux,
+        )
+
+    def _apply_action_sampler_mask(self, actions: torch.Tensor, *, start_index: int = 0) -> torch.Tensor:
+        sampler_mask = self._action_sampler_mask
+        if sampler_mask is None:
+            return actions
+        if actions.ndim not in {2, 3}:
+            raise ValueError(f"Action sampler mask supports [B, D] or [B, H, D], got {tuple(actions.shape)}.")
+        if actions.shape[-1] != sampler_mask.shape[-1]:
+            raise ValueError(
+                f"Action sampler mask dim {sampler_mask.shape[-1]} does not match action dim {actions.shape[-1]}."
+            )
+        horizon = actions.shape[-2] if actions.ndim == 3 else 1
+        end_index = int(start_index) + int(horizon)
+        if end_index > sampler_mask.shape[0]:
+            raise ValueError(
+                "Action sampler mask horizon is shorter than the requested action slice, "
+                f"got mask_horizon={sampler_mask.shape[0]}, start_index={start_index}, horizon={horizon}."
+            )
+        mask = sampler_mask[int(start_index) : end_index].to(device=actions.device, dtype=actions.dtype)
+        if actions.ndim == 3:
+            mask = mask.unsqueeze(0)
+        inactive = actions.new_full((), self.action_sampler_inactive_value)
+        return actions * mask + inactive * (1.0 - mask)
+
+    @staticmethod
+    def _current_action_index_from_aux(aux: dict[str, object]) -> int:
+        value = aux.get("current_action_index", 0)
+        if isinstance(value, torch.Tensor):
+            return int(value.detach().float().cpu().item())
+        try:
+            return int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return 0
 
     def forward(
         self,

@@ -6,6 +6,17 @@ paths:
     libero_public_root: /path/to/datasets
     # Shared negative prompt embedding used by latent-local datasets.
     empty_text_embedding: /path/to/private-resource
+    # Local RoboTwin LeRobot-v2 member or downloaded nested member root.
+    robotwin_lerobot_video_root: /path/to/robotwin/lerobot_member
+    # Local CALVIN debug or full split root containing episode_*.npz files.
+    calvin_root: /path/to/calvin/task_D_D
+
+  simulators:
+    # Local RoboTwin simulator checkout containing envs/ and task_config/.
+    robotwin_root: /path/to/RoboTwin
+    # Local CALVIN checkout containing the calvin_env package. If CALVIN is
+    # installed into the active environment, this can be omitted locally.
+    calvin_root: /path/to/calvin
 
   models:
     # Base LingBot-compatible WAN visual model root.

@@ -5,6 +5,11 @@ from torch.utils.data import Dataset
 
 from open_wam.configs import DataConfig, WindowSamplingMode
 
+from .action_mapping import (
+    action_mapping_is_active,
+    apply_action_mapping,
+    resolve_action_source_dim,
+)
 from .contracts import WAMBatch, WAMSample, collate_wam_samples
 
 
@@ -55,14 +60,34 @@ class SyntheticWindowDataset(Dataset[WAMSample]):
 
     def __getitem__(self, index: int) -> WAMSample:
         action_schema = self.data_config.action_schema
+        if action_mapping_is_active(self.data_config.action_mapping):
+            source_dim = resolve_action_source_dim(self.data_config.action_mapping, fallback_dim=action_schema.action_dim)
+            source_actions = torch.randn(action_schema.action_horizon, source_dim)
+            source_mask = torch.ones_like(source_actions)
+            mapped = apply_action_mapping(
+                source_actions,
+                source_mask,
+                self.data_config.action_mapping,
+                target_dim=action_schema.action_dim,
+            )
+            actions = mapped.actions
+            action_mask = mapped.action_mask
+            metadata = {
+                **build_synthetic_metadata(self.data_config, index=index),
+                **mapped.metadata,
+            }
+        else:
+            actions = torch.randn(action_schema.action_horizon, action_schema.action_dim)
+            action_mask = torch.ones(action_schema.action_horizon, action_schema.action_dim)
+            metadata = build_synthetic_metadata(self.data_config, index=index)
         return WAMSample(
             views=build_synthetic_views(self.data_config, batch_size=None),
-            actions=torch.randn(action_schema.action_horizon, action_schema.action_dim),
-            action_mask=torch.ones(action_schema.action_horizon, action_schema.action_dim),
+            actions=actions,
+            action_mask=action_mask,
             state=torch.randn(action_schema.state_horizon, action_schema.state_dim),
             state_mask=torch.ones(action_schema.state_horizon, action_schema.state_dim),
             task_text=self.task_text,
-            metadata=build_synthetic_metadata(self.data_config, index=index),
+            metadata=metadata,
         )
 
 

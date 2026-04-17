@@ -197,7 +197,7 @@ class MoTActionDecoder(ActionDecoder):
             aux["predicted_latents"] = infer_artifacts.predicted_latents
             aux["predicted_video_latents"] = infer_artifacts.predicted_latents
         return ActionDecoderInferOutput(
-            action_pred=infer_artifacts.action_pred,
+            action_pred=self._apply_action_sampler_mask(infer_artifacts.action_pred),
             next_state=None,
             aux=aux,
         )

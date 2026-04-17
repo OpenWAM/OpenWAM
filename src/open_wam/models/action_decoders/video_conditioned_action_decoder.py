@@ -404,7 +404,7 @@ class VideoConditionedActionDecoder(SequenceActionDecoder):
         if previous_state is not None and previous_state.action_chunk is not None:
             step_within_chunk = int(previous_state.step_within_chunk)
             if step_within_chunk < effective_chunk_steps and step_within_chunk < int(previous_state.action_chunk.shape[1]):
-                cached_chunk = previous_state.action_chunk
+                cached_chunk = self._apply_action_sampler_mask(previous_state.action_chunk)
                 next_state = DecoderRolloutState(
                     action_chunk=cached_chunk,
                     chunk_index=previous_state.chunk_index,
@@ -444,6 +444,7 @@ class VideoConditionedActionDecoder(SequenceActionDecoder):
             device=sequence_context.sequence_tokens.device,
             dtype=sequence_context.sequence_tokens.dtype,
         )
+        sample = self._apply_action_sampler_mask(sample)
         resolved_window: VideoConditionWindowContext | None = None
         for timestep in scheduler.timesteps.to(device=sample.device):
             dense_timestep = torch.full(
@@ -454,6 +455,7 @@ class VideoConditionedActionDecoder(SequenceActionDecoder):
             )
             flow_pred, resolved_window = self._predict_flow(sequence_context, sample, dense_timestep)
             sample = scheduler.step(flow_pred, timestep, sample)
+            sample = self._apply_action_sampler_mask(sample)
         next_state = DecoderRolloutState(
             action_chunk=sample.detach(),
             chunk_index=0 if previous_state is None else int(previous_state.chunk_index) + 1,

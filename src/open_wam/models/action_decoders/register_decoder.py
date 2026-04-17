@@ -58,7 +58,7 @@ class RegisterActionDecoder(ActionDecoder):
         previous_state: object | None = None,
     ) -> ActionDecoderInferOutput:
         del previous_state
-        action_pred = align_policy_features(policy_output.policy_features, self.action_horizon)
+        action_pred = self._apply_action_sampler_mask(align_policy_features(policy_output.policy_features, self.action_horizon))
         aux = {
             "decoder": self.__class__.__name__,
         }

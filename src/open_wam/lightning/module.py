@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import asdict
+
 import torch
 from torch import nn
 
@@ -14,6 +16,7 @@ except ModuleNotFoundError:
 from open_wam.configs import (
     ExperimentConfig,
 )
+from open_wam.configs.enums import serialize_enum_values
 from open_wam.data import WAMBatch, move_wam_batch_to_device
 from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
 from open_wam.pipelines import build_variant_pipeline_from_config
@@ -39,7 +42,7 @@ else:
             self.config = config
             self.pipeline = build_variant_pipeline_from_config(config)
             self.trainability_report = apply_training_component_controls(self.pipeline, config.training)
-            self.save_hyperparameters(ignore=["pipeline"])
+            self.save_hyperparameters({"config": serialize_enum_values(asdict(config))})
 
         def _policy_batch_from_batch(self, batch: WAMBatch) -> PolicyTrainBatch:
             return PolicyTrainBatch(

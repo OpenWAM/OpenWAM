@@ -530,7 +530,7 @@ def test_heng_compatible_libero_yaml_config_loads() -> None:
     assert heng_libero.trainer.strategy == "fsdp"
     assert heng_libero.trainer.save_interval == 100
     assert heng_libero.trainer.enable_wandb is True
-    assert heng_libero.trainer.wandb_project == "openwam-libero-policy-train"
+    assert heng_libero.trainer.wandb_project == "openwam-method1-libero"
 
 
 def test_local_path_registry_overrides_sample_aliases(monkeypatch, tmp_path: Path) -> None:

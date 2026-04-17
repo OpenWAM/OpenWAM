@@ -23,6 +23,8 @@ from open_wam.configs import (
     VPPActionDecoderConfig,
     VideoOnlyActionDecoderConfig,
     VideoSequencePolicyConfig,
+    ActionMappingConfig,
+    ActionNormalizationConfig,
     ConsortiumChannelMappingConfig,
     ConsortiumCloudCacheConfig,
     ConsortiumEpisodeSelectionConfig,
@@ -30,6 +32,7 @@ from open_wam.configs import (
     ConsortiumMemberConfig,
     ActionSchemaConfig,
     ActionTargetConfig,
+    CalvinDataConfig,
     DataConfig,
     ExperimentConfig,
     GenericDataConfig,
@@ -143,6 +146,53 @@ def _load_visual_readout_config(raw_value: Any) -> VisualReadoutConfig | None:
         ),
         diffusion_extract_timestep=int(raw_value.get("diffusion_extract_timestep", 20)),
         diffusion_extract_step_time=int(raw_value.get("diffusion_extract_step_time", 1)),
+    )
+
+
+def _load_action_mapping_config(raw_value: Any, defaults: ActionMappingConfig) -> ActionMappingConfig:
+    raw = raw_value or {}
+    if not isinstance(raw, dict):
+        raise ValueError("Expected `data.action_mapping` to be a mapping.")
+    normalization_raw = raw.get("normalization", None)
+    default_norm = defaults.normalization
+    if normalization_raw is None:
+        normalization = default_norm
+    else:
+        if not isinstance(normalization_raw, dict):
+            raise ValueError("Expected `data.action_mapping.normalization` to be a mapping.")
+        normalization = ActionNormalizationConfig(
+            mode=_coerce_enum(
+                config_enums.ActionNormalizationMode,
+                normalization_raw.get("mode", default_norm.mode),
+            ),
+            q01=tuple(float(value) for value in normalization_raw.get("q01", default_norm.q01)),
+            q99=tuple(float(value) for value in normalization_raw.get("q99", default_norm.q99)),
+            clip_min=normalization_raw.get("clip_min", default_norm.clip_min),
+            clip_max=normalization_raw.get("clip_max", default_norm.clip_max),
+        )
+    return ActionMappingConfig(
+        mode=_coerce_enum(
+            config_enums.ActionMappingMode,
+            raw.get("mode", defaults.mode),
+        ),
+        source_dim=raw.get("source_dim", defaults.source_dim),
+        target_dim=raw.get("target_dim", defaults.target_dim),
+        source_to_target_indices=tuple(
+            int(value) for value in raw.get("source_to_target_indices", defaults.source_to_target_indices)
+        ),
+        active_target_indices=tuple(
+            int(value) for value in raw.get("active_target_indices", defaults.active_target_indices)
+        ),
+        inactive_value=float(raw.get("inactive_value", defaults.inactive_value)),
+        loss_mask_mode=_coerce_enum(
+            config_enums.ActionMappingLossMaskMode,
+            raw.get("loss_mask_mode", defaults.loss_mask_mode),
+        ),
+        sampler_mask_mode=_coerce_enum(
+            config_enums.ActionMappingSamplerMaskMode,
+            raw.get("sampler_mask_mode", defaults.sampler_mask_mode),
+        ),
+        normalization=normalization,
     )
 
 
@@ -731,6 +781,9 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
     elif dataset_type == "lerobot_consortium" or dataset_name == "lerobot_consortium":
         data_defaults = LeRobotConsortiumDataConfig()
         data_config_cls = LeRobotConsortiumDataConfig
+    elif dataset_name == "calvin" or dataset_type == "calvin_npz":
+        data_defaults = CalvinDataConfig()
+        data_config_cls = CalvinDataConfig
     elif dataset_name == "robotwin":
         data_defaults = RobotWinDataConfig()
         data_config_cls = RobotWinDataConfig
@@ -833,6 +886,10 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
                 "gripper_action_index",
                 data_defaults.action_target.gripper_action_index,
             ),
+        ),
+        action_mapping=_load_action_mapping_config(
+            data_raw.get("action_mapping"),
+            data_defaults.action_mapping,
         ),
         sample_construction=SampleConstructionConfig(
             mode=_coerce_enum(

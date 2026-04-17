@@ -1,4 +1,5 @@
 previous_works/
+external/
 outputs/
 wandb/
 configs/local_paths.yaml

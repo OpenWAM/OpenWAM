@@ -18,6 +18,7 @@ from open_wam.configs import (
     VideoSequencePolicyConfig,
 )
 from open_wam.data import build_canonical_video_preprocessor
+from open_wam.data.action_mapping import build_action_sampler_mask, validate_action_mapping_preflight
 from open_wam.models.action_decoders import DecodedFeatureActionDecoder, MLPActionDecoder, RegisterActionDecoder
 from open_wam.models.action_decoders import (
     LingbotParallelActionDecoder,
@@ -58,6 +59,10 @@ def _resolve_parallel_stream_model_action_dim(config: ExperimentConfig) -> int:
 
 def validate_experiment_config(config: ExperimentConfig) -> None:
     action_schema = config.data.action_schema
+    validate_action_mapping_preflight(
+        config.data.action_mapping,
+        action_schema_dim=action_schema.action_dim,
+    )
     if isinstance(
         config.policy_variant,
         (
@@ -435,11 +440,18 @@ def build_variant_pipeline_from_config(config: ExperimentConfig) -> VariantPipel
         and hasattr(action_decoder, "initialize_from_video_core")
     ):
         action_decoder.initialize_from_video_core(visual_tower.core)
+    action_sampler_mask = build_action_sampler_mask(
+        config.data.action_mapping,
+        action_horizon=config.action_decoder.action_horizon,
+        target_dim=config.action_decoder.action_dim,
+    )
     return VariantPipeline(
         visual_tower=visual_tower,
         policy_variant=policy_variant,
         action_decoder=action_decoder,
         preprocessor=build_canonical_video_preprocessor(config.data),
+        action_sampler_mask=action_sampler_mask,
+        action_sampler_inactive_value=config.data.action_mapping.inactive_value,
     )
 
 

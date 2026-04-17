@@ -4,6 +4,10 @@ from dataclasses import dataclass, field
 
 from .enums import (
     AnchorPolicy,
+    ActionMappingLossMaskMode,
+    ActionMappingMode,
+    ActionMappingSamplerMaskMode,
+    ActionNormalizationMode,
     ActionTargetReferenceSource,
     ActionTargetRepresentation,
     ActionTargetStateEncoding,
@@ -57,6 +61,77 @@ class ActionSchemaConfig:
     action_horizon: int
     state_dim: int
     state_horizon: int = 1
+
+
+@dataclass(frozen=True)
+class ActionNormalizationConfig:
+    """Optional numeric normalization for action targets before or after mapping."""
+
+    mode: ActionNormalizationMode = ActionNormalizationMode.NONE
+    q01: tuple[float, ...] = ()
+    q99: tuple[float, ...] = ()
+    clip_min: float | None = None
+    clip_max: float | None = None
+
+    def __post_init__(self) -> None:
+        coerce_fields(self, enum_fields={"mode": ActionNormalizationMode})
+        if self.mode == ActionNormalizationMode.QUANTILES and len(self.q01) != len(self.q99):
+            raise ValueError("Quantile action normalization requires `q01` and `q99` to have the same length.")
+
+
+@dataclass(frozen=True)
+class ActionMappingConfig:
+    """Map dataset-native action vectors into model-facing action dimensions.
+
+    `mode=none` preserves the existing data contract. `sparse_canvas` and
+    `pad_and_reorder` build a target vector whose active channels are selected
+    by `source_to_target_indices`; the returned action mask marks only those
+    active target dimensions as valid.
+    """
+
+    mode: ActionMappingMode = ActionMappingMode.NONE
+    source_dim: int | None = None
+    target_dim: int | None = None
+    source_to_target_indices: tuple[int, ...] = ()
+    active_target_indices: tuple[int, ...] = ()
+    inactive_value: float = 0.0
+    loss_mask_mode: ActionMappingLossMaskMode = ActionMappingLossMaskMode.SOURCE_MASK
+    sampler_mask_mode: ActionMappingSamplerMaskMode = ActionMappingSamplerMaskMode.NONE
+    normalization: ActionNormalizationConfig = field(default_factory=ActionNormalizationConfig)
+
+    def __post_init__(self) -> None:
+        coerce_fields(
+            self,
+            enum_fields={
+                "mode": ActionMappingMode,
+                "loss_mask_mode": ActionMappingLossMaskMode,
+                "sampler_mask_mode": ActionMappingSamplerMaskMode,
+            },
+        )
+        if self.mode == ActionMappingMode.NONE:
+            return
+        if self.source_dim is None or self.source_dim <= 0:
+            raise ValueError("Action mapping requires a positive `source_dim`.")
+        if self.target_dim is None or self.target_dim <= 0:
+            raise ValueError("Action mapping requires a positive `target_dim`.")
+        if len(self.source_to_target_indices) != self.source_dim:
+            raise ValueError(
+                "Action mapping requires exactly one target index per source channel, "
+                f"got source_dim={self.source_dim}, indices={len(self.source_to_target_indices)}."
+            )
+        if len(set(self.source_to_target_indices)) != len(self.source_to_target_indices):
+            raise ValueError("Action mapping target indices must be unique.")
+        for target_index in self.source_to_target_indices:
+            if target_index < 0 or target_index >= self.target_dim:
+                raise ValueError(
+                    f"Action mapping target index {target_index} is outside target_dim={self.target_dim}."
+                )
+        if self.active_target_indices:
+            for target_index in self.active_target_indices:
+                if target_index < 0 or target_index >= self.target_dim:
+                    raise ValueError(
+                        f"Active target index {target_index} is outside target_dim={self.target_dim}."
+                    )
 
 
 @dataclass(frozen=True)
@@ -261,6 +336,7 @@ class DataConfig:
     num_workers: int
     action_schema: ActionSchemaConfig
     action_target: ActionTargetConfig
+    action_mapping: ActionMappingConfig
     sample_construction: SampleConstructionConfig
 
     def __post_init__(self) -> None:
@@ -328,6 +404,7 @@ class GenericDataConfig(DataConfig):
         )
     )
     action_target: ActionTargetConfig = field(default_factory=ActionTargetConfig)
+    action_mapping: ActionMappingConfig = field(default_factory=ActionMappingConfig)
     sample_construction: SampleConstructionConfig = field(default_factory=SampleConstructionConfig)
 
 
@@ -405,6 +482,7 @@ class RobotWinDataConfig(DataConfig):
         )
     )
     action_target: ActionTargetConfig = field(default_factory=ActionTargetConfig)
+    action_mapping: ActionMappingConfig = field(default_factory=ActionMappingConfig)
     sample_construction: SampleConstructionConfig = field(default_factory=SampleConstructionConfig)
 
 
@@ -498,6 +576,82 @@ class LiberoDataConfig(DataConfig):
             gripper_action_index=-1,
         )
     )
+    action_mapping: ActionMappingConfig = field(default_factory=ActionMappingConfig)
+    sample_construction: SampleConstructionConfig = field(default_factory=SampleConstructionConfig)
+
+
+@dataclass(frozen=True)
+class CalvinDataConfig(DataConfig):
+    """Native CALVIN numpy dataset config using static and gripper RGB views."""
+
+    dataset_name: str = "calvin"
+    dataset_type: str = "calvin_npz"
+    repo_id: str | None = None
+    local_root: str | None = None
+    empty_text_embedding_path: str | None = None
+    latent_root: str | None = None
+    latent_subdir: str = "latents"
+    latent_window_profile: LatentWindowProfile = LatentWindowProfile.EXACT_CHUNKED_WINDOW
+    split: DataSplit = DataSplit.TRAIN
+    cache_dir: str | None = None
+    camera_names: tuple[str, ...] = (
+        "rgb_static",
+        "rgb_gripper",
+    )
+    latent_camera_names: tuple[str, ...] = (
+        "rgb_static",
+        "rgb_gripper",
+    )
+    canonical_height: int = 384
+    canonical_width: int = 320
+    view_layout: tuple[ViewLayoutConfig, ...] = field(
+        default_factory=lambda: (
+            ViewLayoutConfig(
+                source_name="rgb_static",
+                canonical_name="rgb_static",
+                top=0,
+                left=0,
+                height=256,
+                width=320,
+            ),
+            ViewLayoutConfig(
+                source_name="rgb_gripper",
+                canonical_name="rgb_gripper",
+                top=256,
+                left=0,
+                height=128,
+                width=320,
+            ),
+        )
+    )
+    num_frames: int = 4
+    frame_stride: int = 1
+    sample_stride: int = 1
+    episode_cache_size: int = 2
+    train_fraction: float = 0.95
+    split_seed: int = 0
+    max_train_episodes: int | None = None
+    max_val_episodes: int | None = None
+    train_batch_size: int = 2
+    val_batch_size: int = 2
+    num_workers: int = 0
+    action_schema: ActionSchemaConfig = field(
+        default_factory=lambda: ActionSchemaConfig(
+            action_dim=7,
+            action_horizon=6,
+            state_dim=15,
+            state_horizon=1,
+        )
+    )
+    action_target: ActionTargetConfig = field(
+        default_factory=lambda: ActionTargetConfig(
+            representation=ActionTargetRepresentation.RAW,
+            source_key="rel_actions",
+            pose_source_key="robot_obs",
+            state_encoding=ActionTargetStateEncoding.IDENTITY,
+        )
+    )
+    action_mapping: ActionMappingConfig = field(default_factory=ActionMappingConfig)
     sample_construction: SampleConstructionConfig = field(default_factory=SampleConstructionConfig)
 
 
@@ -580,6 +734,7 @@ class LeRobotConsortiumDataConfig(DataConfig):
         )
     )
     action_target: ActionTargetConfig = field(default_factory=ActionTargetConfig)
+    action_mapping: ActionMappingConfig = field(default_factory=ActionMappingConfig)
     sample_construction: SampleConstructionConfig = field(default_factory=SampleConstructionConfig)
     consortium_members: tuple[ConsortiumMemberConfig, ...] = ()
     channel_selection_mode: ConsortiumChannelSelectionMode = ConsortiumChannelSelectionMode.ALL_AVAILABLE

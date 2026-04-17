@@ -17,6 +17,11 @@ from torch.utils.data import Dataset
 from open_wam.configs import ActionTargetReferenceSource, ActionTargetRepresentation, DataConfig
 
 from .action_transforms import build_relative_pose_targets, expected_pose_target_dim
+from .action_mapping import (
+    action_mapping_is_active,
+    apply_action_mapping,
+    resolve_action_source_dim,
+)
 from .contracts import WAMSample
 
 
@@ -196,17 +201,25 @@ class LeRobotV2WindowDataset(Dataset[WAMSample]):
         """
 
         action_target = self.data_config.action_target
+        action_mapping = self.data_config.action_mapping
         target_dim = self.data_config.action_schema.action_dim
         target_length = self.data_config.action_schema.action_horizon
 
         if action_target.representation == ActionTargetRepresentation.RAW:
+            source_dim = resolve_action_source_dim(action_mapping, fallback_dim=target_dim)
             actions, action_mask = self._extract_sequence(
                 rows=action_rows,
                 key=action_target.source_key,
-                target_dim=target_dim,
+                target_dim=source_dim,
                 target_length=target_length,
             )
-            return actions, action_mask, {}
+            mapped = apply_action_mapping(
+                actions,
+                action_mask,
+                action_mapping,
+                target_dim=target_dim,
+            )
+            return mapped.actions, mapped.action_mask, mapped.metadata
 
         if action_target.representation == ActionTargetRepresentation.EEF_POSE_RELATIVE_TO_REFERENCE:
             if action_target.reference_source != ActionTargetReferenceSource.ANCHOR_STATE:
@@ -242,10 +255,11 @@ class LeRobotV2WindowDataset(Dataset[WAMSample]):
                 include_gripper=action_target.include_gripper,
                 gripper_representation=action_target.gripper_representation,
             )
-            if target_dim != expected_dim:
+            target_or_source_dim = resolve_action_source_dim(action_mapping, fallback_dim=target_dim)
+            if target_or_source_dim != expected_dim:
                 raise ValueError(
                     "Configured action_dim does not match the derived pose-target dimension: "
-                    f"action_dim={target_dim}, expected={expected_dim} for "
+                    f"configured_dim={target_or_source_dim}, expected={expected_dim} for "
                     f"[rotation_representation={action_target.rotation_representation}, "
                     f"gripper_representation={action_target.gripper_representation}]."
                 )
@@ -258,13 +272,21 @@ class LeRobotV2WindowDataset(Dataset[WAMSample]):
             )
             actions, action_mask = self._pack_sequence(
                 sequence=relative_targets,
-                target_dim=target_dim,
+                target_dim=target_or_source_dim,
                 target_length=target_length,
             )
             if relative_mask.shape[-1] != relative_targets.shape[-1]:
                 raise ValueError("Relative target mask shape must match the relative target tensor shape.")
             action_mask[:, : relative_mask.shape[-1]] = relative_mask
-            return actions, action_mask, metadata
+            mapped = apply_action_mapping(
+                actions,
+                action_mask,
+                action_mapping,
+                target_dim=target_dim,
+            )
+            metadata.update(mapped.metadata)
+            metadata["action_mapping_applied"] = action_mapping_is_active(action_mapping)
+            return mapped.actions, mapped.action_mask, metadata
 
         raise ValueError(f"Unsupported action target representation: {action_target.representation}")
 
