@@ -43,6 +43,8 @@ The first real dataset path is:
 configs/         runnable experiment and eval YAMLs
 notes/           research and engineering notes
 deployment/      compatibility workspace for real-robot and sim deployment tooling
+                 (FR3 ROS2 impedance teleop + recording — see
+                 deployment/real_robot/README.md)
 AGENTS.md        repo-level contributor and agent style guide
 src/open_wam/third_party/  vendored external modules kept inside the repo
 scripts/         thin wrappers, smoke tests, and inspection scripts

@@ -4,6 +4,17 @@ outputs/
 wandb/
 configs/local_paths.yaml
 
+# Runtime logs written at the repo root by some scripts.
+Log/
+*.log
+openwam_crash_*.log
+
+# Editor / IDE local state.
+.vscode/
+.idea/
+*.swp
+*.swo
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -220,3 +231,4 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+deployment/ros2_ws/
