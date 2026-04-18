@@ -155,6 +155,10 @@ def _check_docs_and_cards() -> None:
     required_paths = (
         "CHANGELOG.md",
         "docs/release.md",
+        "docs/architecture.md",
+        "docs/benchmarks.md",
+        "docs/method_families.md",
+        "docs/running_experiments.md",
         "docs/cookbooks/new_method.md",
         "docs/cookbooks/new_action_decoder.md",
         "docs/cookbooks/new_dataset.md",
@@ -188,12 +192,16 @@ def _check_docs_site_source() -> None:
         required = (
             "index.md",
             "quickstart.md",
-            "engineering-notes/index.md",
-            "engineering-notes/finished_roadmaps/index.md",
+            "architecture.md",
+            "method_families.md",
+            "benchmarks.md",
+            "running_experiments.md",
         )
         missing = [path for path in required if not (Path(tmpdir) / path).is_file()]
         if missing:
             raise SystemExit(f"Generated docs site is missing expected pages: {missing!r}")
+        if (Path(tmpdir) / "engineering-notes").exists():
+            raise SystemExit("Generated docs site must not publish raw engineering notes.")
 
 
 def _check_experiment_configs() -> tuple[Path, ...]:

@@ -31,8 +31,8 @@ The default PR workflow also includes two dependency-light companion jobs:
 
 - `minimal-package`: installs only the minimal package and verifies import-safe
   package surfaces plus CLI parser construction without Torch.
-- `docs-site`: installs only MkDocs, stages public docs plus sanitized notes,
-  asserts Torch is unavailable, and builds the static GitHub Pages site.
+- `docs-site`: installs only MkDocs, stages curated public docs, asserts Torch
+  is unavailable, and builds the static GitHub Pages site.
 
 ## Local CPU Pytest Tier
 

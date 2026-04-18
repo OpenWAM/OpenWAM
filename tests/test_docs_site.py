@@ -20,20 +20,22 @@ def _load_docs_builder():
 
 
 @pytest.mark.unit
-def test_docs_site_stages_public_docs_and_sanitized_notes(tmp_path: Path) -> None:
+def test_docs_site_stages_curated_public_docs_only(tmp_path: Path) -> None:
     builder = _load_docs_builder()
     output = tmp_path / "docs_site"
 
     summary = builder.build_docs_site(output)
 
     assert summary["public_pages"] > 0
-    assert summary["note_pages"] > 0
-    assert summary["note_assets"] > 0
+    assert summary["notes_published"] is False
     assert (output / "index.md").is_file()
     assert (output / builder.OUTPUT_SENTINEL).is_file()
     assert (output / "quickstart.md").is_file()
-    assert (output / "engineering-notes" / "index.md").is_file()
-    assert (output / "engineering-notes" / "finished_roadmaps" / "index.md").is_file()
+    assert (output / "architecture.md").is_file()
+    assert (output / "method_families.md").is_file()
+    assert (output / "benchmarks.md").is_file()
+    assert (output / "running_experiments.md").is_file()
+    assert not (output / "engineering-notes").exists()
     assert builder.scan_private_fragments(output) == []
 
 

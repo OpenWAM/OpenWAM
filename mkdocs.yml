@@ -8,6 +8,37 @@ site_dir: site
 theme:
   name: readthedocs
   highlightjs: true
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Quickstart: quickstart.md
+      - CLI Reference: cli.md
+      - Running Experiments: running_experiments.md
+  - Concepts:
+      - Architecture: architecture.md
+      - Method Families: method_families.md
+      - Benchmarks And Data: benchmarks.md
+  - Reproducibility:
+      - Artifacts: artifacts.md
+      - Experiment Cards: experiment_cards.md
+      - Reproducibility: reproducibility.md
+      - Cards:
+          - Card Index: cards/index.md
+          - Public Tiny Synthetic: cards/public_tiny_synthetic_contract.md
+          - Method 1 LIBERO Exact Step 400: cards/method1_libero_exact_step400.md
+          - Method 3 LIBERO Video Sequence Step 800: cards/method3_libero_video_sequence_step800.md
+  - Extending:
+      - Extension SDK: extension_sdk.md
+      - Add A Method: cookbooks/new_method.md
+      - Add An Action Decoder: cookbooks/new_action_decoder.md
+      - Add A Dataset: cookbooks/new_dataset.md
+      - Add A Simulator Adapter: cookbooks/new_simulator_adapter.md
+      - Reproduce A Result: cookbooks/reproduce_result.md
+  - Operations:
+      - Testing: testing.md
+      - Deployment Namespace: deployment_namespace.md
+      - GitHub Pages: github_pages.md
+      - Release Process: release.md
 markdown_extensions:
   - admonition
   - tables

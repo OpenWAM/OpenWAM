@@ -72,6 +72,14 @@ Important source packages:
 
 - [Quickstart](docs/quickstart.md): fresh clone to CPU smoke, local path setup,
   and resource matrix
+- [Architecture](docs/architecture.md): stable runtime boundary and extension
+  contracts
+- [Method families](docs/method_families.md): current policy-attachment
+  families and how they share runtime infrastructure
+- [Benchmarks and data](docs/benchmarks.md): public fixture, LIBERO,
+  RoboTwin, CALVIN, action dimensions, and visual layout contracts
+- [Running experiments](docs/running_experiments.md): train, eval, sanity, and
+  realtime rollout workflow
 - [CLI reference](docs/cli.md): package-owned commands and legacy script policy
 - [Testing](docs/testing.md): pytest markers and CI tiers
 - [Artifacts](docs/artifacts.md): local path registry, checkpoint manifests, and
@@ -84,8 +92,8 @@ Important source packages:
   registry extension points
 - [Experiment cards](docs/experiment_cards.md): method-family result card
   template and current public-card status
-- [GitHub Pages](docs/github_pages.md): generated MkDocs site, sanitized
-  notes publication, and required repository settings
+- [GitHub Pages](docs/github_pages.md): generated MkDocs site and required
+  repository settings
 
 ## Design Rules
 

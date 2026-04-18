@@ -1,18 +1,28 @@
 # Open-WAM Documentation
 
-Open-WAM is a research codebase for comparing world-action-model policy
-attachments while keeping the shared visual backbone stable.
+Open-WAM is a research framework for studying world-action-model policy
+attachments while keeping the shared visual backbone stable. The public docs
+focus on reproducible usage, extension points, and benchmark contracts. Internal
+engineering notes are not published as part of this site.
 
-Start here:
+## Start Here
 
-- [Quickstart](quickstart.md): install paths, CPU smoke checks, and local path setup.
-- [CLI](cli.md): package-owned commands and legacy script policy.
-- [Testing](testing.md): cheap CI, smoke tests, and heavier local checks.
-- [Artifacts](artifacts.md): checkpoint manifests and local path conventions.
-- [Extension SDK](extension_sdk.md): how to add datasets, policy variants, and decoders.
-- [Experiment Cards](experiment_cards.md): public checkpoint/config metadata.
-- [GitHub Pages](github_pages.md): generated docs site and sanitized notes publishing.
+- [Quickstart](quickstart.md): install, validate configs, and run CPU-safe smoke checks.
+- [Architecture](architecture.md): the stable runtime boundary and core abstractions.
+- [Method Families](method_families.md): how the current policy variants fit together.
+- [Benchmarks and Data](benchmarks.md): LIBERO, RoboTwin, CALVIN, and synthetic fixtures.
+- [Running Experiments](running_experiments.md): train, eval, sanity, and rollout workflows.
 
-The generated GitHub Pages site also includes sanitized engineering notes under
-`Engineering Notes`. Those pages are staged from `notes/` and scrubbed for
-machine-local paths before publication.
+## Research Extension
+
+- [Extension SDK](extension_sdk.md): registry surfaces for datasets, policy variants, and decoders.
+- [Cookbooks](cookbooks/new_method.md): concrete recipes for adding new research components.
+- [Artifacts](artifacts.md): checkpoint manifests, local path aliases, and artifact cards.
+- [Reproducibility](reproducibility.md): result envelopes, experiment cards, and tracking policy.
+
+## Contributor Operations
+
+- [CLI Reference](cli.md): package-owned commands and legacy script policy.
+- [Testing](testing.md): CI tiers, pytest markers, and resource gates.
+- [GitHub Pages](github_pages.md): how this site is built and deployed.
+- [Release Process](release.md): versioning, packaging checks, and release checklist.
