@@ -126,6 +126,9 @@ deployment = [
     "pyarrow>=18.0",
     "websockets>=15.0",
 ]
+docs = [
+    "mkdocs==1.6.1",
+]
 full = [
     "accelerate>=1.1.0",
     "bddl==1.0.1",
@@ -142,6 +145,7 @@ full = [
     "imageio-ffmpeg>=0.6.0",
     "lightning>=2.4",
     "matplotlib>=3.10.8",
+    "mkdocs==1.6.1",
     "msgpack>=1.1.2",
     "mujoco>=3.4",
     "numpy>=1.26",

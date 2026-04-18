@@ -64,3 +64,26 @@ jobs:
             configs/experiments/contract_only_robotwin.yaml \
             configs/evals/contract_only_robotwin.yaml \
             configs/examples/calvin_npz_raw7_sanity.yaml
+
+  docs-site:
+    runs-on: ubuntu-latest
+    env:
+      OPEN_WAM_CI_NO_TORCH: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install docs builder only
+        run: python -m pip install "mkdocs==1.6.1"
+      - name: Stage sanitized docs
+        run: python scripts/build_docs_site.py --output .docs_site
+      - name: Assert docs check stays dependency-light
+        run: |
+          python - <<'PY'
+          import importlib.util
+          assert importlib.util.find_spec("torch") is None
+          PY
+      - name: Build docs site
+        run: mkdocs build --clean

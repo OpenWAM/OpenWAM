@@ -5,6 +5,9 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
+import sys
+import tempfile
 import tomllib
 from typing import Any
 
@@ -33,15 +36,18 @@ def main() -> None:
     _check_public_local_paths_sample()
     _check_artifact_manifest()
     _check_docs_and_cards()
+    _check_docs_site_source()
     experiment_paths = _check_experiment_configs()
     example_paths = _check_example_configs()
     eval_paths = _check_eval_configs(experiment_paths)
     _check_static_source_contracts()
     _check_workflow_is_no_torch()
+    _check_pages_workflow()
 
     summary = {
         "artifact_manifest_entries": len(_artifact_blocks(REPO_ROOT / "configs" / "artifacts.sample.yaml")),
         "console_scripts": sorted(scripts),
+        "docs_site": "staged",
         "eval_configs": len(eval_paths),
         "example_configs": len(example_paths),
         "experiment_configs": len(experiment_paths),
@@ -156,10 +162,38 @@ def _check_docs_and_cards() -> None:
         "docs/cookbooks/reproduce_result.md",
         "docs/cards/README.md",
         "docs/cards/public_tiny_synthetic_contract.md",
+        "docs/index.md",
+        "mkdocs.yml",
+        "scripts/build_docs_site.py",
+        ".github/workflows/pages.yml",
     )
     missing = [path for path in required_paths if not (REPO_ROOT / path).is_file()]
     if missing:
-        raise SystemExit(f"Missing public docs/cards/cookbooks: {missing!r}")
+        raise SystemExit(f"Missing required public docs/site files: {missing!r}")
+
+
+def _check_docs_site_source() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        subprocess.run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "build_docs_site.py"),
+                "--output",
+                tmpdir,
+            ],
+            check=True,
+            cwd=REPO_ROOT,
+            stdout=subprocess.DEVNULL,
+        )
+        required = (
+            "index.md",
+            "quickstart.md",
+            "engineering-notes/index.md",
+            "engineering-notes/finished_roadmaps/index.md",
+        )
+        missing = [path for path in required if not (Path(tmpdir) / path).is_file()]
+        if missing:
+            raise SystemExit(f"Generated docs site is missing expected pages: {missing!r}")
 
 
 def _check_experiment_configs() -> tuple[Path, ...]:
@@ -247,6 +281,25 @@ def _check_workflow_is_no_torch() -> None:
     present = [token for token in forbidden if token in workflow]
     if present:
         raise SystemExit(f"CI workflow still contains heavy install/test tokens: {present!r}")
+
+
+def _check_pages_workflow() -> None:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8")
+    required = (
+        "actions/configure-pages@v5",
+        "actions/upload-pages-artifact@v4",
+        "actions/deploy-pages@v4",
+        "mkdocs==1.6.1",
+        "python scripts/build_docs_site.py --output .docs_site",
+        "mkdocs build --clean",
+    )
+    missing = [token for token in required if token not in workflow]
+    if missing:
+        raise SystemExit(f"Pages workflow is missing expected docs deployment steps: {missing!r}")
+    forbidden = ("uv sync", "--extra train", "pytest", "pip install .")
+    present = [token for token in forbidden if token in workflow]
+    if present:
+        raise SystemExit(f"Pages workflow contains heavy install/test tokens: {present!r}")
 
 
 def _top_level_keys(path: Path) -> set[str]:

@@ -29,6 +29,14 @@ uv sync --extra robotwin
 uv sync --extra sim
 ```
 
+For local documentation-site preview:
+
+```bash
+uv sync --extra docs
+uv run --extra docs python scripts/build_docs_site.py --output .docs_site
+uv run --extra docs mkdocs serve
+```
+
 ## CPU Smoke
 
 Run one no-Torch static validation path:

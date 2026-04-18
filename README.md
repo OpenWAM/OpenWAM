@@ -84,6 +84,8 @@ Important source packages:
   registry extension points
 - [Experiment cards](docs/experiment_cards.md): method-family result card
   template and current public-card status
+- [GitHub Pages](docs/github_pages.md): generated MkDocs site, sanitized
+  notes publication, and required repository settings
 
 ## Design Rules
 
@@ -235,7 +237,9 @@ uv sync --extra viz
 uv sync --extra libero
 uv sync --extra robotwin
 uv sync --extra calvin
+uv sync --extra sim
 uv sync --extra deployment
+uv sync --extra docs
 uv sync --extra full
 ```
 

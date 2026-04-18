@@ -1,0 +1,20 @@
+site_name: Open-WAM
+site_description: Unified WAM research framework documentation
+site_url: https://daivdyuan.github.io/Open-WAM/
+repo_url: https://github.com/DaivdYuan/Open-WAM
+repo_name: DaivdYuan/Open-WAM
+docs_dir: .docs_site
+site_dir: site
+theme:
+  name: readthedocs
+  highlightjs: true
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+validation:
+  links:
+    not_found: ignore
+    absolute_links: ignore
+    unrecognized_links: ignore

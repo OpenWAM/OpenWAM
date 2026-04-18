@@ -76,9 +76,19 @@ def test_base_dependencies_stay_minimal_and_extras_are_explicit() -> None:
 
     assert base_deps == ["pyyaml>=6.0"]
     assert not {dependency.split(">=", 1)[0] for dependency in base_deps}.intersection(heavy_base_names)
-    assert {"core", "torch", "train", "eval", "viz", "libero", "robotwin", "calvin", "deployment", "full"}.issubset(
-        extras
-    )
+    assert {
+        "core",
+        "torch",
+        "train",
+        "eval",
+        "viz",
+        "libero",
+        "robotwin",
+        "calvin",
+        "deployment",
+        "docs",
+        "full",
+    }.issubset(extras)
 
 
 @pytest.mark.unit
