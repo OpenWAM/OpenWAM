@@ -98,6 +98,11 @@ def test_method4_video_conditioned_eval_wrappers_resolve_experiment_configs() ->
             "parallel_stream_libero_lingbot_joint_denoise_heng_compatible_0402/checkpoints/checkpoint_step_600/full_training_state.pt",
         ),
         (
+            "parallel_stream_libero_lingbot_joint_denoise_heng_eval_legacy.yaml",
+            "parallel_stream_libero_lingbot_joint_denoise_heng_compatible.yaml",
+            "parallel_stream_libero_lingbot_joint_denoise_heng_compatible/checkpoints/checkpoint_step_300/full_training_state.pt",
+        ),
+        (
             "video_sequence_policy_libero_heng_eval.yaml",
             "video_sequence_policy_libero_latent_local_random_subwindow.yaml",
             "video_sequence_policy_libero_latent_local_random_subwindow_0402/checkpoints/checkpoint_step_800/model_state.pt",
@@ -477,3 +482,52 @@ def test_run_evaluation_loads_pipeline_prefixed_checkpoint(tmp_path: Path) -> No
     assert summary.action_prediction_shape == summary.target_action_shape
     assert summary.mean_action_mse is not None
     assert summary.mean_video_latent_mse is None
+
+
+def test_resolve_checkpoint_file_accepts_checkpoint_step_dir(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "checkpoint_step_12"
+    checkpoint_dir.mkdir(parents=True)
+    model_state = checkpoint_dir / "model_state.pt"
+    model_state.write_bytes(b"test")
+
+    resolved = evaluate_module._resolve_checkpoint_file(checkpoint_dir)
+
+    assert resolved == model_state
+
+
+def test_apply_checkpoint_runtime_override_uses_checkpoint_local_transformer(tmp_path: Path) -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml")
+    checkpoint_dir = tmp_path / "checkpoint_step_42"
+    transformer_dir = checkpoint_dir / "transformer"
+    transformer_dir.mkdir(parents=True)
+    model_state = checkpoint_dir / "model_state.pt"
+    model_state.write_bytes(b"test")
+
+    resolved = evaluate_module._apply_checkpoint_runtime_override(config, checkpoint_dir)
+
+    assert resolved == model_state
+    assert config.backbone.transformer_subdir == str(transformer_dir.resolve())
+    assert str(config.backbone.reference_core_init_mode) == "full"
+
+
+def test_run_evaluation_accepts_checkpoint_step_directory(tmp_path: Path) -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/contract_only_robotwin.yaml")
+    pipeline = build_variant_pipeline_from_config(config)
+    checkpoint_dir = tmp_path / "checkpoint_step_1"
+    checkpoint_dir.mkdir(parents=True)
+    checkpoint_path = checkpoint_dir / "model_state.pt"
+    prefixed_state_dict = {f"pipeline.{key}": value for key, value in pipeline.state_dict().items()}
+    torch.save({"state_dict": prefixed_state_dict}, checkpoint_path)
+
+    request = resolve_evaluation_request(
+        REPO_ROOT / "configs/experiments/contract_only_robotwin.yaml",
+        max_batches_override=1,
+        checkpoint_override=str(checkpoint_dir),
+        device_override="cpu",
+    )
+    summary = run_evaluation(request)
+
+    assert summary.experiment_name == "contract_only_robotwin"
+    assert summary.checkpoint_path == str(checkpoint_path)
+    assert summary.action_prediction_shape == summary.target_action_shape
+    assert summary.mean_action_mse is not None

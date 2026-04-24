@@ -24,6 +24,7 @@ from .common import (
     build_local_video_condition_window,
     prepare_default_runtime_infer_state,
     resolve_video_condition_frame_start,
+    resolve_video_condition_sample_seed,
 )
 from .common.layouts import align_sequence_length, pool_frame_tokens, tokens_to_frame_major
 from .contracts import (
@@ -154,6 +155,7 @@ class PostLatentPolicyVariant(PolicyVariant):
         *,
         frame_start: int,
         observed_prefix_anchor: str = "start",
+        sample_seed: int | None = None,
     ) -> tuple[VideoConditionWindowContext, dict[str, object]]:
         return build_generated_video_condition_window(
             visual_tower=visual_tower,
@@ -169,6 +171,7 @@ class PostLatentPolicyVariant(PolicyVariant):
             guidance_scale=self.inference_config.guidance_scale,
             cache_name="post_latent_video_condition_future",
             observed_prefix_anchor=observed_prefix_anchor,
+            sample_seed=sample_seed,
         )
 
     def _fuse_state(self, policy_features: torch.Tensor, state: torch.Tensor | None) -> torch.Tensor:
@@ -194,6 +197,7 @@ class PostLatentPolicyVariant(PolicyVariant):
                     visual_outputs,
                     frame_start=resolve_video_condition_frame_start(prepared_inputs.batch),
                     observed_prefix_anchor="start",
+                    sample_seed=resolve_video_condition_sample_seed(prepared_inputs.batch),
                 )
         return PolicyTrainOutput(
             policy_features=policy_features,
@@ -241,6 +245,11 @@ class PostLatentPolicyVariant(PolicyVariant):
                 visual_outputs,
                 frame_start=int(infer_state.cursor.current_start_frame),
                 observed_prefix_anchor=str(context.extra.get("video_condition_observed_prefix_anchor", "start")),
+                sample_seed=(
+                    None
+                    if context.extra.get("video_condition_sample_seed") is None
+                    else int(context.extra["video_condition_sample_seed"])
+                ),
             )
         return PolicyInferOutput(
             policy_features=policy_features,

@@ -30,6 +30,7 @@ from open_wam.integrations import (  # noqa: E402
     load_libero_task_init_states,
 )
 from open_wam.models.policy_variants import PolicyInferContext  # noqa: E402
+from open_wam.models.policy_variants.common import derive_video_condition_sample_seed  # noqa: E402
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
 from open_wam.utils import load_experiment_config, seed_everywhere  # noqa: E402
 
@@ -37,6 +38,40 @@ LIBERO_OBS_KEYS = (
     "observation.images.agentview_rgb",
     "observation.images.eye_in_hand_rgb",
 )
+
+
+def _build_sequence_rollout_infer_extra(
+    *,
+    config,
+    prompt: str,
+    generation_action_start: int,
+    runtime_device: torch.device | None = None,
+    task_id: int | None = None,
+    episode_idx: int | None = None,
+) -> dict[str, object]:
+    extra: dict[str, object] = {
+        "task_text": (prompt,),
+    }
+    policy_name = str(config.policy_variant.name)
+    if policy_name in {"post_latent", "post_decoded"}:
+        extra["video_condition_frame_start"] = int(generation_action_start)
+        # Runtime rollouts only have a trailing observed window. Use the newest
+        # latent as the conditioning prefix so generated future frames start
+        # from the same current observation in visualization and sandbox paths.
+        extra["video_condition_observed_prefix_anchor"] = "end"
+        sample_seed = derive_video_condition_sample_seed(
+            {
+                "task_index": task_id,
+                "episode_index": episode_idx,
+                "anchor_frame_index": int(generation_action_start),
+                "action_start_index": int(generation_action_start),
+            }
+        )
+        if sample_seed is not None:
+            extra["video_condition_sample_seed"] = int(sample_seed)
+    if policy_name == "mot" and runtime_device is not None:
+        extra["action_device"] = str(runtime_device)
+    return extra
 
 
 def main() -> None:
@@ -81,6 +116,21 @@ def main() -> None:
     parser.add_argument("--video-steps", type=int, default=None)
     parser.add_argument("--action-steps", type=int, default=None)
     parser.add_argument(
+        "--rollout-chunk-steps",
+        type=int,
+        default=None,
+        help="Optional override for action_decoder.rollout_chunk_steps. Defaults to the experiment config.",
+    )
+    parser.add_argument(
+        "--initial-generation-action-start",
+        type=int,
+        default=None,
+        help=(
+            "Optional initial generation action/frame start for generated-video rollouts. "
+            "Defaults to the exact warmup-window length."
+        ),
+    )
+    parser.add_argument(
         "--visualization-mode",
         type=str,
         default="compare_observed_vs_predicted",
@@ -96,6 +146,7 @@ def main() -> None:
         object.__setattr__(config.inference, "video_num_inference_steps", int(args.video_steps))
     if args.action_steps is not None:
         object.__setattr__(config.inference, "action_num_inference_steps", int(args.action_steps))
+    _apply_rollout_chunk_steps_override(config, args.rollout_chunk_steps)
     action_target_representation = ActionTargetRepresentation(config.data.action_target.representation)
 
     checkpoint_path = _resolve_checkpoint_path_from_args_or_config(
@@ -222,6 +273,11 @@ def main() -> None:
             keyframe_obs_list: list[dict[str, np.ndarray]] = []
             done = False
             chunk_count = 0
+            next_generation_action_start = _resolve_initial_generation_action_start(
+                initial_obs_window,
+                initial_generation_action_start=args.initial_generation_action_start,
+                rollout_starts_at_action_zero=_uses_zero_based_generation_start(config),
+            )
 
             while env.env.timestep < args.max_timestep and not done:
                 if args.max_chunks is not None and chunk_count >= args.max_chunks:
@@ -253,14 +309,24 @@ def main() -> None:
                             state_horizon=int(config.data.action_schema.state_horizon),
                             state_encoding=str(config.data.action_target.state_encoding),
                         ).unsqueeze(0).to(device=runtime_device),
-                        extra={"task_text": (prompt,)},
+                        extra=_build_sequence_rollout_infer_extra(
+                            config=config,
+                            prompt=prompt,
+                            generation_action_start=int(next_generation_action_start),
+                            runtime_device=runtime_device,
+                            task_id=int(args.task_id),
+                            episode_idx=int(args.episode_idx),
+                        ),
                     ),
                     video_latents=rollout_inputs["video_latents"],
                 )
                 session = step_output.session
                 infer_output = step_output.infer_output
 
-                action_pred = infer_output.decoder_output.action_pred[0].detach().to(dtype=torch.float32).cpu().numpy()
+                action_pred, action_plan_metadata = _decoder_output_to_rollout_action_plan(
+                    infer_output.decoder_output
+                )
+                _advance_decoder_state_to_rollout_commit(session, action_plan_metadata)
                 predicted_latents = infer_output.decoder_output.aux.get("predicted_latents")
                 if not isinstance(predicted_latents, torch.Tensor):
                     predicted_latents = infer_output.policy_output.aux.get("predicted_latents")
@@ -273,12 +339,13 @@ def main() -> None:
                         "phase": "infer",
                         "env_timestep_before": timestep_before,
                         "obs_window_size": len(obs_window),
-                        "action_pred_shape": list(infer_output.decoder_output.action_pred.shape),
+                        "action_pred_shape": list(action_pred.shape),
                         "predicted_latents_shape": (
                             list(predicted_latents.shape)
                             if isinstance(predicted_latents, torch.Tensor)
                             else None
                         ),
+                        **action_plan_metadata,
                     },
                 )
 
@@ -298,7 +365,7 @@ def main() -> None:
                 for action_index in range(action_pred.shape[0]):
                     current_obs_record = obs_window[-1]
                     if action_target_representation == ActionTargetRepresentation.RAW:
-                        control_action = np.asarray(action_pred[action_index], dtype=np.float32)
+                        control_action = _materialize_raw_control_action(action_pred[action_index])
                     else:
                         if desired_pose_targets is None:
                             raise RuntimeError("Relative-pose rollout is missing reconstructed pose targets.")
@@ -338,6 +405,7 @@ def main() -> None:
                         "key_frame_count": len(key_frame_list),
                     },
                 )
+                next_generation_action_start += int(action_pred.shape[0])
                 chunk_count += 1
 
         imagined_video = _decode_latent_video(
@@ -826,6 +894,133 @@ def _default_raw_window_frames(latent_num_frames: int) -> int:
     # Wan/LingBot frontend uses temporal compression that maps 15 raw frames -> 4 latent frames.
     # The equivalent general form is 4 * latent_num_frames - 1.
     return 4 * latent_num_frames - 1
+
+
+def _initial_generation_action_start(initial_obs_window: list[dict[str, np.ndarray]]) -> int:
+    return max(0, int(len(initial_obs_window)))
+
+
+def _uses_zero_based_generation_start(config) -> bool:
+    policy_variant = getattr(config, "policy_variant", None)
+    if policy_variant is None:
+        return False
+    train_source = getattr(policy_variant, "train_video_condition_source", None)
+    return str(train_source) == "generated_future"
+
+
+def _resolve_initial_generation_action_start(
+    initial_obs_window: list[dict[str, np.ndarray]],
+    *,
+    initial_generation_action_start: int | None,
+    rollout_starts_at_action_zero: bool = False,
+) -> int:
+    if initial_generation_action_start is not None:
+        return max(0, int(initial_generation_action_start))
+    if rollout_starts_at_action_zero:
+        return 0
+    return _initial_generation_action_start(initial_obs_window)
+
+
+def _materialize_raw_control_action(action: np.ndarray | torch.Tensor) -> np.ndarray:
+    return np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
+
+
+def _apply_rollout_chunk_steps_override(config, rollout_chunk_steps: int | None) -> None:
+    if rollout_chunk_steps is None:
+        return
+    decoder = getattr(config, "action_decoder", None)
+    if decoder is None or not hasattr(decoder, "rollout_chunk_steps"):
+        raise ValueError("Requested rollout chunk override, but the config action decoder has no rollout chunk steps.")
+    object.__setattr__(decoder, "rollout_chunk_steps", int(rollout_chunk_steps))
+
+
+def _decoder_output_to_rollout_action_plan(decoder_output) -> tuple[np.ndarray, dict[str, Any]]:
+    action_chunk = decoder_output.action_pred[0].detach().to(dtype=torch.float32).cpu()
+    current_action = decoder_output.aux.get("current_action")
+    if isinstance(current_action, torch.Tensor):
+        current_action_index = _resolve_decoder_current_action_index(decoder_output)
+        rollout_chunk_steps = _resolve_decoder_rollout_chunk_steps(decoder_output)
+        if current_action_index < 0:
+            raise ValueError(f"Decoder current action index must be non-negative, got {current_action_index}.")
+        commit_end_index = min(
+            int(action_chunk.shape[0]),
+            max(int(current_action_index) + 1, int(rollout_chunk_steps)),
+        )
+        planned_chunk = action_chunk[int(current_action_index) : commit_end_index]
+        source = "decoder_current_action_rollout_chunk"
+        if int(planned_chunk.shape[0]) == 0:
+            planned_chunk = _current_action_tensor_to_chunk(current_action)
+            commit_end_index = int(current_action_index) + int(planned_chunk.shape[0])
+            source = "decoder_current_action"
+        return planned_chunk.numpy(), {
+            "action_plan_source": source,
+            "decoder_rollout_chunk_steps": int(rollout_chunk_steps),
+            "decoder_rollout_commit_start_index": int(current_action_index),
+            "decoder_rollout_commit_end_index": int(commit_end_index),
+            "decoder_rollout_committed_actions": int(planned_chunk.shape[0]),
+        }
+    return (
+        action_chunk.numpy(),
+        {
+            "action_plan_source": "decoder_action_chunk",
+            "decoder_rollout_chunk_steps": None,
+            "decoder_rollout_commit_start_index": None,
+            "decoder_rollout_commit_end_index": None,
+            "decoder_rollout_committed_actions": int(action_chunk.shape[0]),
+        },
+    )
+
+
+def _current_action_tensor_to_chunk(current_action: torch.Tensor) -> torch.Tensor:
+    current_action = current_action.detach().to(dtype=torch.float32).cpu()
+    if current_action.ndim == 1:
+        return current_action.unsqueeze(0)
+    if current_action.ndim == 2:
+        return current_action[:1]
+    raise ValueError(f"Expected current_action shape [D] or [B, D], got {tuple(current_action.shape)}.")
+
+
+def _resolve_decoder_current_action_index(decoder_output) -> int:
+    current_action_index = decoder_output.aux.get("current_action_index")
+    if current_action_index is not None:
+        return int(_json_scalar_from_tensor(current_action_index))
+    next_state = getattr(decoder_output, "next_state", None)
+    if next_state is not None and hasattr(next_state, "step_within_chunk"):
+        return max(0, int(next_state.step_within_chunk) - 1)
+    return 0
+
+
+def _resolve_decoder_rollout_chunk_steps(decoder_output) -> int:
+    rollout_chunk_steps = decoder_output.aux.get("rollout_chunk_steps")
+    if rollout_chunk_steps is None:
+        next_state = getattr(decoder_output, "next_state", None)
+        rollout_chunk_steps = (
+            getattr(next_state, "aux", {}).get("rollout_chunk_steps")
+            if next_state is not None
+            else None
+        )
+    if rollout_chunk_steps is None:
+        return 1
+    return max(1, int(_json_scalar_from_tensor(rollout_chunk_steps)))
+
+
+def _advance_decoder_state_to_rollout_commit(session, action_plan_metadata: dict[str, Any]) -> None:
+    commit_end_index = action_plan_metadata.get("decoder_rollout_commit_end_index")
+    if commit_end_index is None:
+        return
+    policy_state = getattr(session, "policy_state", None)
+    decoder_state = getattr(policy_state, "decoder_state", None)
+    if decoder_state is None or not hasattr(decoder_state, "step_within_chunk"):
+        return
+    decoder_state.step_within_chunk = max(int(decoder_state.step_within_chunk), int(commit_end_index))
+
+
+def _json_scalar_from_tensor(value) -> Any:
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 1:
+            return value.detach().cpu().item()
+        return value.detach().cpu().tolist()
+    return value
 
 
 def _decode_latent_video(

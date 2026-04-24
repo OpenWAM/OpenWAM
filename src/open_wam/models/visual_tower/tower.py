@@ -389,6 +389,7 @@ class VisualTower(nn.Module):
         guidance_scale: float,
         denoise_ratio: float = 1.0,
         cache_name: str = "visual_tower_future_video_denoise",
+        sample_seed: int | None = None,
     ) -> torch.Tensor:
         """Generate future video latents conditioned on a clean observed prefix.
 
@@ -434,6 +435,10 @@ class VisualTower(nn.Module):
         else:
             resolved_text_context = resolved_text_context.to(device=future_template.device, dtype=model_dtype)
 
+        generator = None
+        if sample_seed is not None:
+            generator = torch.Generator(device=future_template.device)
+            generator.manual_seed(int(sample_seed))
         latents = torch.randn(
             batch_size,
             channels,
@@ -442,6 +447,7 @@ class VisualTower(nn.Module):
             latent_width,
             device=future_template.device,
             dtype=model_dtype,
+            generator=generator,
         )
         observed_prefix = observed_prefix.to(dtype=model_dtype)
         latents[:, :, : observed_prefix.shape[2]] = observed_prefix

@@ -13,11 +13,23 @@ from .layouts import tokens_to_frame_major
 
 
 _FRAME_START_METADATA_KEYS = (
+    "action_start_index",
+    "subwindow_action_start",
     "window_start_frame",
     "sample_start_frame",
     "observation_start",
     "segment_start_frame",
     "frame_shift",
+)
+
+_OBSERVED_PREFIX_ANCHOR_METADATA_KEYS = (
+    "video_condition_observed_prefix_anchor",
+    "observed_prefix_anchor",
+)
+
+_VIDEO_CONDITION_SEED_METADATA_KEYS = (
+    "video_condition_seed",
+    "sample_seed",
 )
 
 
@@ -46,6 +58,91 @@ def resolve_video_condition_frame_start(batch: PolicyTrainBatch) -> int:
             f"Got frame_starts={frame_starts!r}."
         )
     return int(first_frame_start)
+
+
+def resolve_video_condition_observed_prefix_anchor(batch: PolicyTrainBatch) -> str:
+    """Resolve the observed-prefix anchor used by generated condition-window training."""
+
+    metadata = batch.extra.get("metadata")
+    if not isinstance(metadata, (tuple, list)):
+        return "start"
+    anchors: list[str] = []
+    for sample_metadata in metadata:
+        if not isinstance(sample_metadata, Mapping):
+            continue
+        for key in _OBSERVED_PREFIX_ANCHOR_METADATA_KEYS:
+            value = sample_metadata.get(key)
+            if value is not None:
+                anchors.append(str(value))
+                break
+    if not anchors:
+        return "start"
+    first_anchor = anchors[0]
+    if any(anchor != first_anchor for anchor in anchors):
+        raise ValueError(
+            "Generated video-condition training currently requires every sample in a batch to share one "
+            "observed-prefix anchor because the shared visual runtime accepts one conditioning convention per call. "
+            f"Got anchors={anchors!r}."
+        )
+    if first_anchor not in {"start", "end"}:
+        raise ValueError(
+            "Generated video-condition training expected observed-prefix anchor to be 'start' or 'end', "
+            f"got {first_anchor!r}."
+        )
+    return first_anchor
+
+
+def derive_video_condition_sample_seed(sample_metadata: Mapping[str, Any]) -> int | None:
+    """Derive one stable generated-video sample seed from rollout/sample metadata."""
+
+    for key in _VIDEO_CONDITION_SEED_METADATA_KEYS:
+        value = sample_metadata.get(key)
+        if value is not None:
+            return int(value)
+
+    seed_components: list[int] = []
+    for key in _FRAME_START_METADATA_KEYS:
+        value = sample_metadata.get(key)
+        if value is not None:
+            seed_components.append(int(value))
+            break
+    if not seed_components:
+        for key in ("episode_index", "task_index", "anchor_frame_index"):
+            value = sample_metadata.get(key)
+            if value is not None:
+                seed_components.append(int(value))
+    if not seed_components:
+        return None
+
+    seed = 0x45D9F3B
+    for value in seed_components:
+        seed = ((seed * 1000003) ^ (int(value) + 0x9E3779B9)) & 0x7FFFFFFF
+    return int(seed)
+
+
+def resolve_video_condition_sample_seed(batch: PolicyTrainBatch) -> int | None:
+    """Resolve one deterministic seed for generated video conditioning."""
+
+    metadata = batch.extra.get("metadata")
+    if not isinstance(metadata, (tuple, list)):
+        return None
+    seeds: list[int] = []
+    for sample_metadata in metadata:
+        if not isinstance(sample_metadata, Mapping):
+            continue
+        seed = derive_video_condition_sample_seed(sample_metadata)
+        if seed is not None:
+            seeds.append(int(seed))
+    if not seeds:
+        return None
+    first_seed = seeds[0]
+    if any(seed != first_seed for seed in seeds):
+        raise ValueError(
+            "Generated video-condition training currently requires every sample in a batch to share one "
+            "deterministic conditioning seed because the shared visual runtime denoises one batched future window. "
+            f"Got seeds={seeds!r}."
+        )
+    return int(first_seed)
 
 
 def build_local_video_condition_window(
@@ -137,6 +234,7 @@ def build_generated_video_condition_window(
     source_stage: str = "generated_future",
     observed_frame_count: int = 1,
     observed_prefix_anchor: str = "start",
+    sample_seed: int | None = None,
 ) -> tuple[VideoConditionWindowContext, dict[str, Any]]:
     """Build a method-4 video-condition window from observed RGB/latents plus predicted future video."""
 
@@ -208,6 +306,7 @@ def build_generated_video_condition_window(
             sigma_shift=float(sigma_shift),
             guidance_scale=float(guidance_scale),
             cache_name=str(cache_name),
+            sample_seed=None if sample_seed is None else int(sample_seed),
         )
         condition_latents = torch.cat([observed_prefix, predicted_future_latents], dim=2)
     else:
@@ -227,6 +326,8 @@ def build_generated_video_condition_window(
         "generated_future_frames": future_frame_count,
         "uses_future_ground_truth": False,
     }
+    if sample_seed is not None:
+        metadata["sample_seed"] = int(sample_seed)
     window = VideoConditionWindowContext(
         local_window_tokens=local_tokens,
         token_grid=token_grid,

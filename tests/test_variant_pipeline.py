@@ -10,7 +10,10 @@ import yaml
 from open_wam.configs import ParallelStreamPolicyConfig, VideoConditionSource
 from open_wam.data import build_synthetic_batch, build_synthetic_latent_batch
 from open_wam.models.policy_variants.common.layouts import tokens_to_frame_major
-from open_wam.models.policy_variants.common.video_conditioning import resolve_video_condition_frame_start
+from open_wam.models.policy_variants.common.video_conditioning import (
+    resolve_video_condition_frame_start,
+    resolve_video_condition_sample_seed,
+)
 from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
 from open_wam.pipelines import build_variant_pipeline_from_config
 from open_wam.utils.config_loader import load_experiment_config
@@ -315,8 +318,8 @@ def test_method4_generated_video_condition_training_uses_predicted_latents(tmp_p
         state=train_batch.state,
         extra={
             "metadata": (
-                {"window_start_frame": 7},
-                {"window_start_frame": 7},
+                {"window_start_frame": 7, "sample_seed": 1234},
+                {"window_start_frame": 7, "sample_seed": 1234},
             ),
         },
     )
@@ -331,6 +334,7 @@ def test_method4_generated_video_condition_training_uses_predicted_latents(tmp_p
     assert train_context.video_condition_window.metadata["uses_future_ground_truth"] is False
     assert train_context.video_condition_window.metadata["frame_start"] == 7
     assert train_context.video_condition_window.metadata["observed_prefix_anchor"] == "start"
+    assert train_context.video_condition_window.metadata["sample_seed"] == 1234
     assert train_context.video_condition_window.local_window_tokens.requires_grad is False
     assert train_output.policy_output.aux["video_condition_source"] == "generated_future_video_tokens"
     assert train_output.policy_output.aux["video_condition_uses_future_ground_truth"] is False
@@ -350,6 +354,63 @@ def test_generated_video_condition_frame_start_rejects_mixed_batch_offsets() -> 
 
     with pytest.raises(ValueError, match="share one absolute frame start"):
         resolve_video_condition_frame_start(batch)
+
+
+def test_generated_video_condition_sample_seed_rejects_mixed_batch_seeds() -> None:
+    batch = PolicyTrainBatch(
+        actions=torch.zeros(2, 1, 1),
+        extra={
+            "metadata": (
+                {"window_start_frame": 3, "sample_seed": 11},
+                {"window_start_frame": 3, "sample_seed": 12},
+            ),
+        },
+    )
+
+    with pytest.raises(ValueError, match="share one deterministic conditioning seed"):
+        resolve_video_condition_sample_seed(batch)
+
+
+@pytest.mark.parametrize("config_name", ["post_latent_robotwin.yaml", "post_decoded_robotwin.yaml"])
+def test_method4_generated_video_condition_infer_uses_provided_sample_seed(
+    tmp_path: Path,
+    config_name: str,
+) -> None:
+    source_path = REPO_ROOT / "configs/experiments" / config_name
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    raw["name"] = f"seeded_{source_path.stem}_video_conditioned"
+    raw.pop("action_decoder", None)
+
+    config_path = tmp_path / f"{raw['name']}.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    _, pipeline, batch, _ = _build_pipeline(config_path)
+    infer_output = pipeline.forward_infer_step(
+        batch.views,
+        PolicyInferContext(
+            state=batch.state,
+            extra={
+                "video_condition_source": "generated_future",
+                "video_condition_observed_prefix_anchor": "end",
+                "video_condition_sample_seed": 1234,
+            },
+        ),
+    )
+
+    infer_context = infer_output.policy_output.decoder_sequence_context
+    assert infer_context is not None and infer_context.video_condition_window is not None
+    assert infer_context.video_condition_window.metadata["sample_seed"] == 1234
+    assert infer_context.video_condition_window.metadata["observed_prefix_anchor"] == "end"
+    infer_frontend_frame_tokens = tokens_to_frame_major(
+        infer_output.visual_outputs.frontend.video_tokens,
+        infer_output.visual_outputs.frontend.token_grid,
+    )
+    assert torch.allclose(
+        infer_context.video_condition_window.local_window_tokens[:, 0],
+        infer_frontend_frame_tokens[:, -1],
+    )
 
 
 def test_method4_video_conditioned_decoder_reuses_chunk_when_configured(tmp_path: Path) -> None:

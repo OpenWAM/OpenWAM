@@ -26,6 +26,7 @@ from open_wam.integrations import (  # noqa: E402
     ensure_local_libero_config,
     load_libero_task_init_states,
 )
+from open_wam.evals.evaluate import EvaluationRequest, resolve_evaluation_request  # noqa: E402
 from open_wam.models.visual_tower.reference_loader import resolve_pretrained_component_dir  # noqa: E402
 from open_wam.pipelines import build_exact_runtime_runner_from_config  # noqa: E402
 from open_wam.utils import (  # noqa: E402
@@ -67,19 +68,25 @@ def main() -> None:
         "--transformer-dir",
         type=str,
         default=None,
-        help="Optional checkpoint transformer export override. Defaults to backbone.transformer_subdir from the config.",
+        help=(
+            "Optional exported transformer override. If omitted, exact visualization keeps "
+            "`backbone.transformer_subdir` from the experiment config even when `--cfg` points "
+            "at an eval wrapper."
+        ),
     )
     args = parser.parse_args()
 
-    config_path = Path(args.config)
-    if not config_path.is_absolute():
-        config_path = (REPO_ROOT / config_path).resolve()
-    config = load_experiment_config(config_path)
-    if args.transformer_dir is not None:
+    request = _resolve_visualization_request(args.config)
+    config = load_experiment_config(request.experiment_config_path)
+    effective_transformer_subdir = _resolve_visualization_transformer_subdir(
+        config=config,
+        transformer_dir_arg=args.transformer_dir,
+    )
+    if effective_transformer_subdir != str(config.backbone.transformer_subdir):
         object.__setattr__(
             config.backbone,
             "transformer_subdir",
-            str(resolve_transformer_dir_override(args.transformer_dir)),
+            effective_transformer_subdir,
         )
     runner = build_exact_runtime_runner_from_config(config)
     runtime_device = _resolve_device(args.runtime_device)
@@ -91,6 +98,7 @@ def main() -> None:
         runtime_device=runtime_device,
         frontend_device=frontend_device,
         decode_device=decode_device,
+        requested_eval_checkpoint=request.checkpoint_path,
     )
     _print_log("load_report", component_report)
 
@@ -339,6 +347,19 @@ def main() -> None:
         env.close()
 
 
+def _resolve_visualization_request(config_arg: str) -> EvaluationRequest:
+    config_path = Path(config_arg)
+    if not config_path.is_absolute():
+        config_path = (REPO_ROOT / config_path).resolve()
+    return resolve_evaluation_request(config_path)
+
+
+def _resolve_visualization_transformer_subdir(*, config, transformer_dir_arg: str | None) -> str:
+    if transformer_dir_arg is None:
+        return str(config.backbone.transformer_subdir)
+    return str(resolve_transformer_dir_override(transformer_dir_arg))
+
+
 def _resolve_task_spec(benchmark_name: str, task_id: int) -> tuple[LiberoTaskSpec, str]:
     ensure_local_libero_config(REPO_ROOT)
     from libero.libero import benchmark  # type: ignore
@@ -577,6 +598,7 @@ def _build_open_wam_component_report(
     runtime_device: torch.device,
     frontend_device: torch.device,
     decode_device: torch.device,
+    requested_eval_checkpoint: Path | None,
 ) -> dict[str, object]:
     backbone = config.backbone
     action_decoder = runner.pipeline.action_decoder
@@ -607,6 +629,9 @@ def _build_open_wam_component_report(
         "runtime_device": str(runtime_device),
         "frontend_device": str(frontend_device),
         "decode_device": str(decode_device),
+        "requested_eval_checkpoint_file": (
+            None if requested_eval_checkpoint is None else str(requested_eval_checkpoint.resolve())
+        ),
         "backbone_pretrained_root": str(backbone.pretrained_model_name_or_path),
         "transformer_dir": str(transformer_dir.resolve()) if transformer_dir is not None else None,
         "transformer_config_sha256": _sha256_if_exists(transformer_dir / "config.json" if transformer_dir is not None else None),

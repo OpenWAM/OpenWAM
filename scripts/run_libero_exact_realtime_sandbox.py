@@ -30,6 +30,7 @@ from open_wam.integrations.realtime_control import (  # noqa: E402
     make_planned_frame_actions,
     merge_future_frame_actions,
 )
+from open_wam.configs import ParallelRuntimeMode  # noqa: E402
 from open_wam.models.policy_variants import PolicyInferState, RolloutCursor  # noqa: E402
 from open_wam.pipelines import build_exact_runtime_runner_from_config  # noqa: E402
 from open_wam.utils import (  # noqa: E402
@@ -88,7 +89,7 @@ def main() -> None:
     parser.add_argument(
         "--planner-mode",
         type=str,
-        choices=("history_only", "async_buffer", "async_mix"),
+        choices=("history_only", "async_buffer", "async_mix", "async_history_first"),
         default="async_buffer",
     )
     parser.add_argument(
@@ -148,6 +149,7 @@ def main() -> None:
         runtime_device=runtime_device,
         frontend_device=frontend_device,
         decode_device=frontend_device,
+        requested_eval_checkpoint=None,
     )
 
     task_spec, prompt = exact_viz._resolve_task_spec(args.benchmark, args.task_id)
@@ -164,6 +166,7 @@ def main() -> None:
     try:
         first_obs = exact_viz._init_single_env(env, init_states[args.episode_idx % len(init_states)])
         with torch.inference_mode():
+            session = runner.reset(task_text=(prompt,))
             startup_prepare_t0 = time.perf_counter()
             initial_inputs = exact_viz._prepare_exact_runtime_inputs(
                 runner,
@@ -175,11 +178,6 @@ def main() -> None:
             _synchronize_devices(frontend_device, runtime_device)
             startup_prepare_s = time.perf_counter() - startup_prepare_t0
 
-            session = runner.reset(
-                task_text=(prompt,),
-                text_context=initial_inputs["text_context"],
-                negative_text_context=initial_inputs["negative_text_context"],
-            )
             startup_infer_t0 = time.perf_counter()
             first_chunk = runner.infer_chunk(
                 session=session,
@@ -190,7 +188,13 @@ def main() -> None:
             _synchronize_devices(runtime_device)
             startup_infer_s = time.perf_counter() - startup_infer_t0
 
-        current_chunk_session = first_chunk.session
+        frame_chunk_size = int(config.inference.frame_chunk_size)
+        history_base_session, current_chunk_session, buffer_tail_session = _resolve_exact_startup_sessions(
+            config=config,
+            startup_session=session,
+            first_chunk=first_chunk,
+            frame_chunk_size=frame_chunk_size,
+        )
         plan_by_frame: dict[int, PlannedFrameAction] = {}
         next_frame_to_execute = 1
         initial_plans = _chunk_to_planned_frames(
@@ -215,13 +219,15 @@ def main() -> None:
         last_action = np.zeros((action_dim,), dtype=np.float32)
         next_action_index = 0
         skipped_replan_submissions = 0
-        pending_history: list[dict[str, Any]] = []
-        frame_chunk_size = int(config.inference.frame_chunk_size)
-        buffer_tail_session = _session_for_next_chunk(
-            first_chunk.session,
-            next_frame_start=int(first_chunk.debug.get("generation_frame_start", 0)) + frame_chunk_size,
-            frame_chunk_size=frame_chunk_size,
-        )
+        pending_history: list[dict[str, Any]] = [
+            _startup_conditioning_history_record(
+                first_chunk=first_chunk,
+                initial_video_latents=initial_inputs["video_latents"],
+                initial_obs=first_obs,
+                action_per_frame=action_per_frame,
+                frame_chunk_size=frame_chunk_size,
+            )
+        ]
         startup_open_loop_s = 0.0
         if args.startup_open_loop_chunks > 0:
             startup_open_loop_t0 = time.perf_counter()
@@ -254,6 +260,11 @@ def main() -> None:
                     if replan_result["job_kind"] == "history_replan":
                         replan_records.append(replan_result["trace"])
                         current_chunk_session = replan_result["session"]
+                        history_base_session = _resolve_next_exact_history_base_session(
+                            config=config,
+                            result=replan_result,
+                            history_base_session=history_base_session,
+                        )
                         buffer_tail_session = replan_result["buffer_tail_session"]
                         submitted_through_frame = int(replan_result["submitted_through_frame"])
                         pending_history = [
@@ -295,6 +306,7 @@ def main() -> None:
                     planner_step_index = planned_frame.planner_step_index
                     ready_monotonic_s = planned_frame.ready_monotonic_s
 
+                frame_obs_sequence: list[dict[str, np.ndarray]] = []
                 for action_offset in range(action_per_frame):
                     scheduled_monotonic = live_start_monotonic + next_action_index * action_period_s
                     now = time.perf_counter()
@@ -308,6 +320,12 @@ def main() -> None:
                     env_step_s = action_end_monotonic - actual_start_monotonic
                     last_action_end_monotonic = action_end_monotonic
                     extracted_obs = exact_viz._extract_obs(obs)
+                    frame_obs_sequence.append(
+                        {
+                            key: np.array(value, copy=True)
+                            for key, value in extracted_obs.items()
+                        }
+                    )
                     last_action = np.array(action, copy=True)
                     current_obs = extracted_obs
                     action_record = {
@@ -356,6 +374,7 @@ def main() -> None:
                             key: np.array(value, copy=True)
                             for key, value in current_obs.items()
                         },
+                        "obs_sequence": frame_obs_sequence,
                         "raw_actions": np.array(frame_actions, copy=True),
                     }
                 )
@@ -365,6 +384,11 @@ def main() -> None:
                     if replan_result["job_kind"] == "history_replan":
                         replan_records.append(replan_result["trace"])
                         current_chunk_session = replan_result["session"]
+                        history_base_session = _resolve_next_exact_history_base_session(
+                            config=config,
+                            result=replan_result,
+                            history_base_session=history_base_session,
+                        )
                         buffer_tail_session = replan_result["buffer_tail_session"]
                         submitted_through_frame = int(replan_result["submitted_through_frame"])
                         pending_history = [
@@ -393,6 +417,7 @@ def main() -> None:
                         pending_history=pending_history,
                         future_buffer_depth=future_buffer_depth,
                         runner=runner,
+                        history_base_session=history_base_session,
                         current_chunk_session=current_chunk_session,
                         prompt=prompt,
                         config=config,
@@ -557,6 +582,33 @@ def _chunk_to_planned_frames(
     )
 
 
+def _startup_conditioning_history_record(
+    *,
+    first_chunk,
+    initial_video_latents: torch.Tensor,
+    initial_obs: dict[str, np.ndarray],
+    action_per_frame: int,
+    frame_chunk_size: int,
+) -> dict[str, Any]:
+    if first_chunk.raw_chunk_action_pred is None:
+        raise RuntimeError("Exact runner did not produce raw 7D LIBERO actions.")
+    raw_actions = rearrange(
+        first_chunk.raw_chunk_action_pred[0],
+        "(f a) c -> f a c",
+        f=frame_chunk_size,
+        a=action_per_frame,
+    )
+    conditioning_frame_index = int(first_chunk.debug.get("generation_frame_start", 0))
+    return {
+        "absolute_frame_index": int(conditioning_frame_index),
+        "obs": {key: np.array(value, copy=True) for key, value in initial_obs.items()},
+        "obs_sequence": [],
+        "raw_actions": raw_actions[0].detach().to(dtype=torch.float32).cpu().numpy(),
+        "video_latents": initial_video_latents.detach(),
+        "source": "startup_conditioning_frame",
+    }
+
+
 def _future_buffer_depth(
     plan_by_frame: dict[int, PlannedFrameAction],
     *,
@@ -574,6 +626,7 @@ def _maybe_submit_planner_job(
     pending_history: list[dict[str, Any]],
     future_buffer_depth: int,
     runner,
+    history_base_session,
     current_chunk_session,
     prompt: str,
     config,
@@ -583,14 +636,7 @@ def _maybe_submit_planner_job(
     seed_base: int | None = None,
 ) -> Future[dict[str, Any]] | None:
     history_payload = [
-        {
-            "absolute_frame_index": int(record["absolute_frame_index"]),
-            "obs": {
-                key: np.array(value, copy=True)
-                for key, value in record["obs"].items()
-            },
-            "raw_actions": np.array(record["raw_actions"], copy=True),
-        }
+        _copy_history_record_for_worker(record)
         for record in pending_history
     ]
     if planner_mode == "history_only":
@@ -599,7 +645,7 @@ def _maybe_submit_planner_job(
         return executor.submit(
             _run_replan_job,
             runner=runner,
-            session=current_chunk_session,
+            session=history_base_session,
             prompt=prompt,
             history_records=history_payload,
             config=config,
@@ -620,7 +666,29 @@ def _maybe_submit_planner_job(
             return executor.submit(
                 _run_replan_job,
                 runner=runner,
-                session=current_chunk_session,
+                session=history_base_session,
+                prompt=prompt,
+                history_records=history_payload,
+                config=config,
+                frontend_device=frontend_device,
+                runtime_device=runtime_device,
+                job_seed=_job_seed_for_session(seed_base, current_chunk_session),
+            )
+        if buffer_tail_session is not None and future_buffer_depth <= 6:
+            return executor.submit(
+                _run_extension_job,
+                runner=runner,
+                session=buffer_tail_session,
+                config=config,
+                job_seed=_job_seed_for_session(seed_base, buffer_tail_session),
+            )
+        return None
+    if planner_mode == "async_history_first":
+        if history_payload:
+            return executor.submit(
+                _run_replan_job,
+                runner=runner,
+                session=history_base_session,
                 prompt=prompt,
                 history_records=history_payload,
                 config=config,
@@ -642,7 +710,7 @@ def _maybe_submit_planner_job(
             return executor.submit(
                 _run_replan_job,
                 runner=runner,
-                session=current_chunk_session,
+                session=history_base_session,
                 prompt=prompt,
                 history_records=history_payload,
                 config=config,
@@ -662,7 +730,7 @@ def _maybe_submit_planner_job(
             return executor.submit(
                 _run_replan_job,
                 runner=runner,
-                session=current_chunk_session,
+                session=history_base_session,
                 prompt=prompt,
                 history_records=history_payload,
                 config=config,
@@ -680,6 +748,28 @@ def _maybe_submit_planner_job(
             )
         return None
     raise ValueError(f"Unsupported planner_mode={planner_mode!r}.")
+
+
+def _copy_history_record_for_worker(record: dict[str, Any]) -> dict[str, Any]:
+    copied = {
+        "absolute_frame_index": int(record["absolute_frame_index"]),
+        "obs": {
+            key: np.array(value, copy=True)
+            for key, value in record["obs"].items()
+        },
+        "raw_actions": np.array(record["raw_actions"], copy=True),
+    }
+    if "obs_sequence" in record:
+        copied["obs_sequence"] = [
+            {
+                key: np.array(value, copy=True)
+                for key, value in obs.items()
+            }
+            for obs in record["obs_sequence"]
+        ]
+    if isinstance(record.get("video_latents"), torch.Tensor):
+        copied["video_latents"] = record["video_latents"].detach().clone()
+    return copied
 
 
 def _job_seed_for_session(seed_base: int | None, session) -> int | None:
@@ -714,6 +804,52 @@ def _session_for_next_chunk(
     )
 
 
+def _resolve_exact_startup_sessions(
+    *,
+    config,
+    startup_session,
+    first_chunk,
+    frame_chunk_size: int,
+):
+    generation_frame_start = int(first_chunk.debug.get("generation_frame_start", 0))
+    current_chunk_session = first_chunk.session
+    history_base_session = _resolve_exact_startup_history_base_session(
+        config=config,
+        startup_session=startup_session,
+        current_chunk_session=current_chunk_session,
+    )
+    buffer_tail_session = _session_for_next_chunk(
+        current_chunk_session,
+        next_frame_start=generation_frame_start + int(frame_chunk_size),
+        frame_chunk_size=int(frame_chunk_size),
+    )
+    return history_base_session, current_chunk_session, buffer_tail_session
+
+
+def _resolve_exact_startup_history_base_session(
+    *,
+    config,
+    startup_session,
+    current_chunk_session,
+):
+    runtime_mode = getattr(config.policy_variant, "runtime_mode", None)
+    if runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
+        return startup_session
+    return current_chunk_session
+
+
+def _resolve_next_exact_history_base_session(
+    *,
+    config,
+    result: dict[str, Any],
+    history_base_session,
+):
+    runtime_mode = getattr(config.policy_variant, "runtime_mode", None)
+    if runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
+        return result.get("warmup_session", history_base_session)
+    return result["session"]
+
+
 def _run_replan_job(
     *,
     runner,
@@ -731,12 +867,10 @@ def _run_replan_job(
         seed_everywhere(int(job_seed))
     observed_frame_index = int(history_records[-1]["absolute_frame_index"])
     history_views = [
-        {
-            key: np.array(value, copy=True)
-            for key, value in record["obs"].items()
-        }
-        for record in history_records
+        {key: np.array(value, copy=True) for key, value in obs.items()}
+        for obs in _history_records_to_obs_sequence(history_records)
     ]
+    precomputed_video_latents = _history_records_to_precomputed_video_latents(history_records)
     action_history = np.concatenate(
         [np.asarray(record["raw_actions"], dtype=np.float32) for record in history_records],
         axis=0,
@@ -752,6 +886,7 @@ def _run_replan_job(
             config=config,
             frontend_device=frontend_device,
             runtime_device=runtime_device,
+            precomputed_video_latents=precomputed_video_latents,
         )
         _synchronize_devices(frontend_device, runtime_device)
         prepare_s = time.perf_counter() - prepare_t0
@@ -785,6 +920,7 @@ def _run_replan_job(
     return {
         "job_kind": "history_replan",
         "session": chunk.session,
+        "warmup_session": warmup.session,
         "buffer_tail_session": _session_for_next_chunk(
             chunk.session,
             next_frame_start=generation_frame_start + int(config.inference.frame_chunk_size),
@@ -795,6 +931,14 @@ def _run_replan_job(
             "job_kind": "history_replan",
             "observed_frame_index": int(observed_frame_index),
             "history_frame_count": int(len(history_records)),
+            "raw_observation_count": int(len(history_views)),
+            "precomputed_video_latent_frames": (
+                0
+                if precomputed_video_latents is None
+                else int(precomputed_video_latents.shape[2])
+            ),
+            "warmup_video_latent_frames": int(prepared["video_latents"].shape[2]),
+            "action_history_steps": int(action_history.shape[0]),
             "session_frame_start_before": int(session.policy_state.cache.get("frame_start", -1)),
             "session_step_before": int(session.policy_state.step_index),
             "session_step_after": int(chunk.session.policy_state.step_index),
@@ -861,43 +1005,69 @@ def _prepare_history_runtime_inputs(
     config,
     frontend_device: torch.device,
     runtime_device: torch.device,
+    precomputed_video_latents: torch.Tensor | None = None,
 ) -> dict[str, torch.Tensor | None]:
-    if not history_views:
-        raise ValueError("Expected at least one observed frame for history preparation.")
-    if len(history_views) == 1:
-        return exact_viz._prepare_exact_runtime_inputs(
-            runner,
-            views=exact_viz._obs_list_to_views(history_views, config=config, device=frontend_device),
-            task_text=task_text,
-            text_context=text_context,
-            negative_text_context=negative_text_context,
-            frontend_device=frontend_device,
-            runtime_device=runtime_device,
-            preserve_stream_cache=False,
-        )
-
-    latent_chunks: list[torch.Tensor] = []
+    if not history_views and precomputed_video_latents is None:
+        raise ValueError("Expected observed frames or precomputed latents for history preparation.")
+    prepared = None
     resolved_text_context = text_context
     resolved_negative_text_context = negative_text_context
-    for frame_obs in history_views:
+    if history_views:
         prepared = exact_viz._prepare_exact_runtime_inputs(
             runner,
-            views=exact_viz._obs_list_to_views([frame_obs], config=config, device=frontend_device),
+            views=exact_viz._obs_list_to_views(history_views, config=config, device=frontend_device),
             task_text=task_text,
             text_context=resolved_text_context,
             negative_text_context=resolved_negative_text_context,
             frontend_device=frontend_device,
             runtime_device=runtime_device,
-            preserve_stream_cache=False,
+            preserve_stream_cache=True,
         )
-        latent_chunks.append(prepared["video_latents"])
         resolved_text_context = prepared["text_context"]
         resolved_negative_text_context = prepared["negative_text_context"]
+    latent_chunks: list[torch.Tensor] = []
+    if precomputed_video_latents is not None:
+        latent_chunks.append(precomputed_video_latents.to(device=runtime_device))
+    if prepared is not None:
+        latent_chunks.append(prepared["video_latents"])
     return {
         "video_latents": torch.cat(latent_chunks, dim=2),
         "text_context": resolved_text_context,
         "negative_text_context": resolved_negative_text_context,
     }
+
+
+def _history_records_to_obs_sequence(history_records: list[dict[str, Any]]) -> list[dict[str, np.ndarray]]:
+    history_views: list[dict[str, np.ndarray]] = []
+    for record in history_records:
+        obs_sequence = record.get("obs_sequence")
+        if obs_sequence is not None:
+            history_views.extend(
+                {
+                    key: np.array(value, copy=True)
+                    for key, value in obs.items()
+                }
+                for obs in obs_sequence
+            )
+            continue
+        history_views.append(
+            {
+                key: np.array(value, copy=True)
+                for key, value in record["obs"].items()
+            }
+        )
+    return history_views
+
+
+def _history_records_to_precomputed_video_latents(history_records: list[dict[str, Any]]) -> torch.Tensor | None:
+    latent_chunks: list[torch.Tensor] = []
+    for record in history_records:
+        video_latents = record.get("video_latents")
+        if isinstance(video_latents, torch.Tensor):
+            latent_chunks.append(video_latents.detach())
+    if not latent_chunks:
+        return None
+    return torch.cat(latent_chunks, dim=2)
 
 
 def _synchronize_devices(*devices: torch.device) -> None:

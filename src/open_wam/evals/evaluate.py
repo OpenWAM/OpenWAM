@@ -13,7 +13,15 @@ SRC_ROOT = Path(__file__).resolve().parents[2]
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from open_wam.configs import DataConfig, DataSplit, EvalMode, EvalPredictionSource, ExperimentConfig, TrainerAccelerator
+from open_wam.configs import (
+    DataConfig,
+    DataSplit,
+    EvalMode,
+    EvalPredictionSource,
+    ExperimentConfig,
+    ReferenceCoreInitMode,
+    TrainerAccelerator,
+)
 from open_wam.data import (
     LatentWAMBatch,
     LatentWAMSample,
@@ -97,6 +105,39 @@ def _resolve_relative_path(base_path: Path, value: str | None) -> Path | None:
         f"Could not resolve relative path '{value}' from base '{base_path}'. "
         f"Checked: {local_candidate} and {cwd_candidate}."
     )
+
+
+def _resolve_checkpoint_file(path: Path) -> Path:
+    candidate = path.expanduser().resolve()
+    if candidate.is_file():
+        return candidate
+    for filename in ("model_state.pt", "full_training_state.pt"):
+        direct_file = candidate / filename
+        if direct_file.is_file():
+            return direct_file
+    checkpoint_dirs = sorted(
+        [child for child in candidate.glob("checkpoint_step_*") if child.is_dir()],
+        key=lambda child: int(child.name.rsplit("_", 1)[-1]),
+    )
+    for checkpoint_dir in reversed(checkpoint_dirs):
+        for filename in ("model_state.pt", "full_training_state.pt"):
+            checkpoint_file = checkpoint_dir / filename
+            if checkpoint_file.is_file():
+                return checkpoint_file
+    raise FileNotFoundError(f"Could not resolve model_state.pt or full_training_state.pt from {path}.")
+
+
+def _apply_checkpoint_runtime_override(
+    experiment_config: ExperimentConfig,
+    checkpoint_path: Path,
+) -> Path | None:
+    checkpoint_file = _resolve_checkpoint_file(checkpoint_path)
+    transformer_dir = checkpoint_file.parent / "transformer"
+    if not transformer_dir.is_dir():
+        return checkpoint_file
+    object.__setattr__(experiment_config.backbone, "transformer_subdir", str(transformer_dir.resolve()))
+    object.__setattr__(experiment_config.backbone, "reference_core_init_mode", ReferenceCoreInitMode.FULL)
+    return checkpoint_file
 
 
 def _coerce_optional_positive_int(
@@ -589,15 +630,18 @@ def run_evaluation(
     """Run the generic evaluation pipeline on the requested split."""
 
     experiment_config = load_experiment_config(request.experiment_config_path)
+    resolved_checkpoint_path: Path | None = None
+    if request.checkpoint_path is not None:
+        resolved_checkpoint_path = _apply_checkpoint_runtime_override(experiment_config, request.checkpoint_path)
     seed_everywhere(request.seed)
     device = _resolve_device(request.device, experiment_config)
     pipeline = build_variant_pipeline_from_config(experiment_config)
-    if request.checkpoint_path is not None:
+    if resolved_checkpoint_path is not None:
         # Load checkpoints on CPU first to avoid doubling GPU memory during
         # deserialization for large full-model eval checkpoints.
         _load_pipeline_checkpoint(
             pipeline,
-            request.checkpoint_path,
+            resolved_checkpoint_path,
             map_location=torch.device("cpu"),
         )
     pipeline = pipeline.to(device)
@@ -967,7 +1011,7 @@ def run_evaluation(
             if trajectory_video_mse_values
             else None
         ),
-        checkpoint_path=str(request.checkpoint_path) if request.checkpoint_path is not None else None,
+        checkpoint_path=str(resolved_checkpoint_path) if resolved_checkpoint_path is not None else None,
     )
 
 

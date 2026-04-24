@@ -112,6 +112,21 @@ def main() -> None:
         help="Optional override for inference.action_num_inference_steps. Defaults to the experiment config.",
     )
     parser.add_argument(
+        "--rollout-chunk-steps",
+        type=int,
+        default=None,
+        help="Optional override for action_decoder.rollout_chunk_steps. Defaults to the experiment config.",
+    )
+    parser.add_argument(
+        "--initial-generation-action-start",
+        type=int,
+        default=None,
+        help=(
+            "Optional initial generation action/frame start for generated-video rollouts. "
+            "Defaults to the exact warmup-window length."
+        ),
+    )
+    parser.add_argument(
         "--guidance-scale",
         type=float,
         default=None,
@@ -126,7 +141,7 @@ def main() -> None:
     parser.add_argument(
         "--planner-mode",
         type=str,
-        choices=("history_only", "async_buffer"),
+        choices=("history_only", "async_buffer", "async_mix", "async_history_first"),
         default="async_buffer",
     )
     parser.add_argument("--sequence-buffer-threshold", type=int, default=3)
@@ -176,6 +191,7 @@ def main() -> None:
         config_path = (REPO_ROOT / config_path).resolve()
     config = load_experiment_config(config_path)
     object.__setattr__(config.backbone, "reference_assets_device_policy", args.reference_assets_device_policy)
+    video_viz._apply_rollout_chunk_steps_override(config, args.rollout_chunk_steps)
     checkpoint_path = _resolve_checkpoint_path_for_config(config=config, checkpoint_arg=args.checkpoint)
     _apply_checkpoint_backbone_override(config, checkpoint_path=checkpoint_path)
 
@@ -242,6 +258,7 @@ def main() -> None:
             action_num_inference_steps=args.action_num_inference_steps,
             guidance_scale=args.guidance_scale,
             action_guidance_scale=args.action_guidance_scale,
+            initial_generation_action_start=args.initial_generation_action_start,
         )
     elif policy_name in {"post_latent", "post_decoded"}:
         summary = _run_sequence_policy_realtime_rollout(
@@ -272,6 +289,7 @@ def main() -> None:
             action_num_inference_steps=args.action_num_inference_steps,
             guidance_scale=args.guidance_scale,
             action_guidance_scale=args.action_guidance_scale,
+            initial_generation_action_start=args.initial_generation_action_start,
         )
     elif policy_name == "mot":
         summary = _run_sequence_policy_realtime_rollout(
@@ -302,6 +320,7 @@ def main() -> None:
             action_num_inference_steps=args.action_num_inference_steps,
             guidance_scale=args.guidance_scale,
             action_guidance_scale=args.action_guidance_scale,
+            initial_generation_action_start=args.initial_generation_action_start,
         )
     else:
         raise ValueError(
@@ -450,6 +469,7 @@ def _run_exact_like_realtime_rollout(
     try:
         first_obs = exact_viz._init_single_env(env, init_states[episode_idx % len(init_states)])
         with torch.inference_mode():
+            session = runner.reset(task_text=(prompt,))
             startup_prepare_t0 = time.perf_counter()
             initial_inputs = exact_viz._prepare_exact_runtime_inputs(
                 runner,
@@ -461,11 +481,6 @@ def _run_exact_like_realtime_rollout(
             exact_sandbox._synchronize_devices(frontend_device, runtime_device)
             startup_prepare_s = time.perf_counter() - startup_prepare_t0
 
-            session = runner.reset(
-                task_text=(prompt,),
-                text_context=initial_inputs["text_context"],
-                negative_text_context=initial_inputs["negative_text_context"],
-            )
             startup_infer_t0 = time.perf_counter()
             first_chunk = runner.infer_chunk(
                 session=session,
@@ -476,10 +491,10 @@ def _run_exact_like_realtime_rollout(
             exact_sandbox._synchronize_devices(runtime_device)
             startup_infer_s = time.perf_counter() - startup_infer_t0
 
-        current_chunk_session = first_chunk.session
-        buffer_tail_session = exact_sandbox._session_for_next_chunk(
-            first_chunk.session,
-            next_frame_start=int(first_chunk.debug.get("generation_frame_start", 0)) + int(config.inference.frame_chunk_size),
+        history_base_session, current_chunk_session, buffer_tail_session = exact_sandbox._resolve_exact_startup_sessions(
+            config=config,
+            startup_session=session,
+            first_chunk=first_chunk,
             frame_chunk_size=int(config.inference.frame_chunk_size),
         )
         plan_by_action: dict[int, PlannedControlStep] = _merge_future_step_actions(
@@ -493,12 +508,20 @@ def _run_exact_like_realtime_rollout(
             ),
             next_action_to_execute=0,
         )
+        pending_history: list[dict[str, Any]] = [
+            _exact_startup_conditioning_history_record(
+                chunk=first_chunk,
+                initial_video_latents=initial_inputs["video_latents"],
+                initial_obs=first_obs,
+                action_per_frame=action_per_frame,
+                frame_chunk_size=int(config.inference.frame_chunk_size),
+            )
+        ]
 
         action_records: list[dict[str, Any]] = []
         action_video_records: list[dict[str, Any]] = []
         replan_records: list[dict[str, Any]] = []
         extension_records: list[dict[str, Any]] = []
-        pending_history: list[dict[str, Any]] = []
         startup_open_loop_s = 0.0
         if startup_open_loop_chunks > 0:
             startup_open_loop_t0 = time.perf_counter()
@@ -512,15 +535,18 @@ def _run_exact_like_realtime_rollout(
                     job_seed=exact_sandbox._job_seed_for_session(seed, buffer_tail_session),
                 )
                 (
+                    history_base_session,
                     current_chunk_session,
                     buffer_tail_session,
                     plan_by_action,
                     pending_history,
-                ) = _consume_exact_future_result(
-                    extension_result,
-                    plan_by_action=plan_by_action,
-                    next_action_to_execute=0,
-                    pending_history=pending_history,
+                        ) = _consume_exact_future_result(
+                            extension_result,
+                            config=config,
+                            plan_by_action=plan_by_action,
+                            next_action_to_execute=0,
+                            pending_history=pending_history,
+                            history_base_session=history_base_session,
                     current_chunk_session=current_chunk_session,
                     buffer_tail_session=buffer_tail_session,
                     replan_records=replan_records,
@@ -546,15 +572,18 @@ def _run_exact_like_realtime_rollout(
             while next_frame_to_execute <= max_frames and next_action_index < max_actions and not done:
                 if replan_future is not None and replan_future.done():
                     (
+                        history_base_session,
                         current_chunk_session,
                         buffer_tail_session,
                         plan_by_action,
                         pending_history,
                     ) = _consume_exact_future_result(
                         replan_future.result(),
+                        config=config,
                         plan_by_action=plan_by_action,
                         next_action_to_execute=next_action_index,
                         pending_history=pending_history,
+                        history_base_session=history_base_session,
                         current_chunk_session=current_chunk_session,
                         buffer_tail_session=buffer_tail_session,
                         replan_records=replan_records,
@@ -604,6 +633,7 @@ def _run_exact_like_realtime_rollout(
                                 pending_history=pending_history,
                                 future_buffer_depth=future_buffer_depth_frames,
                                 runner=runner,
+                                history_base_session=history_base_session,
                                 current_chunk_session=current_chunk_session,
                                 prompt=prompt,
                                 config=config,
@@ -615,19 +645,12 @@ def _run_exact_like_realtime_rollout(
                         if replan_future is None:
                             if pending_history:
                                 history_payload = [
-                                    {
-                                        "absolute_frame_index": int(record["absolute_frame_index"]),
-                                        "obs": {
-                                            key: np.array(value, copy=True)
-                                            for key, value in record["obs"].items()
-                                        },
-                                        "raw_actions": np.array(record["raw_actions"], copy=True),
-                                    }
+                                    exact_sandbox._copy_history_record_for_worker(record)
                                     for record in pending_history
                                 ]
                                 result = exact_sandbox._run_replan_job(
                                     runner=runner,
-                                    session=current_chunk_session,
+                                    session=history_base_session,
                                     prompt=prompt,
                                     history_records=history_payload,
                                     config=config,
@@ -655,15 +678,18 @@ def _run_exact_like_realtime_rollout(
                         result["trace"]["blocking_wait_frame_index"] = int(next_frame_to_execute)
                         result["trace"]["blocking_wait_s"] = float(wait_for_plan_s)
                         (
+                            history_base_session,
                             current_chunk_session,
                             buffer_tail_session,
                             plan_by_action,
                             pending_history,
                         ) = _consume_exact_future_result(
                             result,
+                            config=config,
                             plan_by_action=plan_by_action,
                             next_action_to_execute=next_action_index,
                             pending_history=pending_history,
+                            history_base_session=history_base_session,
                             current_chunk_session=current_chunk_session,
                             buffer_tail_session=buffer_tail_session,
                             replan_records=replan_records,
@@ -712,6 +738,7 @@ def _run_exact_like_realtime_rollout(
                     break
 
                 schedule_pause_s += wait_for_plan_s
+                frame_obs_sequence: list[dict[str, np.ndarray]] = []
                 for action_offset, action in enumerate(frame_actions):
                     scheduled_monotonic = live_start_monotonic + next_action_index * action_period_s + schedule_pause_s
                     now = time.perf_counter()
@@ -724,6 +751,9 @@ def _run_exact_like_realtime_rollout(
                     env_step_s = action_end_monotonic - actual_start_monotonic
                     last_action_end_monotonic = action_end_monotonic
                     extracted_obs = exact_viz._extract_obs(obs)
+                    frame_obs_sequence.append(
+                        {key: np.array(value, copy=True) for key, value in extracted_obs.items()}
+                    )
                     last_action = np.array(action, copy=True)
                     current_obs = extracted_obs
                     generation_action_start = (
@@ -787,21 +817,25 @@ def _run_exact_like_realtime_rollout(
                     {
                         "absolute_frame_index": int(next_frame_to_execute),
                         "obs": {key: np.array(value, copy=True) for key, value in current_obs.items()},
+                        "obs_sequence": frame_obs_sequence,
                         "raw_actions": np.stack(frame_actions, axis=0).astype(np.float32),
                     }
                 )
 
                 if replan_future is not None and replan_future.done():
                     (
+                        history_base_session,
                         current_chunk_session,
                         buffer_tail_session,
                         plan_by_action,
                         pending_history,
                     ) = _consume_exact_future_result(
                         replan_future.result(),
+                        config=config,
                         plan_by_action=plan_by_action,
                         next_action_to_execute=next_action_index,
                         pending_history=pending_history,
+                        history_base_session=history_base_session,
                         current_chunk_session=current_chunk_session,
                         buffer_tail_session=buffer_tail_session,
                         replan_records=replan_records,
@@ -827,6 +861,7 @@ def _run_exact_like_realtime_rollout(
                         pending_history=pending_history,
                         future_buffer_depth=future_buffer_depth_frames,
                         runner=runner,
+                        history_base_session=history_base_session,
                         current_chunk_session=current_chunk_session,
                         prompt=prompt,
                         config=config,
@@ -841,15 +876,18 @@ def _run_exact_like_realtime_rollout(
 
             if replan_future is not None and replan_future.done():
                 (
+                    history_base_session,
                     current_chunk_session,
                     buffer_tail_session,
                     plan_by_action,
                     pending_history,
                 ) = _consume_exact_future_result(
                     replan_future.result(),
+                    config=config,
                     plan_by_action=plan_by_action,
                     next_action_to_execute=next_action_index,
                     pending_history=pending_history,
+                    history_base_session=history_base_session,
                     current_chunk_session=current_chunk_session,
                     buffer_tail_session=buffer_tail_session,
                     replan_records=replan_records,
@@ -866,6 +904,8 @@ def _run_exact_like_realtime_rollout(
             startup_infer_s=startup_infer_s,
             deadline_tolerance_s=deadline_tolerance_s,
         )
+        stale_replan_actions = sum(int(record.get("stale_planned_actions", 0)) for record in replan_records)
+        stale_extension_actions = sum(int(record.get("stale_planned_actions", 0)) for record in extension_records)
         summary.update(
             {
                 "benchmark": benchmark,
@@ -899,6 +939,8 @@ def _run_exact_like_realtime_rollout(
                 "blocking_replan_count": int(blocking_replan_count),
                 "history_replan_count": int(len(replan_records)),
                 "open_loop_extension_count": int(len(extension_records)),
+                "stale_replan_planned_actions": int(stale_replan_actions),
+                "stale_extension_planned_actions": int(stale_extension_actions),
                 "policy_variant": str(config.policy_variant.name),
                 "runtime_mode": str(config.policy_variant.runtime_mode),
             }
@@ -926,9 +968,11 @@ def _run_exact_like_realtime_rollout(
 def _consume_exact_future_result(
     result: dict[str, Any],
     *,
+    config,
     plan_by_action: dict[int, PlannedControlStep],
     next_action_to_execute: int,
     pending_history: list[dict[str, Any]],
+    history_base_session,
     current_chunk_session,
     buffer_tail_session,
     replan_records: list[dict[str, Any]],
@@ -937,6 +981,11 @@ def _consume_exact_future_result(
     if result["job_kind"] == "history_replan":
         replan_records.append(result["trace"])
         current_chunk_session = result["session"]
+        history_base_session = exact_sandbox._resolve_next_exact_history_base_session(
+            config=config,
+            result=result,
+            history_base_session=history_base_session,
+        )
         buffer_tail_session = result["buffer_tail_session"]
         submitted_through_frame = int(result["submitted_through_frame"])
         pending_history = [
@@ -946,12 +995,23 @@ def _consume_exact_future_result(
         extension_records.append(result["trace"])
         buffer_tail_session = result["buffer_tail_session"]
     planned_steps = _planned_frames_to_step_actions(result["planned_frames"])
+    future_planned_steps = [
+        step
+        for step in planned_steps
+        if int(step.absolute_action_index) >= int(next_action_to_execute)
+    ]
+    result["trace"]["planned_action_indices"] = [
+        int(step.absolute_action_index)
+        for step in planned_steps
+    ]
+    result["trace"]["future_planned_actions"] = int(len(future_planned_steps))
+    result["trace"]["stale_planned_actions"] = int(len(planned_steps) - len(future_planned_steps))
     plan_by_action = _merge_future_step_actions(
         plan_by_action,
         planned_steps,
         next_action_to_execute=next_action_to_execute,
     )
-    return current_chunk_session, buffer_tail_session, plan_by_action, pending_history
+    return history_base_session, current_chunk_session, buffer_tail_session, plan_by_action, pending_history
 
 
 def _required_frame_action_indices(
@@ -1013,6 +1073,10 @@ def _exact_chunk_to_planned_steps(
     planned_steps: list[PlannedControlStep] = []
     for frame_offset in range(raw_actions.shape[0]):
         absolute_frame_index = generation_frame_start + frame_offset
+        # Exact LIBERO rollout uses frame 0 only as the startup conditioning
+        # block. The first executable actions come from absolute frame 1.
+        if absolute_frame_index < 1:
+            continue
         for action_offset in range(raw_actions.shape[1]):
             absolute_action_index = _frame_index_to_action_start(
                 absolute_frame_index,
@@ -1030,6 +1094,33 @@ def _exact_chunk_to_planned_steps(
                 )
             )
     return planned_steps
+
+
+def _exact_startup_conditioning_history_record(
+    *,
+    chunk,
+    initial_video_latents: torch.Tensor,
+    initial_obs: dict[str, np.ndarray],
+    action_per_frame: int,
+    frame_chunk_size: int,
+) -> dict[str, Any]:
+    if chunk.raw_chunk_action_pred is None:
+        raise RuntimeError("Exact runner did not produce raw 7D LIBERO actions.")
+    raw_actions = rearrange(
+        chunk.raw_chunk_action_pred[0],
+        "(f a) c -> f a c",
+        f=frame_chunk_size,
+        a=action_per_frame,
+    )
+    conditioning_frame_index = int(chunk.debug.get("generation_frame_start", 0))
+    return {
+        "absolute_frame_index": int(conditioning_frame_index),
+        "obs": {key: np.array(value, copy=True) for key, value in initial_obs.items()},
+        "obs_sequence": [],
+        "raw_actions": raw_actions[0].detach().to(dtype=torch.float32).cpu().numpy(),
+        "video_latents": initial_video_latents.detach(),
+        "source": "startup_conditioning_frame",
+    }
 
 
 def _planned_frames_to_step_actions(planned_frames: list[Any]) -> list[PlannedControlStep]:
@@ -1086,6 +1177,7 @@ def _run_sequence_policy_realtime_rollout(
     action_num_inference_steps: int | None,
     guidance_scale: float | None,
     action_guidance_scale: float | None,
+    initial_generation_action_start: int | None,
 ) -> dict[str, Any]:
     _apply_common_inference_overrides(
         config,
@@ -1139,6 +1231,7 @@ def _run_sequence_policy_realtime_rollout(
         "action_guidance_scale_override": action_guidance_scale,
         "action_horizon": int(config.data.action_schema.action_horizon),
         "sequence_empty_plan_policy": str(sequence_empty_plan_policy),
+        "decoder_runtime": _collect_decoder_runtime_metadata(pipeline, config),
     }
 
     _print_stage(f"{rollout_label}_resolve_task_start", benchmark=benchmark, task_id=task_id)
@@ -1187,10 +1280,16 @@ def _run_sequence_policy_realtime_rollout(
                 session=session,
                 obs_window=[{key: np.array(value, copy=True) for key, value in obs.items()} for obs in initial_obs_window],
                 prompt=prompt,
+                task_id=int(task_id),
+                episode_idx=int(episode_idx),
                 config=config,
                 frontend_device=frontend_device,
                 runtime_device=runtime_device,
-                generation_action_start=0,
+                generation_action_start=video_viz._resolve_initial_generation_action_start(
+                    initial_obs_window,
+                    initial_generation_action_start=initial_generation_action_start,
+                    rollout_starts_at_action_zero=video_viz._uses_zero_based_generation_start(config),
+                ),
                 source="startup_plan",
             )
             exact_sandbox._synchronize_devices(runtime_device)
@@ -1250,6 +1349,8 @@ def _run_sequence_policy_realtime_rollout(
                                     for obs in obs_window
                                 ],
                                 prompt=prompt,
+                                task_id=int(task_id),
+                                episode_idx=int(episode_idx),
                                 config=config,
                                 frontend_device=frontend_device,
                                 runtime_device=runtime_device,
@@ -1389,7 +1490,7 @@ def _run_sequence_policy_realtime_rollout(
                 should_submit = False
                 if planner_mode == "history_only":
                     should_submit = remaining_buffer == 0
-                elif planner_mode == "async_buffer":
+                elif planner_mode in {"async_buffer", "async_mix", "async_history_first"}:
                     should_submit = remaining_buffer <= int(sequence_buffer_threshold)
                 else:
                     raise ValueError(f"Unsupported planner_mode={planner_mode!r} for policy_variant={config.policy_variant.name!r}.")
@@ -1404,6 +1505,8 @@ def _run_sequence_policy_realtime_rollout(
                         session=session,
                         obs_window=obs_snapshot,
                         prompt=prompt,
+                        task_id=int(task_id),
+                        episode_idx=int(episode_idx),
                         config=config,
                         frontend_device=frontend_device,
                         runtime_device=runtime_device,
@@ -1498,6 +1601,8 @@ def _run_sequence_replan_job(
     session,
     obs_window: list[dict[str, np.ndarray]],
     prompt: str,
+    task_id: int,
+    episode_idx: int,
     config,
     frontend_device: torch.device,
     runtime_device: torch.device,
@@ -1519,11 +1624,6 @@ def _run_sequence_replan_job(
         prepare_s = time.perf_counter() - prepare_t0
 
         infer_t0 = time.perf_counter()
-        infer_extra = {"task_text": (prompt,)}
-        if str(config.policy_variant.name) in {"post_latent", "post_decoded"}:
-            infer_extra["video_condition_observed_prefix_anchor"] = "end"
-        if str(config.policy_variant.name) == "mot":
-            infer_extra["action_device"] = str(runtime_device)
         inference_session = _resolve_observation_conditioned_replan_session(
             runner=runner,
             session=session,
@@ -1537,7 +1637,14 @@ def _run_sequence_replan_job(
                     state_horizon=int(config.data.action_schema.state_horizon),
                     state_encoding=str(config.data.action_target.state_encoding),
                 ).unsqueeze(0).to(device=runtime_device),
-                extra=infer_extra,
+                extra=video_viz._build_sequence_rollout_infer_extra(
+                    config=config,
+                    prompt=prompt,
+                    generation_action_start=int(generation_action_start),
+                    runtime_device=runtime_device,
+                    task_id=int(task_id),
+                    episode_idx=int(episode_idx),
+                ),
             ),
             video_latents=rollout_inputs["video_latents"],
             canonical_video=None,
@@ -1587,6 +1694,8 @@ def _run_sequence_replan_job(
             "ready_monotonic_s": float(ready_monotonic_s),
             "video_condition_source": policy_aux.get("video_condition_source"),
             "video_condition_uses_future_ground_truth": policy_aux.get("video_condition_uses_future_ground_truth"),
+            "video_condition_frame_start": video_condition_metadata.get("frame_start"),
+            "video_condition_sample_seed": video_condition_metadata.get("sample_seed"),
             "video_condition_observed_prefix_anchor": video_condition_metadata.get("observed_prefix_anchor"),
             "video_condition_observed_prefix_start_index": video_condition_metadata.get("observed_prefix_start_index"),
             "predicted_video_latents_shape": (
@@ -1594,9 +1703,13 @@ def _run_sequence_replan_job(
                 if isinstance(predicted_latents, torch.Tensor)
                 else None
             ),
+            **_collect_decoder_runtime_metadata(runner.pipeline, config),
             **action_plan_metadata,
             "decoder_sampled_new_chunk": _json_scalar_from_tensor(
                 step_output.infer_output.decoder_output.aux.get("sampled_new_chunk")
+            ),
+            "decoder_num_inference_steps": _json_scalar_from_tensor(
+                step_output.infer_output.decoder_output.aux.get("num_inference_steps")
             ),
             "decoder_current_action_index": _json_scalar_from_tensor(
                 step_output.infer_output.decoder_output.aux.get("current_action_index")
@@ -1731,6 +1844,26 @@ def _json_scalar_from_tensor(value) -> Any:
     return value
 
 
+def _collect_decoder_runtime_metadata(pipeline, config) -> dict[str, Any]:
+    decoder = getattr(pipeline, "action_decoder", None)
+    generation_backend = getattr(decoder, "generation_backend", None)
+    return {
+        "action_decoder_class": None if decoder is None else decoder.__class__.__name__,
+        "config_action_num_inference_steps": int(config.inference.action_num_inference_steps),
+        "config_video_num_inference_steps": int(config.inference.video_num_inference_steps),
+        "decoder_generation_num_sampling_steps": (
+            None
+            if generation_backend is None
+            else int(getattr(generation_backend, "num_sampling_steps", 0) or 0)
+        ),
+        "decoder_rollout_chunk_steps": (
+            None
+            if decoder is None or not hasattr(decoder, "rollout_chunk_steps")
+            else int(getattr(decoder, "rollout_chunk_steps"))
+        ),
+    }
+
+
 def _sequence_chunk_to_planned_steps(
     *,
     action_pred: np.ndarray,
@@ -1797,7 +1930,7 @@ def _materialize_sequence_control_action(
     gripper_representation: str,
 ) -> np.ndarray:
     if planned_step.raw_action is not None:
-        return np.asarray(planned_step.raw_action, dtype=np.float32)
+        return np.clip(np.asarray(planned_step.raw_action, dtype=np.float32), -1.0, 1.0)
     if planned_step.desired_position is None or planned_step.desired_quaternion is None:
         raise RuntimeError("Sequence rollout step is missing absolute pose targets.")
     desired_pose = video_viz.PoseSequence(
