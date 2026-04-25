@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 import json
@@ -22,17 +23,19 @@ if str(SRC_ROOT) not in sys.path:
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import run_libero_exact_realtime_sandbox as exact_sandbox  # noqa: E402
+import libero_exact_realtime_common as exact_sandbox  # noqa: E402
 import run_libero_exact_visualization as exact_viz  # noqa: E402
 import run_libero_video_sequence_visualization as video_viz  # noqa: E402
 
-from open_wam.configs import ActionTargetRepresentation, ParallelRuntimeMode  # noqa: E402
+from open_wam.configs import ActionTargetRepresentation, GripperRepresentation, ParallelRuntimeMode  # noqa: E402
+from open_wam.configs.enums import DeadlineMissPolicy, FallbackHistoryPolicy  # noqa: E402
 from open_wam.integrations import LiberoControlConfig, compute_osc_pose_action  # noqa: E402
 from open_wam.integrations.realtime_control import build_live_rollout_summary  # noqa: E402
 from open_wam.models.policy_variants import PolicyInferContext  # noqa: E402
 from open_wam.pipelines import LingbotExactRunner, VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
 from open_wam.utils import (  # noqa: E402
     load_experiment_config,
+    merge_runtime_config_from_checkpoint,
     seed_everywhere,
     validate_positive_step_override,
 )
@@ -52,6 +55,21 @@ class PlannedControlStep:
     desired_position: np.ndarray | None = None
     desired_quaternion: np.ndarray | None = None
     desired_gripper: np.ndarray | None = None
+
+
+@dataclass
+class ExactFallbackHistoryState:
+    policy: FallbackHistoryPolicy
+    quarantine_active: bool = False
+    clean_frames_since_fallback: int = 0
+    hidden_history_frames: int = 0
+    hidden_history_raw_observations: int = 0
+    hidden_fallback_frames: int = 0
+    hidden_fallback_raw_observations: int = 0
+    hidden_washout_frames: int = 0
+    hidden_washout_raw_observations: int = 0
+    fallback_quarantine_count: int = 0
+    quarantine_records: list[dict[str, Any]] | None = None
 
 
 class _RolloutRunnerLike(Protocol):
@@ -92,6 +110,14 @@ def main() -> None:
     parser.add_argument("--max-actions", type=int, default=80)
     parser.add_argument("--target-action-hz", type=float, default=10.0)
     parser.add_argument("--video-fps", type=float, default=None)
+    parser.add_argument(
+        "--write-fallback-timeline-video",
+        action="store_true",
+        help=(
+            "Also render a debug MP4 that includes fallback-history decisions and the full fallback timeline. "
+            "Disabled by default because it duplicates frame materialization and video encoding work."
+        ),
+    )
     parser.add_argument("--runtime-device", type=str, default=None)
     parser.add_argument("--runtime-devices", type=str, default=None)
     parser.add_argument("--runtime-prep-device", type=str, default=None)
@@ -164,7 +190,41 @@ def main() -> None:
             "This avoids fallback without using future observations, but it is not observation-conditioned replanning."
         ),
     )
-    parser.add_argument("--deadline-miss-policy", type=str, choices=("hold_last", "zero"), default="hold_last")
+    parser.add_argument(
+        "--fallback-history-policy",
+        type=str,
+        choices=tuple(policy.value for policy in FallbackHistoryPolicy),
+        default=FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY.value,
+        help=(
+            "Exact/joint realtime only. Controls whether fallback-period observations/actions are allowed "
+            "back into the model history used for future replans."
+        ),
+    )
+    parser.add_argument(
+        "--replan-low-watermark-actions",
+        "--periodic-replan-frames",
+        dest="replan_low_watermark_actions",
+        type=int,
+        default=0,
+        help=(
+            "Exact/joint fallback-mode ablation. The legacy alias --periodic-replan-frames accepts "
+            "the same value, but K is action steps, not frames. If positive, submit a planner job "
+            "when the future action buffer has at most "
+            "K actions left, and accept late stale chunks only when at least K future actions remain. "
+            "Use with --fallback-history-policy freeze_until_clean_chunk for low-watermark retrigger tests."
+        ),
+    )
+    parser.add_argument(
+        "--deadline-miss-policy",
+        type=str,
+        choices=tuple(policy.value for policy in DeadlineMissPolicy),
+        default=DeadlineMissPolicy.HOLD_STATE.value,
+        help=(
+            "`hold_state` zeroes delta-motion channels and preserves configured absolute-tail channels; "
+            "for ACTION_COMMAND gripper configs with no absolute tail, it zeroes the full action. "
+            "`hold_last` repeats the previous raw action. `zero` sends all zeros."
+        ),
+    )
     parser.add_argument("--deadline-tolerance-ms", type=float, default=2.0)
     parser.add_argument("--output-dir", type=str, default="outputs/libero_realtime_validation")
     parser.add_argument("--suffix", type=str, default="sandbox")
@@ -180,6 +240,8 @@ def main() -> None:
         raise ValueError("--sequence-buffer-threshold must be non-negative.")
     if args.startup_open_loop_chunks < 0:
         raise ValueError("--startup-open-loop-chunks must be non-negative.")
+    if args.replan_low_watermark_actions < 0:
+        raise ValueError("--replan-low-watermark-actions must be non-negative.")
 
     global VERBOSE
     VERBOSE = bool(args.verbose)
@@ -190,9 +252,16 @@ def main() -> None:
     if not config_path.is_absolute():
         config_path = (REPO_ROOT / config_path).resolve()
     config = load_experiment_config(config_path)
+    checkpoint_path = _resolve_checkpoint_path_for_config(config=config, checkpoint_arg=args.checkpoint)
+    config, checkpoint_runtime_config_path = merge_runtime_config_from_checkpoint(config, checkpoint_path)
+    if checkpoint_runtime_config_path is not None and VERBOSE:
+        print(
+            "[realtime_sandbox] merged checkpoint runtime config "
+            f"{checkpoint_runtime_config_path} into {config_path}",
+            file=sys.stderr,
+        )
     object.__setattr__(config.backbone, "reference_assets_device_policy", args.reference_assets_device_policy)
     video_viz._apply_rollout_chunk_steps_override(config, args.rollout_chunk_steps)
-    checkpoint_path = _resolve_checkpoint_path_for_config(config=config, checkpoint_arg=args.checkpoint)
     _apply_checkpoint_backbone_override(config, checkpoint_path=checkpoint_path)
 
     runtime_device = exact_viz._resolve_device(args.runtime_device)
@@ -201,6 +270,7 @@ def main() -> None:
     runtime_devices = video_viz._resolve_runtime_devices(args.runtime_devices, fallback=runtime_device)
     runtime_prep_device = exact_viz._resolve_device(args.runtime_prep_device, fallback=runtime_device)
     runtime_output_device = exact_viz._resolve_device(args.runtime_output_device, fallback=runtime_device)
+    fallback_history_policy = FallbackHistoryPolicy(args.fallback_history_policy)
 
     policy_name = str(config.policy_variant.name)
     if _is_exact_parallel_runtime(config):
@@ -228,8 +298,19 @@ def main() -> None:
             action_guidance_scale=args.action_guidance_scale,
             startup_open_loop_chunks=args.startup_open_loop_chunks,
             sequence_empty_plan_policy=args.sequence_empty_plan_policy,
+            fallback_history_policy=fallback_history_policy,
+            replan_low_watermark_actions=args.replan_low_watermark_actions,
+            write_fallback_timeline_video=args.write_fallback_timeline_video,
         )
     elif policy_name == "video_sequence_policy":
+        if fallback_history_policy is not FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY:
+            raise ValueError(
+                "--fallback-history-policy only applies to exact/joint parallel-stream realtime rollouts."
+            )
+        if args.replan_low_watermark_actions:
+            raise ValueError(
+                "--replan-low-watermark-actions only applies to exact/joint parallel-stream realtime rollouts."
+            )
         summary = _run_sequence_policy_realtime_rollout(
             config=config,
             checkpoint_path=checkpoint_path,
@@ -259,8 +340,17 @@ def main() -> None:
             guidance_scale=args.guidance_scale,
             action_guidance_scale=args.action_guidance_scale,
             initial_generation_action_start=args.initial_generation_action_start,
+            write_fallback_timeline_video=args.write_fallback_timeline_video,
         )
     elif policy_name in {"post_latent", "post_decoded"}:
+        if fallback_history_policy is not FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY:
+            raise ValueError(
+                "--fallback-history-policy only applies to exact/joint parallel-stream realtime rollouts."
+            )
+        if args.replan_low_watermark_actions:
+            raise ValueError(
+                "--replan-low-watermark-actions only applies to exact/joint parallel-stream realtime rollouts."
+            )
         summary = _run_sequence_policy_realtime_rollout(
             config=config,
             checkpoint_path=checkpoint_path,
@@ -290,8 +380,17 @@ def main() -> None:
             guidance_scale=args.guidance_scale,
             action_guidance_scale=args.action_guidance_scale,
             initial_generation_action_start=args.initial_generation_action_start,
+            write_fallback_timeline_video=args.write_fallback_timeline_video,
         )
     elif policy_name == "mot":
+        if fallback_history_policy is not FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY:
+            raise ValueError(
+                "--fallback-history-policy only applies to exact/joint parallel-stream realtime rollouts."
+            )
+        if args.replan_low_watermark_actions:
+            raise ValueError(
+                "--replan-low-watermark-actions only applies to exact/joint parallel-stream realtime rollouts."
+            )
         summary = _run_sequence_policy_realtime_rollout(
             config=config,
             checkpoint_path=checkpoint_path,
@@ -321,6 +420,7 @@ def main() -> None:
             guidance_scale=args.guidance_scale,
             action_guidance_scale=args.action_guidance_scale,
             initial_generation_action_start=args.initial_generation_action_start,
+            write_fallback_timeline_video=args.write_fallback_timeline_video,
         )
     else:
         raise ValueError(
@@ -393,6 +493,289 @@ def _apply_common_inference_overrides(
     if action_guidance_scale is not None:
         object.__setattr__(config.inference, "action_guidance_scale", float(action_guidance_scale))
 
+
+def _frame_contains_fallback_action(action_sources: list[str]) -> bool:
+    return any(str(source).startswith("fallback_") for source in action_sources)
+
+
+def _frame_source_label(action_sources: list[str]) -> str:
+    if not action_sources:
+        return "unknown"
+    first_source = str(action_sources[0])
+    if all(str(source) == first_source for source in action_sources):
+        return first_source
+    return "mixed"
+
+
+def _fallback_history_washout_frames_required(
+    policy: FallbackHistoryPolicy,
+    *,
+    frame_chunk_size: int,
+) -> int:
+    if policy is FallbackHistoryPolicy.FREEZE_UNTIL_CLEAN_CHUNK:
+        return int(frame_chunk_size)
+    return 0
+
+
+def _fallback_policy_freezes_model_timeline(policy: FallbackHistoryPolicy) -> bool:
+    return policy is not FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY
+
+
+def _fallback_absolute_tail_start(config) -> int | None:
+    action_target = getattr(getattr(config, "data", None), "action_target", None)
+    gripper_representation = getattr(action_target, "gripper_representation", None)
+    if gripper_representation == GripperRepresentation.ACTION_COMMAND:
+        return None
+    if str(gripper_representation) == GripperRepresentation.ACTION_COMMAND.value:
+        return None
+    if bool(getattr(action_target, "include_gripper", False)):
+        return 6
+    return None
+
+
+def _exact_runtime_cache_name(session) -> str | None:
+    cache = getattr(getattr(session, "policy_state", None), "cache", None)
+    if not isinstance(cache, dict):
+        return None
+    cache_name = cache.get("cache_name")
+    return None if cache_name is None else str(cache_name)
+
+
+def _exact_runtime_transformer(runner, config):
+    pipeline = getattr(runner, "pipeline", None)
+    visual_tower = getattr(pipeline, "visual_tower", None)
+    if visual_tower is None or not hasattr(visual_tower, "get_runtime_backbone"):
+        return None
+    policy_variant = getattr(runner, "policy_variant", None)
+    action_dim = getattr(policy_variant, "action_dim", None)
+    if action_dim is None:
+        action_dim = int(config.data.action_schema.action_dim)
+    return visual_tower.get_runtime_backbone(action_dim=int(action_dim))
+
+
+def _exact_runtime_streaming_vae(runner):
+    pipeline = getattr(runner, "pipeline", None)
+    visual_tower = getattr(pipeline, "visual_tower", None)
+    frontend = getattr(visual_tower, "frontend", None)
+    reference_assets = getattr(frontend, "reference_assets", None)
+    return getattr(reference_assets, "streaming_vae", None)
+
+
+def _snapshot_exact_runtime_cache(
+    *,
+    runner,
+    config,
+    session,
+) -> dict[str, Any] | None:
+    snapshot: dict[str, Any] = {}
+    streaming_vae = _exact_runtime_streaming_vae(runner)
+    if streaming_vae is not None and hasattr(streaming_vae, "feat_cache"):
+        snapshot["streaming_vae_feat_cache"] = copy.deepcopy(streaming_vae.feat_cache)
+
+    cache_name = _exact_runtime_cache_name(session)
+    transformer = _exact_runtime_transformer(runner, config)
+    caches = getattr(transformer, "_exact_runtime_caches", None)
+    if cache_name is None or not isinstance(caches, dict):
+        return snapshot or None
+    if cache_name not in caches:
+        snapshot.update({"cache_name": cache_name, "exists": False})
+        return snapshot
+    snapshot.update(
+        {
+            "cache_name": cache_name,
+            "exists": True,
+            "cache_state": copy.deepcopy(caches[cache_name]),
+        }
+    )
+    return snapshot
+
+
+def _restore_exact_runtime_cache_snapshot(
+    *,
+    runner,
+    config,
+    snapshot: dict[str, Any] | None,
+) -> None:
+    if snapshot is None:
+        return
+    streaming_vae = _exact_runtime_streaming_vae(runner)
+    if streaming_vae is not None and "streaming_vae_feat_cache" in snapshot:
+        streaming_vae.feat_cache = copy.deepcopy(snapshot["streaming_vae_feat_cache"])
+
+    if "cache_name" not in snapshot:
+        return
+    transformer = _exact_runtime_transformer(runner, config)
+    caches = getattr(transformer, "_exact_runtime_caches", None)
+    if not isinstance(caches, dict):
+        return
+    cache_name = str(snapshot["cache_name"])
+    if bool(snapshot.get("exists", False)):
+        caches[cache_name] = copy.deepcopy(snapshot["cache_state"])
+    else:
+        caches.pop(cache_name, None)
+
+
+def _restore_exact_runtime_cache_if_rejected(
+    result: dict[str, Any],
+    *,
+    runner,
+    config,
+    snapshot: dict[str, Any] | None,
+) -> None:
+    if bool(result.get("trace", {}).get("accepted_chunk", False)):
+        return
+    _restore_exact_runtime_cache_snapshot(runner=runner, config=config, snapshot=snapshot)
+
+
+def _resolve_exact_planner_future_result(
+    future: Future[dict[str, Any]],
+    *,
+    runner,
+    config,
+    snapshot: dict[str, Any] | None,
+) -> dict[str, Any]:
+    try:
+        return future.result()
+    except BaseException:
+        _restore_exact_runtime_cache_snapshot(runner=runner, config=config, snapshot=snapshot)
+        raise
+
+
+def _maybe_submit_exact_planner_job_with_cache_snapshot(
+    *,
+    executor: ThreadPoolExecutor,
+    planner_mode: str,
+    pending_history: list[dict[str, Any]],
+    future_buffer_depth: int,
+    runner,
+    history_base_session,
+    current_chunk_session,
+    prompt: str,
+    config,
+    frontend_device: torch.device,
+    runtime_device: torch.device,
+    buffer_tail_session,
+    seed_base: int | None,
+) -> tuple[Future[dict[str, Any]] | None, dict[str, Any] | None]:
+    if not exact_sandbox._should_submit_planner_job(
+        planner_mode=planner_mode,
+        has_history=bool(pending_history),
+        future_buffer_depth=future_buffer_depth,
+        has_buffer_tail_session=buffer_tail_session is not None,
+    ):
+        return None, None
+    # Keep expensive runtime-cache snapshots on the path that will launch a planner job.
+    snapshot = _snapshot_exact_runtime_cache(
+        runner=runner,
+        config=config,
+        session=current_chunk_session,
+    )
+    submitted_future = exact_sandbox._maybe_submit_planner_job(
+        executor=executor,
+        planner_mode=planner_mode,
+        pending_history=pending_history,
+        future_buffer_depth=future_buffer_depth,
+        runner=runner,
+        history_base_session=history_base_session,
+        current_chunk_session=current_chunk_session,
+        prompt=prompt,
+        config=config,
+        frontend_device=frontend_device,
+        runtime_device=runtime_device,
+        buffer_tail_session=buffer_tail_session,
+        seed_base=seed_base,
+    )
+    if submitted_future is None:
+        return None, None
+    return submitted_future, snapshot
+
+
+def _record_hidden_exact_history_frame(
+    state: ExactFallbackHistoryState,
+    *,
+    raw_observation_count: int,
+    hidden_kind: str,
+) -> None:
+    state.hidden_history_frames += 1
+    state.hidden_history_raw_observations += int(raw_observation_count)
+    if hidden_kind == "fallback":
+        state.hidden_fallback_frames += 1
+        state.hidden_fallback_raw_observations += int(raw_observation_count)
+        return
+    if hidden_kind == "washout":
+        state.hidden_washout_frames += 1
+        state.hidden_washout_raw_observations += int(raw_observation_count)
+        return
+    raise ValueError(f"Unsupported hidden_kind={hidden_kind!r}.")
+
+
+def _maybe_append_exact_history_record(
+    *,
+    pending_history: list[dict[str, Any]],
+    state: ExactFallbackHistoryState,
+    absolute_frame_index: int,
+    current_obs: dict[str, np.ndarray],
+    frame_obs_sequence: list[dict[str, np.ndarray]],
+    frame_actions: list[np.ndarray],
+    frame_action_sources: list[str],
+    frame_chunk_size: int,
+) -> str:
+    contains_fallback_action = _frame_contains_fallback_action(frame_action_sources)
+    history_record = {
+        "absolute_frame_index": int(absolute_frame_index),
+        "obs": {key: np.array(value, copy=True) for key, value in current_obs.items()},
+        "obs_sequence": [
+            {key: np.array(value, copy=True) for key, value in obs.items()}
+            for obs in frame_obs_sequence
+        ],
+        "raw_actions": np.stack(frame_actions, axis=0).astype(np.float32),
+        "source": _frame_source_label(frame_action_sources),
+        "action_sources": [str(source) for source in frame_action_sources],
+        "contains_fallback_action": bool(contains_fallback_action),
+    }
+    raw_observation_count = len(frame_obs_sequence)
+    policy = state.policy
+    if policy is FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY:
+        pending_history.append(history_record)
+        return "included"
+
+    washout_frames_required = _fallback_history_washout_frames_required(
+        policy,
+        frame_chunk_size=frame_chunk_size,
+    )
+    if contains_fallback_action:
+        if not state.quarantine_active:
+            state.fallback_quarantine_count += 1
+        state.quarantine_active = True
+        state.clean_frames_since_fallback = 0
+        state.quarantine_records = []
+        _record_hidden_exact_history_frame(
+            state,
+            raw_observation_count=raw_observation_count,
+            hidden_kind="fallback",
+        )
+        return "fallback"
+    if not state.quarantine_active:
+        pending_history.append(history_record)
+        return "included"
+
+    state.clean_frames_since_fallback += 1
+    if state.quarantine_records is None:
+        state.quarantine_records = []
+    state.quarantine_records.append(history_record)
+    _record_hidden_exact_history_frame(
+        state,
+        raw_observation_count=raw_observation_count,
+        hidden_kind="washout",
+    )
+    if state.clean_frames_since_fallback >= washout_frames_required:
+        pending_history.extend(state.quarantine_records)
+        state.quarantine_records = []
+        state.quarantine_active = False
+        state.clean_frames_since_fallback = 0
+    return "washout"
+
+
 def _run_exact_like_realtime_rollout(
     *,
     config,
@@ -418,7 +801,11 @@ def _run_exact_like_realtime_rollout(
     action_guidance_scale: float | None,
     startup_open_loop_chunks: int,
     sequence_empty_plan_policy: str,
+    fallback_history_policy: FallbackHistoryPolicy,
+    replan_low_watermark_actions: int,
+    write_fallback_timeline_video: bool,
 ) -> dict[str, Any]:
+    replan_low_watermark_actions = int(replan_low_watermark_actions)
     pipeline = build_variant_pipeline_from_config(config)
     pipeline.eval()
     runner = LingbotExactRunner(pipeline)
@@ -452,6 +839,9 @@ def _run_exact_like_realtime_rollout(
         "action_guidance_scale_override": action_guidance_scale,
         "reference_assets_device_policy": str(config.backbone.reference_assets_device_policy),
         "sequence_empty_plan_policy": str(sequence_empty_plan_policy),
+        "fallback_history_policy": str(fallback_history_policy),
+        "replan_low_watermark_actions": int(replan_low_watermark_actions),
+        "periodic_replan_frames": int(replan_low_watermark_actions),
     }
 
     task_spec, prompt = exact_viz._resolve_task_spec(benchmark, task_id)
@@ -462,6 +852,7 @@ def _run_exact_like_realtime_rollout(
 
     action_per_frame = int(config.policy_variant.action_per_frame)
     action_dim = int(config.data.action_schema.action_dim)
+    fallback_absolute_tail_start = _fallback_absolute_tail_start(config)
     action_period_s = 1.0 / float(target_action_hz)
     deadline_tolerance_s = float(deadline_tolerance_ms) / 1000.0
     max_frames = int(math.ceil(max_actions / action_per_frame))
@@ -517,6 +908,7 @@ def _run_exact_like_realtime_rollout(
                 frame_chunk_size=int(config.inference.frame_chunk_size),
             )
         ]
+        fallback_history_state = ExactFallbackHistoryState(policy=fallback_history_policy)
 
         action_records: list[dict[str, Any]] = []
         action_video_records: list[dict[str, Any]] = []
@@ -532,6 +924,7 @@ def _run_exact_like_realtime_rollout(
                     runner=runner,
                     session=buffer_tail_session,
                     config=config,
+                    runtime_device=runtime_device,
                     job_seed=exact_sandbox._job_seed_for_session(seed, buffer_tail_session),
                 )
                 (
@@ -540,23 +933,25 @@ def _run_exact_like_realtime_rollout(
                     buffer_tail_session,
                     plan_by_action,
                     pending_history,
-                        ) = _consume_exact_future_result(
-                            extension_result,
-                            config=config,
-                            plan_by_action=plan_by_action,
-                            next_action_to_execute=0,
-                            pending_history=pending_history,
-                            history_base_session=history_base_session,
+                ) = _consume_exact_future_result(
+                    extension_result,
+                    config=config,
+                    plan_by_action=plan_by_action,
+                    next_action_to_execute=0,
+                    pending_history=pending_history,
+                    history_base_session=history_base_session,
                     current_chunk_session=current_chunk_session,
                     buffer_tail_session=buffer_tail_session,
                     replan_records=replan_records,
                     extension_records=extension_records,
+                    min_future_actions_to_accept_stale_chunk=replan_low_watermark_actions,
                 )
             startup_open_loop_s = time.perf_counter() - startup_open_loop_t0
             startup_infer_s += startup_open_loop_s
         done = False
         current_obs = first_obs
         last_action = np.zeros((action_dim,), dtype=np.float32)
+        executed_action_index = 0
         next_action_index = 0
         live_start_monotonic = time.perf_counter()
         last_action_end_monotonic = live_start_monotonic
@@ -565,12 +960,26 @@ def _run_exact_like_realtime_rollout(
         wait_for_plan_total_s = 0.0
         blocking_replan_count = 0
         schedule_pause_s = 0.0
+        fallback_invalidated_future_actions = 0
+        fallback_invalidated_buffer_count = 0
+        freeze_model_timeline_on_fallback = _fallback_policy_freezes_model_timeline(fallback_history_policy)
+        hidden_fallback_period_active = False
+        hidden_fallback_period_count = 0
+        periodic_replan_submit_count = 0
 
         with ThreadPoolExecutor(max_workers=1) as executor:
             replan_future: Future[dict[str, Any]] | None = None
+            replan_future_cache_snapshot: dict[str, Any] | None = None
             next_frame_to_execute = 1
-            while next_frame_to_execute <= max_frames and next_action_index < max_actions and not done:
+            next_real_frame_to_execute = 1
+            while next_real_frame_to_execute <= max_frames and executed_action_index < max_actions and not done:
                 if replan_future is not None and replan_future.done():
+                    replan_result = _resolve_exact_planner_future_result(
+                        replan_future,
+                        runner=runner,
+                        config=config,
+                        snapshot=replan_future_cache_snapshot,
+                    )
                     (
                         history_base_session,
                         current_chunk_session,
@@ -578,7 +987,7 @@ def _run_exact_like_realtime_rollout(
                         plan_by_action,
                         pending_history,
                     ) = _consume_exact_future_result(
-                        replan_future.result(),
+                        replan_result,
                         config=config,
                         plan_by_action=plan_by_action,
                         next_action_to_execute=next_action_index,
@@ -588,8 +997,16 @@ def _run_exact_like_realtime_rollout(
                         buffer_tail_session=buffer_tail_session,
                         replan_records=replan_records,
                         extension_records=extension_records,
+                        min_future_actions_to_accept_stale_chunk=replan_low_watermark_actions,
+                    )
+                    _restore_exact_runtime_cache_if_rejected(
+                        replan_result,
+                        runner=runner,
+                        config=config,
+                        snapshot=replan_future_cache_snapshot,
                     )
                     replan_future = None
+                    replan_future_cache_snapshot = None
 
                 required_action_indices = _required_frame_action_indices(
                     next_action_index=next_action_index,
@@ -623,7 +1040,10 @@ def _run_exact_like_realtime_rollout(
                                     / action_per_frame
                                 )
                             )
-                            replan_future = exact_sandbox._maybe_submit_planner_job(
+                            (
+                                replan_future,
+                                replan_future_cache_snapshot,
+                            ) = _maybe_submit_exact_planner_job_with_cache_snapshot(
                                 executor=executor,
                                 planner_mode=_resolve_exact_realtime_planner_mode(
                                     planner_mode=planner_mode,
@@ -642,37 +1062,67 @@ def _run_exact_like_realtime_rollout(
                                 buffer_tail_session=buffer_tail_session,
                                 seed_base=seed,
                             )
+                        result_cache_snapshot: dict[str, Any] | None = None
                         if replan_future is None:
+                            result_cache_snapshot = _snapshot_exact_runtime_cache(
+                                runner=runner,
+                                config=config,
+                                session=current_chunk_session,
+                            )
                             if pending_history:
                                 history_payload = [
                                     exact_sandbox._copy_history_record_for_worker(record)
                                     for record in pending_history
                                 ]
-                                result = exact_sandbox._run_replan_job(
-                                    runner=runner,
-                                    session=history_base_session,
-                                    prompt=prompt,
-                                    history_records=history_payload,
-                                    config=config,
-                                    frontend_device=frontend_device,
-                                    runtime_device=runtime_device,
-                                    job_seed=exact_sandbox._job_seed_for_session(seed, current_chunk_session),
-                                )
+                                try:
+                                    result = exact_sandbox._run_replan_job(
+                                        runner=runner,
+                                        session=history_base_session,
+                                        prompt=prompt,
+                                        history_records=history_payload,
+                                        config=config,
+                                        frontend_device=frontend_device,
+                                        runtime_device=runtime_device,
+                                        job_seed=exact_sandbox._job_seed_for_session(seed, current_chunk_session),
+                                    )
+                                except BaseException:
+                                    _restore_exact_runtime_cache_snapshot(
+                                        runner=runner,
+                                        config=config,
+                                        snapshot=result_cache_snapshot,
+                                    )
+                                    raise
                             elif buffer_tail_session is not None:
-                                result = exact_sandbox._run_extension_job(
-                                    runner=runner,
-                                    session=buffer_tail_session,
-                                    config=config,
-                                    job_seed=exact_sandbox._job_seed_for_session(seed, buffer_tail_session),
-                                )
+                                try:
+                                    result = exact_sandbox._run_extension_job(
+                                        runner=runner,
+                                        session=buffer_tail_session,
+                                        config=config,
+                                        runtime_device=runtime_device,
+                                        job_seed=exact_sandbox._job_seed_for_session(seed, buffer_tail_session),
+                                    )
+                                except BaseException:
+                                    _restore_exact_runtime_cache_snapshot(
+                                        runner=runner,
+                                        config=config,
+                                        snapshot=result_cache_snapshot,
+                                    )
+                                    raise
                             else:
                                 raise RuntimeError(
                                     "Exact/joint wait-for-replan mode has no pending future, history, or buffer "
                                     f"session for required actions {required_action_indices}."
                                 )
                         else:
-                            result = replan_future.result()
+                            result = _resolve_exact_planner_future_result(
+                                replan_future,
+                                runner=runner,
+                                config=config,
+                                snapshot=replan_future_cache_snapshot,
+                            )
                             replan_future = None
+                            result_cache_snapshot = replan_future_cache_snapshot
+                            replan_future_cache_snapshot = None
                         wait_for_plan_s = time.perf_counter() - wait_t0
                         result["trace"]["blocking_wait_action_index"] = int(next_action_index)
                         result["trace"]["blocking_wait_frame_index"] = int(next_frame_to_execute)
@@ -694,36 +1144,55 @@ def _run_exact_like_realtime_rollout(
                             buffer_tail_session=buffer_tail_session,
                             replan_records=replan_records,
                             extension_records=extension_records,
+                            min_future_actions_to_accept_stale_chunk=replan_low_watermark_actions,
+                        )
+                        _restore_exact_runtime_cache_if_rejected(
+                            result,
+                            runner=runner,
+                            config=config,
+                            snapshot=result_cache_snapshot,
                         )
                     wait_for_plan_count += 1
                     wait_for_plan_total_s += wait_for_plan_s
 
+                frame_model_action_start = int(next_action_index)
                 frame_actions: list[np.ndarray] = []
-                frame_source = None
-                generation_frame_start = None
-                planner_step_index = None
-                ready_monotonic_s = None
+                frame_action_sources: list[str] = []
+                frame_action_metadata: list[dict[str, Any]] = []
+                missing_required_action_indices = _missing_plan_action_indices(plan_by_action, required_action_indices)
+                use_fallback_frame = (
+                    sequence_empty_plan_policy == "fallback"
+                    and bool(missing_required_action_indices)
+                )
+                if use_fallback_frame and freeze_model_timeline_on_fallback and not hidden_fallback_period_active:
+                    hidden_fallback_period_active = True
+                    hidden_fallback_period_count += 1
+                if not use_fallback_frame and hidden_fallback_period_active:
+                    hidden_fallback_period_active = False
                 for action_offset in range(action_per_frame):
-                    if next_action_index + action_offset >= max_actions:
+                    if executed_action_index + action_offset >= max_actions:
                         break
-                    planned_step = plan_by_action.pop(next_action_index + action_offset, None)
-                    if planned_step is None:
-                        if sequence_empty_plan_policy == "wait_for_replan":
-                            raise RuntimeError(
-                                "Exact/joint wait-for-replan mode exhausted without action "
-                                f"{next_action_index + action_offset}."
-                            )
-                        if sequence_empty_plan_policy == "fallback":
-                            raw_action = exact_sandbox._build_fallback_frame_actions(
-                                action_dim=action_dim,
-                                action_per_frame=1,
-                                policy=deadline_miss_policy,
-                                last_action=last_action,
-                            )[0]
-                            source = f"fallback_{deadline_miss_policy}"
-                        else:
-                            raise ValueError(f"Unsupported sequence_empty_plan_policy={sequence_empty_plan_policy!r}.")
+                    if use_fallback_frame:
+                        raw_action = exact_sandbox._build_fallback_frame_actions(
+                            action_dim=action_dim,
+                            action_per_frame=1,
+                            policy=deadline_miss_policy,
+                            last_action=last_action,
+                            preserve_absolute_tail_from=fallback_absolute_tail_start,
+                        )[0]
+                        source = f"fallback_{deadline_miss_policy}"
+                        generation_frame_start = None
+                        planner_step_index = None
+                        ready_monotonic_s = None
                     else:
+                        planned_step = plan_by_action.pop(frame_model_action_start + action_offset, None)
+                        if planned_step is None:
+                            if sequence_empty_plan_policy == "wait_for_replan":
+                                raise RuntimeError(
+                                    "Exact/joint wait-for-replan mode exhausted without action "
+                                    f"{frame_model_action_start + action_offset}."
+                                )
+                            raise ValueError(f"Unsupported sequence_empty_plan_policy={sequence_empty_plan_policy!r}.")
                         if planned_step.raw_action is None:
                             raise RuntimeError("Exact/joint plan did not contain raw LIBERO actions.")
                         raw_action = np.array(planned_step.raw_action, copy=True)
@@ -732,7 +1201,15 @@ def _run_exact_like_realtime_rollout(
                         planner_step_index = planned_step.planner_step_index
                         ready_monotonic_s = planned_step.ready_monotonic_s
                     frame_actions.append(raw_action)
-                    frame_source = source if frame_source is None else frame_source
+                    frame_action_sources.append(str(source))
+                    frame_action_metadata.append(
+                        {
+                            "source": str(source),
+                            "generation_frame_start": generation_frame_start,
+                            "planner_step_index": planner_step_index,
+                            "ready_monotonic_s": ready_monotonic_s,
+                        }
+                    )
 
                 if not frame_actions:
                     break
@@ -740,7 +1217,14 @@ def _run_exact_like_realtime_rollout(
                 schedule_pause_s += wait_for_plan_s
                 frame_obs_sequence: list[dict[str, np.ndarray]] = []
                 for action_offset, action in enumerate(frame_actions):
-                    scheduled_monotonic = live_start_monotonic + next_action_index * action_period_s + schedule_pause_s
+                    real_action_index = int(executed_action_index)
+                    model_action_index = int(frame_model_action_start + action_offset)
+                    action_metadata = frame_action_metadata[action_offset]
+                    generation_frame_start = action_metadata["generation_frame_start"]
+                    planner_step_index = action_metadata["planner_step_index"]
+                    ready_monotonic_s = action_metadata["ready_monotonic_s"]
+                    source = str(action_metadata["source"])
+                    scheduled_monotonic = live_start_monotonic + real_action_index * action_period_s + schedule_pause_s
                     now = time.perf_counter()
                     if now < scheduled_monotonic:
                         time.sleep(scheduled_monotonic - now)
@@ -749,8 +1233,8 @@ def _run_exact_like_realtime_rollout(
                     obs, _, done, _ = env.step(action.astype(np.float32, copy=False))
                     action_end_monotonic = time.perf_counter()
                     env_step_s = action_end_monotonic - actual_start_monotonic
-                    last_action_end_monotonic = action_end_monotonic
                     extracted_obs = exact_viz._extract_obs(obs)
+                    last_action_end_monotonic = action_end_monotonic
                     frame_obs_sequence.append(
                         {key: np.array(value, copy=True) for key, value in extracted_obs.items()}
                     )
@@ -762,11 +1246,14 @@ def _run_exact_like_realtime_rollout(
                         else _frame_index_to_action_start(generation_frame_start, action_per_frame)
                     )
                     action_record = {
-                        "action_index": int(next_action_index),
-                        "absolute_action_index": int(next_action_index),
-                        "absolute_frame_index": int(next_frame_to_execute),
+                        "action_index": real_action_index,
+                        "absolute_action_index": real_action_index,
+                        "absolute_frame_index": int(next_real_frame_to_execute),
                         "action_offset": int(action_offset),
-                        "source": str(frame_source),
+                        "model_action_index": model_action_index,
+                        "model_frame_index": int(next_frame_to_execute),
+                        "model_action_offset": int(action_offset),
+                        "source": source,
                         "scheduled_start_s": float(scheduled_monotonic - live_start_monotonic),
                         "actual_start_s": float(actual_start_monotonic - live_start_monotonic),
                         "lateness_s": float(lateness_s),
@@ -775,7 +1262,7 @@ def _run_exact_like_realtime_rollout(
                         "generation_lag_actions": (
                             None
                             if generation_action_start is None
-                            else int(next_action_index - generation_action_start)
+                            else int(model_action_index - generation_action_start)
                         ),
                         "generation_frame_start": generation_frame_start,
                         "generation_lag_frames": (
@@ -799,30 +1286,56 @@ def _run_exact_like_realtime_rollout(
                             "obs": {key: np.array(value, copy=True) for key, value in extracted_obs.items()},
                         }
                     )
-                    if VERBOSE and next_action_index % 50 == 0:
+                    if VERBOSE and real_action_index % 50 == 0:
                         _print_stage(
                             "exact_like_action_progress",
-                            action_index=int(next_action_index),
-                            source=frame_source,
+                            action_index=real_action_index,
+                            model_action_index=model_action_index,
+                            source=source,
                             done=bool(done),
                         )
-                    next_action_index += 1
-                    if done or next_action_index >= max_actions:
+                    executed_action_index += 1
+                    if not (source.startswith("fallback_") and freeze_model_timeline_on_fallback):
+                        next_action_index += 1
+                    if done or executed_action_index >= max_actions:
                         break
 
-                if done or next_action_index >= max_actions:
+                if done or executed_action_index >= max_actions:
                     break
 
-                pending_history.append(
-                    {
-                        "absolute_frame_index": int(next_frame_to_execute),
-                        "obs": {key: np.array(value, copy=True) for key, value in current_obs.items()},
-                        "obs_sequence": frame_obs_sequence,
-                        "raw_actions": np.stack(frame_actions, axis=0).astype(np.float32),
-                    }
+                history_decision = _maybe_append_exact_history_record(
+                    pending_history=pending_history,
+                    state=fallback_history_state,
+                    absolute_frame_index=int(next_frame_to_execute),
+                    current_obs=current_obs,
+                    frame_obs_sequence=frame_obs_sequence,
+                    frame_actions=frame_actions,
+                    frame_action_sources=frame_action_sources,
+                    frame_chunk_size=int(config.inference.frame_chunk_size),
                 )
+                frame_contains_fallback = _frame_contains_fallback_action(frame_action_sources)
+                for record in action_records[-len(frame_actions) :]:
+                    record["frame_history_decision"] = str(history_decision)
+                    record["frame_contains_fallback_action"] = bool(frame_contains_fallback)
+                    record["frame_action_sources"] = [str(source) for source in frame_action_sources]
+                for record in action_video_records[-len(frame_actions) :]:
+                    record["frame_history_decision"] = str(history_decision)
+                    record["frame_contains_fallback_action"] = bool(frame_contains_fallback)
+                    record["frame_action_sources"] = [str(source) for source in frame_action_sources]
+                if frame_contains_fallback and not freeze_model_timeline_on_fallback:
+                    fallback_invalidated_future_actions += len(plan_by_action)
+                    plan_by_action = {}
+                    if buffer_tail_session is not None:
+                        fallback_invalidated_buffer_count += 1
+                    buffer_tail_session = None
 
                 if replan_future is not None and replan_future.done():
+                    replan_result = _resolve_exact_planner_future_result(
+                        replan_future,
+                        runner=runner,
+                        config=config,
+                        snapshot=replan_future_cache_snapshot,
+                    )
                     (
                         history_base_session,
                         current_chunk_session,
@@ -830,7 +1343,7 @@ def _run_exact_like_realtime_rollout(
                         plan_by_action,
                         pending_history,
                     ) = _consume_exact_future_result(
-                        replan_future.result(),
+                        replan_result,
                         config=config,
                         plan_by_action=plan_by_action,
                         next_action_to_execute=next_action_index,
@@ -840,18 +1353,38 @@ def _run_exact_like_realtime_rollout(
                         buffer_tail_session=buffer_tail_session,
                         replan_records=replan_records,
                         extension_records=extension_records,
+                        min_future_actions_to_accept_stale_chunk=replan_low_watermark_actions,
+                    )
+                    _restore_exact_runtime_cache_if_rejected(
+                        replan_result,
+                        runner=runner,
+                        config=config,
+                        snapshot=replan_future_cache_snapshot,
                     )
                     replan_future = None
+                    replan_future_cache_snapshot = None
 
                 future_buffer_depth_frames = int(
-                    math.ceil(_future_buffer_depth_actions(plan_by_action, next_action_to_execute=next_action_index) / action_per_frame)
+                    math.ceil(
+                        _future_buffer_depth_actions(plan_by_action, next_action_to_execute=next_action_index)
+                        / action_per_frame
+                    )
+                )
+                future_buffer_depth_actions = _future_buffer_depth_actions(
+                    plan_by_action,
+                    next_action_to_execute=next_action_index,
                 )
                 should_submit_replan = _should_submit_exact_realtime_planner(
+                    future_buffer_depth_actions=future_buffer_depth_actions,
                     future_buffer_depth_frames=future_buffer_depth_frames,
                     sequence_empty_plan_policy=sequence_empty_plan_policy,
+                    replan_low_watermark_actions=replan_low_watermark_actions,
                 )
                 if replan_future is None and should_submit_replan:
-                    replan_future = exact_sandbox._maybe_submit_planner_job(
+                    (
+                        replan_future,
+                        replan_future_cache_snapshot,
+                    ) = _maybe_submit_exact_planner_job_with_cache_snapshot(
                         executor=executor,
                         planner_mode=_resolve_exact_realtime_planner_mode(
                             planner_mode=planner_mode,
@@ -870,11 +1403,22 @@ def _run_exact_like_realtime_rollout(
                         buffer_tail_session=buffer_tail_session,
                         seed_base=seed,
                     )
+                    if replan_future is not None:
+                        if replan_low_watermark_actions > 0:
+                            periodic_replan_submit_count += 1
                 else:
                     skipped_replan_submissions += 1
-                next_frame_to_execute += 1
+                next_real_frame_to_execute += 1
+                if not (frame_contains_fallback and freeze_model_timeline_on_fallback):
+                    next_frame_to_execute += 1
 
             if replan_future is not None and replan_future.done():
+                replan_result = _resolve_exact_planner_future_result(
+                    replan_future,
+                    runner=runner,
+                    config=config,
+                    snapshot=replan_future_cache_snapshot,
+                )
                 (
                     history_base_session,
                     current_chunk_session,
@@ -882,7 +1426,7 @@ def _run_exact_like_realtime_rollout(
                     plan_by_action,
                     pending_history,
                 ) = _consume_exact_future_result(
-                    replan_future.result(),
+                    replan_result,
                     config=config,
                     plan_by_action=plan_by_action,
                     next_action_to_execute=next_action_index,
@@ -892,9 +1436,16 @@ def _run_exact_like_realtime_rollout(
                     buffer_tail_session=buffer_tail_session,
                     replan_records=replan_records,
                     extension_records=extension_records,
+                    min_future_actions_to_accept_stale_chunk=replan_low_watermark_actions,
+                )
+                _restore_exact_runtime_cache_if_rejected(
+                    replan_result,
+                    runner=runner,
+                    config=config,
+                    snapshot=replan_future_cache_snapshot,
                 )
 
-        live_wall_time_s = last_action_end_monotonic - live_start_monotonic if next_action_index > 0 else 0.0
+        live_wall_time_s = last_action_end_monotonic - live_start_monotonic if executed_action_index > 0 else 0.0
         summary = build_live_rollout_summary(
             action_records=action_records,
             replan_records=replan_records,
@@ -906,6 +1457,12 @@ def _run_exact_like_realtime_rollout(
         )
         stale_replan_actions = sum(int(record.get("stale_planned_actions", 0)) for record in replan_records)
         stale_extension_actions = sum(int(record.get("stale_planned_actions", 0)) for record in extension_records)
+        chunk_boundary_dropped_replan_actions = sum(
+            int(record.get("chunk_boundary_dropped_actions", 0)) for record in replan_records
+        )
+        chunk_boundary_dropped_extension_actions = sum(
+            int(record.get("chunk_boundary_dropped_actions", 0)) for record in extension_records
+        )
         summary.update(
             {
                 "benchmark": benchmark,
@@ -914,7 +1471,9 @@ def _run_exact_like_realtime_rollout(
                 "episode_idx": int(episode_idx),
                 "success": bool(done),
                 "max_actions": int(max_actions),
-                "executed_actions": int(next_action_index),
+                "executed_actions": int(executed_action_index),
+                "model_executed_actions": int(next_action_index),
+                "model_executed_frames": int(max(0, next_frame_to_execute - 1)),
                 "env_timestep": int(env.env.timestep),
                 "seed": int(seed),
                 "runtime_device": str(runtime_device),
@@ -929,7 +1488,12 @@ def _run_exact_like_realtime_rollout(
                 "action_guidance_scale": float(runner.policy_variant.inference_config.action_guidance_scale),
                 "planner_mode": planner_mode,
                 "deadline_miss_policy": deadline_miss_policy,
+                "fallback_absolute_tail_start": fallback_absolute_tail_start,
                 "sequence_empty_plan_policy": str(sequence_empty_plan_policy),
+                "fallback_history_policy": str(fallback_history_policy),
+                "replan_low_watermark_actions": int(replan_low_watermark_actions),
+                "periodic_replan_frames": int(replan_low_watermark_actions),
+                "periodic_replan_submit_count": int(periodic_replan_submit_count),
                 "startup_open_loop_chunks": int(startup_open_loop_chunks),
                 "startup_open_loop_s": float(startup_open_loop_s),
                 "skipped_replan_submissions": int(skipped_replan_submissions),
@@ -941,6 +1505,22 @@ def _run_exact_like_realtime_rollout(
                 "open_loop_extension_count": int(len(extension_records)),
                 "stale_replan_planned_actions": int(stale_replan_actions),
                 "stale_extension_planned_actions": int(stale_extension_actions),
+                "chunk_boundary_dropped_replan_actions": int(chunk_boundary_dropped_replan_actions),
+                "chunk_boundary_dropped_extension_actions": int(chunk_boundary_dropped_extension_actions),
+                "fallback_invalidated_future_actions": int(fallback_invalidated_future_actions),
+                "fallback_invalidated_buffer_count": int(fallback_invalidated_buffer_count),
+                "hidden_fallback_period_count": int(hidden_fallback_period_count),
+                "hidden_history_frames": int(fallback_history_state.hidden_history_frames),
+                "hidden_history_raw_observations": int(fallback_history_state.hidden_history_raw_observations),
+                "hidden_fallback_history_frames": int(fallback_history_state.hidden_fallback_frames),
+                "hidden_fallback_history_raw_observations": int(
+                    fallback_history_state.hidden_fallback_raw_observations
+                ),
+                "hidden_washout_history_frames": int(fallback_history_state.hidden_washout_frames),
+                "hidden_washout_history_raw_observations": int(
+                    fallback_history_state.hidden_washout_raw_observations
+                ),
+                "fallback_history_quarantine_count": int(fallback_history_state.fallback_quarantine_count),
                 "policy_variant": str(config.policy_variant.name),
                 "runtime_mode": str(config.policy_variant.runtime_mode),
             }
@@ -960,6 +1540,7 @@ def _run_exact_like_realtime_rollout(
             suffix=suffix,
             video_fps=video_fps or target_action_hz,
             action_per_frame=action_per_frame,
+            write_fallback_timeline_video=write_fallback_timeline_video,
         )
     finally:
         env.close()
@@ -977,41 +1558,86 @@ def _consume_exact_future_result(
     buffer_tail_session,
     replan_records: list[dict[str, Any]],
     extension_records: list[dict[str, Any]],
+    min_future_actions_to_accept_stale_chunk: int = 0,
 ):
-    if result["job_kind"] == "history_replan":
-        replan_records.append(result["trace"])
-        current_chunk_session = result["session"]
-        history_base_session = exact_sandbox._resolve_next_exact_history_base_session(
-            config=config,
-            result=result,
-            history_base_session=history_base_session,
-        )
-        buffer_tail_session = result["buffer_tail_session"]
-        submitted_through_frame = int(result["submitted_through_frame"])
-        pending_history = [
-            record for record in pending_history if int(record["absolute_frame_index"]) > submitted_through_frame
-        ]
-    else:
-        extension_records.append(result["trace"])
-        buffer_tail_session = result["buffer_tail_session"]
     planned_steps = _planned_frames_to_step_actions(result["planned_frames"])
+    (
+        mergeable_planned_steps,
+        chunk_boundary_dropped_actions,
+        partial_stale_chunk_accepted_actions,
+    ) = _drop_partial_stale_chunk_steps(
+        planned_steps,
+        next_action_to_execute=next_action_to_execute,
+        min_future_actions_to_accept_stale_chunk=min_future_actions_to_accept_stale_chunk,
+    )
     future_planned_steps = [
         step
-        for step in planned_steps
+        for step in mergeable_planned_steps
         if int(step.absolute_action_index) >= int(next_action_to_execute)
     ]
+    chunk_accepted = bool(future_planned_steps)
     result["trace"]["planned_action_indices"] = [
         int(step.absolute_action_index)
         for step in planned_steps
     ]
     result["trace"]["future_planned_actions"] = int(len(future_planned_steps))
     result["trace"]["stale_planned_actions"] = int(len(planned_steps) - len(future_planned_steps))
+    result["trace"]["chunk_boundary_dropped_actions"] = int(chunk_boundary_dropped_actions)
+    result["trace"]["partial_stale_chunk_accepted_actions"] = int(partial_stale_chunk_accepted_actions)
+    result["trace"]["accepted_chunk"] = bool(chunk_accepted)
+    if result["job_kind"] == "history_replan":
+        replan_records.append(result["trace"])
+        if chunk_accepted:
+            submitted_through_frame = int(result["submitted_through_frame"])
+            pending_history = [
+                record for record in pending_history if int(record["absolute_frame_index"]) > submitted_through_frame
+            ]
+            current_chunk_session = result["session"]
+            history_base_session = exact_sandbox._resolve_next_exact_history_base_session(
+                config=config,
+                result=result,
+                history_base_session=history_base_session,
+            )
+            buffer_tail_session = result["buffer_tail_session"]
+    else:
+        extension_records.append(result["trace"])
+        if chunk_accepted:
+            buffer_tail_session = result["buffer_tail_session"]
+        else:
+            buffer_tail_session = None
     plan_by_action = _merge_future_step_actions(
         plan_by_action,
-        planned_steps,
+        mergeable_planned_steps,
         next_action_to_execute=next_action_to_execute,
     )
     return history_base_session, current_chunk_session, buffer_tail_session, plan_by_action, pending_history
+
+
+def _drop_partial_stale_chunk_steps(
+    planned_steps: list[PlannedControlStep],
+    *,
+    next_action_to_execute: int,
+    min_future_actions_to_accept_stale_chunk: int = 0,
+) -> tuple[list[PlannedControlStep], int, int]:
+    """Keep exact-runtime chunks atomic when a result arrives after its first action is stale."""
+
+    stale_steps = [
+        step
+        for step in planned_steps
+        if int(step.absolute_action_index) < int(next_action_to_execute)
+    ]
+    future_steps = [
+        step
+        for step in planned_steps
+        if int(step.absolute_action_index) >= int(next_action_to_execute)
+    ]
+    if stale_steps and future_steps:
+        if int(min_future_actions_to_accept_stale_chunk) > 0 and len(future_steps) >= int(
+            min_future_actions_to_accept_stale_chunk
+        ):
+            return future_steps, 0, len(future_steps)
+        return [], len(future_steps), 0
+    return planned_steps, 0, 0
 
 
 def _required_frame_action_indices(
@@ -1044,12 +1670,22 @@ def _resolve_exact_realtime_planner_mode(
 
 def _should_submit_exact_realtime_planner(
     *,
+    future_buffer_depth_actions: int,
     future_buffer_depth_frames: int,
     sequence_empty_plan_policy: str,
+    replan_low_watermark_actions: int = 0,
 ) -> bool:
+    """Return whether to submit another planner job.
+
+    In fallback mode, positive K is an action-step low-watermark, not a video
+    frame cadence: submit once the future action buffer has at most K actions
+    remaining. Blocking mode keeps its historical empty-frame-buffer behavior.
+    """
     if sequence_empty_plan_policy == "wait_for_replan":
         return int(future_buffer_depth_frames) <= 0
-    return True
+    if int(replan_low_watermark_actions) <= 0:
+        return True
+    return int(future_buffer_depth_actions) <= int(replan_low_watermark_actions)
 
 
 def _exact_chunk_to_planned_steps(
@@ -1178,6 +1814,7 @@ def _run_sequence_policy_realtime_rollout(
     guidance_scale: float | None,
     action_guidance_scale: float | None,
     initial_generation_action_start: int | None,
+    write_fallback_timeline_video: bool,
 ) -> dict[str, Any]:
     _apply_common_inference_overrides(
         config,
@@ -1590,6 +2227,7 @@ def _run_sequence_policy_realtime_rollout(
             suffix=suffix,
             video_fps=video_fps or target_action_hz,
             action_per_frame=1,
+            write_fallback_timeline_video=write_fallback_timeline_video,
         )
     finally:
         env.close()
@@ -1998,6 +2636,7 @@ def _finalize_rollout_outputs(
     suffix: str,
     video_fps: float,
     action_per_frame: int,
+    write_fallback_timeline_video: bool,
 ) -> dict[str, Any]:
     output_stem = exact_sandbox._build_output_stem(
         root=output_dir,
@@ -2016,6 +2655,15 @@ def _finalize_rollout_outputs(
     video_path = output_stem.with_suffix(".mp4")
     imageio.mimsave(video_path, video_frames, fps=float(video_fps))
     summary["video_path"] = str(video_path.resolve())
+    if write_fallback_timeline_video:
+        fallback_timeline_frames = exact_sandbox._build_fallback_timeline_video_frames(
+            action_video_records=action_video_records,
+            target_action_hz=float(summary["target_action_hz"]),
+            action_per_frame=action_per_frame,
+        )
+        fallback_timeline_video_path = output_stem.with_name(f"{output_stem.stem}_fallback_timeline.mp4")
+        imageio.mimsave(fallback_timeline_video_path, fallback_timeline_frames, fps=float(video_fps))
+        summary["fallback_timeline_video_path"] = str(fallback_timeline_video_path.resolve())
 
     summary_path = output_stem.with_suffix(".json")
     action_trace_path = output_stem.with_name(f"{output_stem.stem}_actions.jsonl")

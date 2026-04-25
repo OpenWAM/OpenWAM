@@ -557,6 +557,21 @@ class ParallelExactCacheWriteMode(StrEnum):
     JOINT_PACKED = "joint_packed"
 
 
+class FallbackHistoryPolicy(StrEnum):
+    """How exact/joint realtime rollouts expose fallback-period history to replanning."""
+
+    INCLUDE_FALLBACK_HISTORY = "include_fallback_history"
+    FREEZE_UNTIL_CLEAN_CHUNK = "freeze_until_clean_chunk"
+
+
+class DeadlineMissPolicy(StrEnum):
+    """Fallback action to execute when a realtime plan misses its deadline."""
+
+    HOLD_STATE = "hold_state"
+    HOLD_LAST = "hold_last"
+    ZERO = "zero"
+
+
 class ActionNormMethod(StrEnum):
     """Raw-to-model action normalization strategy for exact method-1 paths."""
 

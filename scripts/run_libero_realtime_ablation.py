@@ -16,11 +16,17 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from open_wam.configs.enums import DeadlineMissPolicy, FallbackHistoryPolicy
 from open_wam.utils import load_local_path_registry
 
 
 SANDBOX_SCRIPT = REPO_ROOT / "scripts" / "run_libero_realtime_sandbox.py"
 LOCAL_PATHS_ENV_VAR = "OPEN_WAM_LOCAL_PATHS"
+AUTO_REPLAN_LOW_WATERMARK = "auto"
+RECOMMENDED_REPLAN_LOW_WATERMARK_ACTIONS: dict[str, int] = {
+    "method1_exact_step400": 8,
+    "method2_joint_step600": 12,
+}
 
 
 @dataclass(frozen=True)
@@ -55,66 +61,84 @@ DEFAULT_PROFILES: dict[str, PlannerProfile] = {
         name="naive_blocking",
         planner_mode="history_only",
         sequence_empty_plan_policy="wait_for_replan",
-        deadline_miss_policy="hold_last",
+        deadline_miss_policy=DeadlineMissPolicy.HOLD_STATE.value,
         description="Block simulation whenever a model plan is late; closest mirror of offline/naive rollout.",
     ),
     "buffered_blocking": PlannerProfile(
         name="buffered_blocking",
         planner_mode="async_buffer",
         sequence_empty_plan_policy="wait_for_replan",
-        deadline_miss_policy="hold_last",
+        deadline_miss_policy=DeadlineMissPolicy.HOLD_STATE.value,
         description="Allow async buffering, but pause simulation instead of executing fallback actions.",
     ),
     "live_history_hold": PlannerProfile(
         name="live_history_hold",
         planner_mode="history_only",
         sequence_empty_plan_policy="fallback",
-        deadline_miss_policy="hold_last",
-        description="Keep simulation clock running with observation-conditioned replans only; hold last action on misses.",
+        deadline_miss_policy=DeadlineMissPolicy.HOLD_STATE.value,
+        description=(
+            "Keep simulation clock running with observation-conditioned replans only; "
+            "zero delta-motion channels and preserve absolute channels on misses."
+        ),
     ),
     "live_history_zero": PlannerProfile(
         name="live_history_zero",
         planner_mode="history_only",
         sequence_empty_plan_policy="fallback",
-        deadline_miss_policy="zero",
+        deadline_miss_policy=DeadlineMissPolicy.ZERO.value,
         description="Keep simulation clock running with observation-conditioned replans only; zero action on misses.",
     ),
     "live_async_hold": PlannerProfile(
         name="live_async_hold",
         planner_mode="async_buffer",
         sequence_empty_plan_policy="fallback",
-        deadline_miss_policy="hold_last",
-        description="Keep simulation clock running with async buffering and hold-last fallback on misses.",
+        deadline_miss_policy=DeadlineMissPolicy.HOLD_STATE.value,
+        description=(
+            "Keep simulation clock running with async buffering; zero delta-motion channels and preserve "
+            "absolute channels on misses."
+        ),
     ),
     "live_async_history_first_hold": PlannerProfile(
         name="live_async_history_first_hold",
         planner_mode="async_history_first",
         sequence_empty_plan_policy="fallback",
-        deadline_miss_policy="hold_last",
+        deadline_miss_policy=DeadlineMissPolicy.HOLD_STATE.value,
         description=(
             "Keep simulation clock running; submit observation-conditioned history replans before "
-            "open-loop extensions, holding last action on misses."
+            "open-loop extensions, zeroing delta-motion channels and preserving absolute channels on misses."
+        ),
+    ),
+    "live_async_history_first_startup_hold": PlannerProfile(
+        name="live_async_history_first_startup_hold",
+        planner_mode="async_history_first",
+        sequence_empty_plan_policy="fallback",
+        deadline_miss_policy=DeadlineMissPolicy.HOLD_STATE.value,
+        startup_open_loop_chunks=1,
+        description=(
+            "Verified causal realtime startup profile. Pair with "
+            "`--fallback-history-policy freeze_until_clean_chunk` and "
+            "`--replan-low-watermark-actions auto` for the method-specific Method 1/2 settings."
         ),
     ),
     "live_async_mix_hold": PlannerProfile(
         name="live_async_mix_hold",
         planner_mode="async_mix",
         sequence_empty_plan_policy="fallback",
-        deadline_miss_policy="hold_last",
+        deadline_miss_policy=DeadlineMissPolicy.HOLD_STATE.value,
         description="Keep simulation clock running with a mixed history/extension async planner.",
     ),
     "live_async_zero": PlannerProfile(
         name="live_async_zero",
         planner_mode="async_buffer",
         sequence_empty_plan_policy="fallback",
-        deadline_miss_policy="zero",
+        deadline_miss_policy=DeadlineMissPolicy.ZERO.value,
         description="Keep simulation clock running with async buffering and zero-action fallback on misses.",
     ),
     "live_async_prebuffer_hold": PlannerProfile(
         name="live_async_prebuffer_hold",
         planner_mode="async_buffer",
         sequence_empty_plan_policy="fallback",
-        deadline_miss_policy="hold_last",
+        deadline_miss_policy=DeadlineMissPolicy.HOLD_STATE.value,
         startup_open_loop_chunks=2,
         description="Async buffering with two startup open-loop chunks before the live clock starts.",
     ),
@@ -122,7 +146,7 @@ DEFAULT_PROFILES: dict[str, PlannerProfile] = {
         name="live_async_prebuffer_history_first_hold",
         planner_mode="async_history_first",
         sequence_empty_plan_policy="fallback",
-        deadline_miss_policy="hold_last",
+        deadline_miss_policy=DeadlineMissPolicy.HOLD_STATE.value,
         startup_open_loop_chunks=2,
         description=(
             "Two startup open-loop chunks, then observation-conditioned history replans are preferred "
@@ -216,10 +240,33 @@ def main() -> None:
     parser.add_argument("--decode-device", type=str, default=None)
     parser.add_argument("--reference-assets-device-policy", choices=("cpu_offload", "runtime"), default="runtime")
     parser.add_argument("--sequence-buffer-threshold", type=int, default=3)
+    parser.add_argument(
+        "--fallback-history-policy",
+        type=str,
+        choices=tuple(policy.value for policy in FallbackHistoryPolicy),
+        default=FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY.value,
+    )
+    parser.add_argument(
+        "--replan-low-watermark-actions",
+        "--periodic-replan-frames",
+        dest="replan_low_watermark_actions",
+        default="0",
+        help=(
+            "Exact/joint fallback-mode ablation. The legacy alias --periodic-replan-frames accepts "
+            "the same value, but K is an action-step low-watermark, not frames. If positive, submit "
+            "when the future action buffer has at most K actions left. Use `auto` to apply verified "
+            "case-specific values for built-in Method 1/2 cases."
+        ),
+    )
     parser.add_argument("--video-num-inference-steps", type=int, default=None)
     parser.add_argument("--action-num-inference-steps", type=int, default=None)
     parser.add_argument("--guidance-scale", type=float, default=None)
     parser.add_argument("--action-guidance-scale", type=float, default=None)
+    parser.add_argument(
+        "--write-fallback-timeline-video",
+        action="store_true",
+        help="Forward the sandbox debug flag that writes the extra fallback-timeline MP4.",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--env", action="append", default=[], help="Extra KEY=VALUE environment variable for subprocesses.")
     parser.add_argument("--dry-run", action="store_true")
@@ -229,6 +276,7 @@ def main() -> None:
 
     if args.max_actions <= 0:
         raise ValueError("--max-actions must be positive.")
+    args.replan_low_watermark_actions = _parse_replan_low_watermark_spec(args.replan_low_watermark_actions)
 
     local_path_registry = _load_local_path_registry()
     cases = _resolve_cases(args.cases, local_path_registry=local_path_registry)
@@ -295,6 +343,10 @@ def _build_jobs(
     jobs: list[AblationJob] = []
     for case in cases:
         config_path = _repo_path(case.config)
+        replan_low_watermark_actions = _resolve_case_replan_low_watermark_actions(
+            case=case,
+            spec=args.replan_low_watermark_actions,
+        )
         checkpoint = (
             _resolve_path_token(case.checkpoint, local_path_registry=local_path_registry)
             if case.checkpoint
@@ -303,6 +355,10 @@ def _build_jobs(
         for profile in profiles:
             for target_hz in target_action_hz_values:
                 suffix = _safe_token(f"{args.suffix}_{case.name}_{profile.name}_{target_hz:g}hz")
+                if args.fallback_history_policy != FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY.value:
+                    suffix = _safe_token(f"{suffix}_{args.fallback_history_policy}")
+                if int(replan_low_watermark_actions) > 0:
+                    suffix = _safe_token(f"{suffix}_lowwatermark_{int(replan_low_watermark_actions)}a")
                 command = [
                     sys.executable,
                     str(SANDBOX_SCRIPT),
@@ -330,6 +386,10 @@ def _build_jobs(
                     str(profile.startup_open_loop_chunks),
                     "--sequence-buffer-threshold",
                     str(args.sequence_buffer_threshold),
+                    "--fallback-history-policy",
+                    str(args.fallback_history_policy),
+                    "--replan-low-watermark-actions",
+                    str(replan_low_watermark_actions),
                     "--reference-assets-device-policy",
                     args.reference_assets_device_policy,
                     "--output-dir",
@@ -351,6 +411,8 @@ def _build_jobs(
                 _append_optional_arg(command, "--action-num-inference-steps", args.action_num_inference_steps)
                 _append_optional_arg(command, "--guidance-scale", args.guidance_scale)
                 _append_optional_arg(command, "--action-guidance-scale", args.action_guidance_scale)
+                if args.write_fallback_timeline_video:
+                    command.append("--write-fallback-timeline-video")
                 jobs.append(
                     AblationJob(
                         case=case,
@@ -361,6 +423,38 @@ def _build_jobs(
                     )
                 )
     return jobs
+
+
+def _parse_replan_low_watermark_spec(raw: str | int) -> int | str:
+    if isinstance(raw, int):
+        value = raw
+    else:
+        token = str(raw).strip().lower()
+        if token == AUTO_REPLAN_LOW_WATERMARK:
+            return AUTO_REPLAN_LOW_WATERMARK
+        try:
+            value = int(token)
+        except ValueError as exc:
+            raise ValueError(
+                "--replan-low-watermark-actions must be a non-negative integer or `auto`."
+            ) from exc
+    if value < 0:
+        raise ValueError("--replan-low-watermark-actions must be non-negative.")
+    return value
+
+
+def _resolve_case_replan_low_watermark_actions(*, case: RolloutCase, spec: int | str) -> int:
+    parsed = _parse_replan_low_watermark_spec(spec)
+    if parsed != AUTO_REPLAN_LOW_WATERMARK:
+        return int(parsed)
+    try:
+        return RECOMMENDED_REPLAN_LOW_WATERMARK_ACTIONS[case.name]
+    except KeyError as exc:
+        supported = ", ".join(sorted(RECOMMENDED_REPLAN_LOW_WATERMARK_ACTIONS))
+        raise ValueError(
+            "`--replan-low-watermark-actions auto` is only defined for verified built-in cases: "
+            f"{supported}. Pass an explicit integer K for {case.name!r}."
+        ) from exc
 
 
 def _resolve_cases(raw: str, *, local_path_registry: Mapping[str, str]) -> list[RolloutCase]:

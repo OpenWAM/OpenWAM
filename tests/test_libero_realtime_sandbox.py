@@ -29,6 +29,19 @@ def _load_sandbox_module():
     return module
 
 
+def _build_exact_history_frame_payload() -> tuple[dict[str, np.ndarray], list[dict[str, np.ndarray]], list[np.ndarray]]:
+    current_obs = {"image": np.full((1, 1, 3), 9, dtype=np.uint8)}
+    frame_obs_sequence = [
+        {"image": np.full((1, 1, 3), 2 + index, dtype=np.uint8)}
+        for index in range(4)
+    ]
+    frame_actions = [
+        np.full((7,), float(index), dtype=np.float32)
+        for index in range(4)
+    ]
+    return current_obs, frame_obs_sequence, frame_actions
+
+
 def test_frame_index_to_action_start_matches_exact_realtime_convention() -> None:
     sandbox = _load_sandbox_module()
 
@@ -115,17 +128,128 @@ def test_exact_wait_mode_submits_replans_only_when_buffer_is_empty() -> None:
     sandbox = _load_sandbox_module()
 
     assert sandbox._should_submit_exact_realtime_planner(
+        future_buffer_depth_actions=0,
         future_buffer_depth_frames=0,
         sequence_empty_plan_policy="wait_for_replan",
     )
     assert not sandbox._should_submit_exact_realtime_planner(
+        future_buffer_depth_actions=8,
         future_buffer_depth_frames=2,
         sequence_empty_plan_policy="wait_for_replan",
     )
     assert sandbox._should_submit_exact_realtime_planner(
+        future_buffer_depth_actions=8,
         future_buffer_depth_frames=2,
         sequence_empty_plan_policy="fallback",
     )
+
+
+def test_exact_replan_low_watermark_actions_gate_fallback_submissions() -> None:
+    sandbox = _load_sandbox_module()
+
+    assert sandbox._should_submit_exact_realtime_planner(
+        future_buffer_depth_actions=10,
+        future_buffer_depth_frames=3,
+        sequence_empty_plan_policy="fallback",
+        replan_low_watermark_actions=10,
+    )
+    assert not sandbox._should_submit_exact_realtime_planner(
+        future_buffer_depth_actions=11,
+        future_buffer_depth_frames=3,
+        sequence_empty_plan_policy="fallback",
+        replan_low_watermark_actions=10,
+    )
+    assert sandbox._should_submit_exact_realtime_planner(
+        future_buffer_depth_actions=0,
+        future_buffer_depth_frames=0,
+        sequence_empty_plan_policy="fallback",
+        replan_low_watermark_actions=10,
+    )
+
+
+def test_partial_stale_chunks_can_be_accepted_when_the_future_suffix_is_meaningful() -> None:
+    sandbox = _load_sandbox_module()
+    step_cls = sandbox.PlannedControlStep
+    planned = [
+        step_cls(absolute_action_index=index, generation_action_start=0, source="history_replan")
+        for index in range(16)
+    ]
+
+    mergeable, dropped, accepted_partial = sandbox._drop_partial_stale_chunk_steps(
+        planned,
+        next_action_to_execute=8,
+    )
+    assert mergeable == []
+    assert dropped == 8
+    assert accepted_partial == 0
+
+    mergeable, dropped, accepted_partial = sandbox._drop_partial_stale_chunk_steps(
+        planned,
+        next_action_to_execute=8,
+        min_future_actions_to_accept_stale_chunk=8,
+    )
+    assert [step.absolute_action_index for step in mergeable] == list(range(8, 16))
+    assert dropped == 0
+    assert accepted_partial == 8
+
+
+def test_exact_fallback_history_policy_freeze_until_clean_chunk_delays_full_clean_chunk() -> None:
+    sandbox = _load_sandbox_module()
+    pending_history = []
+    state = sandbox.ExactFallbackHistoryState(
+        policy=sandbox.FallbackHistoryPolicy.FREEZE_UNTIL_CLEAN_CHUNK,
+    )
+    current_obs, frame_obs_sequence, frame_actions = _build_exact_history_frame_payload()
+
+    assert (
+        sandbox._maybe_append_exact_history_record(
+            pending_history=pending_history,
+            state=state,
+            absolute_frame_index=4,
+            current_obs=current_obs,
+            frame_obs_sequence=frame_obs_sequence,
+            frame_actions=frame_actions,
+            frame_action_sources=["fallback_hold_last"] * 4,
+            frame_chunk_size=4,
+        )
+        == "fallback"
+    )
+    assert state.quarantine_active
+
+    for absolute_frame_index in range(5, 9):
+        assert (
+            sandbox._maybe_append_exact_history_record(
+                pending_history=pending_history,
+                state=state,
+                absolute_frame_index=absolute_frame_index,
+                current_obs=current_obs,
+                frame_obs_sequence=frame_obs_sequence,
+                frame_actions=frame_actions,
+                frame_action_sources=["open_loop_extension"] * 4,
+                frame_chunk_size=4,
+            )
+            == "washout"
+        )
+
+    assert not state.quarantine_active
+    assert [record["absolute_frame_index"] for record in pending_history] == [5, 6, 7, 8]
+    assert state.hidden_fallback_frames == 1
+    assert state.hidden_washout_frames == 4
+
+    assert (
+        sandbox._maybe_append_exact_history_record(
+            pending_history=pending_history,
+            state=state,
+            absolute_frame_index=9,
+            current_obs=current_obs,
+            frame_obs_sequence=frame_obs_sequence,
+            frame_actions=frame_actions,
+            frame_action_sources=["history_replan"] * 4,
+            frame_chunk_size=4,
+        )
+        == "included"
+    )
+    assert [record["absolute_frame_index"] for record in pending_history] == [5, 6, 7, 8, 9]
 
 
 def test_exact_realtime_job_seed_tracks_session_step_index() -> None:
@@ -134,6 +258,179 @@ def test_exact_realtime_job_seed_tracks_session_step_index() -> None:
 
     assert sandbox.exact_sandbox._job_seed_for_session(10, session) == 14
     assert sandbox.exact_sandbox._job_seed_for_session(None, session) is None
+
+
+def test_exact_realtime_job_seed_uses_isolated_torch_rng() -> None:
+    sandbox = _load_sandbox_module()
+    torch = sandbox.torch
+    original_state = torch.random.get_rng_state()
+    try:
+        torch.manual_seed(1234)
+        before_state = torch.random.get_rng_state()
+        with sandbox.exact_sandbox._isolated_torch_rng(99, torch.device("cpu")):
+            first = torch.rand(3)
+        with sandbox.exact_sandbox._isolated_torch_rng(99, torch.device("cpu")):
+            second = torch.rand(3)
+
+        assert torch.equal(torch.random.get_rng_state(), before_state)
+        assert torch.allclose(first, second)
+    finally:
+        torch.random.set_rng_state(original_state)
+
+
+def test_exact_planner_no_submit_does_not_snapshot_runtime_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    sandbox = _load_sandbox_module()
+
+    def fail_snapshot(**_: object) -> None:
+        raise AssertionError("cache snapshot should not be taken when no planner job can be submitted")
+
+    monkeypatch.setattr(sandbox, "_snapshot_exact_runtime_cache", fail_snapshot)
+
+    future, snapshot = sandbox._maybe_submit_exact_planner_job_with_cache_snapshot(
+        executor=None,
+        planner_mode="history_only",
+        pending_history=[],
+        future_buffer_depth=0,
+        runner=None,
+        history_base_session=None,
+        current_chunk_session=None,
+        prompt="task",
+        config=None,
+        frontend_device=sandbox.torch.device("cpu"),
+        runtime_device=sandbox.torch.device("cpu"),
+        buffer_tail_session=None,
+        seed_base=0,
+    )
+
+    assert future is None
+    assert snapshot is None
+
+
+def test_exact_fallback_hold_state_zeroes_delta_channels_and_preserves_gripper() -> None:
+    sandbox = _load_sandbox_module()
+    last_action = np.array([0.9, -0.8, 0.7, -0.6, 0.5, -0.4, -1.0], dtype=np.float32)
+
+    fallback = sandbox.exact_sandbox._build_fallback_frame_actions(
+        action_dim=7,
+        action_per_frame=2,
+        policy="hold_state",
+        last_action=last_action,
+    )
+
+    np.testing.assert_allclose(
+        fallback,
+        np.array(
+            [
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0],
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0],
+            ],
+            dtype=np.float32,
+        ),
+    )
+
+
+def test_exact_fallback_hold_state_zeroes_action_command_tail_when_configured() -> None:
+    sandbox = _load_sandbox_module()
+    last_action = np.array([0.9, -0.8, 0.7, -0.6, 0.5, -0.4, -1.0], dtype=np.float32)
+
+    fallback = sandbox.exact_sandbox._build_fallback_frame_actions(
+        action_dim=7,
+        action_per_frame=2,
+        policy="hold_state",
+        last_action=last_action,
+        preserve_absolute_tail_from=None,
+    )
+
+    np.testing.assert_allclose(fallback, np.zeros((2, 7), dtype=np.float32))
+
+
+def test_fallback_absolute_tail_start_skips_action_command_gripper() -> None:
+    sandbox = _load_sandbox_module()
+
+    assert (
+        sandbox._fallback_absolute_tail_start(
+            SimpleNamespace(
+                data=SimpleNamespace(
+                    action_target=SimpleNamespace(
+                        include_gripper=True,
+                        gripper_representation=sandbox.GripperRepresentation.ACTION_COMMAND,
+                    )
+                )
+            )
+        )
+        is None
+    )
+    assert (
+        sandbox._fallback_absolute_tail_start(
+            SimpleNamespace(
+                data=SimpleNamespace(
+                    action_target=SimpleNamespace(
+                        include_gripper=True,
+                        gripper_representation=sandbox.GripperRepresentation.FIRST_CHANNEL,
+                    )
+                )
+            )
+        )
+        == 6
+    )
+
+
+def test_exact_runtime_cache_snapshot_restores_rejected_speculation() -> None:
+    sandbox = _load_sandbox_module()
+    transformer = SimpleNamespace(
+        _exact_runtime_caches={
+            "open_wam_exact": {"value": sandbox.torch.tensor([1.0])},
+        }
+    )
+    streaming_vae = SimpleNamespace(feat_cache=[sandbox.torch.tensor([2.0])])
+    runner = SimpleNamespace(
+        pipeline=SimpleNamespace(
+            visual_tower=SimpleNamespace(
+                frontend=SimpleNamespace(
+                    reference_assets=SimpleNamespace(streaming_vae=streaming_vae),
+                ),
+                get_runtime_backbone=lambda *, action_dim: transformer,
+            )
+        )
+    )
+    config = SimpleNamespace(
+        data=SimpleNamespace(action_schema=SimpleNamespace(action_dim=7)),
+    )
+    session = SimpleNamespace(
+        policy_state=SimpleNamespace(cache={"cache_name": "open_wam_exact"}),
+    )
+
+    snapshot = sandbox._snapshot_exact_runtime_cache(
+        runner=runner,
+        config=config,
+        session=session,
+    )
+    transformer._exact_runtime_caches["open_wam_exact"]["value"][0] = 9.0
+    streaming_vae.feat_cache[0][0] = 10.0
+
+    sandbox._restore_exact_runtime_cache_if_rejected(
+        {"trace": {"accepted_chunk": False}},
+        runner=runner,
+        config=config,
+        snapshot=snapshot,
+    )
+
+    assert float(transformer._exact_runtime_caches["open_wam_exact"]["value"][0]) == 1.0
+    assert float(streaming_vae.feat_cache[0][0]) == 2.0
+
+
+def test_exact_fallback_hold_last_repeats_full_raw_action() -> None:
+    sandbox = _load_sandbox_module()
+    last_action = np.array([0.9, -0.8, 0.7, -0.6, 0.5, -0.4, -1.0], dtype=np.float32)
+
+    fallback = sandbox.exact_sandbox._build_fallback_frame_actions(
+        action_dim=7,
+        action_per_frame=2,
+        policy="hold_last",
+        last_action=last_action,
+    )
+
+    np.testing.assert_allclose(fallback, np.repeat(last_action[None, :], 2, axis=0))
 
 
 def test_exact_startup_sessions_replan_from_first_chunk_state() -> None:
@@ -266,16 +563,39 @@ def test_exact_history_worker_copy_preserves_raw_obs_sequences_and_latents() -> 
 
     copied = sandbox.exact_sandbox._copy_history_record_for_worker(record)
     views = sandbox.exact_sandbox._history_records_to_obs_sequence([copied])
+    raw_count = sandbox.exact_sandbox._count_history_raw_observations([copied])
     latents = sandbox.exact_sandbox._history_records_to_precomputed_video_latents([copied])
 
     assert len(views) == 2
+    assert raw_count == 2
     assert latents is not None
     assert tuple(latents.shape) == (1, 2, 1, 1, 1)
     copied["obs_sequence"][0]["image"][0, 0, 0] = 99
     assert record["obs_sequence"][0]["image"][0, 0, 0] == 2
 
 
-def test_exact_future_result_records_stale_and_future_planned_actions() -> None:
+def test_exact_history_obs_sequence_expands_raw_observation_sequences() -> None:
+    sandbox = _load_sandbox_module()
+    record = {
+        "absolute_frame_index": 3,
+        "obs": {"image": np.full((1, 1, 3), 7, dtype=np.uint8)},
+        "obs_sequence": [
+            {"image": np.full((1, 1, 3), 2, dtype=np.uint8)},
+            {"image": np.full((1, 1, 3), 3, dtype=np.uint8)},
+        ],
+        "raw_actions": np.ones((4, 7), dtype=np.float32),
+    }
+
+    views = sandbox.exact_sandbox._history_records_to_obs_sequence([record])
+    raw_count = sandbox.exact_sandbox._count_history_raw_observations([record])
+
+    assert len(views) == 2
+    np.testing.assert_array_equal(views[0]["image"], record["obs_sequence"][0]["image"])
+    np.testing.assert_array_equal(views[1]["image"], record["obs_sequence"][1]["image"])
+    assert raw_count == 2
+
+
+def test_exact_future_result_drops_partial_stale_chunks() -> None:
     sandbox = _load_sandbox_module()
     frame_cls = sandbox.exact_sandbox.PlannedFrameAction
     trace = {"job_kind": "open_loop_extension"}
@@ -301,7 +621,7 @@ def test_exact_future_result_records_stale_and_future_planned_actions() -> None:
         "trace": trace,
     }
 
-    _, _, _, merged, _ = sandbox._consume_exact_future_result(
+    _, _, buffer_tail_session, merged, _ = sandbox._consume_exact_future_result(
         result,
         config=SimpleNamespace(policy_variant=SimpleNamespace(runtime_mode="lingbot_exact")),
         plan_by_action={},
@@ -314,17 +634,154 @@ def test_exact_future_result_records_stale_and_future_planned_actions() -> None:
         extension_records=[],
     )
 
-    assert sorted(merged) == [6, 7, 8, 9, 10, 11]
-    assert trace["stale_planned_actions"] == 2
-    assert trace["future_planned_actions"] == 6
+    assert merged == {}
+    assert buffer_tail_session is None
+    assert trace["stale_planned_actions"] == 8
+    assert trace["future_planned_actions"] == 0
+    assert trace["chunk_boundary_dropped_actions"] == 6
+    assert not trace["accepted_chunk"]
     assert trace["planned_action_indices"] == list(range(4, 12))
+
+
+def test_exact_future_result_keeps_full_future_chunks() -> None:
+    sandbox = _load_sandbox_module()
+    frame_cls = sandbox.exact_sandbox.PlannedFrameAction
+    trace = {"job_kind": "open_loop_extension"}
+    result = {
+        "job_kind": "open_loop_extension",
+        "planned_frames": [
+            frame_cls(
+                absolute_frame_index=2,
+                generation_frame_start=2,
+                frame_offset=0,
+                raw_actions=np.ones((4, 7), dtype=np.float32),
+                source="open_loop_extension",
+            ),
+            frame_cls(
+                absolute_frame_index=3,
+                generation_frame_start=2,
+                frame_offset=1,
+                raw_actions=np.ones((4, 7), dtype=np.float32) * 2,
+                source="open_loop_extension",
+            ),
+        ],
+        "buffer_tail_session": "tail",
+        "trace": trace,
+    }
+
+    _, _, buffer_tail_session, merged, _ = sandbox._consume_exact_future_result(
+        result,
+        config=SimpleNamespace(policy_variant=SimpleNamespace(runtime_mode="lingbot_exact")),
+        plan_by_action={},
+        next_action_to_execute=4,
+        pending_history=[],
+        history_base_session="history",
+        current_chunk_session="current",
+        buffer_tail_session=None,
+        replan_records=[],
+        extension_records=[],
+    )
+
+    assert sorted(merged) == list(range(4, 12))
+    assert buffer_tail_session == "tail"
+    assert trace["stale_planned_actions"] == 0
+    assert trace["future_planned_actions"] == 8
+    assert trace["chunk_boundary_dropped_actions"] == 0
+    assert trace["accepted_chunk"]
+    assert trace["planned_action_indices"] == list(range(4, 12))
+
+
+def test_exact_history_replan_anchors_planned_frames_to_next_observed_frame(monkeypatch: pytest.MonkeyPatch) -> None:
+    sandbox = _load_sandbox_module()
+
+    warmup_session = SimpleNamespace(
+        policy_state=SimpleNamespace(
+            step_index=1,
+            cache={"frame_start": 13},
+            cursor=SimpleNamespace(block_index=0),
+            decoder_state="decoder",
+        ),
+        task_text=("task",),
+        text_context="text",
+        negative_text_context="negative",
+    )
+    chunk_session = SimpleNamespace(
+        policy_state=SimpleNamespace(
+            step_index=2,
+            cache={"frame_start": 13},
+            cursor=SimpleNamespace(block_index=1),
+            decoder_state="decoder",
+        ),
+        task_text=("task",),
+        text_context="text",
+        negative_text_context="negative",
+    )
+
+    class _FakeRunner:
+        def warmup_cache(self, **kwargs):
+            return SimpleNamespace(session=warmup_session)
+
+        def infer_chunk(self, **kwargs):
+            return SimpleNamespace(
+                session=chunk_session,
+                raw_chunk_action_pred=sandbox.torch.arange(16, dtype=sandbox.torch.float32).view(1, 16, 1),
+                debug={"generation_frame_start": 13},
+            )
+
+    monkeypatch.setattr(
+        sandbox.exact_sandbox,
+        "_prepare_history_runtime_inputs",
+        lambda *args, **kwargs: {
+            "video_latents": sandbox.torch.zeros(1, 48, 13, 1, 1),
+            "text_context": "text",
+            "negative_text_context": "negative",
+        },
+    )
+    monkeypatch.setattr(sandbox.exact_sandbox, "_synchronize_devices", lambda *args, **kwargs: None)
+
+    result = sandbox.exact_sandbox._run_replan_job(
+        runner=_FakeRunner(),
+        session=SimpleNamespace(
+            policy_state=SimpleNamespace(step_index=1, cache={"frame_start": 0}),
+            text_context="text",
+            negative_text_context="negative",
+        ),
+        prompt="task",
+        history_records=[
+            {"absolute_frame_index": 0, "obs": {}, "raw_actions": np.zeros((4, 7), dtype=np.float32)},
+            {"absolute_frame_index": 3, "obs": {}, "raw_actions": np.zeros((4, 7), dtype=np.float32)},
+        ],
+        config=SimpleNamespace(
+            inference=SimpleNamespace(frame_chunk_size=4),
+            policy_variant=SimpleNamespace(action_per_frame=4),
+        ),
+        frontend_device=sandbox.torch.device("cpu"),
+        runtime_device=sandbox.torch.device("cpu"),
+        job_seed=None,
+    )
+
+    assert [frame.absolute_frame_index for frame in result["planned_frames"]] == [4, 5, 6, 7]
+    assert all(frame.generation_frame_start == 4 for frame in result["planned_frames"])
+    assert result["trace"]["generation_frame_start"] == 4
+    assert result["trace"]["model_generation_frame_start"] == 13
+    assert result["trace"]["session_frame_start_after_model"] == 13
+    assert result["buffer_tail_session"].policy_state.cache["frame_start"] == 8
 
 
 def test_exact_history_replan_result_advances_base_session_to_chunk_session() -> None:
     sandbox = _load_sandbox_module()
+    frame_cls = sandbox.exact_sandbox.PlannedFrameAction
     result = {
         "job_kind": "history_replan",
-        "planned_frames": [],
+        "planned_frames": [
+            frame_cls(
+                absolute_frame_index=1,
+                generation_frame_start=1,
+                frame_offset=0,
+                raw_actions=np.ones((4, 7), dtype=np.float32),
+                source="history_replan",
+            ),
+        ],
         "warmup_session": "warmup",
         "session": "chunk",
         "buffer_tail_session": "tail",
@@ -352,15 +809,78 @@ def test_exact_history_replan_result_advances_base_session_to_chunk_session() ->
     assert history_session == "chunk"
     assert chunk_session == "chunk"
     assert buffer_tail_session == "tail"
-    assert merged == {}
+    assert sorted(merged) == [0, 1, 2, 3]
     assert pending_history == [{"absolute_frame_index": 4}]
+
+
+def test_exact_rejected_history_replan_keeps_pending_history() -> None:
+    sandbox = _load_sandbox_module()
+    frame_cls = sandbox.exact_sandbox.PlannedFrameAction
+    result = {
+        "job_kind": "history_replan",
+        "planned_frames": [
+            frame_cls(
+                absolute_frame_index=1,
+                generation_frame_start=1,
+                frame_offset=0,
+                raw_actions=np.ones((4, 7), dtype=np.float32),
+                source="history_replan",
+            ),
+            frame_cls(
+                absolute_frame_index=2,
+                generation_frame_start=1,
+                frame_offset=1,
+                raw_actions=np.ones((4, 7), dtype=np.float32),
+                source="history_replan",
+            ),
+        ],
+        "warmup_session": "warmup",
+        "session": "chunk",
+        "buffer_tail_session": "tail",
+        "submitted_through_frame": 3,
+        "trace": {"job_kind": "history_replan"},
+    }
+    pending = [
+        {"absolute_frame_index": 0},
+        {"absolute_frame_index": 2},
+        {"absolute_frame_index": 4},
+    ]
+
+    history_session, chunk_session, buffer_tail_session, merged, pending_history = sandbox._consume_exact_future_result(
+        result,
+        config=SimpleNamespace(policy_variant=SimpleNamespace(runtime_mode="lingbot_exact")),
+        plan_by_action={},
+        next_action_to_execute=6,
+        pending_history=pending,
+        history_base_session="old_history",
+        current_chunk_session="old_chunk",
+        buffer_tail_session=None,
+        replan_records=[],
+        extension_records=[],
+    )
+
+    assert history_session == "old_history"
+    assert chunk_session == "old_chunk"
+    assert buffer_tail_session is None
+    assert merged == {}
+    assert pending_history == pending
+    assert not result["trace"]["accepted_chunk"]
 
 
 def test_exact_action_conditioned_history_replan_keeps_warmup_session_base() -> None:
     sandbox = _load_sandbox_module()
+    frame_cls = sandbox.exact_sandbox.PlannedFrameAction
     result = {
         "job_kind": "history_replan",
-        "planned_frames": [],
+        "planned_frames": [
+            frame_cls(
+                absolute_frame_index=1,
+                generation_frame_start=1,
+                frame_offset=0,
+                raw_actions=np.ones((4, 7), dtype=np.float32),
+                source="history_replan",
+            ),
+        ],
         "warmup_session": "warmup",
         "session": "chunk",
         "buffer_tail_session": "tail",

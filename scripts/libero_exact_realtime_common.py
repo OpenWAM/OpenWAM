@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import argparse
+from contextlib import contextmanager
 from concurrent.futures import Future, ThreadPoolExecutor
 import json
+from pathlib import Path
 import re
 import sys
 import time
-from pathlib import Path
 from typing import Any
 
-import imageio.v2 as imageio
 import numpy as np
 from PIL import Image, ImageDraw
 import torch
@@ -24,512 +23,32 @@ if str(Path(__file__).resolve().parent) not in sys.path:
 
 import run_libero_exact_visualization as exact_viz  # noqa: E402
 
-from open_wam.integrations.realtime_control import (  # noqa: E402
-    PlannedFrameAction,
-    build_live_rollout_summary,
-    make_planned_frame_actions,
-    merge_future_frame_actions,
-)
 from open_wam.configs import ParallelRuntimeMode  # noqa: E402
 from open_wam.configs.enums import DeadlineMissPolicy  # noqa: E402
-from open_wam.models.policy_variants import PolicyInferState, RolloutCursor  # noqa: E402
-from open_wam.pipelines import build_exact_runtime_runner_from_config  # noqa: E402
-from open_wam.utils import (  # noqa: E402
-    load_experiment_config,
-    resolve_transformer_dir_override,
-    seed_everywhere,
-    validate_positive_step_override,
+from open_wam.integrations.realtime_control import (  # noqa: E402
+    PlannedFrameAction,
+    make_planned_frame_actions,
 )
+from open_wam.models.policy_variants import PolicyInferState, RolloutCursor  # noqa: E402
+from open_wam.utils import validate_positive_step_override  # noqa: E402
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Run the exact LIBERO method-1 policy in a fixed-rate live-control sandbox."
-    )
-    parser.add_argument(
-        "--cfg",
-        "--config",
-        dest="config",
-        type=str,
-        default="configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml",
-    )
-    parser.add_argument("--transformer-dir", type=str, default=None)
-    parser.add_argument("--benchmark", type=str, default="libero_10")
-    parser.add_argument("--task-id", type=int, default=1)
-    parser.add_argument("--episode-idx", type=int, default=7)
-    parser.add_argument("--max-frames", type=int, default=15)
-    parser.add_argument("--target-action-hz", type=float, default=10.0)
-    parser.add_argument("--video-fps", type=float, default=None)
-    parser.add_argument("--runtime-device", type=str, default=None)
-    parser.add_argument("--frontend-device", type=str, default=None)
-    parser.add_argument("--reference-assets-device-policy", type=str, choices=("cpu_offload", "runtime"), default="runtime")
-    parser.add_argument(
-        "--video-num-inference-steps",
-        type=int,
-        default=None,
-        help="Optional override for inference.video_num_inference_steps. Defaults to the experiment config.",
-    )
-    parser.add_argument(
-        "--action-num-inference-steps",
-        type=int,
-        default=None,
-        help="Optional override for inference.action_num_inference_steps. Defaults to the experiment config.",
-    )
-    parser.add_argument(
-        "--guidance-scale",
-        type=float,
-        default=None,
-        help="Optional override for inference.guidance_scale. Defaults to the experiment config.",
-    )
-    parser.add_argument(
-        "--action-guidance-scale",
-        type=float,
-        default=None,
-        help="Optional override for inference.action_guidance_scale. Defaults to the experiment config.",
-    )
-    parser.add_argument(
-        "--planner-mode",
-        type=str,
-        choices=("history_only", "async_buffer", "async_mix", "async_history_first"),
-        default="async_buffer",
-    )
-    parser.add_argument(
-        "--startup-open-loop-chunks",
-        type=int,
-        default=0,
-        help=(
-            "Precompute this many model open-loop chunks before the live clock starts. "
-            "This avoids fallback without future observations, but it is not observation-conditioned replanning."
-        ),
-    )
-    parser.add_argument(
-        "--deadline-miss-policy",
-        type=str,
-        choices=tuple(policy.value for policy in DeadlineMissPolicy),
-        default=DeadlineMissPolicy.HOLD_STATE.value,
-    )
-    parser.add_argument("--deadline-tolerance-ms", type=float, default=2.0)
-    parser.add_argument("--output-dir", type=str, default="outputs/libero_exact_realtime")
-    parser.add_argument("--suffix", type=str, default="sandbox")
-    parser.add_argument("--seed", type=int, default=0)
-    args = parser.parse_args()
-
-    if args.max_frames <= 0:
-        raise ValueError("--max-frames must be positive.")
-    if args.target_action_hz <= 0:
-        raise ValueError("--target-action-hz must be positive.")
-    if args.startup_open_loop_chunks < 0:
-        raise ValueError("--startup-open-loop-chunks must be non-negative.")
-
-    print(
-        "[deprecated] scripts/run_libero_exact_realtime_sandbox.py is a legacy method-1-only entrypoint. "
-        "Use scripts/run_libero_realtime_sandbox.py for future runs.",
-        file=sys.stderr,
-    )
-
-    seed_everywhere(args.seed)
-
-    config_path = Path(args.config)
-    if not config_path.is_absolute():
-        config_path = (REPO_ROOT / config_path).resolve()
-    config = load_experiment_config(config_path)
-    if args.transformer_dir is not None:
-        object.__setattr__(
-            config.backbone,
-            "transformer_subdir",
-            str(resolve_transformer_dir_override(args.transformer_dir)),
-        )
-    object.__setattr__(config.backbone, "reference_assets_device_policy", args.reference_assets_device_policy)
-
-    runner = build_exact_runtime_runner_from_config(config)
-    runtime_device = exact_viz._resolve_device(args.runtime_device)
-    frontend_device = exact_viz._resolve_device(args.frontend_device, fallback=runtime_device)
-    runner.pipeline.visual_tower.ensure_runtime_backbone_device(
-        action_dim=config.action_decoder.action_dim,
-        device=runtime_device,
-    )
-    _apply_inference_overrides(
-        runner,
-        video_num_inference_steps=args.video_num_inference_steps,
-        action_num_inference_steps=args.action_num_inference_steps,
-        guidance_scale=args.guidance_scale,
-        action_guidance_scale=args.action_guidance_scale,
-    )
-    component_report = exact_viz._build_open_wam_component_report(
-        config,
-        runner,
-        runtime_device=runtime_device,
-        frontend_device=frontend_device,
-        decode_device=frontend_device,
-        requested_eval_checkpoint=None,
-    )
-
-    task_spec, prompt = exact_viz._resolve_task_spec(args.benchmark, args.task_id)
-    init_states = exact_viz.load_libero_task_init_states(task_spec)
-    env = exact_viz._construct_single_env(task_spec)
-    if env is None:
-        raise RuntimeError("Failed to construct LIBERO OffScreenRenderEnv after 5 retries.")
-
-    action_per_frame = int(config.policy_variant.action_per_frame)
-    action_dim = int(config.data.action_schema.action_dim)
-    action_period_s = 1.0 / float(args.target_action_hz)
-    deadline_tolerance_s = float(args.deadline_tolerance_ms) / 1000.0
-
-    try:
-        first_obs = exact_viz._init_single_env(env, init_states[args.episode_idx % len(init_states)])
-        with torch.inference_mode():
-            session = runner.reset(task_text=(prompt,))
-            startup_prepare_t0 = time.perf_counter()
-            initial_inputs = exact_viz._prepare_exact_runtime_inputs(
-                runner,
-                views=exact_viz._obs_list_to_views([first_obs], config=config, device=frontend_device),
-                task_text=(prompt,),
-                frontend_device=frontend_device,
-                runtime_device=runtime_device,
-            )
-            _synchronize_devices(frontend_device, runtime_device)
-            startup_prepare_s = time.perf_counter() - startup_prepare_t0
-
-            startup_infer_t0 = time.perf_counter()
-            first_chunk = runner.infer_chunk(
-                session=session,
-                video_latents=initial_inputs["video_latents"],
-                text_context=initial_inputs["text_context"],
-                negative_text_context=initial_inputs["negative_text_context"],
-            )
-            _synchronize_devices(runtime_device)
-            startup_infer_s = time.perf_counter() - startup_infer_t0
-
-        frame_chunk_size = int(config.inference.frame_chunk_size)
-        history_base_session, current_chunk_session, buffer_tail_session = _resolve_exact_startup_sessions(
-            config=config,
-            startup_session=session,
-            first_chunk=first_chunk,
-            frame_chunk_size=frame_chunk_size,
-        )
-        plan_by_frame: dict[int, PlannedFrameAction] = {}
-        next_frame_to_execute = 1
-        initial_plans = _chunk_to_planned_frames(
-            first_chunk=first_chunk,
-            frame_chunk_size=int(config.inference.frame_chunk_size),
-            action_per_frame=action_per_frame,
-            source="startup_plan",
-            ready_monotonic_s=time.perf_counter(),
-        )
-        plan_by_frame = merge_future_frame_actions(
-            plan_by_frame,
-            initial_plans,
-            next_frame_to_execute=next_frame_to_execute,
-        )
-
-        action_records: list[dict[str, Any]] = []
-        action_video_records: list[dict[str, Any]] = []
-        replan_records: list[dict[str, Any]] = []
-        extension_records: list[dict[str, Any]] = []
-        done = False
-        current_obs = first_obs
-        last_action = np.zeros((action_dim,), dtype=np.float32)
-        next_action_index = 0
-        skipped_replan_submissions = 0
-        pending_history: list[dict[str, Any]] = [
-            _startup_conditioning_history_record(
-                first_chunk=first_chunk,
-                initial_video_latents=initial_inputs["video_latents"],
-                initial_obs=first_obs,
-                action_per_frame=action_per_frame,
-                frame_chunk_size=frame_chunk_size,
-            )
-        ]
-        startup_open_loop_s = 0.0
-        if args.startup_open_loop_chunks > 0:
-            startup_open_loop_t0 = time.perf_counter()
-            for _ in range(int(args.startup_open_loop_chunks)):
-                if buffer_tail_session is None:
-                    break
-                extension_result = _run_extension_job(
-                    runner=runner,
-                    session=buffer_tail_session,
-                    config=config,
-                    job_seed=_job_seed_for_session(args.seed, buffer_tail_session),
-                )
-                extension_records.append(extension_result["trace"])
-                buffer_tail_session = extension_result["buffer_tail_session"]
-                plan_by_frame = merge_future_frame_actions(
-                    plan_by_frame,
-                    extension_result["planned_frames"],
-                    next_frame_to_execute=next_frame_to_execute,
-                )
-            startup_open_loop_s = time.perf_counter() - startup_open_loop_t0
-            startup_infer_s += startup_open_loop_s
-        live_start_monotonic = time.perf_counter()
-        last_action_end_monotonic = live_start_monotonic
-
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            replan_future: Future[dict[str, Any]] | None = None
-            while next_frame_to_execute <= int(args.max_frames) and not done:
-                if replan_future is not None and replan_future.done():
-                    replan_result = replan_future.result()
-                    if replan_result["job_kind"] == "history_replan":
-                        replan_records.append(replan_result["trace"])
-                        current_chunk_session = replan_result["session"]
-                        history_base_session = _resolve_next_exact_history_base_session(
-                            config=config,
-                            result=replan_result,
-                            history_base_session=history_base_session,
-                        )
-                        buffer_tail_session = replan_result["buffer_tail_session"]
-                        submitted_through_frame = int(replan_result["submitted_through_frame"])
-                        pending_history = [
-                            record
-                            for record in pending_history
-                            if int(record["absolute_frame_index"]) > submitted_through_frame
-                        ]
-                    else:
-                        extension_records.append(replan_result["trace"])
-                        buffer_tail_session = replan_result["buffer_tail_session"]
-                    plan_by_frame = merge_future_frame_actions(
-                        plan_by_frame,
-                        replan_result["planned_frames"],
-                        next_frame_to_execute=next_frame_to_execute,
-                    )
-                    replan_future = None
-
-                plan_by_frame = merge_future_frame_actions(
-                    plan_by_frame,
-                    (),
-                    next_frame_to_execute=next_frame_to_execute,
-                )
-                planned_frame = plan_by_frame.pop(next_frame_to_execute, None)
-                if planned_frame is None:
-                    frame_actions = _build_fallback_frame_actions(
-                        action_dim=action_dim,
-                        action_per_frame=action_per_frame,
-                        policy=args.deadline_miss_policy,
-                        last_action=last_action,
-                    )
-                    frame_source = f"fallback_{args.deadline_miss_policy}"
-                    generation_frame_start = None
-                    planner_step_index = None
-                    ready_monotonic_s = None
-                else:
-                    frame_actions = np.asarray(planned_frame.raw_actions, dtype=np.float32)
-                    frame_source = str(planned_frame.source)
-                    generation_frame_start = int(planned_frame.generation_frame_start)
-                    planner_step_index = planned_frame.planner_step_index
-                    ready_monotonic_s = planned_frame.ready_monotonic_s
-
-                frame_obs_sequence: list[dict[str, np.ndarray]] = []
-                for action_offset in range(action_per_frame):
-                    scheduled_monotonic = live_start_monotonic + next_action_index * action_period_s
-                    now = time.perf_counter()
-                    if now < scheduled_monotonic:
-                        time.sleep(scheduled_monotonic - now)
-                    actual_start_monotonic = time.perf_counter()
-                    lateness_s = max(0.0, actual_start_monotonic - scheduled_monotonic)
-                    action = frame_actions[action_offset].astype(np.float32, copy=False)
-                    obs, _, done, _ = env.step(action)
-                    action_end_monotonic = time.perf_counter()
-                    env_step_s = action_end_monotonic - actual_start_monotonic
-                    last_action_end_monotonic = action_end_monotonic
-                    extracted_obs = exact_viz._extract_obs(obs)
-                    frame_obs_sequence.append(
-                        {
-                            key: np.array(value, copy=True)
-                            for key, value in extracted_obs.items()
-                        }
-                    )
-                    last_action = np.array(action, copy=True)
-                    current_obs = extracted_obs
-                    action_record = {
-                        "action_index": int(next_action_index),
-                        "absolute_frame_index": int(next_frame_to_execute),
-                        "action_offset": int(action_offset),
-                        "source": frame_source,
-                        "scheduled_start_s": float(scheduled_monotonic - live_start_monotonic),
-                        "actual_start_s": float(actual_start_monotonic - live_start_monotonic),
-                        "lateness_s": float(lateness_s),
-                        "env_step_s": float(env_step_s),
-                        "generation_frame_start": generation_frame_start,
-                        "generation_lag_frames": (
-                            None
-                            if generation_frame_start is None
-                            else int(next_frame_to_execute - generation_frame_start)
-                        ),
-                        "planner_step_index": planner_step_index,
-                        "plan_ready_delay_s": (
-                            None
-                            if ready_monotonic_s is None
-                            else float(actual_start_monotonic - ready_monotonic_s)
-                        ),
-                    }
-                    action_records.append(action_record)
-                    action_video_records.append(
-                        {
-                            **action_record,
-                            "obs": {
-                                key: np.array(value, copy=True)
-                                for key, value in extracted_obs.items()
-                            },
-                        }
-                    )
-                    next_action_index += 1
-                    if done:
-                        break
-
-                if done:
-                    break
-
-                pending_history.append(
-                    {
-                        "absolute_frame_index": int(next_frame_to_execute),
-                        "obs": {
-                            key: np.array(value, copy=True)
-                            for key, value in current_obs.items()
-                        },
-                        "obs_sequence": frame_obs_sequence,
-                        "raw_actions": np.array(frame_actions, copy=True),
-                    }
-                )
-
-                if replan_future is not None and replan_future.done():
-                    replan_result = replan_future.result()
-                    if replan_result["job_kind"] == "history_replan":
-                        replan_records.append(replan_result["trace"])
-                        current_chunk_session = replan_result["session"]
-                        history_base_session = _resolve_next_exact_history_base_session(
-                            config=config,
-                            result=replan_result,
-                            history_base_session=history_base_session,
-                        )
-                        buffer_tail_session = replan_result["buffer_tail_session"]
-                        submitted_through_frame = int(replan_result["submitted_through_frame"])
-                        pending_history = [
-                            record
-                            for record in pending_history
-                            if int(record["absolute_frame_index"]) > submitted_through_frame
-                        ]
-                    else:
-                        extension_records.append(replan_result["trace"])
-                        buffer_tail_session = replan_result["buffer_tail_session"]
-                    plan_by_frame = merge_future_frame_actions(
-                        plan_by_frame,
-                        replan_result["planned_frames"],
-                        next_frame_to_execute=next_frame_to_execute + 1,
-                    )
-                    replan_future = None
-
-                future_buffer_depth = _future_buffer_depth(
-                    plan_by_frame,
-                    next_frame_to_execute=next_frame_to_execute + 1,
-                )
-                if replan_future is None:
-                    replan_future = _maybe_submit_planner_job(
-                        executor=executor,
-                        planner_mode=args.planner_mode,
-                        pending_history=pending_history,
-                        future_buffer_depth=future_buffer_depth,
-                        runner=runner,
-                        history_base_session=history_base_session,
-                        current_chunk_session=current_chunk_session,
-                        prompt=prompt,
-                        config=config,
-                        frontend_device=frontend_device,
-                        runtime_device=runtime_device,
-                        buffer_tail_session=buffer_tail_session,
-                        seed_base=args.seed,
-                    )
-                elif replan_future is not None:
-                    skipped_replan_submissions += 1
-                next_frame_to_execute += 1
-
-            if replan_future is not None and replan_future.done():
-                replan_result = replan_future.result()
-                if replan_result["job_kind"] == "history_replan":
-                    replan_records.append(replan_result["trace"])
-                else:
-                    extension_records.append(replan_result["trace"])
-
-        live_wall_time_s = last_action_end_monotonic - live_start_monotonic if next_action_index > 0 else 0.0
-        summary = build_live_rollout_summary(
-            action_records=action_records,
-            replan_records=replan_records,
-            target_action_hz=args.target_action_hz,
-            live_wall_time_s=live_wall_time_s,
-            startup_prepare_s=startup_prepare_s,
-            startup_infer_s=startup_infer_s,
-            deadline_tolerance_s=deadline_tolerance_s,
-        )
-        summary.update(
-            {
-                "benchmark": args.benchmark,
-                "task_id": int(args.task_id),
-                "prompt": prompt,
-                "episode_idx": int(args.episode_idx),
-                "success": bool(done),
-                "max_frames": int(args.max_frames),
-                "executed_actions": int(next_action_index),
-                "executed_frames": int(len({record["absolute_frame_index"] for record in action_records})),
-                "env_timestep": int(env.env.timestep),
-                "seed": int(args.seed),
-                "runtime_device": str(runtime_device),
-                "frontend_device": str(frontend_device),
-                "transformer_dir": str(config.backbone.transformer_subdir),
-                "reference_assets_device_policy": str(config.backbone.reference_assets_device_policy),
-                "video_num_inference_steps": int(runner.policy_variant.inference_config.video_num_inference_steps),
-                "action_num_inference_steps": int(runner.policy_variant.inference_config.action_num_inference_steps),
-                "guidance_scale": float(runner.policy_variant.inference_config.guidance_scale),
-                "action_guidance_scale": float(runner.policy_variant.inference_config.action_guidance_scale),
-                "planner_mode": args.planner_mode,
-                "deadline_miss_policy": args.deadline_miss_policy,
-                "startup_open_loop_chunks": int(args.startup_open_loop_chunks),
-                "startup_open_loop_s": float(startup_open_loop_s),
-                "skipped_replan_submissions": int(skipped_replan_submissions),
-                "history_replan_count": int(len(replan_records)),
-                "open_loop_extension_count": int(len(extension_records)),
-            }
-        )
-
-        output_stem = _build_output_stem(
-            root=Path(args.output_dir),
-            benchmark_name=args.benchmark,
-            task_id=args.task_id,
-            prompt=prompt,
-            episode_idx=args.episode_idx,
-            suffix=args.suffix,
-        )
-        output_stem.parent.mkdir(parents=True, exist_ok=True)
-        video_frames = _build_realtime_video_frames(
-            action_video_records=action_video_records,
-            target_action_hz=args.target_action_hz,
-            action_per_frame=action_per_frame,
-        )
-        video_path = output_stem.with_suffix(".mp4")
-        imageio.mimsave(
-            video_path,
-            video_frames,
-            fps=float(args.video_fps or args.target_action_hz),
-        )
-        summary["video_path"] = str(video_path.resolve())
-
-        summary_path = output_stem.with_suffix(".json")
-        action_trace_path = output_stem.with_name(f"{output_stem.stem}_actions.jsonl")
-        replan_trace_path = output_stem.with_name(f"{output_stem.stem}_replans.jsonl")
-        extension_trace_path = output_stem.with_name(f"{output_stem.stem}_extensions.jsonl")
-        load_report_path = output_stem.with_name(f"{output_stem.stem}_load_report.json")
-        summary["summary_path"] = str(summary_path.resolve())
-        summary["action_trace_path"] = str(action_trace_path.resolve())
-        summary["replan_trace_path"] = str(replan_trace_path.resolve())
-        summary["extension_trace_path"] = str(extension_trace_path.resolve())
-        summary["load_report_path"] = str(load_report_path.resolve())
-        _write_jsonl(action_trace_path, action_records)
-        _write_jsonl(replan_trace_path, replan_records)
-        _write_jsonl(extension_trace_path, extension_records)
-        load_report_path.write_text(json.dumps(component_report, indent=2), encoding="utf-8")
-        summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-
-        print(json.dumps(summary, indent=2))
-    finally:
-        env.close()
+@contextmanager
+def _isolated_torch_rng(seed: int | None, *devices: torch.device):
+    if seed is None:
+        yield
+        return
+    cuda_devices: list[int] = []
+    for raw_device in devices:
+        device = torch.device(raw_device)
+        if device.type != "cuda" or not torch.cuda.is_available():
+            continue
+        device_index = torch.cuda.current_device() if device.index is None else int(device.index)
+        if device_index not in cuda_devices:
+            cuda_devices.append(device_index)
+    with torch.random.fork_rng(devices=cuda_devices, enabled=True):
+        torch.manual_seed(int(seed))
+        yield
 
 
 def _apply_inference_overrides(
@@ -569,6 +88,7 @@ def _apply_inference_overrides(
             float(action_guidance_scale),
         )
 
+
 def _chunk_to_planned_frames(
     *,
     first_chunk,
@@ -576,6 +96,7 @@ def _chunk_to_planned_frames(
     action_per_frame: int,
     source: str,
     ready_monotonic_s: float,
+    generation_frame_start: int | None = None,
 ) -> list[PlannedFrameAction]:
     if first_chunk.raw_chunk_action_pred is None:
         raise RuntimeError("Exact runner did not produce raw 7D LIBERO actions.")
@@ -585,9 +106,14 @@ def _chunk_to_planned_frames(
         f=frame_chunk_size,
         a=action_per_frame,
     )
+    resolved_generation_frame_start = (
+        int(first_chunk.debug.get("generation_frame_start", 0))
+        if generation_frame_start is None
+        else int(generation_frame_start)
+    )
     return make_planned_frame_actions(
         raw_actions.detach().to(dtype=torch.float32).cpu().numpy(),
-        generation_frame_start=int(first_chunk.debug.get("generation_frame_start", 0)),
+        generation_frame_start=resolved_generation_frame_start,
         source=source,
         planner_step_index=int(first_chunk.session.policy_state.step_index),
         ready_monotonic_s=ready_monotonic_s,
@@ -631,6 +157,34 @@ def _future_buffer_depth(
     return max(0, max(int(frame_id) for frame_id in plan_by_frame) - int(next_frame_to_execute) + 1)
 
 
+def _should_submit_planner_job(
+    *,
+    planner_mode: str,
+    has_history: bool,
+    future_buffer_depth: int,
+    has_buffer_tail_session: bool,
+) -> bool:
+    if planner_mode == "history_only":
+        return has_history
+    if planner_mode == "async_buffer":
+        if has_buffer_tail_session and future_buffer_depth <= 3:
+            return True
+        if has_history:
+            return True
+        return has_buffer_tail_session and future_buffer_depth <= 6
+    if planner_mode == "async_history_first":
+        return has_history or (has_buffer_tail_session and future_buffer_depth <= 6)
+    if planner_mode == "async_mix":
+        if has_history and future_buffer_depth >= 2:
+            return True
+        if has_buffer_tail_session and future_buffer_depth <= 3:
+            return True
+        if has_history:
+            return True
+        return has_buffer_tail_session and future_buffer_depth <= 6
+    raise ValueError(f"Unsupported planner_mode={planner_mode!r}.")
+
+
 def _maybe_submit_planner_job(
     *,
     executor: ThreadPoolExecutor,
@@ -647,6 +201,13 @@ def _maybe_submit_planner_job(
     buffer_tail_session,
     seed_base: int | None = None,
 ) -> Future[dict[str, Any]] | None:
+    if not _should_submit_planner_job(
+        planner_mode=planner_mode,
+        has_history=bool(pending_history),
+        future_buffer_depth=future_buffer_depth,
+        has_buffer_tail_session=buffer_tail_session is not None,
+    ):
+        return None
     history_payload = [
         _copy_history_record_for_worker(record)
         for record in pending_history
@@ -672,6 +233,7 @@ def _maybe_submit_planner_job(
                 runner=runner,
                 session=buffer_tail_session,
                 config=config,
+                runtime_device=runtime_device,
                 job_seed=_job_seed_for_session(seed_base, buffer_tail_session),
             )
         if history_payload:
@@ -692,6 +254,7 @@ def _maybe_submit_planner_job(
                 runner=runner,
                 session=buffer_tail_session,
                 config=config,
+                runtime_device=runtime_device,
                 job_seed=_job_seed_for_session(seed_base, buffer_tail_session),
             )
         return None
@@ -714,6 +277,7 @@ def _maybe_submit_planner_job(
                 runner=runner,
                 session=buffer_tail_session,
                 config=config,
+                runtime_device=runtime_device,
                 job_seed=_job_seed_for_session(seed_base, buffer_tail_session),
             )
         return None
@@ -736,6 +300,7 @@ def _maybe_submit_planner_job(
                 runner=runner,
                 session=buffer_tail_session,
                 config=config,
+                runtime_device=runtime_device,
                 job_seed=_job_seed_for_session(seed_base, buffer_tail_session),
             )
         if history_payload:
@@ -756,6 +321,7 @@ def _maybe_submit_planner_job(
                 runner=runner,
                 session=buffer_tail_session,
                 config=config,
+                runtime_device=runtime_device,
                 job_seed=_job_seed_for_session(seed_base, buffer_tail_session),
             )
         return None
@@ -875,9 +441,8 @@ def _run_replan_job(
 ) -> dict[str, Any]:
     if not history_records:
         raise ValueError("Realtime replan requires at least one observed history frame.")
-    if job_seed is not None:
-        seed_everywhere(int(job_seed))
     observed_frame_index = int(history_records[-1]["absolute_frame_index"])
+    raw_observation_count = _count_history_raw_observations(history_records)
     history_views = [
         {key: np.array(value, copy=True) for key, value in obs.items()}
         for obs in _history_records_to_obs_sequence(history_records)
@@ -887,7 +452,7 @@ def _run_replan_job(
         [np.asarray(record["raw_actions"], dtype=np.float32) for record in history_records],
         axis=0,
     )
-    with torch.inference_mode():
+    with _isolated_torch_rng(job_seed, frontend_device, runtime_device), torch.inference_mode():
         prepare_t0 = time.perf_counter()
         prepared = _prepare_history_runtime_inputs(
             runner,
@@ -921,14 +486,19 @@ def _run_replan_job(
         infer_s = time.perf_counter() - infer_t0
 
     ready_monotonic_s = time.perf_counter()
+    # The exact runtime's internal frame-start metadata drifts with raw
+    # observation count during cache warmup, but the realtime scheduler needs
+    # the next executable chunk to remain aligned to the observed LIBERO frame.
+    generation_frame_start = observed_frame_index + 1
+    model_generation_frame_start = int(chunk.debug.get("generation_frame_start", generation_frame_start))
     planned_frames = _chunk_to_planned_frames(
         first_chunk=chunk,
         frame_chunk_size=int(config.inference.frame_chunk_size),
         action_per_frame=int(config.policy_variant.action_per_frame),
         source="history_replan",
         ready_monotonic_s=ready_monotonic_s,
+        generation_frame_start=generation_frame_start,
     )
-    generation_frame_start = int(chunk.debug.get("generation_frame_start", observed_frame_index))
     return {
         "job_kind": "history_replan",
         "session": chunk.session,
@@ -943,7 +513,7 @@ def _run_replan_job(
             "job_kind": "history_replan",
             "observed_frame_index": int(observed_frame_index),
             "history_frame_count": int(len(history_records)),
-            "raw_observation_count": int(len(history_views)),
+            "raw_observation_count": int(raw_observation_count),
             "precomputed_video_latent_frames": (
                 0
                 if precomputed_video_latents is None
@@ -955,6 +525,8 @@ def _run_replan_job(
             "session_step_before": int(session.policy_state.step_index),
             "session_step_after": int(chunk.session.policy_state.step_index),
             "generation_frame_start": generation_frame_start,
+            "model_generation_frame_start": model_generation_frame_start,
+            "session_frame_start_after_model": int(chunk.session.policy_state.cache.get("frame_start", -1)),
             "planned_frame_ids": [int(plan.absolute_frame_index) for plan in planned_frames],
             "prepare_s": float(prepare_s),
             "warmup_s": float(warmup_s),
@@ -971,11 +543,10 @@ def _run_extension_job(
     runner,
     session,
     config,
+    runtime_device: torch.device,
     job_seed: int | None = None,
 ) -> dict[str, Any]:
-    if job_seed is not None:
-        seed_everywhere(int(job_seed))
-    with torch.inference_mode():
+    with _isolated_torch_rng(job_seed, runtime_device), torch.inference_mode():
         infer_t0 = time.perf_counter()
         chunk = runner.infer_chunk(session=session, advance_frame_start=True)
         _synchronize_devices(chunk.chunk_action_pred.device)
@@ -1069,6 +640,17 @@ def _history_records_to_obs_sequence(history_records: list[dict[str, Any]]) -> l
             }
         )
     return history_views
+
+
+def _count_history_raw_observations(history_records: list[dict[str, Any]]) -> int:
+    raw_count = 0
+    for record in history_records:
+        obs_sequence = record.get("obs_sequence")
+        if obs_sequence is not None:
+            raw_count += len(obs_sequence)
+        elif "obs" in record and not isinstance(record.get("video_latents"), torch.Tensor):
+            raw_count += 1
+    return int(raw_count)
 
 
 def _history_records_to_precomputed_video_latents(history_records: list[dict[str, Any]]) -> torch.Tensor | None:
@@ -1188,12 +770,130 @@ def _build_realtime_video_frames(
     return frames
 
 
+def _build_fallback_timeline_video_frames(
+    *,
+    action_video_records: list[dict[str, Any]],
+    target_action_hz: float,
+    action_per_frame: int,
+) -> list[np.ndarray]:
+    frames: list[np.ndarray] = []
+    for record_index, record in enumerate(action_video_records):
+        obs = record["obs"]
+        agentview = np.ascontiguousarray(obs[exact_viz.LIBERO_OBS_KEYS[0]])
+        wrist = np.ascontiguousarray(obs[exact_viz.LIBERO_OBS_KEYS[1]])
+        row_real = np.hstack([agentview, wrist])
+        titled = exact_viz._with_title(
+            Image.fromarray(np.ascontiguousarray(row_real)),
+            "Live LIBERO fallback timeline (AgentView / Wrist)",
+        )
+        source_color = _fallback_timeline_record_color(record)
+        bordered = Image.new("RGB", (titled.width + 12, titled.height + 12), color=source_color)
+        bordered.paste(titled, (6, 6))
+
+        info_panel = Image.new("RGB", (bordered.width, 164), color=(0, 0, 0))
+        draw = ImageDraw.Draw(info_panel)
+        source = str(record.get("source", "unknown"))
+        history_decision = str(record.get("frame_history_decision", "not_recorded"))
+        generation_lag = (
+            "fallback"
+            if record.get("generation_lag_frames") is None
+            else f"{int(record['generation_lag_frames'])} frame(s)"
+        )
+        generation_frame = "NA" if record.get("generation_frame_start") is None else str(record["generation_frame_start"])
+        ready_delay = (
+            "NA"
+            if record.get("plan_ready_delay_s") is None
+            else f"{float(record['plan_ready_delay_s']):.2f}s"
+        )
+        lines = [
+            (
+                f"Action {int(record['action_index']) + 1} | Frame {int(record['absolute_frame_index'])} "
+                f"[{int(record['action_offset']) + 1}/{action_per_frame}] | Target {target_action_hz:.1f} Hz"
+            ),
+            (
+                f"Source: {source} | History decision: {history_decision} | "
+                f"Frame has fallback: {bool(record.get('frame_contains_fallback_action', source.startswith('fallback_')))}"
+            ),
+            (
+                f"Gen frame: {generation_frame} | Gen lag: {generation_lag} | "
+                f"Ready delay: {ready_delay} | Late: {1000.0 * float(record['lateness_s']):.1f} ms"
+            ),
+            _format_fallback_timeline_action(record.get("action")),
+            "Timeline colors: red fallback, orange hidden/washout, blue history, green extension, violet startup.",
+        ]
+        for index, line in enumerate(lines):
+            fill = source_color if index == 1 else (255, 255, 255)
+            draw.text((10, 10 + index * 28), line, fill=fill)
+
+        timeline = _build_fallback_timeline_strip(
+            action_video_records=action_video_records,
+            width=bordered.width,
+            height=42,
+            current_index=record_index,
+        )
+        full_frame = np.vstack(
+            [
+                np.array(bordered, copy=True),
+                np.array(info_panel, copy=True),
+                np.array(timeline, copy=True),
+            ]
+        )
+        frames.append(np.ascontiguousarray(full_frame))
+    return frames
+
+
+def _fallback_timeline_record_color(record: dict[str, Any]) -> tuple[int, int, int]:
+    source = str(record.get("source", ""))
+    history_decision = str(record.get("frame_history_decision", ""))
+    if source.startswith("fallback_"):
+        return (230, 50, 40)
+    if history_decision in {"fallback", "washout"}:
+        return (235, 165, 35)
+    if source == "history_replan":
+        return (70, 150, 255)
+    if source == "open_loop_extension":
+        return (70, 210, 120)
+    if source == "startup_plan":
+        return (175, 150, 255)
+    return (180, 180, 180)
+
+
+def _format_fallback_timeline_action(action: Any) -> str:
+    if action is None:
+        return "Action: NA"
+    values = [float(value) for value in action]
+    delta_values = " ".join(f"{value:+.2f}" for value in values[:6])
+    tail_values = " ".join(f"{value:+.2f}" for value in values[6:])
+    return f"Action delta[0:6]: {delta_values} | absolute[6:]: {tail_values or 'NA'}"
+
+
+def _build_fallback_timeline_strip(
+    *,
+    action_video_records: list[dict[str, Any]],
+    width: int,
+    height: int,
+    current_index: int,
+) -> Image.Image:
+    strip = Image.new("RGB", (int(width), int(height)), color=(18, 18, 18))
+    draw = ImageDraw.Draw(strip)
+    total = max(1, len(action_video_records))
+    bar_top = 8
+    bar_bottom = int(height) - 10
+    for index, record in enumerate(action_video_records):
+        x0 = int(index * int(width) / total)
+        x1 = max(x0 + 1, int((index + 1) * int(width) / total))
+        draw.rectangle(
+            [x0, bar_top, min(int(width) - 1, x1), bar_bottom],
+            fill=_fallback_timeline_record_color(record),
+        )
+    current_x = int(current_index * int(width) / total)
+    draw.line([(current_x, 0), (current_x, int(height) - 1)], fill=(255, 255, 255), width=3)
+    draw.text((10, int(height) - 10), f"{current_index + 1}/{total}", fill=(255, 255, 255))
+    return strip
+
+
 def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         for record in records:
             handle.write(json.dumps(record, sort_keys=True))
             handle.write("\n")
-
-
-if __name__ == "__main__":
-    main()
