@@ -149,6 +149,13 @@ def _pipeline_case_path(case_name: str, tmp_path: Path) -> Path:
             output_name="mot_robotwin_joint_gpu",
             mutate=_mutate_mot_joint_denoise,
         )
+    if case_name == "mot_non_joint":
+        return _write_temp_config(
+            tmp_path,
+            source_name="mot_robotwin_smoke.yaml",
+            output_name="mot_robotwin_non_joint_gpu",
+            mutate=_mutate_mot_non_joint_two_stream,
+        )
     raise ValueError(f"Unsupported GPU sanity pipeline case {case_name!r}.")
 
 
@@ -197,6 +204,18 @@ def _mutate_mot_joint_denoise(raw: dict[str, Any]) -> None:
     policy_variant = raw.setdefault("policy_variant", {})
     policy_variant["runtime_mode"] = MoTRuntimeMode.JOINT_DENOISE.value
     policy_variant["condition_mode"] = MoTConditionMode.FULL_VIDEO.value
+    _cap_inference_steps(raw, steps=2)
+    inference = raw.setdefault("inference", {})
+    inference["video_num_inference_steps"] = 2
+    inference["action_num_inference_steps"] = 2
+    inference["use_cache"] = False
+
+
+def _mutate_mot_non_joint_two_stream(raw: dict[str, Any]) -> None:
+    policy_variant = raw.setdefault("policy_variant", {})
+    policy_variant["runtime_mode"] = MoTRuntimeMode.NON_JOINT_TWO_STREAM.value
+    policy_variant["condition_mode"] = MoTConditionMode.TEACHER_FORCING_COND_VIDEO.value
+    policy_variant["video_can_attend_action"] = False
     _cap_inference_steps(raw, steps=2)
     inference = raw.setdefault("inference", {})
     inference["video_num_inference_steps"] = 2
@@ -331,6 +350,7 @@ def _clear_cuda_between_tests():
         ("post_decoded_video_conditioned", 6),
         ("mot_prefill", 8),
         ("mot_joint", 8),
+        ("mot_non_joint", 8),
     ],
 )
 def test_gpu_method_family_pipeline_train_and_infer_matrix(
@@ -432,6 +452,7 @@ def test_gpu_method4_current_frame_regression_modes_train_only(
         "method4_current_frame_latent",
         "mot_prefill",
         "mot_joint",
+        "mot_non_joint",
     ],
 )
 def test_gpu_method_family_runtime_train_matrix(
@@ -472,6 +493,7 @@ def test_gpu_method_family_runtime_train_matrix(
         ("post_decoded_video_conditioned", "post_decoded_robotwin_video_conditioned"),
         ("mot_prefill", "mot_robotwin_smoke"),
         ("mot_joint", "mot_robotwin_joint_gpu"),
+        ("mot_non_joint", "mot_robotwin_non_joint_gpu"),
     ],
 )
 def test_gpu_method_family_eval_matrix(

@@ -32,7 +32,11 @@ from open_wam.integrations import (  # noqa: E402
 from open_wam.models.policy_variants import PolicyInferContext  # noqa: E402
 from open_wam.models.policy_variants.common import derive_video_condition_sample_seed  # noqa: E402
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
-from open_wam.utils import load_experiment_config, seed_everywhere  # noqa: E402
+from open_wam.utils import (  # noqa: E402
+    load_experiment_config,
+    merge_runtime_config_from_checkpoint,
+    seed_everywhere,
+)
 
 LIBERO_OBS_KEYS = (
     "observation.images.agentview_rgb",
@@ -142,6 +146,11 @@ def main() -> None:
     if not config_path.is_absolute():
         config_path = (REPO_ROOT / config_path).resolve()
     config = load_experiment_config(config_path)
+    checkpoint_path = _resolve_checkpoint_path_from_args_or_config(
+        checkpoint_arg=args.checkpoint,
+        transformer_subdir=str(config.backbone.transformer_subdir),
+    )
+    config, _ = merge_runtime_config_from_checkpoint(config, checkpoint_path)
     if args.video_steps is not None:
         object.__setattr__(config.inference, "video_num_inference_steps", int(args.video_steps))
     if args.action_steps is not None:
@@ -149,10 +158,6 @@ def main() -> None:
     _apply_rollout_chunk_steps_override(config, args.rollout_chunk_steps)
     action_target_representation = ActionTargetRepresentation(config.data.action_target.representation)
 
-    checkpoint_path = _resolve_checkpoint_path_from_args_or_config(
-        checkpoint_arg=args.checkpoint,
-        transformer_subdir=str(config.backbone.transformer_subdir),
-    )
     checkpoint_step_dir = checkpoint_path.parent
     transformer_dir = checkpoint_step_dir / "transformer"
     if transformer_dir.is_dir():
@@ -904,6 +909,9 @@ def _uses_zero_based_generation_start(config) -> bool:
     policy_variant = getattr(config, "policy_variant", None)
     if policy_variant is None:
         return False
+    policy_name = getattr(policy_variant, "name", None)
+    if str(policy_name) == "mot":
+        return True
     train_source = getattr(policy_variant, "train_video_condition_source", None)
     return str(train_source) == "generated_future"
 

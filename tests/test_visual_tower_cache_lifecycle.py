@@ -98,3 +98,46 @@ def test_prefill_exact_video_cache_materializes_self_attention_kv_for_single_str
     assert cache.self_attention_kv[0].value is not None
     assert cache.self_attention_kv[0].key.shape[2] == 2
     assert cache.self_attention_kv[0].value.shape[2] == 2
+    assert not cache.self_attention_kv[0].key.requires_grad
+
+
+def test_exact_video_cache_prefill_accepts_attention_mask_and_trainable_cache() -> None:
+    tower = VisualTower(
+        SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=2,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            max_text_tokens=4,
+            load_wan_vae_frontend=False,
+            load_text_conditioning=False,
+            load_reference_core_weights=False,
+        ),
+        action_dim=4,
+    )
+    observed_prefix = torch.randn(1, 48, 2, 2, 2, requires_grad=True)
+    text_context = torch.zeros(1, 4, 16)
+    attention_mask = torch.tril(torch.ones(2, 2, dtype=torch.bool))
+
+    cache = tower.prefill_exact_video_cache(
+        observed_prefix=observed_prefix,
+        text_context=text_context,
+        frame_start=0,
+        cache_name="unit_test_masked_prefill",
+        attention_mask=attention_mask,
+        detach_cache=False,
+    )
+    flow_pred = tower.predict_video_flow(
+        noisy_latents=observed_prefix.detach(),
+        timesteps=torch.zeros(1, 2),
+        text_context=text_context,
+        attention_mask=attention_mask,
+    )
+
+    assert cache.self_attention_kv[0].key is not None
+    assert cache.self_attention_kv[0].key.requires_grad
+    assert flow_pred.shape == observed_prefix.shape

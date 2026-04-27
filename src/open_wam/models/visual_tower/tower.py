@@ -229,6 +229,7 @@ class VisualTower(nn.Module):
         timesteps: torch.Tensor,
         text_context: torch.Tensor | None,
         frame_start: int = 0,
+        attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Run the shared exact single-stream video path without variant-specific logic."""
 
@@ -278,6 +279,7 @@ class VisualTower(nn.Module):
                     "timesteps": timesteps.to(device=noisy_latents.device, dtype=torch.float32),
                     "grid_id": grid_id,
                     "text_emb": text_context,
+                    "attention_mask": attention_mask,
                 },
                 action_mode=False,
             )
@@ -300,6 +302,8 @@ class VisualTower(nn.Module):
         text_context: torch.Tensor | None,
         frame_start: int = 0,
         cache_name: str = "mot_video_prefill",
+        attention_mask: torch.Tensor | None = None,
+        detach_cache: bool = True,
     ) -> CacheState:
         """Materialize a single-stream video self-attention cache via shared runtime execution."""
 
@@ -349,6 +353,7 @@ class VisualTower(nn.Module):
                 "cache_name": cache_name,
                 "stage": "mot_video_prefill",
                 "tokens_per_frame": int(token_grid.tokens_per_frame),
+                "detach_self_attention_cache": bool(detach_cache),
             },
             self_attention_kv=tuple(),
             cross_attention_kv=tuple(),
@@ -365,6 +370,7 @@ class VisualTower(nn.Module):
                     "timesteps": timesteps,
                     "grid_id": grid_id,
                     "text_emb": text_context,
+                    "attention_mask": attention_mask,
                 },
                 update_cache=0,
                 cache_name=cache_name,

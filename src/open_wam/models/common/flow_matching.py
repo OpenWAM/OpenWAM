@@ -184,16 +184,22 @@ class VideoFlowMatchTrainArtifacts:
     """Train-time noisy video pack for `[B, C_latent, F, H, W]` tensors.
 
     Shapes:
-    - `timesteps`: `[B, F]`
+    - `timesteps`: `[B, F]` (V_noisy copy per-frame timesteps)
     - `noisy_latents`: `[B, C_latent, F, H, W]`
     - `targets`: `[B, C_latent, F, H, W]`
-    - `condition_latents`: `[B, C_latent, F, H, W]`
+    - `condition_latents`: `[B, C_latent, F, H, W]` (V_clean copy; equals
+      GT when no augmentation, slightly noised when `noisy_condition_prob`
+      augmentation fires)
+    - `condition_timesteps`: `[B, F]` (per-frame timesteps matching
+      `condition_latents`; zeros when clean, sampled from the top half of
+      the schedule when augmentation fires)
     """
 
     timesteps: torch.Tensor
     noisy_latents: torch.Tensor
     targets: torch.Tensor
     condition_latents: torch.Tensor
+    condition_timesteps: torch.Tensor
     scheduler: FlowMatchScheduler
 
 
@@ -317,23 +323,33 @@ def build_video_flow_match_train_artifacts(
     noisy_latents = scheduler.add_noise(video_latents, noise, timesteps, t_dim=2)
     targets = scheduler.training_target(video_latents, noise, timesteps)
     condition_latents = video_latents
-    if noisy_condition_prob > 0.0 and torch.rand(1, device=video_latents.device).item() < noisy_condition_prob:
-        condition_timestep_ids = sample_timestep_id(
-            batch_size=batch_size,
-            sample_shape=(num_frames,),
-            min_timestep_bd=0.5,
-            max_timestep_bd=1.0,
-            num_train_timesteps=training_config.video_num_train_timesteps,
-            device=video_latents.device,
-        )
-        condition_timesteps = scheduler.timesteps.to(device=video_latents.device)[condition_timestep_ids]
-        condition_noise = torch.randn_like(video_latents)
-        condition_latents = scheduler.add_noise(video_latents, condition_noise, condition_timesteps, t_dim=2)
+    condition_timesteps = torch.zeros_like(timesteps)
+    if noisy_condition_prob > 0.0:
+        # Augmentation decision must be identical across ranks under FSDP:
+        # different branches produce different autograd-graph shapes, which
+        # desynchronizes FSDP's per-rank backward all_gather schedule and
+        # triggers NCCL watchdog timeouts. Sample on rank 0 and broadcast.
+        decision = torch.rand(1, device=video_latents.device)
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.broadcast(decision, src=0)
+        if decision.item() < noisy_condition_prob:
+            condition_timestep_ids = sample_timestep_id(
+                batch_size=batch_size,
+                sample_shape=(num_frames,),
+                min_timestep_bd=0.5,
+                max_timestep_bd=1.0,
+                num_train_timesteps=training_config.video_num_train_timesteps,
+                device=video_latents.device,
+            )
+            condition_timesteps = scheduler.timesteps.to(device=video_latents.device)[condition_timestep_ids]
+            condition_noise = torch.randn_like(video_latents)
+            condition_latents = scheduler.add_noise(video_latents, condition_noise, condition_timesteps, t_dim=2)
     return VideoFlowMatchTrainArtifacts(
         timesteps=timesteps,
         noisy_latents=noisy_latents,
         targets=targets,
         condition_latents=condition_latents,
+        condition_timesteps=condition_timesteps,
         scheduler=scheduler,
     )
 

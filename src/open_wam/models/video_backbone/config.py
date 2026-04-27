@@ -6,6 +6,7 @@ from typing import Literal
 from open_wam.configs.enums import (
     AttentionMode,
     BackboneImplementation,
+    ExportedRuntimeActionInitMode,
     ReferenceAssetsDevicePolicy,
     ReferenceCoreInitMode,
     coerce_fields,
@@ -78,6 +79,14 @@ class SharedVideoTransformerConfig:
     load_text_conditioning: bool = False
     load_reference_core_weights: bool = False
     reference_core_init_mode: ReferenceCoreInitMode = ReferenceCoreInitMode.FULL
+    # Optional secondary root used by mixed initialization modes that borrow a
+    # small subset of calibrated video-core weights from a compatible checkpoint.
+    reference_norm2_source_path: str | None = None
+    # When loading an exported runtime backbone, choose whether action/runtime
+    # modules come from that checkpoint or remain randomly initialized.
+    exported_runtime_action_init_mode: ExportedRuntimeActionInitMode = (
+        ExportedRuntimeActionInitMode.LOAD_FROM_CHECKPOINT
+    )
     # `runtime`: keep reference VAE/text assets on the active runtime device.
     # `cpu_offload`: mirror Heng's eval server and keep them on CPU.
     reference_assets_device_policy: ReferenceAssetsDevicePolicy = ReferenceAssetsDevicePolicy.RUNTIME
@@ -89,6 +98,7 @@ class SharedVideoTransformerConfig:
             self,
             enum_fields={
                 "attn_mode": AttentionMode,
+                "exported_runtime_action_init_mode": ExportedRuntimeActionInitMode,
                 "reference_assets_device_policy": ReferenceAssetsDevicePolicy,
                 "reference_core_init_mode": ReferenceCoreInitMode,
             },

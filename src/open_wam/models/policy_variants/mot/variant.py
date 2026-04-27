@@ -1,20 +1,26 @@
 from __future__ import annotations
 
+import os
+
 import torch
+import torch.nn.functional as F
 
 from open_wam.models.common.flow_matching import (
     build_video_flow_match_train_artifacts,
     build_video_flow_match_inference_scheduler,
     build_action_flow_match_inference_scheduler,
     build_action_flow_match_train_artifacts,
+    build_frame_aligned_action_flow_match_train_artifacts,
     denoised_actions_from_flow,
     denoised_video_latents_from_flow,
 )
 from open_wam.configs import InferenceConfig, MoTPolicyConfig, MoTRuntimeMode, TrainingConfig
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
+from open_wam.models.visual_tower.grid_ids import build_action_grid_ids
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 
 from ..base import PolicyVariant
+from ..common.layouts import expand_previous_action
 from ..contracts import (
     PolicyInferContext,
     PolicyInferOutput,
@@ -24,21 +30,81 @@ from ..contracts import (
     PolicyTrainOutput,
 )
 from .contracts import (
+    MoTActionCache,
+    MoTActionLayerCache,
     MoTActionTrainArtifacts,
     MoTInferArtifacts,
     MoTRuntimeState,
     MoTTrainArtifacts,
+    MoTVideoCache,
+    MoTVideoLayerCache,
     MoTVideoTrainArtifacts,
 )
 from .modules import MoTActionExpert, init_action_expert_from_video_core
 from .runtime import (
+    append_mot_action_cache,
+    append_mot_video_cache,
+    build_chunk_causal_video_mask,
     build_mot_attention_mask,
+    build_mot_inference_action_attention_mask,
+    build_packed_action_attention_mask,
+    build_packed_video_self_attention_mask,
     forward_joint_video_action_denoise,
+    forward_action_with_video_and_action_cache,
     forward_action_with_video_cache,
+    forward_packed_action_with_video_cache,
+    forward_packed_video_denoise,
+    move_mot_action_cache,
     move_mot_video_cache,
     prefill_video_kv_cache,
+    trim_mot_action_cache_prefix,
+    trim_mot_action_cache_tail,
+    trim_mot_video_cache_tail,
     resolve_mot_condition_latents,
 )
+
+# LingBot-reference slot-pool window used by both `_initialize_reference_cache`
+# and the Method-1-aligned video-cache trim. Method 1's per-stream effective
+# lookback is `(attn_window // 2) * frame_chunk_size` integer frames (60 at
+# attn_window=30, frame_chunk_size=4).
+_MOT_SLOT_POOL_ATTN_WINDOW = 30
+
+
+def _rewind_runtime_action_cache_to_frame(
+    runtime_state: MoTRuntimeState,
+    *,
+    absolute_frame_start: int,
+    action_tokens_per_frame: int,
+) -> None:
+    if action_tokens_per_frame <= 0:
+        raise ValueError(
+            "MoT action-cache rewind requires positive action_tokens_per_frame, "
+            f"got {action_tokens_per_frame}."
+        )
+    target_frame = int(absolute_frame_start)
+    action_cache = runtime_state.action_cache
+    if action_cache is None:
+        runtime_state.action_cache_start_frame = target_frame
+        return
+    if action_cache.action_seq_len % action_tokens_per_frame != 0:
+        raise ValueError(
+            "MoT action cache length must be frame-aligned before rewind, "
+            f"got action_seq_len={action_cache.action_seq_len}, "
+            f"action_tokens_per_frame={action_tokens_per_frame}."
+        )
+    cache_start_frame = int(runtime_state.action_cache_start_frame)
+    keep_frames = target_frame - cache_start_frame
+    if keep_frames <= 0:
+        runtime_state.action_cache = None
+        runtime_state.action_cache_start_frame = target_frame
+        return
+    cached_frames = action_cache.action_seq_len // action_tokens_per_frame
+    if keep_frames >= cached_frames:
+        return
+    runtime_state.action_cache = trim_mot_action_cache_prefix(
+        action_cache,
+        max_action_seq_len=int(keep_frames * action_tokens_per_frame),
+    )
 
 
 class MoTPolicyVariant(PolicyVariant):
@@ -89,28 +155,100 @@ class MoTPolicyVariant(PolicyVariant):
             eps=backbone_config.latent_norm_eps,
         )
         self._action_expert_initialized = False
+        self._train_video_cache_detach_by_core_id: dict[int, bool] = {}
 
-    def _build_video_train_rollout(
+    def _should_detach_train_video_cache(self, visual_tower: VisualTower) -> bool:
+        core_id = id(visual_tower.core)
+        detach_cache = self._train_video_cache_detach_by_core_id.get(core_id)
+        if detach_cache is None:
+            detach_cache = not any(parameter.requires_grad for parameter in visual_tower.core.parameters())
+            self._train_video_cache_detach_by_core_id[core_id] = detach_cache
+        return bool(detach_cache)
+
+    def _resolve_train_loss_frame_range(
         self,
         *,
-        visual_tower: VisualTower,
-        visual_outputs: VisualStageOutputs,
-    ) -> MoTVideoTrainArtifacts:
-        video_latents = visual_outputs.frontend.video_latents
-        observed_prefix_frames = int(self.config.video_prefix_frames)
-        if video_latents.shape[2] <= observed_prefix_frames:
+        batch: PolicyTrainBatch,
+        observed_num_frames: int,
+    ) -> tuple[int, int] | None:
+        metadata = batch.extra.get("metadata")
+        if not isinstance(metadata, tuple) or not metadata:
+            return None
+        metadata_start = metadata[0].get("loss_frame_start")
+        metadata_end = metadata[0].get("loss_frame_end")
+        if metadata_start is None and metadata_end is None:
+            return None
+        loss_frame_start = 0 if metadata_start is None else int(metadata_start)
+        loss_frame_end = observed_num_frames if metadata_end is None else int(metadata_end)
+        if loss_frame_start < 0 or loss_frame_end < loss_frame_start or loss_frame_end > observed_num_frames:
             raise ValueError(
-                "MoT joint video training requires at least one future frame after the observed prefix, "
-                f"got video_latents.shape={tuple(video_latents.shape)}, video_prefix_frames={observed_prefix_frames}."
+                "Invalid MoT train loss-frame metadata, "
+                f"got start={loss_frame_start}, end={loss_frame_end}, observed_num_frames={observed_num_frames}."
             )
-        video_artifacts = build_video_flow_match_train_artifacts(
-            video_latents,
-            training_config=self.training_config,
+        return loss_frame_start, loss_frame_end
+
+    def _resolve_train_history_frames(
+        self,
+        *,
+        batch: PolicyTrainBatch,
+        observed_num_frames: int,
+    ) -> int:
+        metadata = batch.extra.get("metadata")
+        resolved_history_frames: int | None = None
+        if isinstance(metadata, tuple) and metadata:
+            raw_history_frames = metadata[0].get("history_frames")
+            if raw_history_frames is not None:
+                resolved_history_frames = int(raw_history_frames)
+        loss_frame_range = self._resolve_train_loss_frame_range(
+            batch=batch,
+            observed_num_frames=observed_num_frames,
         )
-        noisy_latents = video_artifacts.noisy_latents.clone()
-        timesteps = video_artifacts.timesteps.clone()
-        noisy_latents[:, :, :observed_prefix_frames] = video_latents[:, :, :observed_prefix_frames]
-        timesteps[:, :observed_prefix_frames] = 0.0
+        if loss_frame_range is not None:
+            resolved_history_frames = int(loss_frame_range[0])
+        if resolved_history_frames is None:
+            resolved_history_frames = int(self.config.video_prefix_frames)
+        if resolved_history_frames <= 0 or resolved_history_frames >= observed_num_frames:
+            raise ValueError(
+                "MoT training requires at least one history frame and one current frame, "
+                f"got resolved_history_frames={resolved_history_frames}, observed_num_frames={observed_num_frames}."
+            )
+        return resolved_history_frames
+
+    def _build_effective_action_mask(
+        self,
+        *,
+        batch: PolicyTrainBatch,
+        observed_num_frames: int,
+    ) -> torch.Tensor | None:
+        base_mask = batch.action_mask
+        loss_frame_range = self._resolve_train_loss_frame_range(
+            batch=batch,
+            observed_num_frames=observed_num_frames,
+        )
+        if loss_frame_range is None:
+            return base_mask
+        if batch.actions.shape[1] % max(1, observed_num_frames) != 0:
+            return base_mask
+        action_per_frame = batch.actions.shape[1] // max(1, observed_num_frames)
+        if action_per_frame <= 0:
+            return base_mask
+        loss_frame_start, loss_frame_end = loss_frame_range
+        effective_mask = (
+            torch.ones_like(batch.actions, dtype=torch.float32)
+            if base_mask is None
+            else base_mask.to(dtype=torch.float32)
+        )
+        frame_mask = torch.zeros_like(effective_mask)
+        frame_mask[:, loss_frame_start * action_per_frame : loss_frame_end * action_per_frame] = 1.0
+        return effective_mask * frame_mask
+
+    def _build_effective_video_loss_mask(
+        self,
+        *,
+        video_latents: torch.Tensor,
+        batch: PolicyTrainBatch,
+        default_history_frames: int,
+    ) -> torch.Tensor:
         future_loss_mask = torch.zeros(
             video_latents.shape[0],
             1,
@@ -120,12 +258,172 @@ class MoTPolicyVariant(PolicyVariant):
             device=video_latents.device,
             dtype=video_latents.dtype,
         )
-        future_loss_mask[:, :, observed_prefix_frames:] = 1.0
+        loss_frame_range = self._resolve_train_loss_frame_range(
+            batch=batch,
+            observed_num_frames=int(video_latents.shape[2]),
+        )
+        if loss_frame_range is None:
+            future_loss_mask[:, :, default_history_frames:] = 1.0
+            return future_loss_mask
+        loss_frame_start, loss_frame_end = loss_frame_range
+        future_loss_mask[:, :, loss_frame_start:loss_frame_end] = 1.0
+        return future_loss_mask
+
+    def _resolve_train_action_tokens_per_frame(
+        self,
+        *,
+        batch: PolicyTrainBatch,
+        observed_num_frames: int,
+    ) -> int | None:
+        if observed_num_frames <= 0:
+            return None
+        if batch.actions.shape[1] % observed_num_frames != 0:
+            return None
+        action_tokens_per_frame = batch.actions.shape[1] // observed_num_frames
+        return action_tokens_per_frame if action_tokens_per_frame > 0 else None
+
+    def _resolve_train_sampled_chunk_size(
+        self,
+        *,
+        batch: PolicyTrainBatch,
+        observed_num_frames: int,
+    ) -> int | None:
+        metadata = batch.extra.get("metadata")
+        if not isinstance(metadata, tuple) or not metadata:
+            return None
+        sampled_chunk_size = metadata[0].get("sampled_chunk_size")
+        if sampled_chunk_size is None:
+            return None
+        resolved_chunk_size = int(sampled_chunk_size)
+        if resolved_chunk_size <= 0:
+            return None
+        return min(resolved_chunk_size, observed_num_frames)
+
+    def _resolve_train_sampled_window_size(
+        self,
+        *,
+        batch: PolicyTrainBatch,
+    ) -> int | None:
+        metadata = batch.extra.get("metadata")
+        if not isinstance(metadata, tuple) or not metadata:
+            return None
+        sampled_window_size = metadata[0].get("sampled_window_size")
+        if sampled_window_size is None:
+            return None
+        resolved_window_size = int(sampled_window_size)
+        return resolved_window_size if resolved_window_size > 0 else None
+
+    def _resolve_train_frame_shift(
+        self,
+        *,
+        batch: PolicyTrainBatch,
+    ) -> int:
+        metadata = batch.extra.get("metadata")
+        if not isinstance(metadata, tuple) or not metadata:
+            return 0
+        raw_frame_shift = metadata[0].get("frame_shift")
+        return 0 if raw_frame_shift is None else int(raw_frame_shift)
+
+    def _sample_full_segment_train_geometry(
+        self,
+        *,
+        observed_num_frames: int,
+        device: torch.device,
+    ) -> tuple[int, int, int]:
+        # FULL_SEGMENT data path: data adapter does not pre-sample chunk/window
+        # geometry, so the variant draws it per-step the same way method-1 does
+        # in `prepare_lingbot_parallel_train_artifacts` — chunk_size in
+        # [1, training_config.chunk_size] and window_size in
+        # [4, training_config.window_size]. history_frames is then drawn
+        # uniformly over chunk-aligned positions inside the episode so the
+        # action expert sees every (history_len, current_chunk) pair.
+        cs_max = max(1, int(self.training_config.chunk_size))
+        sampled_chunk_size = int(torch.randint(1, cs_max + 1, (1,), device=device).item())
+        if int(self.training_config.window_size) >= 4:
+            sampled_window_size = int(
+                torch.randint(4, int(self.training_config.window_size) + 1, (1,), device=device).item()
+            )
+        else:
+            sampled_window_size = max(1, int(self.training_config.window_size))
+        max_history_chunks = max(1, observed_num_frames // sampled_chunk_size - 1)
+        history_chunks = int(torch.randint(1, max_history_chunks + 1, (1,), device=device).item())
+        history_frames = max(1, min(history_chunks * sampled_chunk_size, observed_num_frames - sampled_chunk_size))
+        return sampled_chunk_size, sampled_window_size, history_frames
+
+    def _build_action_grid_ids_for_sequence(
+        self,
+        *,
+        batch_size: int,
+        seq_len: int,
+        action_tokens_per_frame: int,
+        device: torch.device,
+        frame_shift: int,
+    ) -> torch.Tensor:
+        if seq_len <= 0:
+            raise ValueError(f"Expected positive action seq_len, got {seq_len}.")
+        if action_tokens_per_frame <= 0 or seq_len % action_tokens_per_frame != 0:
+            raise ValueError(
+                "MoT action grid ids require `seq_len` to divide by `action_tokens_per_frame`, "
+                f"got seq_len={seq_len}, action_tokens_per_frame={action_tokens_per_frame}."
+            )
+        num_frames = seq_len // action_tokens_per_frame
+        return build_action_grid_ids(
+            num_frames=num_frames,
+            action_per_frame=action_tokens_per_frame,
+            device=device,
+            frame_shift=float(frame_shift),
+        )[None].expand(batch_size, -1, -1)
+
+    def _apply_train_history_action_condition(
+        self,
+        *,
+        train_artifacts,
+        actions: torch.Tensor,
+        observed_num_frames: int,
+        history_frames: int,
+    ):
+        if observed_num_frames <= 0 or actions.shape[1] % observed_num_frames != 0:
+            return train_artifacts
+        action_tokens_per_frame = actions.shape[1] // observed_num_frames
+        if action_tokens_per_frame <= 0:
+            return train_artifacts
+        history_action_tokens = int(history_frames * action_tokens_per_frame)
+        if history_action_tokens <= 0:
+            return train_artifacts
+        history_action_tokens = min(history_action_tokens, int(actions.shape[1]))
+        train_artifacts.noisy_actions[:, :history_action_tokens] = actions[:, :history_action_tokens]
+        train_artifacts.timesteps[:, :history_action_tokens] = 0.0
+        return train_artifacts
+
+    def _build_video_train_rollout(
+        self,
+        *,
+        visual_tower: VisualTower,
+        visual_outputs: VisualStageOutputs,
+        batch: PolicyTrainBatch,
+        history_frames: int,
+        attention_mask: torch.Tensor | None = None,
+    ) -> MoTVideoTrainArtifacts:
+        video_latents = visual_outputs.frontend.video_latents
+        video_artifacts = build_video_flow_match_train_artifacts(
+            video_latents,
+            training_config=self.training_config,
+        )
+        noisy_latents = video_artifacts.noisy_latents.clone()
+        timesteps = video_artifacts.timesteps.clone()
+        noisy_latents[:, :, :history_frames] = video_latents[:, :, :history_frames]
+        timesteps[:, :history_frames] = 0.0
+        future_loss_mask = self._build_effective_video_loss_mask(
+            video_latents=video_latents,
+            batch=batch,
+            default_history_frames=history_frames,
+        )
         flow_pred = visual_tower.predict_video_flow(
             noisy_latents=noisy_latents,
             timesteps=timesteps,
             text_context=visual_outputs.frontend.conditioning.text_context,
             frame_start=0,
+            attention_mask=attention_mask,
         )
         predicted_latents = denoised_video_latents_from_flow(
             noisy_latents=noisy_latents,
@@ -189,6 +487,12 @@ class MoTPolicyVariant(PolicyVariant):
                 visual_outputs=visual_outputs,
                 prepared_inputs=prepared_inputs,
             )
+        if self.config.runtime_mode == MoTRuntimeMode.NON_JOINT_TWO_STREAM:
+            return self._forward_train_non_joint_two_stream(
+                visual_tower=visual_tower,
+                visual_outputs=visual_outputs,
+                prepared_inputs=prepared_inputs,
+            )
         return self._forward_train_prefill_action_denoise(
             visual_tower=visual_tower,
             visual_outputs=visual_outputs,
@@ -204,33 +508,74 @@ class MoTPolicyVariant(PolicyVariant):
         self._maybe_initialize_action_expert(visual_tower)
         video_latents = prepared_inputs.variant_inputs["video_latents"]
         text_context = prepared_inputs.variant_inputs["text_context"]
+        history_frames = self._resolve_train_history_frames(
+            batch=prepared_inputs.batch,
+            observed_num_frames=int(video_latents.shape[2]),
+        )
         video_train_artifacts = build_video_flow_match_train_artifacts(
             video_latents,
             training_config=self.training_config,
         )
-        condition_latents = resolve_mot_condition_latents(
-            video_latents=video_latents,
-            condition_mode=self.config.condition_mode,
-            video_prefix_frames=self.config.video_prefix_frames,
-            teacher_forcing_video_noise_prob=self.config.teacher_forcing_video_noise_prob,
-            training=True,
-            scheduler=video_train_artifacts.scheduler,
+        effective_action_mask = self._build_effective_action_mask(
+            batch=prepared_inputs.batch,
+            observed_num_frames=int(video_latents.shape[2]),
         )
+        action_tokens_per_frame = self._resolve_train_action_tokens_per_frame(
+            batch=prepared_inputs.batch,
+            observed_num_frames=int(video_latents.shape[2]),
+        )
+        video_tokens_per_frame = int(prepared_inputs.variant_inputs["video_tokens_per_frame"])
+        sampled_chunk_size = self._resolve_train_sampled_chunk_size(
+            batch=prepared_inputs.batch,
+            observed_num_frames=int(video_latents.shape[2]),
+        )
+        if sampled_chunk_size is None:
+            sampled_chunk_size = max(
+                1,
+                min(int(self.training_config.chunk_size), int(video_latents.shape[2])),
+            )
+        sampled_window_size = self._resolve_train_sampled_window_size(
+            batch=prepared_inputs.batch,
+        )
+        if sampled_window_size is None:
+            sampled_window_size = max(1, int(self.training_config.window_size))
+        frame_shift = self._resolve_train_frame_shift(batch=prepared_inputs.batch)
+        chunk_causal_video_mask = build_chunk_causal_video_mask(
+            video_seq_len=video_tokens_per_frame * int(video_latents.shape[2]),
+            video_tokens_per_frame=video_tokens_per_frame,
+            action_chunk_size_frames=sampled_chunk_size,
+            device=video_latents.device,
+            attention_window_size=sampled_window_size,
+        )
+
+        # Method-5 video-prefill action denoise is aligned to method-1 full-seg
+        # semantics: the action expert conditions on the full clean video
+        # sample, but the video K/V prefill itself stays chunk-causal so future
+        # chunks do not leak through the shared video backbone.
+        action_condition_latents = video_latents
         video_cache = prefill_video_kv_cache(
             visual_tower=visual_tower,
-            observed_prefix=condition_latents,
+            observed_prefix=action_condition_latents,
             text_context=text_context,
             frame_start=0,
+            attention_mask=chunk_causal_video_mask,
+            detach_cache=self._should_detach_train_video_cache(visual_tower),
         )
         train_artifacts = build_action_flow_match_train_artifacts(
             prepared_inputs.batch.actions,
-            prepared_inputs.batch.action_mask,
+            effective_action_mask,
             training_config=self.training_config,
+        )
+        train_artifacts = self._apply_train_history_action_condition(
+            train_artifacts=train_artifacts,
+            actions=prepared_inputs.batch.actions,
+            observed_num_frames=int(video_latents.shape[2]),
+            history_frames=history_frames,
         )
         resolved_text = text_context
         if resolved_text is None:
-            resolved_text = condition_latents.new_zeros(
-                condition_latents.shape[0],
+            resolved_text = action_condition_latents.new_zeros(
+                action_condition_latents.shape[0],
                 visual_tower.config.max_text_tokens,
                 visual_tower.config.text_dim,
             )
@@ -238,6 +583,13 @@ class MoTPolicyVariant(PolicyVariant):
             action_tokens=train_artifacts.noisy_actions,
             timestep=train_artifacts.timesteps,
             context=resolved_text,
+            action_grid_ids=self._build_action_grid_ids_for_sequence(
+                batch_size=train_artifacts.noisy_actions.shape[0],
+                seq_len=train_artifacts.noisy_actions.shape[1],
+                action_tokens_per_frame=action_tokens_per_frame,
+                device=train_artifacts.noisy_actions.device,
+                frame_shift=frame_shift,
+            ) if action_tokens_per_frame is not None else None,
         )
         action_hidden_states = forward_action_with_video_cache(
             action_expert=self.action_expert,
@@ -249,6 +601,11 @@ class MoTPolicyVariant(PolicyVariant):
                 device=train_artifacts.noisy_actions.device,
                 condition_mode=self.config.condition_mode,
                 video_tokens_per_frame=prepared_inputs.variant_inputs["video_tokens_per_frame"],
+                action_tokens_per_frame=action_tokens_per_frame,
+                action_chunk_size_frames=sampled_chunk_size,
+                clean_video_frames=int(video_latents.shape[2]),
+                clean_action_frames=history_frames,
+                attention_window_size=sampled_window_size,
             ),
         )
         flow_pred = self.action_expert.post_dit(action_hidden_states, action_pre)
@@ -263,12 +620,16 @@ class MoTPolicyVariant(PolicyVariant):
             video_rollout = self._build_video_train_rollout(
                 visual_tower=visual_tower,
                 visual_outputs=visual_outputs,
+                batch=prepared_inputs.batch,
+                history_frames=history_frames,
+                attention_mask=chunk_causal_video_mask,
             )
-        batch_size = condition_latents.shape[0]
+        batch_size = action_condition_latents.shape[0]
         return PolicyTrainOutput(
-            policy_features=condition_latents.new_zeros(batch_size, 0, self.action_expert.hidden_size),
+            policy_features=action_condition_latents.new_zeros(batch_size, 0, self.action_expert.hidden_size),
             metrics={
-                "mot_video_prefix_frames": condition_latents.new_tensor(float(self.config.video_prefix_frames)),
+                "mot_history_frames": action_condition_latents.new_tensor(float(history_frames)),
+                "mot_video_prefix_frames": action_condition_latents.new_tensor(float(history_frames)),
             },
             aux={
                 "variant": self.config.name,
@@ -276,6 +637,8 @@ class MoTPolicyVariant(PolicyVariant):
                 "condition_mode": str(self.config.condition_mode),
                 "video_cache_seq_len": video_cache.video_seq_len,
                 "runtime_mode": str(self.config.runtime_mode),
+                "sampled_chunk_size": sampled_chunk_size,
+                "sampled_window_size": sampled_window_size,
                 "mot_train_artifacts": MoTTrainArtifacts(
                     action=MoTActionTrainArtifacts(
                         flow_pred=flow_pred,
@@ -288,7 +651,7 @@ class MoTPolicyVariant(PolicyVariant):
                     video=video_rollout,
                     condition_mode=str(self.config.condition_mode),
                     runtime_mode=str(self.config.runtime_mode),
-                    video_prefix_frames=int(self.config.video_prefix_frames),
+                    history_frames=int(history_frames),
                     video_cache_seq_len=video_cache.video_seq_len,
                 ),
             },
@@ -302,12 +665,10 @@ class MoTPolicyVariant(PolicyVariant):
     ) -> PolicyTrainOutput:
         video_latents = prepared_inputs.variant_inputs["video_latents"]
         text_context = prepared_inputs.variant_inputs["text_context"]
-        observed_prefix_frames = int(self.config.video_prefix_frames)
-        if video_latents.shape[2] <= observed_prefix_frames:
-            raise ValueError(
-                "MoT joint denoise requires at least one future frame after the observed prefix, "
-                f"got video_latents.shape={tuple(video_latents.shape)}, video_prefix_frames={observed_prefix_frames}."
-            )
+        history_frames = self._resolve_train_history_frames(
+            batch=prepared_inputs.batch,
+            observed_num_frames=int(video_latents.shape[2]),
+        )
 
         video_artifacts = build_video_flow_match_train_artifacts(
             video_latents,
@@ -315,22 +676,33 @@ class MoTPolicyVariant(PolicyVariant):
         )
         noisy_video_latents = video_artifacts.noisy_latents.clone()
         video_timesteps = video_artifacts.timesteps.clone()
-        noisy_video_latents[:, :, :observed_prefix_frames] = video_latents[:, :, :observed_prefix_frames]
-        video_timesteps[:, :observed_prefix_frames] = 0.0
-        future_loss_mask = torch.zeros(
-            video_latents.shape[0],
-            1,
-            video_latents.shape[2],
-            1,
-            1,
-            device=video_latents.device,
-            dtype=video_latents.dtype,
+        noisy_video_latents[:, :, :history_frames] = video_latents[:, :, :history_frames]
+        video_timesteps[:, :history_frames] = 0.0
+        future_loss_mask = self._build_effective_video_loss_mask(
+            video_latents=video_latents,
+            batch=prepared_inputs.batch,
+            default_history_frames=history_frames,
         )
-        future_loss_mask[:, :, observed_prefix_frames:] = 1.0
+        effective_action_mask = self._build_effective_action_mask(
+            batch=prepared_inputs.batch,
+            observed_num_frames=int(video_latents.shape[2]),
+        )
+        action_tokens_per_frame = self._resolve_train_action_tokens_per_frame(
+            batch=prepared_inputs.batch,
+            observed_num_frames=int(video_latents.shape[2]),
+        )
+        sampled_chunk_size = self._resolve_train_sampled_chunk_size(
+            batch=prepared_inputs.batch,
+            observed_num_frames=int(video_latents.shape[2]),
+        )
+        sampled_window_size = self._resolve_train_sampled_window_size(
+            batch=prepared_inputs.batch,
+        )
+        frame_shift = self._resolve_train_frame_shift(batch=prepared_inputs.batch)
 
         train_artifacts = build_action_flow_match_train_artifacts(
             prepared_inputs.batch.actions,
-            prepared_inputs.batch.action_mask,
+            effective_action_mask,
             training_config=self.training_config,
         )
         resolved_text = text_context
@@ -344,6 +716,13 @@ class MoTPolicyVariant(PolicyVariant):
             action_tokens=train_artifacts.noisy_actions,
             timestep=train_artifacts.timesteps,
             context=resolved_text,
+            action_grid_ids=self._build_action_grid_ids_for_sequence(
+                batch_size=train_artifacts.noisy_actions.shape[0],
+                seq_len=train_artifacts.noisy_actions.shape[1],
+                action_tokens_per_frame=action_tokens_per_frame,
+                device=train_artifacts.noisy_actions.device,
+                frame_shift=frame_shift,
+            ) if action_tokens_per_frame is not None else None,
         )
         video_flow_pred, action_hidden_states = forward_joint_video_action_denoise(
             visual_tower=visual_tower,
@@ -359,7 +738,11 @@ class MoTPolicyVariant(PolicyVariant):
                 condition_mode=self.config.condition_mode,
                 video_tokens_per_frame=prepared_inputs.variant_inputs["video_tokens_per_frame"],
                 video_can_attend_action=self.config.video_can_attend_action,
+                action_tokens_per_frame=action_tokens_per_frame,
+                action_chunk_size_frames=sampled_chunk_size,
+                clean_video_frames=history_frames,
             ),
+            use_activation_checkpointing=self.config.use_activation_checkpointing,
         )
         flow_pred = self.action_expert.post_dit(action_hidden_states, action_pre)
         denoised_actions = denoised_actions_from_flow(
@@ -378,13 +761,16 @@ class MoTPolicyVariant(PolicyVariant):
         return PolicyTrainOutput(
             policy_features=video_latents.new_zeros(batch_size, 0, self.action_expert.hidden_size),
             metrics={
-                "mot_video_prefix_frames": video_latents.new_tensor(float(self.config.video_prefix_frames)),
+                "mot_history_frames": video_latents.new_tensor(float(history_frames)),
+                "mot_video_prefix_frames": video_latents.new_tensor(float(history_frames)),
             },
             aux={
                 "variant": self.config.name,
                 "method_family": "mot",
                 "condition_mode": str(self.config.condition_mode),
                 "runtime_mode": str(self.config.runtime_mode),
+                "sampled_chunk_size": sampled_chunk_size,
+                "sampled_window_size": sampled_window_size,
                 "mot_train_artifacts": MoTTrainArtifacts(
                     action=MoTActionTrainArtifacts(
                         flow_pred=flow_pred,
@@ -405,7 +791,265 @@ class MoTPolicyVariant(PolicyVariant):
                     ),
                     condition_mode=str(self.config.condition_mode),
                     runtime_mode=str(self.config.runtime_mode),
-                    video_prefix_frames=int(self.config.video_prefix_frames),
+                    history_frames=int(history_frames),
+                ),
+            },
+        )
+
+    def _forward_train_non_joint_two_stream(
+        self,
+        visual_tower: VisualTower,
+        visual_outputs: VisualStageOutputs,
+        prepared_inputs: PolicyPreparedInputs,
+    ) -> PolicyTrainOutput:
+        # Method-1 non-joint aligned training via packed [noisy | clean] copies
+        # on BOTH video and action streams. Direct structural port of Method 1's
+        # ``chunked_temporal_exact`` packed layout to MoT's two-expert
+        # architecture.
+        #
+        # Structure (matches Method 1's packed sequence semantics):
+        #
+        #   Forward V -- packed ``[V_noisy | V_clean]`` through the video core.
+        #     Both halves share the same frame positions (identical rotary
+        #     embeddings); only the attention mask's ``noise_id`` distinguishes
+        #     them. Mask enforces the Method 1 rules over chunk ids:
+        #       clean_to_clean: kv_chunk <= q_chunk
+        #       noise_to_clean: kv_chunk <  q_chunk   (key insight)
+        #       noise_to_noisy: kv_chunk == q_chunk
+        #     The ``V_noisy`` half output is the video flow prediction; the
+        #     ``V_clean`` half K/V is extracted per layer for the action
+        #     stream to attend in the next forward.
+        #
+        #   Forward A -- packed ``[A_noisy | A_clean]`` through the action
+        #     expert, joint K/V = ``[V_clean_cache | A_noisy | A_clean]``.
+        #     Method 1's mask rules apply across three segments, with video
+        #     chunk ids = ``2*chunk`` (even), action chunk ids =
+        #     ``2*chunk + 1`` (odd). The ``A_noisy`` half output is the
+        #     action flow prediction.
+        #
+        # Loss is taken only from the noisy halves; clean halves are
+        # teacher-forced conditioning. Both losses backprop through the shared
+        # video core (V_clean K/V are NOT detached).
+        self._maybe_initialize_action_expert(visual_tower)
+        video_latents = prepared_inputs.variant_inputs["video_latents"]
+        text_context = prepared_inputs.variant_inputs["text_context"]
+        video_tokens_per_frame = int(prepared_inputs.variant_inputs["video_tokens_per_frame"])
+        num_video_frames = int(video_latents.shape[2])
+        # Geometry resolution: contextual_subwindow data path stamps
+        # `sampled_chunk_size` etc. into per-sample metadata; FULL_SEGMENT
+        # data path leaves it unset, so we draw it per-step here the same way
+        # method-1's `prepare_lingbot_parallel_train_artifacts` does.
+        metadata_for_geometry = prepared_inputs.batch.extra.get("metadata")
+        metadata_has_geometry = (
+            isinstance(metadata_for_geometry, tuple)
+            and len(metadata_for_geometry) > 0
+            and metadata_for_geometry[0].get("sampled_chunk_size") is not None
+        )
+        if metadata_has_geometry:
+            history_frames = self._resolve_train_history_frames(
+                batch=prepared_inputs.batch,
+                observed_num_frames=num_video_frames,
+            )
+            sampled_chunk_size = self._resolve_train_sampled_chunk_size(
+                batch=prepared_inputs.batch,
+                observed_num_frames=num_video_frames,
+            )
+            sampled_window_size = self._resolve_train_sampled_window_size(
+                batch=prepared_inputs.batch,
+            )
+        else:
+            sampled_chunk_size, sampled_window_size, history_frames = (
+                self._sample_full_segment_train_geometry(
+                    observed_num_frames=num_video_frames,
+                    device=video_latents.device,
+                )
+            )
+        effective_action_mask = self._build_effective_action_mask(
+            batch=prepared_inputs.batch,
+            observed_num_frames=num_video_frames,
+        )
+        action_tokens_per_frame = self._resolve_train_action_tokens_per_frame(
+            batch=prepared_inputs.batch,
+            observed_num_frames=num_video_frames,
+        )
+        frame_shift = self._resolve_train_frame_shift(batch=prepared_inputs.batch)
+
+        if action_tokens_per_frame is None:
+            raise ValueError(
+                "MoT non_joint_two_stream packed training requires "
+                "`action_tokens_per_frame` resolvable from the batch, got None."
+            )
+        if sampled_chunk_size is None:
+            raise ValueError(
+                "MoT non_joint_two_stream packed training requires "
+                "`sampled_chunk_size` resolvable from the batch metadata or full-segment fallback, got None."
+            )
+
+        # ---- Video side: build noisy/clean pair and run packed forward. ----
+        # Per-frame timesteps sampled for every frame (including history);
+        # Method 1 parity -- no ``history`` pin, the loss mask handles what
+        # counts. The ``condition_latents`` / ``condition_timesteps`` carry
+        # the (possibly augmented) V_clean copy per Method 1's
+        # ``noisy_video_condition_prob`` logic.
+        video_artifacts = build_video_flow_match_train_artifacts(
+            video_latents,
+            training_config=self.training_config,
+            noisy_condition_prob=float(self.config.noisy_video_condition_prob),
+        )
+        future_loss_mask = self._build_effective_video_loss_mask(
+            video_latents=video_latents,
+            batch=prepared_inputs.batch,
+            default_history_frames=history_frames,
+        )
+        packed_video_mask = build_packed_video_self_attention_mask(
+            num_frames=num_video_frames,
+            video_tokens_per_frame=video_tokens_per_frame,
+            action_chunk_size_frames=sampled_chunk_size,
+            device=video_latents.device,
+            attention_window_size=sampled_window_size,
+        )
+        video_flow_pred, v_clean_cache = forward_packed_video_denoise(
+            visual_tower=visual_tower,
+            noisy_video_latents=video_artifacts.noisy_latents,
+            clean_video_latents=video_artifacts.condition_latents,
+            noisy_timesteps=video_artifacts.timesteps,
+            clean_timesteps=video_artifacts.condition_timesteps,
+            packed_attention_mask=packed_video_mask,
+            text_context=text_context,
+            frame_start=frame_shift,
+            use_activation_checkpointing=bool(self.config.use_activation_checkpointing),
+        )
+        predicted_latents = denoised_video_latents_from_flow(
+            noisy_latents=video_artifacts.noisy_latents,
+            flow_pred=video_flow_pred,
+            timesteps=video_artifacts.timesteps,
+            scheduler=video_artifacts.scheduler,
+        )
+
+        # ---- Action side: pack [A_noisy | A_clean] and run against V_clean. ----
+        # No history pin on A_noisy either (Method 1 parity); the effective
+        # action mask already zeros out loss on history positions.
+        #
+        # Timesteps are sampled per-frame (F values) and broadcast across the
+        # `action_per_frame` slots in each frame via `slot_timesteps`. This
+        # matches Method 1's `_add_noise(action_mode=True)` which samples
+        # `batch_size=num_frames` timesteps and adds noise along `t_dim=2`.
+        action_artifacts = build_frame_aligned_action_flow_match_train_artifacts(
+            prepared_inputs.batch.actions,
+            effective_action_mask,
+            training_config=self.training_config,
+            num_frames=num_video_frames,
+            action_per_frame=int(action_tokens_per_frame),
+        )
+        noisy_actions = action_artifacts.noisy_actions
+        clean_actions = action_artifacts.condition_actions.to(
+            device=noisy_actions.device, dtype=noisy_actions.dtype
+        )
+        if clean_actions.shape != noisy_actions.shape:
+            raise ValueError(
+                "Packed action training requires noisy/clean actions to share shape, "
+                f"got noisy={tuple(noisy_actions.shape)}, clean={tuple(clean_actions.shape)}."
+            )
+        action_seq_len = int(noisy_actions.shape[1])
+        num_action_frames = action_seq_len // int(action_tokens_per_frame)
+
+        packed_action_tokens = torch.cat([noisy_actions, clean_actions], dim=1)
+        # Per-token timesteps broadcast from the per-frame sample (matches
+        # Method 1's `_time_embed` repeat-interleave of per-frame timesteps).
+        noisy_slot_timesteps = action_artifacts.slot_timesteps
+        clean_slot_timesteps = torch.zeros_like(noisy_slot_timesteps)
+        packed_action_timesteps = torch.cat(
+            [noisy_slot_timesteps, clean_slot_timesteps], dim=1
+        )
+
+        resolved_text = text_context
+        if resolved_text is None:
+            resolved_text = video_latents.new_zeros(
+                video_latents.shape[0],
+                visual_tower.config.max_text_tokens,
+                visual_tower.config.text_dim,
+            )
+
+        single_action_grid = self._build_action_grid_ids_for_sequence(
+            batch_size=noisy_actions.shape[0],
+            seq_len=action_seq_len,
+            action_tokens_per_frame=action_tokens_per_frame,
+            device=noisy_actions.device,
+            frame_shift=frame_shift,
+        )  # [B, 4, T_a*ppF_a]
+        packed_action_grid = torch.cat([single_action_grid, single_action_grid], dim=-1)
+
+        packed_action_pre = self.action_expert.pre_dit(
+            action_tokens=packed_action_tokens,
+            timestep=packed_action_timesteps,
+            context=resolved_text,
+            action_grid_ids=packed_action_grid,
+        )
+        packed_action_mask = build_packed_action_attention_mask(
+            num_video_frames=num_video_frames,
+            video_tokens_per_frame=video_tokens_per_frame,
+            num_action_frames=num_action_frames,
+            action_tokens_per_frame=int(action_tokens_per_frame),
+            action_chunk_size_frames=sampled_chunk_size,
+            device=noisy_actions.device,
+            attention_window_size=sampled_window_size,
+        )
+        packed_action_hidden = forward_packed_action_with_video_cache(
+            action_expert=self.action_expert,
+            packed_action_pre=packed_action_pre,
+            v_clean_cache=v_clean_cache,
+            action_attention_mask=packed_action_mask,
+        )
+        packed_action_flow = self.action_expert.post_dit(packed_action_hidden, packed_action_pre)
+        # Loss from the A_noisy half only (first action_seq_len tokens).
+        action_flow_pred = packed_action_flow[:, :action_seq_len]
+        denoised_actions = denoised_actions_from_flow(
+            noisy_actions=noisy_actions,
+            flow_pred=action_flow_pred,
+            timesteps=noisy_slot_timesteps,
+            scheduler=action_artifacts.scheduler,
+        )
+
+        # ---- Assemble training artifacts ----
+        video_rollout: MoTVideoTrainArtifacts | None = None
+        if self.training_config.objective_enabled("latent"):
+            video_rollout = MoTVideoTrainArtifacts(
+                flow_pred=video_flow_pred,
+                targets=video_artifacts.targets,
+                timesteps=video_artifacts.timesteps,
+                scheduler=video_artifacts.scheduler,
+                predicted_latents=predicted_latents,
+                target_latents=video_latents,
+                future_loss_mask=future_loss_mask,
+            )
+
+        batch_size = video_latents.shape[0]
+        return PolicyTrainOutput(
+            policy_features=video_latents.new_zeros(batch_size, 0, self.action_expert.hidden_size),
+            metrics={
+                "mot_history_frames": video_latents.new_tensor(float(history_frames)),
+                "mot_video_prefix_frames": video_latents.new_tensor(float(history_frames)),
+            },
+            aux={
+                "variant": self.config.name,
+                "method_family": "mot",
+                "condition_mode": str(self.config.condition_mode),
+                "runtime_mode": str(self.config.runtime_mode),
+                "sampled_chunk_size": sampled_chunk_size,
+                "sampled_window_size": sampled_window_size,
+                "mot_train_artifacts": MoTTrainArtifacts(
+                    action=MoTActionTrainArtifacts(
+                        flow_pred=action_flow_pred,
+                        targets=action_artifacts.targets,
+                        timesteps=noisy_slot_timesteps,
+                        scheduler=action_artifacts.scheduler,
+                        denoised_actions=denoised_actions,
+                        action_mask=action_artifacts.action_mask,
+                    ),
+                    video=video_rollout,
+                    condition_mode=str(self.config.condition_mode),
+                    runtime_mode=str(self.config.runtime_mode),
+                    history_frames=int(history_frames),
                 ),
             },
         )
@@ -427,46 +1071,53 @@ class MoTPolicyVariant(PolicyVariant):
             else torch.device(str(action_device_raw))
         )
         action_dtype = next(self.action_expert.parameters()).dtype
+        # Only `joint_denoise` stays on the simultaneous video+action denoise
+        # path. `non_joint_two_stream` falls through to the method-1-aligned
+        # default path below (video fully denoised first, then action attends
+        # clean video K/V via `forward_action_with_video_cache`).
         if self.config.runtime_mode == MoTRuntimeMode.JOINT_DENOISE:
             runtime_device = next(visual_tower.core.parameters()).device
             if action_device != runtime_device:
                 raise ValueError(
                     "MoT joint_denoise inference currently requires video and action to run on the same device, "
-                    f"got runtime_device={runtime_device}, action_device={action_device}."
+                    f"got runtime_device={runtime_device}, action_device={action_device}, "
+                    f"runtime_mode={self.config.runtime_mode!r}."
                 )
             runtime_state.text_context = visual_outputs.frontend.conditioning.text_context
             runtime_state.action_device = str(action_device)
             state.variant_state = runtime_state
             del context
             return state
-        if runtime_state.video_cache is None:
-            condition_latents = resolve_mot_condition_latents(
-                video_latents=visual_outputs.frontend.video_latents,
-                condition_mode=self.config.condition_mode,
-                video_prefix_frames=self.config.video_prefix_frames,
-                teacher_forcing_video_noise_prob=self.config.teacher_forcing_video_noise_prob,
-                training=False,
-            )
-            prefetched_video_cache = prefill_video_kv_cache(
-                visual_tower=visual_tower,
-                observed_prefix=condition_latents,
-                text_context=visual_outputs.frontend.conditioning.text_context,
-                frame_start=int(state.cursor.current_start_frame),
-            )
-            runtime_state.video_cache = move_mot_video_cache(
-                prefetched_video_cache,
-                device=action_device,
-                dtype=action_dtype,
-            )
-            resolved_text_context = visual_outputs.frontend.conditioning.text_context
-            runtime_state.text_context = (
-                None
-                if resolved_text_context is None
-                else resolved_text_context.to(device=action_device, dtype=action_dtype)
-            )
-            runtime_state.video_tokens_per_frame = max(
-                1,
-                visual_outputs.frontend.token_grid.tokens_per_frame * condition_latents.shape[2] // max(1, visual_outputs.frontend.video_latents.shape[2]),
+        condition_latents = visual_outputs.frontend.video_latents
+        current_condition_frame_start = int(state.cursor.current_start_frame)
+        # Note: `runtime_state.video_cache` is populated inside
+        # `forward_infer_step` after the slot-pool warmup + video denoise
+        # last-step write, so we don't prefill it here.
+        resolved_text_context = visual_outputs.frontend.conditioning.text_context
+        runtime_state.text_context = (
+            None
+            if resolved_text_context is None
+            else resolved_text_context.to(device=action_device, dtype=action_dtype)
+        )
+        runtime_state.video_tokens_per_frame = int(visual_outputs.frontend.token_grid.tokens_per_frame)
+        runtime_state.chunk_advance_frames = max(1, int(self.inference_config.frame_chunk_size))
+        # Only initialize `next_condition_frame_start` on the first chunk of a
+        # session. After that, `forward_infer_step` at the end of each chunk
+        # sets it to the current chunk's `generation_frame_start` so the NEXT
+        # chunk's observation write lands on the same rotary positions as the
+        # current chunk's pred entries (overwriting them, keeping the cache
+        # contiguous). Without this guard, advancing here by
+        # `condition_latents.shape[2]` double-advances alongside
+        # `cursor.current_start_frame` and leaves a `chunk_frames`-wide gap
+        # of empty rotary slots at every chunk boundary, which desynchronizes
+        # the training-time contiguous rotary assumption from the inference
+        # cache layout (Method 1 avoids this by using `advance_frame_start=
+        # False` inside its denoise rollout and a separate post-rollout
+        # `warmup_cache` that writes observations at the same frame_start
+        # where the pred just landed).
+        if runtime_state.past_clean_latents is None:
+            runtime_state.next_condition_frame_start = int(
+                current_condition_frame_start + int(condition_latents.shape[2])
             )
         runtime_state.action_device = str(action_device)
         state.variant_state = runtime_state
@@ -484,13 +1135,20 @@ class MoTPolicyVariant(PolicyVariant):
             infer_state.variant_state if isinstance(infer_state.variant_state, MoTRuntimeState) else MoTRuntimeState()
         )
         self._maybe_initialize_action_expert(visual_tower)
+        # Only `joint_denoise` uses the simultaneous video+action denoise
+        # branch below. `non_joint_two_stream` falls through to the
+        # method-1-aligned default path at the bottom of this function, which
+        # denoises video to completion first via
+        # `visual_tower.generate_conditioned_future_latents` and then runs the
+        # action expert against the resulting all-clean video K/V cache.
         if self.config.runtime_mode == MoTRuntimeMode.JOINT_DENOISE:
             device = next(visual_tower.core.parameters()).device
             action_device = next(self.action_expert.parameters()).device
             if action_device != device:
                 raise ValueError(
                     "MoT joint_denoise inference currently requires visual tower and action expert on the same device, "
-                    f"got visual_device={device}, action_device={action_device}."
+                    f"got visual_device={device}, action_device={action_device}, "
+                    f"runtime_mode={self.config.runtime_mode!r}."
                 )
             dtype = next(self.action_expert.parameters()).dtype
             batch_size = visual_outputs.frontend.video_latents.shape[0]
@@ -498,14 +1156,16 @@ class MoTPolicyVariant(PolicyVariant):
             video_latents = visual_outputs.frontend.video_latents.to(device=device, dtype=dtype)
             if video_latents.shape[2] <= observed_prefix_frames:
                 raise ValueError(
-                    "MoT joint_denoise inference requires at least one future frame after the observed prefix, "
-                    f"got video_latents.shape={tuple(video_latents.shape)}, video_prefix_frames={observed_prefix_frames}."
+                    "MoT two-stream inference requires at least one future frame after the observed prefix, "
+                    f"got video_latents.shape={tuple(video_latents.shape)}, video_prefix_frames={observed_prefix_frames}, "
+                    f"runtime_mode={self.config.runtime_mode!r}."
                 )
             if self.inference_config.video_num_inference_steps != self.inference_config.action_num_inference_steps:
                 raise ValueError(
-                    "MoT joint_denoise inference currently requires matching video/action inference step counts, "
+                    "MoT two-stream inference currently requires matching video/action inference step counts, "
                     f"got video_num_inference_steps={self.inference_config.video_num_inference_steps}, "
-                    f"action_num_inference_steps={self.inference_config.action_num_inference_steps}."
+                    f"action_num_inference_steps={self.inference_config.action_num_inference_steps}, "
+                    f"runtime_mode={self.config.runtime_mode!r}."
                 )
             observed_prefix = video_latents[:, :, :observed_prefix_frames]
             future_template = video_latents[:, :, observed_prefix_frames:]
@@ -604,36 +1264,295 @@ class MoTPolicyVariant(PolicyVariant):
                     ),
                 },
             )
-        predicted_latents = None
+        # True Method-1-aligned NON_JOINT_TWO_STREAM rollout with persistent
+        # KV cache on the shared video core. Each chunk:
+        #   1) First chunk only -- bootstrap the shared transformer's
+        #      `_exact_runtime_caches[cache_name]` with observed env latents
+        #      at frame_start=0, all frames clean (timestep=0), update_cache=2.
+        #      Matches Method 1's `_write_exact_cache_chunk` bootstrap.
+        #   2) Every chunk -- run video denoise with ONLY the
+        #      `frame_chunk_size` noisy current-chunk latents as Q. Past
+        #      context comes from cache. `update_cache=0` during denoise
+        #      steps, `update_cache=1` on the last step writes the new
+        #      chunk's clean K/V back into cache, matching Method 1 exactly.
+        #   3) Extract a MoTVideoCache view of the updated cache (taking the
+        #      cond half when CFG is doubled) so the action expert can
+        #      cross-attend the full rollout history.
+        #   4) Run action denoise against that MoTVideoCache.
+        from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
+            FlowMatchScheduler as _VideoFlowMatchScheduler,
+            _clear_exact_prediction_cache as _clear_pred_cache,
+            data_seq_to_patch as _data_seq_to_patch,
+            initialize_reference_cache as _initialize_reference_cache,
+            prepare_reference_single_stream_input as _prepare_single_stream_input,
+            reference_runtime_dtype as _reference_runtime_dtype,
+            run_reference_single_stream_forward as _run_single_stream_forward,
+        )
+
         video_latents = visual_outputs.frontend.video_latents
-        prefix_frames = int(self.config.video_prefix_frames)
-        if video_latents.shape[2] > prefix_frames:
-            observed_prefix = video_latents[:, :, :prefix_frames]
-            future_template = torch.zeros_like(video_latents[:, :, prefix_frames:])
-            text_context_for_video = visual_outputs.frontend.conditioning.text_context
-            if text_context_for_video is None:
-                text_context_for_video = torch.zeros(
-                    video_latents.shape[0],
-                    visual_tower.config.max_text_tokens,
-                    visual_tower.config.text_dim,
-                    device=video_latents.device,
-                    dtype=video_latents.dtype,
-                )
-            predicted_latents = visual_tower.generate_conditioned_future_latents(
-                observed_prefix=observed_prefix,
-                future_template=future_template,
-                text_context=text_context_for_video,
-                negative_text_context=visual_outputs.frontend.conditioning.negative_text_context,
-                frame_start=int(infer_state.cursor.current_start_frame),
-                num_inference_steps=self.inference_config.video_num_inference_steps,
-                num_train_timesteps=self.training_config.video_num_train_timesteps,
-                sigma_shift=self.training_config.video_sigma_shift,
-                guidance_scale=self.inference_config.guidance_scale,
-                cache_name="mot_infer_predicted_video_latents",
-            )
-        batch_size = int(visual_outputs.frontend.video_latents.shape[0])
+        batch_size = int(video_latents.shape[0])
         device = next(self.action_expert.parameters()).device
         dtype = next(self.action_expert.parameters()).dtype
+        video_device = next(visual_tower.core.parameters()).device
+        video_dtype = _reference_runtime_dtype(visual_tower.core)
+
+        chunk_frames = max(1, int(self.inference_config.frame_chunk_size))
+        if self.action_horizon % chunk_frames != 0:
+            raise ValueError(
+                "MoT non-joint inference expects `action_horizon` to divide by `inference.frame_chunk_size`, "
+                f"got action_horizon={self.action_horizon}, frame_chunk_size={chunk_frames}."
+            )
+        action_tokens_per_frame = self.action_horizon // chunk_frames
+
+        text_context_for_video = visual_outputs.frontend.conditioning.text_context
+        if text_context_for_video is None:
+            text_context_for_video = torch.zeros(
+                batch_size,
+                visual_tower.config.max_text_tokens,
+                visual_tower.config.text_dim,
+                device=video_device,
+                dtype=video_dtype,
+            )
+        else:
+            text_context_for_video = text_context_for_video.to(
+                device=video_device, dtype=video_dtype
+            )
+        # Full Method-1 alignment: cache at 2B with CFG throughout the
+        # video path. Bootstrap uses `force_cfg_batch=True` so every
+        # subsequent denoise step (with `guidance_scale>1` and
+        # `negative_text_emb`) can do CFG batching consistently. The
+        # action expert runs at batch=B, so when we extract the
+        # MoTVideoCache for action we slice the cond half `[:B]`.
+        negative_text_context = visual_outputs.frontend.conditioning.negative_text_context
+        if negative_text_context is not None:
+            negative_text_context = negative_text_context.to(
+                device=video_device, dtype=video_dtype
+            )
+        use_cfg = (
+            negative_text_context is not None
+            and bool(self.inference_config.use_cache)
+        )
+
+        cache_name = "mot_non_joint_two_stream_cache"
+        latent_channels = int(visual_tower.config.latent_channels)
+        latent_height = int(video_latents.shape[-2])
+        latent_width = int(video_latents.shape[-1])
+        is_first_chunk = runtime_state.past_clean_latents is None
+        skip_observation_update = bool(context.extra.get("mot_skip_observation_update", False))
+        if skip_observation_update and is_first_chunk:
+            raise ValueError("MoT open-loop extension requires an initialized non-joint rollout cache.")
+        condition_frame_start_override_raw = context.extra.get("mot_condition_frame_start")
+        if skip_observation_update and condition_frame_start_override_raw is not None:
+            raise ValueError("MoT condition-frame rewind is only valid for observation-conditioned replans.")
+        # Method-1-aligned per-chunk warmup. On chunk 0 we allocate the
+        # slot-pool backend via `initialize_reference_cache` and write the
+        # bootstrap obs latents at frame_start=0. On subsequent chunks the
+        # driver passes a fresh window of real env observations (encoded
+        # into `video_latents`). We:
+        #   1) clear the prediction cache (last chunk's denoise last-step
+        #      pred K/V),
+        #   2) write the real-env observation as a NEW stable chunk at
+        #      `frame_start = runtime_state.next_condition_frame_start`.
+        # `observed_prefix.shape[2]` is allowed to vary between chunks --
+        # chunk 0 may use a 1-frame bootstrap (matching Method 1) while
+        # subsequent chunks pass `chunk_frames` real env-observation latents
+        # that overwrite the previous chunk's pred slots. The Route-A
+        # inference mask removes the old chunk_frames-aligned bootstrap
+        # constraint by treating past KV as always-visible.
+        current_obs_frame_start = int(runtime_state.next_condition_frame_start)
+        if is_first_chunk:
+            _initialize_reference_cache(
+                visual_tower.core,
+                cache_name=cache_name,
+                attn_window=_MOT_SLOT_POOL_ATTN_WINDOW,
+                batch_size=batch_size,
+                frame_chunk_size=chunk_frames,
+                latent_height=latent_height,
+                latent_width=latent_width,
+                device=video_device,
+                action_per_frame=action_tokens_per_frame,
+                use_cfg=use_cfg,
+            )
+            current_obs_frame_start = 0
+        elif condition_frame_start_override_raw is not None:
+            current_obs_frame_start = int(condition_frame_start_override_raw)
+        if self.inference_config.use_cache and not skip_observation_update:
+            _clear_pred_cache(visual_tower.core, cache_name=cache_name)
+        observed_prefix = video_latents.to(device=video_device, dtype=video_dtype)
+        if not skip_observation_update:
+            boot_video_input = _prepare_single_stream_input(
+                latents=observed_prefix,
+                timestep=0.0,
+                text_emb=text_context_for_video,
+                frame_st_id=current_obs_frame_start,
+                backbone_config=visual_tower.config,
+                action_mode=False,
+            )
+            _run_single_stream_forward(
+                visual_tower.core,
+                input_dict=boot_video_input,
+                update_cache=2,
+                cache_name=cache_name,
+                action_mode=False,
+                guidance_scale=1.0,
+                negative_text_emb=negative_text_context,
+                combine_cfg=False,
+                force_cfg_batch=use_cfg,
+            )
+            runtime_state.past_clean_latents = observed_prefix.detach()
+        # Observation-conditioned replans write real observations into the
+        # next slots. Async open-loop extensions intentionally skip this
+        # write so planning ahead does not leak too-early real frames into a
+        # future chunk; they extend from the already generated cache instead.
+        generation_frame_start = (
+            current_obs_frame_start + chunk_frames
+            if skip_observation_update
+            else current_obs_frame_start + int(observed_prefix.shape[2])
+        )
+        runtime_state.next_condition_frame_start = (
+            generation_frame_start + chunk_frames if skip_observation_update else generation_frame_start
+        )
+
+        # Cache-aware video denoise on the current noisy chunk only.
+        latents = torch.randn(
+            batch_size,
+            latent_channels,
+            chunk_frames,
+            latent_height,
+            latent_width,
+            device=video_device,
+            dtype=video_dtype,
+        )
+        video_scheduler = _VideoFlowMatchScheduler(
+            shift=self.training_config.video_sigma_shift,
+            sigma_min=0.0,
+            extra_one_step=True,
+            num_train_timesteps=self.training_config.video_num_train_timesteps,
+        )
+        video_scheduler.set_timesteps(self.inference_config.video_num_inference_steps)
+        video_timesteps = F.pad(
+            video_scheduler.timesteps.to(device=video_device),
+            (0, 1),
+            mode="constant",
+            value=0,
+        )
+        for index, timestep in enumerate(video_timesteps):
+            last_step = index == len(video_timesteps) - 1
+            video_input = _prepare_single_stream_input(
+                latents=latents,
+                timestep=timestep,
+                text_emb=text_context_for_video,
+                frame_st_id=generation_frame_start,
+                backbone_config=visual_tower.config,
+                action_mode=False,
+            )
+            video_noise_pred = _run_single_stream_forward(
+                visual_tower.core,
+                input_dict=video_input,
+                update_cache=1 if (last_step and self.inference_config.use_cache) else 0,
+                cache_name=cache_name,
+                action_mode=False,
+                guidance_scale=self.inference_config.guidance_scale,
+                negative_text_emb=negative_text_context,
+                force_cfg_batch=use_cfg,
+            )
+            if not last_step:
+                video_noise_pred = _data_seq_to_patch(
+                    visual_tower.core.patch_size,
+                    video_noise_pred,
+                    chunk_frames,
+                    latent_height,
+                    latent_width,
+                    batch_size=batch_size,
+                ).to(dtype=video_dtype)
+                latents = video_scheduler.step(video_noise_pred, timestep, latents)
+        predicted_latents = latents
+
+        # Don't advance `next_condition_frame_start` past the observation
+        # write position. Method 1 with `advance_frame_start=False` keeps
+        # frame_start at the value warmup set it to, so that the NEXT
+        # chunk's warmup writes its real observations at the same rotary
+        # positions that the current chunk's pred entries just landed on
+        # (teacher-forcing the pred positions with real obs). The pred
+        # entries (chunk_frames tokens at rotary [gen_start..gen_start+4))
+        # will be cleared + overwritten by the next chunk's stable obs
+        # write via `_clear_pred_cache` + `_run_single_stream_forward(
+        # update_cache=2)`. The TOTAL number of clean video frames the
+        # action expert sees this chunk is observation frames +
+        # current-chunk pred frames.
+        total_clean_video_frames = generation_frame_start + chunk_frames
+
+        # Extract MoTVideoCache from the shared transformer's cache. With
+        # CFG active the cache is doubled `[cond, uncond]` on the batch
+        # dim; slice the cond half for the action expert (batch=B).
+        cache_state = visual_tower.core._resolve_exact_cache_state(cache_name)
+        if cache_state is None:
+            raise RuntimeError(
+                f"MoT non_joint_two_stream expected cache state at `{cache_name}` "
+                "but the shared transformer returned None."
+            )
+        extracted_layers: list[MoTVideoLayerCache] = []
+        for entry in cache_state.self_attention_kv:
+            if entry.key is None or entry.value is None:
+                raise RuntimeError(
+                    "MoT non_joint_two_stream cache extraction found an empty layer entry."
+                )
+            key = entry.key
+            value = entry.value
+            if key.shape[0] == 2 * batch_size:
+                key = key[:batch_size]
+                value = value[:batch_size]
+            elif key.shape[0] != batch_size:
+                raise RuntimeError(
+                    "MoT non_joint_two_stream cache batch dimension must match the current batch "
+                    f"(or 2x for CFG), got cache_batch={key.shape[0]}, batch_size={batch_size}."
+                )
+            extracted_layers.append(
+                MoTVideoLayerCache(key=key.detach(), value=value.detach())
+            )
+        action_video_cache = MoTVideoCache(
+            layers=tuple(extracted_layers),
+            video_seq_len=int(extracted_layers[0].key.shape[2]),
+        )
+        # Method-1 alignment: Method 1's slot pool stores both video and
+        # action so video occupies `(attn_window // 2) * latent_token_per_chunk`
+        # tokens (= 60 frames at attn_window=30, chunk_frames=4, tokens/frame=32),
+        # which is integer-frame-aligned. Method 5 only writes video so the
+        # slot pool fills with `(attn_window // 2) * (latent + action)` tokens
+        # (= 67.5 frames here), leaving a partial leading frame after eviction.
+        # Trim to Method 1's per-stream cap so the action expert sees the
+        # same frame-aligned video lookback Method 1 does.
+        method1_video_lookback_frames = (
+            (_MOT_SLOT_POOL_ATTN_WINDOW // 2) * int(chunk_frames)
+        )
+        max_video_tokens_for_action = int(method1_video_lookback_frames) * int(
+            runtime_state.video_tokens_per_frame
+        ) if runtime_state.video_tokens_per_frame else None
+        if (
+            max_video_tokens_for_action is not None
+            and max_video_tokens_for_action > 0
+            and action_video_cache.video_seq_len > max_video_tokens_for_action
+        ):
+            action_video_cache = trim_mot_video_cache_tail(
+                action_video_cache,
+                max_video_seq_len=max_video_tokens_for_action,
+            )
+        action_video_cache = move_mot_video_cache(
+            action_video_cache, device=device, dtype=dtype
+        )
+        runtime_state.video_cache = action_video_cache
+        cached_batch_size = int(action_video_cache.layers[0].key.shape[0])
+        if cached_batch_size != batch_size:
+            raise ValueError(
+                "MoT cached-action inference requires the current observation batch to match the cached video batch, "
+                f"got current_batch_size={batch_size}, cached_batch_size={cached_batch_size}."
+            )
+        if self.action_horizon % chunk_frames != 0:
+            raise ValueError(
+                "MoT non-joint inference expects `action_horizon` to divide by `inference.frame_chunk_size`, "
+                f"got action_horizon={self.action_horizon}, frame_chunk_size={chunk_frames}."
+            )
+        action_tokens_per_frame = self.action_horizon // chunk_frames
         scheduler = build_action_flow_match_inference_scheduler(
             training_config=self.training_config,
             inference_config=self.inference_config,
@@ -654,23 +1573,91 @@ class MoTPolicyVariant(PolicyVariant):
                 device=device,
                 dtype=dtype,
             )
-        if runtime_state.video_cache is None:
-            raise ValueError("MoT cached-action inference expected `MoTRuntimeState.video_cache` to be populated.")
-        video_cache = runtime_state.video_cache
-        cached_batch_size = int(video_cache.layers[0].key.shape[0])
-        if cached_batch_size != batch_size:
-            raise ValueError(
-                "MoT cached-action inference requires the current observation batch to match the cached video batch, "
-                f"got current_batch_size={batch_size}, cached_batch_size={cached_batch_size}."
+        # Method-1-aligned action denoise with persistent action K/V
+        # cache. Past action chunks' clean K/V live in
+        # `runtime_state.action_cache`; fresh `action_horizon` tokens are
+        # the only Q this forward recomputes every step. On the final
+        # (padded timestep=0) step we capture the fresh per-layer K/V
+        # and append to `runtime_state.action_cache`, mirroring Method 1's
+        # `update_cache=1` at the last action step.
+        action_cache_rewind_frame_start_raw = context.extra.get("mot_action_cache_rewind_frame_start")
+        if action_cache_rewind_frame_start_raw is None:
+            action_cache_rewind_frame_start_raw = context.extra.get("mot_action_cache_prefix_frames")
+        if action_cache_rewind_frame_start_raw is not None:
+            _rewind_runtime_action_cache_to_frame(
+                runtime_state,
+                absolute_frame_start=int(action_cache_rewind_frame_start_raw),
+                action_tokens_per_frame=action_tokens_per_frame,
             )
-        attention_mask = build_mot_attention_mask(
-            video_seq_len=video_cache.video_seq_len,
-            action_seq_len=self.action_horizon,
-            device=device,
-            condition_mode=self.config.condition_mode,
-            video_tokens_per_frame=runtime_state.video_tokens_per_frame,
+        past_action_cache = runtime_state.action_cache
+        # Diagnostic: setting OPEN_WAM_MOT_DISABLE_PAST_ACTION_CACHE=1 forces
+        # the action expert to see only video + current noisy action per
+        # chunk (no past action history). Useful for isolating whether
+        # autoregressive drift in the past_action K/V chain is the source
+        # of chunk-to-chunk instability.
+        if os.environ.get("OPEN_WAM_MOT_DISABLE_PAST_ACTION_CACHE", "0") == "1":
+            past_action_cache = None
+        past_action_seq_len = int(past_action_cache.action_seq_len) if past_action_cache is not None else 0
+        if past_action_seq_len % action_tokens_per_frame != 0:
+            raise ValueError(
+                "MoT non_joint_two_stream action cache length must be a multiple of action_tokens_per_frame, "
+                f"got past_action_seq_len={past_action_seq_len}, action_tokens_per_frame={action_tokens_per_frame}."
+            )
+        past_action_frames = past_action_seq_len // action_tokens_per_frame
+        total_action_seq_len = past_action_seq_len + self.action_horizon
+        # Method-1 byte-aligned mask: replicates
+        # `build_chunked_temporal_exact_attention_profile` for the inference
+        # `[video_cache; past_action_cache; current_action]` layout. Block
+        # ids are video=chunk*2 / action=chunk*2+1, the within-window check
+        # uses `training_config.window_size` (same value Method 1 passes as
+        # `input_dict["window_size"]` at inference), and clean/noise causal
+        # rules match Method 1's chunked_temporal_exact profile.
+        if runtime_state.video_tokens_per_frame is None or runtime_state.video_tokens_per_frame <= 0:
+            raise RuntimeError(
+                "MoT inference mask requires `runtime_state.video_tokens_per_frame` to be set, "
+                f"got {runtime_state.video_tokens_per_frame!r}."
+            )
+        video_lookback_frames_for_mask = int(action_video_cache.video_seq_len) // int(
+            runtime_state.video_tokens_per_frame
         )
-        for timestep in scheduler.timesteps:
+        current_action_frame_start = int(total_clean_video_frames - chunk_frames)
+        video_frame_start = int(total_clean_video_frames - video_lookback_frames_for_mask)
+        past_action_frame_start = (
+            int(runtime_state.action_cache_start_frame)
+            if past_action_cache is not None
+            else int(current_action_frame_start)
+        )
+        if past_action_cache is not None:
+            cached_action_end_frame = int(past_action_frame_start + past_action_frames)
+            if cached_action_end_frame != current_action_frame_start:
+                raise RuntimeError(
+                    "MoT action cache frame span is not contiguous with the current chunk, "
+                    f"cache_span=[{past_action_frame_start}, {cached_action_end_frame}), "
+                    f"current_action_frame_start={current_action_frame_start}."
+                )
+        attention_mask = build_mot_inference_action_attention_mask(
+            video_seq_len=action_video_cache.video_seq_len,
+            past_action_seq_len=past_action_seq_len,
+            current_action_seq_len=self.action_horizon,
+            video_tokens_per_frame=int(runtime_state.video_tokens_per_frame),
+            action_tokens_per_frame=action_tokens_per_frame,
+            chunk_size_frames=max(1, int(self.training_config.chunk_size)),
+            window_size_frames=max(1, int(self.training_config.window_size)),
+            device=device,
+            video_can_attend_action=False,
+            video_frame_start=video_frame_start,
+            past_action_frame_start=past_action_frame_start,
+            current_action_frame_start=current_action_frame_start,
+        )
+        # Method-1-aligned cache write: run the denoise loop without
+        # capturing K/V, then issue a SEPARATE fresh forward at timestep=0
+        # with the final denoised sample to capture cache-bound K/V. Mirrors
+        # `_write_exact_cache_chunk(update_cache=1)` in
+        # `run_parallel_action_conditioned_inference_rollout`, which calls a
+        # fresh single-stream forward after all denoise steps complete
+        # rather than reusing the loop's last-step K/V.
+        fresh_action_kv: MoTActionCache | None = None
+        for timestep in scheduler.timesteps.to(device=device):
             dense_timestep = torch.full(
                 (batch_size, self.action_horizon),
                 float(timestep),
@@ -681,17 +1668,94 @@ class MoTPolicyVariant(PolicyVariant):
                 action_tokens=sample,
                 timestep=dense_timestep,
                 context=text_context.to(device=device, dtype=dtype),
+                action_grid_ids=self._build_action_grid_ids_for_sequence(
+                    batch_size=batch_size,
+                    seq_len=self.action_horizon,
+                    action_tokens_per_frame=action_tokens_per_frame,
+                    device=device,
+                    frame_shift=int(total_clean_video_frames - chunk_frames),
+                ),
             )
-            action_hidden_states = forward_action_with_video_cache(
+            action_hidden_states, _ = forward_action_with_video_and_action_cache(
                 action_expert=self.action_expert,
                 action_pre=action_pre,
-                video_cache=video_cache,
+                video_cache=action_video_cache,
+                action_cache=past_action_cache,
                 attention_mask=attention_mask,
             )
             flow_pred = self.action_expert.post_dit(action_hidden_states, action_pre)
             sample = scheduler.step(flow_pred, timestep, sample)
+        # Separate cache-write forward at timestep=0 with the final denoised
+        # sample. This is the Method-1 parity step.
+        cache_write_timestep = torch.zeros(
+            (batch_size, self.action_horizon),
+            device=device,
+            dtype=torch.float32,
+        )
+        cache_write_action_pre = self.action_expert.pre_dit(
+            action_tokens=sample,
+            timestep=cache_write_timestep,
+            context=text_context.to(device=device, dtype=dtype),
+            action_grid_ids=self._build_action_grid_ids_for_sequence(
+                batch_size=batch_size,
+                seq_len=self.action_horizon,
+                action_tokens_per_frame=action_tokens_per_frame,
+                device=device,
+                frame_shift=int(total_clean_video_frames - chunk_frames),
+            ),
+        )
+        _, fresh_action_kv = forward_action_with_video_and_action_cache(
+            action_expert=self.action_expert,
+            action_pre=cache_write_action_pre,
+            video_cache=action_video_cache,
+            action_cache=past_action_cache,
+            attention_mask=attention_mask,
+        )
+        if fresh_action_kv is None:
+            raise RuntimeError(
+                "MoT non_joint_two_stream cache-write forward did not produce fresh K/V."
+            )
+        # Append fresh action K/V to the persistent action cache for next chunk.
+        fresh_action_kv_moved = move_mot_action_cache(
+            fresh_action_kv, device=device, dtype=dtype
+        )
+        if past_action_cache is None:
+            runtime_state.action_cache = fresh_action_kv_moved
+            runtime_state.action_cache_start_frame = int(current_action_frame_start)
+        else:
+            runtime_state.action_cache = append_mot_action_cache(
+                past_action_cache, fresh_action_kv_moved
+            )
+        # Method-1 alignment: video and action share the same effective
+        # lookback. Method 1 stores both streams in the slot pool and
+        # `attn_window` evicts them together; to mirror that with Method 5's
+        # split caches we trim the action cache to exactly the video cache's
+        # current frame count. Asymmetric lookback (action shorter or longer
+        # than video) is OOD: training always saw matched lengths, so the
+        # action expert hallucinates when past action covers a different
+        # frame span than past video.
+        video_tokens_per_frame_for_trim = runtime_state.video_tokens_per_frame
+        if video_tokens_per_frame_for_trim is not None and video_tokens_per_frame_for_trim > 0:
+            video_lookback_frames = int(action_video_cache.video_seq_len) // int(
+                video_tokens_per_frame_for_trim
+            )
+            max_action_seq_len = max(
+                action_tokens_per_frame,
+                video_lookback_frames * action_tokens_per_frame,
+            )
+            action_cache_before_trim = runtime_state.action_cache
+            if action_cache_before_trim.action_seq_len > max_action_seq_len:
+                dropped_action_tokens = int(action_cache_before_trim.action_seq_len - max_action_seq_len)
+                runtime_state.action_cache_start_frame += int(dropped_action_tokens // action_tokens_per_frame)
+            runtime_state.action_cache = trim_mot_action_cache_tail(
+                action_cache_before_trim,
+                max_action_seq_len=max_action_seq_len,
+            )
         next_state = infer_state
         next_state.step_index += 1
+        next_state.cursor.current_start_frame = int(
+            infer_state.cursor.current_start_frame + max(1, runtime_state.chunk_advance_frames)
+        )
         next_state.variant_state = runtime_state
         return PolicyInferOutput(
             policy_features=sample.new_zeros(batch_size, 0, self.action_expert.hidden_size),
@@ -700,6 +1764,33 @@ class MoTPolicyVariant(PolicyVariant):
                 "variant": self.config.name,
                 "method_family": "mot",
                 "condition_mode": str(self.config.condition_mode),
+                "mot_cache_debug": {
+                    "video_cache_seq_len": int(runtime_state.video_cache.video_seq_len) if runtime_state.video_cache is not None else 0,
+                    "action_video_cache_seq_len": int(action_video_cache.video_seq_len),
+                    "action_cache_seq_len": int(runtime_state.action_cache.action_seq_len) if runtime_state.action_cache is not None else 0,
+                    "action_cache_start_frame": int(runtime_state.action_cache_start_frame),
+                    "action_cache_frames_before_chunk": int(past_action_frames),
+                    "total_clean_video_frames": int(total_clean_video_frames),
+                    "is_first_chunk": bool(is_first_chunk),
+                    "use_cfg": bool(use_cfg),
+                    "current_start_frame": int(next_state.cursor.current_start_frame),
+                    "next_condition_frame_start": int(runtime_state.next_condition_frame_start),
+                    "chunk_advance_frames": int(runtime_state.chunk_advance_frames),
+                    "video_frame_start": int(video_frame_start),
+                    "past_action_frame_start": int(past_action_frame_start),
+                    "current_action_frame_start": int(current_action_frame_start),
+                    "skip_observation_update": bool(skip_observation_update),
+                    "condition_frame_start_override": (
+                        None
+                        if condition_frame_start_override_raw is None
+                        else int(condition_frame_start_override_raw)
+                    ),
+                    "action_cache_rewind_frame_start": (
+                        None
+                        if action_cache_rewind_frame_start_raw is None
+                        else int(action_cache_rewind_frame_start_raw)
+                    ),
+                },
                 **(
                     {"predicted_latents": predicted_latents.detach(), "predicted_video_latents": predicted_latents.detach()}
                     if isinstance(predicted_latents, torch.Tensor)

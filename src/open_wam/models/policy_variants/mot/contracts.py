@@ -18,6 +18,18 @@ class MoTVideoCache:
     video_seq_len: int
 
 
+@dataclass(frozen=True)
+class MoTActionLayerCache:
+    key: torch.Tensor
+    value: torch.Tensor
+
+
+@dataclass(frozen=True)
+class MoTActionCache:
+    layers: tuple[MoTActionLayerCache, ...]
+    action_seq_len: int
+
+
 @dataclass
 class MoTRuntimeState:
     """Typed MoT rollout state stored inside `PolicyInferState.variant_state`."""
@@ -25,7 +37,24 @@ class MoTRuntimeState:
     action_device: str | None = None
     text_context: torch.Tensor | None = None
     video_cache: MoTVideoCache | None = None
+    # Persistent per-action-expert-layer K/V cache for past action chunks.
+    # Grows by `action_horizon` tokens per chunk when the
+    # method-1-aligned non-joint runtime writes the last-step (clean)
+    # action K/V back to cache. Mirrors Method 1's shared-transformer
+    # cache append for action tokens.
+    action_cache: MoTActionCache | None = None
+    # Absolute video-frame index of the first frame represented by
+    # `action_cache`. Tail trimming advances this value; speculative rewinds
+    # use it to convert an absolute rewind frame into a cache-local prefix.
+    action_cache_start_frame: int = 0
+    # Accumulated clean video latents across rollout chunks. Populated by
+    # the method-1-aligned non-joint rollout so each subsequent video
+    # denoise can attend the full generated-so-far sequence instead of
+    # only the driver's sliding observation window. Shape [B, C, T, H, W].
+    past_clean_latents: torch.Tensor | None = None
     video_tokens_per_frame: int | None = None
+    next_condition_frame_start: int = 0
+    chunk_advance_frames: int = 0
 
 
 @dataclass(frozen=True)
@@ -55,7 +84,7 @@ class MoTTrainArtifacts:
     video: MoTVideoTrainArtifacts | None
     condition_mode: str
     runtime_mode: str
-    video_prefix_frames: int
+    history_frames: int
     video_cache_seq_len: int | None = None
 
 

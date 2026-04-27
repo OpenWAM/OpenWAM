@@ -345,6 +345,7 @@ class SharedTransformerAttention(nn.Module):
         cached_prefix_visibility: torch.Tensor | None = None,
         cache_current_token_count: int = 0,
         cache_current_token_span: tuple[int, int] | None = None,
+        detach_cache_entry: bool = True,
         kv_cache_override: AttentionCacheEntry | None = None,
         cache_backend_name: str | None = None,
         cache_backend_state=None,
@@ -385,58 +386,27 @@ class SharedTransformerAttention(nn.Module):
             else:
                 key_t = key.transpose(1, 2)
                 value_t = value.transpose(1, 2)
-                current_cache_entry = (
-                    AttentionCacheEntry(
-                        key=key_t[
-                            :,
-                            :,
-                            (
-                                cache_current_token_span[0]
-                                if cache_current_token_span is not None
-                                else 0
-                            ) : (
-                                cache_current_token_span[1]
-                                if cache_current_token_span is not None
-                                else cache_current_token_count
-                            ),
-                            :,
-                        ].detach(),
-                        value=value_t[
-                            :,
-                            :,
-                            (
-                                cache_current_token_span[0]
-                                if cache_current_token_span is not None
-                                else 0
-                            ) : (
-                                cache_current_token_span[1]
-                                if cache_current_token_span is not None
-                                else cache_current_token_count
-                            ),
-                            :,
-                        ].detach(),
+                cache_start = cache_current_token_span[0] if cache_current_token_span is not None else 0
+                cache_end = (
+                    cache_current_token_span[1]
+                    if cache_current_token_span is not None
+                    else cache_current_token_count
+                )
+                cache_token_count = int(cache_end - cache_start)
+                if cache_token_count > 0:
+                    cache_key = key_t[:, :, cache_start:cache_end, :]
+                    cache_value = value_t[:, :, cache_start:cache_end, :]
+                    if detach_cache_entry:
+                        cache_key = cache_key.detach()
+                        cache_value = cache_value.detach()
+                    current_cache_entry = AttentionCacheEntry(
+                        key=cache_key,
+                        value=cache_value,
                         metadata={
-                            "cached_tokens": int(
-                                (
-                                    cache_current_token_span[1] - cache_current_token_span[0]
-                                ) if cache_current_token_span is not None else cache_current_token_count
-                            ),
-                            "segment_token_lengths": (
-                                int(
-                                    (
-                                        cache_current_token_span[1] - cache_current_token_span[0]
-                                    ) if cache_current_token_span is not None else cache_current_token_count
-                                ),
-                            ),
+                            "cached_tokens": cache_token_count,
+                            "segment_token_lengths": (cache_token_count,),
                         },
                     )
-                    if (
-                        (cache_current_token_span[1] - cache_current_token_span[0]) > 0
-                        if cache_current_token_span is not None
-                        else cache_current_token_count > 0
-                    )
-                    else None
-                )
                 key = key_t
                 value = value_t
         if kv_cache_override is None:
@@ -683,6 +653,7 @@ class SharedTransformerBlock(nn.Module):
         cached_prefix_visibility: torch.Tensor | None = None,
         cache_current_token_count: int = 0,
         cache_current_token_span: tuple[int, int] | None = None,
+        detach_self_attention_cache: bool = True,
         self_attention_cache_backend_name: str | None = None,
         self_attention_cache_backend_state=None,
         self_attention_cache_update_mode: int = 0,
@@ -734,6 +705,7 @@ class SharedTransformerBlock(nn.Module):
             cached_prefix_visibility=resolved_cached_prefix_visibility,
             cache_current_token_count=cache_current_token_count,
             cache_current_token_span=cache_current_token_span,
+            detach_cache_entry=detach_self_attention_cache,
             cache_backend_name=self_attention_cache_backend_name,
             cache_backend_state=self_attention_cache_backend_state,
             cache_backend_update_mode=self_attention_cache_update_mode,
@@ -1503,6 +1475,11 @@ class SharedVideoTransformerCore(nn.Module):
         cache_state = self._resolve_exact_cache_state(cache_name)
         cache_backend_name = cache_state.backend_name if cache_state is not None else None
         cache_backend_payload = cache_state.backend_payload if cache_state is not None else None
+        detach_self_attention_cache = (
+            bool(cache_state.payload.get("detach_self_attention_cache", True))
+            if cache_state is not None
+            else True
+        )
         cache_current_token_count = 0
         if cache_state is not None and cache_state.update_metadata.update_kv_cache:
             # Exact single-stream cache writes are prefix-style: cache the visible
@@ -1522,6 +1499,7 @@ class SharedVideoTransformerCore(nn.Module):
                 encoder_hidden_states=text_hidden_states,
                 temb=timestep_proj,
                 rotary_emb=rotary_emb,
+                attention_mask=input_dict.get("attention_mask"),
                 self_attention_cache_backend_name=cache_backend_name,
                 self_attention_cache_backend_state=(
                     cache_backend_payload.layer_states[layer_index]
@@ -1531,6 +1509,7 @@ class SharedVideoTransformerCore(nn.Module):
                     else None
                 ),
                 cache_current_token_count=cache_current_token_count,
+                detach_self_attention_cache=detach_self_attention_cache,
                 self_attention_cache_update_mode=update_cache,
             )
             next_self_attention_kv.append(current_self_cache_entry or AttentionCacheEntry())

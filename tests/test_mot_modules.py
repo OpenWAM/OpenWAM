@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 
@@ -16,14 +18,24 @@ from open_wam.configs import (
     TrainingConfig,
 )
 from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
-from open_wam.models.policy_variants.mot.contracts import MoTRuntimeState
+from open_wam.models.policy_variants.mot.contracts import (
+    MoTActionCache,
+    MoTActionLayerCache,
+    MoTRuntimeState,
+)
 from open_wam.models.policy_variants.mot.modules import (
     MoTActionExpert,
     init_action_expert_from_video_core,
 )
 from open_wam.models.policy_variants.mot.runtime import (
+    build_mot_inference_action_attention_mask,
     build_mot_attention_mask,
     resolve_mot_condition_latents,
+    trim_mot_action_cache_prefix,
+)
+from open_wam.models.policy_variants.mot.variant import (
+    MoTPolicyVariant,
+    _rewind_runtime_action_cache_to_frame,
 )
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore
@@ -179,6 +191,118 @@ def test_build_mot_attention_mask_respects_full_video_visibility() -> None:
 
     assert mask.shape == (12, 12)
     assert mask[8:, :8].all()
+
+
+def test_build_mot_inference_action_mask_uses_absolute_frame_starts() -> None:
+    mask = build_mot_inference_action_attention_mask(
+        video_seq_len=8,
+        past_action_seq_len=0,
+        current_action_seq_len=4,
+        video_tokens_per_frame=2,
+        action_tokens_per_frame=2,
+        chunk_size_frames=2,
+        window_size_frames=8,
+        device=torch.device("cpu"),
+        video_frame_start=0,
+        current_action_frame_start=2,
+    )
+
+    current_action_query = 8
+    current_video_frame_token = 4
+    assert mask[current_action_query, current_video_frame_token]
+
+
+def test_trim_mot_action_cache_prefix_keeps_oldest_tokens() -> None:
+    key = torch.arange(1 * 1 * 6 * 1, dtype=torch.float32).reshape(1, 1, 6, 1)
+    value = key + 100
+    cache = MoTActionCache(
+        layers=(MoTActionLayerCache(key=key, value=value),),
+        action_seq_len=6,
+    )
+
+    trimmed = trim_mot_action_cache_prefix(cache, max_action_seq_len=4)
+
+    assert trimmed.action_seq_len == 4
+    assert torch.equal(trimmed.layers[0].key.flatten(), torch.arange(4, dtype=torch.float32))
+    assert torch.equal(trimmed.layers[0].value.flatten(), torch.arange(100, 104, dtype=torch.float32))
+
+
+def test_runtime_action_cache_rewind_uses_absolute_cache_start_frame() -> None:
+    key = torch.arange(1 * 1 * 12 * 1, dtype=torch.float32).reshape(1, 1, 12, 1)
+    state = MoTRuntimeState(
+        action_cache=MoTActionCache(
+            layers=(MoTActionLayerCache(key=key, value=key + 100),),
+            action_seq_len=12,
+        ),
+        action_cache_start_frame=10,
+    )
+
+    _rewind_runtime_action_cache_to_frame(
+        state,
+        absolute_frame_start=14,
+        action_tokens_per_frame=2,
+    )
+
+    assert state.action_cache_start_frame == 10
+    assert state.action_cache is not None
+    assert state.action_cache.action_seq_len == 8
+    assert torch.equal(state.action_cache.layers[0].key.flatten(), torch.arange(8, dtype=torch.float32))
+
+
+def test_runtime_action_cache_rewind_clears_cache_before_window() -> None:
+    key = torch.arange(1 * 1 * 12 * 1, dtype=torch.float32).reshape(1, 1, 12, 1)
+    state = MoTRuntimeState(
+        action_cache=MoTActionCache(
+            layers=(MoTActionLayerCache(key=key, value=key + 100),),
+            action_seq_len=12,
+        ),
+        action_cache_start_frame=10,
+    )
+
+    _rewind_runtime_action_cache_to_frame(
+        state,
+        absolute_frame_start=8,
+        action_tokens_per_frame=2,
+    )
+
+    assert state.action_cache is None
+    assert state.action_cache_start_frame == 8
+
+
+def test_mot_train_video_cache_detach_decision_is_cached_per_core() -> None:
+    class CountingCore:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.parameter = torch.nn.Parameter(torch.zeros(1), requires_grad=False)
+
+        def parameters(self):
+            self.calls += 1
+            return iter((self.parameter,))
+
+    variant = MoTPolicyVariant(
+        config=MoTPolicyConfig(),
+        backbone_config=SharedVideoTransformerConfig(
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+        ),
+        training_config=TrainingConfig(),
+        inference_config=InferenceConfig(),
+        action_dim=4,
+        action_horizon=4,
+        state_dim=4,
+    )
+    core = CountingCore()
+    visual_tower = SimpleNamespace(core=core)
+
+    assert variant._should_detach_train_video_cache(visual_tower)
+    core.parameter.requires_grad_(True)
+    assert variant._should_detach_train_video_cache(visual_tower)
+    assert core.calls == 1
 
 
 @pytest.mark.parametrize(

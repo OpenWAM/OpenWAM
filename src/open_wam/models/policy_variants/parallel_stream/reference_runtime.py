@@ -742,12 +742,19 @@ def repeat_input_for_cfg(
     *,
     negative_text_emb: torch.Tensor,
 ) -> dict[str, torch.Tensor]:
-    return {
+    repeated = {
         "noisy_latents": input_dict["noisy_latents"].repeat(2, 1, 1, 1, 1),
         "text_emb": torch.cat([input_dict["text_emb"], negative_text_emb], dim=0),
         "grid_id": input_dict["grid_id"].repeat(2, 1, 1),
         "timesteps": input_dict["timesteps"].repeat(2, 1),
     }
+    attention_mask = input_dict.get("attention_mask")
+    if attention_mask is not None:
+        if attention_mask.ndim in {3, 4} and attention_mask.shape[0] == input_dict["noisy_latents"].shape[0]:
+            repeat_shape = (2,) + (1,) * (attention_mask.ndim - 1)
+            attention_mask = attention_mask.repeat(*repeat_shape)
+        repeated["attention_mask"] = attention_mask
+    return repeated
 
 
 def _repeat_joint_input_for_cfg(
@@ -794,12 +801,16 @@ def prepare_reference_forward_input(
     transformer: torch.nn.Module,
 ) -> dict[str, torch.Tensor]:
     model_dtype = reference_runtime_dtype(transformer)
-    return {
+    prepared = {
         "noisy_latents": input_dict["noisy_latents"].to(model_dtype),
         "text_emb": input_dict["text_emb"].to(model_dtype),
         "grid_id": input_dict["grid_id"],
         "timesteps": input_dict["timesteps"],
     }
+    attention_mask = input_dict.get("attention_mask")
+    if attention_mask is not None:
+        prepared["attention_mask"] = attention_mask
+    return prepared
 
 
 def run_reference_single_stream_forward(

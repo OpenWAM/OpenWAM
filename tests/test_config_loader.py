@@ -13,6 +13,7 @@ from open_wam.configs import (
     CausalPrefixSuffixBucketConfig,
     CFGMode,
     CausalVideoPredictionPolicyConfig,
+    ExportedRuntimeActionInitMode,
     JointSampler,
     LatentWindowProfile,
     LoopPolicyName,
@@ -630,6 +631,23 @@ def test_loaded_enum_like_fields_are_real_enum_members() -> None:
     assert isinstance(config.backbone.train_attn_mode, AttentionMode)
 
 
+def test_backbone_exported_runtime_action_init_mode_loads_as_enum(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_joint_denoise_heng_compatible.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw.setdefault("backbone", {})
+    raw["backbone"]["exported_runtime_action_init_mode"] = "random"
+
+    config_path = tmp_path / "joint_random_action_init.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    assert config.backbone.exported_runtime_action_init_mode == ExportedRuntimeActionInitMode.RANDOM
+
+
 def test_sample_construction_yaml_strings_are_coerced_to_enum_members(tmp_path: Path) -> None:
     source_path = REPO_ROOT / "configs/experiments/register_attached_libero_latent_local.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
@@ -814,6 +832,13 @@ def test_causal_video_prediction_config_loads() -> None:
     assert config.action_decoder.name == ActionDecoderName.VIDEO_ONLY
     assert config.data.sample_construction.mode == WindowSamplingMode.CAUSAL_PREFIX_SUFFIX
     assert config.training.enabled_objectives == ("latent",)
+    assert config.training.trainable_components == (
+        TrainingComponentSelector.VISUAL_TOWER_SHARED_VIDEO_BACKBONE,
+    )
+    assert config.training.frozen_components == (
+        TrainingComponentSelector.VISUAL_TOWER_SHARED_ACTION_RUNTIME,
+        TrainingComponentSelector.VISUAL_TOWER_SHARED_RUNTIME_ADAPTERS,
+    )
     assert config.data.sample_construction.causal_prefix_suffix_buckets == (
         CausalPrefixSuffixBucketConfig(observed_frames=1, future_frames=3),
         CausalPrefixSuffixBucketConfig(observed_frames=2, future_frames=6),

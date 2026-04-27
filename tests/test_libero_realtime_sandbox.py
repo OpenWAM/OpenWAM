@@ -167,6 +167,39 @@ def test_exact_replan_low_watermark_actions_gate_fallback_submissions() -> None:
     )
 
 
+def test_sequence_realtime_low_watermark_overrides_buffer_threshold() -> None:
+    sandbox = _load_sandbox_module()
+
+    assert sandbox._should_submit_sequence_realtime_planner(
+        planner_mode="async_history_first",
+        future_buffer_depth_actions=12,
+        sequence_empty_plan_policy="fallback",
+        sequence_buffer_threshold=3,
+        replan_low_watermark_actions=12,
+    )
+    assert not sandbox._should_submit_sequence_realtime_planner(
+        planner_mode="async_history_first",
+        future_buffer_depth_actions=13,
+        sequence_empty_plan_policy="fallback",
+        sequence_buffer_threshold=3,
+        replan_low_watermark_actions=12,
+    )
+    assert sandbox._should_submit_sequence_realtime_planner(
+        planner_mode="async_history_first",
+        future_buffer_depth_actions=3,
+        sequence_empty_plan_policy="wait_for_replan",
+        sequence_buffer_threshold=3,
+        replan_low_watermark_actions=0,
+    )
+    assert not sandbox._should_submit_sequence_realtime_planner(
+        planner_mode="history_only",
+        future_buffer_depth_actions=1,
+        sequence_empty_plan_policy="fallback",
+        sequence_buffer_threshold=3,
+        replan_low_watermark_actions=12,
+    )
+
+
 def test_partial_stale_chunks_can_be_accepted_when_the_future_suffix_is_meaningful() -> None:
     sandbox = _load_sandbox_module()
     step_cls = sandbox.PlannedControlStep
@@ -250,6 +283,102 @@ def test_exact_fallback_history_policy_freeze_until_clean_chunk_delays_full_clea
         == "included"
     )
     assert [record["absolute_frame_index"] for record in pending_history] == [5, 6, 7, 8, 9]
+
+
+def test_fallback_model_timeline_advancement_is_policy_driven() -> None:
+    sandbox = _load_sandbox_module()
+
+    assert sandbox._action_advances_model_timeline(
+        "history_replan",
+        fallback_history_policy=sandbox.FallbackHistoryPolicy.FREEZE_UNTIL_CLEAN_CHUNK,
+    )
+    assert not sandbox._action_advances_model_timeline(
+        "fallback_hold_state",
+        fallback_history_policy=sandbox.FallbackHistoryPolicy.FREEZE_UNTIL_CLEAN_CHUNK,
+    )
+    assert sandbox._action_advances_model_timeline(
+        "fallback_hold_state",
+        fallback_history_policy=sandbox.FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY,
+    )
+
+
+def test_sequence_buffer_tail_promotes_after_prebuffer_actions_are_consumed() -> None:
+    sandbox = _load_sandbox_module()
+    config = SimpleNamespace(policy_variant=SimpleNamespace(name="mot"), data=SimpleNamespace(
+        action_schema=SimpleNamespace(action_horizon=16),
+    ), inference=SimpleNamespace(frame_chunk_size=4))
+
+    assert not sandbox._sequence_buffer_tail_ready_for_history_promotion(
+        config=config,
+        next_action_index=27,
+        buffer_tail_generation_action_start=32,
+        history_generation_action_start=16,
+    )
+    assert sandbox._sequence_buffer_tail_ready_for_history_promotion(
+        config=config,
+        next_action_index=28,
+        buffer_tail_generation_action_start=32,
+        history_generation_action_start=16,
+    )
+    assert not sandbox._sequence_buffer_tail_ready_for_history_promotion(
+        config=config,
+        next_action_index=28,
+        buffer_tail_generation_action_start=32,
+        history_generation_action_start=32,
+    )
+
+
+def test_sequence_fallback_history_freezes_until_full_clean_action_chunk() -> None:
+    sandbox = _load_sandbox_module()
+    model_obs_window = [{"image": np.array([0], dtype=np.uint8)}]
+    state = sandbox.SequenceFallbackHistoryState(
+        policy=sandbox.FallbackHistoryPolicy.FREEZE_UNTIL_CLEAN_CHUNK,
+    )
+
+    assert (
+        sandbox._maybe_append_sequence_model_observation(
+            model_obs_window=model_obs_window,
+            state=state,
+            current_obs={"image": np.array([1], dtype=np.uint8)},
+            action_source="fallback_hold_state",
+            clean_actions_required=3,
+            max_window_frames=2,
+        )
+        == "fallback"
+    )
+    assert [int(obs["image"][0]) for obs in model_obs_window] == [0]
+    assert state.quarantine_active
+
+    for value in (2, 3):
+        assert (
+            sandbox._maybe_append_sequence_model_observation(
+                model_obs_window=model_obs_window,
+                state=state,
+                current_obs={"image": np.array([value], dtype=np.uint8)},
+                action_source="history_replan",
+                clean_actions_required=3,
+                max_window_frames=2,
+            )
+            == "washout"
+        )
+        assert [int(obs["image"][0]) for obs in model_obs_window] == [0]
+
+    assert (
+        sandbox._maybe_append_sequence_model_observation(
+            model_obs_window=model_obs_window,
+            state=state,
+            current_obs={"image": np.array([4], dtype=np.uint8)},
+            action_source="history_replan",
+            clean_actions_required=3,
+            max_window_frames=2,
+        )
+        == "washout"
+    )
+
+    assert not state.quarantine_active
+    assert [int(obs["image"][0]) for obs in model_obs_window] == [3, 4]
+    assert state.hidden_fallback_actions == 1
+    assert state.hidden_washout_actions == 3
 
 
 def test_exact_realtime_job_seed_tracks_session_step_index() -> None:
@@ -1040,7 +1169,24 @@ def test_generated_future_rollout_defaults_initial_generation_start_to_zero() ->
     )
 
 
-def test_mot_realtime_replan_resets_observation_conditioned_session() -> None:
+def test_mot_rollout_defaults_initial_generation_start_to_zero() -> None:
+    sandbox = _load_sandbox_module()
+
+    config = SimpleNamespace(policy_variant=SimpleNamespace(name="mot"))
+    initial_obs_window = [{"image": np.zeros((2, 2, 3), dtype=np.uint8)} for _ in range(15)]
+
+    assert sandbox.video_viz._uses_zero_based_generation_start(config) is True
+    assert (
+        sandbox.video_viz._resolve_initial_generation_action_start(
+            initial_obs_window,
+            initial_generation_action_start=None,
+            rollout_starts_at_action_zero=sandbox.video_viz._uses_zero_based_generation_start(config),
+        )
+        == 0
+    )
+
+
+def test_mot_non_joint_realtime_replan_preserves_observation_conditioned_session() -> None:
     sandbox = _load_sandbox_module()
     calls = []
 
@@ -1064,7 +1210,10 @@ def test_mot_realtime_replan_resets_observation_conditioned_session() -> None:
         text_context="text",
         negative_text_context="negative",
     )
-    mot_config = SimpleNamespace(policy_variant=SimpleNamespace(name="mot"))
+    mot_config = SimpleNamespace(policy_variant=SimpleNamespace(name="mot", runtime_mode="non_joint_two_stream"))
+    mot_prefill_config = SimpleNamespace(
+        policy_variant=SimpleNamespace(name="mot", runtime_mode="video_prefill_action_denoise")
+    )
     method4_config = SimpleNamespace(policy_variant=SimpleNamespace(name="post_latent"))
 
     resolved = sandbox._resolve_observation_conditioned_replan_session(
@@ -1073,7 +1222,16 @@ def test_mot_realtime_replan_resets_observation_conditioned_session() -> None:
         config=mot_config,
     )
 
-    assert resolved is not session
+    assert resolved is session
+    assert calls == []
+
+    resolved_prefill = sandbox._resolve_observation_conditioned_replan_session(
+        runner=Runner(),
+        session=session,
+        config=mot_prefill_config,
+    )
+
+    assert resolved_prefill is not session
     assert calls == [
         {
             "task_text": ("task",),

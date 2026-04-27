@@ -290,9 +290,27 @@ class PolicyVariantName(StrEnum):
 
 
 class MoTRuntimeMode(StrEnum):
-    """Execution mode for the MoT policy family."""
+    """Execution mode for the MoT policy family.
+
+    `VIDEO_PREFILL_ACTION_DENOISE` keeps the video branch clean during training
+    and only denoises actions against a cached video prefix — useful as a
+    stage-0 / action-only posttrain on top of a frozen video backbone.
+
+    `NON_JOINT_TWO_STREAM` aligns with method-1 `lingbot_exact` (non-joint):
+    both streams get a history-clean / current-noisy split and are denoised
+    simultaneously, but the mask disallows same-chunk noisy-to-noisy cross-
+    stream attention (video blocks are even, action blocks are odd, so
+    `kv_block == q_block` only fires within the same stream). Combined with
+    `video_can_attend_action=false` this gives the MoT analogue of method-1
+    non-joint (minus the unavoidable "video sees earlier clean action" delta).
+
+    `JOINT_DENOISE` aligns with method-1 `lingbot_exact_action_conditioned`
+    (joint): both streams noisy, and the mask allows same-chunk noisy-to-noisy
+    cross-stream attention (subject to `video_can_attend_action`).
+    """
 
     VIDEO_PREFILL_ACTION_DENOISE = "video_prefill_action_denoise"
+    NON_JOINT_TWO_STREAM = "non_joint_two_stream"
     JOINT_DENOISE = "joint_denoise"
 
 
@@ -318,6 +336,7 @@ class MoTPreset(StrEnum):
     FASTWAM = "fastwam"
     FASTWAM_JOINT = "fastwam_joint"
     FASTWAM_IDM = "fastwam_idm"
+    FASTWAM_NON_JOINT = "fastwam_non_joint"
 
 
 class VisualReadoutSourceFamily(StrEnum):
@@ -677,6 +696,9 @@ class TrainingComponentSelector(StrEnum):
     VISUAL_TOWER_FRONTEND = "visual_tower.frontend"
     VISUAL_TOWER_CORE = "visual_tower.core"
     VISUAL_TOWER_RUNTIME_BACKBONE = "visual_tower.runtime_backbone"
+    VISUAL_TOWER_SHARED_VIDEO_BACKBONE = "visual_tower.shared_video_backbone"
+    VISUAL_TOWER_SHARED_ACTION_RUNTIME = "visual_tower.shared_action_runtime"
+    VISUAL_TOWER_SHARED_RUNTIME_ADAPTERS = "visual_tower.shared_runtime_adapters"
     VISUAL_TOWER_DECODER = "visual_tower.decoder"
     POLICY_VARIANT = "policy_variant"
     POLICY_VARIANT_ACTION_EXPERT = "policy_variant.action_expert"
@@ -711,6 +733,15 @@ class ReferenceCoreInitMode(StrEnum):
 
     FULL = "full"
     VIDEO_ONLY = "video_only"
+    RAW_WAN_VIDEO_ONLY = "raw_wan_video_only"
+    RAW_WAN_VIDEO_ONLY_WITH_BASE_NORM2 = "raw_wan_video_only_with_base_norm2"
+
+
+class ExportedRuntimeActionInitMode(StrEnum):
+    """How exported-runtime loads should initialize action/runtime-specific modules."""
+
+    LOAD_FROM_CHECKPOINT = "load_from_checkpoint"
+    RANDOM = "random"
 
 
 class EvalMode(StrEnum):

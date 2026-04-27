@@ -34,7 +34,11 @@ from open_wam.integrations import (  # noqa: E402
 from open_wam.models.policy_variants import PolicyInferContext  # noqa: E402
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
 from open_wam.utils.local_paths import read_yaml_with_local_paths  # noqa: E402
-from open_wam.utils import load_experiment_config, seed_everywhere  # noqa: E402
+from open_wam.utils import (  # noqa: E402
+    load_experiment_config,
+    merge_runtime_config_from_checkpoint,
+    seed_everywhere,
+)
 
 LIBERO_OBS_KEYS = (
     "observation.images.agentview_rgb",
@@ -77,6 +81,14 @@ def main() -> None:
     parser.add_argument("--action-device", type=str, default=None)
     parser.add_argument("--frontend-device", type=str, default=None)
     parser.add_argument("--decode-device", type=str, default=None)
+    parser.add_argument(
+        "--reset-policy-state-each-chunk",
+        action="store_true",
+        help=(
+            "Debug/compatibility mode matching the original standalone MoT script: "
+            "rebuild the MoT policy state for each observation window instead of carrying caches across chunks."
+        ),
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config)
@@ -94,6 +106,8 @@ def main() -> None:
             "MoT visualization requires a trained checkpoint. Pass `--checkpoint`, set top-level "
             "`checkpoint_path` in the config, or point `backbone.transformer_subdir` at an exported checkpoint."
         )
+    config, _ = merge_runtime_config_from_checkpoint(config, checkpoint_path)
+    _validate_mot_config(config)
     transformer_dir = checkpoint_path.parent / "transformer"
     if transformer_dir.is_dir():
         object.__setattr__(config.backbone, "transformer_subdir", str(transformer_dir.resolve()))
@@ -136,11 +150,13 @@ def main() -> None:
         raise RuntimeError("Failed to construct LIBERO OffScreenRenderEnv after 5 retries.")
 
     try:
+        _print_log("stage", {"name": "init_env_rollout_start", "episode_idx": int(args.episode_idx)})
         initial_obs_window = _init_single_env(
             env,
             init_states[args.episode_idx % len(init_states)],
             num_frames=raw_window_frames,
         )
+        _print_log("stage", {"name": "init_env_rollout_done", "initial_window": len(initial_obs_window)})
         frame_window: deque[dict[str, np.ndarray]] = deque(maxlen=raw_window_frames)
         for obs in initial_obs_window:
             frame_window.append({key: np.array(value, copy=True) for key, value in obs.items()})
@@ -163,12 +179,15 @@ def main() -> None:
             if args.seed is not None:
                 seed_everywhere(args.seed + chunk_count)
 
-            step_session = runner.reset(
-                task_text=session.task_text,
-                text_context=session.text_context,
-                negative_text_context=session.negative_text_context,
-            )
             with torch.inference_mode():
+                _print_log(
+                    "stage",
+                    {
+                        "name": "chunk_prepare_start",
+                        "chunk_index": int(chunk_count),
+                        "env_timestep": int(env.env.timestep),
+                    },
+                )
                 views = _obs_list_to_views(list(frame_window), device=frontend_device)
                 visual_outputs = _prepare_visual_outputs_offline(
                     pipeline,
@@ -177,27 +196,45 @@ def main() -> None:
                     frontend_device=frontend_device,
                     runtime_device=runtime_device,
                 )
+                _print_log(
+                    "stage",
+                    {
+                        "name": "chunk_infer_start",
+                        "chunk_index": int(chunk_count),
+                        "env_timestep": int(env.env.timestep),
+                    },
+                )
                 infer_output = pipeline._forward_infer_with_visual_outputs(
                     visual_outputs,
                     context=_build_infer_context(prompt, action_device=action_device),
-                    infer_state=step_session.policy_state,
+                    infer_state=None if args.reset_policy_state_each_chunk else session.policy_state,
+                )
+                _print_log(
+                    "stage",
+                    {
+                        "name": "chunk_infer_done",
+                        "chunk_index": int(chunk_count),
+                        "env_timestep": int(env.env.timestep),
+                    },
                 )
             session = runner.reset(
-                task_text=step_session.task_text,
+                task_text=session.task_text,
                 text_context=(
                     visual_outputs.frontend.conditioning.text_context
                     if visual_outputs.frontend.conditioning.text_context is not None
-                    else step_session.text_context
+                    else session.text_context
                 ),
                 negative_text_context=(
                     visual_outputs.frontend.conditioning.negative_text_context
                     if visual_outputs.frontend.conditioning.negative_text_context is not None
-                    else step_session.negative_text_context
+                    else session.negative_text_context
                 ),
             )
             session.policy_state = infer_output.policy_output.next_state
             actions = infer_output.decoder_output.action_pred[0].detach().to(dtype=torch.float32).cpu().numpy()
-            action_trace.extend(actions)
+            frame_chunk_size = _frame_chunk_size(config)
+            action_per_frame = _action_per_frame(config)
+            frame_actions = actions.reshape(frame_chunk_size, action_per_frame, actions.shape[-1])
             predicted_latents = infer_output.decoder_output.aux.get("predicted_latents")
             if not isinstance(predicted_latents, torch.Tensor):
                 predicted_latents = infer_output.policy_output.aux.get("predicted_latents")
@@ -212,7 +249,7 @@ def main() -> None:
                 "action_shape": list(actions.shape),
                 "predicted_latents_shape": None if not isinstance(predicted_latents, torch.Tensor) else list(predicted_latents.shape),
                 "first_action_preview": [float(v) for v in actions[0].tolist()],
-                "policy_debug": infer_output.policy_output.aux,
+                "policy_debug": _summarize_policy_debug(infer_output.policy_output.aux),
             }
             _print_log(f"chunk_{chunk_count}", chunk_log)
             chunk_logs.append(chunk_log)
@@ -224,14 +261,21 @@ def main() -> None:
                 future_frame_count=future_frame_count,
             )
             executed_actions = 0
-            for action_index, action in enumerate(actions):
-                obs, _, done, _ = env.step(action.astype(np.float32))
-                executed_actions += 1
-                extracted = _extract_obs(obs)
-                rollout_frames.append({key: np.array(value, copy=True) for key, value in extracted.items()})
-                frame_window.append({key: np.array(value, copy=True) for key, value in extracted.items()})
-                if action_index in sample_indices:
-                    real_future_frames.append({key: np.array(value, copy=True) for key, value in extracted.items()})
+            start_frame_group = 1 if chunk_count == 0 else 0
+            for frame_group in range(start_frame_group, frame_actions.shape[0]):
+                for action_offset, action in enumerate(frame_actions[frame_group]):
+                    absolute_action_index = frame_group * action_per_frame + action_offset
+                    control_action = np.clip(action.astype(np.float32, copy=False), -1.0, 1.0)
+                    action_trace.append(np.array(control_action, copy=True))
+                    obs, _, done, _ = env.step(control_action)
+                    executed_actions += 1
+                    extracted = _extract_obs(obs)
+                    rollout_frames.append({key: np.array(value, copy=True) for key, value in extracted.items()})
+                    frame_window.append({key: np.array(value, copy=True) for key, value in extracted.items()})
+                    if absolute_action_index in sample_indices:
+                        real_future_frames.append({key: np.array(value, copy=True) for key, value in extracted.items()})
+                    if done or env.env.timestep >= args.max_timestep:
+                        break
                 if done or env.env.timestep >= args.max_timestep:
                     break
 
@@ -240,6 +284,7 @@ def main() -> None:
                 "phase": "env_rollout",
                 "env_timestep_after": int(env.env.timestep),
                 "executed_actions": int(executed_actions),
+                "start_frame_group": int(start_frame_group),
                 "done_after_chunk": bool(done),
                 "success_after_chunk": bool(done),
             }
@@ -294,7 +339,20 @@ def main() -> None:
             "checkpoint_file": str(checkpoint_path.resolve()),
         }
         summary_path = output_path.with_suffix(".json")
+        action_trace_path = output_path.with_name(f"{output_path.stem}_actions.jsonl")
+        summary["action_trace_path"] = str(action_trace_path.resolve())
         summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        with action_trace_path.open("w", encoding="utf-8") as handle:
+            for action_index, action in enumerate(action_trace):
+                handle.write(
+                    json.dumps(
+                        {
+                            "action_index": int(action_index),
+                            "action": np.asarray(action, dtype=np.float32).tolist(),
+                        }
+                    )
+                    + "\n"
+                )
         chunk_log_path = output_path.with_name(f"{output_path.stem}_chunks.json")
         chunk_log_path.write_text(json.dumps(chunk_logs, indent=2, default=str), encoding="utf-8")
         load_report_path = output_path.with_name(f"{output_path.stem}_load_report.json")
@@ -597,6 +655,21 @@ def _future_sample_indices(*, action_count: int, future_frame_count: int) -> lis
     return deduped
 
 
+def _frame_chunk_size(config) -> int:
+    frame_chunk_size = max(1, int(config.inference.frame_chunk_size))
+    action_horizon = int(config.data.action_schema.action_horizon)
+    if action_horizon % frame_chunk_size != 0:
+        raise ValueError(
+            "MoT rollout expects action_horizon to divide by inference.frame_chunk_size, "
+            f"got action_horizon={action_horizon}, frame_chunk_size={frame_chunk_size}."
+        )
+    return frame_chunk_size
+
+
+def _action_per_frame(config) -> int:
+    return max(1, int(config.data.action_schema.action_horizon) // _frame_chunk_size(config))
+
+
 def _build_rollout_video_frames(
     *,
     real_obs_list: list[dict[str, np.ndarray]],
@@ -806,11 +879,47 @@ def _sha256_if_exists(path: Path | None) -> str | None:
 
 
 def _print_log(label: str, payload: dict[str, object]) -> None:
-    print(f"[{label}] {json.dumps(payload, sort_keys=True, default=str)}")
+    print(f"[{label}] {json.dumps(payload, sort_keys=True, default=str)}", flush=True)
 
 
 def _count_trainable_parameters(module: torch.nn.Module) -> int:
     return sum(parameter.numel() for parameter in module.parameters() if parameter.requires_grad)
+
+
+def _summarize_policy_debug(aux: dict[str, object]) -> dict[str, object]:
+    """Keep rollout logs readable by replacing large tensors with metadata."""
+
+    summary: dict[str, object] = {}
+    for key, value in aux.items():
+        if isinstance(value, torch.Tensor):
+            summary[key] = {
+                "shape": list(value.shape),
+                "dtype": str(value.dtype),
+                "device": str(value.device),
+            }
+            continue
+        if key == "mot_infer_artifacts" and hasattr(value, "action_pred"):
+            action_pred = getattr(value, "action_pred", None)
+            predicted_latents = getattr(value, "predicted_latents", None)
+            summary[key] = {
+                "action_pred_shape": (
+                    list(action_pred.shape) if isinstance(action_pred, torch.Tensor) else None
+                ),
+                "predicted_latents_shape": (
+                    list(predicted_latents.shape) if isinstance(predicted_latents, torch.Tensor) else None
+                ),
+                "condition_mode": str(getattr(value, "condition_mode", "")),
+                "runtime_mode": str(getattr(value, "runtime_mode", "")),
+            }
+            continue
+        if isinstance(value, dict):
+            summary[key] = value
+            continue
+        if value is None or isinstance(value, (bool, int, float, str)):
+            summary[key] = value
+            continue
+        summary[key] = type(value).__name__
+    return summary
 
 
 def _resolve_device(device_arg: str | None, *, fallback: torch.device | None = None) -> torch.device:

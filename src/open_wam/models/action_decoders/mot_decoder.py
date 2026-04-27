@@ -133,7 +133,7 @@ class MoTActionDecoder(ActionDecoder):
         action_mse = _masked_action_mse(
             action_pred=train_artifacts.action.denoised_actions,
             target_actions=batch.actions,
-            action_mask=batch.action_mask,
+            action_mask=train_artifacts.action.action_mask,
         )
 
         if train_artifacts.video is not None:

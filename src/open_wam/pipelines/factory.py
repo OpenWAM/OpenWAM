@@ -7,6 +7,7 @@ from open_wam.configs import (
     CausalVideoPredictionPolicyConfig,
     ExperimentConfig,
     MoTPolicyConfig,
+    MoTRuntimeMode,
     ParallelRuntimeMode,
     ParallelStreamPolicyConfig,
     PostDecodedPolicyConfig,
@@ -162,11 +163,16 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
     if isinstance(config.policy_variant, MoTPolicyConfig):
         if action_schema.action_horizon <= 0:
             raise ValueError("MoT method 5 requires `data.action_schema.action_horizon > 0`.")
-        if config.policy_variant.video_prefix_frames >= config.data.num_frames:
+        if (
+            config.policy_variant.runtime_mode
+            in {MoTRuntimeMode.JOINT_DENOISE, MoTRuntimeMode.NON_JOINT_TWO_STREAM}
+            and config.policy_variant.video_prefix_frames >= config.data.num_frames
+        ):
             raise ValueError(
-                "MoT method 5 requires `video_prefix_frames < data.num_frames`, "
+                "MoT two-stream method 5 requires `video_prefix_frames < data.num_frames`, "
                 f"got video_prefix_frames={config.policy_variant.video_prefix_frames}, "
-                f"data.num_frames={config.data.num_frames}."
+                f"data.num_frames={config.data.num_frames}, "
+                f"runtime_mode={config.policy_variant.runtime_mode!r}."
             )
         if config.policy_variant.num_action_layers != config.backbone.num_layers:
             raise ValueError(

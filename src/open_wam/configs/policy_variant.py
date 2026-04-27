@@ -227,12 +227,24 @@ class MoTPolicyConfig(PolicyVariantConfig):
     action_expert_init_mode: MoTActionExpertInitMode = MoTActionExpertInitMode.VIDEO_WEIGHT_COPY
     video_prefix_frames: int = 1
     teacher_forcing_video_noise_prob: float = 0.5
+    # Probability of augmenting the ``V_clean`` copy with a light top-half
+    # schedule corruption during non-joint packed training. Matches Method 1
+    # ``ParallelStreamPolicyConfig.noisy_video_condition_prob`` (default 0.5).
+    # When augmentation fires, the clean copy is noised with per-frame
+    # timesteps sampled from ``[0.5, 1.0]`` of the schedule, simulating the
+    # "past chunks were generated, not observed" regime at inference.
+    noisy_video_condition_prob: float = 0.5
     num_action_layers: int = 30
     action_hidden_size: int | None = None
     action_ffn_dim: int | None = None
     video_can_attend_action: bool = True
     use_text_conditioning: bool = True
     use_state_conditioning: bool = False
+    # Trade forward compute for activation memory by recomputing each
+    # (video, action) block pair during backward instead of storing its
+    # activations. Only affects two-stream train paths that run through
+    # `forward_joint_video_action_denoise`.
+    use_activation_checkpointing: bool = False
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -250,6 +262,11 @@ class MoTPolicyConfig(PolicyVariantConfig):
             raise ValueError(
                 "MoT policy requires `0 <= teacher_forcing_video_noise_prob <= 1`, "
                 f"got teacher_forcing_video_noise_prob={self.teacher_forcing_video_noise_prob!r}."
+            )
+        if not (0.0 <= float(self.noisy_video_condition_prob) <= 1.0):
+            raise ValueError(
+                "MoT policy requires `0 <= noisy_video_condition_prob <= 1`, "
+                f"got noisy_video_condition_prob={self.noisy_video_condition_prob!r}."
             )
         if int(self.num_action_layers) <= 0:
             raise ValueError(

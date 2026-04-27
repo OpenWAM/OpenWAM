@@ -209,6 +209,7 @@ class VideoConditionedActionExpert(nn.Module):
         timestep: torch.Tensor,
         context: torch.Tensor,
         context_mask: torch.Tensor | None = None,
+        action_grid_ids: torch.Tensor | None = None,
     ) -> ActionExpertPreprocessOutput:
         if action_tokens.ndim != 3:
             raise ValueError(
@@ -258,7 +259,15 @@ class VideoConditionedActionExpert(nn.Module):
         tokens = self.action_embedder(action_tokens)
         _, t_mod = self.time_conditioner(timestep.to(device=tokens.device, dtype=torch.float32), dtype=tokens.dtype)
         projected_context = self.context_proj(context.to(device=tokens.device, dtype=tokens.dtype))
-        grid_ids = build_sequence_grid_ids(seq_len, device=tokens.device)[None].expand(batch_size, -1, -1)
+        if action_grid_ids is not None:
+            if action_grid_ids.shape != (batch_size, 4, seq_len):
+                raise ValueError(
+                    "VideoConditionedActionExpert expects action_grid_ids with shape [B, 4, T], "
+                    f"got {tuple(action_grid_ids.shape)} for action shape {tuple(action_tokens.shape)}."
+                )
+            grid_ids = action_grid_ids.to(device=tokens.device, dtype=torch.float32)
+        else:
+            grid_ids = build_sequence_grid_ids(seq_len, device=tokens.device)[None].expand(batch_size, -1, -1)
         freqs = self.rope(grid_ids)
         resolved_context_mask = None if context_mask is None else context_mask.to(device=tokens.device, dtype=torch.bool)
         return ActionExpertPreprocessOutput(
@@ -305,12 +314,14 @@ class VideoConditionedActionExpert(nn.Module):
         timestep: torch.Tensor,
         context: torch.Tensor,
         context_mask: torch.Tensor | None = None,
+        action_grid_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         preprocessed = self.pre_dit(
             action_tokens=action_tokens,
             timestep=timestep,
             context=context,
             context_mask=context_mask,
+            action_grid_ids=action_grid_ids,
         )
         hidden_states = self.forward_layers(preprocessed)
         return self.post_dit(hidden_states, preprocessed)

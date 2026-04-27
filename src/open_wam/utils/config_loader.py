@@ -356,6 +356,16 @@ def _load_policy_variant_config(
                 "teacher_forcing_video_noise_prob": 0.5,
                 "video_prefix_frames": 1,
             }
+        elif preset == config_enums.MoTPreset.FASTWAM_NON_JOINT:
+            # Method-1-non-joint-aligned two-stream MoT: both video and action
+            # run through a history-clean / current-noisy split, and the mask
+            # disallows same-chunk noisy-to-noisy cross-stream attention.
+            mot_defaults = {
+                "runtime_mode": config_enums.MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+                "condition_mode": config_enums.MoTConditionMode.TEACHER_FORCING_COND_VIDEO,
+                "teacher_forcing_video_noise_prob": 0.0,
+                "video_prefix_frames": 1,
+            }
         return MoTPolicyConfig(
             hidden_size=hidden_size,
             attach_site=_coerce_enum(
@@ -395,6 +405,7 @@ def _load_policy_variant_config(
             video_can_attend_action=resolved_raw.get("video_can_attend_action", True),
             use_text_conditioning=resolved_raw.get("use_text_conditioning", True),
             use_state_conditioning=resolved_raw.get("use_state_conditioning", False),
+            use_activation_checkpointing=resolved_raw.get("use_activation_checkpointing", False),
         )
     if name == config_enums.PolicyVariantName.REGISTER_ATTACHED:
         return RegisterAttachedPolicyConfig(
@@ -1070,6 +1081,17 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         reference_core_init_mode=_coerce_enum(
             config_enums.ReferenceCoreInitMode,
             backbone_raw.get("reference_core_init_mode", backbone_defaults.reference_core_init_mode),
+        ),
+        reference_norm2_source_path=backbone_raw.get(
+            "reference_norm2_source_path",
+            backbone_defaults.reference_norm2_source_path,
+        ),
+        exported_runtime_action_init_mode=_coerce_enum(
+            config_enums.ExportedRuntimeActionInitMode,
+            backbone_raw.get(
+                "exported_runtime_action_init_mode",
+                backbone_defaults.exported_runtime_action_init_mode,
+            ),
         ),
         reference_assets_device_policy=_coerce_enum(
             config_enums.ReferenceAssetsDevicePolicy,
