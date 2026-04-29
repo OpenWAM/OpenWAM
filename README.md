@@ -335,8 +335,13 @@ uv run python scripts/run_heng_libero_exact_visualization.py \
   --episode-idx 0 \
   --max-chunks 6 \
   --seed 1234 \
+  --pretrained-root <LINGBOT_VA_BASE_ROOT> \
+  --transformer-dir <METHOD1_STEP400_CHECKPOINT>/transformer \
   --output-dir outputs/libero_exact_visualization_chunks6_seeded
 ```
+
+Replace `<LINGBOT_VA_BASE_ROOT>` with the local LingBot/Wan base model root and
+`<METHOD1_STEP400_CHECKPOINT>` with the local checkpoint-step directory.
 
 Run eval:
 

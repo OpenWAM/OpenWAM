@@ -25,6 +25,7 @@ from open_wam.models.common import (
     resolve_cache_backend_spec,
     restore_slot_pool_slots,
     select_attention_profile_mask,
+    SlotPoolLayerState,
     unpatchify_video_tokens,
     update_slot_pool_layer_state,
 )
@@ -934,6 +935,108 @@ class SharedVideoTransformerCore(nn.Module):
             kwargs["dtype"] = dtype
         return tensor.to(**kwargs)
 
+    @classmethod
+    def _cached_optional_tensor(
+        cls,
+        tensor: torch.Tensor | None,
+        *,
+        cache: dict[tuple[str, torch.device, torch.dtype | None], torch.Tensor],
+        name: str,
+        device: torch.device,
+        dtype: torch.dtype | None = None,
+    ) -> torch.Tensor | None:
+        if tensor is None:
+            return None
+        dtype_key = dtype if dtype is not None and tensor.is_floating_point() else None
+        cache_key = (name, torch.device(device), dtype_key)
+        cached = cache.get(cache_key)
+        if cached is None:
+            cached = cls._move_optional_tensor(tensor, device=torch.device(device), dtype=dtype)
+            cache[cache_key] = cached
+        return cached
+
+    def _move_attention_profile(
+        self,
+        profile: PreparedAttentionProfile | None,
+        *,
+        device: torch.device,
+    ) -> PreparedAttentionProfile | None:
+        if profile is None:
+            return None
+        device = torch.device(device)
+        has_block_masks = (
+            profile.self_attention_block_mask is not None
+            or profile.cross_attention_block_mask is not None
+        )
+        if has_block_masks:
+            metadata = profile.metadata
+            required_keys = (
+                "latent_shape",
+                "action_shape",
+                "padded_length",
+                "chunk_size",
+                "window_size",
+                "text_token_count",
+                "allow_joint_noisy_block_attention",
+            )
+            if all(key in metadata for key in required_keys):
+                return build_chunked_temporal_exact_attention_profile(
+                    latent_shape=tuple(int(v) for v in metadata["latent_shape"]),
+                    action_shape=tuple(int(v) for v in metadata["action_shape"]),
+                    padded_length=int(metadata["padded_length"]),
+                    chunk_size=int(metadata["chunk_size"]),
+                    window_size=int(metadata["window_size"]),
+                    patch_size=self.patch_size,
+                    text_token_count=int(metadata["text_token_count"]),
+                    device=device,
+                    build_dense_masks=(
+                        profile.self_attention_mask is not None
+                        or profile.cross_attention_mask is not None
+                    ),
+                    build_flex_masks=True,
+                    allow_joint_noisy_block_attention=bool(metadata["allow_joint_noisy_block_attention"]),
+                )
+            if profile.self_attention_mask is None and profile.cross_attention_mask is None:
+                return profile
+            return replace(
+                profile,
+                self_attention_mask=self._move_optional_tensor(profile.self_attention_mask, device=device),
+                cross_attention_mask=self._move_optional_tensor(profile.cross_attention_mask, device=device),
+                self_attention_block_mask=None,
+                cross_attention_block_mask=None,
+            )
+        return replace(
+            profile,
+            self_attention_mask=self._move_optional_tensor(profile.self_attention_mask, device=device),
+            cross_attention_mask=self._move_optional_tensor(profile.cross_attention_mask, device=device),
+        )
+
+    def _cached_attention_profile(
+        self,
+        profile: PreparedAttentionProfile | None,
+        *,
+        cache: dict[torch.device, PreparedAttentionProfile | None],
+        device: torch.device,
+    ) -> PreparedAttentionProfile | None:
+        device = torch.device(device)
+        if device not in cache:
+            cache[device] = self._move_attention_profile(profile, device=device)
+        return cache[device]
+
+    @staticmethod
+    def _move_slot_pool_layer_state(
+        layer_state: SlotPoolLayerState | None,
+        *,
+        device: torch.device,
+    ) -> SlotPoolLayerState | None:
+        if layer_state is None:
+            return None
+        for name in ("key", "value", "slot_ids", "slot_mask", "prediction_mask"):
+            tensor = getattr(layer_state, name)
+            if tensor is not None and tensor.device != device:
+                setattr(layer_state, name, tensor.to(device=device))
+        return layer_state
+
     def _move_structured_attention_context(
         self,
         context: StructuredAttentionContext | None,
@@ -1492,32 +1595,71 @@ class SharedVideoTransformerCore(nn.Module):
                 cache_current_token_count = int(hidden_states.shape[1])
             cache_current_token_count = max(0, min(cache_current_token_count, int(hidden_states.shape[1])))
         next_self_attention_kv: list[AttentionCacheEntry] = []
+        attention_mask = input_dict.get("attention_mask")
+        moved_tensor_cache: dict[tuple[str, torch.device, torch.dtype | None], torch.Tensor] = {}
 
         for layer_index, block in enumerate(self.blocks):
+            block_device = (
+                self._runtime_block_devices[layer_index % len(self._runtime_block_devices)]
+                if self._runtime_block_devices
+                else hidden_states.device
+            )
+            if hidden_states.device != block_device:
+                hidden_states = hidden_states.to(device=block_device)
+            block_text_hidden_states = self._cached_optional_tensor(
+                text_hidden_states,
+                cache=moved_tensor_cache,
+                name="text_hidden_states",
+                device=block_device,
+                dtype=hidden_states.dtype,
+            )
+            block_timestep_proj = self._cached_optional_tensor(
+                timestep_proj,
+                cache=moved_tensor_cache,
+                name="timestep_proj",
+                device=block_device,
+                dtype=hidden_states.dtype,
+            )
+            block_rotary_emb = self._cached_optional_tensor(
+                rotary_emb,
+                cache=moved_tensor_cache,
+                name="rotary_emb",
+                device=block_device,
+            )
+            block_attention_mask = self._cached_optional_tensor(
+                attention_mask,
+                cache=moved_tensor_cache,
+                name="attention_mask",
+                device=block_device,
+            )
+            block_cache_backend_state = (
+                cache_backend_payload.layer_states[layer_index]
+                if cache_backend_uses_slot_pool(cache_backend_name)
+                and cache_backend_payload is not None
+                and layer_index < len(cache_backend_payload.layer_states)
+                else None
+            )
+            block_cache_backend_state = self._move_slot_pool_layer_state(block_cache_backend_state, device=block_device)
             hidden_states, current_self_cache_entry, _ = block(
                 hidden_states,
-                encoder_hidden_states=text_hidden_states,
-                temb=timestep_proj,
-                rotary_emb=rotary_emb,
-                attention_mask=input_dict.get("attention_mask"),
+                encoder_hidden_states=block_text_hidden_states,
+                temb=block_timestep_proj,
+                rotary_emb=block_rotary_emb,
+                attention_mask=block_attention_mask,
                 self_attention_cache_backend_name=cache_backend_name,
-                self_attention_cache_backend_state=(
-                    cache_backend_payload.layer_states[layer_index]
-                    if cache_backend_uses_slot_pool(cache_backend_name)
-                    and cache_backend_payload is not None
-                    and layer_index < len(cache_backend_payload.layer_states)
-                    else None
-                ),
+                self_attention_cache_backend_state=block_cache_backend_state,
                 cache_current_token_count=cache_current_token_count,
                 detach_self_attention_cache=detach_self_attention_cache,
                 self_attention_cache_update_mode=update_cache,
             )
             next_self_attention_kv.append(current_self_cache_entry or AttentionCacheEntry())
 
+        output_device = self.scale_shift_table.device
+        if hidden_states.device != output_device:
+            hidden_states = hidden_states.to(device=output_device)
+        temb = temb.to(device=output_device, dtype=hidden_states.dtype)
         temb_scale_shift_table = self.scale_shift_table[None] + temb[:, :, None, ...]
         shift, scale = _select_chunk_slices(temb_scale_shift_table, 2)
-        shift = shift.to(hidden_states.device)
-        scale = scale.to(hidden_states.device)
         hidden_states = (self.norm_out(hidden_states.float()) * (1.0 + scale) + shift).type_as(hidden_states)
 
         if cache_state is not None:
@@ -1564,30 +1706,68 @@ class SharedVideoTransformerCore(nn.Module):
         cache_backend_name = cache_state.backend_name if cache_state is not None else None
         cache_backend_payload = cache_state.backend_payload if cache_state is not None else None
         next_self_attention_kv: list[AttentionCacheEntry] = []
+        moved_tensor_cache: dict[tuple[str, torch.device, torch.dtype | None], torch.Tensor] = {}
+        attention_profile_cache: dict[torch.device, PreparedAttentionProfile | None] = {}
 
         for layer_index, block in enumerate(self.blocks):
+            block_device = (
+                self._runtime_block_devices[layer_index % len(self._runtime_block_devices)]
+                if self._runtime_block_devices
+                else hidden_states.device
+            )
+            if hidden_states.device != block_device:
+                hidden_states = hidden_states.to(device=block_device)
+            block_text_hidden_states = self._cached_optional_tensor(
+                text_hidden_states,
+                cache=moved_tensor_cache,
+                name="text_hidden_states",
+                device=block_device,
+                dtype=hidden_states.dtype,
+            )
+            block_timestep_proj = self._cached_optional_tensor(
+                timestep_proj,
+                cache=moved_tensor_cache,
+                name="timestep_proj",
+                device=block_device,
+                dtype=hidden_states.dtype,
+            )
+            block_rotary_emb = self._cached_optional_tensor(
+                rotary_emb,
+                cache=moved_tensor_cache,
+                name="rotary_emb",
+                device=block_device,
+            )
+            block_attention_profile = self._cached_attention_profile(
+                exact_attention_profile,
+                cache=attention_profile_cache,
+                device=block_device,
+            )
+            block_cache_backend_state = (
+                cache_backend_payload.layer_states[layer_index]
+                if cache_backend_uses_slot_pool(cache_backend_name)
+                and cache_backend_payload is not None
+                and layer_index < len(cache_backend_payload.layer_states)
+                else None
+            )
+            block_cache_backend_state = self._move_slot_pool_layer_state(block_cache_backend_state, device=block_device)
             hidden_states, current_self_cache_entry, _ = block(
                 hidden_states,
-                encoder_hidden_states=text_hidden_states,
-                temb=timestep_proj,
-                rotary_emb=rotary_emb,
-                attention_profile=exact_attention_profile,
+                encoder_hidden_states=block_text_hidden_states,
+                temb=block_timestep_proj,
+                rotary_emb=block_rotary_emb,
+                attention_profile=block_attention_profile,
                 self_attention_cache_backend_name=cache_backend_name,
-                self_attention_cache_backend_state=(
-                    cache_backend_payload.layer_states[layer_index]
-                    if cache_backend_uses_slot_pool(cache_backend_name)
-                    and cache_backend_payload is not None
-                    and layer_index < len(cache_backend_payload.layer_states)
-                    else None
-                ),
+                self_attention_cache_backend_state=block_cache_backend_state,
                 self_attention_cache_update_mode=update_cache,
             )
             next_self_attention_kv.append(current_self_cache_entry or AttentionCacheEntry())
 
+        output_device = self.scale_shift_table.device
+        if hidden_states.device != output_device:
+            hidden_states = hidden_states.to(device=output_device)
+        temb = temb.to(device=output_device, dtype=hidden_states.dtype)
         temb_scale_shift_table = self.scale_shift_table[None] + temb[:, :, None, ...]
         shift, scale = _select_chunk_slices(temb_scale_shift_table, 2)
-        shift = shift.to(hidden_states.device)
-        scale = scale.to(hidden_states.device)
         hidden_states = (self.norm_out(hidden_states.float()) * (1.0 + scale) + shift).type_as(hidden_states)
         latent_hidden_states, _, action_hidden_states, _, _ = _select_split_segments(
             hidden_states,

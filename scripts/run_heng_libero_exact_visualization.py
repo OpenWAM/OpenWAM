@@ -4,6 +4,7 @@ import argparse
 import copy
 import hashlib
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -12,6 +13,7 @@ import cv2
 import imageio.v2 as imageio
 import numpy as np
 import torch
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -23,7 +25,11 @@ for path in (SRC_ROOT, HENG_REPO_ROOT, HENG_WAN_ROOT):
         sys.path.insert(0, str(path))
 
 from open_wam.third_party.lingbot import _ensure_flash_attn_shims  # noqa: E402
-from open_wam.integrations import ensure_local_libero_config  # noqa: E402
+from open_wam.integrations import (  # noqa: E402
+    LiberoTaskSpec,
+    ensure_local_libero_config,
+    load_libero_task_init_states,
+)
 from open_wam.utils import seed_everywhere  # noqa: E402
 
 _ensure_flash_attn_shims()
@@ -54,13 +60,29 @@ def main() -> None:
     parser.add_argument("--output-dir", type=str, default="outputs/libero_exact_visualization_firstpass")
     parser.add_argument("--suffix", type=str, default="heng")
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument(
+        "--pretrained-root",
+        type=str,
+        default=None,
+        help="LingBot/Wan base root for Heng's VA_Server. Overrides placeholder paths in Heng configs.",
+    )
+    parser.add_argument(
+        "--transformer-dir",
+        type=str,
+        default=None,
+        help="Optional trained transformer directory to mount under Heng's expected pretrained root layout.",
+    )
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
         raise RuntimeError("Heng comparison runner expects CUDA to be available.")
     torch.cuda.set_device(0)
 
-    model = _build_heng_model(Path(args.output_dir))
+    model = _build_heng_model(
+        Path(args.output_dir),
+        pretrained_root=Path(args.pretrained_root) if args.pretrained_root else None,
+        transformer_dir=Path(args.transformer_dir) if args.transformer_dir else None,
+    )
     component_report = _build_heng_component_report(model)
     _print_log("load_report", component_report)
     env = None
@@ -73,11 +95,13 @@ def main() -> None:
                 "bddl_file_name": benchmark_instance.get_task_bddl_file_path(args.task_id),
                 "camera_heights": 128,
                 "camera_widths": 128,
+                "horizon": max(args.max_timestep + 16, 1000),
+                "ignore_done": True,
             }
         )
         if env is None:
             raise RuntimeError("Failed to construct LIBERO OffScreenRenderEnv after 5 retries.")
-        init_states = benchmark_instance.get_task_init_states(args.task_id)
+        init_states = _load_heng_init_states(args.benchmark, args.task_id, benchmark_instance, task)
         first_obs = _init_single_env(env, init_states[args.episode_idx % init_states.shape[0]])
 
         model.infer(dict(reset=True, prompt=prompt, n_view=2))
@@ -165,8 +189,7 @@ def main() -> None:
                 },
             )
 
-        video_ret = model.infer(dict(export_imagined_video=True))
-        imagined_video = video_ret.get("video")
+        imagined_video = _export_heng_imagined_video(model)
 
         output_path = _build_output_path(
             root=Path(args.output_dir),
@@ -210,18 +233,47 @@ def main() -> None:
         torch.cuda.empty_cache()
 
 
-def _build_heng_model(save_root: Path) -> VA_Server:
+def _build_heng_model(
+    save_root: Path,
+    *,
+    pretrained_root: Path | None = None,
+    transformer_dir: Path | None = None,
+) -> VA_Server:
     config = copy.deepcopy(VA_CONFIGS["libero"])
     config.rank = 0
     config.local_rank = 0
     config.world_size = 1
     config.save_root = str(save_root.resolve())
+    if pretrained_root is not None:
+        config.wan22_pretrained_model_name_or_path = str(pretrained_root.expanduser().resolve())
+    if transformer_dir is not None:
+        source_transformer_dir = transformer_dir.expanduser().resolve()
+        resolved_transformer_dir = _ensure_heng_compatible_transformer_dir(
+            save_root=save_root,
+            pretrained_root=Path(config.wan22_pretrained_model_name_or_path),
+            transformer_dir=source_transformer_dir,
+        )
+        model_root = _prepare_heng_model_root(
+            save_root=save_root,
+            pretrained_root=Path(config.wan22_pretrained_model_name_or_path),
+            transformer_dir=resolved_transformer_dir,
+        )
+        config.heng_base_pretrained_root = str(Path(config.wan22_pretrained_model_name_or_path).resolve())
+        config.heng_source_transformer_dir = str(source_transformer_dir)
+        config.heng_transformer_dir = str(resolved_transformer_dir)
+        config.wan22_pretrained_model_name_or_path = str(model_root)
+    else:
+        root = Path(config.wan22_pretrained_model_name_or_path).expanduser().resolve()
+        config.heng_base_pretrained_root = str(root)
+        config.heng_source_transformer_dir = str(root / "transformer")
+        config.heng_transformer_dir = str(root / "transformer")
     return VA_Server(config)
 
 
 def _build_heng_component_report(model: VA_Server) -> dict[str, object]:
-    transformer_dir = Path(model.job_config.transformer_override_path) / "transformer"
-    pretrained_root = Path(model.job_config.wan22_pretrained_model_name_or_path)
+    pretrained_root = Path(model.job_config.heng_base_pretrained_root)
+    transformer_dir = Path(model.job_config.heng_transformer_dir)
+    source_transformer_dir = Path(model.job_config.heng_source_transformer_dir)
     vae_dir = pretrained_root / "vae"
     text_encoder_dir = pretrained_root / "text_encoder"
     tokenizer_dir = pretrained_root / "tokenizer"
@@ -230,7 +282,9 @@ def _build_heng_component_report(model: VA_Server) -> dict[str, object]:
         "pipeline": "heng",
         "runtime_device": str(model.device),
         "backbone_pretrained_root": str(pretrained_root.resolve()),
+        "source_transformer_dir": str(source_transformer_dir.resolve()),
         "transformer_dir": str(transformer_dir.resolve()),
+        "transformer_converted_for_heng": source_transformer_dir.resolve() != transformer_dir.resolve(),
         "transformer_config_sha256": _sha256_if_exists(transformer_dir / "config.json"),
         "transformer_weights_sha256": _sha256_if_exists(transformer_dir / "diffusion_pytorch_model.safetensors"),
         "vae_dir": str(vae_dir.resolve()),
@@ -258,6 +312,139 @@ def _build_heng_component_report(model: VA_Server) -> dict[str, object]:
         "visual_tower_decoder_bypassed_in_exact_mode": True,
         "exact_action_adapter_enabled": True,
     }
+
+
+def _load_heng_init_states(
+    benchmark_name: str,
+    task_id: int,
+    benchmark_instance,
+    task,
+):
+    config_path = Path(os.environ["LIBERO_CONFIG_PATH"]) / "config.yaml"
+    with config_path.open("r", encoding="utf-8") as handle:
+        libero_config = yaml.safe_load(handle)
+    task_spec = LiberoTaskSpec(
+        benchmark_name=benchmark_name,
+        task_id=task_id,
+        task_name=task.name,
+        task_language=task.language,
+        problem_folder=task.problem_folder,
+        bddl_file_path=benchmark_instance.get_task_bddl_file_path(task_id),
+        init_states_path=str(Path(libero_config["init_states"]) / task.problem_folder / f"{task.name}.pruned_init"),
+    )
+    return load_libero_task_init_states(task_spec, REPO_ROOT)
+
+
+def _export_heng_imagined_video(model: VA_Server):
+    try:
+        video_ret = model.infer(dict(export_imagined_video=True))
+    except KeyError as exc:
+        if exc.args == ("obs",):
+            return None
+        raise
+    return video_ret.get("video")
+
+
+def _ensure_heng_compatible_transformer_dir(
+    *,
+    save_root: Path,
+    pretrained_root: Path,
+    transformer_dir: Path,
+) -> Path:
+    config_path = transformer_dir / "config.json"
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Transformer config not found: {config_path}")
+    with config_path.open("r", encoding="utf-8") as handle:
+        source_config = json.load(handle)
+    if source_config.get("_class_name") == "WanTransformer3DModel":
+        return transformer_dir
+
+    weights_path = transformer_dir / "diffusion_pytorch_model.safetensors"
+    if not weights_path.is_file():
+        raise FileNotFoundError(f"Only unsharded Open-WAM transformer exports are supported: {weights_path}")
+    digest = hashlib.sha256(str(transformer_dir.resolve()).encode("utf-8")).hexdigest()[:12]
+    converted_dir = save_root.resolve() / "_heng_transformer_converted" / digest
+    converted_config_path = converted_dir / "config.json"
+    converted_weights_path = converted_dir / "diffusion_pytorch_model.safetensors"
+    if converted_config_path.is_file() and converted_weights_path.is_file():
+        return converted_dir
+
+    base_config_path = pretrained_root.expanduser().resolve() / "transformer" / "config.json"
+    if not base_config_path.is_file():
+        raise FileNotFoundError(f"Heng transformer base config not found: {base_config_path}")
+    converted_dir.mkdir(parents=True, exist_ok=True)
+    with base_config_path.open("r", encoding="utf-8") as handle:
+        heng_config = json.load(handle)
+    if "attn_mode" in source_config:
+        heng_config["attn_mode"] = source_config["attn_mode"]
+
+    from safetensors.torch import load_file, save_file
+
+    source_state = load_file(str(weights_path), device="cpu")
+    converted_state = {}
+    for key, value in source_state.items():
+        converted_key = _to_heng_transformer_key(key)
+        if converted_key is None:
+            continue
+        converted_state[converted_key] = value
+    with converted_config_path.open("w", encoding="utf-8") as handle:
+        json.dump(heng_config, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    save_file(converted_state, str(converted_weights_path))
+    return converted_dir
+
+
+def _to_heng_transformer_key(key: str) -> str | None:
+    if key.startswith("runtime_stream_adapters."):
+        return None
+    prefix_pairs = (
+        ("time_conditioner.", "condition_embedder."),
+        ("text_proj.", "condition_embedder.text_embedder."),
+        ("action_time_conditioner.", "condition_embedder_action."),
+        ("action_text_proj.", "condition_embedder_action.text_embedder."),
+    )
+    for source_prefix, target_prefix in prefix_pairs:
+        if key.startswith(source_prefix):
+            return f"{target_prefix}{key[len(source_prefix):]}"
+    return key
+
+
+def _prepare_heng_model_root(
+    *,
+    save_root: Path,
+    pretrained_root: Path,
+    transformer_dir: Path,
+) -> Path:
+    pretrained_root = pretrained_root.expanduser().resolve()
+    transformer_dir = transformer_dir.expanduser().resolve()
+    _require_dir(pretrained_root / "vae")
+    _require_dir(pretrained_root / "text_encoder")
+    _require_dir(pretrained_root / "tokenizer")
+    _require_dir(transformer_dir)
+
+    digest = hashlib.sha256(f"{pretrained_root}|{transformer_dir}".encode("utf-8")).hexdigest()[:12]
+    model_root = save_root.resolve() / "_heng_model_roots" / digest
+    model_root.mkdir(parents=True, exist_ok=True)
+    _safe_link_dir(pretrained_root / "vae", model_root / "vae")
+    _safe_link_dir(pretrained_root / "text_encoder", model_root / "text_encoder")
+    _safe_link_dir(pretrained_root / "tokenizer", model_root / "tokenizer")
+    _safe_link_dir(transformer_dir, model_root / "transformer")
+    return model_root
+
+
+def _require_dir(path: Path) -> None:
+    if not path.is_dir():
+        raise FileNotFoundError(f"Required Heng model directory not found: {path}")
+
+
+def _safe_link_dir(source: Path, dest: Path) -> None:
+    if dest.is_symlink() and dest.resolve() == source:
+        return
+    if dest.exists():
+        if dest.resolve() == source:
+            return
+        raise FileExistsError(f"Refusing to replace existing Heng model path: {dest}")
+    dest.symlink_to(source, target_is_directory=True)
 
 
 def _construct_single_env(env_args):

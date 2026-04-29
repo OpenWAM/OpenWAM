@@ -328,6 +328,53 @@ def test_sequence_buffer_tail_promotes_after_prebuffer_actions_are_consumed() ->
     )
 
 
+def test_mot_async_history_submit_rewinds_speculative_action_tail_only() -> None:
+    sandbox = _load_sandbox_module()
+    mot_config = SimpleNamespace(
+        policy_variant=SimpleNamespace(name="mot", runtime_mode="non_joint_two_stream"),
+    )
+    non_mot_config = SimpleNamespace(
+        policy_variant=SimpleNamespace(name="parallel_stream", runtime_mode="lingbot_exact"),
+    )
+
+    assert (
+        sandbox._mot_action_cache_rewind_for_sequence_submit(
+            config=mot_config,
+            planner_mode="async_history_first",
+            use_observation_update=True,
+            condition_frame_start=8,
+        )
+        == 8
+    )
+    assert (
+        sandbox._mot_action_cache_rewind_for_sequence_submit(
+            config=mot_config,
+            planner_mode="history_only",
+            use_observation_update=True,
+            condition_frame_start=8,
+        )
+        is None
+    )
+    assert (
+        sandbox._mot_action_cache_rewind_for_sequence_submit(
+            config=mot_config,
+            planner_mode="async_history_first",
+            use_observation_update=False,
+            condition_frame_start=8,
+        )
+        is None
+    )
+    assert (
+        sandbox._mot_action_cache_rewind_for_sequence_submit(
+            config=non_mot_config,
+            planner_mode="async_history_first",
+            use_observation_update=True,
+            condition_frame_start=8,
+        )
+        is None
+    )
+
+
 def test_sequence_fallback_history_freezes_until_full_clean_action_chunk() -> None:
     sandbox = _load_sandbox_module()
     model_obs_window = [{"image": np.array([0], dtype=np.uint8)}]

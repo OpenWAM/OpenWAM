@@ -2051,6 +2051,7 @@ def _run_sequence_policy_realtime_rollout(
         "decode_device": str(decode_device),
         "action_device": str(runtime_device) if str(config.policy_variant.name) == "mot" else None,
         "runtime_devices": [str(device) for device in runtime_devices],
+        "reference_assets_device_policy": str(config.backbone.reference_assets_device_policy),
         "video_steps": int(config.inference.video_num_inference_steps),
         "action_steps": int(config.inference.action_num_inference_steps),
         "guidance_scale": float(config.inference.guidance_scale),
@@ -2309,6 +2310,9 @@ def _run_sequence_policy_realtime_rollout(
                                 blocking_generation_action_start = int(next_generation_action_start)
                                 blocking_cache_snapshot = None
                                 blocking_condition_frame_start = None
+                            # The restored history snapshot already contains
+                            # the correct MoT action-cache prefix. Rewinding
+                            # here mutates chunk-by-chunk parity.
                             result = _run_sequence_replan_job(
                                 runner=runner,
                                 session=blocking_session,
@@ -2323,7 +2327,6 @@ def _run_sequence_policy_realtime_rollout(
                                 source="blocking_replan",
                                 runtime_cache_snapshot=blocking_cache_snapshot,
                                 mot_condition_frame_start=blocking_condition_frame_start,
-                                mot_action_cache_rewind_frame_start=blocking_condition_frame_start,
                             )
                         else:
                             result = replan_future.result()
@@ -2637,7 +2640,17 @@ def _run_sequence_policy_realtime_rollout(
                         use_observation_update=use_observation_update,
                         runtime_cache_snapshot=submit_cache_snapshot,
                         mot_condition_frame_start=submit_condition_frame_start,
-                        mot_action_cache_rewind_frame_start=submit_condition_frame_start,
+                        # Async observation-conditioned MoT replans can be
+                        # launched from a speculative buffer-tail session.
+                        # Trim that future action K/V suffix to the chunk
+                        # being replaced; blocking/history-only replans keep
+                        # their accepted cache prefix untouched for parity.
+                        mot_action_cache_rewind_frame_start=_mot_action_cache_rewind_for_sequence_submit(
+                            config=config,
+                            planner_mode=planner_mode,
+                            use_observation_update=use_observation_update,
+                            condition_frame_start=submit_condition_frame_start,
+                        ),
                         preserve_rng_state=not bool(use_observation_update),
                     )
                 elif replan_future is not None:
@@ -2698,6 +2711,7 @@ def _run_sequence_policy_realtime_rollout(
                 "runtime_devices": [str(device) for device in runtime_devices],
                 "checkpoint_file": str(checkpoint_path.resolve()),
                 "transformer_dir": str(config.backbone.transformer_subdir),
+                "reference_assets_device_policy": str(config.backbone.reference_assets_device_policy),
                 "video_num_inference_steps": int(config.inference.video_num_inference_steps),
                 "action_num_inference_steps": int(config.inference.action_num_inference_steps),
                 "guidance_scale": float(config.inference.guidance_scale),
@@ -2947,6 +2961,24 @@ def _should_use_mot_open_loop_extension(
     if planner_mode not in {"async_buffer", "async_mix", "async_history_first"}:
         return False
     return int(remaining_buffer_actions) > 0
+
+
+def _mot_action_cache_rewind_for_sequence_submit(
+    *,
+    config,
+    planner_mode: str,
+    use_observation_update: bool,
+    condition_frame_start: int | None,
+) -> int | None:
+    if condition_frame_start is None:
+        return None
+    if not bool(use_observation_update):
+        return None
+    if not _is_mot_non_joint_two_stream(config):
+        return None
+    if planner_mode not in {"async_mix", "async_history_first"}:
+        return None
+    return int(condition_frame_start)
 
 
 def _apply_sequence_replan_result(
