@@ -166,8 +166,8 @@ DEFAULT_CASES: dict[str, RolloutCase] = {
     "method1_exact_latest": RolloutCase(
         name="method1_exact_latest",
         config=Path("configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml"),
-        checkpoint="${paths.checkpoints.parallel_stream_exact_libero_step_1100_0402}",
-        description="Newest local method-1 exact checkpoint alias.",
+        checkpoint="${paths.checkpoints.parallel_stream_exact_libero_step_400}",
+        description="Current Method-1 exact checkpoint alias pinned to Heng's step-400 root.",
     ),
     "method2_joint_step600": RolloutCase(
         name="method2_joint_step600",

@@ -35,7 +35,7 @@ paths:
     method4_generated_video_conditioned_step_5000: /path/to/runs/method4_post_latent_generated_video_conditioned_libero/checkpoints/checkpoint_step_5000
 
     # Method-1 exact and joint transformer exports.
-    parallel_stream_exact_libero_latest: ${paths.checkpoints.parallel_stream_exact_libero_step_1100_0402}/transformer
+    parallel_stream_exact_libero_latest: ${paths.checkpoints.parallel_stream_exact_libero_step_400}/transformer
     parallel_stream_joint_libero_step_400: /path/to/runs/parallel_stream_libero_lingbot_joint_denoise_heng_compatible/checkpoints/checkpoint_step_400/transformer
     parallel_stream_joint_libero_step_600: /path/to/runs/parallel_stream_libero_lingbot_joint_denoise_heng_compatible/checkpoints/checkpoint_step_600/transformer
     parallel_stream_joint_libero_contextual_fixed_geometry_step_800: /path/to/runs/parallel_stream_libero_lingbot_joint_denoise_heng_compatible_contextual_fixed_geometry/checkpoints/checkpoint_step_800/transformer
