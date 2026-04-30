@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from enum import StrEnum
 from pathlib import Path
 from typing import Any, TypeVar
 
+from open_wam.configs.enums import StrEnum
 from open_wam.configs import (
     ActionDecoderConfig,
     DecodedFeatureActionDecoderConfig,

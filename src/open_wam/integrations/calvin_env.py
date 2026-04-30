@@ -15,9 +15,9 @@ import torch
 from open_wam.configs import DataConfig
 from open_wam.models.policy_variants import PolicyInferContext
 from open_wam.pipelines import VariantRolloutRunner
-
-from .sim_benchmark import (
+from open_wam.simulators import (
     SimStepResult,
+    SimulatorCapabilities,
     build_state_history_tensor,
     build_view_history_batch,
     source_action_from_model_action,
@@ -38,6 +38,7 @@ class CalvinBenchmarkAdapter:
     """CALVIN simulator adapter using the official play-table env API when available."""
 
     benchmark_name = "calvin"
+    capabilities = SimulatorCapabilities(action_step_semantics="single_env_step", action_modes=("rel_actions",))
 
     def __init__(self, config: CalvinEnvConfig) -> None:
         self.config = config

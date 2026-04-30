@@ -15,9 +15,9 @@ import numpy as np
 import yaml
 
 from open_wam.configs import DataConfig
-
-from .sim_benchmark import (
+from open_wam.simulators import (
     SimStepResult,
+    SimulatorCapabilities,
     normalize_quaternion_xyzw,
     source_action_from_model_action,
 )
@@ -48,12 +48,19 @@ class RobotwinEnvConfig:
     instruction: str | None = None
     seed_offset: int = 10000
     action_type: str = "ee"
+    expert_precheck: bool = False
+    instruction_type: str = "seen"
 
 
 class RobotwinBenchmarkAdapter:
     """RoboTwin simulator adapter using the official task env API."""
 
     benchmark_name = "robotwin"
+    capabilities = SimulatorCapabilities(
+        action_step_semantics="blocking_high_level_target",
+        supports_expert_precheck=True,
+        action_modes=("ee", "qpos"),
+    )
 
     def __init__(self, config: RobotwinEnvConfig) -> None:
         self.config = config
@@ -78,10 +85,12 @@ class RobotwinBenchmarkAdapter:
             _install_ee_skip_topp_planner_patch()
         now_ep_num = int(episode_idx or 0)
         resolved_seed = self._resolve_seed(seed=seed, episode_idx=episode_idx)
+        generated_instruction = self._run_expert_precheck(now_ep_num=now_ep_num, seed=resolved_seed)
         with self._robotwin_cwd():
             self._task_env.setup_demo(now_ep_num=now_ep_num, seed=resolved_seed, is_test=True, **self._args)
-            if self.config.instruction is not None and hasattr(self._task_env, "set_instruction"):
-                self._task_env.set_instruction(instruction=self.config.instruction)
+            instruction = self.config.instruction if self.config.instruction is not None else generated_instruction
+            if instruction is not None and hasattr(self._task_env, "set_instruction"):
+                self._task_env.set_instruction(instruction=instruction)
             self._task_text = self._resolve_task_text()
             return self._task_env.get_obs()
 
@@ -103,16 +112,14 @@ class RobotwinBenchmarkAdapter:
         }
 
     def extract_state(self, observation: Any) -> np.ndarray | None:
+        if self.config.action_type == "ee":
+            endpose_state = _extract_endpose_state(observation)
+            if endpose_state is not None:
+                return endpose_state
         joint_action = observation.get("joint_action")
         if isinstance(joint_action, dict) and "vector" in joint_action:
             return np.asarray(joint_action["vector"], dtype=np.float32)
-        endpose = observation.get("endpose")
-        if isinstance(endpose, dict):
-            left = list(endpose.get("left_endpose", ())) + [endpose.get("left_gripper", 0.0)]
-            right = list(endpose.get("right_endpose", ())) + [endpose.get("right_gripper", 0.0)]
-            if len(left) == 8 and len(right) == 8:
-                return np.asarray([*left, *right], dtype=np.float32)
-        return None
+        return _extract_endpose_state(observation)
 
     def model_action_to_env_action(self, model_action: np.ndarray, *, data_config: DataConfig) -> np.ndarray:
         source_action = np.asarray(
@@ -300,6 +307,47 @@ class RobotwinBenchmarkAdapter:
                 return None
         return None
 
+    def _run_expert_precheck(self, *, now_ep_num: int, seed: int) -> str | None:
+        """Run RoboTwin's expert validation path and return its generated prompt."""
+
+        if not self.config.expert_precheck:
+            return None
+        if self._task_env is None or self._args is None:
+            raise RuntimeError("RoboTwin expert precheck requires a constructed task env.")
+        if self.config.action_type == "qpos":
+            raise ValueError("RoboTwin expert precheck requires action_type='ee' so the official planner path is active.")
+
+        precheck_args = dict(self._args)
+        render_freq = precheck_args.get("render_freq")
+        precheck_args["render_freq"] = 0
+        with self._robotwin_cwd():
+            self._task_env.setup_demo(now_ep_num=now_ep_num, seed=seed, is_test=True, **precheck_args)
+            episode_info = self._task_env.play_once()
+            plan_success = bool(getattr(self._task_env, "plan_success", False))
+            task_success = bool(self._task_env.check_success()) if hasattr(self._task_env, "check_success") else True
+            self._task_env.close_env()
+        self._task_env = self._build_task_env(self.config.task_name)
+        if render_freq is not None:
+            self._args["render_freq"] = render_freq
+        if not plan_success or not task_success:
+            raise RuntimeError(f"RoboTwin expert precheck failed for seed={seed}.")
+        return self._generate_instruction_from_episode_info(episode_info)
+
+    def _generate_instruction_from_episode_info(self, episode_info: Any) -> str | None:
+        if not isinstance(episode_info, dict) or not isinstance(episode_info.get("info"), dict):
+            return None
+        try:
+            from description.utils.generate_episode_instructions import generate_episode_descriptions  # type: ignore
+        except Exception:
+            return None
+        results = generate_episode_descriptions(self.config.task_name, [episode_info["info"]], 1)
+        if not results:
+            return None
+        choices = results[0].get(self.config.instruction_type)
+        if not choices:
+            return None
+        return str(choices[0])
+
     @contextmanager
     def _robotwin_cwd(self) -> Iterator[None]:
         cwd = Path.cwd()
@@ -317,6 +365,16 @@ def _extract_camera_rgb(observation: dict[str, Any], camera_name: str) -> np.nda
     if camera_name in observation:
         return np.asarray(observation[camera_name])
     raise KeyError(f"RoboTwin observation does not expose camera '{camera_name}'.")
+
+
+def _extract_endpose_state(observation: Any) -> np.ndarray | None:
+    endpose = observation.get("endpose")
+    if isinstance(endpose, dict):
+        left = list(endpose.get("left_endpose", ())) + [endpose.get("left_gripper", 0.0)]
+        right = list(endpose.get("right_endpose", ())) + [endpose.get("right_gripper", 0.0)]
+        if len(left) == 8 and len(right) == 8:
+            return np.asarray([*left, *right], dtype=np.float32)
+    return None
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:

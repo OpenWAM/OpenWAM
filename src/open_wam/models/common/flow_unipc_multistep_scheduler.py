@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import math
-from enum import StrEnum
 from typing import List
 
 import numpy as np
 import torch
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.schedulers.scheduling_utils import SchedulerMixin, SchedulerOutput
+from open_wam.configs.enums import StrEnum
 
 
 class FlowUniPCPredictionType(StrEnum):

@@ -320,8 +320,9 @@ def _run_rollout_style_infer(
                 )
             elapsed_values.append(time.perf_counter() - start)
             session = step_output.session
-            previous_action = step_output.infer_output.decoder_output.action_pred[:, :1].detach()
-            action_shapes.append(list(step_output.infer_output.decoder_output.action_pred.shape))
+            action_pred = step_output.infer_output.decoder_output.action_pred.detach()
+            previous_action = action_pred
+            action_shapes.append(list(action_pred.shape))
     total_elapsed = sum(elapsed_values)
     return {
         "steps": steps,

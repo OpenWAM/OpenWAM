@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 import re
 from typing import Any, Iterable, Mapping
@@ -22,6 +21,7 @@ from open_wam.configs.enums import (
     DataSplit,
     EvalMode,
     PolicyVariantName,
+    StrEnum,
     TrainerAccelerator,
     TrainerPrecision,
 )

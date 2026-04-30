@@ -1,5 +1,8 @@
 """Raw-video data handling for the new WAM framework."""
 
+from importlib import import_module
+from typing import Any
+
 from .action_transforms import (
     PoseSequence,
     build_relative_pose_targets,
@@ -17,65 +20,78 @@ from .action_mapping import (
     validate_action_mapping_preflight,
 )
 from .contracts import WAMBatch, WAMSample, collate_wam_samples, move_wam_batch_to_device
-from .calvin_npz import CalvinNPZWindowDataset, build_calvin_npz_train_val_datasets, discover_calvin_npz_episodes
-from .factory import DatasetLoaderSpec, build_train_val_datasets, register_dataset_builder, resolve_dataset_loader_spec
 from .latent_contracts import (
     LatentWAMBatch,
     LatentWAMSample,
     collate_latent_wam_samples,
     move_latent_wam_batch_to_device,
 )
-from .latent_factory import build_train_val_latent_datasets, register_latent_dataset_builder
-from .lerobot_v2_latent import (
-    LocalLeRobotLatentWindowDataset,
-    build_local_lerobot_latent_train_val_datasets,
-    discover_local_lerobot_repo_bundles,
-)
-from .latent_synthetic import SyntheticLatentWindowDataset, build_synthetic_latent_batch
-from .lerobot_consortium import (
-    LeRobotConsortiumWindowDataset,
-    build_lerobot_consortium_catalog,
-    build_lerobot_consortium_train_val_datasets,
-    discover_local_lerobot_consortium_members,
-    resolve_lerobot_consortium_train_val_split,
-)
-from .lerobot_consortium_report import (
-    build_lerobot_consortium_report,
-    format_lerobot_consortium_report,
-)
-from .lerobot_consortium_index import (
-    LeRobotConsortiumInventoryRow,
-    LeRobotConsortiumRepoTarget,
-    build_lerobot_consortium_inventory,
-    build_lerobot_consortium_inventory_row,
-    infer_lerobot_consortium_source_group,
-    load_lerobot_consortium_inventory_rows,
-    load_lerobot_consortium_repo_targets,
-    render_lerobot_consortium_inventory_markdown,
-    write_lerobot_consortium_inventory_csv,
-    write_lerobot_consortium_inventory_json,
-    write_lerobot_consortium_inventory_markdown,
-    write_lerobot_consortium_repo_targets,
-)
-from .lerobot_consortium_contracts import (
-    build_lerobot_consortium_contract_catalog,
-    build_lerobot_consortium_contract_catalog_from_inventory_rows,
-    write_lerobot_consortium_contract_catalog,
-)
-from .libero_hdf5 import LiberoOfflineWindowDataset, build_libero_offline_train_val_episode_split, load_libero_offline_metadata
-from .lerobot_v2 import LeRobotV2WindowDataset, build_lerobot_train_val_episode_split, load_lerobot_v2_metadata
-from .lerobot_video import (
-    LeRobotV2VideoWindowDataset,
-    build_lerobot_v2_video_train_val_datasets,
-    load_lerobot_v2_video_metadata,
-)
-from .raw_video import (
-    CanonicalVideoBatch,
-    ConfiguredCanonicalVideoPreprocessor,
-    RobotWinCanonicalVideoPreprocessor,
-    build_canonical_video_preprocessor,
-)
-from .synthetic import SyntheticWindowDataset, build_synthetic_batch, build_synthetic_views
+
+_LAZY_EXPORTS = {
+    "CalvinNPZWindowDataset": "calvin_npz",
+    "build_calvin_npz_train_val_datasets": "calvin_npz",
+    "discover_calvin_npz_episodes": "calvin_npz",
+    "DatasetLoaderSpec": "factory",
+    "build_train_val_datasets": "factory",
+    "register_dataset_builder": "factory",
+    "resolve_dataset_loader_spec": "factory",
+    "build_train_val_latent_datasets": "latent_factory",
+    "register_latent_dataset_builder": "latent_factory",
+    "LocalLeRobotLatentWindowDataset": "lerobot_v2_latent",
+    "build_local_lerobot_latent_train_val_datasets": "lerobot_v2_latent",
+    "discover_local_lerobot_repo_bundles": "lerobot_v2_latent",
+    "SyntheticLatentWindowDataset": "latent_synthetic",
+    "build_synthetic_latent_batch": "latent_synthetic",
+    "LeRobotConsortiumWindowDataset": "lerobot_consortium",
+    "build_lerobot_consortium_catalog": "lerobot_consortium",
+    "build_lerobot_consortium_train_val_datasets": "lerobot_consortium",
+    "discover_local_lerobot_consortium_members": "lerobot_consortium",
+    "resolve_lerobot_consortium_train_val_split": "lerobot_consortium",
+    "build_lerobot_consortium_report": "lerobot_consortium_report",
+    "format_lerobot_consortium_report": "lerobot_consortium_report",
+    "LeRobotConsortiumInventoryRow": "lerobot_consortium_index",
+    "LeRobotConsortiumRepoTarget": "lerobot_consortium_index",
+    "build_lerobot_consortium_inventory": "lerobot_consortium_index",
+    "build_lerobot_consortium_inventory_row": "lerobot_consortium_index",
+    "infer_lerobot_consortium_source_group": "lerobot_consortium_index",
+    "load_lerobot_consortium_inventory_rows": "lerobot_consortium_index",
+    "load_lerobot_consortium_repo_targets": "lerobot_consortium_index",
+    "render_lerobot_consortium_inventory_markdown": "lerobot_consortium_index",
+    "write_lerobot_consortium_inventory_csv": "lerobot_consortium_index",
+    "write_lerobot_consortium_inventory_json": "lerobot_consortium_index",
+    "write_lerobot_consortium_inventory_markdown": "lerobot_consortium_index",
+    "write_lerobot_consortium_repo_targets": "lerobot_consortium_index",
+    "build_lerobot_consortium_contract_catalog": "lerobot_consortium_contracts",
+    "build_lerobot_consortium_contract_catalog_from_inventory_rows": "lerobot_consortium_contracts",
+    "write_lerobot_consortium_contract_catalog": "lerobot_consortium_contracts",
+    "LiberoOfflineWindowDataset": "libero_hdf5",
+    "build_libero_offline_train_val_episode_split": "libero_hdf5",
+    "load_libero_offline_metadata": "libero_hdf5",
+    "LeRobotV2WindowDataset": "lerobot_v2",
+    "build_lerobot_train_val_episode_split": "lerobot_v2",
+    "load_lerobot_v2_metadata": "lerobot_v2",
+    "LeRobotV2VideoWindowDataset": "lerobot_video",
+    "build_lerobot_v2_video_train_val_datasets": "lerobot_video",
+    "load_lerobot_v2_video_metadata": "lerobot_video",
+    "CanonicalVideoBatch": "raw_video",
+    "ConfiguredCanonicalVideoPreprocessor": "raw_video",
+    "RobotWinCanonicalVideoPreprocessor": "raw_video",
+    "build_canonical_video_preprocessor": "raw_video",
+    "SyntheticWindowDataset": "synthetic",
+    "build_synthetic_batch": "synthetic",
+    "build_synthetic_views": "synthetic",
+}
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _LAZY_EXPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = import_module(f"{__name__}.{module_name}")
+    value = getattr(module, name)
+    globals()[name] = value
+    return value
+
 
 __all__ = [
     "CanonicalVideoBatch",

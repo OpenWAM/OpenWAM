@@ -7,7 +7,11 @@ The stable runtime boundary is:
 
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised in RoboTwin's Python 3.10 env.
+    import tomli as tomllib
 
 
 def _resolve_version() -> str:

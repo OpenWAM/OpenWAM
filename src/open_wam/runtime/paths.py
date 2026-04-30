@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised in RoboTwin's Python 3.10 env.
+    import tomli as tomllib
 
 
 def find_repo_root(start: str | Path | None = None) -> Path:

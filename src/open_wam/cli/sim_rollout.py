@@ -17,6 +17,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--episode-idx", type=int, default=0)
     parser.add_argument("--max-steps", type=int, default=80)
     parser.add_argument("--target-action-hz", type=float, default=None)
+    parser.add_argument(
+        "--action-commit-mode",
+        choices=("first_action", "full_chunk"),
+        default="first_action",
+    )
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--output-dir", type=str, default="outputs/sim_realtime")
     parser.add_argument("--suffix", type=str, default="rollout")
@@ -27,6 +32,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--robotwin-task-name", type=str, default=None)
     parser.add_argument("--robotwin-task-config", type=str, default=None)
     parser.add_argument("--robotwin-action-type", type=str, default="ee")
+    parser.add_argument("--robotwin-expert-precheck", action="store_true")
+    parser.add_argument("--robotwin-instruction-type", type=str, default="seen")
     parser.add_argument("--instruction", type=str, default=None)
     parser.add_argument("--calvin-root", type=str, default=None)
     parser.add_argument("--calvin-dataset-root", type=str, default=None)

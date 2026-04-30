@@ -95,7 +95,7 @@ def test_base_dependencies_stay_minimal_and_extras_are_explicit() -> None:
 def test_minimal_import_surfaces_do_not_import_torch_stack() -> None:
     code = (
         "import sys; "
-        "import open_wam, open_wam.configs, open_wam.runtime, open_wam.utils, open_wam.pipelines; "
+        "import open_wam, open_wam.configs, open_wam.runtime, open_wam.utils, open_wam.pipelines, open_wam.simulators; "
         "from open_wam.cli.train import build_arg_parser as train_parser; "
         "from open_wam.cli.eval import build_arg_parser as eval_parser; "
         "from open_wam.cli.sanity import build_arg_parser as sanity_parser; "

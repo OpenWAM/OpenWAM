@@ -15,13 +15,11 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from open_wam.integrations.calvin_env import CalvinBenchmarkAdapter, CalvinEnvConfig  # noqa: E402
-from open_wam.integrations.robotwin_env import RobotwinBenchmarkAdapter, RobotwinEnvConfig  # noqa: E402
-from open_wam.integrations.sim_benchmark import (  # noqa: E402
+from open_wam.simulators import (  # noqa: E402
+    SimActionCommitMode,
     run_closed_loop_sim_rollout,
     summarize_sim_rollout,
 )
-from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
 from open_wam.runtime import build_result_envelope  # noqa: E402
 from open_wam.utils import load_experiment_config, seed_everywhere  # noqa: E402
 from open_wam.utils.local_paths import load_local_path_registry  # noqa: E402
@@ -42,6 +40,12 @@ def main() -> None:
     parser.add_argument("--episode-idx", type=int, default=0)
     parser.add_argument("--max-steps", type=int, default=80)
     parser.add_argument("--target-action-hz", type=float, default=None)
+    parser.add_argument(
+        "--action-commit-mode",
+        choices=tuple(mode.value for mode in SimActionCommitMode),
+        default=SimActionCommitMode.FIRST_ACTION.value,
+        help="Commit only the first predicted action per replan, or blockingly execute the full predicted chunk.",
+    )
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--output-dir", type=str, default="outputs/sim_realtime")
     parser.add_argument("--suffix", type=str, default="rollout")
@@ -56,6 +60,12 @@ def main() -> None:
     parser.add_argument("--robotwin-task-name", type=str, default=None)
     parser.add_argument("--robotwin-task-config", type=str, default=None)
     parser.add_argument("--robotwin-action-type", type=str, default="ee")
+    parser.add_argument(
+        "--robotwin-expert-precheck",
+        action="store_true",
+        help="Run RoboTwin's expert play_once/check_success path and generate the episode instruction before reset.",
+    )
+    parser.add_argument("--robotwin-instruction-type", type=str, default="seen")
     parser.add_argument("--instruction", type=str, default=None)
     parser.add_argument("--calvin-root", type=str, default=None)
     parser.add_argument("--calvin-dataset-root", type=str, default=None)
@@ -87,6 +97,8 @@ def main() -> None:
             device=device,
         )
     else:
+        from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config
+
         pipeline = build_variant_pipeline_from_config(config).to(device)
         pipeline.eval()
         if checkpoint_path is not None:
@@ -108,6 +120,7 @@ def main() -> None:
             seed=args.seed,
             max_steps=args.max_steps,
             target_action_hz=args.target_action_hz,
+            action_commit_mode=args.action_commit_mode,
         )
     finally:
         adapter.close()
@@ -124,6 +137,7 @@ def main() -> None:
             "checkpoint_path": None if checkpoint_path is None else str(checkpoint_path),
             "zero_policy": bool(args.zero_policy),
             "device": str(device),
+            "action_commit_mode": args.action_commit_mode,
         }
     )
     summary = build_result_envelope(
@@ -175,6 +189,8 @@ class _ZeroActionRolloutRunner:
 def _build_adapter(args: argparse.Namespace) -> Any:
     registry = load_local_path_registry()
     if args.benchmark == "robotwin":
+        from open_wam.integrations.robotwin_env import RobotwinBenchmarkAdapter, RobotwinEnvConfig
+
         root = args.robotwin_root or registry.get("simulators.robotwin_root")
         if root is None:
             raise SystemExit(
@@ -190,8 +206,12 @@ def _build_adapter(args: argparse.Namespace) -> Any:
                 task_config=task_config,
                 instruction=args.instruction,
                 action_type=args.robotwin_action_type,
+                expert_precheck=bool(args.robotwin_expert_precheck),
+                instruction_type=args.robotwin_instruction_type,
             )
         )
+    from open_wam.integrations.calvin_env import CalvinBenchmarkAdapter, CalvinEnvConfig
+
     calvin_root = args.calvin_root or registry.get("simulators.calvin_root")
     calvin_dataset_root = args.calvin_dataset_root or registry.get("datasets.calvin_root")
     return CalvinBenchmarkAdapter(

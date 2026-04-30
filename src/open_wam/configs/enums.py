@@ -1,8 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
-from enum import Enum, StrEnum
+from enum import Enum
 from typing import Any, Callable, Mapping, TypeAlias, TypeVar
+
+try:
+    from enum import StrEnum
+except ImportError:  # pragma: no cover - exercised in RoboTwin's Python 3.10 env.
+
+    class StrEnum(str, Enum):
+        """Python 3.10 fallback matching the string behavior of stdlib StrEnum."""
+
+        pass
 
 
 EnumT = TypeVar("EnumT", bound=StrEnum)
