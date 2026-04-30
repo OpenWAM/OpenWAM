@@ -56,6 +56,16 @@ def main() -> None:
     parser.add_argument("--task-id", type=int, default=8)
     parser.add_argument("--episode-idx", type=int, default=0)
     parser.add_argument("--max-timestep", type=int, default=800)
+    parser.add_argument(
+        "--env-horizon",
+        type=int,
+        default=None,
+        help=(
+            "Optional LIBERO/robosuite internal episode horizon. Use this with large "
+            "--max-timestep values so failed rollouts can write summaries instead of "
+            "terminating inside the simulator."
+        ),
+    )
     parser.add_argument("--max-chunks", type=int, default=None)
     parser.add_argument("--video-fps", type=float, default=15.0)
     parser.add_argument("--output-dir", type=str, default="outputs/libero_exact_visualization")
@@ -104,7 +114,7 @@ def main() -> None:
 
     task_spec, prompt = _resolve_task_spec(args.benchmark, args.task_id)
     init_states = load_libero_task_init_states(task_spec)
-    env = _construct_single_env(task_spec)
+    env = _construct_single_env(task_spec, env_horizon=args.env_horizon)
     if env is None:
         raise RuntimeError("Failed to construct LIBERO OffScreenRenderEnv after 5 retries.")
 
@@ -382,7 +392,7 @@ def _resolve_task_spec(benchmark_name: str, task_id: int) -> tuple[LiberoTaskSpe
     return task_spec, prompt
 
 
-def _construct_single_env(task_spec: LiberoTaskSpec):
+def _construct_single_env(task_spec: LiberoTaskSpec, *, env_horizon: int | None):
     ensure_local_libero_config(REPO_ROOT)
     from libero.libero.envs import OffScreenRenderEnv  # type: ignore
 
@@ -390,11 +400,14 @@ def _construct_single_env(task_spec: LiberoTaskSpec):
     env = None
     while env is None and count < 5:
         try:
-            env = OffScreenRenderEnv(
-                bddl_file_name=task_spec.bddl_file_path,
-                camera_heights=128,
-                camera_widths=128,
-            )
+            kwargs = {
+                "bddl_file_name": task_spec.bddl_file_path,
+                "camera_heights": 128,
+                "camera_widths": 128,
+            }
+            if env_horizon is not None:
+                kwargs["horizon"] = int(env_horizon)
+            env = OffScreenRenderEnv(**kwargs)
         except Exception as exc:  # pragma: no cover - best-effort retry path
             print(f"construct env failed ({count + 1}/5): {exc}")
             time.sleep(5)

@@ -1,0 +1,35 @@
+# Read-only LingBot-VA LIBERO-10 baseline suite.
+#
+# Export the machine-local paths before running:
+#
+#   export LINGBOT_VA_BASE_ROOT=/path/to/lingbot-va-base
+#   export LINGBOT_VA_LIBERO10_TRANSFORMER=/path/to/checkpoint/transformer
+#
+# Then run:
+#
+#   CUDA_VISIBLE_DEVICES=0 PYTHONUNBUFFERED=1 \
+#     python -m baselines.lingbot_va.run_libero10_baseline \
+#       --suite baselines/lingbot_va/suites/libero10_env_template.yaml
+
+source_repo: previous_works/lingbot-va
+pretrained_root: ${LINGBOT_VA_BASE_ROOT}
+output_dir: outputs/lingbot_va_baseline
+
+checkpoints:
+  - name: lingbot_va_libero10
+    transformer_dir: ${LINGBOT_VA_LIBERO10_TRANSFORMER}
+    enable_offload: false
+
+episodes:
+  benchmark: libero_10
+  task_ids: 0:10
+  episode_indices: "0"
+  seed: 0
+
+runtime:
+  max_timestep: 1000
+  max_chunks:
+  video_fps: 15
+  cuda_device: 0
+  render_video: true
+  continue_on_error: true
