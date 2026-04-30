@@ -26,7 +26,7 @@ from .exported_runtime_backbone import (
     resolve_runtime_backbone_dir,
 )
 from .frontend import SharedVideoFrontend
-from .grid_ids import build_video_grid_ids
+from .grid_ids import build_mesh_id, build_video_grid_ids
 from .reference_core_weights import BackboneLoadReport, load_reference_weights_into_replica_core
 from .replica_core import SharedVideoTransformerCore
 from .reference_transformer import preferred_reference_dtype
@@ -235,7 +235,6 @@ class VisualTower(nn.Module):
 
         from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
             data_seq_to_patch,
-            get_mesh_id,
             reference_runtime_dtype,
         )
 
@@ -261,16 +260,15 @@ class VisualTower(nn.Module):
             )
         else:
             text_context = text_context.to(device=noisy_latents.device, dtype=model_dtype)
-        grid_id = get_mesh_id(
-            num_frames // self.config.patch_size_t,
-            latent_height // self.config.patch_size_h,
-            latent_width // self.config.patch_size_w,
-            t=0,
-            f_w=1,
-            f_shift=frame_start,
+        grid_id = build_mesh_id(
+            f=num_frames // self.config.patch_size_t,
+            h=latent_height // self.config.patch_size_h,
+            w=latent_width // self.config.patch_size_w,
+            t=0.0,
+            f_shift=float(frame_start),
             action=False,
             device=noisy_latents.device,
-        )[None].repeat(batch_size, 1, 1)
+        ).unsqueeze(0).expand(batch_size, -1, -1)
         step_output = self.execute_runtime_step(
             RuntimeStepInput(
                 program=build_single_stream_exact_runtime_program(),
@@ -380,6 +378,141 @@ class VisualTower(nn.Module):
         if step_output.cache_state is None:
             raise ValueError("Exact video cache prefill did not return a cache state.")
         return step_output.cache_state
+
+    def run_packed_exact_video_forward(
+        self,
+        *,
+        video_latents: torch.Tensor,
+        timesteps: torch.Tensor,
+        text_context: torch.Tensor | None,
+        frame_start: int = 0,
+        attention_mask: torch.Tensor | None = None,
+        cache_name: str = "packed_exact_video_forward",
+        packed_copies: int = 1,
+        detach_cache: bool = False,
+    ) -> tuple[torch.Tensor, tuple[AttentionCacheEntry, ...]]:
+        """Run an exact video forward and expose its self-attention K/V."""
+
+        from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
+            data_seq_to_patch,
+            reference_runtime_dtype,
+        )
+
+        if video_latents.ndim != 5:
+            raise ValueError(
+                "Expected `video_latents` with shape [B, C, T, H, W], "
+                f"got {tuple(video_latents.shape)}."
+            )
+        copy_count = int(packed_copies)
+        if copy_count <= 0:
+            raise ValueError(f"`packed_copies` must be positive, got {packed_copies}.")
+
+        batch_size, _, num_frames, latent_height, latent_width = video_latents.shape
+        if num_frames <= 0:
+            raise ValueError("Packed exact video forward requires at least one frame.")
+        if num_frames % copy_count != 0:
+            raise ValueError(
+                "Packed exact video forward requires the frame count to be divisible "
+                f"by `packed_copies`, got num_frames={num_frames}, packed_copies={packed_copies}."
+            )
+        if timesteps.shape != (batch_size, num_frames):
+            raise ValueError(
+                "Packed exact video forward expects `timesteps` with shape [B, T], "
+                f"got {tuple(timesteps.shape)} for latents {tuple(video_latents.shape)}."
+            )
+
+        patch_t = int(self.config.patch_size_t)
+        patch_h = int(self.config.patch_size_h)
+        patch_w = int(self.config.patch_size_w)
+        frames_per_copy = num_frames // copy_count
+        if (
+            num_frames % patch_t != 0
+            or frames_per_copy % patch_t != 0
+            or latent_height % patch_h != 0
+            or latent_width % patch_w != 0
+        ):
+            raise ValueError(
+                "Packed exact video latents must be divisible by patch size. "
+                f"latents={tuple(video_latents.shape)}, patch={(patch_t, patch_h, patch_w)}."
+            )
+
+        model_dtype = reference_runtime_dtype(self.core)
+        if text_context is None:
+            text_context = torch.zeros(
+                batch_size,
+                self.config.max_text_tokens,
+                self.config.text_dim,
+                device=video_latents.device,
+                dtype=model_dtype,
+            )
+        else:
+            text_context = text_context.to(device=video_latents.device, dtype=model_dtype)
+
+        tokens_per_frame = (latent_height // patch_h) * (latent_width // patch_w)
+        # Packed teacher-forced copies share physical frame positions; the
+        # attention mask distinguishes copies by sequence segment.
+        grid_per_copy = build_mesh_id(
+            f=frames_per_copy // patch_t,
+            h=latent_height // patch_h,
+            w=latent_width // patch_w,
+            t=0.0,
+            f_shift=float(frame_start),
+            action=False,
+            device=video_latents.device,
+        )
+        grid_id = torch.cat([grid_per_copy] * copy_count, dim=1).unsqueeze(0).expand(batch_size, -1, -1)
+
+        transformer = self.get_runtime_backbone(action_dim=int(self.action_dim))
+        transformer._exact_runtime_caches[cache_name] = CacheState(
+            supported=True,
+            current_start_frame=frame_start,
+            cached_frames=num_frames,
+            chunk_size=num_frames,
+            capability="self_attn_only",
+            backend_name="merged_prefix",
+            backend_payload=None,
+            payload={
+                "cache_name": cache_name,
+                "stage": "packed_exact_video_forward",
+                "tokens_per_frame": int(tokens_per_frame),
+                "packed_copies": copy_count,
+                "detach_self_attention_cache": bool(detach_cache),
+            },
+            self_attention_kv=tuple(),
+            cross_attention_kv=tuple(),
+            update_metadata=CacheUpdateMetadata(
+                current_start_frame=frame_start,
+                update_kv_cache=True,
+            ),
+        )
+        step_output = self.execute_runtime_step(
+            RuntimeStepInput(
+                program=build_single_stream_exact_runtime_program(),
+                payload={
+                    "noisy_latents": video_latents.to(dtype=model_dtype),
+                    "timesteps": timesteps.to(device=video_latents.device, dtype=torch.float32),
+                    "grid_id": grid_id,
+                    "text_emb": text_context,
+                    "attention_mask": attention_mask,
+                },
+                update_cache=0,
+                cache_name=cache_name,
+                action_mode=False,
+            )
+        )
+        if step_output.tokens is None:
+            raise ValueError("Packed exact video forward did not return video flow tokens.")
+        if step_output.cache_state is None:
+            raise ValueError("Packed exact video forward did not return a cache state.")
+        flow_pred = data_seq_to_patch(
+            self.core.patch_size,
+            step_output.tokens,
+            num_frames,
+            latent_height,
+            latent_width,
+            batch_size=batch_size,
+        ).to(dtype=video_latents.dtype)
+        return flow_pred, tuple(step_output.cache_state.self_attention_kv)
 
     def generate_conditioned_future_latents(
         self,

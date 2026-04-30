@@ -154,16 +154,23 @@ def forward_packed_video_denoise(
         _summon_full_params(visual_tower.core) if enable_summon else _DummyCtx()
     )
     with summon_ctx:
-        packed_flow_pred, packed_kv = visual_tower.run_mot_packed_video_forward(
-            noisy_video_latents=noisy_video_latents,
-            clean_video_latents=clean_video_latents,
-            noisy_timesteps=noisy_timesteps,
-            clean_timesteps=clean_timesteps,
+        effective_clean_timesteps = (
+            torch.zeros_like(noisy_timesteps) if clean_timesteps is None else clean_timesteps
+        )
+        if noisy_timesteps.shape != effective_clean_timesteps.shape:
+            raise ValueError(
+                "forward_packed_video_denoise expects matching noisy/clean timestep shapes, "
+                f"got noisy={tuple(noisy_timesteps.shape)}, clean={tuple(effective_clean_timesteps.shape)}."
+            )
+        packed_flow_pred, packed_kv = visual_tower.run_packed_exact_video_forward(
+            video_latents=torch.cat([noisy_video_latents, clean_video_latents], dim=2),
+            timesteps=torch.cat([noisy_timesteps, effective_clean_timesteps], dim=1),
             text_context=text_context,
             attention_mask=packed_attention_mask,
             frame_start=frame_start,
             cache_name=cache_name,
-            use_activation_checkpointing=use_activation_checkpointing,
+            packed_copies=2,
+            detach_cache=False,
         )
     noisy_flow_pred = packed_flow_pred[:, :, :num_frames].contiguous()
 

@@ -6,6 +6,7 @@ from open_wam.models.common import RolloutCursor
 from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig, SharedVideoTransformerConfig
 from open_wam.models.video_backbone.contracts import AttentionCacheEntry, CacheState, CacheUpdateMetadata
 from open_wam.models.visual_tower import VisualTower
+from open_wam.models.visual_tower.runtime_programs import RuntimeStepOutput
 
 
 def test_visual_tower_advance_runtime_cache_state_updates_cursor_metadata() -> None:
@@ -141,3 +142,76 @@ def test_exact_video_cache_prefill_accepts_attention_mask_and_trainable_cache() 
     assert cache.self_attention_kv[0].key is not None
     assert cache.self_attention_kv[0].key.requires_grad
     assert flow_pred.shape == observed_prefix.shape
+
+
+def test_packed_exact_video_forward_reuses_positions_per_copy_and_returns_kv(monkeypatch) -> None:
+    tower = VisualTower(
+        SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=2,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            max_text_tokens=4,
+            load_wan_vae_frontend=False,
+            load_text_conditioning=False,
+            load_reference_core_weights=False,
+        ),
+        action_dim=4,
+    )
+    video_latents = torch.randn(1, 48, 4, 2, 2, requires_grad=True)
+    timesteps = torch.zeros(1, 4)
+    attention_mask = torch.ones(4, 4, dtype=torch.bool)
+    captured = {}
+
+    def fake_execute_runtime_step(step_input):
+        captured["payload"] = step_input.payload
+        captured["cache_name"] = step_input.cache_name
+        entry = AttentionCacheEntry(
+            key=torch.randn(1, 4, 4, 8, requires_grad=True),
+            value=torch.randn(1, 4, 4, 8, requires_grad=True),
+        )
+        return RuntimeStepOutput(
+            tokens=torch.zeros(1, 4, 192),
+            cache_state=CacheState(
+                supported=True,
+                current_start_frame=7,
+                cached_frames=4,
+                chunk_size=4,
+                self_attention_kv=(entry,),
+                update_metadata=CacheUpdateMetadata(
+                    current_start_frame=7,
+                    update_kv_cache=True,
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(tower, "execute_runtime_step", fake_execute_runtime_step)
+
+    flow_pred, kv = tower.run_packed_exact_video_forward(
+        video_latents=video_latents,
+        timesteps=timesteps,
+        text_context=None,
+        frame_start=7,
+        attention_mask=attention_mask,
+        cache_name="unit_test_packed",
+        packed_copies=2,
+        detach_cache=False,
+    )
+
+    grid_id = captured["payload"]["grid_id"]
+    cache = tower.core._exact_runtime_caches["unit_test_packed"]
+    assert captured["cache_name"] == "unit_test_packed"
+    assert captured["payload"]["attention_mask"] is attention_mask
+    assert grid_id.dtype == torch.float32
+    assert torch.equal(grid_id[:, :, :2], grid_id[:, :, 2:])
+    assert grid_id[0, 0].tolist() == [7, 8, 7, 8]
+    assert cache.payload["packed_copies"] == 2
+    assert cache.payload["detach_self_attention_cache"] is False
+    assert flow_pred.shape == video_latents.shape
+    assert len(kv) == 1
+    assert kv[0].key is not None
+    assert kv[0].key.requires_grad
