@@ -8,5 +8,6 @@ not add method-specific branches to `VariantPipeline`, `VisualTower`,
 
 Current baselines:
 
-- `lingbot_va/`: read-only LingBot-VA LIBERO-10 rollout runner using Heng's
-  original `VA_Server` semantics.
+- `lingbot_va/`: read-only upstream LingBot-VA LIBERO-LONG checkpoint runner
+  for `libero_10` baseline evaluation, plus upstream-style RobotWin server/client
+  wrappers for the released RobotWin checkpoint.

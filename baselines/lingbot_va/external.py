@@ -5,7 +5,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import yaml
 
@@ -14,7 +14,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = REPO_ROOT / "src"
 DEFAULT_SOURCE_REPO_CANDIDATES = (
     REPO_ROOT / "previous_works" / "lingbot-va",
-    Path("/path/to/private-resource"),
 )
 
 
@@ -25,10 +24,7 @@ class ExternalModules:
     VA_Server: type
     benchmark: Any
     OffScreenRenderEnv: type
-    LiberoTaskSpec: type
-    ensure_local_libero_config: Callable[..., Any]
-    load_libero_task_init_states: Callable[..., Any]
-    seed_everywhere: Callable[..., Any]
+    seed_everywhere: Any
 
 
 def resolve_source_repo(source_repo: str | Path | None = None) -> Path:
@@ -55,11 +51,7 @@ def load_external_modules(source_repo: str | Path | None = None) -> ExternalModu
     _bootstrap_libero_config_without_prompt()
 
     from open_wam.third_party.lingbot import _ensure_flash_attn_shims
-    from open_wam.integrations import (
-        LiberoTaskSpec,
-        ensure_local_libero_config,
-        load_libero_task_init_states,
-    )
+    from open_wam.integrations import ensure_local_libero_config
     from open_wam.utils import seed_everywhere
 
     _ensure_flash_attn_shims()
@@ -76,9 +68,6 @@ def load_external_modules(source_repo: str | Path | None = None) -> ExternalModu
         VA_Server=server.VA_Server,
         benchmark=benchmark,
         OffScreenRenderEnv=envs.OffScreenRenderEnv,
-        LiberoTaskSpec=LiberoTaskSpec,
-        ensure_local_libero_config=ensure_local_libero_config,
-        load_libero_task_init_states=load_libero_task_init_states,
         seed_everywhere=seed_everywhere,
     )
 

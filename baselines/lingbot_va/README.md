@@ -1,137 +1,191 @@
-# LingBot-VA LIBERO-10 Baseline
+# LingBot-VA LIBERO-LONG Baseline
 
-This baseline runs the prior LingBot-VA model as an external reference system
-while keeping Open-WAM methods untouched. The runner imports LingBot-VA source
-read-only, stages compatible model roots under the output directory, and uses
-Open-WAM's LIBERO init-state loader so rollout inputs match the current
-Open-WAM LIBERO-10 evaluation setup.
+This baseline runs the upstream open-source LingBot-VA LIBERO checkpoint as an
+external reference system while keeping Open-WAM methods untouched.
 
-## Contract
+The default baseline is intentionally narrow:
 
-What is intentionally shared with Open-WAM rollouts:
+- source checkout: `previous_works/lingbot-va`, read-only
+- released checkpoint: `robbyant/lingbot-va-posttrain-libero-long`
+- released checkpoint revision: `0e89d1e753019988aba484e8da2dc0810e264d9f`
+- benchmark: `libero_10`, the LIBERO-LONG task suite
+- control loop: upstream `evaluation/libero/client.py` semantics
+- horizon: upstream `env.timestep < 800`
 
-- LIBERO benchmark/task/episode identifiers.
-- LIBERO pruned init-state loading through `open_wam.integrations`.
-- 128x128 `agentview` and wrist RGB observations.
-- 7D LIBERO environment actions.
-- Per-episode and per-chunk seeding.
-- Video artifacts and JSON summaries for every rollout.
+No local checkpoint substitution, Open-WAM-exported transformer, or
+action-channel compatibility override is part of this baseline.
 
-What remains LingBot-VA-owned:
+## Download
 
-- The model object is Heng's original `VA_Server`.
-- The chunk lifecycle is `reset -> infer chunk -> execute chunk -> warmup KV`.
-- The first chunk skips frame group 0, matching the LingBot client.
-- The model checkpoint is loaded from LingBot/Heng-format components.
-
-The wrapper also normalizes the LIBERO action config to Heng's successful
-server contract: EEF channels `0..5`, gripper channel `28`,
-`action_snr_shift=1.0`, and matching quantile stats. This is a wrapper-level
-runtime override because the checked-in `previous_works/lingbot-va` config can
-drift from Heng's successful checkout; the LingBot source files themselves are
-not edited.
-
-The baseline is comparable to Open-WAM `blocking_control` rollouts. It is not a
-live realtime scheduler, because Heng's original server waits for each full
-chunk and warmup before continuing.
-
-## Read-Only Source Rule
-
-Do not edit `previous_works/lingbot-va` or any external LingBot checkout. The
-runner only adds source paths to `sys.path` and writes staged symlinks,
-converted transformer copies, videos, traces, and summaries under the selected
-`output_dir`.
-
-If a transformer was exported by Open-WAM with local conditioner key names, the
-baseline creates a converted copy under:
-
-```text
-<output_dir>/checkpoints/<checkpoint_name>/_heng_transformer_converted/
-```
-
-The source checkpoint is not modified.
-
-## CLI
-
-One checkpoint:
+Place the released checkpoint outside the repo under the shared research tree:
 
 ```bash
-PYTHONUNBUFFERED=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=0 \
-  python -m baselines.lingbot_va.run_libero10_baseline \
-    --source-repo previous_works/lingbot-va \
-    --pretrained-root /path/to/lingbot-va-base \
-    --transformer-dir /path/to/checkpoint/transformer \
-    --checkpoint-name lingbot_va_libero10_step600 \
-    --benchmark libero_10 \
-    --task-ids 0:10 \
-    --episode-indices 0 \
-    --max-timestep 1000 \
-    --output-dir outputs/lingbot_va_baseline \
-    --seed 0
+/path/to/private-resource - <<'PY'
+from huggingface_hub import snapshot_download
+
+snapshot_download(
+    repo_id="robbyant/lingbot-va-posttrain-libero-long",
+    local_dir="/path/to/private-resource",
+)
+PY
 ```
 
-Suite file:
+The model root must contain `vae/`, `text_encoder/`, `tokenizer/`, and
+`transformer/`.
+
+## Run
+
+Full upstream-style LIBERO-10 evaluation is 10 tasks x 50 init states:
 
 ```bash
-export LINGBOT_VA_BASE_ROOT=/path/to/lingbot-va-base
-export LINGBOT_VA_LIBERO10_TRANSFORMER=/path/to/checkpoint/transformer
+export LINGBOT_VA_MODEL_ROOT=/path/to/private-resource
 
-PYTHONUNBUFFERED=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=0 \
-  python -m baselines.lingbot_va.run_libero10_baseline \
+PYTHONPATH=src:outputs/lingbot_va_pydeps \
+PYTHONUNBUFFERED=1 MUJOCO_GL=egl TOKENIZERS_PARALLELISM=false \
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=0 \
+  /path/to/private-resource \
+  -m baselines.lingbot_va.run_libero10_baseline \
     --suite baselines/lingbot_va/suites/libero10_env_template.yaml
 ```
 
+Single smoke episode:
+
+```bash
+PYTHONPATH=src:outputs/lingbot_va_pydeps \
+PYTHONUNBUFFERED=1 MUJOCO_GL=egl TOKENIZERS_PARALLELISM=false \
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=0 \
+  /path/to/private-resource \
+  -m baselines.lingbot_va.run_libero10_baseline \
+    --source-repo previous_works/lingbot-va \
+    --model-root /path/to/private-resource \
+    --checkpoint-name lingbot_va_posttrain_libero_long \
+    --benchmark libero_10 \
+    --task-ids 0 \
+    --episode-indices 0 \
+    --max-timestep 800 \
+    --video-fps 60 \
+    --output-dir outputs/lingbot_va_posttrain_libero_long_smoke \
+    --continue-on-error
+```
+
+## Contract
+
+The runner imports upstream `VA_Server` and preserves the LIBERO client loop:
+
+- initialize env from `benchmark_instance.get_task_init_states(task_id)`
+- `model.infer(dict(reset=True, prompt=prompt))`
+- infer one chunk from the latest observation
+- skip frame group `0` only on the first chunk
+- execute every action in the returned chunk in order
+- append key frames after every `action_per_frame` actions
+- warm the KV cache with `compute_kv_cache=True, imagine=False, state=action`
+- stop when the env reports success or reaches timestep `800`
+
+Open-WAM only provides argument parsing, resumable episode grids/manifests,
+JSON summaries, and optional rollout video rendering.
+
 ## Artifacts
 
-Each suite writes:
+Each run writes:
 
-- `results.jsonl`: append-only per-episode records.
-- `summary.json`: aggregate result and full row list.
-- `summary.md`: compact table for notes or PR descriptions.
-- `load_reports/<checkpoint>.json`: loaded component hashes and runtime config.
-- `rollouts/.../*.mp4`: side-by-side agentview/wrist videos with chunk colors.
-- `rollouts/.../*_chunks.json`: per-chunk infer/warmup timing and boundaries.
+- `results.jsonl`: append-only per-episode records
+- `summary.json`: aggregate result and full row list
+- `summary.md`: compact table
+- `load_reports/<checkpoint>.json`: model-root provenance and runtime config
+- `rollouts/.../*_chunks.json`: per-chunk timing and boundaries
+- `rollouts/.../*.mp4`: optional side-by-side videos with chunk colors
 
-## Roadmap
+Long runs can set `runtime.resume: true`; completed rows are skipped by
+`(checkpoint, benchmark, task_id, episode_idx, seed, sample_id)`.
 
-1. Exact LingBot-VA chunk-by-chunk LIBERO-10 parity is established.
-2. The bounded all-task LIBERO-10 suite has been run for task IDs `0:10`,
-   episode `0`, seed `0`, max timestep `1000`.
-3. The best native checkpoint tested so far is
-   `train_out_heng_libero_10_0323_60fps/checkpoint_step_600`, with `9/10`
-   successes on that suite.
-4. Task 8 remains the residual failure. Additional probes at 60fps step550 and
-   `libero_all_0325_60fps_videoonly` step850 also failed task 8 at the horizon.
-5. Open-WAM-exported Method-1 checkpoints remain parity controls, not the
-   LingBot-VA baseline.
-6. Only after the exact baseline is stable, add an optional realtime wrapper
-   that maps LingBot chunks into the shared Open-WAM sandbox scheduler.
+The default suite leaves `seed` empty to match the upstream client, which does
+not seed the policy RNG. Pass `--seed` only for explicit reproducibility
+ablations.
 
-## Current Result
+Two-GPU full evaluations can be merged after both shards finish:
 
-Validation date: 2026-04-29.
-
-Native LingBot-VA checkpoint:
-
-```text
-/path/to/private-resource
+```bash
+PYTHONPATH=src:outputs/lingbot_va_pydeps \
+  /path/to/private-resource \
+  -m baselines.lingbot_va.summarize_results \
+  --results-jsonl \
+    outputs/lingbot_va_posttrain_libero_long_libero10_full_20260429/gpu0_tasks0_4/results.jsonl \
+    outputs/lingbot_va_posttrain_libero_long_libero10_full_20260429/gpu1_tasks5_9/results.jsonl \
+  --expect-count 500 \
+  --expect-benchmark libero_10 \
+  --expect-task-ids 0:10 \
+  --expect-episode-indices 0:50 \
+  --require-null-seed \
+  --require-unique \
+  --require-hf-revision 0e89d1e753019988aba484e8da2dc0810e264d9f \
+  --require-model-root /path/to/private-resource \
+  --output-dir outputs/lingbot_va_posttrain_libero_long_libero10_full_20260429/combined
 ```
 
-Suite:
+## Result
 
-- benchmark: `libero_10`
-- task IDs: `0:10`
-- episode index: `0`
-- seed: `0`
-- max timestep: `1000`
+Canonical LIBERO-10 full evaluation completed on 2026-04-30:
 
-Result: `9/10` successes. Task 8, `put both moka pots on the stove`, failed at
-`env_timestep=1009`.
+| Checkpoint | Successes | Episodes | Success rate | Mean env timestep | Mean chunks |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `lingbot_va_posttrain_libero_long` | 483 | 500 | 0.966 | 288.2 | 18.4 |
 
-Artifacts:
+Task-level results and the 17 horizon-timeout failures are documented in
+`notes/lingbot_va_baseline_libero10.md`.
 
-```text
-outputs/lingbot_va_baseline_libero10_ep0_20260429/summary.md
-outputs/lingbot_va_baseline_libero10_ep0_20260429/summary.json
-outputs/lingbot_va_baseline_libero10_ep0_20260429/rollouts/
+## RobotWin Evaluation
+
+LingBot-VA's RobotWin evaluation is a separate upstream blocking-control path:
+the client requests one action chunk, steps the simulator through that chunk,
+warms the model KV cache from the executed key frames, then requests the next
+chunk. It is comparable to our blocking-control rollouts, not realtime
+`freeze_until_clean_chunk` or async scheduling policies.
+
+The wrappers below do not edit `previous_works/lingbot-va`; they execute the
+upstream RobotWin server/client code with local path and output-root patches.
+
+Start one model server per GPU:
+
+```bash
+PYTHONPATH=src:outputs/lingbot_va_pydeps \
+PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0 \
+  /path/to/private-resource \
+  -m baselines.lingbot_va.run_robotwin_server \
+    --source-repo previous_works/lingbot-va \
+    --model-root /path/to/private-resource \
+    --save-root outputs/lingbot_va_robotwin/server_gpu0 \
+    --port 29056
 ```
+
+Run the upstream default task for 100 expert-verified episodes:
+
+```bash
+PYTHONUNBUFFERED=1 PYTHONWARNINGS=ignore::UserWarning \
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 ROBOTWIN_ROOT=/path/to/RoboTwin \
+  /path/to/robotwin/python \
+  -m baselines.lingbot_va.run_robotwin_client \
+    --source-repo previous_works/lingbot-va \
+    --save-root outputs/lingbot_va_robotwin/adjust_bottle_100ep \
+    --task-name adjust_bottle \
+    --test-num 100 \
+    --seed 0 \
+    --port 29056
+```
+
+Artifacts are written under the client `--save-root`:
+
+- `stseed-10000/metrics/<task>/res.json`: incremental success count
+- `stseed-10000/visualization/<task>/*.mp4`: per-episode comparison videos
+- `eval_result/<task>/ACT/demo_clean/0/<timestamp>/_result.txt`: upstream result
+  file
+
+Local 100-episode RobotWin validation completed on 2026-04-30:
+
+| Task | Successes | Episodes | Success rate |
+| --- | ---: | ---: | ---: |
+| `adjust_bottle` | 98 | 100 | 0.98 |
+| `place_mouse_pad` | 94 | 100 | 0.94 |
+
+These two tasks validate the wrapper path. They are not a full RobotWin suite
+run; the upstream multi-GPU launcher enumerates 50 unique tasks at 100 episodes
+per task.

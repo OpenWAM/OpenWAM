@@ -1,9 +1,8 @@
-# Read-only LingBot-VA LIBERO-10 baseline suite.
+# Vanilla LingBot-VA LIBERO-LONG baseline suite on LIBERO-10.
 #
 # Export the machine-local paths before running:
 #
-#   export LINGBOT_VA_BASE_ROOT=/path/to/lingbot-va-base
-#   export LINGBOT_VA_LIBERO10_TRANSFORMER=/path/to/checkpoint/transformer
+#   export LINGBOT_VA_MODEL_ROOT=/path/to/private-resource
 #
 # Then run:
 #
@@ -12,24 +11,29 @@
 #       --suite baselines/lingbot_va/suites/libero10_env_template.yaml
 
 source_repo: previous_works/lingbot-va
-pretrained_root: ${LINGBOT_VA_BASE_ROOT}
-output_dir: outputs/lingbot_va_baseline
+model_root: ${LINGBOT_VA_MODEL_ROOT:-/path/to/private-resource}
+hf_repo_id: robbyant/lingbot-va-posttrain-libero-long
+hf_revision: 0e89d1e753019988aba484e8da2dc0810e264d9f
+output_dir: outputs/lingbot_va_posttrain_libero_long_libero10
 
 checkpoints:
-  - name: lingbot_va_libero10
-    transformer_dir: ${LINGBOT_VA_LIBERO10_TRANSFORMER}
+  - name: lingbot_va_posttrain_libero_long
     enable_offload: false
 
 episodes:
   benchmark: libero_10
   task_ids: 0:10
-  episode_indices: "0"
-  seed: 0
+  # Upstream LIBERO client default is 50 episodes per task.
+  episode_indices: "0:50"
+  # Leave empty to match the upstream client, which does not set a policy RNG seed.
+  seed:
 
 runtime:
-  max_timestep: 1000
+  # Upstream client loops while env timestep < 800.
+  max_timestep: 800
   max_chunks:
-  video_fps: 15
+  video_fps: 60
   cuda_device: 0
-  render_video: true
+  render_video: false
   continue_on_error: true
+  resume: true

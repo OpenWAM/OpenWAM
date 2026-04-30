@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,11 +9,10 @@ from typing import Any
 
 import numpy as np
 import torch
-import yaml
 
-from .assets import PreparedCheckpoint, build_component_report, stage_checkpoint
+from .assets import PreparedModel, build_component_report, prepare_model_root
 from .config import CheckpointSpec, EpisodeSpec
-from .external import REPO_ROOT, ExternalModules, load_external_modules
+from .external import ExternalModules, load_external_modules
 from .video import LIBERO_OBS_KEYS, save_libero_rollout_video
 
 
@@ -54,12 +52,15 @@ class ChunkTrace:
 class RolloutResult:
     checkpoint_name: str
     source_repo: str
-    prepared_checkpoint: dict[str, Any]
+    prepared_model: dict[str, Any]
     benchmark: str
     task_id: int
     prompt: str
     episode_idx: int
     seed: int | None
+    sample_id: str | None
+    sample_kind: str | None
+    sample_index: int | None
     success: bool
     chunk_count: int
     env_timestep: int
@@ -75,12 +76,15 @@ class RolloutResult:
         return {
             "checkpoint_name": self.checkpoint_name,
             "source_repo": self.source_repo,
-            "prepared_checkpoint": self.prepared_checkpoint,
+            "prepared_model": self.prepared_model,
             "benchmark": self.benchmark,
             "task_id": self.task_id,
             "prompt": self.prompt,
             "episode_idx": self.episode_idx,
             "seed": self.seed,
+            "sample_id": self.sample_id,
+            "sample_kind": self.sample_kind,
+            "sample_index": self.sample_index,
             "success": self.success,
             "chunk_count": self.chunk_count,
             "env_timestep": self.env_timestep,
@@ -95,7 +99,7 @@ class RolloutResult:
 
 
 class LingBotVALiberoRunner:
-    """Runs Heng's LingBot-VA `VA_Server` exactly, with Open-WAM LIBERO setup."""
+    """Runs the upstream LingBot-VA `VA_Server` with the upstream LIBERO client loop."""
 
     def __init__(
         self,
@@ -103,7 +107,7 @@ class LingBotVALiberoRunner:
         *,
         output_dir: str | Path,
         cuda_device: int = 0,
-        video_fps: float = 15.0,
+        video_fps: float = 60.0,
         render_video: bool = True,
     ) -> None:
         self.checkpoint = checkpoint
@@ -112,7 +116,7 @@ class LingBotVALiberoRunner:
         self.video_fps = video_fps
         self.render_video = render_video
         self.modules: ExternalModules = load_external_modules(checkpoint.source_repo)
-        self.prepared_checkpoint: PreparedCheckpoint | None = None
+        self.prepared_model: PreparedModel | None = None
         self.model: Any | None = None
         self.load_report: dict[str, Any] | None = None
 
@@ -131,13 +135,11 @@ class LingBotVALiberoRunner:
             raise RuntimeError("LingBot-VA LIBERO baseline expects CUDA to be available.")
         torch.cuda.set_device(self.cuda_device)
 
-        checkpoint_root = self.output_dir / "checkpoints" / self.checkpoint.name
-        checkpoint_root.mkdir(parents=True, exist_ok=True)
-        self.prepared_checkpoint = stage_checkpoint(
+        self.prepared_model = prepare_model_root(
             name=self.checkpoint.name,
-            save_root=checkpoint_root,
-            pretrained_root=self.checkpoint.pretrained_root,
-            transformer_dir=self.checkpoint.transformer_dir,
+            model_root=self.checkpoint.model_root,
+            hf_repo_id=self.checkpoint.hf_repo_id,
+            hf_revision=self.checkpoint.hf_revision,
         )
 
         config = copy.deepcopy(self.modules.VA_CONFIGS["libero"])
@@ -145,15 +147,14 @@ class LingBotVALiberoRunner:
         config.local_rank = self.cuda_device
         config.world_size = 1
         config.save_root = str((self.output_dir / "server_state" / self.checkpoint.name).resolve())
-        config.wan22_pretrained_model_name_or_path = str(self.prepared_checkpoint.model_root)
-        _apply_heng_libero_action_parity_config(config)
+        config.wan22_pretrained_model_name_or_path = str(self.prepared_model.model_root)
         if self.checkpoint.enable_offload is not None:
             config.enable_offload = bool(self.checkpoint.enable_offload)
         config.lingbot_va_baseline_source_repo = str(self.modules.source_repo)
-        config.lingbot_va_baseline_prepared_checkpoint = self.prepared_checkpoint.to_json_dict()
+        config.lingbot_va_baseline_prepared_model = self.prepared_model.to_json_dict()
 
         self.model = self.modules.VA_Server(config)
-        self.load_report = build_component_report(self.model, self.prepared_checkpoint)
+        self.load_report = build_component_report(self.model, self.prepared_model)
         self.load_report["source_repo"] = str(self.modules.source_repo)
         load_report_path = self._checkpoint_load_report_path()
         load_report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -172,11 +173,13 @@ class LingBotVALiberoRunner:
         max_timestep: int,
         max_chunks: int | None = None,
     ) -> RolloutResult:
-        if self.model is None or self.prepared_checkpoint is None:
+        if self.model is None or self.prepared_model is None:
             self.load()
         assert self.model is not None
-        assert self.prepared_checkpoint is not None
+        assert self.prepared_model is not None
         assert self.load_report is not None
+        if episode.benchmark != "libero_10":
+            raise ValueError(f"LingBot-VA LIBERO-LONG baseline only supports benchmark 'libero_10', got {episode.benchmark!r}.")
 
         if episode.seed is not None:
             self.modules.seed_everywhere(episode.seed)
@@ -189,8 +192,6 @@ class LingBotVALiberoRunner:
                 "bddl_file_name": benchmark_instance.get_task_bddl_file_path(episode.task_id),
                 "camera_heights": 128,
                 "camera_widths": 128,
-                "horizon": max(max_timestep + 16, 1000),
-                "ignore_done": True,
             }
         )
         if env is None:
@@ -204,18 +205,14 @@ class LingBotVALiberoRunner:
         chunk_count = 0
         first = True
         try:
-            init_states = self._load_init_states(episode, benchmark_instance, task)
+            init_states = benchmark_instance.get_task_init_states(episode.task_id)
             first_obs = self._init_env(env, init_states[episode.episode_idx % init_states.shape[0]])
-            full_obs_list.append({key: np.array(value, copy=True) for key, value in first_obs.items()})
-            frame_chunk_ids.append(-1)
 
-            self.model.infer(dict(reset=True, prompt=prompt, n_view=2))
+            self.model.infer(dict(reset=True, prompt=prompt))
 
             while env.env.timestep < max_timestep and not done:
                 if max_chunks is not None and chunk_count >= max_chunks:
                     break
-                if episode.seed is not None:
-                    self.modules.seed_everywhere(episode.seed + chunk_count)
 
                 timestep_before = int(env.env.timestep)
                 frame_st_before = _optional_int(getattr(self.model, "frame_st_id", None))
@@ -301,12 +298,15 @@ class LingBotVALiberoRunner:
         result = RolloutResult(
             checkpoint_name=self.checkpoint.name,
             source_repo=str(self.modules.source_repo),
-            prepared_checkpoint=self.prepared_checkpoint.to_json_dict(),
+            prepared_model=self.prepared_model.to_json_dict(),
             benchmark=episode.benchmark,
             task_id=episode.task_id,
             prompt=prompt,
             episode_idx=episode.episode_idx,
             seed=episode.seed,
+            sample_id=episode.sample_id,
+            sample_kind=episode.sample_kind,
+            sample_index=episode.sample_index,
             success=bool(done),
             chunk_count=chunk_count,
             env_timestep=int(traces[-1].env_timestep_after if traces else 0),
@@ -332,21 +332,6 @@ class LingBotVALiberoRunner:
                 time.sleep(5)
         return env
 
-    def _load_init_states(self, episode: EpisodeSpec, benchmark_instance, task):
-        config_path = Path(os.environ["LIBERO_CONFIG_PATH"]) / "config.yaml"
-        with config_path.open("r", encoding="utf-8") as handle:
-            libero_config = yaml.safe_load(handle)
-        task_spec = self.modules.LiberoTaskSpec(
-            benchmark_name=episode.benchmark,
-            task_id=episode.task_id,
-            task_name=task.name,
-            task_language=task.language,
-            problem_folder=task.problem_folder,
-            bddl_file_path=benchmark_instance.get_task_bddl_file_path(episode.task_id),
-            init_states_path=str(Path(libero_config["init_states"]) / task.problem_folder / f"{task.name}.pruned_init"),
-        )
-        return self.modules.load_libero_task_init_states(task_spec, REPO_ROOT)
-
     def _init_env(self, env, init_state) -> dict[str, np.ndarray]:
         env.reset()
         env.set_init_state(init_state)
@@ -364,12 +349,13 @@ class LingBotVALiberoRunner:
     def _rollout_video_path(self, *, episode: EpisodeSpec, prompt: str, success: bool) -> Path:
         safe_prompt = prompt.replace(" ", "_")
         safe_name = self.checkpoint.name.replace("/", "_")
+        sample_prefix = f"{_safe_path_component(episode.sample_id)}_" if episode.sample_id else ""
         return (
             self.output_dir
             / "rollouts"
             / episode.benchmark
             / f"{episode.task_id}_{safe_prompt}"
-            / f"{episode.episode_idx}_{success}_{safe_name}_seed{episode.seed}.mp4"
+            / f"{sample_prefix}{episode.episode_idx}_{success}_{safe_name}_seed{episode.seed}.mp4"
         )
 
     def _checkpoint_load_report_path(self) -> Path:
@@ -389,38 +375,7 @@ def _optional_int(value: Any) -> int | None:
     return int(value)
 
 
-def _apply_heng_libero_action_parity_config(config: Any) -> None:
-    """Match the Heng LIBERO server config used by successful exact rollouts."""
-
-    used_action_channel_ids = list(range(0, 6)) + [28]
-    inverse_used_action_channel_ids = [len(used_action_channel_ids)] * int(config.action_dim)
-    for model_channel, source_channel in enumerate(used_action_channel_ids):
-        inverse_used_action_channel_ids[source_channel] = model_channel
-
-    config.action_snr_shift = 1.0
-    config.used_action_channel_ids = used_action_channel_ids
-    config.inverse_used_action_channel_ids = inverse_used_action_channel_ids
-    config.action_norm_method = "quantiles"
-    config.norm_stat = {
-        "q01": [
-            -0.6589285731315613,
-            -0.84375,
-            -0.9375,
-            -0.12107142806053162,
-            -0.15964286029338837,
-            -0.26571428775787354,
-        ]
-        + [0.0] * 22
-        + [-1.0, 0.0],
-        "q99": [
-            0.8999999761581421,
-            0.8544642925262451,
-            0.9375,
-            0.17142857611179352,
-            0.1842857152223587,
-            0.34392857551574707,
-        ]
-        + [0.0] * 22
-        + [1.0, 0.0],
-    }
-    config.lingbot_va_baseline_action_config = "heng_libero_eef6_gripper28"
+def _safe_path_component(value: str | None) -> str:
+    if not value:
+        return ""
+    return "".join(char if char.isalnum() or char in {"-", "_", "."} else "_" for char in str(value))
