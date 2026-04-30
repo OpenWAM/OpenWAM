@@ -133,11 +133,15 @@ def _apply_checkpoint_runtime_override(
 ) -> Path | None:
     checkpoint_file = _resolve_checkpoint_file(checkpoint_path)
     transformer_dir = checkpoint_file.parent / "transformer"
-    if not transformer_dir.is_dir():
+    if not _is_usable_transformer_dir(transformer_dir):
         return checkpoint_file
     object.__setattr__(experiment_config.backbone, "transformer_subdir", str(transformer_dir.resolve()))
     object.__setattr__(experiment_config.backbone, "reference_core_init_mode", ReferenceCoreInitMode.FULL)
     return checkpoint_file
+
+
+def _is_usable_transformer_dir(path: Path) -> bool:
+    return path.is_dir() and any(path.iterdir())
 
 
 def _coerce_optional_positive_int(

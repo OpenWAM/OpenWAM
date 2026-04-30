@@ -484,8 +484,12 @@ def _apply_checkpoint_backbone_override(config, *, checkpoint_path: Path | None)
         return
     checkpoint_step_dir = checkpoint_path.parent
     transformer_dir = checkpoint_step_dir / "transformer"
-    if transformer_dir.is_dir():
+    if _is_usable_transformer_dir(transformer_dir):
         object.__setattr__(config.backbone, "transformer_subdir", str(transformer_dir.resolve()))
+
+
+def _is_usable_transformer_dir(path: Path) -> bool:
+    return path.is_dir() and any(path.iterdir())
 
 
 def _apply_common_inference_overrides(
