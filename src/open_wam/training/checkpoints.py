@@ -53,6 +53,7 @@ def _save_state_dict_options() -> StateDictOptions:
 def _load_state_dict_options() -> StateDictOptions:
     return StateDictOptions(
         full_state_dict=True,
+        cpu_offload=True,
         strict=False,
     )
 
@@ -180,13 +181,16 @@ class CheckpointManager:
         set_model_state_dict(model, payload["model_state_dict"], options=load_options)
         optimizer_state = payload.get("optimizer_state_dict")
         if optimizer is not None and isinstance(optimizer_state, dict):
-            dense_optimizer_state = _densify_optimizer_state_dict(
-                model=model,
-                optimizer=optimizer,
-                optim_state_dict=optimizer_state,
-                options=load_options,
-            )
-            set_optimizer_state_dict(model, optimizer, optim_state_dict=dense_optimizer_state, options=load_options)
+            try:
+                set_optimizer_state_dict(model, optimizer, optim_state_dict=optimizer_state, options=load_options)
+            except Exception:
+                dense_optimizer_state = _densify_optimizer_state_dict(
+                    model=model,
+                    optimizer=optimizer,
+                    optim_state_dict=optimizer_state,
+                    options=load_options,
+                )
+                set_optimizer_state_dict(model, optimizer, optim_state_dict=dense_optimizer_state, options=load_options)
         scheduler_state = payload.get("scheduler_state_dict")
         if scheduler is not None and isinstance(scheduler_state, dict):
             scheduler.load_state_dict(scheduler_state)

@@ -40,24 +40,13 @@ from .step_executor import PipelineTrainStepExecutor, build_batch_adapter
 from .strategies import build_training_strategy
 
 
-def _resolve_optimizer_state_dtype(strategy) -> torch.dtype | None:
-    precision = getattr(strategy, "precision", None)
-    if precision is None:
-        return None
-    precision_value = str(precision)
-    if "bf16" in precision_value:
-        return torch.bfloat16
-    if "fp16" in precision_value or "16" == precision_value:
-        return torch.float16
-    return None
-
-
-def _normalize_optimizer_state_dtypes(optimizer: torch.optim.Optimizer, *, state_dtype: torch.dtype | None) -> None:
-    if state_dtype is None:
-        return
-    for state in optimizer.state.values():
+def _normalize_optimizer_state_dtypes(optimizer: torch.optim.Optimizer) -> None:
+    for parameter, state in optimizer.state.items():
         if not isinstance(state, dict):
             continue
+        if not torch.is_tensor(parameter) or not torch.is_floating_point(parameter):
+            continue
+        state_dtype = parameter.dtype
         for key, value in list(state.items()):
             if key == "step":
                 continue
@@ -154,22 +143,26 @@ class TrainingRuntime:
         return runtime
 
     def resume(self, checkpoint_path: str) -> None:
+        current_run_name = self.train_state.run_name
         train_state, payload = self.checkpoint_manager.load(
             path=checkpoint_path,
             model=self.strategy.unwrap_model(self.model),
             optimizer=self.optimizer,
             scheduler=self.scheduler,
-            map_location=self.strategy.device,
+            map_location="cpu",
         )
-        _normalize_optimizer_state_dtypes(
-            self.optimizer,
-            state_dtype=_resolve_optimizer_state_dtype(self.strategy),
-        )
+        _normalize_optimizer_state_dtypes(self.optimizer)
+        if train_state.run_name is None:
+            train_state.run_name = current_run_name
         self.train_state = train_state
         self.strategy.load_state_dict(payload.get("strategy_state_dict") if isinstance(payload, dict) else None)
         self.log_sink.log_event(
             name="resume",
-            payload={"checkpoint_path": checkpoint_path, "optimizer_step": self.train_state.optimizer_step},
+            payload={
+                "checkpoint_path": checkpoint_path,
+                "resolved_checkpoint_path": self.train_state.resume_source,
+                "optimizer_step": self.train_state.optimizer_step,
+            },
         )
 
     def run(self) -> TrainState:
