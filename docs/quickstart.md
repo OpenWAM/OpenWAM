@@ -89,6 +89,84 @@ The file is gitignored. You can also use:
 OPEN_WAM_LOCAL_PATHS=/absolute/path/to/local_paths.yaml uv run open-wam-eval ...
 ```
 
+## LIBERO Local Rollout Setup
+
+To actually run a LIBERO realtime rollout (e.g.
+`scripts/run_libero_realtime_ablation.py`) on your own machine, the
+`[libero]` extra is necessary but not sufficient — it pins the LIBERO-side
+runtime deps (`gym==0.25.2`, `robosuite==1.4.0`, `bddl==1.0.1`, etc.) but
+not the model stack (Torch, diffusers, transformers, ...). Three additional
+steps are required.
+
+### 1. Install model + simulator deps together
+
+Use `[sim]` (or `[full]`) — `[sim]` is the smallest extra that combines the
+LIBERO-side deps with the model runtime stack:
+
+```bash
+uv sync --extra sim
+```
+
+### 2. Install upstream LIBERO from source
+
+LIBERO is **not** distributed on PyPI; the `[libero]` extra only pulls its
+runtime deps. Clone the upstream source and pip-install it in editable mode:
+
+```bash
+git clone https://github.com/Lifelong-Robot-Learning/LIBERO ../LIBERO
+
+# Upstream ships the inner `libero/` directory without an __init__.py and
+# relies on namespace-package import. PEP-660 editable installs from
+# setuptools generate an empty finder for that case (MAPPING == {}), so
+# `import libero` fails outside the repo dir. Touching an empty
+# __init__.py makes it a real package and the editable install resolves
+# correctly.
+touch ../LIBERO/libero/__init__.py
+
+uv pip install -e ../LIBERO
+```
+
+### 3. Tell LIBERO where its assets live
+
+LIBERO reads `~/.libero/config.yaml` on import. Create it before the first
+run, otherwise it falls into an interactive `input()` prompt:
+
+```bash
+mkdir -p ~/.libero
+cat > ~/.libero/config.yaml <<'EOF'
+benchmark_root: /absolute/path/to/LIBERO/libero/libero
+bddl_files:    /absolute/path/to/LIBERO/libero/libero/bddl_files
+init_states:   /absolute/path/to/LIBERO/libero/libero/init_files
+datasets:      /absolute/path/to/LIBERO/libero/datasets
+assets:        /absolute/path/to/LIBERO/libero/libero/assets
+EOF
+```
+
+The five keys must match LIBERO's loader exactly — `bddl_files` (not
+`bddl_files_folder`), `init_states` (not `init_states_folder`), etc.
+Otherwise `libero.libero.get_libero_path` raises `AssertionError: Key ...
+not found in config file`.
+
+### 4. Verify the stack imports
+
+```bash
+uv run --extra sim python -c "
+import torch, libero, open_wam, mujoco, robosuite, diffusers, transformers
+print('torch:', torch.__version__, 'cuda:', torch.cuda.is_available())
+print('libero:', libero.__file__)
+print('mujoco:', mujoco.__version__, 'robosuite:', robosuite.__version__)
+"
+```
+
+### 5. (Optional) Silence robosuite's macro warning
+
+The first import emits `[robosuite WARNING] No private macro file found`.
+It is harmless, but can be dismissed with:
+
+```bash
+uv run --extra sim python -c "import robosuite, os; os.system(f'python {os.path.dirname(robosuite.__file__)}/scripts/setup_macros.py')"
+```
+
 ## Stable Commands
 
 Preferred package commands:

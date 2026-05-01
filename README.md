@@ -251,6 +251,43 @@ uv sync --extra docs
 uv sync --extra full
 ```
 
+For a local LIBERO simulator rollout the `[libero]` extra alone is **not**
+enough — it only pins the LIBERO-specific runtime deps (`gym`, `robosuite`,
+`bddl`, etc.) and not the model stack. Use `[sim]` (or `[full]`), and add
+the upstream LIBERO source plus a one-line config so LIBERO can locate its
+bddl / init / asset folders:
+
+```bash
+# 1. Install model + simulator deps in one shot
+uv sync --extra sim
+
+# 2. Clone upstream LIBERO; it is not on PyPI
+git clone https://github.com/Lifelong-Robot-Learning/LIBERO ../LIBERO
+# Empty __init__.py so editable installs see `libero` as a real package
+# instead of an empty PEP-660 namespace finder.
+touch ../LIBERO/libero/__init__.py
+uv pip install -e ../LIBERO
+
+# 3. Tell LIBERO where its asset/bddl/init directories live
+mkdir -p ~/.libero
+cat > ~/.libero/config.yaml <<'EOF'
+benchmark_root: /absolute/path/to/LIBERO/libero/libero
+bddl_files:    /absolute/path/to/LIBERO/libero/libero/bddl_files
+init_states:   /absolute/path/to/LIBERO/libero/libero/init_files
+datasets:      /absolute/path/to/LIBERO/libero/datasets
+assets:        /absolute/path/to/LIBERO/libero/libero/assets
+EOF
+
+# 4. Point the local checkpoint registry at the trained Method 1 ckpt
+cp configs/local_paths.sample.yaml configs/local_paths.yaml
+# Replace the parallel_stream_exact_libero_step_400 placeholder with the
+# absolute path to your local checkpoint_step_400 directory.
+```
+
+The keys in `~/.libero/config.yaml` must be exactly `benchmark_root`,
+`bddl_files`, `init_states`, `datasets`, `assets` — without the `_folder`
+suffix LIBERO's loader rejects them.
+
 Use the lightweight smoke configs after installing Torch/runtime extras when
 you want fast CPU checks of method 1 and method 2 without instantiating the full
 LingBot-scale backbone:

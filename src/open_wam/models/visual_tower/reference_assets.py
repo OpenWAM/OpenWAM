@@ -15,6 +15,48 @@ from .reference_loader import resolve_pretrained_component_dir
 from .reference_transformer import preferred_reference_dtype
 
 
+_PLACEHOLDER_PATH_PREFIXES = ("/path/to/", "/path/to", "path/to/")
+
+
+def _validate_pretrained_root(
+    pretrained_root: str,
+    *,
+    config: LingbotCompatibleVideoBackboneConfig,
+) -> None:
+    """Fail loud if pretrained_model_name_or_path is the sample placeholder
+    (`/path/to/...`) or a non-existent path while reference asset loading is
+    requested. Without this guard the loader silently leaves vae / text encoder
+    as None, the frontend falls back to a randomly-initialized latentizer, and
+    rollouts appear to run but produce N(0,1) noise as video_latents — which
+    cascades into wildly wrong actions and a fail rollout."""
+    needs_assets = bool(config.load_wan_vae_frontend) or bool(config.load_text_conditioning)
+    if not needs_assets:
+        return
+    root_str = str(pretrained_root)
+    if root_str.startswith(_PLACEHOLDER_PATH_PREFIXES):
+        raise FileNotFoundError(
+            f"backbone.pretrained_model_name_or_path is still the placeholder "
+            f"{root_str!r}. This usually means configs/local_paths.yaml was "
+            f"never edited from configs/local_paths.sample.yaml, OR the "
+            f"checkpoint's resolved_config.yaml has a hard-coded path that "
+            f"does not exist on this machine. Edit configs/local_paths.yaml "
+            f"(set paths.models.lingbot_va_base) and/or fix the checkpoint's "
+            f"resolved_config.yaml before re-running."
+        )
+    from pathlib import Path as _Path
+    if not _Path(root_str).expanduser().exists():
+        raise FileNotFoundError(
+            f"backbone.pretrained_model_name_or_path={root_str!r} does not "
+            f"exist on this machine. Reference assets (VAE / text encoder) "
+            f"would silently be skipped, leaving the frontend's latentizer "
+            f"to produce random N(0,1) latents — making the rollout look "
+            f"like a soft failure (action=garbage, gripper sign random) "
+            f"instead of a hard error. Either: copy the assets locally and "
+            f"update configs/local_paths.yaml, or fix the checkpoint's "
+            f"resolved_config.yaml to point at an existing path."
+        )
+
+
 def _load_transformers_assets() -> tuple[type[Any], type[Any]]:
     try:
         from transformers import T5TokenizerFast, UMT5EncoderModel
@@ -91,31 +133,56 @@ class LingbotReferenceAssets:
         pretrained_root = config.pretrained_model_name_or_path
         if pretrained_root is None:
             return assets
+
+        _validate_pretrained_root(pretrained_root, config=config)
+
         reference_dtype = torch.bfloat16
 
         if config.load_wan_vae_frontend:
             vae_dir = resolve_pretrained_component_dir(pretrained_root, config.vae_subdir)
-            if vae_dir is not None and vae_dir.exists():
-                assets.vae = AutoencoderKLWan.from_pretrained(
-                    str(vae_dir),
-                    torch_dtype=reference_dtype,
+            if vae_dir is None or not vae_dir.exists():
+                raise FileNotFoundError(
+                    f"backbone.load_wan_vae_frontend=True but the VAE component directory "
+                    f"could not be resolved under pretrained_model_name_or_path="
+                    f"{pretrained_root!r} (looked for subdir {config.vae_subdir!r}; "
+                    f"resolved to {vae_dir}). Update configs/local_paths.yaml or the "
+                    f"checkpoint's resolved_config.yaml so this path actually exists. "
+                    f"Without it, the frontend silently falls back to a randomly-initialized "
+                    f"latentizer producing N(0,1) noise, which makes downstream rollouts "
+                    f"appear to 'run' but with wildly wrong actions."
                 )
-                assets.streaming_vae = WanVAEStreamingWrapper(assets.vae)
+            assets.vae = AutoencoderKLWan.from_pretrained(
+                str(vae_dir),
+                torch_dtype=reference_dtype,
+            )
+            assets.streaming_vae = WanVAEStreamingWrapper(assets.vae)
 
         if config.load_text_conditioning:
             tokenizer_cls, text_encoder_cls = _load_transformers_assets()
             text_encoder_dir = resolve_pretrained_component_dir(pretrained_root, config.text_encoder_subdir)
             tokenizer_dir = resolve_pretrained_component_dir(pretrained_root, config.tokenizer_subdir)
-            if text_encoder_dir is not None and text_encoder_dir.exists():
-                assets.text_encoder = text_encoder_cls.from_pretrained(
-                    str(text_encoder_dir),
-                    torch_dtype=reference_dtype,
+            if text_encoder_dir is None or not text_encoder_dir.exists():
+                raise FileNotFoundError(
+                    f"backbone.load_text_conditioning=True but the text encoder directory "
+                    f"could not be resolved under pretrained_model_name_or_path="
+                    f"{pretrained_root!r} (looked for subdir {config.text_encoder_subdir!r}; "
+                    f"resolved to {text_encoder_dir})."
                 )
-                assets.text_encoder.eval()
-                for parameter in assets.text_encoder.parameters():
-                    parameter.requires_grad = False
-            if tokenizer_dir is not None and tokenizer_dir.exists():
-                assets.tokenizer = tokenizer_cls.from_pretrained(str(tokenizer_dir))
+            if tokenizer_dir is None or not tokenizer_dir.exists():
+                raise FileNotFoundError(
+                    f"backbone.load_text_conditioning=True but the tokenizer directory "
+                    f"could not be resolved under pretrained_model_name_or_path="
+                    f"{pretrained_root!r} (looked for subdir {config.tokenizer_subdir!r}; "
+                    f"resolved to {tokenizer_dir})."
+                )
+            assets.text_encoder = text_encoder_cls.from_pretrained(
+                str(text_encoder_dir),
+                torch_dtype=reference_dtype,
+            )
+            assets.text_encoder.eval()
+            for parameter in assets.text_encoder.parameters():
+                parameter.requires_grad = False
+            assets.tokenizer = tokenizer_cls.from_pretrained(str(tokenizer_dir))
         if assets.vae is not None:
             assets.vae.eval()
             for parameter in assets.vae.parameters():

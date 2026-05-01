@@ -4,6 +4,7 @@ import argparse
 import copy
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+import hashlib
 import json
 import math
 import random
@@ -14,6 +15,7 @@ from typing import Any, Protocol
 
 import imageio.v2 as imageio
 import numpy as np
+import os
 import torch
 from einops import rearrange
 
@@ -126,8 +128,12 @@ def main() -> None:
         type=int,
         default=None,
         help=(
-            "Optional LIBERO/robosuite internal episode horizon. Use this with large --max-actions; "
-            "otherwise the env can terminate before the sandbox action cap is reached."
+            "Override the LIBERO/robosuite environment horizon (max env steps "
+            "before the episode auto-terminates). Set this to a value >= "
+            "--max-actions when running long realtime rollouts at high "
+            "control rates, otherwise robosuite raises 'executing action in "
+            "terminated episode' once the default horizon (typically 600) is "
+            "reached. None keeps the upstream LIBERO default."
         ),
     )
     parser.add_argument("--target-action-hz", type=float, default=10.0)
@@ -251,6 +257,14 @@ def main() -> None:
     parser.add_argument("--output-dir", type=str, default="outputs/libero_realtime_validation")
     parser.add_argument("--suffix", type=str, default="sandbox")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--debug-startup-dump",
+        action="store_true",
+        help=(
+            "Write a startup-only debug JSON with initial observation/input/action hashes. "
+            "This is disabled by default and does not change the model forward path."
+        ),
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -326,6 +340,7 @@ def main() -> None:
             fallback_history_policy=fallback_history_policy,
             replan_low_watermark_actions=args.replan_low_watermark_actions,
             write_fallback_timeline_video=args.write_fallback_timeline_video,
+            debug_startup_dump=args.debug_startup_dump,
         )
     elif policy_name == "video_sequence_policy":
         summary = _run_sequence_policy_realtime_rollout(
@@ -969,6 +984,7 @@ def _run_exact_like_realtime_rollout(
     fallback_history_policy: FallbackHistoryPolicy,
     replan_low_watermark_actions: int,
     write_fallback_timeline_video: bool,
+    debug_startup_dump: bool,
 ) -> dict[str, Any]:
     replan_low_watermark_actions = int(replan_low_watermark_actions)
     pipeline = build_variant_pipeline_from_config(config)
@@ -1024,6 +1040,7 @@ def _run_exact_like_realtime_rollout(
 
     try:
         first_obs = exact_viz._init_single_env(env, init_states[episode_idx % len(init_states)])
+        startup_debug_report: dict[str, Any] | None = None
         with torch.inference_mode():
             session = runner.reset(task_text=(prompt,))
             startup_prepare_t0 = time.perf_counter()
@@ -1037,6 +1054,7 @@ def _run_exact_like_realtime_rollout(
             exact_sandbox._synchronize_devices(frontend_device, runtime_device)
             startup_prepare_s = time.perf_counter() - startup_prepare_t0
 
+            rng_before_startup_infer = _debug_rng_state()
             startup_infer_t0 = time.perf_counter()
             first_chunk = runner.infer_chunk(
                 session=session,
@@ -1046,6 +1064,21 @@ def _run_exact_like_realtime_rollout(
             )
             exact_sandbox._synchronize_devices(runtime_device)
             startup_infer_s = time.perf_counter() - startup_infer_t0
+            if debug_startup_dump:
+                startup_debug_report = _build_exact_startup_debug_report(
+                    first_obs=first_obs,
+                    initial_inputs=initial_inputs,
+                    session=session,
+                    first_chunk=first_chunk,
+                    config=config,
+                    prompt=prompt,
+                    seed=seed,
+                    runtime_device=runtime_device,
+                    frontend_device=frontend_device,
+                    decode_device=decode_device,
+                    rng_before_startup_infer=rng_before_startup_infer,
+                    rng_after_startup_infer=_debug_rng_state(),
+                )
 
         history_base_session, current_chunk_session, buffer_tail_session = exact_sandbox._resolve_exact_startup_sessions(
             config=config,
@@ -1710,6 +1743,7 @@ def _run_exact_like_realtime_rollout(
             video_fps=video_fps or target_action_hz,
             action_per_frame=action_per_frame,
             write_fallback_timeline_video=write_fallback_timeline_video,
+            startup_debug_report=startup_debug_report,
         )
     finally:
         env.close()
@@ -3320,6 +3354,145 @@ def _frame_index_to_action_start(frame_index: int, action_per_frame: int) -> int
     return max(0, int(frame_index) - 1) * int(action_per_frame)
 
 
+def _debug_sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _debug_array_summary(value: np.ndarray | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    array = np.ascontiguousarray(np.asarray(value))
+    flat = array.reshape(-1)
+    numeric = flat.astype(np.float64, copy=False) if flat.size else flat
+    return {
+        "shape": [int(dim) for dim in array.shape],
+        "dtype": str(array.dtype),
+        "sha256": _debug_sha256_bytes(array.tobytes()),
+        "preview": flat[:12].tolist(),
+        "mean": None if flat.size == 0 else float(numeric.mean()),
+        "std": None if flat.size == 0 else float(numeric.std()),
+    }
+
+
+def _debug_tensor_summary(value: torch.Tensor | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    tensor = value.detach().contiguous().cpu()
+    byte_tensor = tensor.view(torch.uint8)
+    flat = tensor.reshape(-1)
+    numeric = flat.to(dtype=torch.float32) if flat.numel() else flat
+    return {
+        "shape": [int(dim) for dim in tensor.shape],
+        "dtype": str(tensor.dtype),
+        "device": str(value.device),
+        "sha256": _debug_sha256_bytes(byte_tensor.numpy().tobytes()),
+        "preview": flat[:12].to(dtype=torch.float32).tolist(),
+        "mean": None if flat.numel() == 0 else float(numeric.mean().item()),
+        "std": None if flat.numel() == 0 else float(numeric.std(unbiased=False).item()),
+    }
+
+
+def _debug_rng_state() -> dict[str, Any]:
+    return {
+        "torch_cpu": _debug_tensor_summary(torch.get_rng_state()),
+        "torch_cuda": (
+            [_debug_tensor_summary(state) for state in torch.cuda.get_rng_state_all()]
+            if torch.cuda.is_available()
+            else None
+        ),
+    }
+
+
+def _debug_raw_action_grid(
+    *,
+    chunk,
+    frame_chunk_size: int,
+    action_per_frame: int,
+) -> dict[str, Any] | None:
+    if chunk.raw_chunk_action_pred is None:
+        return None
+    raw_actions = rearrange(
+        chunk.raw_chunk_action_pred[0].detach().to(dtype=torch.float32).cpu(),
+        "(f a) c -> f a c",
+        f=frame_chunk_size,
+        a=action_per_frame,
+    )
+    generation_frame_start = int(chunk.debug.get("generation_frame_start", 0))
+    executable: list[list[float]] = []
+    for frame_offset in range(raw_actions.shape[0]):
+        if generation_frame_start + frame_offset < 1:
+            continue
+        for action_offset in range(raw_actions.shape[1]):
+            executable.append([float(value) for value in raw_actions[frame_offset, action_offset].tolist()])
+    return {
+        "generation_frame_start": int(generation_frame_start),
+        "all_gripper_by_frame": [
+            [float(raw_actions[frame_offset, action_offset, 6].item()) for action_offset in range(raw_actions.shape[1])]
+            for frame_offset in range(raw_actions.shape[0])
+        ],
+        "first_executable_actions": executable[:16],
+    }
+
+
+def _build_exact_startup_debug_report(
+    *,
+    first_obs: dict[str, np.ndarray],
+    initial_inputs: dict[str, torch.Tensor | None],
+    session,
+    first_chunk,
+    config,
+    prompt: str,
+    seed: int,
+    runtime_device: torch.device,
+    frontend_device: torch.device,
+    decode_device: torch.device,
+    rng_before_startup_infer: dict[str, Any],
+    rng_after_startup_infer: dict[str, Any],
+) -> dict[str, Any]:
+    cuda_device_name = None
+    if runtime_device.type == "cuda" and torch.cuda.is_available():
+        device_index = torch.cuda.current_device() if runtime_device.index is None else int(runtime_device.index)
+        cuda_device_name = torch.cuda.get_device_name(device_index)
+    return {
+        "schema_version": 1,
+        "purpose": "startup_first_chunk_cross_gpu_debug",
+        "prompt": str(prompt),
+        "seed": int(seed),
+        "torch_version": str(torch.__version__),
+        "cuda_device_name": cuda_device_name,
+        "runtime_device": str(runtime_device),
+        "frontend_device": str(frontend_device),
+        "decode_device": str(decode_device),
+        "reference_assets_device_policy": str(config.backbone.reference_assets_device_policy),
+        "runtime_mode": str(config.policy_variant.runtime_mode),
+        "video_num_inference_steps": int(config.inference.video_num_inference_steps),
+        "action_num_inference_steps": int(config.inference.action_num_inference_steps),
+        "guidance_scale": float(config.inference.guidance_scale),
+        "action_guidance_scale": float(config.inference.action_guidance_scale),
+        "first_obs": {key: _debug_array_summary(value) for key, value in sorted(first_obs.items())},
+        "initial_inputs": {
+            "video_latents": _debug_tensor_summary(initial_inputs.get("video_latents")),
+            "text_context": _debug_tensor_summary(initial_inputs.get("text_context")),
+            "negative_text_context": _debug_tensor_summary(initial_inputs.get("negative_text_context")),
+        },
+        "session_text_context": _debug_tensor_summary(getattr(session, "text_context", None)),
+        "session_negative_text_context": _debug_tensor_summary(getattr(session, "negative_text_context", None)),
+        "rng_before_startup_infer": rng_before_startup_infer,
+        "rng_after_startup_infer": rng_after_startup_infer,
+        "first_chunk": {
+            "debug": dict(first_chunk.debug),
+            "chunk_action_pred": _debug_tensor_summary(first_chunk.chunk_action_pred),
+            "raw_chunk_action_pred": _debug_tensor_summary(first_chunk.raw_chunk_action_pred),
+            "predicted_latents": _debug_tensor_summary(first_chunk.predicted_latents),
+            "raw_action_grid": _debug_raw_action_grid(
+                chunk=first_chunk,
+                frame_chunk_size=int(config.inference.frame_chunk_size),
+                action_per_frame=int(config.policy_variant.action_per_frame),
+            ),
+        },
+    }
+
+
 def _finalize_rollout_outputs(
     *,
     summary: dict[str, Any],
@@ -3337,6 +3510,7 @@ def _finalize_rollout_outputs(
     video_fps: float,
     action_per_frame: int,
     write_fallback_timeline_video: bool,
+    startup_debug_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     output_stem = exact_sandbox._build_output_stem(
         root=output_dir,
@@ -3370,15 +3544,20 @@ def _finalize_rollout_outputs(
     replan_trace_path = output_stem.with_name(f"{output_stem.stem}_replans.jsonl")
     extension_trace_path = output_stem.with_name(f"{output_stem.stem}_extensions.jsonl")
     load_report_path = output_stem.with_name(f"{output_stem.stem}_load_report.json")
+    startup_debug_path = output_stem.with_name(f"{output_stem.stem}_startup_debug.json")
     summary["summary_path"] = str(summary_path.resolve())
     summary["action_trace_path"] = str(action_trace_path.resolve())
     summary["replan_trace_path"] = str(replan_trace_path.resolve())
     summary["extension_trace_path"] = str(extension_trace_path.resolve())
     summary["load_report_path"] = str(load_report_path.resolve())
+    if startup_debug_report is not None:
+        summary["startup_debug_path"] = str(startup_debug_path.resolve())
     exact_sandbox._write_jsonl(action_trace_path, action_records)
     exact_sandbox._write_jsonl(replan_trace_path, replan_records)
     exact_sandbox._write_jsonl(extension_trace_path, extension_records)
     load_report_path.write_text(json.dumps(component_report, indent=2), encoding="utf-8")
+    if startup_debug_report is not None:
+        startup_debug_path.write_text(json.dumps(startup_debug_report, indent=2), encoding="utf-8")
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
 
