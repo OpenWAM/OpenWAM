@@ -39,6 +39,7 @@ from open_wam.pipelines import LingbotExactRunner, VariantRolloutRunner, build_v
 from open_wam.utils import (  # noqa: E402
     load_experiment_config,
     merge_runtime_config_from_checkpoint,
+    resolve_transformer_dir_override,
     seed_everywhere,
     validate_positive_step_override,
 )
@@ -118,6 +119,26 @@ def main() -> None:
         default=None,
         help="Checkpoint file, checkpoint_step_* directory, or run directory. "
         "If omitted, exact/joint variants use `backbone.transformer_subdir`; sequence-style variants infer from that directory.",
+    )
+    parser.add_argument(
+        "--transformer-dir",
+        type=str,
+        default=None,
+        help=(
+            "Exact/joint exported-transformer override. This mirrors "
+            "scripts/run_libero_exact_visualization.py and intentionally does not merge "
+            "checkpoint resolved_config.yaml."
+        ),
+    )
+    parser.add_argument(
+        "--merge-checkpoint-runtime-config",
+        action="store_true",
+        help=(
+            "Opt into merging checkpoint resolved_config.yaml before rollout. "
+            "Exact/joint parallel-stream realtime rollouts skip this merge by default so "
+            "`--checkpoint` remains parity-compatible with exact visualization and only "
+            "uses the checkpoint to locate the exported transformer."
+        ),
     )
     parser.add_argument("--benchmark", type=str, default="libero_10")
     parser.add_argument("--task-id", type=int, default=1)
@@ -290,17 +311,37 @@ def main() -> None:
     if not config_path.is_absolute():
         config_path = (REPO_ROOT / config_path).resolve()
     config = load_experiment_config(config_path)
-    checkpoint_path = _resolve_checkpoint_path_for_config(config=config, checkpoint_arg=args.checkpoint)
-    config, checkpoint_runtime_config_path = merge_runtime_config_from_checkpoint(config, checkpoint_path)
-    if checkpoint_runtime_config_path is not None and VERBOSE:
-        print(
-            "[realtime_sandbox] merged checkpoint runtime config "
-            f"{checkpoint_runtime_config_path} into {config_path}",
-            file=sys.stderr,
+    if args.transformer_dir is not None:
+        if args.checkpoint is not None:
+            raise ValueError("--transformer-dir is an exact-runtime override and cannot be combined with --checkpoint.")
+        if not _is_exact_parallel_runtime(config):
+            raise ValueError("--transformer-dir is only supported for exact/joint parallel-stream realtime rollouts.")
+        checkpoint_path = None
+        object.__setattr__(
+            config.backbone,
+            "transformer_subdir",
+            str(resolve_transformer_dir_override(args.transformer_dir)),
         )
+        checkpoint_runtime_config_path = None
+    else:
+        checkpoint_path = _resolve_checkpoint_path_for_config(config=config, checkpoint_arg=args.checkpoint)
+        should_merge_checkpoint_runtime_config = (
+            bool(args.merge_checkpoint_runtime_config)
+            or not _is_exact_parallel_runtime(config)
+        )
+        if should_merge_checkpoint_runtime_config:
+            config, checkpoint_runtime_config_path = merge_runtime_config_from_checkpoint(config, checkpoint_path)
+            if checkpoint_runtime_config_path is not None and VERBOSE:
+                print(
+                    "[realtime_sandbox] merged checkpoint runtime config "
+                    f"{checkpoint_runtime_config_path} into {config_path}",
+                    file=sys.stderr,
+                )
+        else:
+            checkpoint_runtime_config_path = None
+        _apply_checkpoint_backbone_override(config, checkpoint_path=checkpoint_path)
     object.__setattr__(config.backbone, "reference_assets_device_policy", args.reference_assets_device_policy)
     video_viz._apply_rollout_chunk_steps_override(config, args.rollout_chunk_steps)
-    _apply_checkpoint_backbone_override(config, checkpoint_path=checkpoint_path)
 
     runtime_device = exact_viz._resolve_device(args.runtime_device)
     frontend_device = exact_viz._resolve_device(args.frontend_device, fallback=runtime_device)
@@ -1023,6 +1064,7 @@ def _run_exact_like_realtime_rollout(
         "fallback_history_policy": str(fallback_history_policy),
         "replan_low_watermark_actions": int(replan_low_watermark_actions),
         "periodic_replan_frames": int(replan_low_watermark_actions),
+        "startup_seed": int(seed),
     }
 
     task_spec, prompt = exact_viz._resolve_task_spec(benchmark, task_id)
@@ -1043,42 +1085,45 @@ def _run_exact_like_realtime_rollout(
         startup_debug_report: dict[str, Any] | None = None
         with torch.inference_mode():
             session = runner.reset(task_text=(prompt,))
-            startup_prepare_t0 = time.perf_counter()
-            initial_inputs = exact_viz._prepare_exact_runtime_inputs(
-                runner,
-                views=exact_viz._obs_list_to_views([first_obs], config=config, device=frontend_device),
-                task_text=(prompt,),
-                frontend_device=frontend_device,
-                runtime_device=runtime_device,
-            )
-            exact_sandbox._synchronize_devices(frontend_device, runtime_device)
-            startup_prepare_s = time.perf_counter() - startup_prepare_t0
-
-            rng_before_startup_infer = _debug_rng_state()
-            startup_infer_t0 = time.perf_counter()
-            first_chunk = runner.infer_chunk(
-                session=session,
-                video_latents=initial_inputs["video_latents"],
-                text_context=initial_inputs["text_context"],
-                negative_text_context=initial_inputs["negative_text_context"],
-            )
-            exact_sandbox._synchronize_devices(runtime_device)
-            startup_infer_s = time.perf_counter() - startup_infer_t0
-            if debug_startup_dump:
-                startup_debug_report = _build_exact_startup_debug_report(
-                    first_obs=first_obs,
-                    initial_inputs=initial_inputs,
-                    session=session,
-                    first_chunk=first_chunk,
-                    config=config,
-                    prompt=prompt,
-                    seed=seed,
-                    runtime_device=runtime_device,
+            # Match scripts/run_libero_exact_visualization.py, which seeds
+            # immediately before each chunk instead of only at process start.
+            with exact_sandbox._isolated_torch_rng(seed, frontend_device, runtime_device):
+                startup_prepare_t0 = time.perf_counter()
+                initial_inputs = exact_viz._prepare_exact_runtime_inputs(
+                    runner,
+                    views=exact_viz._obs_list_to_views([first_obs], config=config, device=frontend_device),
+                    task_text=(prompt,),
                     frontend_device=frontend_device,
-                    decode_device=decode_device,
-                    rng_before_startup_infer=rng_before_startup_infer,
-                    rng_after_startup_infer=_debug_rng_state(),
+                    runtime_device=runtime_device,
                 )
+                exact_sandbox._synchronize_devices(frontend_device, runtime_device)
+                startup_prepare_s = time.perf_counter() - startup_prepare_t0
+
+                rng_before_startup_infer = _debug_rng_state()
+                startup_infer_t0 = time.perf_counter()
+                first_chunk = runner.infer_chunk(
+                    session=session,
+                    video_latents=initial_inputs["video_latents"],
+                    text_context=initial_inputs["text_context"],
+                    negative_text_context=initial_inputs["negative_text_context"],
+                )
+                exact_sandbox._synchronize_devices(runtime_device)
+                startup_infer_s = time.perf_counter() - startup_infer_t0
+                if debug_startup_dump:
+                    startup_debug_report = _build_exact_startup_debug_report(
+                        first_obs=first_obs,
+                        initial_inputs=initial_inputs,
+                        session=session,
+                        first_chunk=first_chunk,
+                        config=config,
+                        prompt=prompt,
+                        seed=seed,
+                        runtime_device=runtime_device,
+                        frontend_device=frontend_device,
+                        decode_device=decode_device,
+                        rng_before_startup_infer=rng_before_startup_infer,
+                        rng_after_startup_infer=_debug_rng_state(),
+                    )
 
         history_base_session, current_chunk_session, buffer_tail_session = exact_sandbox._resolve_exact_startup_sessions(
             config=config,
