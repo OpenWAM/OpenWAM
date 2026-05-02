@@ -179,6 +179,60 @@ def test_sample_episodes_by_task_distribution_is_deterministic() -> None:
     assert first_allocations == second_allocations
 
 
+def test_parse_int_selector_supports_lists_and_half_open_ranges() -> None:
+    assert sampled_eval.parse_int_selector("0,2:5,4,8:12:2") == [0, 2, 3, 4, 8, 10]
+
+
+def test_select_task_episode_axis_matches_upstream_task_ids() -> None:
+    episodes = [
+        sampled_eval.DatasetEpisode(
+            dataset_episode_index=250 + index,
+            task_text="tomato",
+            task_index=5,
+            task_id=0,
+            task_name="task_0_tomato",
+            episode_idx=index,
+            length=10,
+        )
+        for index in range(3)
+    ] + [
+        sampled_eval.DatasetEpisode(
+            dataset_episode_index=50 + index,
+            task_text="black bowl",
+            task_index=1,
+            task_id=3,
+            task_name="task_3_black_bowl",
+            episode_idx=index,
+            length=10,
+        )
+        for index in range(3)
+    ]
+
+    selected, allocations = sampled_eval.select_task_episode_axis(
+        episodes,
+        count=2,
+        task_ids="0",
+        episode_indices=None,
+    )
+
+    assert [(episode.task_id, episode.episode_idx, episode.dataset_episode_index) for episode in selected] == [
+        (0, 0, 250),
+        (0, 1, 251),
+    ]
+    assert allocations == {"tomato": 2}
+
+
+def test_select_sampled_episodes_rejects_task_axis_options_in_distribution_mode() -> None:
+    with pytest.raises(ValueError, match="require --sample-mode task_episode_axis"):
+        sampled_eval.select_sampled_episodes(
+            [],
+            mode="dataset_distribution",
+            count=1,
+            seed=0,
+            task_ids="0",
+        )
+
+
 def test_parse_target_requests_accepts_method_key_label_and_checkpoint() -> None:
     targets = sampled_eval.parse_target_requests(
         [
@@ -279,6 +333,35 @@ def test_build_cases_uses_method_config_scheduler_and_device_templates() -> None
     assert command[command.index("--reference-assets-device-policy") + 1] == "cpu_offload"
     assert command[command.index("--runtime-devices") + 1] == "{device}"
     assert command[command.index("--startup-open-loop-chunks") + 1] == "1"
+
+
+def test_build_child_env_preserves_ld_library_path_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/local/lib")
+    args = argparse.Namespace(
+        local_paths=Path("configs/local_paths.yaml"),
+        libero_repo_root=Path("/data/lingbot_data_exp/LIBERO"),
+        mujoco_gl="egl",
+        clear_ld_library_path=False,
+    )
+
+    env = sampled_eval.build_child_env(args)
+
+    assert env["LD_LIBRARY_PATH"] == "/usr/local/lib"
+    assert env["PYOPENGL_PLATFORM"] == "egl"
+
+
+def test_build_child_env_can_clear_ld_library_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/local/lib")
+    args = argparse.Namespace(
+        local_paths=Path("configs/local_paths.yaml"),
+        libero_repo_root=Path("/data/lingbot_data_exp/LIBERO"),
+        mujoco_gl="egl",
+        clear_ld_library_path=True,
+    )
+
+    env = sampled_eval.build_child_env(args)
+
+    assert "LD_LIBRARY_PATH" not in env
 
 
 def test_results_csv_uses_dynamic_target_columns(tmp_path: Path) -> None:

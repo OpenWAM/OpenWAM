@@ -225,6 +225,34 @@ def main() -> None:
     parser.add_argument("--num-episodes", type=int, default=50)
     parser.add_argument("--sample-seed", type=int, default=0)
     parser.add_argument(
+        "--sample-mode",
+        choices=("dataset_distribution", "task_episode_axis"),
+        default="dataset_distribution",
+        help=(
+            "`dataset_distribution` samples LeRobot episodes proportionally by dataset task distribution. "
+            "`task_episode_axis` selects explicit upstream LIBERO task ids and per-task episode indices, "
+            "which is the mode for #77-style task-0 parity checks."
+        ),
+    )
+    parser.add_argument(
+        "--task-ids",
+        type=str,
+        default=None,
+        help=(
+            "Task selector for --sample-mode task_episode_axis. Supports comma-separated ids and "
+            "Python-style half-open ranges, e.g. `0`, `0,2,5`, or `0:10`."
+        ),
+    )
+    parser.add_argument(
+        "--episode-indices",
+        type=str,
+        default=None,
+        help=(
+            "Per-task episode selector for --sample-mode task_episode_axis. Supports comma-separated ids "
+            "and Python-style half-open ranges. Defaults to `0:<num-episodes>`."
+        ),
+    )
+    parser.add_argument(
         "--task-id-source",
         choices=("auto", "libero", "metadata"),
         default="auto",
@@ -294,6 +322,14 @@ def main() -> None:
         help="Optional reference-asset placement override. Omit to use the method default.",
     )
     parser.add_argument("--mujoco-gl", type=str, default="osmesa")
+    parser.add_argument(
+        "--clear-ld-library-path",
+        action="store_true",
+        help=(
+            "Remove LD_LIBRARY_PATH from rollout child processes. Disabled by default because LIBERO / MuJoCo "
+            "parity runs may depend on the shell-provided graphics/runtime library path."
+        ),
+    )
     parser.add_argument("--write-fallback-timeline-video", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--collect", type=Path, default=None, help="Collect an existing run directory and exit.")
     parser.add_argument("--fail-fast", action="store_true")
@@ -354,10 +390,13 @@ def main() -> None:
             task_text_to_task_id=task_id_map,
             task_text_to_task_name=task_name_map,
         )
-        sampled_episodes, sample_allocations = sample_episodes_by_task_distribution(
+        sampled_episodes, sample_allocations = select_sampled_episodes(
             dataset_episodes,
+            mode=args.sample_mode,
             count=args.num_episodes,
             seed=args.sample_seed,
+            task_ids=args.task_ids,
+            episode_indices=args.episode_indices,
         )
 
     cases = build_cases(
@@ -379,7 +418,10 @@ def main() -> None:
             {
                 "dataset_root": str(args.dataset_root),
                 "num_episodes": args.num_episodes,
+                "sample_mode": args.sample_mode,
                 "sample_seed": args.sample_seed,
+                "task_ids": args.task_ids,
+                "episode_indices": args.episode_indices,
                 "task_allocations": sample_allocations,
                 "episodes": [asdict(episode) for episode in sampled_episodes],
             },
@@ -400,8 +442,12 @@ def main() -> None:
         "repo_root": str(REPO_ROOT),
         "dataset_root": str(args.dataset_root),
         "benchmark": args.benchmark,
-        "num_sampled_episodes": args.num_episodes,
+        "num_sampled_episodes": len(sampled_episodes),
+        "requested_num_episodes": args.num_episodes,
+        "sample_mode": args.sample_mode,
         "sample_seed": args.sample_seed,
+        "task_ids": args.task_ids,
+        "episode_indices": args.episode_indices,
         "output_root": str(output_root),
         "log_root": str(log_root),
         "cases_path": str(cases_path),
@@ -680,6 +726,94 @@ def resolve_task_ids(
                 os.environ.pop("LIBERO_REPO_ROOT", None)
             else:
                 os.environ["LIBERO_REPO_ROOT"] = old_libero_repo_root
+
+
+def select_sampled_episodes(
+    episodes: list[DatasetEpisode],
+    *,
+    mode: str,
+    count: int,
+    seed: int,
+    task_ids: str | None = None,
+    episode_indices: str | None = None,
+) -> tuple[list[DatasetEpisode], dict[str, int]]:
+    if mode == "dataset_distribution":
+        if task_ids is not None or episode_indices is not None:
+            raise ValueError("--task-ids/--episode-indices require --sample-mode task_episode_axis.")
+        return sample_episodes_by_task_distribution(episodes, count=count, seed=seed)
+    if mode == "task_episode_axis":
+        return select_task_episode_axis(
+            episodes,
+            count=count,
+            task_ids=task_ids,
+            episode_indices=episode_indices,
+        )
+    raise ValueError(f"Unsupported sample mode: {mode!r}")
+
+
+def select_task_episode_axis(
+    episodes: list[DatasetEpisode],
+    *,
+    count: int,
+    task_ids: str | None,
+    episode_indices: str | None,
+) -> tuple[list[DatasetEpisode], dict[str, int]]:
+    selected_task_ids = parse_int_selector(task_ids or "0")
+    if not selected_task_ids:
+        raise ValueError("--task-ids did not select any task ids.")
+    selected_episode_indices = parse_int_selector(episode_indices or f"0:{count}")
+    if not selected_episode_indices:
+        raise ValueError("--episode-indices did not select any episode indices.")
+
+    by_key = {(int(episode.task_id), int(episode.episode_idx)): episode for episode in episodes}
+    selected: list[DatasetEpisode] = []
+    missing: list[str] = []
+    for task_id in selected_task_ids:
+        for episode_idx in selected_episode_indices:
+            episode = by_key.get((int(task_id), int(episode_idx)))
+            if episode is None:
+                missing.append(f"task_id={task_id},episode_idx={episode_idx}")
+                continue
+            selected.append(episode)
+    if missing:
+        preview = ", ".join(missing[:10])
+        suffix = "" if len(missing) <= 10 else f", ... ({len(missing)} missing total)"
+        raise ValueError(f"Requested LIBERO task/episode pairs are not present in dataset metadata: {preview}{suffix}")
+
+    allocations: dict[str, int] = defaultdict(int)
+    for episode in selected:
+        allocations[episode.task_text] += 1
+    selected.sort(key=lambda item: (item.task_id, item.episode_idx, item.dataset_episode_index))
+    return selected, dict(allocations)
+
+
+def parse_int_selector(value: str) -> list[int]:
+    selected: list[int] = []
+    seen: set[int] = set()
+    for raw_piece in value.split(","):
+        piece = raw_piece.strip()
+        if not piece:
+            continue
+        if ":" in piece:
+            parts = piece.split(":")
+            if len(parts) not in {2, 3}:
+                raise ValueError(f"Invalid integer range selector {piece!r}.")
+            start = int(parts[0]) if parts[0] else 0
+            stop = int(parts[1])
+            step = int(parts[2]) if len(parts) == 3 and parts[2] else 1
+            if step == 0:
+                raise ValueError(f"Invalid integer range selector {piece!r}: step cannot be zero.")
+            values = range(start, stop, step)
+        else:
+            values = (int(piece),)
+        for item in values:
+            if item < 0:
+                raise ValueError(f"Negative indices are not supported: {item}")
+            if item in seen:
+                continue
+            seen.add(item)
+            selected.append(item)
+    return selected
 
 
 def sample_episodes_by_task_distribution(
@@ -1137,19 +1271,22 @@ def run_case(
         return
 
     command = [part.replace("{device}", device) for part in case.command_template]
-    env = os.environ.copy()
-    env.pop("LD_LIBRARY_PATH", None)
-    local_paths = args.local_paths if args.local_paths.is_absolute() else REPO_ROOT / args.local_paths
-    env["OPEN_WAM_LOCAL_PATHS"] = str(local_paths)
-    env["LIBERO_REPO_ROOT"] = str(args.libero_repo_root)
-    env["MUJOCO_GL"] = args.mujoco_gl
-    env["PYTHONUNBUFFERED"] = "1"
-    env.setdefault("WANDB_MODE", "disabled")
+    env = build_child_env(args)
 
     write_case_status(status_path, state="running", returncode=None, case=case, device=device, log_path=log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("w", encoding="utf-8") as log:
-        log.write(json.dumps({"event": "sampled_eval_case_start", "case": asdict(case), "device": device}, indent=2))
+        log.write(
+            json.dumps(
+                {
+                    "event": "sampled_eval_case_start",
+                    "case": asdict(case),
+                    "device": device,
+                    "child_env": child_env_report(env, clear_ld_library_path=bool(args.clear_ld_library_path)),
+                },
+                indent=2,
+            )
+        )
         log.write("\n")
         log.flush()
         completed = subprocess.run(command, cwd=REPO_ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
@@ -1161,6 +1298,32 @@ def run_case(
         device=device,
         log_path=log_path,
     )
+
+
+def build_child_env(args: argparse.Namespace) -> dict[str, str]:
+    env = os.environ.copy()
+    if getattr(args, "clear_ld_library_path", False):
+        env.pop("LD_LIBRARY_PATH", None)
+    local_paths = args.local_paths if args.local_paths.is_absolute() else REPO_ROOT / args.local_paths
+    env["OPEN_WAM_LOCAL_PATHS"] = str(local_paths)
+    env["LIBERO_REPO_ROOT"] = str(args.libero_repo_root)
+    env["MUJOCO_GL"] = args.mujoco_gl
+    env["PYTHONUNBUFFERED"] = "1"
+    env.setdefault("PYOPENGL_PLATFORM", "egl" if args.mujoco_gl == "egl" else args.mujoco_gl)
+    env.setdefault("WANDB_MODE", "disabled")
+    return env
+
+
+def child_env_report(env: dict[str, str], *, clear_ld_library_path: bool) -> dict[str, str | bool | None]:
+    return {
+        "clear_ld_library_path": clear_ld_library_path,
+        "ld_library_path": env.get("LD_LIBRARY_PATH"),
+        "mujoco_gl": env.get("MUJOCO_GL"),
+        "pyopengl_platform": env.get("PYOPENGL_PLATFORM"),
+        "open_wam_local_paths": env.get("OPEN_WAM_LOCAL_PATHS"),
+        "libero_repo_root": env.get("LIBERO_REPO_ROOT"),
+        "wandb_mode": env.get("WANDB_MODE"),
+    }
 
 
 def write_case_status(
@@ -1279,7 +1442,9 @@ def build_summary_payload(manifest: dict[str, Any], reports: list[dict[str, Any]
         "log_root": manifest["log_root"],
         "dataset_root": manifest["dataset_root"],
         "benchmark": manifest.get("benchmark"),
+        "sample_mode": manifest.get("sample_mode", "dataset_distribution"),
         "num_sampled_episodes": manifest["num_sampled_episodes"],
+        "requested_num_episodes": manifest.get("requested_num_episodes", manifest["num_sampled_episodes"]),
         "task_allocations": manifest.get("task_allocations", {}),
         "target_keys": target_keys,
         "checkpoint_specs": manifest.get("checkpoint_specs", []),
@@ -1356,6 +1521,7 @@ def write_summary_md(path: Path, summary: dict[str, Any]) -> None:
         "",
         f"Run ID: `{summary['run_id']}`",
         f"Benchmark: `{summary.get('benchmark')}`",
+        f"Sample mode: `{summary.get('sample_mode', 'dataset_distribution')}`",
         f"Dataset root: `{summary['dataset_root']}`",
         f"Output root: `{summary['output_root']}`",
         f"Log root: `{summary['log_root']}`",
@@ -1440,6 +1606,7 @@ def write_status_note(path: Path, *, manifest: dict[str, Any], cases: list[EvalC
         f"Run ID: `{manifest['run_id']}`",
         f"Generated UTC: `{manifest['generated_at_utc']}`",
         f"Benchmark: `{manifest['benchmark']}`",
+        f"Sample mode: `{manifest.get('sample_mode', 'dataset_distribution')}`",
         f"Task id source: `{manifest.get('task_id_source', 'unknown')}`",
         f"Dataset root: `{manifest['dataset_root']}`",
         f"Output root: `{manifest['output_root']}`",
