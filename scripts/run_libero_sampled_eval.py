@@ -235,6 +235,17 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--distribution-episode-strategy",
+        choices=("first", "random", "evenly_spaced"),
+        default="first",
+        help=(
+            "How --sample-mode dataset_distribution chooses task-local episode/init-state indices after "
+            "proportional task allocation. `first` selects episode_idx 0..k-1 per task and is the default "
+            "because it generalizes the #77 task-axis parity protocol. `random` preserves the old "
+            "seed-based behavior. `evenly_spaced` covers the available task-local episode range."
+        ),
+    )
+    parser.add_argument(
         "--task-ids",
         type=str,
         default=None,
@@ -383,6 +394,7 @@ def main() -> None:
             benchmark=args.benchmark,
             mode=args.task_id_source,
             libero_repo_root=args.libero_repo_root,
+            local_paths=args.local_paths,
         )
         dataset_episodes = build_dataset_episodes(
             metadata["episodes"],
@@ -397,7 +409,14 @@ def main() -> None:
             seed=args.sample_seed,
             task_ids=args.task_ids,
             episode_indices=args.episode_indices,
+            distribution_episode_strategy=args.distribution_episode_strategy,
         )
+    sample_warnings = build_sample_warnings(
+        mode=args.sample_mode,
+        requested_count=args.num_episodes,
+        task_allocations=sample_allocations,
+        distribution_episode_strategy=args.distribution_episode_strategy,
+    )
 
     cases = build_cases(
         sampled_episodes,
@@ -420,9 +439,11 @@ def main() -> None:
                 "num_episodes": args.num_episodes,
                 "sample_mode": args.sample_mode,
                 "sample_seed": args.sample_seed,
+                "distribution_episode_strategy": args.distribution_episode_strategy,
                 "task_ids": args.task_ids,
                 "episode_indices": args.episode_indices,
                 "task_allocations": sample_allocations,
+                "sample_warnings": sample_warnings,
                 "episodes": [asdict(episode) for episode in sampled_episodes],
             },
             indent=2,
@@ -446,6 +467,7 @@ def main() -> None:
         "requested_num_episodes": args.num_episodes,
         "sample_mode": args.sample_mode,
         "sample_seed": args.sample_seed,
+        "distribution_episode_strategy": args.distribution_episode_strategy,
         "task_ids": args.task_ids,
         "episode_indices": args.episode_indices,
         "output_root": str(output_root),
@@ -460,6 +482,7 @@ def main() -> None:
         "checkpoint_specs": [asdict(spec) for spec in checkpoint_specs],
         "task_allocations": sample_allocations,
         "task_resolution_warnings": task_resolution_warnings,
+        "sample_warnings": sample_warnings,
         "missing": missing,
         "execute": bool(args.execute),
     }
@@ -671,6 +694,7 @@ def resolve_task_ids(
     benchmark: str,
     mode: str,
     libero_repo_root: Path | None = None,
+    local_paths: Path | None = None,
 ) -> tuple[dict[str, int], dict[str, str | None], list[str]]:
     if mode not in {"auto", "libero", "metadata"}:
         raise ValueError(f"Unsupported task id source: {mode}")
@@ -686,9 +710,14 @@ def resolve_task_ids(
         )
 
     old_libero_repo_root = os.environ.get("LIBERO_REPO_ROOT")
+    old_local_paths = os.environ.get("OPEN_WAM_LOCAL_PATHS")
     override_libero_repo_root = libero_repo_root is not None
+    override_local_paths = local_paths is not None
     if override_libero_repo_root:
         os.environ["LIBERO_REPO_ROOT"] = str(libero_repo_root)
+    if override_local_paths:
+        resolved_local_paths = local_paths if local_paths.is_absolute() else REPO_ROOT / local_paths
+        os.environ["OPEN_WAM_LOCAL_PATHS"] = str(resolved_local_paths)
 
     try:
         try:
@@ -726,6 +755,11 @@ def resolve_task_ids(
                 os.environ.pop("LIBERO_REPO_ROOT", None)
             else:
                 os.environ["LIBERO_REPO_ROOT"] = old_libero_repo_root
+        if override_local_paths:
+            if old_local_paths is None:
+                os.environ.pop("OPEN_WAM_LOCAL_PATHS", None)
+            else:
+                os.environ["OPEN_WAM_LOCAL_PATHS"] = old_local_paths
 
 
 def select_sampled_episodes(
@@ -736,11 +770,17 @@ def select_sampled_episodes(
     seed: int,
     task_ids: str | None = None,
     episode_indices: str | None = None,
+    distribution_episode_strategy: str = "first",
 ) -> tuple[list[DatasetEpisode], dict[str, int]]:
     if mode == "dataset_distribution":
         if task_ids is not None or episode_indices is not None:
             raise ValueError("--task-ids/--episode-indices require --sample-mode task_episode_axis.")
-        return sample_episodes_by_task_distribution(episodes, count=count, seed=seed)
+        return sample_episodes_by_task_distribution(
+            episodes,
+            count=count,
+            seed=seed,
+            episode_strategy=distribution_episode_strategy,
+        )
     if mode == "task_episode_axis":
         return select_task_episode_axis(
             episodes,
@@ -821,9 +861,12 @@ def sample_episodes_by_task_distribution(
     *,
     count: int,
     seed: int,
+    episode_strategy: str = "first",
 ) -> tuple[list[DatasetEpisode], dict[str, int]]:
     if count > len(episodes):
         raise ValueError(f"Cannot sample {count} episodes without replacement from only {len(episodes)} episodes.")
+    if episode_strategy not in {"first", "random", "evenly_spaced"}:
+        raise ValueError(f"Unsupported dataset distribution episode strategy: {episode_strategy!r}")
 
     by_task: dict[str, list[DatasetEpisode]] = defaultdict(list)
     for episode in episodes:
@@ -831,22 +874,66 @@ def sample_episodes_by_task_distribution(
     for task_episodes in by_task.values():
         task_episodes.sort(key=lambda item: item.dataset_episode_index)
 
+    task_order = sorted(by_task, key=lambda text: (by_task[text][0].task_id, text))
     allocations = allocate_proportional_counts(
         {task_text: len(task_episodes) for task_text, task_episodes in by_task.items()},
         total=count,
+        tie_break_order=task_order,
     )
     rng = random.Random(seed)
     selected: list[DatasetEpisode] = []
-    for task_text in sorted(by_task, key=lambda text: (by_task[text][0].task_id, text)):
+    for task_text in task_order:
         task_count = allocations[task_text]
         if task_count <= 0:
             continue
-        selected.extend(sorted(rng.sample(by_task[task_text], task_count), key=lambda item: item.episode_idx))
+        selected.extend(
+            select_distribution_task_episodes(
+                by_task[task_text],
+                count=task_count,
+                strategy=episode_strategy,
+                rng=rng,
+            )
+        )
     selected.sort(key=lambda item: (item.task_id, item.episode_idx, item.dataset_episode_index))
     return selected, allocations
 
 
-def allocate_proportional_counts(group_sizes: dict[str, int], *, total: int) -> dict[str, int]:
+def select_distribution_task_episodes(
+    episodes: list[DatasetEpisode],
+    *,
+    count: int,
+    strategy: str,
+    rng: random.Random,
+) -> list[DatasetEpisode]:
+    if count > len(episodes):
+        raise ValueError(f"Cannot select {count} task episodes from only {len(episodes)} candidates.")
+    if strategy == "first":
+        return list(episodes[:count])
+    if strategy == "random":
+        return sorted(rng.sample(episodes, count), key=lambda item: item.episode_idx)
+    if strategy == "evenly_spaced":
+        return [episodes[index] for index in evenly_spaced_indices(len(episodes), count)]
+    raise ValueError(f"Unsupported dataset distribution episode strategy: {strategy!r}")
+
+
+def evenly_spaced_indices(population: int, count: int) -> list[int]:
+    if count < 0:
+        raise ValueError("count must be non-negative.")
+    if count > population:
+        raise ValueError("count cannot exceed population.")
+    if count == 0:
+        return []
+    if count == 1:
+        return [0]
+    return sorted({round(index * (population - 1) / (count - 1)) for index in range(count)})
+
+
+def allocate_proportional_counts(
+    group_sizes: dict[str, int],
+    *,
+    total: int,
+    tie_break_order: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, int]:
     if total < 0:
         raise ValueError("total must be non-negative.")
     if total > sum(group_sizes.values()):
@@ -861,9 +948,11 @@ def allocate_proportional_counts(group_sizes: dict[str, int], *, total: int) -> 
     ideals = {key: (total * size / population) for key, size in usable.items()}
     allocations = {key: min(int(math.floor(ideal)), usable[key]) for key, ideal in ideals.items()}
     remaining = total - sum(allocations.values())
+    ordered_keys = tuple(tie_break_order) if tie_break_order is not None else tuple(group_sizes)
+    tie_rank = {key: index for index, key in enumerate(ordered_keys)}
 
-    def priority(key: str) -> tuple[float, int, str]:
-        return (ideals[key] - math.floor(ideals[key]), usable[key], key)
+    def priority(key: str) -> tuple[float, int, int]:
+        return (ideals[key] - math.floor(ideals[key]), usable[key], -tie_rank.get(key, len(tie_rank)))
 
     while remaining > 0:
         candidates = [key for key in usable if allocations[key] < usable[key]]
@@ -876,6 +965,32 @@ def allocate_proportional_counts(group_sizes: dict[str, int], *, total: int) -> 
             remaining -= 1
 
     return {key: allocations.get(key, 0) for key in group_sizes}
+
+
+def build_sample_warnings(
+    *,
+    mode: str,
+    requested_count: int,
+    task_allocations: dict[str, int],
+    distribution_episode_strategy: str,
+) -> list[str]:
+    if mode != "dataset_distribution" or not task_allocations:
+        return []
+    warnings: list[str] = []
+    task_count = len(task_allocations)
+    covered_task_count = sum(1 for count in task_allocations.values() if count > 0)
+    if requested_count < task_count:
+        warnings.append(
+            f"Requested {requested_count} sampled episodes across {task_count} tasks; only "
+            f"{covered_task_count} tasks are covered. Increase --num-episodes to at least {task_count} "
+            "for a cross-task smoke run."
+        )
+    if distribution_episode_strategy == "random":
+        warnings.append(
+            "`--distribution-episode-strategy random` samples arbitrary task-local init states and is "
+            "not directly comparable to #77-style episode_idx prefix parity runs."
+        )
+    return warnings
 
 
 def build_cases(
@@ -1443,9 +1558,11 @@ def build_summary_payload(manifest: dict[str, Any], reports: list[dict[str, Any]
         "dataset_root": manifest["dataset_root"],
         "benchmark": manifest.get("benchmark"),
         "sample_mode": manifest.get("sample_mode", "dataset_distribution"),
+        "distribution_episode_strategy": manifest.get("distribution_episode_strategy"),
         "num_sampled_episodes": manifest["num_sampled_episodes"],
         "requested_num_episodes": manifest.get("requested_num_episodes", manifest["num_sampled_episodes"]),
         "task_allocations": manifest.get("task_allocations", {}),
+        "sample_warnings": manifest.get("sample_warnings", []),
         "target_keys": target_keys,
         "checkpoint_specs": manifest.get("checkpoint_specs", []),
         "by_checkpoint": by_checkpoint,
@@ -1522,15 +1639,25 @@ def write_summary_md(path: Path, summary: dict[str, Any]) -> None:
         f"Run ID: `{summary['run_id']}`",
         f"Benchmark: `{summary.get('benchmark')}`",
         f"Sample mode: `{summary.get('sample_mode', 'dataset_distribution')}`",
+        f"Distribution episode strategy: `{summary.get('distribution_episode_strategy') or 'n/a'}`",
         f"Dataset root: `{summary['dataset_root']}`",
         f"Output root: `{summary['output_root']}`",
         f"Log root: `{summary['log_root']}`",
         "",
+    ]
+    sample_warnings = summary.get("sample_warnings") or []
+    if sample_warnings:
+        lines.extend(["## Sample Warnings", ""])
+        lines.extend([f"- {warning}" for warning in sample_warnings])
+        lines.append("")
+    lines.extend(
+        [
         "## Aggregate",
         "",
         "| Target | Method | Success rate | Success | Finished | Total | Failed processes |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
-    ]
+        ]
+    )
     for key in summary["target_keys"]:
         payload = summary["by_checkpoint"].get(key)
         if payload is None:
@@ -1607,15 +1734,20 @@ def write_status_note(path: Path, *, manifest: dict[str, Any], cases: list[EvalC
         f"Generated UTC: `{manifest['generated_at_utc']}`",
         f"Benchmark: `{manifest['benchmark']}`",
         f"Sample mode: `{manifest.get('sample_mode', 'dataset_distribution')}`",
+        f"Distribution episode strategy: `{manifest.get('distribution_episode_strategy') or 'n/a'}`",
         f"Task id source: `{manifest.get('task_id_source', 'unknown')}`",
         f"Dataset root: `{manifest['dataset_root']}`",
         f"Output root: `{manifest['output_root']}`",
         f"Cases: `{len(cases)}`",
         f"Scheduler profile: `{manifest['scheduler_profile']}`",
         "",
-        "## Targets",
-        "",
     ]
+    sample_warnings = manifest.get("sample_warnings") or []
+    if sample_warnings:
+        lines.extend(["## Sample Warnings", ""])
+        lines.extend([f"- {warning}" for warning in sample_warnings])
+        lines.append("")
+    lines.extend(["## Targets", ""])
     for spec in manifest["checkpoint_specs"]:
         transformer = spec.get("runtime_transformer_dir") or spec.get("preflight_problem") or "missing"
         lines.append(

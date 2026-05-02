@@ -155,6 +155,36 @@ def test_resolve_task_ids_libero_repo_root_overrides_stale_environment(monkeypat
     assert os.environ["LIBERO_REPO_ROOT"] == "/stale/libero"
 
 
+def test_resolve_task_ids_local_paths_overrides_stale_environment(monkeypatch, tmp_path: Path) -> None:
+    calls: list[str | None] = []
+    fake_module = types.ModuleType("open_wam.integrations.libero_env")
+
+    def fake_resolve_libero_task(task_text, project_root, *, benchmark_name=None):
+        del task_text, project_root, benchmark_name
+        calls.append(os.environ.get("OPEN_WAM_LOCAL_PATHS"))
+        return SimpleNamespace(
+            benchmark_name="libero_10",
+            task_id=2,
+            task_name="KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it",
+        )
+
+    fake_module.resolve_libero_task = fake_resolve_libero_task
+    monkeypatch.setitem(sys.modules, "open_wam.integrations.libero_env", fake_module)
+    monkeypatch.setenv("OPEN_WAM_LOCAL_PATHS", "/stale/local_paths.yaml")
+
+    local_paths = tmp_path / "local_paths.yaml"
+    task_ids, _, _ = sampled_eval.resolve_task_ids(
+        {"turn on the stove and put the moka pot on it": 0},
+        benchmark="libero_10",
+        mode="auto",
+        local_paths=local_paths,
+    )
+
+    assert task_ids == {"turn on the stove and put the moka pot on it": 2}
+    assert calls == [str(local_paths)]
+    assert os.environ["OPEN_WAM_LOCAL_PATHS"] == "/stale/local_paths.yaml"
+
+
 def test_sample_episodes_by_task_distribution_is_deterministic() -> None:
     episodes = [
         sampled_eval.DatasetEpisode(
@@ -173,10 +203,74 @@ def test_sample_episodes_by_task_distribution_is_deterministic() -> None:
     second, second_allocations = sampled_eval.sample_episodes_by_task_distribution(episodes, count=6, seed=123)
 
     assert first_allocations == {"task 0": 2, "task 1": 2, "task 2": 2}
-    assert [episode.dataset_episode_index for episode in first] == [
-        episode.dataset_episode_index for episode in second
-    ]
+    assert [episode.dataset_episode_index for episode in first] == [0, 1, 10, 11, 20, 21]
+    assert [episode.dataset_episode_index for episode in first] == [episode.dataset_episode_index for episode in second]
     assert first_allocations == second_allocations
+
+
+def test_sample_episodes_by_task_distribution_random_strategy_preserves_seeded_sampling() -> None:
+    episodes = [
+        sampled_eval.DatasetEpisode(
+            dataset_episode_index=index,
+            task_text=f"task {index // 10}",
+            task_index=index // 10,
+            task_id=index // 10,
+            task_name=None,
+            episode_idx=index % 10,
+            length=10,
+        )
+        for index in range(30)
+    ]
+
+    selected, allocations = sampled_eval.sample_episodes_by_task_distribution(
+        episodes,
+        count=6,
+        seed=123,
+        episode_strategy="random",
+    )
+
+    assert allocations == {"task 0": 2, "task 1": 2, "task 2": 2}
+    assert [episode.dataset_episode_index for episode in selected] == [0, 4, 11, 16, 21, 24]
+
+
+def test_sample_episodes_by_task_distribution_uses_upstream_task_id_tie_breaks() -> None:
+    episodes = []
+    task_specs = [
+        ("metadata task 0", 2),
+        ("metadata task 1", 0),
+        ("metadata task 2", 1),
+    ]
+    for dataset_index, (task_text, task_id) in enumerate(task_specs):
+        episodes.append(
+            sampled_eval.DatasetEpisode(
+                dataset_episode_index=dataset_index,
+                task_text=task_text,
+                task_index=dataset_index,
+                task_id=task_id,
+                task_name=None,
+                episode_idx=0,
+                length=10,
+            )
+        )
+
+    selected, allocations = sampled_eval.sample_episodes_by_task_distribution(episodes, count=2, seed=0)
+
+    assert allocations == {"metadata task 0": 0, "metadata task 1": 1, "metadata task 2": 1}
+    assert [(episode.task_id, episode.dataset_episode_index) for episode in selected] == [(0, 1), (1, 2)]
+
+
+def test_sample_warnings_flag_undercovered_dataset_distribution() -> None:
+    warnings = sampled_eval.build_sample_warnings(
+        mode="dataset_distribution",
+        requested_count=5,
+        task_allocations={f"task {index}": 1 if index < 5 else 0 for index in range(10)},
+        distribution_episode_strategy="first",
+    )
+
+    assert warnings == [
+        "Requested 5 sampled episodes across 10 tasks; only 5 tasks are covered. "
+        "Increase --num-episodes to at least 10 for a cross-task smoke run."
+    ]
 
 
 def test_parse_int_selector_supports_lists_and_half_open_ranges() -> None:
