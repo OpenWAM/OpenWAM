@@ -3,8 +3,13 @@ from __future__ import annotations
 import argparse
 import csv
 import importlib.util
+import os
 from pathlib import Path
 import sys
+import types
+from types import SimpleNamespace
+
+import pytest
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "run_libero_sampled_eval.py"
@@ -53,6 +58,101 @@ def test_build_dataset_episodes_uses_task_local_rank() -> None:
         (3, 8, 1),
         (4, 7, 2),
     ]
+
+
+def test_resolve_task_ids_uses_requested_benchmark(monkeypatch) -> None:
+    calls: list[tuple[str, str | None]] = []
+    fake_module = types.ModuleType("open_wam.integrations.libero_env")
+
+    def fake_resolve_libero_task(task_text, project_root, *, benchmark_name=None):
+        del project_root
+        calls.append((task_text, benchmark_name))
+        return SimpleNamespace(
+            benchmark_name=benchmark_name,
+            task_id=5,
+            task_name="STUDY_SCENE2_pick_up_the_book_and_place_it_in_the_back_compartment_of_the_caddy",
+        )
+
+    fake_module.resolve_libero_task = fake_resolve_libero_task
+    monkeypatch.setitem(sys.modules, "open_wam.integrations.libero_env", fake_module)
+
+    task_ids, task_names, warnings = sampled_eval.resolve_task_ids(
+        {"pick up the book and place it in the back compartment of the caddy": 9},
+        benchmark="libero_10",
+        mode="auto",
+    )
+
+    assert calls == [("pick up the book and place it in the back compartment of the caddy", "libero_10")]
+    assert task_ids == {"pick up the book and place it in the back compartment of the caddy": 5}
+    assert task_names == {
+        "pick up the book and place it in the back compartment of the caddy": (
+            "STUDY_SCENE2_pick_up_the_book_and_place_it_in_the_back_compartment_of_the_caddy"
+        )
+    }
+    assert warnings == []
+
+
+def test_resolve_task_ids_auto_refuses_metadata_fallback(monkeypatch) -> None:
+    fake_module = types.ModuleType("open_wam.integrations.libero_env")
+
+    def fake_resolve_libero_task(task_text, project_root, *, benchmark_name=None):
+        del task_text, project_root, benchmark_name
+        raise ValueError("duplicate task text")
+
+    fake_module.resolve_libero_task = fake_resolve_libero_task
+    monkeypatch.setitem(sys.modules, "open_wam.integrations.libero_env", fake_module)
+
+    with pytest.raises(RuntimeError, match="Refusing to fall back to metadata task_index"):
+        sampled_eval.resolve_task_ids(
+            {"pick up the book and place it in the back compartment of the caddy": 9},
+            benchmark="libero_10",
+            mode="auto",
+        )
+
+
+def test_resolve_task_ids_metadata_emits_safety_warning() -> None:
+    task_ids, task_names, warnings = sampled_eval.resolve_task_ids(
+        {"turn on the stove": 2},
+        benchmark="libero_10",
+        mode="metadata",
+    )
+
+    assert task_ids == {"turn on the stove": 2}
+    assert task_names == {"turn on the stove": None}
+    assert warnings == [
+        "Using LeRobot metadata task_index as LIBERO task_id. This is only valid after verifying "
+        "the local metadata order matches the requested upstream LIBERO benchmark order."
+    ]
+
+
+def test_resolve_task_ids_libero_repo_root_overrides_stale_environment(monkeypatch, tmp_path: Path) -> None:
+    calls: list[str | None] = []
+    fake_module = types.ModuleType("open_wam.integrations.libero_env")
+
+    def fake_resolve_libero_task(task_text, project_root, *, benchmark_name=None):
+        del task_text, project_root, benchmark_name
+        calls.append(os.environ.get("LIBERO_REPO_ROOT"))
+        return SimpleNamespace(
+            benchmark_name="libero_10",
+            task_id=2,
+            task_name="KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it",
+        )
+
+    fake_module.resolve_libero_task = fake_resolve_libero_task
+    monkeypatch.setitem(sys.modules, "open_wam.integrations.libero_env", fake_module)
+    monkeypatch.setenv("LIBERO_REPO_ROOT", "/stale/libero")
+
+    override_root = tmp_path / "LIBERO"
+    task_ids, _, _ = sampled_eval.resolve_task_ids(
+        {"turn on the stove and put the moka pot on it": 0},
+        benchmark="libero_10",
+        mode="auto",
+        libero_repo_root=override_root,
+    )
+
+    assert task_ids == {"turn on the stove and put the moka pot on it": 2}
+    assert calls == [str(override_root)]
+    assert os.environ["LIBERO_REPO_ROOT"] == "/stale/libero"
 
 
 def test_sample_episodes_by_task_distribution_is_deterministic() -> None:

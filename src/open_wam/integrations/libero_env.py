@@ -105,7 +105,12 @@ def ensure_local_libero_config(project_root: Path | None = None) -> Path:
     return config_path
 
 
-def resolve_libero_task(task_text: str, project_root: Path | None = None) -> LiberoTaskSpec:
+def resolve_libero_task(
+    task_text: str,
+    project_root: Path | None = None,
+    *,
+    benchmark_name: str | None = None,
+) -> LiberoTaskSpec:
     """Resolve dataset task text to one upstream LIBERO benchmark task."""
 
     ensure_local_libero_config(project_root)
@@ -113,7 +118,19 @@ def resolve_libero_task(task_text: str, project_root: Path | None = None) -> Lib
 
     normalized_task_text = _normalize_task_text(task_text)
     matches: list[LiberoTaskSpec] = []
-    for benchmark_name, benchmark_class in benchmark.get_benchmark_dict().items():
+    benchmark_classes = benchmark.get_benchmark_dict()
+    if benchmark_name is not None:
+        try:
+            benchmark_items = ((benchmark_name, benchmark_classes[benchmark_name]),)
+        except KeyError as exc:
+            available = ", ".join(sorted(benchmark_classes))
+            raise ValueError(
+                f"Unknown LIBERO benchmark {benchmark_name!r}; available benchmarks: {available}"
+            ) from exc
+    else:
+        benchmark_items = tuple(benchmark_classes.items())
+
+    for current_benchmark_name, benchmark_class in benchmark_items:
         try:
             benchmark_instance = benchmark_class()
         except Exception:
@@ -127,7 +144,7 @@ def resolve_libero_task(task_text: str, project_root: Path | None = None) -> Lib
                 continue
             matches.append(
                 LiberoTaskSpec(
-                    benchmark_name=benchmark_name,
+                    benchmark_name=current_benchmark_name,
                     task_id=task_id,
                     task_name=task.name,
                     task_language=task.language,
@@ -458,6 +475,12 @@ def _resolve_libero_paths() -> tuple[Path, Path]:
     path so the current uv environment can still import `libero.libero`.
     """
 
+    env_repo_root = os.environ.get("LIBERO_REPO_ROOT")
+    if env_repo_root:
+        env_paths = _libero_paths_from_repo_root(Path(env_repo_root).expanduser())
+        if env_paths is not None:
+            return env_paths
+
     import_error: Exception | None = None
     try:
         libero_pkg = importlib.import_module("libero.libero")
@@ -481,27 +504,29 @@ def _resolve_libero_paths() -> tuple[Path, Path]:
 
     fallback_repo_roots: list[Path] = []
 
-    env_repo_root = os.environ.get("LIBERO_REPO_ROOT")
-    if env_repo_root:
-        fallback_repo_roots.append(Path(env_repo_root).expanduser())
-
     project_root = _project_root(None)
     fallback_repo_roots.append(project_root.parent / "LIBERO")
 
     for repo_root in fallback_repo_roots:
-        package_root = repo_root / "libero" / "libero"
-        if not (package_root / "__init__.py").exists():
-            continue
-        repo_root_resolved = repo_root.resolve()
-        repo_root_str = str(repo_root_resolved)
-        if repo_root_str not in sys.path:
-            sys.path.insert(0, repo_root_str)
-        return repo_root_resolved, package_root.resolve()
+        paths = _libero_paths_from_repo_root(repo_root)
+        if paths is not None:
+            return paths
 
     raise ImportError(
         "LIBERO could not be imported. Either install an importable LIBERO package into the uv environment "
         "or set LIBERO_REPO_ROOT to a checkout whose structure contains `libero/libero/__init__.py`."
     ) from import_error
+
+
+def _libero_paths_from_repo_root(repo_root: Path) -> tuple[Path, Path] | None:
+    package_root = repo_root / "libero" / "libero"
+    if not (package_root / "__init__.py").exists():
+        return None
+    repo_root_resolved = repo_root.resolve()
+    repo_root_str = str(repo_root_resolved)
+    if repo_root_str not in sys.path:
+        sys.path.insert(0, repo_root_str)
+    return repo_root_resolved, package_root.resolve()
 
 
 def _project_gripper_state(gripper_state: torch.Tensor, *, gripper_representation: str) -> torch.Tensor:

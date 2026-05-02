@@ -229,8 +229,8 @@ def main() -> None:
         choices=("auto", "libero", "metadata"),
         default="auto",
         help=(
-            "`libero` resolves task text through upstream LIBERO. `metadata` assumes meta/tasks.jsonl "
-            "task_index already matches LIBERO task_id. `auto` tries LIBERO first and falls back to metadata."
+            "`auto`/`libero` resolve task text through the requested upstream LIBERO benchmark. "
+            "`metadata` explicitly assumes meta/tasks.jsonl task_index already matches LIBERO task_id."
         ),
     )
     parser.add_argument(
@@ -410,6 +410,7 @@ def main() -> None:
         "devices": parse_devices(args.devices),
         "methods": [method.key for method in selected_methods],
         "scheduler_profile": scheduler_spec.key,
+        "task_id_source": args.task_id_source,
         "checkpoint_specs": [asdict(spec) for spec in checkpoint_specs],
         "task_allocations": sample_allocations,
         "task_resolution_warnings": task_resolution_warnings,
@@ -628,26 +629,44 @@ def resolve_task_ids(
     if mode not in {"auto", "libero", "metadata"}:
         raise ValueError(f"Unsupported task id source: {mode}")
     if mode == "metadata":
+        warning = (
+            "Using LeRobot metadata task_index as LIBERO task_id. This is only valid after verifying "
+            "the local metadata order matches the requested upstream LIBERO benchmark order."
+        )
         return (
             {task_text: int(task_index) for task_text, task_index in task_text_to_index.items()},
             {task_text: None for task_text in task_text_to_index},
-            [],
+            [warning],
         )
 
     old_libero_repo_root = os.environ.get("LIBERO_REPO_ROOT")
-    injected_libero_repo_root = False
-    if old_libero_repo_root is None and libero_repo_root is not None:
+    override_libero_repo_root = libero_repo_root is not None
+    if override_libero_repo_root:
         os.environ["LIBERO_REPO_ROOT"] = str(libero_repo_root)
-        injected_libero_repo_root = True
 
     try:
-        from open_wam.integrations.libero_env import resolve_libero_task
+        try:
+            from open_wam.integrations.libero_env import resolve_libero_task
+        except Exception as exc:
+            raise RuntimeError(
+                "Could not import the LIBERO task resolver. Refusing to fall back to metadata task_index "
+                "because local LeRobot task order may differ from upstream benchmark task ids. "
+                "Use --task-id-source metadata only after verifying the orders match."
+            ) from exc
 
         task_ids: dict[str, int] = {}
         task_names: dict[str, str | None] = {}
         warnings: list[str] = []
         for task_text in sorted(task_text_to_index):
-            task_spec = resolve_libero_task(task_text, REPO_ROOT)
+            try:
+                task_spec = resolve_libero_task(task_text, REPO_ROOT, benchmark_name=benchmark)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Could not resolve task text {task_text!r} inside LIBERO benchmark {benchmark!r}. "
+                    "Refusing to fall back to metadata task_index because local LeRobot task order may "
+                    "differ from upstream benchmark task ids. Use --task-id-source metadata only after "
+                    "verifying the orders match."
+                ) from exc
             if task_spec.benchmark_name != benchmark:
                 warnings.append(
                     f"task {task_text!r} resolved to benchmark {task_spec.benchmark_name!r}, expected {benchmark!r}"
@@ -655,21 +674,12 @@ def resolve_task_ids(
             task_ids[task_text] = int(task_spec.task_id)
             task_names[task_text] = str(task_spec.task_name)
         return task_ids, task_names, warnings
-    except Exception as exc:
-        if mode == "libero":
-            raise
-        warnings = [
-            f"LIBERO task resolution failed ({type(exc).__name__}: {exc}); "
-            "falling back to metadata task_index."
-        ]
-        return (
-            {task_text: int(task_index) for task_text, task_index in task_text_to_index.items()},
-            {task_text: None for task_text in task_text_to_index},
-            warnings,
-        )
     finally:
-        if injected_libero_repo_root:
-            os.environ.pop("LIBERO_REPO_ROOT", None)
+        if override_libero_repo_root:
+            if old_libero_repo_root is None:
+                os.environ.pop("LIBERO_REPO_ROOT", None)
+            else:
+                os.environ["LIBERO_REPO_ROOT"] = old_libero_repo_root
 
 
 def sample_episodes_by_task_distribution(
@@ -1430,6 +1440,7 @@ def write_status_note(path: Path, *, manifest: dict[str, Any], cases: list[EvalC
         f"Run ID: `{manifest['run_id']}`",
         f"Generated UTC: `{manifest['generated_at_utc']}`",
         f"Benchmark: `{manifest['benchmark']}`",
+        f"Task id source: `{manifest.get('task_id_source', 'unknown')}`",
         f"Dataset root: `{manifest['dataset_root']}`",
         f"Output root: `{manifest['output_root']}`",
         f"Cases: `{len(cases)}`",
