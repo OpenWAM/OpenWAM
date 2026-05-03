@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-set -x
+if [[ "${TRACE:-0}" == "1" ]]; then
+  set -x
+fi
 
 umask 007
 

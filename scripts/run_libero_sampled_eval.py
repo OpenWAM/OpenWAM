@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 from collections import defaultdict
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import csv
 import json
@@ -20,6 +20,18 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from open_wam.data.replay_status import (  # noqa: E402
+    REPLAY_STATUS_POLICIES,
+    ReplayStatusFilterReport,
+    filter_episode_indices_by_replay_status,
+    load_replay_status_records,
+    normalize_replay_status_policy,
+)
+
 DEFAULT_CONFIG = "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
 DEFAULT_BASE_CHECKPOINT = (
     "/data/openwam_exp/runs/parallel_stream_libero_lingbot_exact_heng_compatible/checkpoints/checkpoint_step_400"
@@ -42,6 +54,15 @@ class DatasetEpisode:
     task_name: str | None
     episode_idx: int
     length: int
+    replay_status: str | None = None
+    episode_id: int | None = None
+    init_id: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.episode_id is None:
+            object.__setattr__(self, "episode_id", int(self.dataset_episode_index))
+        if self.init_id is None:
+            object.__setattr__(self, "init_id", int(self.episode_idx))
 
 
 @dataclass(frozen=True)
@@ -120,7 +141,10 @@ class EvalCase:
     task_text: str
     task_name: str | None
     dataset_episode_index: int
+    episode_id: int
+    init_id: int
     episode_idx: int
+    replay_status: str | None
     seed: int
     output_dir: str
     suffix: str
@@ -150,14 +174,6 @@ METHODS: tuple[MethodSpec, ...] = (
         config="configs/evals/mot_libero_full_segment_non_joint_action_only_eval.yaml",
         reference_assets_device_policy="cpu_offload",
         async_low_watermark=16,
-        extra_args=(
-            "--runtime-devices",
-            "{device}",
-            "--runtime-prep-device",
-            "{device}",
-            "--runtime-output-device",
-            "{device}",
-        ),
     ),
 )
 
@@ -222,16 +238,49 @@ def main() -> None:
     parser.add_argument("--run-label", type=str, default="sampled_eval")
     parser.add_argument("--dataset-root", type=Path, default=Path(DEFAULT_DATASET_ROOT))
     parser.add_argument("--benchmark", type=str, default="libero_10")
-    parser.add_argument("--num-episodes", type=int, default=50)
+    parser.add_argument(
+        "--num-episodes",
+        type=int,
+        default=50,
+        help="Number of sampled dataset episodes. Ignored by --sample-mode full.",
+    )
     parser.add_argument("--sample-seed", type=int, default=0)
     parser.add_argument(
         "--sample-mode",
-        choices=("dataset_distribution", "task_episode_axis"),
+        choices=("dataset_distribution", "task_episode_axis", "full"),
         default="dataset_distribution",
         help=(
             "`dataset_distribution` samples LeRobot episodes proportionally by dataset task distribution. "
             "`task_episode_axis` selects explicit upstream LIBERO task ids and per-task episode indices, "
-            "which is the mode for #77-style task-0 parity checks."
+            "which is the mode for #77-style task-0 parity checks. `full` enumerates every upstream "
+            "LIBERO init state for every selected task before replay-status policy validation."
+        ),
+    )
+    parser.add_argument(
+        "--replay-status-path",
+        type=Path,
+        default=None,
+        help=(
+            "Optional replay-status JSONL path. Relative paths are resolved under --dataset-root. "
+            "Defaults to meta/replay_status.jsonl when that file exists."
+        ),
+    )
+    parser.add_argument(
+        "--replay-status-policy",
+        choices=tuple(sorted(REPLAY_STATUS_POLICIES)),
+        default="successful_only",
+        help=(
+            "Dataset episode filter applied before dataset-distribution sampling and validated after explicit "
+            "task/init-axis selection. The default samples only successful demos when replay labels exist."
+        ),
+    )
+    parser.add_argument(
+        "--require-replay-status",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Fail if replay-status metadata is missing. The default keeps older unlabeled datasets runnable "
+            "while still filtering automatically when replay_status.jsonl is present."
         ),
     )
     parser.add_argument(
@@ -250,8 +299,9 @@ def main() -> None:
         type=str,
         default=None,
         help=(
-            "Task selector for --sample-mode task_episode_axis. Supports comma-separated ids and "
-            "Python-style half-open ranges, e.g. `0`, `0,2,5`, or `0:10`."
+            "Task selector for --sample-mode task_episode_axis or full. Supports comma-separated ids and "
+            "Python-style half-open ranges, e.g. `0`, `0,2,5`, or `0:10`. Defaults to task 0 for "
+            "task_episode_axis and all benchmark tasks for full."
         ),
     )
     parser.add_argument(
@@ -260,7 +310,8 @@ def main() -> None:
         default=None,
         help=(
             "Per-task episode selector for --sample-mode task_episode_axis. Supports comma-separated ids "
-            "and Python-style half-open ranges. Defaults to `0:<num-episodes>`."
+            "and Python-style half-open ranges. Defaults to `0:<num-episodes>`. Not used by "
+            "--sample-mode full."
         ),
     )
     parser.add_argument(
@@ -315,24 +366,44 @@ def main() -> None:
     parser.add_argument("--output-root", type=Path, default=None)
     parser.add_argument("--local-paths", type=Path, default=Path(DEFAULT_LOCAL_PATHS))
     parser.add_argument("--libero-repo-root", type=Path, default=Path(DEFAULT_LIBERO_REPO_ROOT))
-    parser.add_argument("--python", type=Path, default=REPO_ROOT / ".venv" / "bin" / "python")
+    parser.add_argument("--python", type=Path, default=Path(sys.executable))
     parser.add_argument("--devices", type=str, default="cuda:0,cuda:1")
     parser.add_argument("--execute", action="store_true", help="Run generated cases locally.")
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--ignore-missing", action="store_true")
-    parser.add_argument("--max-actions", type=int, default=3000)
-    parser.add_argument("--env-horizon", type=int, default=5000)
-    parser.add_argument("--target-action-hz", type=float, default=10.0)
-    parser.add_argument("--video-fps", type=int, default=15)
+    parser.add_argument(
+        "--eval-profile",
+        choices=("debug_short", "libero_10hz_full"),
+        default="libero_10hz_full",
+        help="Rollout-default profile passed to scripts/run_libero_realtime_sandbox.py.",
+    )
+    parser.add_argument("--max-actions", type=int, default=None, help="Optional override for --eval-profile.")
+    parser.add_argument("--env-horizon", type=int, default=None, help="Optional override for --eval-profile.")
+    parser.add_argument("--target-action-hz", type=float, default=None, help="Optional override for --eval-profile.")
+    parser.add_argument("--video-fps", type=int, default=None, help="Optional override for --eval-profile.")
+    parser.add_argument(
+        "--rollout-artifact-profile",
+        choices=("lean", "standard", "debug"),
+        default="lean",
+        help=(
+            "Artifact profile passed to each realtime rollout. `lean` writes only per-rollout summary JSONs "
+            "and sampled-eval logs/results; use `standard` or `debug` when you need MP4s and trace files."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=0, help="Rollout seed passed to run_libero_realtime_sandbox.py.")
-    parser.add_argument("--deadline-miss-policy", type=str, default="hold_state")
+    parser.add_argument("--deadline-miss-policy", type=str, default=None, help="Optional override for --eval-profile.")
     parser.add_argument(
         "--reference-assets-device-policy",
         choices=("cpu_offload", "runtime"),
         default=None,
         help="Optional reference-asset placement override. Omit to use the method default.",
     )
-    parser.add_argument("--mujoco-gl", type=str, default="osmesa")
+    parser.add_argument(
+        "--mujoco-gl",
+        type=str,
+        default=None,
+        help="MuJoCo GL backend for child rollouts. Defaults to MUJOCO_GL from the shell, then egl.",
+    )
     parser.add_argument(
         "--clear-ld-library-path",
         action="store_true",
@@ -341,7 +412,7 @@ def main() -> None:
             "parity runs may depend on the shell-provided graphics/runtime library path."
         ),
     )
-    parser.add_argument("--write-fallback-timeline-video", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--write-fallback-timeline-video", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--collect", type=Path, default=None, help="Collect an existing run directory and exit.")
     parser.add_argument("--fail-fast", action="store_true")
     args = parser.parse_args()
@@ -353,6 +424,10 @@ def main() -> None:
 
     if args.num_episodes <= 0:
         raise ValueError("--num-episodes must be positive.")
+    for positive_arg in ("max_actions", "env_horizon", "target_action_hz", "video_fps"):
+        value = getattr(args, positive_arg)
+        if value is not None and value <= 0:
+            raise ValueError(f"--{positive_arg.replace('_', '-')} must be positive when provided.")
 
     target_requests = parse_target_requests(args.target)
     method_selector = args.methods
@@ -366,8 +441,9 @@ def main() -> None:
         target_requests=target_requests,
     )
 
+    sample_count_label = "full" if args.sample_mode == "full" else f"n{args.num_episodes}"
     run_id = args.run_id or (
-        f"{sanitize_label(args.run_label)}_{sanitize_label(args.benchmark)}_n{args.num_episodes}_"
+        f"{sanitize_label(args.run_label)}_{sanitize_label(args.benchmark)}_{sample_count_label}_"
         f"seed{args.sample_seed}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     )
     output_root = (
@@ -385,10 +461,18 @@ def main() -> None:
     sampled_episodes: list[DatasetEpisode] = []
     sample_allocations: dict[str, int] = {}
     task_resolution_warnings: list[str] = []
+    replay_status_report: ReplayStatusFilterReport | None = None
+    replay_status_path: Path | None = None
+    full_init_counts_by_task_id: dict[int, int] = {}
     if not args.dataset_root.is_dir():
         dataset_preflight_problem = f"dataset root does not exist: {args.dataset_root}"
     else:
         metadata = load_lerobot_metadata(args.dataset_root)
+        replay_status_records, replay_status_path = load_replay_status_records(
+            args.dataset_root,
+            replay_status_path=args.replay_status_path,
+            require=args.require_replay_status,
+        )
         task_id_map, task_name_map, task_resolution_warnings = resolve_task_ids(
             metadata["task_text_to_index"],
             benchmark=args.benchmark,
@@ -402,6 +486,22 @@ def main() -> None:
             task_text_to_task_id=task_id_map,
             task_text_to_task_name=task_name_map,
         )
+        dataset_episodes = attach_replay_status_to_dataset_episodes(dataset_episodes, replay_status_records)
+        if args.sample_mode == "full":
+            full_init_counts_by_task_id = resolve_libero_init_counts(
+                benchmark=args.benchmark,
+                task_ids=parse_int_selector(args.task_ids) if args.task_ids is not None else None,
+                libero_repo_root=args.libero_repo_root,
+                local_paths=args.local_paths,
+            )
+        if args.sample_mode == "dataset_distribution":
+            dataset_episodes, replay_status_report = filter_dataset_episodes_by_replay_status(
+                dataset_episodes,
+                policy=args.replay_status_policy,
+                replay_status_records=replay_status_records,
+                require_replay_status=args.require_replay_status,
+                source_path=replay_status_path,
+            )
         sampled_episodes, sample_allocations = select_sampled_episodes(
             dataset_episodes,
             mode=args.sample_mode,
@@ -410,13 +510,24 @@ def main() -> None:
             task_ids=args.task_ids,
             episode_indices=args.episode_indices,
             distribution_episode_strategy=args.distribution_episode_strategy,
+            full_init_counts_by_task_id=full_init_counts_by_task_id,
         )
+        if args.sample_mode in {"task_episode_axis", "full"}:
+            sampled_episodes, replay_status_report = filter_dataset_episodes_by_replay_status(
+                sampled_episodes,
+                policy=args.replay_status_policy,
+                replay_status_records=replay_status_records,
+                require_replay_status=args.require_replay_status,
+                source_path=replay_status_path,
+                task_axis_validation=True,
+            )
     sample_warnings = build_sample_warnings(
         mode=args.sample_mode,
         requested_count=args.num_episodes,
         task_allocations=sample_allocations,
         distribution_episode_strategy=args.distribution_episode_strategy,
     )
+    sample_warnings.extend(build_replay_status_warnings(replay_status_report))
 
     cases = build_cases(
         sampled_episodes,
@@ -440,8 +551,17 @@ def main() -> None:
                 "sample_mode": args.sample_mode,
                 "sample_seed": args.sample_seed,
                 "distribution_episode_strategy": args.distribution_episode_strategy,
+                "eval_profile": args.eval_profile,
+                "rollout_artifact_profile": args.rollout_artifact_profile,
                 "task_ids": args.task_ids,
                 "episode_indices": args.episode_indices,
+                "full_init_counts_by_task_id": {
+                    str(task_id): count for task_id, count in sorted(full_init_counts_by_task_id.items())
+                },
+                "replay_status_path": str(replay_status_path) if replay_status_path is not None else None,
+                "replay_status_policy": args.replay_status_policy,
+                "require_replay_status": args.require_replay_status,
+                "replay_status_filter": replay_status_report.to_dict() if replay_status_report is not None else None,
                 "task_allocations": sample_allocations,
                 "sample_warnings": sample_warnings,
                 "episodes": [asdict(episode) for episode in sampled_episodes],
@@ -468,8 +588,17 @@ def main() -> None:
         "sample_mode": args.sample_mode,
         "sample_seed": args.sample_seed,
         "distribution_episode_strategy": args.distribution_episode_strategy,
+        "eval_profile": args.eval_profile,
+        "rollout_artifact_profile": args.rollout_artifact_profile,
         "task_ids": args.task_ids,
         "episode_indices": args.episode_indices,
+        "full_init_counts_by_task_id": {
+            str(task_id): count for task_id, count in sorted(full_init_counts_by_task_id.items())
+        },
+        "replay_status_path": str(replay_status_path) if replay_status_path is not None else None,
+        "replay_status_policy": args.replay_status_policy,
+        "require_replay_status": args.require_replay_status,
+        "replay_status_filter": replay_status_report.to_dict() if replay_status_report is not None else None,
         "output_root": str(output_root),
         "log_root": str(log_root),
         "cases_path": str(cases_path),
@@ -688,6 +817,60 @@ def build_dataset_episodes(
     return episodes
 
 
+def attach_replay_status_to_dataset_episodes(
+    episodes: list[DatasetEpisode],
+    replay_status_records: dict[int, Any],
+) -> list[DatasetEpisode]:
+    if not replay_status_records:
+        return list(episodes)
+    return [
+        replace(
+            episode,
+            replay_status=(
+                replay_status_records[episode.dataset_episode_index].replay_status
+                if episode.dataset_episode_index in replay_status_records
+                else None
+            ),
+        )
+        for episode in episodes
+    ]
+
+
+def filter_dataset_episodes_by_replay_status(
+    episodes: list[DatasetEpisode],
+    *,
+    policy: str,
+    replay_status_records: dict[int, Any],
+    require_replay_status: bool,
+    source_path: Path | None,
+    task_axis_validation: bool = False,
+) -> tuple[list[DatasetEpisode], ReplayStatusFilterReport]:
+    normalized_policy = normalize_replay_status_policy(policy)
+    selected_indices = [episode.dataset_episode_index for episode in episodes]
+    kept_indices, report = filter_episode_indices_by_replay_status(
+        selected_indices,
+        replay_status_records=replay_status_records,
+        policy=normalized_policy,
+        require_labeled=bool(replay_status_records) or bool(require_replay_status),
+        source_path=source_path,
+    )
+    kept_index_set = set(kept_indices)
+    kept_episodes = [episode for episode in episodes if episode.dataset_episode_index in kept_index_set]
+    if task_axis_validation and len(kept_episodes) != len(episodes):
+        failed = [
+            f"task_id={episode.task_id},init_id={episode.init_id},dataset_episode_index={episode.dataset_episode_index}"
+            for episode in episodes
+            if episode.dataset_episode_index not in kept_index_set
+        ]
+        preview = ", ".join(failed[:10])
+        suffix = "" if len(failed) <= 10 else f", ... ({len(failed)} filtered total)"
+        raise ValueError(
+            f"Requested task/init-axis episodes do not satisfy replay_status_policy={normalized_policy!r}: "
+            f"{preview}{suffix}"
+        )
+    return kept_episodes, report
+
+
 def resolve_task_ids(
     task_text_to_index: dict[str, int],
     *,
@@ -762,6 +945,89 @@ def resolve_task_ids(
                 os.environ["OPEN_WAM_LOCAL_PATHS"] = old_local_paths
 
 
+def resolve_libero_init_counts(
+    *,
+    benchmark: str,
+    task_ids: list[int] | None,
+    libero_repo_root: Path | None = None,
+    local_paths: Path | None = None,
+) -> dict[int, int]:
+    old_libero_repo_root = os.environ.get("LIBERO_REPO_ROOT")
+    old_local_paths = os.environ.get("OPEN_WAM_LOCAL_PATHS")
+    override_libero_repo_root = libero_repo_root is not None
+    override_local_paths = local_paths is not None
+    if override_libero_repo_root:
+        os.environ["LIBERO_REPO_ROOT"] = str(libero_repo_root)
+    if override_local_paths:
+        resolved_local_paths = local_paths if local_paths.is_absolute() else REPO_ROOT / local_paths
+        os.environ["OPEN_WAM_LOCAL_PATHS"] = str(resolved_local_paths)
+
+    try:
+        try:
+            from open_wam.integrations.libero_env import (
+                LiberoTaskSpec,
+                ensure_local_libero_config,
+                load_libero_task_init_states,
+            )
+        except Exception as exc:
+            raise RuntimeError("Could not import the LIBERO config bootstrap helper.") from exc
+
+        config_path = ensure_local_libero_config(REPO_ROOT)
+        import yaml
+
+        with config_path.open("r", encoding="utf-8") as handle:
+            libero_config = yaml.safe_load(handle)
+        from libero.libero import benchmark as libero_benchmark  # type: ignore
+
+        benchmark_classes = libero_benchmark.get_benchmark_dict()
+        try:
+            benchmark_instance = benchmark_classes[benchmark]()
+        except KeyError as exc:
+            available = ", ".join(sorted(benchmark_classes))
+            raise ValueError(f"Unknown LIBERO benchmark {benchmark!r}; available benchmarks: {available}") from exc
+
+        get_num_tasks = getattr(benchmark_instance, "get_num_tasks", None)
+        if callable(get_num_tasks):
+            task_count = int(get_num_tasks())
+        else:
+            n_tasks = getattr(benchmark_instance, "n_tasks", None)
+            task_count = int(n_tasks) if n_tasks is not None else len(benchmark_instance.tasks)
+        selected_task_ids = task_ids if task_ids is not None else list(range(task_count))
+        invalid_task_ids = [task_id for task_id in selected_task_ids if task_id < 0 or task_id >= task_count]
+        if invalid_task_ids:
+            raise ValueError(
+                f"Requested task ids exceed benchmark {benchmark!r} task count {task_count}: {invalid_task_ids}"
+            )
+
+        init_counts: dict[int, int] = {}
+        for task_id in selected_task_ids:
+            task = benchmark_instance.get_task(int(task_id))
+            task_spec = LiberoTaskSpec(
+                benchmark_name=benchmark,
+                task_id=int(task_id),
+                task_name=task.name,
+                task_language=task.language,
+                problem_folder=task.problem_folder,
+                bddl_file_path=benchmark_instance.get_task_bddl_file_path(int(task_id)),
+                init_states_path=str(
+                    Path(libero_config["init_states"]) / task.problem_folder / f"{task.name}.pruned_init"
+                ),
+            )
+            init_counts[int(task_id)] = int(len(load_libero_task_init_states(task_spec, REPO_ROOT)))
+        return init_counts
+    finally:
+        if override_libero_repo_root:
+            if old_libero_repo_root is None:
+                os.environ.pop("LIBERO_REPO_ROOT", None)
+            else:
+                os.environ["LIBERO_REPO_ROOT"] = old_libero_repo_root
+        if override_local_paths:
+            if old_local_paths is None:
+                os.environ.pop("OPEN_WAM_LOCAL_PATHS", None)
+            else:
+                os.environ["OPEN_WAM_LOCAL_PATHS"] = old_local_paths
+
+
 def select_sampled_episodes(
     episodes: list[DatasetEpisode],
     *,
@@ -771,10 +1037,11 @@ def select_sampled_episodes(
     task_ids: str | None = None,
     episode_indices: str | None = None,
     distribution_episode_strategy: str = "first",
+    full_init_counts_by_task_id: dict[int, int] | None = None,
 ) -> tuple[list[DatasetEpisode], dict[str, int]]:
     if mode == "dataset_distribution":
         if task_ids is not None or episode_indices is not None:
-            raise ValueError("--task-ids/--episode-indices require --sample-mode task_episode_axis.")
+            raise ValueError("--task-ids/--episode-indices require --sample-mode task_episode_axis or full.")
         return sample_episodes_by_task_distribution(
             episodes,
             count=count,
@@ -785,6 +1052,15 @@ def select_sampled_episodes(
         return select_task_episode_axis(
             episodes,
             count=count,
+            task_ids=task_ids,
+            episode_indices=episode_indices,
+        )
+    if mode == "full":
+        if full_init_counts_by_task_id is None:
+            raise ValueError("--sample-mode full requires benchmark init-state counts.")
+        return select_full_task_init_axis(
+            episodes,
+            init_counts_by_task_id=full_init_counts_by_task_id,
             task_ids=task_ids,
             episode_indices=episode_indices,
         )
@@ -824,6 +1100,52 @@ def select_task_episode_axis(
     for episode in selected:
         allocations[episode.task_text] += 1
     selected.sort(key=lambda item: (item.task_id, item.episode_idx, item.dataset_episode_index))
+    return selected, dict(allocations)
+
+
+def select_full_task_init_axis(
+    episodes: list[DatasetEpisode],
+    *,
+    init_counts_by_task_id: dict[int, int],
+    task_ids: str | None,
+    episode_indices: str | None,
+) -> tuple[list[DatasetEpisode], dict[str, int]]:
+    if episode_indices is not None:
+        raise ValueError("--episode-indices is not used with --sample-mode full; full enumerates every init id.")
+    if not init_counts_by_task_id:
+        raise ValueError("--sample-mode full requires at least one benchmark task/init count.")
+    selected_task_ids = parse_int_selector(task_ids) if task_ids is not None else sorted(init_counts_by_task_id)
+    if not selected_task_ids:
+        raise ValueError("--task-ids did not select any task ids.")
+
+    by_key = {(int(episode.task_id), int(episode.init_id)): episode for episode in episodes}
+    selected: list[DatasetEpisode] = []
+    missing: list[str] = []
+    for task_id in selected_task_ids:
+        if task_id not in init_counts_by_task_id:
+            available = ", ".join(str(item) for item in sorted(init_counts_by_task_id))
+            raise ValueError(f"Task id {task_id} is not available for --sample-mode full; available task ids: {available}")
+        init_count = int(init_counts_by_task_id[task_id])
+        if init_count <= 0:
+            raise ValueError(f"Task id {task_id} has no LIBERO init states.")
+        for init_id in range(init_count):
+            episode = by_key.get((int(task_id), int(init_id)))
+            if episode is None:
+                missing.append(f"task_id={task_id},init_id={init_id}")
+                continue
+            selected.append(episode)
+    if missing:
+        preview = ", ".join(missing[:10])
+        suffix = "" if len(missing) <= 10 else f", ... ({len(missing)} missing total)"
+        raise ValueError(
+            "Full LIBERO task/init grid is not present in dataset metadata: "
+            f"{preview}{suffix}. Use task_episode_axis for a partial grid or refresh the dataset metadata."
+        )
+
+    allocations: dict[str, int] = defaultdict(int)
+    for episode in selected:
+        allocations[episode.task_text] += 1
+    selected.sort(key=lambda item: (item.task_id, item.init_id, item.dataset_episode_index))
     return selected, dict(allocations)
 
 
@@ -974,6 +1296,13 @@ def build_sample_warnings(
     task_allocations: dict[str, int],
     distribution_episode_strategy: str,
 ) -> list[str]:
+    if mode == "full":
+        if not task_allocations:
+            return []
+        return [
+            "`--sample-mode full` ignores --num-episodes and enumerates every benchmark task/init pair "
+            "before replay-status policy validation."
+        ]
     if mode != "dataset_distribution" or not task_allocations:
         return []
     warnings: list[str] = []
@@ -991,6 +1320,48 @@ def build_sample_warnings(
             "not directly comparable to #77-style episode_idx prefix parity runs."
         )
     return warnings
+
+
+def build_replay_status_warnings(report: ReplayStatusFilterReport | None) -> list[str]:
+    if report is None:
+        return []
+    warnings: list[str] = []
+    if report.missing_status_file and report.policy != "include_all":
+        warnings.append(
+            f"Replay-status policy {report.policy!r} was requested, but no replay-status file was found; "
+            "sampling fell back to all dataset episodes. Pass --require-replay-status to make this fatal."
+        )
+    if (
+        not report.missing_status_file
+        and report.policy != "include_all"
+        and report.total_episodes
+        and report.labeled_episodes == 0
+    ):
+        warnings.append(
+            f"Replay-status policy {report.policy!r} was requested, but the replay-status file contains "
+            "no labels for the selected dataset episodes; sampling fell back to all selected episodes. "
+            "Pass --require-replay-status to make an empty or incomplete status file fatal."
+        )
+    if report.filtered_episodes:
+        warnings.append(
+            f"Replay-status policy {report.policy!r} filtered {report.filtered_episodes} of "
+            f"{report.total_episodes} candidate dataset episodes."
+        )
+    return warnings
+
+
+def append_optional_arg(
+    command: list[str],
+    flag: str,
+    value: object | None,
+    *,
+    default: object | None = None,
+) -> None:
+    if value is None:
+        return
+    if default is not None and value == default:
+        return
+    command.extend([flag, str(value)])
 
 
 def build_cases(
@@ -1013,7 +1384,7 @@ def build_cases(
             checkpoint_output_dir = output_root / checkpoint_spec.key
             suffix = sanitize_label(
                 f"{checkpoint_spec.key}_{args.run_label}_{benchmark}_sample{sample_index:03d}_"
-                f"dataset_ep{episode.dataset_episode_index:06d}_t{episode.task_id:02d}_e{episode.episode_idx}_"
+                f"dataset_ep{episode.dataset_episode_index:06d}_t{episode.task_id:02d}_init{episode.init_id}_"
                 f"seed{seed}_{scheduler_suffix}"
             )
             command = [
@@ -1023,39 +1394,38 @@ def build_cases(
                 checkpoint_spec.config,
                 "--checkpoint",
                 checkpoint_spec.checkpoint,
-                "--benchmark",
-                benchmark,
                 "--task-id",
                 str(episode.task_id),
                 "--episode-idx",
-                str(episode.episode_idx),
-                "--max-actions",
-                str(args.max_actions),
-                "--env-horizon",
-                str(args.env_horizon),
-                "--target-action-hz",
-                str(args.target_action_hz),
-                "--video-fps",
-                str(args.video_fps),
+                str(episode.init_id),
+                "--eval-profile",
+                args.eval_profile,
+                "--realtime-scheduler-profile",
+                scheduler_spec.key,
                 "--runtime-device",
                 "{device}",
-                "--frontend-device",
-                "{device}",
-                "--decode-device",
-                "{device}",
-                "--reference-assets-device-policy",
-                checkpoint_spec.reference_assets_device_policy,
+                "--artifact-profile",
+                args.rollout_artifact_profile,
                 "--output-dir",
                 str(checkpoint_output_dir),
-                "--seed",
-                str(seed),
-                "--deadline-miss-policy",
-                args.deadline_miss_policy,
-                *checkpoint_spec.extra_args,
-                *scheduler_flags,
                 "--suffix",
                 suffix,
             ]
+            append_optional_arg(command, "--benchmark", benchmark, default="libero_10")
+            append_optional_arg(command, "--max-actions", args.max_actions)
+            append_optional_arg(command, "--env-horizon", args.env_horizon)
+            append_optional_arg(command, "--target-action-hz", args.target_action_hz)
+            append_optional_arg(command, "--video-fps", args.video_fps)
+            append_optional_arg(command, "--seed", seed, default=0)
+            append_optional_arg(command, "--deadline-miss-policy", args.deadline_miss_policy)
+            append_optional_arg(
+                command,
+                "--reference-assets-device-policy",
+                checkpoint_spec.reference_assets_device_policy,
+                default="runtime",
+            )
+            command.extend(checkpoint_spec.extra_args)
+            command.extend(scheduler_flags)
             if args.write_fallback_timeline_video:
                 command.append("--write-fallback-timeline-video")
             cases.append(
@@ -1080,7 +1450,10 @@ def build_cases(
                     task_text=episode.task_text,
                     task_name=episode.task_name,
                     dataset_episode_index=episode.dataset_episode_index,
+                    episode_id=int(episode.episode_id),
+                    init_id=int(episode.init_id),
                     episode_idx=episode.episode_idx,
+                    replay_status=episode.replay_status,
                     seed=seed,
                     output_dir=str(checkpoint_output_dir),
                     suffix=suffix,
@@ -1088,7 +1461,7 @@ def build_cases(
                         checkpoint_output_dir
                         / benchmark
                         / f"{episode.task_id}_*"
-                        / f"{episode.episode_idx}_{suffix}.json"
+                        / f"{episode.init_id}_{suffix}.json"
                     ),
                     command_template=command,
                     preflight_problem=checkpoint_spec.preflight_problem,
@@ -1148,10 +1521,11 @@ def preflight(
 
 
 def scheduler_flags_for(method: MethodSpec, scheduler: SchedulerSpec) -> list[str]:
-    flags = list(scheduler.flags)
+    flags: list[str] = []
     if scheduler.key == "freeze_until_clean_chunk":
         startup_chunks = "1" if method.key == "m5" else "0"
-        flags.extend(["--startup-open-loop-chunks", startup_chunks])
+        if startup_chunks != "0":
+            flags.extend(["--startup-open-loop-chunks", startup_chunks])
     if scheduler.use_method_low_watermark:
         flags.extend(["--replan-low-watermark-actions", str(method.async_low_watermark)])
     return flags
@@ -1422,9 +1796,10 @@ def build_child_env(args: argparse.Namespace) -> dict[str, str]:
     local_paths = args.local_paths if args.local_paths.is_absolute() else REPO_ROOT / args.local_paths
     env["OPEN_WAM_LOCAL_PATHS"] = str(local_paths)
     env["LIBERO_REPO_ROOT"] = str(args.libero_repo_root)
-    env["MUJOCO_GL"] = args.mujoco_gl
+    mujoco_gl = args.mujoco_gl or env.get("MUJOCO_GL") or "egl"
+    env["MUJOCO_GL"] = mujoco_gl
     env["PYTHONUNBUFFERED"] = "1"
-    env.setdefault("PYOPENGL_PLATFORM", "egl" if args.mujoco_gl == "egl" else args.mujoco_gl)
+    env.setdefault("PYOPENGL_PLATFORM", "egl" if mujoco_gl == "egl" else mujoco_gl)
     env.setdefault("WANDB_MODE", "disabled")
     return env
 
@@ -1559,9 +1934,17 @@ def build_summary_payload(manifest: dict[str, Any], reports: list[dict[str, Any]
         "benchmark": manifest.get("benchmark"),
         "sample_mode": manifest.get("sample_mode", "dataset_distribution"),
         "distribution_episode_strategy": manifest.get("distribution_episode_strategy"),
+        "eval_profile": manifest.get("eval_profile"),
+        "rollout_artifact_profile": manifest.get("rollout_artifact_profile"),
+        "scheduler_profile": manifest.get("scheduler_profile"),
+        "replay_status_path": manifest.get("replay_status_path"),
+        "replay_status_policy": manifest.get("replay_status_policy"),
+        "require_replay_status": manifest.get("require_replay_status"),
+        "replay_status_filter": manifest.get("replay_status_filter"),
         "num_sampled_episodes": manifest["num_sampled_episodes"],
         "requested_num_episodes": manifest.get("requested_num_episodes", manifest["num_sampled_episodes"]),
         "task_allocations": manifest.get("task_allocations", {}),
+        "full_init_counts_by_task_id": manifest.get("full_init_counts_by_task_id", {}),
         "sample_warnings": manifest.get("sample_warnings", []),
         "target_keys": target_keys,
         "checkpoint_specs": manifest.get("checkpoint_specs", []),
@@ -1582,9 +1965,12 @@ def build_paired_rows(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
             {
                 "sample_index": sample_index,
                 "dataset_episode_index": case["dataset_episode_index"],
+                "episode_id": case.get("episode_id", case["dataset_episode_index"]),
                 "task_id": case["task_id"],
                 "task_text": case["task_text"],
+                "init_id": case.get("init_id", case["episode_idx"]),
                 "episode_idx": case["episode_idx"],
+                "replay_status": case.get("replay_status"),
             },
         )
         key = str(case["checkpoint_key"])
@@ -1605,8 +1991,11 @@ def write_results_csv(path: Path, summary: dict[str, Any]) -> None:
     fieldnames = [
         "sample_index",
         "dataset_episode_index",
+        "episode_id",
         "task_id",
+        "init_id",
         "episode_idx",
+        "replay_status",
         "task_text",
     ]
     for key in target_keys:
@@ -1640,6 +2029,11 @@ def write_summary_md(path: Path, summary: dict[str, Any]) -> None:
         f"Benchmark: `{summary.get('benchmark')}`",
         f"Sample mode: `{summary.get('sample_mode', 'dataset_distribution')}`",
         f"Distribution episode strategy: `{summary.get('distribution_episode_strategy') or 'n/a'}`",
+        f"Eval profile: `{summary.get('eval_profile') or 'n/a'}`",
+        f"Rollout artifact profile: `{summary.get('rollout_artifact_profile') or 'n/a'}`",
+        f"Scheduler profile: `{summary.get('scheduler_profile') or 'n/a'}`",
+        f"Replay-status policy: `{summary.get('replay_status_policy') or 'n/a'}`",
+        f"Replay-status file: `{summary.get('replay_status_path') or 'n/a'}`",
         f"Dataset root: `{summary['dataset_root']}`",
         f"Output root: `{summary['output_root']}`",
         f"Log root: `{summary['log_root']}`",
@@ -1677,10 +2071,10 @@ def write_summary_md(path: Path, summary: dict[str, Any]) -> None:
             "",
         ]
     )
-    headers = ["Sample", "Dataset episode", "Task", "Init state"] + [
+    headers = ["Sample", "Dataset episode", "Task", "Init id", "Replay"] + [
         target_labels.get(key, key) for key in summary["target_keys"]
     ]
-    aligns = ["---:", "---:", "---:", "---:"] + ["---" for _ in summary["target_keys"]]
+    aligns = ["---:", "---:", "---:", "---:", "---"] + ["---" for _ in summary["target_keys"]]
     lines.append("| " + " | ".join(md_escape(header) for header in headers) + " |")
     lines.append("| " + " | ".join(aligns) + " |")
     for row in summary["paired_rows"]:
@@ -1688,7 +2082,8 @@ def write_summary_md(path: Path, summary: dict[str, Any]) -> None:
             str(row["sample_index"]),
             str(row["dataset_episode_index"]),
             str(row["task_id"]),
-            str(row["episode_idx"]),
+            str(row.get("init_id", row["episode_idx"])),
+            str(row.get("replay_status") or "n/a"),
         ]
         for key in summary["target_keys"]:
             cells.append(
@@ -1735,6 +2130,10 @@ def write_status_note(path: Path, *, manifest: dict[str, Any], cases: list[EvalC
         f"Benchmark: `{manifest['benchmark']}`",
         f"Sample mode: `{manifest.get('sample_mode', 'dataset_distribution')}`",
         f"Distribution episode strategy: `{manifest.get('distribution_episode_strategy') or 'n/a'}`",
+        f"Eval profile: `{manifest.get('eval_profile') or 'n/a'}`",
+        f"Rollout artifact profile: `{manifest.get('rollout_artifact_profile') or 'n/a'}`",
+        f"Replay-status policy: `{manifest.get('replay_status_policy') or 'n/a'}`",
+        f"Replay-status file: `{manifest.get('replay_status_path') or 'n/a'}`",
         f"Task id source: `{manifest.get('task_id_source', 'unknown')}`",
         f"Dataset root: `{manifest['dataset_root']}`",
         f"Output root: `{manifest['output_root']}`",

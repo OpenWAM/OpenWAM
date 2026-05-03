@@ -23,6 +23,7 @@ from .enums import (
     DataSplit,
     GripperRepresentation,
     LatentWindowProfile,
+    ReplayStatusPolicy,
     RotationRepresentation,
     TemporalPositionMode,
     WindowSamplingMode,
@@ -331,6 +332,9 @@ class DataConfig:
     split_seed: int
     max_train_episodes: int | None
     max_val_episodes: int | None
+    replay_status_path: str | None
+    replay_status_policy: ReplayStatusPolicy
+    require_replay_status: bool
     train_batch_size: int
     val_batch_size: int
     num_workers: int
@@ -345,6 +349,7 @@ class DataConfig:
             enum_fields={
                 "split": DataSplit,
                 "latent_window_profile": LatentWindowProfile,
+                "replay_status_policy": ReplayStatusPolicy,
             },
         )
 
@@ -388,10 +393,13 @@ class GenericDataConfig(DataConfig):
     frame_stride: int = 1
     sample_stride: int = 1
     episode_cache_size: int = 2
-    train_fraction: float = 0.95
+    train_fraction: float = 1.0
     split_seed: int = 0
     max_train_episodes: int | None = None
     max_val_episodes: int | None = None
+    replay_status_path: str | None = None
+    replay_status_policy: ReplayStatusPolicy = ReplayStatusPolicy.INCLUDE_ALL
+    require_replay_status: bool = False
     train_batch_size: int = 2
     val_batch_size: int = 2
     num_workers: int = 0
@@ -466,10 +474,13 @@ class RobotWinDataConfig(DataConfig):
     frame_stride: int = 1
     sample_stride: int = 1
     episode_cache_size: int = 1
-    train_fraction: float = 0.95
+    train_fraction: float = 1.0
     split_seed: int = 0
     max_train_episodes: int | None = None
     max_val_episodes: int | None = None
+    replay_status_path: str | None = None
+    replay_status_policy: ReplayStatusPolicy = ReplayStatusPolicy.INCLUDE_ALL
+    require_replay_status: bool = False
     train_batch_size: int = 2
     val_batch_size: int = 2
     num_workers: int = 0
@@ -548,10 +559,13 @@ class LiberoDataConfig(DataConfig):
     frame_stride: int = 1
     sample_stride: int = 1
     episode_cache_size: int = 2
-    train_fraction: float = 0.95
+    train_fraction: float = 1.0
     split_seed: int = 0
     max_train_episodes: int | None = None
     max_val_episodes: int | None = None
+    replay_status_path: str | None = None
+    replay_status_policy: ReplayStatusPolicy = ReplayStatusPolicy.SUCCESSFUL_ONLY
+    require_replay_status: bool = False
     train_batch_size: int = 2
     val_batch_size: int = 2
     num_workers: int = 0
@@ -628,10 +642,13 @@ class CalvinDataConfig(DataConfig):
     frame_stride: int = 1
     sample_stride: int = 1
     episode_cache_size: int = 2
-    train_fraction: float = 0.95
+    train_fraction: float = 1.0
     split_seed: int = 0
     max_train_episodes: int | None = None
     max_val_episodes: int | None = None
+    replay_status_path: str | None = None
+    replay_status_policy: ReplayStatusPolicy = ReplayStatusPolicy.INCLUDE_ALL
+    require_replay_status: bool = False
     train_batch_size: int = 2
     val_batch_size: int = 2
     num_workers: int = 0
@@ -718,10 +735,13 @@ class LeRobotConsortiumDataConfig(DataConfig):
     frame_stride: int = 1
     sample_stride: int = 1
     episode_cache_size: int = 2
-    train_fraction: float = 0.95
+    train_fraction: float = 1.0
     split_seed: int = 0
     max_train_episodes: int | None = None
     max_val_episodes: int | None = None
+    replay_status_path: str | None = None
+    replay_status_policy: ReplayStatusPolicy = ReplayStatusPolicy.INCLUDE_ALL
+    require_replay_status: bool = False
     train_batch_size: int = 2
     val_batch_size: int = 2
     num_workers: int = 0

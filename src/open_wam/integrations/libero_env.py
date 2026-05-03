@@ -98,8 +98,11 @@ def ensure_local_libero_config(project_root: Path | None = None) -> Path:
         "assets": str((libero_package_root / "assets").resolve()),
     }
     config_path = config_dir / "config.yaml"
-    with config_path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(config, handle, sort_keys=False)
+    config_text = yaml.safe_dump(config, sort_keys=False)
+    if not config_path.is_file() or config_path.read_text(encoding="utf-8") != config_text:
+        tmp_path = config_path.with_name(f"{config_path.name}.{os.getpid()}.tmp")
+        tmp_path.write_text(config_text, encoding="utf-8")
+        tmp_path.replace(config_path)
 
     os.environ["LIBERO_CONFIG_PATH"] = str(config_dir)
     return config_path

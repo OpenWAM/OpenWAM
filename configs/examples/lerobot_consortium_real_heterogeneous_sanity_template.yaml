@@ -84,7 +84,7 @@ data:
   episode_cache_size: 2
 
   # Split policy controls.
-  train_fraction: 0.95
+  train_fraction: 1.0
   split_seed: 7
   max_train_episodes: null
   max_val_episodes: null

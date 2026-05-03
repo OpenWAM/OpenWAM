@@ -25,7 +25,7 @@ data:
     predict_blocks_per_sample: 1
     randomize_geometry: true
   episode_cache_size: 2
-  train_fraction: 0.95
+  train_fraction: 1.0
   split_seed: 0
   train_batch_size: 1
   val_batch_size: 1

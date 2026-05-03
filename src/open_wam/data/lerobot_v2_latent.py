@@ -31,6 +31,7 @@ from .action_mapping import (
 )
 from .latent_contracts import LatentWAMSample
 from .lerobot_v2 import LeRobotEpisodeRecord, LeRobotV2Metadata, _resolve_row_key
+from .replay_status import filter_episode_indices_by_replay_status, load_replay_status_records
 
 
 _LATENT_FILE_PATTERN = re.compile(r"episode_(?P<episode>\d{6})_(?P<start>\d+)_(?P<end>\d+)\.pth$")
@@ -1369,6 +1370,18 @@ def build_local_lerobot_latent_train_val_datasets(
     for bundle in bundles:
         repo_windows = scan_local_latent_windows(bundle.root, data_config)
         repo_episodes = [episode.episode_index for episode in bundle.metadata.episodes]
+        replay_status_records, replay_status_path = load_replay_status_records(
+            bundle.root,
+            replay_status_path=data_config.replay_status_path,
+            require=data_config.require_replay_status,
+        )
+        repo_episodes, _ = filter_episode_indices_by_replay_status(
+            repo_episodes,
+            replay_status_records=replay_status_records,
+            policy=data_config.replay_status_policy,
+            require_labeled=bool(replay_status_records) or bool(data_config.require_replay_status),
+            source_path=replay_status_path,
+        )
         train_episodes, repo_val_episodes = split_local_episode_indices(
             episode_indices=repo_episodes,
             train_fraction=data_config.train_fraction,

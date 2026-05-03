@@ -51,13 +51,72 @@ def test_build_dataset_episodes_uses_task_local_rank() -> None:
         task_text_to_task_name={"task a": "task_a", "task b": "task_b"},
     )
 
-    assert [(episode.dataset_episode_index, episode.task_id, episode.episode_idx) for episode in episodes] == [
-        (0, 7, 0),
-        (1, 8, 0),
-        (2, 7, 1),
-        (3, 8, 1),
-        (4, 7, 2),
+    assert [
+        (episode.dataset_episode_index, episode.episode_id, episode.task_id, episode.episode_idx, episode.init_id)
+        for episode in episodes
+    ] == [
+        (0, 0, 7, 0, 0),
+        (1, 1, 8, 0, 0),
+        (2, 2, 7, 1, 1),
+        (3, 3, 8, 1, 1),
+        (4, 4, 7, 2, 2),
     ]
+
+
+def test_filter_dataset_episodes_by_replay_status_filters_distribution_candidates() -> None:
+    episodes = [
+        sampled_eval.DatasetEpisode(
+            dataset_episode_index=index,
+            task_text="task",
+            task_index=0,
+            task_id=0,
+            task_name=None,
+            episode_idx=index,
+            length=10,
+        )
+        for index in range(3)
+    ]
+    records = {
+        0: SimpleNamespace(replay_status="success"),
+        1: SimpleNamespace(replay_status="failure"),
+        2: SimpleNamespace(replay_status="success"),
+    }
+
+    filtered, report = sampled_eval.filter_dataset_episodes_by_replay_status(
+        episodes,
+        policy="successful_only",
+        replay_status_records=records,
+        require_replay_status=True,
+        source_path=None,
+    )
+
+    assert [episode.dataset_episode_index for episode in filtered] == [0, 2]
+    assert report.filtered_episodes == 1
+
+
+def test_filter_dataset_episodes_by_replay_status_rejects_failed_task_axis_request() -> None:
+    episodes = [
+        sampled_eval.DatasetEpisode(
+            dataset_episode_index=0,
+            task_text="task",
+            task_index=0,
+            task_id=0,
+            task_name=None,
+            episode_idx=0,
+            length=10,
+        )
+    ]
+    records = {0: SimpleNamespace(replay_status="failure")}
+
+    with pytest.raises(ValueError, match="do not satisfy replay_status_policy"):
+        sampled_eval.filter_dataset_episodes_by_replay_status(
+            episodes,
+            policy="successful_only",
+            replay_status_records=records,
+            require_replay_status=True,
+            source_path=None,
+            task_axis_validation=True,
+        )
 
 
 def test_resolve_task_ids_uses_requested_benchmark(monkeypatch) -> None:
@@ -273,6 +332,28 @@ def test_sample_warnings_flag_undercovered_dataset_distribution() -> None:
     ]
 
 
+def test_replay_status_warnings_distinguish_empty_present_status_file() -> None:
+    report = sampled_eval.ReplayStatusFilterReport(
+        source_path="/tmp/replay_status.jsonl",
+        policy="successful_only",
+        require_replay_status=False,
+        total_episodes=2,
+        labeled_episodes=0,
+        kept_episodes=2,
+        filtered_episodes=0,
+        status_counts={},
+        missing_status_file=False,
+    )
+
+    warnings = sampled_eval.build_replay_status_warnings(report)
+
+    assert warnings == [
+        "Replay-status policy 'successful_only' was requested, but the replay-status file contains "
+        "no labels for the selected dataset episodes; sampling fell back to all selected episodes. "
+        "Pass --require-replay-status to make an empty or incomplete status file fatal."
+    ]
+
+
 def test_parse_int_selector_supports_lists_and_half_open_ranges() -> None:
     assert sampled_eval.parse_int_selector("0,2:5,4,8:12:2") == [0, 2, 3, 4, 8, 10]
 
@@ -314,6 +395,80 @@ def test_select_task_episode_axis_matches_upstream_task_ids() -> None:
         (0, 1, 251),
     ]
     assert allocations == {"tomato": 2}
+
+
+def test_select_full_task_init_axis_enumerates_benchmark_init_ids() -> None:
+    episodes = [
+        sampled_eval.DatasetEpisode(
+            dataset_episode_index=index,
+            task_text="task 0",
+            task_index=0,
+            task_id=0,
+            task_name="task_0",
+            episode_idx=index,
+            length=10,
+        )
+        for index in range(2)
+    ] + [
+        sampled_eval.DatasetEpisode(
+            dataset_episode_index=10 + index,
+            task_text="task 1",
+            task_index=1,
+            task_id=1,
+            task_name="task_1",
+            episode_idx=index,
+            length=10,
+        )
+        for index in range(3)
+    ]
+
+    selected, allocations = sampled_eval.select_full_task_init_axis(
+        episodes,
+        init_counts_by_task_id={0: 2, 1: 3},
+        task_ids=None,
+        episode_indices=None,
+    )
+
+    assert [(episode.task_id, episode.init_id, episode.dataset_episode_index) for episode in selected] == [
+        (0, 0, 0),
+        (0, 1, 1),
+        (1, 0, 10),
+        (1, 1, 11),
+        (1, 2, 12),
+    ]
+    assert allocations == {"task 0": 2, "task 1": 3}
+
+
+def test_select_full_task_init_axis_rejects_missing_dataset_pairs() -> None:
+    episodes = [
+        sampled_eval.DatasetEpisode(
+            dataset_episode_index=0,
+            task_text="task 0",
+            task_index=0,
+            task_id=0,
+            task_name="task_0",
+            episode_idx=0,
+            length=10,
+        )
+    ]
+
+    with pytest.raises(ValueError, match="task_id=0,init_id=1"):
+        sampled_eval.select_full_task_init_axis(
+            episodes,
+            init_counts_by_task_id={0: 2},
+            task_ids=None,
+            episode_indices=None,
+        )
+
+
+def test_select_full_task_init_axis_rejects_episode_indices_selector() -> None:
+    with pytest.raises(ValueError, match="episode-indices is not used"):
+        sampled_eval.select_full_task_init_axis(
+            [],
+            init_counts_by_task_id={0: 1},
+            task_ids=None,
+            episode_indices="0:1",
+        )
 
 
 def test_select_sampled_episodes_rejects_task_axis_options_in_distribution_mode() -> None:
@@ -380,11 +535,13 @@ def test_build_cases_uses_method_config_scheduler_and_device_templates() -> None
     args = argparse.Namespace(
         python=Path("/venv/bin/python"),
         run_label="matrix",
-        max_actions=3000,
-        env_horizon=5000,
-        target_action_hz=10.0,
-        video_fps=15,
-        deadline_miss_policy="hold_state",
+        eval_profile="libero_10hz_full",
+        max_actions=None,
+        env_horizon=None,
+        target_action_hz=None,
+        video_fps=None,
+        rollout_artifact_profile="lean",
+        deadline_miss_policy=None,
         write_fallback_timeline_video=False,
     )
     episode = sampled_eval.DatasetEpisode(
@@ -395,6 +552,7 @@ def test_build_cases_uses_method_config_scheduler_and_device_templates() -> None
         task_name=None,
         episode_idx=4,
         length=100,
+        replay_status="success",
     )
     method = next(method for method in sampled_eval.METHODS if method.key == "m5")
     checkpoint = sampled_eval.CheckpointSpec(
@@ -425,8 +583,44 @@ def test_build_cases_uses_method_config_scheduler_and_device_templates() -> None
         == "configs/evals/mot_libero_full_segment_non_joint_action_only_eval.yaml"
     )
     assert command[command.index("--reference-assets-device-policy") + 1] == "cpu_offload"
-    assert command[command.index("--runtime-devices") + 1] == "{device}"
+    assert command[command.index("--runtime-device") + 1] == "{device}"
+    assert "--runtime-devices" not in command
+    assert command[command.index("--artifact-profile") + 1] == "lean"
+    assert command[command.index("--eval-profile") + 1] == "libero_10hz_full"
+    assert command[command.index("--realtime-scheduler-profile") + 1] == "freeze_until_clean_chunk"
+    assert "--max-actions" not in command
+    assert "--env-horizon" not in command
+    assert "--video-fps" not in command
     assert command[command.index("--startup-open-loop-chunks") + 1] == "1"
+    assert command[command.index("--episode-idx") + 1] == "4"
+    assert cases[0].episode_id == 12
+    assert cases[0].init_id == 4
+    assert cases[0].replay_status == "success"
+
+
+def test_build_paired_rows_preserves_replay_status() -> None:
+    rows = sampled_eval.build_paired_rows(
+        [
+            {
+                "case": {
+                    "sample_index": 0,
+                    "checkpoint_key": "m1_base",
+                    "dataset_episode_index": 10,
+                    "episode_id": 10,
+                    "task_id": 1,
+                    "task_text": "task",
+                    "init_id": 2,
+                    "episode_idx": 2,
+                    "replay_status": "success",
+                },
+                "status": {"state": "completed", "returncode": 0},
+                "summary": {"success": True, "executed_actions": 15, "fallback_actions": 0},
+                "summary_path": "/tmp/summary.json",
+            }
+        ]
+    )
+
+    assert rows[0]["replay_status"] == "success"
 
 
 def test_build_child_env_preserves_ld_library_path_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -458,14 +652,32 @@ def test_build_child_env_can_clear_ld_library_path(monkeypatch: pytest.MonkeyPat
     assert "LD_LIBRARY_PATH" not in env
 
 
+def test_build_child_env_defaults_to_shell_mujoco_gl(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MUJOCO_GL", "egl")
+    args = argparse.Namespace(
+        local_paths=Path("configs/local_paths.yaml"),
+        libero_repo_root=Path("/data/lingbot_data_exp/LIBERO"),
+        mujoco_gl=None,
+        clear_ld_library_path=False,
+    )
+
+    env = sampled_eval.build_child_env(args)
+
+    assert env["MUJOCO_GL"] == "egl"
+    assert env["PYOPENGL_PLATFORM"] == "egl"
+
+
 def test_results_csv_uses_dynamic_target_columns(tmp_path: Path) -> None:
     summary = {
         "paired_rows": [
             {
                 "sample_index": 0,
                 "dataset_episode_index": 10,
+                "episode_id": 10,
                 "task_id": 1,
+                "init_id": 2,
                 "episode_idx": 2,
+                "replay_status": "success",
                 "task_text": "task",
                 "m2_base_status": "completed",
                 "m2_base_returncode": 0,
@@ -491,4 +703,6 @@ def test_results_csv_uses_dynamic_target_columns(tmp_path: Path) -> None:
         rows = list(csv.DictReader(handle))
     assert "m2_base_success" in rows[0]
     assert "m5_posttrained_status" in rows[0]
+    assert rows[0]["init_id"] == "2"
+    assert rows[0]["replay_status"] == "success"
     assert "posttrained_success" not in rows[0]

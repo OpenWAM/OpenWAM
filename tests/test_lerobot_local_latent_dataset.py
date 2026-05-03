@@ -9,7 +9,7 @@ import pyarrow.parquet as pq
 import pytest
 import torch
 
-from open_wam.configs import WindowSamplingMode
+from open_wam.configs import ReplayStatusPolicy, WindowSamplingMode
 from open_wam.data import build_train_val_latent_datasets
 from open_wam.training import TrainingRuntime
 from open_wam.utils.config_loader import load_experiment_config
@@ -109,6 +109,29 @@ def _build_local_robotwin_latent_repo(
         torch.save(payload, latent_path)
 
 
+def _append_second_latent_episode(repo_root: Path, *, total_rows: int = 20) -> None:
+    info_path = repo_root / "meta" / "info.json"
+    info = json.loads(info_path.read_text(encoding="utf-8"))
+    info["total_episodes"] = 2
+    _write_json(info_path, info)
+    _write_jsonl(
+        repo_root / "meta" / "episodes.jsonl",
+        [
+            {"episode_index": 0, "length": total_rows, "tasks": ["pick up block"]},
+            {"episode_index": 1, "length": total_rows, "tasks": ["pick up block"]},
+        ],
+    )
+    original_rows = pq.read_table(repo_root / "data" / "chunk-000" / "episode_000000.parquet").to_pylist()
+    pq.write_table(
+        pa.Table.from_pylist(original_rows),
+        repo_root / "data" / "chunk-000" / "episode_000001.parquet",
+    )
+    for latent_path in (repo_root / "latents" / "chunk-000").glob("*/episode_000000_*.pth"):
+        episode_one_path = latent_path.with_name(latent_path.name.replace("episode_000000", "episode_000001"))
+        episode_one_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(torch.load(latent_path, map_location="cpu", weights_only=False), episode_one_path)
+
+
 def test_local_lerobot_latent_dataset_builds_canonical_latents(tmp_path: Path) -> None:
     repo_root = tmp_path / "robotwin_local_latent"
     _build_local_robotwin_latent_repo(repo_root)
@@ -139,6 +162,40 @@ def test_local_lerobot_latent_dataset_builds_canonical_latents(tmp_path: Path) -
     assert sample.metadata["observed_frame_ids"] == [0, 1, 2, 3]
     assert sample.metadata["observation_start"] == 0
     assert sample.metadata["observation_frame_indices"] == [0, 1, 2, 3]
+
+
+def test_local_lerobot_latent_dataset_filters_failed_replay_status(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent"
+    _build_local_robotwin_latent_repo(repo_root)
+    _append_second_latent_episode(repo_root)
+    _write_jsonl(
+        repo_root / "meta" / "replay_status.jsonl",
+        [
+            {"dataset_episode_index": 0, "replay_status": "success", "simulator": {"mujoco_gl": "osmesa"}},
+            {"dataset_episode_index": 1, "replay_status": "failure", "simulator": {"mujoco_gl": "osmesa"}},
+        ],
+    )
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            replay_status_policy=ReplayStatusPolicy.SUCCESSFUL_ONLY,
+            require_replay_status=True,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+        ),
+    )
+
+    train_dataset, val_dataset = build_train_val_latent_datasets(config.data)
+
+    assert {window.episode_index for window in train_dataset.windows} == {0}
+    assert {window.episode_index for window in val_dataset.windows} == {0}
 
 
 def test_standard_policy_full_segment_latent_profile_uses_schema_horizon(tmp_path: Path) -> None:
@@ -524,6 +581,7 @@ def test_local_lerobot_latent_dataset_supports_causal_prefix_suffix_sampling(tmp
         data=replace(
             config.data,
             local_root=str(repo_root),
+            empty_text_embedding_path=None,
             train_fraction=1.0,
             num_workers=0,
             train_batch_size=1,

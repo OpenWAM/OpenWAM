@@ -47,6 +47,45 @@ from open_wam.utils import (  # noqa: E402
 VERBOSE = False
 
 
+EVAL_PROFILE_DEFAULTS: dict[str, dict[str, object]] = {
+    "debug_short": {},
+    "libero_10hz_full": {
+        "max_actions": 3000,
+        "env_horizon": 5000,
+        "target_action_hz": 10.0,
+        "deadline_miss_policy": DeadlineMissPolicy.HOLD_STATE.value,
+    },
+}
+
+
+ARTIFACT_PROFILES = ("lean", "standard", "debug")
+
+
+REALTIME_SCHEDULER_PROFILE_DEFAULTS: dict[str, dict[str, object]] = {
+    "manual": {},
+    "blocking_control": {
+        "planner_mode": "history_only",
+        "sequence_empty_plan_policy": "wait_for_replan",
+        "fallback_history_policy": FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY.value,
+        "startup_open_loop_chunks": 0,
+        "replan_low_watermark_actions": 0,
+    },
+    "freeze_until_clean_chunk": {
+        "planner_mode": "history_only",
+        "sequence_empty_plan_policy": "fallback",
+        "fallback_history_policy": FallbackHistoryPolicy.FREEZE_UNTIL_CLEAN_CHUNK.value,
+        "startup_open_loop_chunks": 0,
+        "replan_low_watermark_actions": 0,
+    },
+    "async_history_first": {
+        "planner_mode": "async_history_first",
+        "sequence_empty_plan_policy": "fallback",
+        "fallback_history_policy": FallbackHistoryPolicy.FREEZE_UNTIL_CLEAN_CHUNK.value,
+        "startup_open_loop_chunks": 1,
+    },
+}
+
+
 @dataclass(frozen=True)
 class PlannedControlStep:
     absolute_action_index: int
@@ -97,6 +136,91 @@ class _RolloutRunnerLike(Protocol):
         negative_text_context: torch.Tensor | None = None,
     ):
         ...
+
+
+def _apply_realtime_cli_profiles(args: argparse.Namespace, argv: list[str]) -> None:
+    eval_defaults = EVAL_PROFILE_DEFAULTS.get(str(args.eval_profile))
+    if eval_defaults is None:
+        raise ValueError(f"Unsupported eval profile: {args.eval_profile!r}")
+    _apply_cli_profile_defaults(
+        args,
+        argv,
+        eval_defaults,
+        flag_aliases={
+            "max_actions": ("--max-actions",),
+            "env_horizon": ("--env-horizon",),
+            "target_action_hz": ("--target-action-hz",),
+            "video_fps": ("--video-fps",),
+            "deadline_miss_policy": ("--deadline-miss-policy",),
+        },
+    )
+
+    scheduler_defaults = REALTIME_SCHEDULER_PROFILE_DEFAULTS.get(str(args.realtime_scheduler_profile))
+    if scheduler_defaults is None:
+        raise ValueError(f"Unsupported realtime scheduler profile: {args.realtime_scheduler_profile!r}")
+    _apply_cli_profile_defaults(
+        args,
+        argv,
+        scheduler_defaults,
+        flag_aliases={
+            "planner_mode": ("--planner-mode",),
+            "sequence_empty_plan_policy": ("--sequence-empty-plan-policy",),
+            "fallback_history_policy": ("--fallback-history-policy",),
+            "startup_open_loop_chunks": ("--startup-open-loop-chunks",),
+            "replan_low_watermark_actions": ("--replan-low-watermark-actions", "--periodic-replan-frames"),
+        },
+    )
+
+
+def _apply_cli_profile_defaults(
+    args: argparse.Namespace,
+    argv: list[str],
+    defaults: dict[str, object],
+    *,
+    flag_aliases: dict[str, tuple[str, ...]],
+) -> None:
+    for attr, value in defaults.items():
+        if _cli_flag_present(argv, *flag_aliases.get(attr, ())):
+            continue
+        setattr(args, attr, value)
+
+
+def _cli_flag_present(argv: list[str], *flags: str) -> bool:
+    for token in argv:
+        for flag in flags:
+            if token == flag or token.startswith(f"{flag}="):
+                return True
+    return False
+
+
+def _artifact_profile_writes_rollout_video(artifact_profile: str) -> bool:
+    return artifact_profile in {"standard", "debug"}
+
+
+def _artifact_profile_writes_debug_artifacts(artifact_profile: str) -> bool:
+    return artifact_profile in {"standard", "debug"}
+
+
+def _artifact_profile_writes_fallback_timeline_video(
+    artifact_profile: str,
+    *,
+    write_fallback_timeline_video: bool,
+) -> bool:
+    return artifact_profile == "debug" or bool(write_fallback_timeline_video)
+
+
+def _artifact_profile_collects_video_records(
+    artifact_profile: str,
+    *,
+    write_fallback_timeline_video: bool,
+) -> bool:
+    return (
+        _artifact_profile_writes_rollout_video(artifact_profile)
+        or _artifact_profile_writes_fallback_timeline_video(
+            artifact_profile,
+            write_fallback_timeline_video=write_fallback_timeline_video,
+        )
+    )
 
 
 def main() -> None:
@@ -160,11 +284,30 @@ def main() -> None:
     parser.add_argument("--target-action-hz", type=float, default=10.0)
     parser.add_argument("--video-fps", type=float, default=None)
     parser.add_argument(
+        "--eval-profile",
+        choices=tuple(EVAL_PROFILE_DEFAULTS),
+        default="debug_short",
+        help=(
+            "Named rollout defaults. `debug_short` preserves the historical short sandbox defaults. "
+            "`libero_10hz_full` sets the long 10 Hz LIBERO eval protocol used by sampled evals."
+        ),
+    )
+    parser.add_argument(
         "--write-fallback-timeline-video",
         action="store_true",
         help=(
             "Also render a debug MP4 that includes fallback-history decisions and the full fallback timeline. "
             "Disabled by default because it duplicates frame materialization and video encoding work."
+        ),
+    )
+    parser.add_argument(
+        "--artifact-profile",
+        choices=ARTIFACT_PROFILES,
+        default="standard",
+        help=(
+            "Output artifact set. `lean` writes only the summary JSON and any explicitly requested startup debug dump; "
+            "`standard` preserves the historical rollout MP4, trace JSONL files, and load report; "
+            "`debug` also writes the fallback-timeline MP4."
         ),
     )
     parser.add_argument("--runtime-device", type=str, default=None)
@@ -218,6 +361,12 @@ def main() -> None:
         type=str,
         choices=("history_only", "async_buffer", "async_mix", "async_history_first"),
         default="async_buffer",
+    )
+    parser.add_argument(
+        "--realtime-scheduler-profile",
+        choices=tuple(REALTIME_SCHEDULER_PROFILE_DEFAULTS),
+        default="manual",
+        help="Named realtime scheduler defaults; explicit low-level scheduler flags still override the profile.",
     )
     parser.add_argument("--sequence-buffer-threshold", type=int, default=3)
     parser.add_argument(
@@ -288,6 +437,7 @@ def main() -> None:
     )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
+    _apply_realtime_cli_profiles(args, sys.argv[1:])
 
     if args.max_actions <= 0:
         raise ValueError("--max-actions must be positive.")
@@ -381,6 +531,7 @@ def main() -> None:
             fallback_history_policy=fallback_history_policy,
             replan_low_watermark_actions=args.replan_low_watermark_actions,
             write_fallback_timeline_video=args.write_fallback_timeline_video,
+            artifact_profile=args.artifact_profile,
             debug_startup_dump=args.debug_startup_dump,
         )
     elif policy_name == "video_sequence_policy":
@@ -418,6 +569,7 @@ def main() -> None:
             action_guidance_scale=args.action_guidance_scale,
             initial_generation_action_start=args.initial_generation_action_start,
             write_fallback_timeline_video=args.write_fallback_timeline_video,
+            artifact_profile=args.artifact_profile,
         )
     elif policy_name in {"post_latent", "post_decoded"}:
         summary = _run_sequence_policy_realtime_rollout(
@@ -454,6 +606,7 @@ def main() -> None:
             action_guidance_scale=args.action_guidance_scale,
             initial_generation_action_start=args.initial_generation_action_start,
             write_fallback_timeline_video=args.write_fallback_timeline_video,
+            artifact_profile=args.artifact_profile,
         )
     elif policy_name == "mot":
         summary = _run_sequence_policy_realtime_rollout(
@@ -490,6 +643,7 @@ def main() -> None:
             action_guidance_scale=args.action_guidance_scale,
             initial_generation_action_start=args.initial_generation_action_start,
             write_fallback_timeline_video=args.write_fallback_timeline_video,
+            artifact_profile=args.artifact_profile,
         )
     else:
         raise ValueError(
@@ -1025,6 +1179,7 @@ def _run_exact_like_realtime_rollout(
     fallback_history_policy: FallbackHistoryPolicy,
     replan_low_watermark_actions: int,
     write_fallback_timeline_video: bool,
+    artifact_profile: str,
     debug_startup_dump: bool,
 ) -> dict[str, Any]:
     replan_low_watermark_actions = int(replan_low_watermark_actions)
@@ -1155,6 +1310,10 @@ def _run_exact_like_realtime_rollout(
 
         action_records: list[dict[str, Any]] = []
         action_video_records: list[dict[str, Any]] = []
+        collect_video_records = _artifact_profile_collects_video_records(
+            artifact_profile,
+            write_fallback_timeline_video=write_fallback_timeline_video,
+        )
         replan_records: list[dict[str, Any]] = []
         extension_records: list[dict[str, Any]] = []
         startup_open_loop_s = 0.0
@@ -1523,12 +1682,13 @@ def _run_exact_like_realtime_rollout(
                         "wait_for_plan_s": float(wait_for_plan_s),
                     }
                     action_records.append(action_record)
-                    action_video_records.append(
-                        {
-                            **action_record,
-                            "obs": {key: np.array(value, copy=True) for key, value in extracted_obs.items()},
-                        }
-                    )
+                    if collect_video_records:
+                        action_video_records.append(
+                            {
+                                **action_record,
+                                "obs": {key: np.array(value, copy=True) for key, value in extracted_obs.items()},
+                            }
+                        )
                     if VERBOSE and real_action_index % 50 == 0:
                         _print_stage(
                             "exact_like_action_progress",
@@ -1788,6 +1948,7 @@ def _run_exact_like_realtime_rollout(
             video_fps=video_fps or target_action_hz,
             action_per_frame=action_per_frame,
             write_fallback_timeline_video=write_fallback_timeline_video,
+            artifact_profile=artifact_profile,
             startup_debug_report=startup_debug_report,
         )
     finally:
@@ -2091,6 +2252,7 @@ def _run_sequence_policy_realtime_rollout(
     action_guidance_scale: float | None,
     initial_generation_action_start: int | None,
     write_fallback_timeline_video: bool,
+    artifact_profile: str,
 ) -> dict[str, Any]:
     _apply_common_inference_overrides(
         config,
@@ -2284,6 +2446,10 @@ def _run_sequence_policy_realtime_rollout(
             startup_infer_s += startup_open_loop_s
         action_records: list[dict[str, Any]] = []
         action_video_records: list[dict[str, Any]] = []
+        collect_video_records = _artifact_profile_collects_video_records(
+            artifact_profile,
+            write_fallback_timeline_video=write_fallback_timeline_video,
+        )
         replan_records: list[dict[str, Any]] = []
         done = False
         last_action = np.zeros((int(config.data.action_schema.action_dim),), dtype=np.float32)
@@ -2562,12 +2728,13 @@ def _run_sequence_policy_realtime_rollout(
                     "history_append_result": history_append_result,
                 }
                 action_records.append(action_record)
-                action_video_records.append(
-                    {
-                        **action_record,
-                        "obs": {key: np.array(value, copy=True) for key, value in current_obs.items()},
-                    }
-                )
+                if collect_video_records:
+                    action_video_records.append(
+                        {
+                            **action_record,
+                            "obs": {key: np.array(value, copy=True) for key, value in current_obs.items()},
+                        }
+                    )
                 if VERBOSE and real_action_index % 50 == 0:
                     _print_stage(
                         f"{rollout_label}_action_progress",
@@ -2839,6 +3006,7 @@ def _run_sequence_policy_realtime_rollout(
             video_fps=video_fps or target_action_hz,
             action_per_frame=1,
             write_fallback_timeline_video=write_fallback_timeline_video,
+            artifact_profile=artifact_profile,
         )
     finally:
         env.close()
@@ -3555,6 +3723,7 @@ def _finalize_rollout_outputs(
     video_fps: float,
     action_per_frame: int,
     write_fallback_timeline_video: bool,
+    artifact_profile: str,
     startup_debug_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     output_stem = exact_sandbox._build_output_stem(
@@ -3566,15 +3735,20 @@ def _finalize_rollout_outputs(
         suffix=suffix,
     )
     output_stem.parent.mkdir(parents=True, exist_ok=True)
-    video_frames = exact_sandbox._build_realtime_video_frames(
-        action_video_records=action_video_records,
-        target_action_hz=float(summary["target_action_hz"]),
-        action_per_frame=action_per_frame,
-    )
-    video_path = output_stem.with_suffix(".mp4")
-    imageio.mimsave(video_path, video_frames, fps=float(video_fps))
-    summary["video_path"] = str(video_path.resolve())
-    if write_fallback_timeline_video:
+    summary["artifact_profile"] = str(artifact_profile)
+    if _artifact_profile_writes_rollout_video(artifact_profile):
+        video_frames = exact_sandbox._build_realtime_video_frames(
+            action_video_records=action_video_records,
+            target_action_hz=float(summary["target_action_hz"]),
+            action_per_frame=action_per_frame,
+        )
+        video_path = output_stem.with_suffix(".mp4")
+        imageio.mimsave(video_path, video_frames, fps=float(video_fps))
+        summary["video_path"] = str(video_path.resolve())
+    if _artifact_profile_writes_fallback_timeline_video(
+        artifact_profile,
+        write_fallback_timeline_video=write_fallback_timeline_video,
+    ):
         fallback_timeline_frames = exact_sandbox._build_fallback_timeline_video_frames(
             action_video_records=action_video_records,
             target_action_hz=float(summary["target_action_hz"]),
@@ -3591,16 +3765,18 @@ def _finalize_rollout_outputs(
     load_report_path = output_stem.with_name(f"{output_stem.stem}_load_report.json")
     startup_debug_path = output_stem.with_name(f"{output_stem.stem}_startup_debug.json")
     summary["summary_path"] = str(summary_path.resolve())
-    summary["action_trace_path"] = str(action_trace_path.resolve())
-    summary["replan_trace_path"] = str(replan_trace_path.resolve())
-    summary["extension_trace_path"] = str(extension_trace_path.resolve())
-    summary["load_report_path"] = str(load_report_path.resolve())
+    if _artifact_profile_writes_debug_artifacts(artifact_profile):
+        summary["action_trace_path"] = str(action_trace_path.resolve())
+        summary["replan_trace_path"] = str(replan_trace_path.resolve())
+        summary["extension_trace_path"] = str(extension_trace_path.resolve())
+        summary["load_report_path"] = str(load_report_path.resolve())
     if startup_debug_report is not None:
         summary["startup_debug_path"] = str(startup_debug_path.resolve())
-    exact_sandbox._write_jsonl(action_trace_path, action_records)
-    exact_sandbox._write_jsonl(replan_trace_path, replan_records)
-    exact_sandbox._write_jsonl(extension_trace_path, extension_records)
-    load_report_path.write_text(json.dumps(component_report, indent=2), encoding="utf-8")
+    if _artifact_profile_writes_debug_artifacts(artifact_profile):
+        exact_sandbox._write_jsonl(action_trace_path, action_records)
+        exact_sandbox._write_jsonl(replan_trace_path, replan_records)
+        exact_sandbox._write_jsonl(extension_trace_path, extension_records)
+        load_report_path.write_text(json.dumps(component_report, indent=2), encoding="utf-8")
     if startup_debug_report is not None:
         startup_debug_path.write_text(json.dumps(startup_debug_report, indent=2), encoding="utf-8")
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")

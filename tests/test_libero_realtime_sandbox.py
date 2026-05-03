@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -40,6 +41,107 @@ def _build_exact_history_frame_payload() -> tuple[dict[str, np.ndarray], list[di
         for index in range(4)
     ]
     return current_obs, frame_obs_sequence, frame_actions
+
+
+def test_realtime_profiles_apply_long_libero_defaults_and_scheduler_defaults() -> None:
+    sandbox = _load_sandbox_module()
+    args = SimpleNamespace(
+        eval_profile="libero_10hz_full",
+        realtime_scheduler_profile="blocking_control",
+        max_actions=80,
+        env_horizon=None,
+        target_action_hz=10.0,
+        video_fps=None,
+        deadline_miss_policy="hold_state",
+        planner_mode="async_buffer",
+        sequence_empty_plan_policy="fallback",
+        fallback_history_policy="include_fallback_history",
+        startup_open_loop_chunks=0,
+        replan_low_watermark_actions=0,
+    )
+
+    sandbox._apply_realtime_cli_profiles(args, [])
+
+    assert args.max_actions == 3000
+    assert args.env_horizon == 5000
+    assert args.video_fps is None
+    assert args.planner_mode == "history_only"
+    assert args.sequence_empty_plan_policy == "wait_for_replan"
+
+
+def test_realtime_profiles_preserve_explicit_low_level_overrides() -> None:
+    sandbox = _load_sandbox_module()
+    args = SimpleNamespace(
+        eval_profile="libero_10hz_full",
+        realtime_scheduler_profile="async_history_first",
+        max_actions=120,
+        env_horizon=None,
+        target_action_hz=10.0,
+        video_fps=None,
+        deadline_miss_policy="hold_state",
+        planner_mode="history_only",
+        sequence_empty_plan_policy="fallback",
+        fallback_history_policy="include_fallback_history",
+        startup_open_loop_chunks=0,
+        replan_low_watermark_actions=7,
+    )
+
+    sandbox._apply_realtime_cli_profiles(
+        args,
+        ["--max-actions", "120", "--planner-mode", "history_only", "--replan-low-watermark-actions", "7"],
+    )
+
+    assert args.max_actions == 120
+    assert args.planner_mode == "history_only"
+    assert args.replan_low_watermark_actions == 7
+    assert args.startup_open_loop_chunks == 1
+
+
+def test_finalize_rollout_outputs_lean_skips_videos_and_traces(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox = _load_sandbox_module()
+
+    def fail_if_called(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("lean artifact profile should not render videos or trace files")
+
+    monkeypatch.setattr(sandbox.exact_sandbox, "_build_realtime_video_frames", fail_if_called)
+    monkeypatch.setattr(sandbox.exact_sandbox, "_build_fallback_timeline_video_frames", fail_if_called)
+    monkeypatch.setattr(sandbox.exact_sandbox, "_write_jsonl", fail_if_called)
+    monkeypatch.setattr(sandbox.imageio, "mimsave", fail_if_called)
+
+    summary = sandbox._finalize_rollout_outputs(
+        summary={"target_action_hz": 10.0},
+        action_records=[{"action_index": 0}],
+        action_video_records=[],
+        replan_records=[{"event": "replan"}],
+        extension_records=[{"event": "extension"}],
+        component_report={"checkpoint_file": "/tmp/model_state.pt"},
+        output_dir=tmp_path,
+        benchmark="libero_10",
+        task_id=0,
+        prompt="pick up the black bowl",
+        episode_idx=0,
+        suffix="lean",
+        video_fps=10.0,
+        action_per_frame=1,
+        write_fallback_timeline_video=False,
+        artifact_profile="lean",
+    )
+
+    summary_path = Path(summary["summary_path"])
+    assert summary["artifact_profile"] == "lean"
+    assert summary_path.is_file()
+    assert json.loads(summary_path.read_text(encoding="utf-8"))["artifact_profile"] == "lean"
+    assert "video_path" not in summary
+    assert "action_trace_path" not in summary
+    assert not list(tmp_path.rglob("*.mp4"))
+    assert not list(tmp_path.rglob("*_actions.jsonl"))
+    assert not list(tmp_path.rglob("*_replans.jsonl"))
+    assert not list(tmp_path.rglob("*_extensions.jsonl"))
+    assert not list(tmp_path.rglob("*_load_report.json"))
 
 
 def test_frame_index_to_action_start_matches_exact_realtime_convention() -> None:

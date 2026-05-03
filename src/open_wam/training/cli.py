@@ -8,7 +8,7 @@ from typing import Any, Mapping
 
 import yaml
 
-from open_wam.configs import ExperimentConfig, WandBMode
+from open_wam.configs import ExperimentConfig
 from open_wam.utils import load_experiment_config
 
 
@@ -23,12 +23,14 @@ class TrainCliOverrides:
     config_name: str | None = None
     save_root: str | None = None
     checkpoint_dir: str | None = None
+    checkpoint_root: str | None = None
     resume_from: str | None = None
     run_name: str | None = None
     dataset_root: str | None = None
     latent_root: str | None = None
     transformer_subdir: str | None = None
     devices: int | None = None
+    num_steps: int | None = None
     enable_wandb: bool = False
     disable_wandb: bool = False
     wandb_project: str | None = None
@@ -48,12 +50,18 @@ def build_train_arg_parser() -> argparse.ArgumentParser:
         help="Full run output directory. This mirrors LingBot's `save_root` semantics.",
     )
     parser.add_argument("--checkpoint-dir", type=str)
+    parser.add_argument(
+        "--checkpoint-root",
+        type=str,
+        help="Warm-start checkpoint_step_* directory; infers model_state.pt and transformer/ when not overridden.",
+    )
     parser.add_argument("--resume-from", type=str)
     parser.add_argument("--run-name", type=str)
     parser.add_argument("--dataset-root", type=str)
     parser.add_argument("--latent-root", type=str)
     parser.add_argument("--transformer-subdir", type=str)
     parser.add_argument("--devices", type=int)
+    parser.add_argument("--num-steps", type=int)
     parser.add_argument("--enable-wandb", action="store_true")
     parser.add_argument("--disable-wandb", action="store_true")
     parser.add_argument("--wandb-project", type=str)
@@ -77,12 +85,14 @@ def parse_train_cli(argv: list[str] | None = None) -> TrainCliOverrides:
         config_name=args.config_name,
         save_root=args.save_root,
         checkpoint_dir=args.checkpoint_dir,
+        checkpoint_root=args.checkpoint_root,
         resume_from=args.resume_from,
         run_name=args.run_name,
         dataset_root=args.dataset_root,
         latent_root=args.latent_root,
         transformer_subdir=args.transformer_subdir,
         devices=args.devices,
+        num_steps=args.num_steps,
         enable_wandb=args.enable_wandb,
         disable_wandb=args.disable_wandb,
         wandb_project=args.wandb_project,
@@ -141,6 +151,12 @@ def apply_train_cli_overrides(
 
     if overrides.checkpoint_dir is not None:
         update_map["trainer.checkpoint_dir"] = overrides.checkpoint_dir
+    if overrides.checkpoint_root is not None:
+        checkpoint_root = Path(overrides.checkpoint_root).expanduser()
+        if overrides.resume_from is None:
+            update_map["trainer.resume_from"] = str(checkpoint_root / "model_state.pt")
+        if overrides.transformer_subdir is None:
+            update_map["backbone.transformer_subdir"] = str(checkpoint_root / "transformer")
     if overrides.resume_from is not None:
         update_map["trainer.resume_from"] = overrides.resume_from
     if overrides.dataset_root is not None:
@@ -151,6 +167,8 @@ def apply_train_cli_overrides(
         update_map["backbone.transformer_subdir"] = overrides.transformer_subdir
     if overrides.devices is not None:
         update_map["trainer.devices"] = overrides.devices
+    if overrides.num_steps is not None:
+        update_map["training.num_steps"] = overrides.num_steps
     if overrides.enable_wandb:
         update_map["trainer.enable_wandb"] = True
     if overrides.disable_wandb:
@@ -164,7 +182,13 @@ def apply_train_cli_overrides(
 
     update_map.update(parse_override_assignments(overrides.overrides))
     config = apply_config_overrides(config, update_map)
-    return apply_wandb_env_defaults(config, env=env or os.environ)
+    return apply_wandb_env_defaults(
+        config,
+        env=env or os.environ,
+        use_env_project=overrides.wandb_project is None,
+        use_env_entity=overrides.wandb_entity is None,
+        use_env_mode=overrides.wandb_mode is None,
+    )
 
 
 def parse_override_assignments(tokens: tuple[str, ...] | list[str]) -> dict[str, Any]:
@@ -186,16 +210,19 @@ def apply_wandb_env_defaults(
     config: ExperimentConfig,
     *,
     env: Mapping[str, str],
+    use_env_project: bool = True,
+    use_env_entity: bool = True,
+    use_env_mode: bool = True,
 ) -> ExperimentConfig:
     if not config.trainer.enable_wandb:
         return config
     updates: dict[str, Any] = {}
-    if config.trainer.wandb_project is None and env.get("WANDB_PROJECT"):
+    if use_env_project and env.get("WANDB_PROJECT"):
         updates["wandb_project"] = env["WANDB_PROJECT"]
     entity = env.get("WANDB_ENTITY") or env.get("WANDB_TEAM_NAME")
-    if config.trainer.wandb_entity is None and entity:
+    if use_env_entity and entity:
         updates["wandb_entity"] = entity
-    if config.trainer.wandb_mode == WandBMode.DISABLED and env.get("WANDB_MODE"):
+    if use_env_mode and env.get("WANDB_MODE"):
         updates["wandb_mode"] = env["WANDB_MODE"]
     if not updates:
         return config

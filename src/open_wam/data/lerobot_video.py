@@ -17,6 +17,7 @@ from open_wam.configs import ActionTargetRepresentation, DataConfig
 from .action_mapping import apply_action_mapping, resolve_action_source_dim
 from .contracts import WAMSample
 from .lerobot_v2 import EpisodeWindow, LeRobotEpisodeRecord, _resolve_row_key
+from .replay_status import filter_episode_indices_by_replay_status, load_replay_status_records
 
 
 @dataclass(frozen=True)
@@ -261,6 +262,18 @@ def build_lerobot_v2_video_train_val_datasets(
         raise ValueError("`lerobot_v2_video` requires `data.local_root`.")
     metadata = load_lerobot_v2_video_metadata(Path(data_config.local_root).expanduser())
     episode_indices = [episode.episode_index for episode in metadata.episodes]
+    replay_status_records, replay_status_path = load_replay_status_records(
+        metadata.repo_root,
+        replay_status_path=data_config.replay_status_path,
+        require=data_config.require_replay_status,
+    )
+    episode_indices, _ = filter_episode_indices_by_replay_status(
+        episode_indices,
+        replay_status_records=replay_status_records,
+        policy=data_config.replay_status_policy,
+        require_labeled=bool(replay_status_records) or bool(data_config.require_replay_status),
+        source_path=replay_status_path,
+    )
     rng = random.Random(data_config.split_seed)
     rng.shuffle(episode_indices)
     train_count = int(len(episode_indices) * data_config.train_fraction)

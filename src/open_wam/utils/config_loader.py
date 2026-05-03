@@ -860,6 +860,12 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         split_seed=data_raw.get("split_seed", data_defaults.split_seed),
         max_train_episodes=data_raw.get("max_train_episodes", data_defaults.max_train_episodes),
         max_val_episodes=data_raw.get("max_val_episodes", data_defaults.max_val_episodes),
+        replay_status_path=data_raw.get("replay_status_path", data_defaults.replay_status_path),
+        replay_status_policy=_coerce_enum(
+            config_enums.ReplayStatusPolicy,
+            data_raw.get("replay_status_policy", data_defaults.replay_status_policy),
+        ),
+        require_replay_status=data_raw.get("require_replay_status", data_defaults.require_replay_status),
         train_batch_size=data_raw.get("train_batch_size", data_defaults.train_batch_size),
         val_batch_size=data_raw.get("val_batch_size", data_defaults.val_batch_size),
         num_workers=data_raw.get("num_workers", data_defaults.num_workers),

@@ -23,6 +23,7 @@ from .action_mapping import (
     resolve_action_source_dim,
 )
 from .contracts import WAMSample
+from .replay_status import filter_episode_indices_by_replay_status, load_replay_status_records
 
 
 def _resolve_row_key(row: dict[str, Any], key: str) -> str:
@@ -428,6 +429,18 @@ def build_lerobot_train_val_episode_split(data_config: DataConfig) -> tuple[list
 
     metadata = load_lerobot_v2_metadata(repo_id=data_config.repo_id, cache_dir=data_config.cache_dir)
     episode_indices = [episode.episode_index for episode in metadata.episodes]
+    replay_status_records, replay_status_path = load_replay_status_records(
+        None,
+        replay_status_path=data_config.replay_status_path,
+        require=data_config.require_replay_status,
+    )
+    episode_indices, _ = filter_episode_indices_by_replay_status(
+        episode_indices,
+        replay_status_records=replay_status_records,
+        policy=data_config.replay_status_policy,
+        require_labeled=bool(replay_status_records) or bool(data_config.require_replay_status),
+        source_path=replay_status_path,
+    )
     rng = random.Random(data_config.split_seed)
     rng.shuffle(episode_indices)
 

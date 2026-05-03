@@ -19,17 +19,17 @@ def test_cli_overrides_map_save_root_and_env_defaults(tmp_path: Path) -> None:
     overrides = TrainCliOverrides(
         config_name="parallel_stream_robotwin_smoke",
         save_root=str(tmp_path / "heng_style_run"),
+        checkpoint_root="/checkpoints/checkpoint_step_400",
         dataset_root="/datasets/local_libero",
         latent_root="/datasets/local_libero/latents",
-        transformer_subdir="/models/runtime_transformer",
         devices=6,
+        num_steps=4,
         enable_wandb=True,
         overrides=(
             "trainer.runtime=composable",
             "trainer.batch_adapter=latents",
             "trainer.loop_policy=steps",
             "trainer.strategy=single_device",
-            "training.num_steps=3",
             "trainer.save_interval=50",
         ),
     )
@@ -48,13 +48,14 @@ def test_cli_overrides_map_save_root_and_env_defaults(tmp_path: Path) -> None:
     assert config.trainer.checkpoint_dir == str(tmp_path / "heng_style_run" / "checkpoints")
     assert config.data.local_root == "/datasets/local_libero"
     assert config.data.latent_root == "/datasets/local_libero/latents"
-    assert config.backbone.transformer_subdir == "/models/runtime_transformer"
+    assert config.trainer.resume_from == "/checkpoints/checkpoint_step_400/model_state.pt"
+    assert config.backbone.transformer_subdir == "/checkpoints/checkpoint_step_400/transformer"
     assert config.trainer.devices == 6
     assert config.trainer.runtime == TrainerRuntimeName.COMPOSABLE
     assert config.trainer.batch_adapter == BatchAdapterName.LATENTS
     assert config.trainer.loop_policy == LoopPolicyName.STEPS
     assert config.trainer.strategy == StrategyName.SINGLE_DEVICE
-    assert config.training.num_steps == 3
+    assert config.training.num_steps == 4
     assert config.trainer.save_interval == 50
     assert config.trainer.enable_wandb is True
     assert config.trainer.wandb_project == "lingbot-va-posttrain-libero"

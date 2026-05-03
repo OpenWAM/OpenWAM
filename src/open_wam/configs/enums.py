@@ -76,6 +76,14 @@ class DataSplit(StrEnum):
     VAL = "val"
 
 
+class ReplayStatusPolicy(StrEnum):
+    """How dataset replay labels constrain episode selection."""
+
+    INCLUDE_ALL = "include_all"
+    SUCCESSFUL_ONLY = "successful_only"
+    FAILURE_ONLY = "failure_only"
+
+
 class ActionMappingMode(StrEnum):
     """How data-layer action targets are mapped into model-facing dimensions."""
 

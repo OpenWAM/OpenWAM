@@ -544,7 +544,8 @@ case_command() {
   local wandb_mode="$5"
   local smoke="$6"
   shift 6
-  local launcher config_name wandb_flag resume_from transformer_subdir
+  local launcher config_name resume_from transformer_subdir checkpoint_root
+  local -a checkpoint_args wandb_args
   if [[ "${case_key}" == "m1" ]]; then
     launcher="scripts/run_parallel_stream_posttrain_libero.sh"
     config_name="parallel_stream_libero_lingbot_exact_heng_compatible"
@@ -560,10 +561,17 @@ case_command() {
   fi
   resume_from="$(resolve_case_resume_from "${case_key}" "${save_root}")"
   transformer_subdir="$(resolve_case_transformer_subdir "${case_key}" "${resume_from}")"
+  checkpoint_root="${resume_from}"
+  if [[ -f "${resume_from}" ]]; then
+    checkpoint_root="$(dirname "${resume_from}")"
+  fi
+  checkpoint_args=(--checkpoint-root "${checkpoint_root}")
+  if [[ "${resume_from}" != "${checkpoint_root}/model_state.pt" || "${transformer_subdir}" != "${checkpoint_root}/transformer" ]]; then
+    checkpoint_args=(--resume-from "${resume_from}" --transformer-subdir "${transformer_subdir}")
+  fi
+  wandb_args=()
   if [[ "${smoke}" == "1" ]]; then
-    wandb_flag="--disable-wandb"
-  else
-    wandb_flag="--enable-wandb"
+    wandb_args=(--disable-wandb)
   fi
 
   log "case_config: ${case_key}: resume_from=${resume_from} transformer_subdir=${transformer_subdir}"
@@ -572,15 +580,10 @@ case_command() {
   WANDB_PROJECT="${WANDB_PROJECT_NAME}" \
   bash "${launcher}" \
     --save-root "${save_root}" \
-    --resume-from "${resume_from}" \
-    --transformer-subdir "${transformer_subdir}" \
-    "${wandb_flag}" \
-    --wandb-mode "${wandb_mode}" \
-    --wandb-project "${WANDB_PROJECT_NAME}" \
-    --set "data.local_root=${DATA_ROOT}" \
-    --set "data.empty_text_embedding_path=${EMPTY_TEXT_EMB}" \
-    --set "backbone.pretrained_model_name_or_path=${LINGBOT_BASE}" \
-    --set "training.num_steps=${num_steps}" \
+    "${checkpoint_args[@]}" \
+    "${wandb_args[@]}" \
+    --dataset-root "${DATA_ROOT}" \
+    --num-steps "${num_steps}" \
     "$@"
 }
 

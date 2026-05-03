@@ -82,7 +82,7 @@ data:
   sample_stride: 1
   episode_cache_size: 2
 
-  train_fraction: 0.95
+  train_fraction: 1.0
   split_seed: 7
   max_train_episodes: null
   max_val_episodes: null

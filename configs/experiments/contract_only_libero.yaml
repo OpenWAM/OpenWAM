@@ -12,7 +12,7 @@ data:
   frame_stride: 1
   sample_stride: 1
   episode_cache_size: 2
-  train_fraction: 0.95
+  train_fraction: 1.0
   split_seed: 0
   max_train_episodes: 8
   max_val_episodes: 2
