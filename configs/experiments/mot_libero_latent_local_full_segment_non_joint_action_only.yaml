@@ -29,10 +29,18 @@ data:
   num_frames: 4
   frame_stride: 1
   sample_stride: 1
-  # No `sample_construction:` block → defaults to `WindowSamplingMode.FULL_SEGMENT`,
-  # matching method1's `parallel_stream_libero_lingbot_joint_denoise_heng_compatible`.
-  # Each training sample spans the whole episode, so the action expert sees the
-  # same long-horizon distribution as method1.
+  # Segment construction samples latent starts uniformly across all eligible
+  # trajectories, then samples a segment length from the configured range. Tail
+  # overflow is zero-order-held for video/state and masked for missing actions.
+  sample_construction:
+    mode: uniform_segment
+    segment_min_frames: 16
+    segment_max_frames: 64
+    segment_length_stride: 4
+    segment_locality_block_size: 4
+    sample_weight_mode: inverse_task_demo_count
+    sample_weight_min: 0.25
+    sample_weight_max: 4.0
   episode_cache_size: 2
   train_fraction: 1.0
   split_seed: 0
@@ -138,6 +146,12 @@ training:
   enabled_objectives: [action]
   latent_loss_weight: 0.0
   action_loss_weight: 1.0
+  # Full-segment losses are averaged per sample; scale by valid action steps so
+  # long compositional episodes carry transition-proportional signal.
+  sample_loss_weight_mode: valid_action_steps
+  sample_loss_weight_reference_steps: null
+  sample_loss_weight_min: 0.25
+  sample_loss_weight_max: 4.0
   trainable_components: [policy_variant.action_expert]
 
 inference:

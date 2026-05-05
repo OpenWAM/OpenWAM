@@ -53,7 +53,7 @@ def collate_latent_wam_samples(samples: list[LatentWAMSample]) -> LatentWAMBatch
     negative_text_context = _stack_optional_tensor(samples, "negative_text_context")
     canonical_video = _stack_optional_tensor(samples, "canonical_video")
     task_text = tuple(sample.task_text for sample in samples)
-    metadata = tuple(sample.metadata for sample in samples)
+    metadata = tuple(_metadata_with_action_stats(sample) for sample in samples)
     return LatentWAMBatch(
         video_latents=video_latents,
         actions=actions,
@@ -97,3 +97,18 @@ def _stack_optional_tensor(samples: list[LatentWAMSample], field_name: str) -> t
     if any(value is None for value in values):
         raise ValueError(f"Inconsistent optional field '{field_name}' across the latent batch.")
     return torch.stack(values, dim=0)  # type: ignore[arg-type]
+
+
+def _metadata_with_action_stats(sample: LatentWAMSample) -> dict[str, Any]:
+    metadata = dict(sample.metadata)
+    action_mask = sample.action_mask
+    if action_mask is None:
+        valid_steps = int(sample.actions.shape[0])
+        valid_values = int(sample.actions.numel())
+    else:
+        reduced = action_mask.float().sum(dim=-1)
+        valid_steps = int((reduced > 0).sum().item())
+        valid_values = int(action_mask.float().sum().item())
+    metadata.setdefault("valid_action_steps", valid_steps)
+    metadata.setdefault("valid_action_values", valid_values)
+    return metadata

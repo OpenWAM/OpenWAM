@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
 from dataclasses import asdict
 from pathlib import Path
 
@@ -12,14 +11,12 @@ from torch.utils.data.distributed import DistributedSampler
 from open_wam.configs import BatchAdapterName, ExperimentConfig, LoopPolicyName, StrategyName, TrainerRuntimeName
 from open_wam.configs.enums import serialize_enum_values
 from open_wam.data import (
-    WAMSample,
     build_train_val_datasets,
     build_train_val_latent_datasets,
     collate_latent_wam_samples,
     collate_wam_samples,
     resolve_dataset_loader_spec,
 )
-from open_wam.data.latent_contracts import LatentWAMSample
 from open_wam.pipelines import build_variant_pipeline_from_config
 
 from .checkpoints import CheckpointManager
@@ -208,9 +205,7 @@ class TrainingRuntime:
 
     def _run_epoch_loop(self, policy: EpochLoopPolicy) -> None:
         while policy.should_continue(self.train_state):
-            train_sampler = getattr(self.train_loader, "sampler", None)
-            if isinstance(train_sampler, DistributedSampler):
-                train_sampler.set_epoch(self.train_state.epoch_index)
+            _set_sampler_epoch(self.train_loader, self.train_state.epoch_index)
             for batch_idx, batch in enumerate(self.train_loader):
                 if policy.limit_train_batches is not None and batch_idx >= policy.limit_train_batches:
                     break
@@ -220,10 +215,19 @@ class TrainingRuntime:
         self._save_checkpoint(final=True)
 
     def _run_step_loop(self, policy: StepLoopPolicy) -> None:
-        for _, batch in enumerate(_cycle(self.train_loader)):
-            self._train_micro_step(batch)
-            if not policy.should_continue(self.train_state):
-                break
+        while policy.should_continue(self.train_state):
+            _set_sampler_epoch(self.train_loader, self.train_state.epoch_index)
+            saw_batch = False
+            for batch_idx, batch in enumerate(self.train_loader):
+                if policy.limit_train_batches is not None and batch_idx >= policy.limit_train_batches:
+                    break
+                saw_batch = True
+                self._train_micro_step(batch)
+                if not policy.should_continue(self.train_state):
+                    break
+            if not saw_batch:
+                raise ValueError("Step-loop training received no batches from the train dataloader.")
+            self.train_state.epoch_index += 1
         self._run_validation(limit_batches=policy.limit_val_batches)
         self._save_checkpoint(final=True)
 
@@ -350,14 +354,29 @@ class TrainingRuntime:
         return reduced
 
 
+def _set_sampler_epoch(loader: DataLoader, epoch: int) -> None:
+    set_epoch = getattr(getattr(loader, "sampler", None), "set_epoch", None)
+    if callable(set_epoch):
+        set_epoch(int(epoch))
+
+
 def build_runtime_dataloaders(config: ExperimentConfig, strategy) -> tuple[DataLoader, DataLoader]:
     if config.trainer.batch_adapter == BatchAdapterName.LATENTS:
         train_dataset, val_dataset = build_train_val_latent_datasets(config.data)
-        train_sampler = (
-            DistributedSampler(train_dataset, shuffle=True, num_replicas=strategy.world_size, rank=strategy.rank)
-            if strategy.distributed
-            else None
+        train_loader_spec = resolve_dataset_loader_spec(
+            train_dataset,
+            split="train",
+            world_size=strategy.world_size,
+            rank=strategy.rank,
         )
+        train_sampler = train_loader_spec.sampler
+        if train_sampler is None and strategy.distributed:
+            train_sampler = DistributedSampler(
+                train_dataset,
+                shuffle=True,
+                num_replicas=strategy.world_size,
+                rank=strategy.rank,
+            )
         val_sampler = (
             DistributedSampler(val_dataset, shuffle=False, num_replicas=strategy.world_size, rank=strategy.rank)
             if strategy.distributed
@@ -367,7 +386,7 @@ def build_runtime_dataloaders(config: ExperimentConfig, strategy) -> tuple[DataL
             DataLoader(
                 train_dataset,
                 batch_size=config.data.train_batch_size,
-                shuffle=train_sampler is None,
+                shuffle=train_sampler is None and train_loader_spec.shuffle,
                 num_workers=config.data.num_workers,
                 sampler=train_sampler,
                 collate_fn=collate_latent_wam_samples,
@@ -472,9 +491,3 @@ def should_use_composable_runtime(config: ExperimentConfig) -> bool:
     if config.trainer.strategy not in {StrategyName.LIGHTNING, StrategyName.SINGLE_DEVICE}:
         return True
     return False
-
-
-def _cycle(loader: DataLoader) -> Iterator[WAMSample | LatentWAMSample]:
-    while True:
-        for batch in loader:
-            yield batch

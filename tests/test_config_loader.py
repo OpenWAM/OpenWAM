@@ -25,6 +25,7 @@ from open_wam.configs import (
     PostDecodedPolicyConfig,
     PostLatentPolicyConfig,
     AnchorPolicy,
+    SampleWeightMode,
     ReferenceCoreInitMode,
     RegisterAttachedPolicyConfig,
     TemporalPositionMode,
@@ -655,12 +656,19 @@ def test_sample_construction_yaml_strings_are_coerced_to_enum_members(tmp_path: 
 
     raw.setdefault("data", {})
     raw["data"]["sample_construction"] = {
-        "mode": "aligned_subwindow",
+        "mode": "uniform_segment",
         "anchor_policy": "random_valid",
         "num_frames": 5,
         "action_horizon": 20,
         "state_horizon": 2,
         "frame_stride": 1,
+        "segment_min_frames": 8,
+        "segment_max_frames": 32,
+        "segment_length_stride": 4,
+        "segment_locality_block_size": 3,
+        "sample_weight_mode": "valid_action_steps_x_inverse_task_demo_count",
+        "sample_weight_min": 0.25,
+        "sample_weight_max": 4.0,
     }
 
     config_path = tmp_path / "register_attached_sample_construction.yaml"
@@ -669,11 +677,18 @@ def test_sample_construction_yaml_strings_are_coerced_to_enum_members(tmp_path: 
 
     config = load_experiment_config(config_path)
 
-    assert config.data.sample_construction.mode == WindowSamplingMode.ALIGNED_SUBWINDOW
+    assert config.data.sample_construction.mode == WindowSamplingMode.UNIFORM_SEGMENT
     assert config.data.sample_construction.anchor_policy == AnchorPolicy.RANDOM_VALID
     assert config.data.sample_construction.num_frames == 5
     assert config.data.sample_construction.action_horizon == 20
     assert config.data.sample_construction.state_horizon == 2
+    assert config.data.sample_construction.segment_min_frames == 8
+    assert config.data.sample_construction.segment_max_frames == 32
+    assert config.data.sample_construction.segment_length_stride == 4
+    assert config.data.sample_construction.segment_locality_block_size == 3
+    assert config.data.sample_construction.sample_weight_mode == SampleWeightMode.VALID_ACTION_STEPS_X_INVERSE_TASK_DEMO_COUNT
+    assert config.data.sample_construction.sample_weight_min == pytest.approx(0.25)
+    assert config.data.sample_construction.sample_weight_max == pytest.approx(4.0)
 
 
 def test_contextual_sample_construction_and_temporal_position_mode_load(tmp_path: Path) -> None:

@@ -25,6 +25,7 @@ from .enums import (
     LatentWindowProfile,
     ReplayStatusPolicy,
     RotationRepresentation,
+    SampleWeightMode,
     TemporalPositionMode,
     WindowSamplingMode,
     coerce_fields,
@@ -282,6 +283,13 @@ class SampleConstructionConfig:
     window_size: int = 1
     predict_blocks_per_sample: int = 1
     randomize_geometry: bool = True
+    segment_min_frames: int | None = None
+    segment_max_frames: int | None = None
+    segment_length_stride: int = 1
+    segment_locality_block_size: int = 4
+    sample_weight_mode: SampleWeightMode = SampleWeightMode.UNIFORM
+    sample_weight_min: float | None = None
+    sample_weight_max: float | None = None
     causal_prefix_suffix_buckets: tuple[CausalPrefixSuffixBucketConfig, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
@@ -290,8 +298,33 @@ class SampleConstructionConfig:
             enum_fields={
                 "mode": WindowSamplingMode,
                 "anchor_policy": AnchorPolicy,
+                "sample_weight_mode": SampleWeightMode,
             },
         )
+        if self.sample_weight_min is not None and self.sample_weight_min < 0:
+            raise ValueError("`sample_construction.sample_weight_min` must be non-negative when set.")
+        if self.sample_weight_max is not None and self.sample_weight_max <= 0:
+            raise ValueError("`sample_construction.sample_weight_max` must be positive when set.")
+        if (
+            self.sample_weight_min is not None
+            and self.sample_weight_max is not None
+            and self.sample_weight_min > self.sample_weight_max
+        ):
+            raise ValueError("`sample_construction.sample_weight_min` cannot exceed `sample_weight_max`.")
+        if self.segment_min_frames is not None and self.segment_min_frames <= 0:
+            raise ValueError("`sample_construction.segment_min_frames` must be positive when set.")
+        if self.segment_max_frames is not None and self.segment_max_frames <= 0:
+            raise ValueError("`sample_construction.segment_max_frames` must be positive when set.")
+        if (
+            self.segment_min_frames is not None
+            and self.segment_max_frames is not None
+            and self.segment_min_frames > self.segment_max_frames
+        ):
+            raise ValueError("`sample_construction.segment_min_frames` cannot exceed `segment_max_frames`.")
+        if self.segment_length_stride <= 0:
+            raise ValueError("`sample_construction.segment_length_stride` must be positive.")
+        if self.segment_locality_block_size <= 0:
+            raise ValueError("`sample_construction.segment_locality_block_size` must be positive.")
         for bucket in self.causal_prefix_suffix_buckets:
             if bucket.observed_frames <= 0 or bucket.future_frames <= 0:
                 raise ValueError(

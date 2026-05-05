@@ -15,6 +15,7 @@ except ModuleNotFoundError:
 
 from open_wam.configs import (
     ExperimentConfig,
+    SampleLossWeightMode,
 )
 from open_wam.configs.enums import serialize_enum_values
 from open_wam.data import WAMBatch, move_wam_batch_to_device
@@ -40,6 +41,12 @@ else:
         def __init__(self, config: ExperimentConfig) -> None:
             super().__init__()
             self.config = config
+            if config.training.sample_loss_weight_mode != SampleLossWeightMode.NONE:
+                raise ValueError(
+                    "sample_loss_weight_mode is only supported by the composable runtime because the Lightning "
+                    "training path receives a scalar reduced decoder loss. Set trainer.runtime=composable or disable "
+                    "sample_loss_weight_mode."
+                )
             self.pipeline = build_variant_pipeline_from_config(config)
             self.trainability_report = apply_training_component_controls(self.pipeline, config.training)
             self.save_hyperparameters({"config": serialize_enum_values(asdict(config))})

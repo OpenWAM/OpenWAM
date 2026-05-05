@@ -117,6 +117,7 @@ class WindowSamplingMode(StrEnum):
     """How one training sample is constructed from a latent source segment."""
 
     FULL_SEGMENT = "full_segment"
+    UNIFORM_SEGMENT = "uniform_segment"
     RANDOM_SUBWINDOW = "random_subwindow"
     CONTEXTUAL_SUBWINDOW = "contextual_subwindow"
     ALIGNED_SUBWINDOW = "aligned_subwindow"
@@ -141,6 +142,15 @@ class LatentWindowProfile(StrEnum):
 
     EXACT_CHUNKED_WINDOW = "exact_chunked_window"
     STANDARD_POLICY_WINDOW = "standard_policy_window"
+
+
+class SampleWeightMode(StrEnum):
+    """How local latent datasets weight train-sampler draws."""
+
+    UNIFORM = "uniform"
+    VALID_ACTION_STEPS = "valid_action_steps"
+    INVERSE_TASK_DEMO_COUNT = "inverse_task_demo_count"
+    VALID_ACTION_STEPS_X_INVERSE_TASK_DEMO_COUNT = "valid_action_steps_x_inverse_task_demo_count"
 
 
 class ConsortiumChannelSelectionMode(StrEnum):
@@ -703,6 +713,14 @@ class TrainingObjective(StrEnum):
 
     ACTION = "action"
     LATENT = "latent"
+
+
+class SampleLossWeightMode(StrEnum):
+    """How runtime training loss should be scaled from per-sample metadata."""
+
+    NONE = "none"
+    VALID_ACTION_STEPS = "valid_action_steps"
+    SQRT_VALID_ACTION_STEPS = "sqrt_valid_action_steps"
 
 
 class TrainingComponentSelector(StrEnum):

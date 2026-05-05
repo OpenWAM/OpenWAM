@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections import OrderedDict
+from collections import Counter, OrderedDict
+from collections.abc import Iterator
 from dataclasses import dataclass
 import math
 import json
@@ -12,7 +13,7 @@ from typing import Any
 import pyarrow.parquet as pq
 import torch
 from einops import rearrange
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 
 from open_wam.configs import (
     ActionTargetReferenceSource,
@@ -20,6 +21,7 @@ from open_wam.configs import (
     DataConfig,
     DataSplit,
     LatentWindowProfile,
+    SampleWeightMode,
     WindowSamplingMode,
 )
 
@@ -83,15 +85,128 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             for bundle in discover_local_lerobot_repo_bundles(data_config.local_root)
         }
         self._episode_cache: OrderedDict[tuple[str, int], list[dict[str, Any]]] = OrderedDict()
+        self._latent_view_cache: OrderedDict[
+            tuple[str, int, int, int],
+            tuple[torch.Tensor, dict[str, dict[str, int]], dict[str, Any]],
+        ] = OrderedDict()
 
         if not self.windows:
             raise ValueError(
                 "No valid latent windows were constructed. "
                 f"Check local_root={data_config.local_root!r} and latent_camera_names={data_config.latent_camera_names!r}."
             )
+        self._window_valid_action_steps = tuple(self._estimate_window_valid_action_steps(window) for window in self.windows)
+        self.dataset_mean_valid_action_steps = self._estimate_mean_valid_action_steps()
+        self._window_task_texts = tuple(self._window_task_text(window) for window in self.windows)
+        self._task_demo_counts = self._estimate_task_demo_counts()
+        self.dataset_mean_task_demo_count = self._estimate_mean_task_demo_count()
+        self.sample_weights = self._build_sample_weights()
 
     def __len__(self) -> int:
         return len(self.windows)
+
+    def build_train_sampler(self, *, world_size: int = 1, rank: int = 0) -> Sampler[int] | None:
+        if self.data_config.sample_construction.sample_weight_mode == SampleWeightMode.UNIFORM:
+            return None
+        return LocalLatentWeightedTrainSampler(self, world_size=world_size, rank=rank)
+
+    def _estimate_mean_valid_action_steps(self) -> float:
+        positive_estimates = [value for value in self._window_valid_action_steps if value > 0]
+        if not positive_estimates:
+            return float(max(1, self.data_config.action_schema.action_horizon))
+        return float(sum(positive_estimates) / len(positive_estimates))
+
+    def _estimate_window_valid_action_steps(self, window: LocalEpisodeWindow) -> int:
+        if (
+            self.data_config.sample_construction.mode == WindowSamplingMode.FULL_SEGMENT
+            and self.data_config.latent_window_profile == LatentWindowProfile.EXACT_CHUNKED_WINDOW
+        ):
+            observed_frame_ids = window.observation_frame_indices
+            frame_stride = 1
+            if len(observed_frame_ids) > 1:
+                frame_stride = max(1, int(observed_frame_ids[1] - observed_frame_ids[0]))
+            prefix_actions = frame_stride * int(
+                self.data_config.action_schema.action_horizon // max(1, self.data_config.num_frames)
+            )
+            window_span = max(0, window.end_frame - window.start_frame)
+            raw_action_steps = max(len(observed_frame_ids), window_span)
+            return max(0, int(prefix_actions + raw_action_steps))
+        if self.data_config.sample_construction.mode == WindowSamplingMode.CAUSAL_PREFIX_SUFFIX:
+            return 0
+        return max(0, int(self.data_config.action_schema.action_horizon))
+
+    def _window_task_text(self, window: LocalEpisodeWindow) -> str:
+        repo_bundle = self._repo_bundles.get(str(window.repo_root))
+        if repo_bundle is not None:
+            episode_record = repo_bundle.episodes_by_index.get(window.episode_index)
+            if episode_record is not None and episode_record.tasks:
+                return str(episode_record.tasks[0])
+        return f"{window.repo_root}:episode:{window.episode_index}"
+
+    def _estimate_task_demo_counts(self) -> Counter[str]:
+        demo_keys_by_task: dict[str, set[tuple[str, int]]] = {}
+        for window, task_text in zip(self.windows, self._window_task_texts, strict=True):
+            demo_keys_by_task.setdefault(task_text, set()).add((str(window.repo_root), int(window.episode_index)))
+        return Counter({task_text: len(demo_keys) for task_text, demo_keys in demo_keys_by_task.items()})
+
+    def _estimate_mean_task_demo_count(self) -> float:
+        if not self._task_demo_counts:
+            return 1.0
+        return float(sum(self._task_demo_counts.values()) / len(self._task_demo_counts))
+
+    def _build_sample_weights(self) -> tuple[float, ...]:
+        mode = self.data_config.sample_construction.sample_weight_mode
+        if mode == SampleWeightMode.UNIFORM:
+            return tuple(1.0 for _ in self.windows)
+
+        reference_steps = max(1.0, float(self.dataset_mean_valid_action_steps))
+        reference_task_count = max(1.0, float(self.dataset_mean_task_demo_count))
+        weights: list[float] = []
+        for index, valid_steps in enumerate(self._window_valid_action_steps):
+            weight = 1.0
+            if mode in {
+                SampleWeightMode.VALID_ACTION_STEPS,
+                SampleWeightMode.VALID_ACTION_STEPS_X_INVERSE_TASK_DEMO_COUNT,
+            }:
+                weight *= max(1.0, float(valid_steps)) / reference_steps
+            if mode in {
+                SampleWeightMode.INVERSE_TASK_DEMO_COUNT,
+                SampleWeightMode.VALID_ACTION_STEPS_X_INVERSE_TASK_DEMO_COUNT,
+            }:
+                task_count = max(1, self._task_demo_counts[self._window_task_texts[index]])
+                weight *= reference_task_count / float(task_count)
+            if self.data_config.sample_construction.sample_weight_min is not None:
+                weight = max(float(self.data_config.sample_construction.sample_weight_min), weight)
+            if self.data_config.sample_construction.sample_weight_max is not None:
+                weight = min(float(self.data_config.sample_construction.sample_weight_max), weight)
+            weights.append(float(weight))
+
+        if not any(weight > 0 for weight in weights):
+            return tuple(1.0 for _ in self.windows)
+        return tuple(weights)
+
+    def _sample_weight_metadata(self, index: int) -> dict[str, Any]:
+        task_text = self._window_task_texts[index]
+        return {
+            "train_sample_weight": self.sample_weights[index],
+            "train_sample_weight_mode": self.data_config.sample_construction.sample_weight_mode,
+            "eligible_task_demo_count": self._task_demo_counts[task_text],
+            "dataset_mean_eligible_task_demo_count": self.dataset_mean_task_demo_count,
+        }
+
+    def _action_loss_metadata(self, action_mask: torch.Tensor | None) -> dict[str, Any]:
+        if action_mask is None:
+            valid_steps = int(self.data_config.action_schema.action_horizon)
+            valid_values = valid_steps * int(self.data_config.action_schema.action_dim)
+        else:
+            reduced = action_mask.float().sum(dim=-1)
+            valid_steps = int((reduced > 0).sum().item())
+            valid_values = int(action_mask.float().sum().item())
+        return {
+            "valid_action_steps": valid_steps,
+            "valid_action_values": valid_values,
+            "dataset_mean_valid_action_steps": self.dataset_mean_valid_action_steps,
+        }
 
     def __getitem__(self, index: int) -> LatentWAMSample:
         window = self.windows[index]
@@ -167,6 +282,8 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
                 "state_source_key": state_source_key,
                 "action_representation": self.data_config.action_target.representation,
                 **action_target_metadata,
+                **self._action_loss_metadata(action_mask),
+                **self._sample_weight_metadata(index),
             },
         )
 
@@ -292,6 +409,25 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
         if canonical_latents is None:
             raise ValueError("Expected at least one latent camera payload.")
         return canonical_latents.permute(3, 0, 1, 2).contiguous().to(dtype=torch.float32), metadata
+
+    def _load_canonical_window_latents(
+        self,
+        window: LocalEpisodeWindow,
+        metadata: LeRobotV2Metadata,
+    ) -> tuple[torch.Tensor, dict[str, dict[str, int]], dict[str, Any]]:
+        cache_key = (str(window.repo_root), window.episode_index, window.start_frame, window.end_frame)
+        if cache_key in self._latent_view_cache:
+            self._latent_view_cache.move_to_end(cache_key)
+            return self._latent_view_cache[cache_key]
+
+        latent_payloads = self._load_window_latents(window, metadata)
+        video_latents, latent_layout_metadata = self._assemble_canonical_latents(latent_payloads)
+        primary_payload = dict(latent_payloads[self.data_config.latent_camera_names[0]])
+        payload = (video_latents, latent_layout_metadata, primary_payload)
+        self._latent_view_cache[cache_key] = payload
+        while len(self._latent_view_cache) > max(1, int(self.data_config.episode_cache_size)):
+            self._latent_view_cache.popitem(last=False)
+        return payload
 
     def _build_lingbot_window_action_targets(
         self,
@@ -549,6 +685,495 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
         return boundaries
 
 
+class LocalLatentWeightedTrainSampler(Sampler[int]):
+    """Replacement train sampler for weighted local latent examples."""
+
+    def __init__(self, dataset: LocalLeRobotLatentWindowDataset, *, world_size: int = 1, rank: int = 0) -> None:
+        if len(dataset) <= 0:
+            raise ValueError("Weighted local latent sampling requires a non-empty dataset.")
+        if world_size <= 0:
+            raise ValueError(f"`world_size` must be positive, got {world_size}.")
+        if rank < 0 or rank >= world_size:
+            raise ValueError(f"`rank` must be in [0, world_size), got rank={rank}, world_size={world_size}.")
+        self.dataset = dataset
+        self.world_size = int(world_size)
+        self.rank = int(rank)
+        self.epoch = 0
+        self._num_samples = int(math.ceil(len(dataset) / float(self.world_size)))
+        self._total_size = self._num_samples * self.world_size
+
+    def __len__(self) -> int:
+        return self._num_samples
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def __iter__(self) -> Iterator[int]:
+        weights = torch.tensor(self.dataset.sample_weights, dtype=torch.double)
+        if float(weights.sum().item()) <= 0:
+            weights = torch.ones(len(self.dataset), dtype=torch.double)
+        generator = torch.Generator()
+        seed = (int(self.dataset.data_config.split_seed) + self.epoch * 1_000_003) & 0x7FFF_FFFF_FFFF_FFFF
+        generator.manual_seed(seed)
+        sampled = torch.multinomial(
+            weights,
+            num_samples=self._total_size,
+            replacement=True,
+            generator=generator,
+        ).tolist()
+        return iter(int(index) for index in sampled[self.rank : self._total_size : self.world_size])
+
+
+class LocalLatentEpochOrderSampler(Sampler[int]):
+    """Sampler backed by a dataset-provided epoch order."""
+
+    def __init__(self, dataset: "UniformSegmentLocalLeRobotLatentDataset", *, world_size: int = 1, rank: int = 0) -> None:
+        if len(dataset) <= 0:
+            raise ValueError("Epoch-order local latent sampling requires a non-empty dataset.")
+        if world_size <= 0:
+            raise ValueError(f"`world_size` must be positive, got {world_size}.")
+        if rank < 0 or rank >= world_size:
+            raise ValueError(f"`rank` must be in [0, world_size), got rank={rank}, world_size={world_size}.")
+        self.dataset = dataset
+        self.world_size = int(world_size)
+        self.rank = int(rank)
+        self.epoch = 0
+        self._num_samples = int(math.ceil(len(dataset) / float(self.world_size)))
+        self._total_size = self._num_samples * self.world_size
+
+    def __len__(self) -> int:
+        return self._num_samples
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def __iter__(self) -> Iterator[int]:
+        order = self.dataset.build_epoch_index_order(epoch=self.epoch)
+        if not order:
+            raise ValueError("Epoch-order local latent sampler received an empty order.")
+        if len(order) < self._total_size:
+            repeats = int(math.ceil(self._total_size / len(order)))
+            order = (order * repeats)[: self._total_size]
+        else:
+            order = order[: self._total_size]
+        return iter(int(index) for index in order[self.rank : self._total_size : self.world_size])
+
+
+class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
+    """Uniform latent-start segment sampler over all eligible trajectories."""
+
+    def __init__(self, data_config: DataConfig, windows: list[LocalEpisodeWindow]) -> None:
+        super().__init__(data_config, windows)
+        self._segment_length_candidates = self._resolve_segment_length_candidates()
+        self._virtual_index = self._build_virtual_index()
+        if not self._virtual_index:
+            raise ValueError("Uniform segment sampling requires at least one latent start.")
+        self._virtual_indices_by_window = self._build_virtual_indices_by_window()
+        self.dataset_mean_valid_action_steps = self._estimate_virtual_mean_valid_action_steps()
+        self.sample_weights = self._build_virtual_sample_weights()
+
+    def __len__(self) -> int:
+        return len(self._virtual_index)
+
+    def build_train_sampler(self, *, world_size: int = 1, rank: int = 0) -> Sampler[int]:
+        return LocalLatentEpochOrderSampler(self, world_size=world_size, rank=rank)
+
+    def build_epoch_index_order(self, *, epoch: int) -> list[int]:
+        rng = random.Random(self.data_config.split_seed + epoch * 1_000_003)
+        if self.data_config.sample_construction.sample_weight_mode == SampleWeightMode.UNIFORM:
+            per_window = {
+                window_index: list(indices)
+                for window_index, indices in self._virtual_indices_by_window.items()
+            }
+            for indices in per_window.values():
+                rng.shuffle(indices)
+        else:
+            weights = torch.tensor(self.sample_weights, dtype=torch.double)
+            if float(weights.sum().item()) <= 0:
+                weights = torch.ones(len(self), dtype=torch.double)
+            generator = torch.Generator()
+            generator.manual_seed((self.data_config.split_seed + epoch * 1_000_003) & 0x7FFF_FFFF_FFFF_FFFF)
+            sampled = torch.multinomial(weights, num_samples=len(self), replacement=True, generator=generator).tolist()
+            per_window: dict[int, list[int]] = {}
+            for virtual_index in sampled:
+                window_index, _ = self._virtual_index[int(virtual_index)]
+                per_window.setdefault(window_index, []).append(int(virtual_index))
+            for indices in per_window.values():
+                rng.shuffle(indices)
+
+        window_order = list(per_window)
+        rng.shuffle(window_order)
+        block_size = max(1, int(self.data_config.sample_construction.segment_locality_block_size))
+        ordered: list[int] = []
+        active = list(window_order)
+        while active:
+            next_active: list[int] = []
+            for window_index in active:
+                indices = per_window[window_index]
+                take = indices[:block_size]
+                del indices[:block_size]
+                ordered.extend(take)
+                if indices:
+                    next_active.append(window_index)
+            active = next_active
+        return ordered
+
+    def _resolve_segment_length_candidates(self) -> tuple[int, ...]:
+        sample_cfg = self.data_config.sample_construction
+        min_frames = int(sample_cfg.segment_min_frames or self.data_config.num_frames)
+        max_frames = int(sample_cfg.segment_max_frames or min_frames)
+        stride = max(1, int(sample_cfg.segment_length_stride))
+        if min_frames > max_frames:
+            raise ValueError(
+                "Uniform segment sampling requires segment_min_frames <= segment_max_frames, "
+                f"got min={min_frames}, max={max_frames}."
+            )
+        candidates = list(range(min_frames, max_frames + 1, stride))
+        if candidates[-1] != max_frames:
+            candidates.append(max_frames)
+        return tuple(candidates)
+
+    def _build_virtual_index(self) -> tuple[tuple[int, int], ...]:
+        virtual_index: list[tuple[int, int]] = []
+        for window_index, window in enumerate(self.windows):
+            source_latent_frames = max(1, len(window.observation_frame_indices))
+            for latent_start in range(source_latent_frames):
+                virtual_index.append((window_index, latent_start))
+        return tuple(virtual_index)
+
+    def _build_virtual_indices_by_window(self) -> dict[int, list[int]]:
+        by_window: dict[int, list[int]] = {}
+        for virtual_index, (window_index, _) in enumerate(self._virtual_index):
+            by_window.setdefault(window_index, []).append(virtual_index)
+        return by_window
+
+    def _estimate_virtual_mean_valid_action_steps(self) -> float:
+        estimates = [
+            self._estimate_virtual_valid_action_steps(virtual_index)
+            for virtual_index in range(len(self._virtual_index))
+        ]
+        positive = [value for value in estimates if value > 0]
+        if not positive:
+            return float(max(1, self.data_config.action_schema.action_horizon))
+        return float(sum(positive) / len(positive))
+
+    def _estimate_virtual_valid_action_steps(self, virtual_index: int) -> float:
+        window_index, latent_start = self._virtual_index[virtual_index]
+        window = self.windows[window_index]
+        estimates = [
+            self._estimate_segment_valid_action_steps(
+                window=window,
+                latent_start=latent_start,
+                segment_length=segment_length,
+            )
+            for segment_length in self._segment_length_candidates
+        ]
+        return float(sum(estimates) / len(estimates))
+
+    def _estimate_segment_valid_action_steps(
+        self,
+        *,
+        window: LocalEpisodeWindow,
+        latent_start: int,
+        segment_length: int,
+    ) -> int:
+        raw_frame_ids = list(window.observation_frame_indices)
+        source_latent_frames = len(raw_frame_ids)
+        if not raw_frame_ids or source_latent_frames <= 0:
+            return 0
+        observed_frame_ids = self._segment_observed_frame_ids(
+            raw_frame_ids=raw_frame_ids,
+            source_latent_frames=source_latent_frames,
+            latent_start=latent_start,
+            segment_length=segment_length,
+        )
+        frame_stride = 1
+        if len(observed_frame_ids) > 1:
+            frame_stride = max(1, int(observed_frame_ids[1] - observed_frame_ids[0]))
+        prefix_actions = frame_stride * int(
+            self.data_config.action_schema.action_horizon // max(1, self.data_config.num_frames)
+        )
+        valid_latent_end = min(source_latent_frames, latent_start + segment_length)
+        boundaries = self._build_raw_bucket_boundaries(
+            raw_frame_count=len(raw_frame_ids),
+            latent_num_frames=source_latent_frames,
+        )
+        raw_start_position = min(boundaries[latent_start], len(raw_frame_ids) - 1)
+        raw_end_position = boundaries[valid_latent_end]
+        if raw_end_position <= raw_start_position:
+            raw_end_position = raw_start_position + 1
+        sample_start_frame = raw_frame_ids[raw_start_position]
+        sample_end_frame = raw_frame_ids[min(len(raw_frame_ids) - 1, raw_end_position - 1)] + 1
+        raw_action_steps = max(0, sample_end_frame - sample_start_frame)
+        required_action_steps = max(1, segment_length * prefix_actions)
+        return min(required_action_steps, prefix_actions + raw_action_steps)
+
+    def _build_virtual_sample_weights(self) -> tuple[float, ...]:
+        mode = self.data_config.sample_construction.sample_weight_mode
+        if mode == SampleWeightMode.UNIFORM:
+            return tuple(1.0 for _ in self._virtual_index)
+        reference_steps = max(1.0, float(self.dataset_mean_valid_action_steps))
+        reference_task_count = max(1.0, float(self.dataset_mean_task_demo_count))
+        weights: list[float] = []
+        for virtual_index, (window_index, _) in enumerate(self._virtual_index):
+            weight = 1.0
+            if mode in {
+                SampleWeightMode.VALID_ACTION_STEPS,
+                SampleWeightMode.VALID_ACTION_STEPS_X_INVERSE_TASK_DEMO_COUNT,
+            }:
+                weight *= max(1.0, self._estimate_virtual_valid_action_steps(virtual_index)) / reference_steps
+            if mode in {
+                SampleWeightMode.INVERSE_TASK_DEMO_COUNT,
+                SampleWeightMode.VALID_ACTION_STEPS_X_INVERSE_TASK_DEMO_COUNT,
+            }:
+                task_text = self._window_task_texts[window_index]
+                task_count = max(1, self._task_demo_counts[task_text])
+                weight *= reference_task_count / float(task_count)
+            if self.data_config.sample_construction.sample_weight_min is not None:
+                weight = max(float(self.data_config.sample_construction.sample_weight_min), weight)
+            if self.data_config.sample_construction.sample_weight_max is not None:
+                weight = min(float(self.data_config.sample_construction.sample_weight_max), weight)
+            weights.append(float(weight))
+        if not any(weight > 0 for weight in weights):
+            return tuple(1.0 for _ in self._virtual_index)
+        return tuple(weights)
+
+    def _sample_weight_metadata(self, index: int) -> dict[str, Any]:
+        window_index, _ = self._virtual_index[index]
+        task_text = self._window_task_texts[window_index]
+        return {
+            "train_sample_weight": self.sample_weights[index],
+            "train_sample_weight_mode": self.data_config.sample_construction.sample_weight_mode,
+            "eligible_task_demo_count": self._task_demo_counts[task_text],
+            "dataset_mean_eligible_task_demo_count": self.dataset_mean_task_demo_count,
+        }
+
+    def __getitem__(self, index: int) -> LatentWAMSample:
+        window_index, latent_start = self._virtual_index[index]
+        window = self.windows[window_index]
+        repo_bundle = self._repo_bundles[str(window.repo_root)]
+        rows = self._load_episode_rows(window.repo_root, window.episode_index, repo_bundle.metadata)
+        full_video_latents, latent_layout_metadata, primary_payload = self._load_canonical_window_latents(
+            window,
+            repo_bundle.metadata,
+        )
+        segment_length = self._sample_segment_length(index)
+        subwindow = self._build_uniform_segment(
+            video_latents=full_video_latents,
+            rows=rows,
+            primary_payload=primary_payload,
+            window=window,
+            latent_start=latent_start,
+            segment_length=segment_length,
+        )
+
+        task_index = int(rows[min(subwindow["sample_start_frame"], len(rows) - 1)].get("task_index", 0)) if rows else 0
+        episode_record = repo_bundle.episodes_by_index.get(window.episode_index)
+        task_text = repo_bundle.metadata.tasks_by_index.get(task_index)
+        if task_text is None and episode_record is not None and episode_record.tasks:
+            task_text = episode_record.tasks[0]
+
+        text_context = primary_payload.get("text_emb")
+        if isinstance(text_context, torch.Tensor):
+            text_context = text_context.to(dtype=torch.float32)
+        else:
+            text_context = None
+        negative_text_context = self.empty_text_embedding.clone() if self.empty_text_embedding is not None else None
+
+        return LatentWAMSample(
+            video_latents=subwindow["video_latents"],
+            actions=subwindow["actions"],
+            action_mask=subwindow["action_mask"],
+            state=subwindow["state"],
+            state_mask=subwindow["state_mask"],
+            task_text=task_text,
+            text_context=text_context,
+            negative_text_context=negative_text_context,
+            metadata={
+                "repo_root": str(window.repo_root),
+                "dataset_id": str(window.repo_root),
+                "episode_index": window.episode_index,
+                "segment_start_frame": window.start_frame,
+                "segment_end_frame": window.end_frame,
+                "sample_start_frame": subwindow["sample_start_frame"],
+                "sample_end_frame": subwindow["sample_end_frame"],
+                "observation_start": subwindow["sample_start_frame"],
+                "observation_frame_indices": subwindow["observed_frame_ids"],
+                "window_sampling_mode": WindowSamplingMode.UNIFORM_SEGMENT,
+                "window_start_frame": subwindow["sample_start_frame"],
+                "window_end_frame": subwindow["sample_end_frame"],
+                "anchor_frame_index": subwindow["anchor_frame_index"],
+                "observed_frame_ids": subwindow["observed_frame_ids"],
+                "task_index": task_index,
+                "latent_layout": latent_layout_metadata,
+                "state_source_key": self.data_config.action_target.pose_source_key,
+                "action_representation": self.data_config.action_target.representation,
+                "virtual_sample_index": index,
+                "trajectory_window_index": window_index,
+                "subwindow_latent_start": latent_start,
+                "subwindow_latent_end": latent_start + segment_length,
+                "segment_length_frames": segment_length,
+                "segment_valid_latent_frames": subwindow["valid_latent_frames"],
+                "segment_padded_latent_frames": subwindow["padded_latent_frames"],
+                "tail_padding_mode": "zero_hold",
+                "subwindow_action_start": subwindow["action_start_index"],
+                "subwindow_action_end": subwindow["action_end_index"],
+                **subwindow["action_target_metadata"],
+                **self._action_loss_metadata(subwindow["action_mask"]),
+                **self._sample_weight_metadata(index),
+            },
+        )
+
+    def _sample_segment_length(self, index: int) -> int:
+        split_salt = 17 if self.data_config.split == DataSplit.TRAIN else 53
+        seed = (
+            int(self.data_config.split_seed)
+            + split_salt
+            + 1_000_003 * int(index + 1)
+        ) & 0x7FFF_FFFF_FFFF_FFFF
+        rng = random.Random(seed)
+        return int(self._segment_length_candidates[rng.randrange(len(self._segment_length_candidates))])
+
+    def _build_uniform_segment(
+        self,
+        *,
+        video_latents: torch.Tensor,
+        rows: list[dict[str, Any]],
+        primary_payload: dict[str, Any],
+        window: LocalEpisodeWindow,
+        latent_start: int,
+        segment_length: int,
+    ) -> dict[str, Any]:
+        source_latent_frames = int(video_latents.shape[1])
+        if source_latent_frames <= 0:
+            raise ValueError("Uniform segment sampling requires at least one source latent frame.")
+        if latent_start < 0 or latent_start >= source_latent_frames:
+            raise IndexError(f"latent_start={latent_start} is outside source_latent_frames={source_latent_frames}.")
+        raw_frame_ids = [int(value) for value in list(primary_payload.get("frame_ids", []))]
+        if not raw_frame_ids:
+            raw_frame_ids = list(window.observation_frame_indices)
+        if not raw_frame_ids:
+            raise ValueError("Uniform segment sampling requires non-empty frame ids.")
+
+        valid_latent_frames = max(0, min(segment_length, source_latent_frames - latent_start))
+        padded_latent_frames = max(0, segment_length - valid_latent_frames)
+        observed_frame_ids = self._segment_observed_frame_ids(
+            raw_frame_ids=raw_frame_ids,
+            source_latent_frames=source_latent_frames,
+            latent_start=latent_start,
+            segment_length=segment_length,
+        )
+        boundaries = self._build_raw_bucket_boundaries(
+            raw_frame_count=len(raw_frame_ids),
+            latent_num_frames=source_latent_frames,
+        )
+        raw_start_position = min(boundaries[latent_start], len(raw_frame_ids) - 1)
+        valid_latent_end = min(source_latent_frames, latent_start + segment_length)
+        raw_end_position = boundaries[valid_latent_end]
+        if raw_end_position <= raw_start_position:
+            raw_end_position = raw_start_position + 1
+        sample_start_frame = raw_frame_ids[raw_start_position]
+        sample_end_frame = raw_frame_ids[min(len(raw_frame_ids) - 1, raw_end_position - 1)] + 1
+        anchor_frame_index = observed_frame_ids[-1]
+
+        sampled_window = LocalEpisodeWindow(
+            repo_root=window.repo_root,
+            episode_index=window.episode_index,
+            start_frame=sample_start_frame,
+            end_frame=min(sample_end_frame, len(rows)),
+        )
+        actions, action_mask, action_target_metadata = self._build_lingbot_window_action_targets(
+            rows=rows,
+            window=sampled_window,
+            observed_frame_ids=observed_frame_ids,
+            latent_num_frames=segment_length,
+        )
+        state_start = max(0, anchor_frame_index - self.data_config.action_schema.state_horizon + 1)
+        state_rows = rows[state_start : min(anchor_frame_index + 1, len(rows))]
+        state, state_mask = self._extract_sequence(
+            rows=state_rows,
+            key=self.data_config.action_target.pose_source_key,
+            target_dim=self.data_config.action_schema.state_dim,
+            target_length=self.data_config.action_schema.state_horizon,
+            left_pad=True,
+        )
+        return {
+            "video_latents": self._slice_video_latents_with_zero_hold(
+                video_latents=video_latents,
+                latent_start=latent_start,
+                segment_length=segment_length,
+            ),
+            "actions": actions,
+            "action_mask": action_mask,
+            "action_target_metadata": action_target_metadata,
+            "state": state,
+            "state_mask": state_mask,
+            "sample_start_frame": sample_start_frame,
+            "sample_end_frame": sample_end_frame,
+            "anchor_frame_index": anchor_frame_index,
+            "observed_frame_ids": observed_frame_ids,
+            "action_start_index": sample_start_frame,
+            "action_end_index": sample_start_frame + int(actions.shape[0]),
+            "valid_latent_frames": valid_latent_frames,
+            "padded_latent_frames": padded_latent_frames,
+        }
+
+    @staticmethod
+    def _segment_observed_frame_ids(
+        *,
+        raw_frame_ids: list[int],
+        source_latent_frames: int,
+        latent_start: int,
+        segment_length: int,
+    ) -> list[int]:
+        boundaries = LocalLeRobotLatentWindowDataset._build_raw_bucket_boundaries(
+            raw_frame_count=len(raw_frame_ids),
+            latent_num_frames=source_latent_frames,
+        )
+        observed_frame_ids: list[int] = []
+        for latent_index in range(latent_start, latent_start + segment_length):
+            if latent_index >= source_latent_frames:
+                observed_frame_ids.append(raw_frame_ids[-1])
+                continue
+            bucket_start = boundaries[latent_index]
+            bucket_end = boundaries[latent_index + 1]
+            if bucket_start >= len(raw_frame_ids):
+                observed_frame_ids.append(raw_frame_ids[-1])
+                continue
+            bucket = raw_frame_ids[bucket_start:bucket_end]
+            observed_frame_ids.append(bucket[-1] if bucket else raw_frame_ids[bucket_start])
+        return observed_frame_ids
+
+    @staticmethod
+    def _slice_video_latents_with_zero_hold(
+        *,
+        video_latents: torch.Tensor,
+        latent_start: int,
+        segment_length: int,
+    ) -> torch.Tensor:
+        latent_end = latent_start + segment_length
+        valid_slice = video_latents[:, latent_start:min(latent_end, video_latents.shape[1])].contiguous()
+        if valid_slice.shape[1] == segment_length:
+            return valid_slice
+        output = torch.zeros(
+            video_latents.shape[0],
+            segment_length,
+            video_latents.shape[2],
+            video_latents.shape[3],
+            dtype=video_latents.dtype,
+            device=video_latents.device,
+        )
+        if valid_slice.shape[1] > 0:
+            output[:, : valid_slice.shape[1]] = valid_slice
+            output[:, valid_slice.shape[1] :] = valid_slice[:, -1:].expand(
+                -1,
+                segment_length - valid_slice.shape[1],
+                -1,
+                -1,
+            )
+        return output.contiguous()
+
+
 class FullSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
     """Current LingBot-style long-window latent dataset view."""
 
@@ -621,6 +1246,8 @@ class RandomSubwindowLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
                 "subwindow_action_start": subwindow["action_start_index"],
                 "subwindow_action_end": subwindow["action_end_index"],
                 **subwindow["action_target_metadata"],
+                **self._action_loss_metadata(subwindow["action_mask"]),
+                **self._sample_weight_metadata(index),
             },
         )
 
@@ -822,6 +1449,8 @@ class ContextualSubwindowLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDatas
                 "loss_frame_end": subwindow["current_end_frame_in_sample"],
                 "frame_shift": subwindow["sample_start_frame"],
                 **subwindow["action_target_metadata"],
+                **self._action_loss_metadata(subwindow["action_mask"]),
+                **self._sample_weight_metadata(index),
             },
         )
 
@@ -1059,6 +1688,8 @@ class AlignedSubwindowLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset)
                 "subwindow_action_end": subwindow["action_end_index"],
                 "state_indices": subwindow["state_indices"],
                 "subwindow_state_indices": subwindow["state_indices"],
+                **self._action_loss_metadata(subwindow["action_mask"]),
+                **self._sample_weight_metadata(index),
             },
         )
 
@@ -1262,6 +1893,8 @@ class CausalPrefixSuffixLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDatase
                 "future_suffix_frames": subwindow["future_suffix_frames"],
                 "valid_video_frames": subwindow["valid_video_frames"],
                 "padded_video_frames": int(subwindow["video_latents"].shape[1]),
+                **self._action_loss_metadata(subwindow["action_mask"]),
+                **self._sample_weight_metadata(index),
             },
         )
 
@@ -1401,6 +2034,18 @@ def build_local_lerobot_latent_train_val_datasets(
     dataset_cls: type[Dataset[LatentWAMSample]]
     if data_config.sample_construction.mode == WindowSamplingMode.FULL_SEGMENT:
         dataset_cls = FullSegmentLocalLeRobotLatentDataset
+    elif data_config.sample_construction.mode == WindowSamplingMode.UNIFORM_SEGMENT:
+        segment_min_frames = int(data_config.sample_construction.segment_min_frames or data_config.num_frames)
+        segment_max_frames = int(data_config.sample_construction.segment_max_frames or segment_min_frames)
+        if (
+            segment_min_frames != segment_max_frames
+            and (data_config.train_batch_size != 1 or data_config.val_batch_size != 1)
+        ):
+            raise ValueError(
+                "Uniform segment sampling with variable segment lengths requires train/val batch size 1 because "
+                "latent/action tensor lengths vary across examples."
+            )
+        dataset_cls = UniformSegmentLocalLeRobotLatentDataset
     elif data_config.sample_construction.mode == WindowSamplingMode.RANDOM_SUBWINDOW:
         dataset_cls = RandomSubwindowLocalLeRobotLatentDataset
     elif data_config.sample_construction.mode == WindowSamplingMode.CONTEXTUAL_SUBWINDOW:

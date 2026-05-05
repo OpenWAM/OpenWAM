@@ -952,6 +952,37 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
                 "randomize_geometry",
                 data_defaults.sample_construction.randomize_geometry,
             ),
+            segment_min_frames=sample_construction_raw.get(
+                "segment_min_frames",
+                data_defaults.sample_construction.segment_min_frames,
+            ),
+            segment_max_frames=sample_construction_raw.get(
+                "segment_max_frames",
+                data_defaults.sample_construction.segment_max_frames,
+            ),
+            segment_length_stride=sample_construction_raw.get(
+                "segment_length_stride",
+                data_defaults.sample_construction.segment_length_stride,
+            ),
+            segment_locality_block_size=sample_construction_raw.get(
+                "segment_locality_block_size",
+                data_defaults.sample_construction.segment_locality_block_size,
+            ),
+            sample_weight_mode=_coerce_enum(
+                config_enums.SampleWeightMode,
+                sample_construction_raw.get(
+                    "sample_weight_mode",
+                    data_defaults.sample_construction.sample_weight_mode,
+                ),
+            ),
+            sample_weight_min=sample_construction_raw.get(
+                "sample_weight_min",
+                data_defaults.sample_construction.sample_weight_min,
+            ),
+            sample_weight_max=sample_construction_raw.get(
+                "sample_weight_max",
+                data_defaults.sample_construction.sample_weight_max,
+            ),
             causal_prefix_suffix_buckets=tuple(
                 CausalPrefixSuffixBucketConfig(
                     observed_frames=int(bucket["observed_frames"]),
@@ -1138,6 +1169,13 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         enabled_objectives=tuple(training_raw.get("enabled_objectives", ("action", "latent"))),
         latent_loss_weight=training_raw.get("latent_loss_weight", 1.0),
         action_loss_weight=training_raw.get("action_loss_weight", 1.0),
+        sample_loss_weight_mode=_coerce_enum(
+            config_enums.SampleLossWeightMode,
+            training_raw.get("sample_loss_weight_mode", "none"),
+        ),
+        sample_loss_weight_reference_steps=training_raw.get("sample_loss_weight_reference_steps"),
+        sample_loss_weight_min=training_raw.get("sample_loss_weight_min"),
+        sample_loss_weight_max=training_raw.get("sample_loss_weight_max"),
         trainable_components=tuple(training_raw.get("trainable_components", ("all",))),
         frozen_components=tuple(training_raw.get("frozen_components", ())),
     )

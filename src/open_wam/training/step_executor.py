@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
 import torch
 
-from open_wam.configs import BatchAdapterName, TrainingConfig
+from open_wam.configs import BatchAdapterName, SampleLossWeightMode, TrainingConfig
 from open_wam.data import (
     LatentWAMBatch,
     WAMBatch,
@@ -150,11 +151,19 @@ class PipelineTrainStepExecutor:
                 text_context=prepared.text_context,
                 negative_text_context=prepared.negative_text_context,
             )
+        sample_loss_weight = resolve_sample_loss_weight(
+            training_config=self.training_config,
+            batch=prepared.policy_batch,
+        )
+        loss = output.decoder_output.loss * sample_loss_weight
         metrics = {
-            "loss": output.decoder_output.loss.detach(),
+            "loss": loss.detach(),
             **{name: value.detach() for name, value in output.decoder_output.metrics.items()},
         }
-        return TrainStepResult(loss=output.decoder_output.loss, metrics=metrics, output=output)
+        if self.training_config.sample_loss_weight_mode != SampleLossWeightMode.NONE:
+            metrics["unweighted_loss"] = output.decoder_output.loss.detach()
+            metrics["sample_loss_weight"] = sample_loss_weight.detach()
+        return TrainStepResult(loss=loss, metrics=metrics, output=output)
 
     def _apply_text_condition_dropout(self, prepared: PreparedTrainInput) -> PreparedTrainInput:
         prob = float(self.training_config.text_condition_dropout_prob)
@@ -177,3 +186,80 @@ class PipelineTrainStepExecutor:
             text_context=text_context,
             negative_text_context=prepared.negative_text_context,
         )
+
+
+def resolve_sample_loss_weight(
+    *,
+    training_config: TrainingConfig,
+    batch: PolicyTrainBatch,
+) -> torch.Tensor:
+    mode = training_config.sample_loss_weight_mode
+    if mode == SampleLossWeightMode.NONE:
+        return torch.ones((), dtype=torch.float32, device=batch.actions.device)
+
+    valid_action_steps = _per_sample_valid_action_steps(batch)
+    if valid_action_steps.shape[0] != 1:
+        raise ValueError(
+            "sample_loss_weight_mode currently requires train_batch_size=1 because decoder_output.loss is "
+            "already reduced to a scalar before runtime weighting. Use gradient_accumulation_steps for larger "
+            "effective batches or disable sample_loss_weight_mode."
+        )
+    reference_steps = training_config.sample_loss_weight_reference_steps
+    if reference_steps is None:
+        reference_steps = _metadata_mean_float(
+            batch.extra.get("metadata"),
+            "dataset_mean_valid_action_steps",
+        )
+    if reference_steps is None:
+        reference_steps = float(valid_action_steps.detach().mean().clamp_min(1.0).item())
+    reference = torch.tensor(
+        float(reference_steps),
+        dtype=torch.float32,
+        device=valid_action_steps.device,
+    ).clamp_min(1.0)
+    normalized = valid_action_steps / reference
+    if mode == SampleLossWeightMode.VALID_ACTION_STEPS:
+        weights = normalized
+    elif mode == SampleLossWeightMode.SQRT_VALID_ACTION_STEPS:
+        weights = torch.sqrt(normalized.clamp_min(0.0))
+    else:
+        raise ValueError(f"Unsupported sample_loss_weight_mode {mode!r}.")
+
+    if training_config.sample_loss_weight_min is not None:
+        weights = weights.clamp_min(float(training_config.sample_loss_weight_min))
+    if training_config.sample_loss_weight_max is not None:
+        weights = weights.clamp_max(float(training_config.sample_loss_weight_max))
+    return weights.mean()
+
+
+def _per_sample_valid_action_steps(batch: PolicyTrainBatch) -> torch.Tensor:
+    if batch.action_mask is None:
+        return torch.full(
+            (batch.actions.shape[0],),
+            fill_value=float(batch.actions.shape[1]),
+            dtype=torch.float32,
+            device=batch.actions.device,
+        )
+    if batch.action_mask.ndim < 3:
+        raise ValueError(
+            "Expected action_mask to have shape [batch, time, dim] when sample loss weighting is enabled, "
+            f"got {tuple(batch.action_mask.shape)}."
+        )
+    valid_step_mask = batch.action_mask.float().sum(dim=-1) > 0
+    return valid_step_mask.float().sum(dim=-1).clamp_min(1.0)
+
+
+def _metadata_mean_float(metadata: object, key: str) -> float | None:
+    if not isinstance(metadata, (tuple, list)):
+        return None
+    values: list[float] = []
+    for item in metadata:
+        if not isinstance(item, Mapping):
+            continue
+        value = item.get(key)
+        if value is None:
+            continue
+        values.append(float(value))
+    if not values:
+        return None
+    return float(sum(values) / len(values))

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from .enums import (
     OptimizerName,
+    SampleLossWeightMode,
     SchedulerName,
     TrainingComponentSelector,
     TrainingObjective,
@@ -68,6 +69,10 @@ class TrainingConfig:
     )
     latent_loss_weight: float = 1.0
     action_loss_weight: float = 1.0
+    sample_loss_weight_mode: SampleLossWeightMode = SampleLossWeightMode.NONE
+    sample_loss_weight_reference_steps: float | None = None
+    sample_loss_weight_min: float | None = None
+    sample_loss_weight_max: float | None = None
 
     # Trainability knobs
     trainable_components: tuple[TrainingComponentSelector, ...] = (TrainingComponentSelector.ALL,)
@@ -79,6 +84,7 @@ class TrainingConfig:
             enum_fields={
                 "optimizer_name": OptimizerName,
                 "scheduler_name": SchedulerName,
+                "sample_loss_weight_mode": SampleLossWeightMode,
             },
             enum_tuple_fields={
                 "trainable_components": TrainingComponentSelector,
@@ -88,6 +94,18 @@ class TrainingConfig:
                 "enabled_objectives": normalize_enabled_objectives,
             },
         )
+        if self.sample_loss_weight_reference_steps is not None and self.sample_loss_weight_reference_steps <= 0:
+            raise ValueError("`sample_loss_weight_reference_steps` must be positive when set.")
+        if self.sample_loss_weight_min is not None and self.sample_loss_weight_min < 0:
+            raise ValueError("`sample_loss_weight_min` must be non-negative when set.")
+        if self.sample_loss_weight_max is not None and self.sample_loss_weight_max <= 0:
+            raise ValueError("`sample_loss_weight_max` must be positive when set.")
+        if (
+            self.sample_loss_weight_min is not None
+            and self.sample_loss_weight_max is not None
+            and self.sample_loss_weight_min > self.sample_loss_weight_max
+        ):
+            raise ValueError("`sample_loss_weight_min` cannot exceed `sample_loss_weight_max`.")
 
     def objective_enabled(self, objective_name: TrainingObjective | str) -> bool:
         resolved_name = OBJECTIVE_ALIASES.get(objective_name, objective_name)

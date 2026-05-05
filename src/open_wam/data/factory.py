@@ -64,8 +64,11 @@ def resolve_dataset_loader_spec(
     if split == "train":
         build_train_sampler = getattr(dataset, "build_train_sampler", None)
         if callable(build_train_sampler):
+            sampler = build_train_sampler(world_size=world_size, rank=rank)
+            if sampler is None:
+                return DatasetLoaderSpec(sampler=None, shuffle=True)
             return DatasetLoaderSpec(
-                sampler=build_train_sampler(world_size=world_size, rank=rank),
+                sampler=sampler,
                 shuffle=False,
             )
         return DatasetLoaderSpec(sampler=None, shuffle=True)

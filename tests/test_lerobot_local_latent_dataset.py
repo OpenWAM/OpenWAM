@@ -3,13 +3,14 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 from pathlib import Path
+import random
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import torch
 
-from open_wam.configs import ReplayStatusPolicy, WindowSamplingMode
+from open_wam.configs import ReplayStatusPolicy, SampleWeightMode, WindowSamplingMode
 from open_wam.data import build_train_val_latent_datasets
 from open_wam.training import TrainingRuntime
 from open_wam.utils.config_loader import load_experiment_config
@@ -132,6 +133,96 @@ def _append_second_latent_episode(repo_root: Path, *, total_rows: int = 20) -> N
         torch.save(torch.load(latent_path, map_location="cpu", weights_only=False), episode_one_path)
 
 
+def _append_second_latent_window_same_episode(repo_root: Path, *, start_frame: int = 2) -> None:
+    for latent_path in (repo_root / "latents" / "chunk-000").glob("*/episode_000000_0_*.pth"):
+        payload = dict(torch.load(latent_path, map_location="cpu", weights_only=False))
+        latent_num_frames = int(payload["latent_num_frames"])
+        payload["frame_ids"] = list(range(start_frame, start_frame + latent_num_frames))
+        shifted_path = latent_path.with_name(
+            f"episode_000000_{start_frame}_{start_frame + latent_num_frames}.pth"
+        )
+        torch.save(payload, shifted_path)
+
+
+def _append_latent_episode(
+    repo_root: Path,
+    *,
+    episode_index: int,
+    task_index: int,
+    task_text: str,
+    total_rows: int,
+    latent_num_frames: int,
+    action_key: str = "action",
+    state_key: str = "state",
+    action_dim: int = 30,
+    state_dim: int = 30,
+    camera_names: tuple[str, ...] = ("cam_high", "cam_left_wrist", "cam_right_wrist"),
+) -> None:
+    info_path = repo_root / "meta" / "info.json"
+    info = json.loads(info_path.read_text(encoding="utf-8"))
+    info["total_episodes"] = max(int(info["total_episodes"]), episode_index + 1)
+    _write_json(info_path, info)
+
+    episodes_path = repo_root / "meta" / "episodes.jsonl"
+    episode_records = [
+        json.loads(line)
+        for line in episodes_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    episode_records = [record for record in episode_records if int(record["episode_index"]) != episode_index]
+    episode_records.append({"episode_index": episode_index, "length": total_rows, "tasks": [task_text]})
+    _write_jsonl(episodes_path, sorted(episode_records, key=lambda record: int(record["episode_index"])))
+
+    tasks_path = repo_root / "meta" / "tasks.jsonl"
+    task_records = [
+        json.loads(line)
+        for line in tasks_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    task_records = [record for record in task_records if int(record["task_index"]) != task_index]
+    task_records.append({"task_index": task_index, "task": task_text})
+    _write_jsonl(tasks_path, sorted(task_records, key=lambda record: int(record["task_index"])))
+
+    rows = []
+    for frame_index in range(total_rows):
+        rows.append(
+            {
+                "frame_index": frame_index,
+                "task_index": task_index,
+                action_key: [float(frame_index)] * action_dim,
+                state_key: [float(frame_index)] * state_dim,
+            }
+        )
+    parquet_path = repo_root / "data" / "chunk-000" / f"episode_{episode_index:06d}.parquet"
+    parquet_path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.Table.from_pylist(rows), parquet_path)
+
+    default_latent_specs = {
+        "cam_high": (16, 20),
+        "cam_left_wrist": (8, 10),
+        "cam_right_wrist": (8, 10),
+    }
+    for camera_name in camera_names:
+        latent_height, latent_width = default_latent_specs.get(camera_name, (8, 8))
+        flat_latents = torch.randn(latent_num_frames * latent_height * latent_width, 48)
+        payload = {
+            "latent": flat_latents,
+            "latent_num_frames": latent_num_frames,
+            "latent_height": latent_height,
+            "latent_width": latent_width,
+            "frame_ids": list(range(latent_num_frames)),
+        }
+        latent_path = (
+            repo_root
+            / "latents"
+            / "chunk-000"
+            / camera_name
+            / f"episode_{episode_index:06d}_0_{latent_num_frames}.pth"
+        )
+        latent_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(payload, latent_path)
+
+
 def test_local_lerobot_latent_dataset_builds_canonical_latents(tmp_path: Path) -> None:
     repo_root = tmp_path / "robotwin_local_latent"
     _build_local_robotwin_latent_repo(repo_root)
@@ -162,6 +253,8 @@ def test_local_lerobot_latent_dataset_builds_canonical_latents(tmp_path: Path) -
     assert sample.metadata["observed_frame_ids"] == [0, 1, 2, 3]
     assert sample.metadata["observation_start"] == 0
     assert sample.metadata["observation_frame_indices"] == [0, 1, 2, 3]
+    assert sample.metadata["valid_action_steps"] == 6
+    assert sample.metadata["dataset_mean_valid_action_steps"] == pytest.approx(6.0)
 
 
 def test_local_lerobot_latent_dataset_filters_failed_replay_status(tmp_path: Path) -> None:
@@ -196,6 +289,266 @@ def test_local_lerobot_latent_dataset_filters_failed_replay_status(tmp_path: Pat
 
     assert {window.episode_index for window in train_dataset.windows} == {0}
     assert {window.episode_index for window in val_dataset.windows} == {0}
+
+
+def test_local_lerobot_latent_dataset_weights_long_depleted_tasks(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent"
+    _build_local_robotwin_latent_repo(repo_root)
+    _append_second_latent_episode(repo_root)
+    _append_latent_episode(
+        repo_root,
+        episode_index=2,
+        task_index=1,
+        task_text="assemble the long task",
+        total_rows=40,
+        latent_num_frames=40,
+    )
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                sample_weight_mode=SampleWeightMode.VALID_ACTION_STEPS_X_INVERSE_TASK_DEMO_COUNT,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    weights_by_episode = {
+        window.episode_index: train_dataset.sample_weights[index]
+        for index, window in enumerate(train_dataset.windows)
+    }
+
+    assert train_dataset.dataset_mean_valid_action_steps == pytest.approx(18.0)
+    assert train_dataset.dataset_mean_task_demo_count == pytest.approx(1.5)
+    assert weights_by_episode[0] == pytest.approx(0.25)
+    assert weights_by_episode[1] == pytest.approx(0.25)
+    assert weights_by_episode[2] == pytest.approx(3.5)
+    assert weights_by_episode[2] > weights_by_episode[0]
+
+    sample = train_dataset[2]
+    assert sample.metadata["train_sample_weight"] == pytest.approx(weights_by_episode[2])
+    assert sample.metadata["eligible_task_demo_count"] == 1
+    assert sample.metadata["dataset_mean_eligible_task_demo_count"] == pytest.approx(1.5)
+
+
+def test_inverse_task_demo_count_counts_unique_demos_not_windows(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent"
+    _build_local_robotwin_latent_repo(repo_root)
+    _append_second_latent_window_same_episode(repo_root)
+    _append_latent_episode(
+        repo_root,
+        episode_index=1,
+        task_index=1,
+        task_text="assemble the other task",
+        total_rows=20,
+        latent_num_frames=4,
+    )
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                sample_weight_mode=SampleWeightMode.INVERSE_TASK_DEMO_COUNT,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+
+    window_keys = sorted((window.episode_index, window.start_frame) for window in train_dataset.windows)
+    assert window_keys == [(0, 0), (0, 2), (1, 0)]
+    assert train_dataset.dataset_mean_task_demo_count == pytest.approx(1.0)
+    assert train_dataset.sample_weights == pytest.approx((1.0, 1.0, 1.0))
+
+    for index in range(len(train_dataset)):
+        sample = train_dataset[index]
+        assert sample.metadata["eligible_task_demo_count"] == 1
+        assert sample.metadata["dataset_mean_eligible_task_demo_count"] == pytest.approx(1.0)
+
+
+def test_local_lerobot_latent_weighted_sampler_shards_with_replacement(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent"
+    _build_local_robotwin_latent_repo(repo_root)
+    _append_second_latent_episode(repo_root)
+    _append_latent_episode(
+        repo_root,
+        episode_index=2,
+        task_index=1,
+        task_text="assemble the long task",
+        total_rows=40,
+        latent_num_frames=40,
+    )
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            split_seed=123,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                sample_weight_mode=SampleWeightMode.INVERSE_TASK_DEMO_COUNT,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    sampler = train_dataset.build_train_sampler(world_size=2, rank=1)
+
+    assert sampler is not None
+    assert len(sampler) == 2
+    assert all(0 <= index < len(train_dataset) for index in list(sampler))
+    sampler.set_epoch(7)
+    assert all(0 <= index < len(train_dataset) for index in list(sampler))
+
+
+def test_uniform_segment_sampling_pads_tail_with_zero_order_hold(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent_uniform_segment"
+    _build_local_robotwin_latent_repo(repo_root, total_rows=6, latent_num_frames=6)
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.UNIFORM_SEGMENT,
+                segment_min_frames=4,
+                segment_max_frames=4,
+                segment_length_stride=1,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    sample = train_dataset[5]
+
+    assert len(train_dataset) == 6
+    assert sample.video_latents.shape == (48, 4, 24, 20)
+    assert sample.actions.shape == (8, 30)
+    assert sample.metadata["window_sampling_mode"] == WindowSamplingMode.UNIFORM_SEGMENT
+    assert sample.metadata["subwindow_latent_start"] == 5
+    assert sample.metadata["subwindow_latent_end"] == 9
+    assert sample.metadata["segment_length_frames"] == 4
+    assert sample.metadata["segment_valid_latent_frames"] == 1
+    assert sample.metadata["segment_padded_latent_frames"] == 3
+    assert sample.metadata["tail_padding_mode"] == "zero_hold"
+    assert sample.metadata["observed_frame_ids"] == [5, 5, 5, 5]
+    assert torch.equal(sample.video_latents[:, 0], sample.video_latents[:, 1])
+    assert torch.equal(sample.video_latents[:, 1], sample.video_latents[:, 2])
+    assert sample.metadata["valid_action_steps"] == 3
+
+
+def test_uniform_segment_length_is_deterministic_for_virtual_sample(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent_uniform_segment_deterministic"
+    _build_local_robotwin_latent_repo(repo_root, total_rows=8, latent_num_frames=8)
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            split_seed=123,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.UNIFORM_SEGMENT,
+                segment_min_frames=2,
+                segment_max_frames=5,
+                segment_length_stride=1,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    first_length = train_dataset[3].metadata["segment_length_frames"]
+
+    torch.manual_seed(999)
+    for _ in range(10):
+        _ = random.randrange(1 << 30)
+
+    assert train_dataset[3].metadata["segment_length_frames"] == first_length
+
+
+def test_uniform_segment_sampler_round_robins_trajectory_blocks(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent_uniform_segment_order"
+    _build_local_robotwin_latent_repo(repo_root, total_rows=4, latent_num_frames=4)
+    _append_latent_episode(
+        repo_root,
+        episode_index=1,
+        task_index=1,
+        task_text="longer task",
+        total_rows=6,
+        latent_num_frames=6,
+    )
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            split_seed=0,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.UNIFORM_SEGMENT,
+                segment_min_frames=2,
+                segment_max_frames=2,
+                segment_locality_block_size=1,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    sampler = train_dataset.build_train_sampler(world_size=1, rank=0)
+    order = list(sampler)
+    first_windows = {train_dataset._virtual_index[index][0] for index in order[:2]}
+
+    assert len(train_dataset) == 10
+    assert sorted(order) == list(range(len(train_dataset)))
+    assert first_windows == {0, 1}
 
 
 def test_standard_policy_full_segment_latent_profile_uses_schema_horizon(tmp_path: Path) -> None:

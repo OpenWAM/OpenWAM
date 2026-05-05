@@ -4,9 +4,17 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import torch
+from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data.distributed import DistributedSampler
 import yaml
 
+from open_wam.configs import TrainingConfig
+from open_wam.models.policy_variants import PolicyTrainBatch
 from open_wam.training import TrainingRuntime
+from open_wam.training.loop_policies import StepLoopPolicy
+from open_wam.training.state import TrainState
+from open_wam.training.step_executor import resolve_sample_loss_weight
 from open_wam.utils.config_loader import load_experiment_config
 
 
@@ -69,6 +77,82 @@ def test_composable_runtime_trains_shared_core_method_smokes(tmp_path: Path, con
     final_state = runtime.run()
 
     assert final_state.optimizer_step == 1
+
+
+def test_step_loop_reshuffles_distributed_sampler_each_loader_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    dataset = TensorDataset(torch.arange(1))
+    sampler = DistributedSampler(dataset, num_replicas=1, rank=0, shuffle=True)
+    loader = DataLoader(dataset, batch_size=1, sampler=sampler)
+    seen_epochs: list[int] = []
+    original_set_epoch = sampler.set_epoch
+
+    def record_set_epoch(epoch: int) -> None:
+        seen_epochs.append(epoch)
+        original_set_epoch(epoch)
+
+    monkeypatch.setattr(sampler, "set_epoch", record_set_epoch)
+    runtime = TrainingRuntime.__new__(TrainingRuntime)
+    runtime.train_loader = loader
+    runtime.train_state = TrainState(run_name="step-loop-sampler-test")
+    runtime._run_validation = lambda *, limit_batches: None
+    runtime._save_checkpoint = lambda *, final: None
+
+    def train_one_batch(batch) -> None:
+        del batch
+        runtime.train_state.global_step += 1
+        runtime.train_state.seen_batches += 1
+        runtime.train_state.optimizer_step += 1
+
+    runtime._train_micro_step = train_one_batch
+
+    TrainingRuntime._run_step_loop(runtime, StepLoopPolicy(max_steps=3))
+
+    assert seen_epochs == [0, 1, 2]
+    assert runtime.train_state.epoch_index == 3
+
+
+def test_sample_loss_weight_can_scale_by_valid_action_steps() -> None:
+    actions = torch.zeros(1, 6, 7)
+    action_mask = torch.zeros_like(actions)
+    action_mask[0, :6] = 1.0
+    batch = PolicyTrainBatch(
+        actions=actions,
+        action_mask=action_mask,
+        extra={"metadata": ({"dataset_mean_valid_action_steps": 4.0},)},
+    )
+
+    weight = resolve_sample_loss_weight(
+        training_config=TrainingConfig(sample_loss_weight_mode="valid_action_steps"),
+        batch=batch,
+    )
+    sqrt_weight = resolve_sample_loss_weight(
+        training_config=TrainingConfig(sample_loss_weight_mode="sqrt_valid_action_steps"),
+        batch=batch,
+    )
+
+    assert weight.item() == pytest.approx(1.5)
+    assert sqrt_weight.item() == pytest.approx(1.5**0.5)
+
+
+def test_sample_loss_weight_rejects_reduced_multi_sample_batches() -> None:
+    actions = torch.zeros(2, 6, 7)
+    action_mask = torch.ones_like(actions)
+    batch = PolicyTrainBatch(
+        actions=actions,
+        action_mask=action_mask,
+        extra={
+            "metadata": (
+                {"dataset_mean_valid_action_steps": 6.0},
+                {"dataset_mean_valid_action_steps": 6.0},
+            )
+        },
+    )
+
+    with pytest.raises(ValueError, match="train_batch_size=1"):
+        resolve_sample_loss_weight(
+            training_config=TrainingConfig(sample_loss_weight_mode="valid_action_steps"),
+            batch=batch,
+        )
 
 
 def test_composable_runtime_trains_causal_video_prediction_smoke(tmp_path: Path) -> None:
