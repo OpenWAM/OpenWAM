@@ -312,6 +312,8 @@ class PolicyVariantName(StrEnum):
     VIDEO_SEQUENCE_POLICY = "video_sequence_policy"
     CAUSAL_VIDEO_PREDICTION = "causal_video_prediction"
     MOT = "mot"
+    # Obsolete traditional Method 2. Kept for loading historical configs only;
+    # pipeline construction raises an explicit error.
     REGISTER_ATTACHED = "register_attached"
     PARALLEL_STREAM = "parallel_stream"
 
@@ -573,6 +575,19 @@ class ParallelActionAttentionScope(StrEnum):
 
     FULL = "full"
     BLOCK_LOCAL = "block_local"
+
+
+class CurrentBlockCoupling(StrEnum):
+    """Same-chunk video/action visibility for video/action rollout variants."""
+
+    VIDEO_THEN_ACTION = "video_then_action"
+    JOINT = "joint"
+    ACTION_THEN_VIDEO = "action_then_video"
+    DECOUPLED_SAME_STEP = "decoupled_same_step"
+
+
+# Backward-compatible export for early Method-1 configs/code paths.
+ParallelCurrentBlockCoupling = CurrentBlockCoupling
 
 
 class ParallelSequenceComponent(StrEnum):

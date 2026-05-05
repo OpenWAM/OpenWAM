@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from open_wam.data import build_synthetic_batch
 from open_wam.models.policy_variants import PolicyTrainBatch
 from open_wam.models.visual_tower import (
@@ -54,6 +56,7 @@ def test_exact_runtime_program_executes_on_shared_backbone() -> None:
     assert step_output.aux["sequence_family"] == "chunked_dual_stream_exact"
 
 
+@pytest.mark.skip(reason="Traditional Method 2 register-attached runtime is obsolete and intentionally disabled.")
 def test_register_runtime_program_executes_on_shared_backbone() -> None:
     config = load_experiment_config(
         REPO_ROOT / "configs/experiments/register_attached_robotwin_smoke.yaml"

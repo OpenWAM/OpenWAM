@@ -1,5 +1,16 @@
 from __future__ import annotations
 
+import warnings
+
+_OBSOLETE_REGISTER_ATTACHED_MESSAGE = (
+    "Traditional Method 2 register_attached is obsolete and intentionally disabled. "
+    "Use the maintained Method 2 parallel_stream lingbot_exact_action_conditioned / "
+    "joint-denoise path instead."
+)
+warnings.warn(_OBSOLETE_REGISTER_ATTACHED_MESSAGE, RuntimeWarning, stacklevel=2)
+raise RuntimeError(_OBSOLETE_REGISTER_ATTACHED_MESSAGE)
+
+# Historical smoke body retained below for reference only.
 import sys
 from pathlib import Path
 

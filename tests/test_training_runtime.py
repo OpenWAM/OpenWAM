@@ -64,7 +64,6 @@ def _build_step_runtime_config(
     "config_name",
     [
         "parallel_stream_robotwin_smoke.yaml",
-        "register_attached_robotwin_smoke.yaml",
         "video_sequence_policy_robotwin_smoke.yaml",
         "mot_robotwin_smoke.yaml",
     ],

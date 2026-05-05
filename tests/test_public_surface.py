@@ -257,7 +257,6 @@ def test_public_tiny_fixture_artifact_layout_is_valid() -> None:
     "config_name",
     [
         "parallel_stream_robotwin_smoke.yaml",
-        "register_attached_robotwin_smoke.yaml",
         "video_sequence_policy_robotwin_smoke.yaml",
         "mot_robotwin_smoke.yaml",
     ],
@@ -268,4 +267,18 @@ def test_builtin_pipeline_registries_construct_smoke_variants(config_name: str) 
     assert type(config.policy_variant) in POLICY_VARIANT_BUILDERS.keys()
     assert config.action_decoder.name in ACTION_DECODER_BUILDERS.keys()
     assert build_policy_variant(config) is not None
+    assert build_action_decoder(config) is not None
+
+
+@pytest.mark.smoke
+def test_obsolete_register_attached_builder_fails_loudly() -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/register_attached_robotwin_smoke.yaml"
+    )
+
+    assert type(config.policy_variant) in POLICY_VARIANT_BUILDERS.keys()
+    assert config.action_decoder.name in ACTION_DECODER_BUILDERS.keys()
+    with pytest.warns(RuntimeWarning, match="Traditional Method 2 `register_attached` is obsolete"):
+        with pytest.raises(RuntimeError, match="Traditional Method 2 `register_attached` is obsolete"):
+            build_policy_variant(config)
     assert build_action_decoder(config) is not None

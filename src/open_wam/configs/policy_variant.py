@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from .enums import (
     ActionChunkAnchorMode,
     ActionNormMethod,
+    CurrentBlockCoupling,
     ParallelActionAttentionScope,
     ParallelActionConditionSource,
     AttachSite,
@@ -238,6 +239,7 @@ class MoTPolicyConfig(PolicyVariantConfig):
     action_hidden_size: int | None = None
     action_ffn_dim: int | None = None
     video_can_attend_action: bool = True
+    current_block_coupling: CurrentBlockCoupling | None = None
     use_text_conditioning: bool = True
     use_state_conditioning: bool = False
     # Trade forward compute for activation memory by recomputing each
@@ -292,6 +294,7 @@ class MoTPolicyConfig(PolicyVariantConfig):
             },
             optional_enum_fields={
                 "preset": MoTPreset,
+                "current_block_coupling": CurrentBlockCoupling,
             },
         )
 
@@ -365,6 +368,7 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
     video_condition_on_action: bool = False
     video_action_condition_source: ParallelActionConditionSource = ParallelActionConditionSource.NOISY_ACTION
     video_action_attention_scope: ParallelActionAttentionScope = ParallelActionAttentionScope.BLOCK_LOCAL
+    current_block_coupling: CurrentBlockCoupling | None = None
     couple_action_to_video_timesteps: bool = True
     temporal_position_mode: TemporalPositionMode = TemporalPositionMode.GLOBAL_SHIFTED
     used_action_channel_ids: tuple[int, ...] = field(default_factory=tuple)
@@ -386,5 +390,6 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
                 "temporal_position_mode": TemporalPositionMode,
                 "action_norm_method": ActionNormMethod,
             },
+            optional_enum_fields={"current_block_coupling": CurrentBlockCoupling},
             enum_tuple_fields={"sequence_order": ParallelSequenceComponent},
         )

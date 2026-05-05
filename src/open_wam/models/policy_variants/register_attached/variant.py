@@ -31,12 +31,19 @@ from ..contracts import (
     RolloutCursor,
 )
 from ..common.rollout import advance_rollout_cursor
+from .deprecation import raise_register_attached_obsolete
 from .layout import RegisterSequenceLayout
 from .runtime import RegisterAttachedRuntime, RegisterRuntimeSpec
 
 
 class RegisterAttachedPolicyVariant(PolicyVariant):
-    """DreamZero-inspired register-attached policy variant.
+    """OBSOLETE traditional Method 2 register-attached policy variant.
+
+    This class is kept only so historical checkpoints, notes, and tests can
+    reference the old structure. Instantiating it raises an explicit obsolete
+    warning and error; do not add new runtime behavior here.
+
+    Historical design summary:
 
     This variant now owns joint video+action diffusion rather than passing
     clean video features into an action-only decoder.
@@ -64,6 +71,9 @@ class RegisterAttachedPolicyVariant(PolicyVariant):
         state_dim: int,
         state_horizon: int,
     ) -> None:
+        raise_register_attached_obsolete(stacklevel=2)
+
+        # Obsolete implementation retained below for archaeology only.
         super().__init__()
         self.config = config
         self.backbone_config = backbone_config

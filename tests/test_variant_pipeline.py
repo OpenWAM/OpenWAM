@@ -58,7 +58,6 @@ def _build_pipeline(config_path: Path) -> tuple:
         ("post_latent_robotwin_video_conditioned.yaml", 6),
         ("post_decoded_robotwin_video_conditioned.yaml", 6),
         ("video_sequence_policy_robotwin_smoke.yaml", 6),
-        ("register_attached_robotwin_smoke.yaml", 6),
         ("parallel_stream_robotwin_smoke.yaml", 8),
         ("mot_robotwin_smoke.yaml", 8),
     ],
@@ -97,7 +96,6 @@ def test_variant_pipeline_train_and_infer_shapes(config_name: str, expected_hori
         ("post_latent_libero_smoke.yaml", 6),
         ("post_decoded_libero_smoke.yaml", 6),
         ("video_sequence_policy_libero_smoke.yaml", 6),
-        ("register_attached_libero_smoke.yaml", 6),
         ("parallel_stream_libero_raw_smoke.yaml", 16),
     ],
 )

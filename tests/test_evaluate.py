@@ -268,7 +268,6 @@ def test_run_evaluation_on_parallel_stream_robotwin(tmp_path: Path) -> None:
     ("config_path", "expected_name"),
     [
         (REPO_ROOT / "configs/evals/parallel_stream_robotwin_smoke.yaml", "parallel_stream_robotwin_smoke"),
-        (REPO_ROOT / "configs/evals/register_attached_robotwin_smoke.yaml", "register_attached_robotwin_smoke"),
         (REPO_ROOT / "configs/evals/video_sequence_policy_robotwin_smoke.yaml", "video_sequence_policy_robotwin_smoke"),
         (REPO_ROOT / "configs/evals/mot_robotwin_smoke.yaml", "mot_robotwin_smoke"),
         (REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml", "post_latent_robotwin_video_conditioned"),

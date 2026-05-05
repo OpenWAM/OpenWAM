@@ -9,7 +9,11 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange
 
-from open_wam.configs.enums import ParallelExactCacheWriteMode
+from open_wam.configs.enums import (
+    CurrentBlockCoupling,
+    ParallelExactCacheWriteMode,
+    ParallelRuntimeMode,
+)
 from open_wam.configs.inference import InferenceConfig
 from open_wam.configs.policy_variant import ParallelStreamPolicyConfig
 from open_wam.configs.training import TrainingConfig
@@ -17,6 +21,7 @@ from open_wam.models.common import (
     PreparedAttentionProfile,
     build_chunked_temporal_exact_attention_profile,
     cache_backend_uses_slot_pool,
+    chunked_temporal_exact_profile_name_for_coupling,
     materialize_cache_backend_entries,
 )
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig, resolve_stage_attention_mode
@@ -248,6 +253,24 @@ class LingbotParallelInferArtifacts:
     debug: dict[str, Any]
 
 
+def resolve_parallel_current_block_coupling(
+    policy_config: ParallelStreamPolicyConfig,
+) -> CurrentBlockCoupling:
+    """Resolve legacy M1 runtime knobs into an explicit current-block mode."""
+
+    if policy_config.current_block_coupling is not None:
+        return CurrentBlockCoupling(policy_config.current_block_coupling)
+    if policy_config.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
+        return CurrentBlockCoupling.JOINT
+    return CurrentBlockCoupling.VIDEO_THEN_ACTION
+
+
+def _attention_profile_name_for_current_block_coupling(
+    coupling: CurrentBlockCoupling,
+) -> str:
+    return chunked_temporal_exact_profile_name_for_coupling(coupling.value)
+
+
 def _add_noise(
     latent: torch.Tensor,
     *,
@@ -441,6 +464,12 @@ def prepare_parallel_exact_train_artifacts(
         )
     else:
         sampled_window_size = max(1, int(training_config.window_size))
+    attention_profile_name = None
+    if train_attn_mode == "flex":
+        attention_profile_name = _attention_profile_name_for_current_block_coupling(
+            resolve_parallel_current_block_coupling(policy_config)
+        )
+
     return LingbotParallelTrainArtifacts(
         input_dict={
             "latent_dict": latent_dict,
@@ -450,7 +479,7 @@ def prepare_parallel_exact_train_artifacts(
             "loss_frame_start": resolved_loss_frame_start,
             "loss_frame_end": resolved_loss_frame_end,
             "frame_shift": int(frame_shift),
-            "attention_profile_name": "chunked_temporal_exact" if train_attn_mode == "flex" else None,
+            "attention_profile_name": attention_profile_name,
         },
         latent_scheduler=latent_scheduler,
         action_scheduler=action_scheduler,
@@ -472,14 +501,14 @@ def prepare_parallel_action_conditioned_train_artifacts(
     loss_frame_end: int | None = None,
     frame_shift: int = 0,
 ) -> LingbotParallelTrainArtifacts:
-    if not policy_config.video_condition_on_action:
+    coupling = resolve_parallel_current_block_coupling(policy_config)
+    if (
+        coupling == CurrentBlockCoupling.JOINT
+        and policy_config.current_block_coupling is None
+        and not policy_config.video_condition_on_action
+    ):
         raise ValueError(
             "`lingbot_exact_action_conditioned` requires `video_condition_on_action = true`."
-        )
-    if str(policy_config.video_action_condition_source) != "noisy_action":
-        raise NotImplementedError(
-            "Only `video_action_condition_source = noisy_action` is currently implemented for "
-            "`lingbot_exact_action_conditioned`."
         )
     artifacts = prepare_parallel_exact_train_artifacts(
         backbone_config=backbone_config,
@@ -495,8 +524,6 @@ def prepare_parallel_action_conditioned_train_artifacts(
         loss_frame_end=loss_frame_end,
         frame_shift=frame_shift,
     )
-    if artifacts.input_dict.get("attention_profile_name") == "chunked_temporal_exact":
-        artifacts.input_dict["attention_profile_name"] = "chunked_temporal_exact_joint"
     return artifacts
 
 
@@ -1061,6 +1088,12 @@ def run_parallel_exact_inference_rollout(
     cache_name = cache_context.cache_name
     cache_backend_name = cache_context.cache_backend_name
     current_frame_start = int(infer_cache.get("frame_start", 0))
+    current_block_coupling = resolve_parallel_current_block_coupling(policy_config)
+    if current_block_coupling == CurrentBlockCoupling.JOINT:
+        raise ValueError(
+            "Joint M1 coupling must use `run_parallel_action_conditioned_inference_rollout`; "
+            "the staged exact rollout only supports ordered or decoupled same-step coupling."
+        )
     cache_spec = _build_exact_cache_spec(
         write_mode=ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED,
         batch_size=batch_size,
@@ -1123,43 +1156,6 @@ def run_parallel_exact_inference_rollout(
         video_timesteps = video_timesteps[: inference_config.video_exec_step]
     action_timesteps = F.pad(action_scheduler.timesteps.to(device=device), (0, 1), mode="constant", value=0)
 
-    # Video denoising always runs before action denoising so the action stream
-    # can condition on the final visual chunk, matching the LingBot server
-    # rollout order.
-    for index, timestep in enumerate(video_timesteps):
-        last_step = index == len(video_timesteps) - 1
-        video_input = prepare_reference_single_stream_input(
-            latents=latents,
-            timestep=timestep,
-            text_emb=text_emb,
-            frame_st_id=generation_frame_start,
-            backbone_config=backbone_config,
-            action_mode=False,
-            cond=latent_cond,
-        )
-        video_noise_pred = run_reference_single_stream_forward(
-            transformer,
-            input_dict=video_input,
-            update_cache=1 if (last_step and inference_config.use_cache) else 0,
-            cache_name=cache_name,
-            action_mode=False,
-            guidance_scale=inference_config.guidance_scale,
-            negative_text_emb=negative_text_emb,
-            force_cfg_batch=cache_context.use_cfg and inference_config.use_cache,
-        )
-        if not last_step or inference_config.video_exec_step != -1:
-            video_noise_pred = data_seq_to_patch(
-                transformer.patch_size,
-                video_noise_pred,
-                inference_config.frame_chunk_size,
-                latent_height,
-                latent_width,
-                batch_size=batch_size,
-            )
-            latents = video_scheduler.step(video_noise_pred, timestep, latents)
-        if latent_cond is not None:
-            latents[:, :, 0:1] = latent_cond
-
     action_cond = None
     if infer_cache.get("step_index", 0) == 0:
         action_cond = torch.zeros(
@@ -1171,40 +1167,109 @@ def run_parallel_exact_inference_rollout(
             device=device,
             dtype=model_dtype,
         )
-    # Actions are denoised in their native `[B, D_action, F_chunk, A, 1]`
-    # volume and converted back to `[B, F_chunk * A, D_action]` only once the
-    # chunk is complete.
-    for index, timestep in enumerate(action_timesteps):
-        last_step = index == len(action_timesteps) - 1
-        action_input = prepare_reference_single_stream_input(
-            latents=actions,
-            timestep=timestep,
-            text_emb=text_emb,
-            frame_st_id=generation_frame_start,
-            backbone_config=backbone_config,
-            action_mode=True,
-            cond=action_cond,
-            action_channel_mask=action_channel_mask,
-        )
-        action_noise_pred = run_reference_single_stream_forward(
-            transformer,
-            input_dict=action_input,
-            update_cache=1 if (last_step and inference_config.use_cache) else 0,
-            cache_name=cache_name,
-            action_mode=True,
-            guidance_scale=inference_config.action_guidance_scale,
-            negative_text_emb=negative_text_emb,
-            force_cfg_batch=cache_context.use_cfg and inference_config.use_cache,
-        )
-        if not last_step:
-            action_noise_pred = rearrange(
-                action_noise_pred,
-                "b (f n) c -> b c f n 1",
-                f=inference_config.frame_chunk_size,
+
+    def denoise_video_chunk(*, commit_to_cache: bool) -> None:
+        nonlocal latents
+        for index, timestep in enumerate(video_timesteps):
+            last_step = index == len(video_timesteps) - 1
+            video_input = prepare_reference_single_stream_input(
+                latents=latents,
+                timestep=timestep,
+                text_emb=text_emb,
+                frame_st_id=generation_frame_start,
+                backbone_config=backbone_config,
+                action_mode=False,
+                cond=latent_cond,
             )
-            actions = action_scheduler.step(action_noise_pred, timestep, actions)
-        if action_cond is not None:
-            actions[:, :, 0:1] = action_cond
+            video_noise_pred = run_reference_single_stream_forward(
+                transformer,
+                input_dict=video_input,
+                update_cache=1 if (last_step and commit_to_cache and inference_config.use_cache) else 0,
+                cache_name=cache_name,
+                action_mode=False,
+                guidance_scale=inference_config.guidance_scale,
+                negative_text_emb=negative_text_emb,
+                force_cfg_batch=cache_context.use_cfg and inference_config.use_cache,
+            )
+            if not last_step or inference_config.video_exec_step != -1:
+                video_noise_pred = data_seq_to_patch(
+                    transformer.patch_size,
+                    video_noise_pred,
+                    inference_config.frame_chunk_size,
+                    latent_height,
+                    latent_width,
+                    batch_size=batch_size,
+                )
+                latents = video_scheduler.step(video_noise_pred, timestep, latents)
+            if latent_cond is not None:
+                latents[:, :, 0:1] = latent_cond
+
+    def denoise_action_chunk(*, commit_to_cache: bool) -> None:
+        nonlocal actions
+        # Actions are denoised in their native `[B, D_action, F_chunk, A, 1]`
+        # volume and converted back to `[B, F_chunk * A, D_action]` once the
+        # chunk is complete.
+        for index, timestep in enumerate(action_timesteps):
+            last_step = index == len(action_timesteps) - 1
+            action_input = prepare_reference_single_stream_input(
+                latents=actions,
+                timestep=timestep,
+                text_emb=text_emb,
+                frame_st_id=generation_frame_start,
+                backbone_config=backbone_config,
+                action_mode=True,
+                cond=action_cond,
+                action_channel_mask=action_channel_mask,
+            )
+            action_noise_pred = run_reference_single_stream_forward(
+                transformer,
+                input_dict=action_input,
+                update_cache=1 if (last_step and commit_to_cache and inference_config.use_cache) else 0,
+                cache_name=cache_name,
+                action_mode=True,
+                guidance_scale=inference_config.action_guidance_scale,
+                negative_text_emb=negative_text_emb,
+                force_cfg_batch=cache_context.use_cfg and inference_config.use_cache,
+            )
+            if not last_step:
+                action_noise_pred = rearrange(
+                    action_noise_pred,
+                    "b (f n) c -> b c f n 1",
+                    f=inference_config.frame_chunk_size,
+                )
+                actions = action_scheduler.step(action_noise_pred, timestep, actions)
+            if action_cond is not None:
+                actions[:, :, 0:1] = action_cond
+
+    if current_block_coupling == CurrentBlockCoupling.VIDEO_THEN_ACTION:
+        cache_commit_strategy = "video_then_action_staged"
+        denoise_video_chunk(commit_to_cache=True)
+        denoise_action_chunk(commit_to_cache=True)
+    elif current_block_coupling == CurrentBlockCoupling.ACTION_THEN_VIDEO:
+        cache_commit_strategy = "action_then_video_staged"
+        denoise_action_chunk(commit_to_cache=True)
+        denoise_video_chunk(commit_to_cache=True)
+    elif current_block_coupling == CurrentBlockCoupling.DECOUPLED_SAME_STEP:
+        cache_commit_strategy = "decoupled_same_step_deferred"
+        denoise_video_chunk(commit_to_cache=False)
+        denoise_action_chunk(commit_to_cache=False)
+        if inference_config.use_cache:
+            _write_exact_cache_chunk(
+                transformer=transformer,
+                cache_spec=cache_spec,
+                cache_name=cache_name,
+                frame_start=generation_frame_start,
+                backbone_config=backbone_config,
+                video_latents=latents,
+                action_latents=actions,
+                text_emb=text_emb,
+                negative_text_emb=negative_text_emb,
+                use_cfg=cache_context.use_cfg,
+                action_channel_mask=action_channel_mask,
+                update_cache=1,
+            )
+    else:  # pragma: no cover - enum guard
+        raise ValueError(f"Unsupported M1 current-block coupling: {current_block_coupling!r}")
 
     next_cache = {
         "runtime_mode": "lingbot_exact",
@@ -1228,6 +1293,8 @@ def run_parallel_exact_inference_rollout(
         "advance_frame_start": advance_frame_start,
         "video_timesteps": video_timesteps.tolist(),
         "action_timesteps": action_timesteps.tolist(),
+        "current_block_coupling": current_block_coupling.value,
+        "cache_commit_strategy": cache_commit_strategy,
         "video_guidance_scale": float(inference_config.guidance_scale),
         "action_guidance_scale": float(inference_config.action_guidance_scale),
         "cache_write_mode": str(cache_spec.write_mode),
@@ -1284,6 +1351,7 @@ def _run_parallel_exact_joint_forward_manual(
         action_dict = input_dict["action_dict"]
         assert isinstance(latent_dict, dict)
         assert isinstance(action_dict, dict)
+        attention_profile_name = input_dict.get("attention_profile_name")
         rebuilt_dense_profile = build_chunked_temporal_exact_attention_profile(
             latent_shape=tuple(int(dim) for dim in latent_dict["noisy_latents"].shape),
             action_shape=tuple(int(dim) for dim in action_dict["noisy_latents"].shape),
@@ -1295,8 +1363,10 @@ def _run_parallel_exact_joint_forward_manual(
             device=hidden_states.device,
             build_dense_masks=True,
             build_flex_masks=False,
-            allow_joint_noisy_block_attention=(
-                input_dict.get("attention_profile_name") == "chunked_temporal_exact_joint"
+            current_block_coupling=(
+                str(attention_profile_name)
+                if attention_profile_name not in (None, "none")
+                else None
             ),
         )
         exact_attention_profile = PreparedAttentionProfile(
@@ -1760,14 +1830,15 @@ def run_parallel_action_conditioned_inference_rollout(
     infer_cache: dict[str, Any],
     advance_frame_start: bool = False,
 ) -> LingbotParallelInferArtifacts:
-    if not policy_config.video_condition_on_action:
+    current_block_coupling = resolve_parallel_current_block_coupling(policy_config)
+    if current_block_coupling != CurrentBlockCoupling.JOINT:
+        raise ValueError(
+            "`run_parallel_action_conditioned_inference_rollout` only implements joint same-step coupling; "
+            f"got {current_block_coupling.value!r}."
+        )
+    if policy_config.current_block_coupling is None and not policy_config.video_condition_on_action:
         raise ValueError(
             "`lingbot_exact_action_conditioned` requires `video_condition_on_action = true`."
-        )
-    if str(policy_config.video_action_condition_source) != "noisy_action":
-        raise NotImplementedError(
-            "Only `video_action_condition_source = noisy_action` is currently implemented for "
-            "`lingbot_exact_action_conditioned`."
         )
     if condition_latents is not None:
         device = condition_latents.device
@@ -1871,7 +1942,7 @@ def run_parallel_action_conditioned_inference_rollout(
     attention_profile_name = None
     if str(policy_config.video_action_attention_scope) == "block_local":
         if resolve_stage_attention_mode(backbone_config, stage="train", exact_runtime=True) == "flex":
-            attention_profile_name = "chunked_temporal_exact_joint"
+            attention_profile_name = _attention_profile_name_for_current_block_coupling(current_block_coupling)
 
     video_timestep_values_list = list(video_scheduler.timesteps.to(device=device))
     action_timestep_values_list = list(action_scheduler.timesteps.to(device=device))
@@ -1999,6 +2070,7 @@ def run_parallel_action_conditioned_inference_rollout(
         "video_condition_on_action": bool(policy_config.video_condition_on_action),
         "video_action_condition_source": str(policy_config.video_action_condition_source),
         "video_action_attention_scope": str(policy_config.video_action_attention_scope),
+        "current_block_coupling": current_block_coupling.value,
         "couple_action_to_video_timesteps": bool(policy_config.couple_action_to_video_timesteps),
         "joint_denoise": True,
         "uses_explicit_clean_condition": False,

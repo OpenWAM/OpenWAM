@@ -38,6 +38,9 @@ from open_wam.models.policy_variants import (
     VideoSequencePolicyVariant,
 )
 from open_wam.models.policy_variants.parallel_stream.action_adapter import build_action_adapter_spec
+from open_wam.models.policy_variants.register_attached.deprecation import (
+    raise_register_attached_obsolete,
+)
 from open_wam.models.visual_tower import VisualTower
 from open_wam.models.video_backbone import normalize_backbone_implementation
 
@@ -61,6 +64,8 @@ def _resolve_parallel_stream_model_action_dim(config: ExperimentConfig) -> int:
 
 def validate_experiment_config(config: ExperimentConfig) -> None:
     action_schema = config.data.action_schema
+    if isinstance(config.policy_variant, RegisterAttachedPolicyConfig):
+        raise_register_attached_obsolete(stacklevel=3)
     validate_action_mapping_preflight(
         config.data.action_mapping,
         action_schema_dim=action_schema.action_dim,
@@ -323,19 +328,9 @@ def _build_mot_policy_variant(config: ExperimentConfig):
 
 
 def _build_register_attached_policy_variant(config: ExperimentConfig):
-    action_schema = config.data.action_schema
     policy_config = config.policy_variant
     assert isinstance(policy_config, RegisterAttachedPolicyConfig)
-    return RegisterAttachedPolicyVariant(
-        config=policy_config,
-        backbone_config=config.backbone,
-        training_config=config.training,
-        inference_config=config.inference,
-        action_dim=action_schema.action_dim,
-        action_horizon=action_schema.action_horizon,
-        state_dim=action_schema.state_dim,
-        state_horizon=action_schema.state_horizon,
-    )
+    raise_register_attached_obsolete(stacklevel=3)
 
 
 def _build_parallel_stream_policy_variant(config: ExperimentConfig):
@@ -527,7 +522,7 @@ def _register_builtin_pipeline_builders() -> None:
     POLICY_VARIANT_BUILDERS.register(
         RegisterAttachedPolicyConfig,
         _build_register_attached_policy_variant,
-        description="Register-attached policy variant.",
+        description="OBSOLETE traditional Method 2 register-attached policy variant.",
         replace=True,
     )
     POLICY_VARIANT_BUILDERS.register(

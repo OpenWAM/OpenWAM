@@ -60,9 +60,26 @@ class PreparedAttentionProfile:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+VIDEO_THEN_ACTION_COUPLING = "video_then_action"
+JOINT_COUPLING = "joint"
+ACTION_THEN_VIDEO_COUPLING = "action_then_video"
+DECOUPLED_SAME_STEP_COUPLING = "decoupled_same_step"
+
+_CHUNKED_EXACT_PROFILE_BY_COUPLING: dict[str, str] = {
+    VIDEO_THEN_ACTION_COUPLING: "chunked_temporal_exact",
+    JOINT_COUPLING: "chunked_temporal_exact_joint",
+    ACTION_THEN_VIDEO_COUPLING: "chunked_temporal_exact_action_then_video",
+    DECOUPLED_SAME_STEP_COUPLING: "chunked_temporal_exact_decoupled_same_step",
+}
+_CHUNKED_EXACT_COUPLING_BY_PROFILE = {
+    profile_name: coupling for coupling, profile_name in _CHUNKED_EXACT_PROFILE_BY_COUPLING.items()
+}
+
 _ATTENTION_PROFILE_ALIASES: dict[str, str] = {
     "chunked_temporal_exact": "chunked_temporal_exact",
     "chunked_temporal_exact_joint": "chunked_temporal_exact_joint",
+    "chunked_temporal_exact_action_then_video": "chunked_temporal_exact_action_then_video",
+    "chunked_temporal_exact_decoupled_same_step": "chunked_temporal_exact_decoupled_same_step",
     "lingbot_chunked_exact": "chunked_temporal_exact",
     "none": "none",
 }
@@ -77,6 +94,44 @@ def normalize_attention_profile_name(name: str | None) -> str | None:
         raise ValueError(
             f"Unsupported attention profile {name!r}. Expected one of {tuple(_ATTENTION_PROFILE_ALIASES)}."
         ) from exc
+
+
+def normalize_chunked_temporal_exact_coupling(coupling: str | None) -> str:
+    """Normalize exact method-1 current-block coupling names."""
+
+    if coupling is None:
+        return VIDEO_THEN_ACTION_COUPLING
+    value = str(getattr(coupling, "value", coupling))
+    if value in _CHUNKED_EXACT_PROFILE_BY_COUPLING:
+        return value
+    try:
+        normalized_profile = normalize_attention_profile_name(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"Unsupported exact current-block coupling {coupling!r}. "
+            f"Expected one of {tuple(_CHUNKED_EXACT_PROFILE_BY_COUPLING)}."
+        ) from exc
+    if normalized_profile in _CHUNKED_EXACT_COUPLING_BY_PROFILE:
+        return _CHUNKED_EXACT_COUPLING_BY_PROFILE[normalized_profile]
+    raise ValueError(
+        f"Unsupported exact current-block coupling {coupling!r}. "
+        f"Expected one of {tuple(_CHUNKED_EXACT_PROFILE_BY_COUPLING)}."
+    )
+
+
+def chunked_temporal_exact_profile_name_for_coupling(coupling: str | None) -> str:
+    """Return the attention-profile name for an exact method-1 coupling mode."""
+
+    return _CHUNKED_EXACT_PROFILE_BY_COUPLING[normalize_chunked_temporal_exact_coupling(coupling)]
+
+
+def chunked_temporal_exact_coupling_from_profile_name(name: str) -> str:
+    """Return the exact method-1 coupling represented by an attention-profile name."""
+
+    normalized_profile = normalize_attention_profile_name(name)
+    if normalized_profile not in _CHUNKED_EXACT_COUPLING_BY_PROFILE:
+        raise ValueError(f"Attention profile {name!r} is not a chunked exact profile.")
+    return _CHUNKED_EXACT_COUPLING_BY_PROFILE[normalized_profile]
 
 
 def resolve_attention_profile_backend(
@@ -156,8 +211,21 @@ def build_chunked_temporal_exact_attention_profile(
     device: torch.device,
     build_dense_masks: bool = False,
     build_flex_masks: bool = False,
-    allow_joint_noisy_block_attention: bool = False,
+    allow_joint_noisy_block_attention: bool | None = None,
+    current_block_coupling: str | None = None,
 ) -> PreparedAttentionProfile:
+    if current_block_coupling is None:
+        current_block_coupling = JOINT_COUPLING if allow_joint_noisy_block_attention else VIDEO_THEN_ACTION_COUPLING
+    elif allow_joint_noisy_block_attention is not None:
+        legacy_coupling = JOINT_COUPLING if allow_joint_noisy_block_attention else VIDEO_THEN_ACTION_COUPLING
+        normalized_coupling = normalize_chunked_temporal_exact_coupling(current_block_coupling)
+        if normalized_coupling != legacy_coupling:
+            raise ValueError(
+                "`current_block_coupling` conflicts with legacy "
+                "`allow_joint_noisy_block_attention`."
+            )
+    current_block_coupling = normalize_chunked_temporal_exact_coupling(current_block_coupling)
+
     batch_size, _, latent_frames, latent_height, latent_width = latent_shape
     _, _, action_frames, action_height, action_width = action_shape
     patch_t, patch_h, patch_w = patch_size
@@ -184,10 +252,15 @@ def build_chunked_temporal_exact_attention_profile(
         .expand(batch_size, -1, action_height, action_width)[None]
         .flatten()
     )
-    frame_ids = torch.cat(
-        [latent_frame_id // chunk_size * 2] * 2
-        + [action_frame_id // chunk_size * 2 + 1] * 2
-    )
+    latent_chunk_id = latent_frame_id // chunk_size
+    action_chunk_id = action_frame_id // chunk_size
+    if current_block_coupling == ACTION_THEN_VIDEO_COUPLING:
+        latent_block_id = latent_chunk_id * 2 + 1
+        action_block_id = action_chunk_id * 2
+    else:
+        latent_block_id = latent_chunk_id * 2
+        action_block_id = action_chunk_id * 2 + 1
+    frame_ids = torch.cat([latent_block_id] * 2 + [action_block_id] * 2)
     noise_ids = torch.cat(
         [
             torch.zeros_like(latent_frame_id),
@@ -196,11 +269,20 @@ def build_chunked_temporal_exact_attention_profile(
             torch.ones_like(action_frame_id),
         ]
     )
+    stream_ids = torch.cat(
+        [
+            torch.zeros_like(latent_frame_id),
+            torch.zeros_like(latent_frame_id),
+            torch.ones_like(action_frame_id),
+            torch.ones_like(action_frame_id),
+        ]
+    )
 
     if padded_length > 0:
         seq_ids = torch.nn.functional.pad(seq_ids, (0, padded_length), value=-1)
         frame_ids = torch.nn.functional.pad(frame_ids, (0, padded_length), value=-1)
         noise_ids = torch.nn.functional.pad(noise_ids, (0, padded_length), value=-1)
+        stream_ids = torch.nn.functional.pad(stream_ids, (0, padded_length), value=-1)
 
     text_seq_ids = torch.arange(batch_size, device=device)[:, None].expand(-1, text_token_count).flatten()
 
@@ -213,16 +295,25 @@ def build_chunked_temporal_exact_attention_profile(
         kv_frame = frame_ids[None, :]
         q_noise = noise_ids[:, None]
         kv_noise = noise_ids[None, :]
+        q_stream = stream_ids[:, None]
+        kv_stream = stream_ids[None, :]
         q_block = torch.div(q_frame, 2, rounding_mode="floor")
         kv_block = torch.div(kv_frame, 2, rounding_mode="floor")
 
         same_seq = (q_seq == kv_seq) & (q_seq >= 0) & (kv_seq >= 0)
-        clean_to_clean = (q_noise == 1) & (kv_noise == 1) & (kv_frame <= q_frame)
-        if allow_joint_noisy_block_attention:
+        if current_block_coupling == DECOUPLED_SAME_STEP_COUPLING:
+            clean_to_clean = (
+                (q_noise == 1)
+                & (kv_noise == 1)
+                & ((kv_block < q_block) | ((kv_block == q_block) & (kv_stream == q_stream)))
+            )
+        else:
+            clean_to_clean = (q_noise == 1) & (kv_noise == 1) & (kv_frame <= q_frame)
+        if current_block_coupling in {JOINT_COUPLING, DECOUPLED_SAME_STEP_COUPLING}:
             noise_to_clean = (q_noise == 0) & (kv_noise == 1) & (kv_block < q_block)
         else:
             noise_to_clean = (q_noise == 0) & (kv_noise == 1) & (kv_frame < q_frame)
-        if allow_joint_noisy_block_attention:
+        if current_block_coupling == JOINT_COUPLING:
             noise_to_noise = (q_noise == 0) & (kv_noise == 0) & (kv_block == q_block)
         else:
             noise_to_noise = (q_noise == 0) & (kv_noise == 0) & (kv_frame == q_frame)
@@ -240,6 +331,7 @@ def build_chunked_temporal_exact_attention_profile(
         seq_ids_flex = seq_ids.to(device=device, dtype=torch.long)
         frame_ids_flex = frame_ids.to(device=device, dtype=torch.long)
         noise_ids_flex = noise_ids.to(device=device, dtype=torch.long)
+        stream_ids_flex = stream_ids.to(device=device, dtype=torch.long)
         text_seq_ids_flex = text_seq_ids.to(device=device, dtype=torch.long)
 
         def self_mask_mod(
@@ -254,12 +346,31 @@ def build_chunked_temporal_exact_attention_profile(
                 & (seq_ids_flex[q_idx] >= 0)
                 & (seq_ids_flex[kv_idx] >= 0)
             )
-            clean_to_clean = (
-                (noise_ids_flex[q_idx] == 1)
-                & (noise_ids_flex[kv_idx] == 1)
-                & (frame_ids_flex[kv_idx] <= frame_ids_flex[q_idx])
-            )
-            if allow_joint_noisy_block_attention:
+            if current_block_coupling == DECOUPLED_SAME_STEP_COUPLING:
+                clean_to_clean = (
+                    (noise_ids_flex[q_idx] == 1)
+                    & (noise_ids_flex[kv_idx] == 1)
+                    & (
+                        (
+                            torch.div(frame_ids_flex[kv_idx], 2, rounding_mode="floor")
+                            < torch.div(frame_ids_flex[q_idx], 2, rounding_mode="floor")
+                        )
+                        | (
+                            (
+                                torch.div(frame_ids_flex[kv_idx], 2, rounding_mode="floor")
+                                == torch.div(frame_ids_flex[q_idx], 2, rounding_mode="floor")
+                            )
+                            & (stream_ids_flex[kv_idx] == stream_ids_flex[q_idx])
+                        )
+                    )
+                )
+            else:
+                clean_to_clean = (
+                    (noise_ids_flex[q_idx] == 1)
+                    & (noise_ids_flex[kv_idx] == 1)
+                    & (frame_ids_flex[kv_idx] <= frame_ids_flex[q_idx])
+                )
+            if current_block_coupling in {JOINT_COUPLING, DECOUPLED_SAME_STEP_COUPLING}:
                 noise_to_clean = (
                     (noise_ids_flex[q_idx] == 0)
                     & (noise_ids_flex[kv_idx] == 1)
@@ -274,11 +385,14 @@ def build_chunked_temporal_exact_attention_profile(
                     & (noise_ids_flex[kv_idx] == 1)
                     & (frame_ids_flex[kv_idx] < frame_ids_flex[q_idx])
                 )
-            if allow_joint_noisy_block_attention:
+            if current_block_coupling == JOINT_COUPLING:
                 noise_to_noise = (
                     (noise_ids_flex[q_idx] == 0)
                     & (noise_ids_flex[kv_idx] == 0)
-                    & (torch.div(frame_ids_flex[kv_idx], 2, rounding_mode="floor") == torch.div(frame_ids_flex[q_idx], 2, rounding_mode="floor"))
+                    & (
+                        torch.div(frame_ids_flex[kv_idx], 2, rounding_mode="floor")
+                        == torch.div(frame_ids_flex[q_idx], 2, rounding_mode="floor")
+                    )
                 )
             else:
                 noise_to_noise = (
@@ -327,7 +441,7 @@ def build_chunked_temporal_exact_attention_profile(
 
     return PreparedAttentionProfile(
         spec=AttentionProfileSpec(
-            name="chunked_temporal_exact_joint" if allow_joint_noisy_block_attention else "chunked_temporal_exact",
+            name=chunked_temporal_exact_profile_name_for_coupling(current_block_coupling),
             family="chunked_exact",
             backend="flex_or_sdpa",
         ),
@@ -343,7 +457,8 @@ def build_chunked_temporal_exact_attention_profile(
             "action_shape": tuple(int(v) for v in action_shape),
             "padded_length": int(padded_length),
             "text_token_count": int(text_token_count),
-            "allow_joint_noisy_block_attention": bool(allow_joint_noisy_block_attention),
+            "allow_joint_noisy_block_attention": current_block_coupling == JOINT_COUPLING,
+            "current_block_coupling": current_block_coupling,
         },
     )
 

@@ -30,6 +30,7 @@ from open_wam.models.policy_variants.mot.modules import (
 from open_wam.models.policy_variants.mot.runtime import (
     build_mot_inference_action_attention_mask,
     build_mot_attention_mask,
+    build_packed_action_attention_mask,
     resolve_mot_condition_latents,
     trim_mot_action_cache_prefix,
 )
@@ -210,6 +211,48 @@ def test_build_mot_inference_action_mask_uses_absolute_frame_starts() -> None:
     current_action_query = 8
     current_video_frame_token = 4
     assert mask[current_action_query, current_video_frame_token]
+
+
+def test_build_mot_inference_action_mask_decouples_same_step_video() -> None:
+    mask = build_mot_inference_action_attention_mask(
+        video_seq_len=8,
+        past_action_seq_len=0,
+        current_action_seq_len=4,
+        video_tokens_per_frame=2,
+        action_tokens_per_frame=2,
+        chunk_size_frames=2,
+        window_size_frames=8,
+        device=torch.device("cpu"),
+        video_frame_start=0,
+        current_action_frame_start=2,
+        current_block_coupling="decoupled_same_step",
+    )
+
+    current_action_query = 8
+    current_video_frame_token = 4
+    previous_video_frame_token = 2
+    assert not mask[current_action_query, current_video_frame_token]
+    assert mask[current_action_query, previous_video_frame_token]
+
+
+def test_build_packed_action_mask_decouples_same_step_clean_video() -> None:
+    mask = build_packed_action_attention_mask(
+        num_video_frames=2,
+        video_tokens_per_frame=2,
+        num_action_frames=2,
+        action_tokens_per_frame=2,
+        action_chunk_size_frames=1,
+        device=torch.device("cpu"),
+        current_block_coupling="decoupled_same_step",
+    )
+
+    action_noisy_frame_0_query = 0
+    action_noisy_frame_1_query = 2
+    video_clean_frame_0_key = 0
+    video_clean_frame_1_key = 2
+    assert not mask[action_noisy_frame_0_query, video_clean_frame_0_key]
+    assert not mask[action_noisy_frame_1_query, video_clean_frame_1_key]
+    assert mask[action_noisy_frame_1_query, video_clean_frame_0_key]
 
 
 def test_trim_mot_action_cache_prefix_keeps_oldest_tokens() -> None:

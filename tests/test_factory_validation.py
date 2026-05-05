@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import torch
 
 from open_wam.configs import (
@@ -701,7 +702,7 @@ def test_video_sequence_policy_requires_shared_transformer_backbone() -> None:
         raise AssertionError("Expected video-sequence validation to reject a non-shared backbone.")
 
 
-def test_register_attached_requires_shared_transformer_backbone() -> None:
+def test_register_attached_pipeline_build_is_obsolete() -> None:
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=2,
@@ -719,12 +720,9 @@ def test_register_attached_requires_shared_transformer_backbone() -> None:
         inference=InferenceConfig(frame_chunk_size=2),
     )
 
-    try:
-        build_variant_pipeline_from_config(config)
-    except ValueError as exc:
-        assert "shared transformer backbone" in str(exc)
-    else:  # pragma: no cover - defensive guard
-        raise AssertionError("Expected register-attached validation to reject a non-shared backbone.")
+    with pytest.warns(RuntimeWarning, match="Traditional Method 2 `register_attached` is obsolete"):
+        with pytest.raises(RuntimeError, match="Traditional Method 2 `register_attached` is obsolete"):
+            build_variant_pipeline_from_config(config)
 
 
 def test_mot_policy_builds_with_shared_transformer_backbone() -> None:
@@ -823,7 +821,7 @@ def test_post_decoded_rejects_non_decode_attachment() -> None:
         raise AssertionError("Expected post-decoded config to reject non-decode attachment.")
 
 
-def test_register_attached_rejects_misaligned_libero_style_block_counts() -> None:
+def test_register_attached_libero_style_config_is_obsolete_before_block_validation() -> None:
     config = ExperimentConfig(
         data=LiberoDataConfig(
             num_frames=4,
@@ -848,9 +846,6 @@ def test_register_attached_rejects_misaligned_libero_style_block_counts() -> Non
         inference=InferenceConfig(frame_chunk_size=1),
     )
 
-    try:
-        build_variant_pipeline_from_config(config)
-    except ValueError as exc:
-        assert "block counts to match" in str(exc)
-    else:  # pragma: no cover - defensive guard
-        raise AssertionError("Expected register-attached validation to reject misaligned raw-LIBERO block counts.")
+    with pytest.warns(RuntimeWarning, match="Traditional Method 2 `register_attached` is obsolete"):
+        with pytest.raises(RuntimeError, match="Traditional Method 2 `register_attached` is obsolete"):
+            build_variant_pipeline_from_config(config)

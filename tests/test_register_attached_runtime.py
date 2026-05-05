@@ -15,6 +15,9 @@ from open_wam.utils.config_loader import load_experiment_config
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+pytestmark = pytest.mark.skip(
+    reason="Traditional Method 2 register-attached runtime is obsolete and intentionally disabled."
+)
 
 
 def test_register_attached_runtime_owns_sequence_assembly() -> None:

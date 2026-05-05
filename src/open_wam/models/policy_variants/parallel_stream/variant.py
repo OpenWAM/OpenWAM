@@ -5,6 +5,7 @@ import torch
 
 from open_wam.configs import (
     ActionSpace,
+    CurrentBlockCoupling,
     InferenceConfig,
     ParallelExactCacheWriteMode,
     ParallelRuntimeMode,
@@ -30,6 +31,7 @@ from ..contracts import (
 from .reference_runtime import (
     prepare_parallel_action_conditioned_train_artifacts,
     prepare_parallel_exact_train_artifacts,
+    resolve_parallel_current_block_coupling,
     run_parallel_action_conditioned_inference_rollout,
     run_parallel_action_conditioned_train,
     run_parallel_exact_cache_warmup,
@@ -89,7 +91,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
     def exact_cache_write_mode(self) -> ParallelExactCacheWriteMode:
         """Cache write contract selected by the exact runtime program."""
 
-        if self.config.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
+        if resolve_parallel_current_block_coupling(self.config) == CurrentBlockCoupling.JOINT:
             return ParallelExactCacheWriteMode.JOINT_PACKED
         return ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED
 
@@ -446,7 +448,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             text_emb = text_context
             negative_text_emb = negative_text_context
             output_dtype = torch.float32 if parameter.device.type == "cpu" else parameter.dtype
-        if self.config.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
+        if resolve_parallel_current_block_coupling(self.config) == CurrentBlockCoupling.JOINT:
             infer_artifacts = run_parallel_action_conditioned_inference_rollout(
                 transformer=reference_transformer,
                 backbone_config=self.backbone_config,

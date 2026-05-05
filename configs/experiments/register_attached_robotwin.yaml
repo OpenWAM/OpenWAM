@@ -1,3 +1,6 @@
+# OBSOLETE: traditional Method 2 `register_attached` is disabled. This config is
+# kept for historical reference only; pipeline construction raises an explicit
+# warning and error.
 name: register_attached_robotwin
 
 data:

@@ -14,7 +14,7 @@ from open_wam.models.common.flow_matching import (
     denoised_actions_from_flow,
     denoised_video_latents_from_flow,
 )
-from open_wam.configs import InferenceConfig, MoTPolicyConfig, MoTRuntimeMode, TrainingConfig
+from open_wam.configs import CurrentBlockCoupling, InferenceConfig, MoTPolicyConfig, MoTRuntimeMode, TrainingConfig
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 from open_wam.models.visual_tower.grid_ids import build_action_grid_ids
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
@@ -68,6 +68,14 @@ from .runtime import (
 # lookback is `(attn_window // 2) * frame_chunk_size` integer frames (60 at
 # attn_window=30, frame_chunk_size=4).
 _MOT_SLOT_POOL_ATTN_WINDOW = 30
+
+
+def resolve_mot_current_block_coupling(config: MoTPolicyConfig) -> CurrentBlockCoupling:
+    """Resolve Method-5 current-block coupling, defaulting to current behavior."""
+
+    if config.current_block_coupling is None:
+        return CurrentBlockCoupling.VIDEO_THEN_ACTION
+    return CurrentBlockCoupling(config.current_block_coupling)
 
 
 def _rewind_runtime_action_cache_to_frame(
@@ -950,6 +958,16 @@ class MoTPolicyVariant(PolicyVariant):
                 "Packed action training requires noisy/clean actions to share shape, "
                 f"got noisy={tuple(noisy_actions.shape)}, clean={tuple(clean_actions.shape)}."
             )
+        current_block_coupling = resolve_mot_current_block_coupling(self.config)
+        if current_block_coupling == CurrentBlockCoupling.JOINT:
+            raise NotImplementedError(
+                "M5 current_block_coupling='joint' is reserved as placeholder 2. "
+                "Use runtime_mode='joint_denoise' for the existing packed joint path."
+            )
+        if current_block_coupling == CurrentBlockCoupling.ACTION_THEN_VIDEO:
+            raise NotImplementedError(
+                "M5 current_block_coupling='action_then_video' is reserved as placeholder 3."
+            )
         action_seq_len = int(noisy_actions.shape[1])
         num_action_frames = action_seq_len // int(action_tokens_per_frame)
 
@@ -993,6 +1011,7 @@ class MoTPolicyVariant(PolicyVariant):
             action_chunk_size_frames=sampled_chunk_size,
             device=noisy_actions.device,
             attention_window_size=sampled_window_size,
+            current_block_coupling=current_block_coupling,
         )
         packed_action_hidden = forward_packed_action_with_video_cache(
             action_expert=self.action_expert,
@@ -1035,6 +1054,7 @@ class MoTPolicyVariant(PolicyVariant):
                 "method_family": "mot",
                 "condition_mode": str(self.config.condition_mode),
                 "runtime_mode": str(self.config.runtime_mode),
+                "current_block_coupling": current_block_coupling.value,
                 "sampled_chunk_size": sampled_chunk_size,
                 "sampled_window_size": sampled_window_size,
                 "mot_train_artifacts": MoTTrainArtifacts(
@@ -1303,6 +1323,17 @@ class MoTPolicyVariant(PolicyVariant):
                 f"got action_horizon={self.action_horizon}, frame_chunk_size={chunk_frames}."
             )
         action_tokens_per_frame = self.action_horizon // chunk_frames
+        current_block_coupling = resolve_mot_current_block_coupling(self.config)
+        if current_block_coupling == CurrentBlockCoupling.JOINT:
+            raise NotImplementedError(
+                "M5 current_block_coupling='joint' is reserved as placeholder 2. "
+                "Use runtime_mode='joint_denoise' for the existing packed joint path."
+            )
+        if current_block_coupling == CurrentBlockCoupling.ACTION_THEN_VIDEO:
+            raise NotImplementedError(
+                "M5 current_block_coupling='action_then_video' is reserved as placeholder 3."
+            )
+        video_commit_before_action = current_block_coupling == CurrentBlockCoupling.VIDEO_THEN_ACTION
 
         text_context_for_video = visual_outputs.frontend.conditioning.text_context
         if text_context_for_video is None:
@@ -1449,7 +1480,7 @@ class MoTPolicyVariant(PolicyVariant):
             video_noise_pred = _run_single_stream_forward(
                 visual_tower.core,
                 input_dict=video_input,
-                update_cache=1 if (last_step and self.inference_config.use_cache) else 0,
+                update_cache=1 if (last_step and video_commit_before_action and self.inference_config.use_cache) else 0,
                 cache_name=cache_name,
                 action_mode=False,
                 guidance_scale=self.inference_config.guidance_scale,
@@ -1481,65 +1512,73 @@ class MoTPolicyVariant(PolicyVariant):
         # action expert sees this chunk is observation frames +
         # current-chunk pred frames.
         total_clean_video_frames = generation_frame_start + chunk_frames
+        action_visible_video_end_frame = (
+            total_clean_video_frames
+            if video_commit_before_action
+            else generation_frame_start
+        )
 
-        # Extract MoTVideoCache from the shared transformer's cache. With
-        # CFG active the cache is doubled `[cond, uncond]` on the batch
-        # dim; slice the cond half for the action expert (batch=B).
-        cache_state = visual_tower.core._resolve_exact_cache_state(cache_name)
-        if cache_state is None:
-            raise RuntimeError(
-                f"MoT non_joint_two_stream expected cache state at `{cache_name}` "
-                "but the shared transformer returned None."
-            )
-        extracted_layers: list[MoTVideoLayerCache] = []
-        for entry in cache_state.self_attention_kv:
-            if entry.key is None or entry.value is None:
+        def extract_mot_video_cache_from_exact_cache() -> MoTVideoCache:
+            # With CFG active the cache is doubled `[cond, uncond]` on the
+            # batch dim; slice the cond half for the action expert (batch=B).
+            cache_state = visual_tower.core._resolve_exact_cache_state(cache_name)
+            if cache_state is None:
                 raise RuntimeError(
-                    "MoT non_joint_two_stream cache extraction found an empty layer entry."
+                    f"MoT non_joint_two_stream expected cache state at `{cache_name}` "
+                    "but the shared transformer returned None."
                 )
-            key = entry.key
-            value = entry.value
-            if key.shape[0] == 2 * batch_size:
-                key = key[:batch_size]
-                value = value[:batch_size]
-            elif key.shape[0] != batch_size:
-                raise RuntimeError(
-                    "MoT non_joint_two_stream cache batch dimension must match the current batch "
-                    f"(or 2x for CFG), got cache_batch={key.shape[0]}, batch_size={batch_size}."
+            extracted_layers: list[MoTVideoLayerCache] = []
+            for entry in cache_state.self_attention_kv:
+                if entry.key is None or entry.value is None:
+                    raise RuntimeError(
+                        "MoT non_joint_two_stream cache extraction found an empty layer entry."
+                    )
+                key = entry.key
+                value = entry.value
+                if key.shape[0] == 2 * batch_size:
+                    key = key[:batch_size]
+                    value = value[:batch_size]
+                elif key.shape[0] != batch_size:
+                    raise RuntimeError(
+                        "MoT non_joint_two_stream cache batch dimension must match the current batch "
+                        f"(or 2x for CFG), got cache_batch={key.shape[0]}, batch_size={batch_size}."
+                    )
+                extracted_layers.append(
+                    MoTVideoLayerCache(key=key.detach(), value=value.detach())
                 )
-            extracted_layers.append(
-                MoTVideoLayerCache(key=key.detach(), value=value.detach())
+            return MoTVideoCache(
+                layers=tuple(extracted_layers),
+                video_seq_len=int(extracted_layers[0].key.shape[2]),
             )
-        action_video_cache = MoTVideoCache(
-            layers=tuple(extracted_layers),
-            video_seq_len=int(extracted_layers[0].key.shape[2]),
-        )
-        # Method-1 alignment: Method 1's slot pool stores both video and
-        # action so video occupies `(attn_window // 2) * latent_token_per_chunk`
-        # tokens (= 60 frames at attn_window=30, chunk_frames=4, tokens/frame=32),
-        # which is integer-frame-aligned. Method 5 only writes video so the
-        # slot pool fills with `(attn_window // 2) * (latent + action)` tokens
-        # (= 67.5 frames here), leaving a partial leading frame after eviction.
-        # Trim to Method 1's per-stream cap so the action expert sees the
-        # same frame-aligned video lookback Method 1 does.
-        method1_video_lookback_frames = (
-            (_MOT_SLOT_POOL_ATTN_WINDOW // 2) * int(chunk_frames)
-        )
-        max_video_tokens_for_action = int(method1_video_lookback_frames) * int(
-            runtime_state.video_tokens_per_frame
-        ) if runtime_state.video_tokens_per_frame else None
-        if (
-            max_video_tokens_for_action is not None
-            and max_video_tokens_for_action > 0
-            and action_video_cache.video_seq_len > max_video_tokens_for_action
-        ):
-            action_video_cache = trim_mot_video_cache_tail(
-                action_video_cache,
-                max_video_seq_len=max_video_tokens_for_action,
+
+        action_video_cache = extract_mot_video_cache_from_exact_cache()
+        def prepare_action_video_cache(cache: MoTVideoCache) -> MoTVideoCache:
+            # Method-1 alignment: Method 1's slot pool stores both video and
+            # action so video occupies `(attn_window // 2) * latent_token_per_chunk`
+            # tokens (= 60 frames at attn_window=30, chunk_frames=4, tokens/frame=32),
+            # which is integer-frame-aligned. Method 5 only writes video so the
+            # slot pool fills with `(attn_window // 2) * (latent + action)` tokens
+            # (= 67.5 frames here), leaving a partial leading frame after eviction.
+            # Trim to Method 1's per-stream cap so the action expert sees the
+            # same frame-aligned video lookback Method 1 does.
+            method1_video_lookback_frames = (
+                (_MOT_SLOT_POOL_ATTN_WINDOW // 2) * int(chunk_frames)
             )
-        action_video_cache = move_mot_video_cache(
-            action_video_cache, device=device, dtype=dtype
-        )
+            max_video_tokens_for_action = int(method1_video_lookback_frames) * int(
+                runtime_state.video_tokens_per_frame
+            ) if runtime_state.video_tokens_per_frame else None
+            if (
+                max_video_tokens_for_action is not None
+                and max_video_tokens_for_action > 0
+                and cache.video_seq_len > max_video_tokens_for_action
+            ):
+                cache = trim_mot_video_cache_tail(
+                    cache,
+                    max_video_seq_len=max_video_tokens_for_action,
+                )
+            return move_mot_video_cache(cache, device=device, dtype=dtype)
+
+        action_video_cache = prepare_action_video_cache(action_video_cache)
         runtime_state.video_cache = action_video_cache
         cached_batch_size = int(action_video_cache.layers[0].key.shape[0])
         if cached_batch_size != batch_size:
@@ -1620,8 +1659,8 @@ class MoTPolicyVariant(PolicyVariant):
         video_lookback_frames_for_mask = int(action_video_cache.video_seq_len) // int(
             runtime_state.video_tokens_per_frame
         )
-        current_action_frame_start = int(total_clean_video_frames - chunk_frames)
-        video_frame_start = int(total_clean_video_frames - video_lookback_frames_for_mask)
+        current_action_frame_start = int(generation_frame_start)
+        video_frame_start = int(action_visible_video_end_frame - video_lookback_frames_for_mask)
         past_action_frame_start = (
             int(runtime_state.action_cache_start_frame)
             if past_action_cache is not None
@@ -1648,6 +1687,7 @@ class MoTPolicyVariant(PolicyVariant):
             video_frame_start=video_frame_start,
             past_action_frame_start=past_action_frame_start,
             current_action_frame_start=current_action_frame_start,
+            current_block_coupling=current_block_coupling,
         )
         # Method-1-aligned cache write: run the denoise loop without
         # capturing K/V, then issue a SEPARATE fresh forward at timestep=0
@@ -1673,7 +1713,7 @@ class MoTPolicyVariant(PolicyVariant):
                     seq_len=self.action_horizon,
                     action_tokens_per_frame=action_tokens_per_frame,
                     device=device,
-                    frame_shift=int(total_clean_video_frames - chunk_frames),
+                    frame_shift=int(current_action_frame_start),
                 ),
             )
             action_hidden_states, _ = forward_action_with_video_and_action_cache(
@@ -1701,7 +1741,7 @@ class MoTPolicyVariant(PolicyVariant):
                 seq_len=self.action_horizon,
                 action_tokens_per_frame=action_tokens_per_frame,
                 device=device,
-                frame_shift=int(total_clean_video_frames - chunk_frames),
+                frame_shift=int(current_action_frame_start),
             ),
         )
         _, fresh_action_kv = forward_action_with_video_and_action_cache(
@@ -1726,6 +1766,30 @@ class MoTPolicyVariant(PolicyVariant):
             runtime_state.action_cache = append_mot_action_cache(
                 past_action_cache, fresh_action_kv_moved
             )
+        if current_block_coupling == CurrentBlockCoupling.DECOUPLED_SAME_STEP and self.inference_config.use_cache:
+            deferred_video_input = _prepare_single_stream_input(
+                latents=predicted_latents.to(device=video_device, dtype=video_dtype),
+                timestep=0.0,
+                text_emb=text_context_for_video,
+                frame_st_id=generation_frame_start,
+                backbone_config=visual_tower.config,
+                action_mode=False,
+            )
+            _run_single_stream_forward(
+                visual_tower.core,
+                input_dict=deferred_video_input,
+                update_cache=1,
+                cache_name=cache_name,
+                action_mode=False,
+                guidance_scale=1.0,
+                negative_text_emb=negative_text_context,
+                combine_cfg=False,
+                force_cfg_batch=use_cfg,
+            )
+            action_video_cache = prepare_action_video_cache(
+                extract_mot_video_cache_from_exact_cache()
+            )
+            runtime_state.video_cache = action_video_cache
         # Method-1 alignment: video and action share the same effective
         # lookback. Method 1 stores both streams in the slot pool and
         # `attn_window` evicts them together; to mirror that with Method 5's
@@ -1785,6 +1849,9 @@ class MoTPolicyVariant(PolicyVariant):
                         if condition_frame_start_override_raw is None
                         else int(condition_frame_start_override_raw)
                     ),
+                    "current_block_coupling": current_block_coupling.value,
+                    "video_commit_before_action": bool(video_commit_before_action),
+                    "action_visible_video_end_frame": int(action_visible_video_end_frame),
                     "action_cache_rewind_frame_start": (
                         None
                         if action_cache_rewind_frame_start_raw is None

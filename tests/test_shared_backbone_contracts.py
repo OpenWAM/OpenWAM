@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from open_wam.data import build_synthetic_batch
 from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
 from open_wam.pipelines import build_variant_pipeline_from_config
@@ -61,16 +63,12 @@ def test_video_sequence_policy_can_request_shared_core_outputs() -> None:
     assert infer_output.visual_outputs.core.aux["used_action_conditioner"] is False
 
 
-def test_register_attached_variant_uses_action_conditioner_path() -> None:
-    _, pipeline, batch, train_batch = _build_train_batch(
+def test_register_attached_variant_is_obsolete() -> None:
+    config = load_experiment_config(
         REPO_ROOT / "configs/experiments/register_attached_robotwin_smoke.yaml"
     )
-    train_output = pipeline.forward_train(batch.views, train_batch)
-    infer_output = pipeline.forward_infer_step(
-        batch.views,
-        PolicyInferContext(state=batch.state, extra={"task_text": batch.task_text}),
-    )
+    config = replace(config, backbone=replace(config.backbone, implementation="lingbot_replica"))
 
-    assert train_output.policy_output.aux["core_aux"]["weight_source"] == "local_init"
-    assert train_output.policy_output.aux["core_aux"]["used_action_conditioner"] is True
-    assert infer_output.policy_output.aux["core_aux"]["used_action_conditioner"] is True
+    with pytest.warns(RuntimeWarning, match="Traditional Method 2 `register_attached` is obsolete"):
+        with pytest.raises(RuntimeError, match="Traditional Method 2 `register_attached` is obsolete"):
+            build_variant_pipeline_from_config(config)

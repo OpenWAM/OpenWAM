@@ -977,9 +977,18 @@ class SharedVideoTransformerCore(nn.Module):
                 "chunk_size",
                 "window_size",
                 "text_token_count",
-                "allow_joint_noisy_block_attention",
             )
-            if all(key in metadata for key in required_keys):
+            if all(key in metadata for key in required_keys) and (
+                "current_block_coupling" in metadata
+                or "allow_joint_noisy_block_attention" in metadata
+            ):
+                current_block_coupling = metadata.get("current_block_coupling")
+                if current_block_coupling is None:
+                    current_block_coupling = (
+                        "joint"
+                        if bool(metadata["allow_joint_noisy_block_attention"])
+                        else "video_then_action"
+                    )
                 return build_chunked_temporal_exact_attention_profile(
                     latent_shape=tuple(int(v) for v in metadata["latent_shape"]),
                     action_shape=tuple(int(v) for v in metadata["action_shape"]),
@@ -994,7 +1003,7 @@ class SharedVideoTransformerCore(nn.Module):
                         or profile.cross_attention_mask is not None
                     ),
                     build_flex_masks=True,
-                    allow_joint_noisy_block_attention=bool(metadata["allow_joint_noisy_block_attention"]),
+                    current_block_coupling=str(current_block_coupling),
                 )
             if profile.self_attention_mask is None and profile.cross_attention_mask is None:
                 return profile

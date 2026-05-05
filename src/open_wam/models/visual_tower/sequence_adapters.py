@@ -13,6 +13,7 @@ from open_wam.models.common import (
     build_chunked_temporal_exact_attention_profile,
     build_register_attention_mask,
     build_register_position_context,
+    chunked_temporal_exact_coupling_from_profile_name,
     normalize_attention_profile_name,
 )
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig, resolve_stage_attention_mode
@@ -407,7 +408,12 @@ def prepare_exact_dual_stream_train_sequence(
         attention_profile_name = "chunked_temporal_exact"
 
     exact_attention_profile = None
-    if attention_profile_name in {"chunked_temporal_exact", "chunked_temporal_exact_joint"}:
+    if attention_profile_name in {
+        "chunked_temporal_exact",
+        "chunked_temporal_exact_joint",
+        "chunked_temporal_exact_action_then_video",
+        "chunked_temporal_exact_decoupled_same_step",
+    }:
         exact_attention_profile = build_chunked_temporal_exact_attention_profile(
             latent_shape=tuple(int(dim) for dim in latent_dict["noisy_latents"].shape),
             action_shape=tuple(int(dim) for dim in action_dict["noisy_latents"].shape),
@@ -419,12 +425,13 @@ def prepare_exact_dual_stream_train_sequence(
             device=hidden_states.device,
             build_dense_masks=hidden_states.device.type != "cuda",
             build_flex_masks=hidden_states.device.type == "cuda",
-            allow_joint_noisy_block_attention=attention_profile_name == "chunked_temporal_exact_joint",
+            current_block_coupling=chunked_temporal_exact_coupling_from_profile_name(attention_profile_name),
         )
     elif attention_profile_name not in (None, "none"):
         raise ValueError(
             "Exact dual-stream adapter only supports `attention_profile_name` of "
-            f"`None`, `none`, `chunked_temporal_exact`, or `chunked_temporal_exact_joint`, got {attention_profile_name!r}."
+            "`None`, `none`, or a `chunked_temporal_exact*` profile, "
+            f"got {attention_profile_name!r}."
         )
 
     return PreparedExactTrainSequence(

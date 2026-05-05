@@ -1,3 +1,6 @@
+# OBSOLETE: traditional Method 2 `register_attached` is disabled. This wrapper is
+# kept for historical reference only; evaluation pipeline construction raises an
+# explicit warning and error.
 name: register_attached_robotwin_smoke_eval
 experiment_config: configs/experiments/register_attached_robotwin_smoke.yaml
 mode: batch

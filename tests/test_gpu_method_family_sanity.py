@@ -340,7 +340,6 @@ def _clear_cuda_between_tests():
     [
         ("parallel_exact", 8),
         ("parallel_action_conditioned", 8),
-        ("register_attached", 6),
         ("video_sequence_default", 6),
         ("video_sequence_core_layer", 6),
         ("video_sequence_core_multi_layer", 6),
@@ -484,7 +483,6 @@ def test_gpu_method_family_runtime_train_matrix(
     [
         ("parallel_exact", "parallel_stream_robotwin_smoke"),
         ("parallel_action_conditioned", "parallel_stream_robotwin_action_conditioned_gpu"),
-        ("register_attached", "register_attached_robotwin_smoke"),
         ("video_sequence_default", "video_sequence_policy_robotwin_smoke"),
         ("video_sequence_core_layer", "video_sequence_policy_robotwin_core_layer_gpu"),
         ("post_latent_legacy", "post_latent_robotwin"),
