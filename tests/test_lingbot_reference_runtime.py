@@ -5,6 +5,7 @@ from torch import nn
 
 from open_wam.configs import (
     InferenceConfig,
+    CurrentBlockCoupling,
     ParallelExactCacheWriteMode,
     ParallelRuntimeMode,
     ParallelStreamPolicyConfig,
@@ -218,8 +219,45 @@ def test_parallel_stream_variant_selects_exact_cache_write_contract() -> None:
         num_frames=2,
     )
 
+    video_noisy_to_action = ParallelStreamPolicyVariant(
+        ParallelStreamPolicyConfig(
+            hidden_size=32,
+            runtime_mode=ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
+            current_block_coupling=CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
+            frame_chunk_size=2,
+            action_per_frame=2,
+            attn_window=8,
+            video_condition_on_action=True,
+        ),
+        backbone_config=backbone_config,
+        training_config=training_config,
+        inference_config=inference_config,
+        action_dim=4,
+        action_horizon=4,
+        num_frames=2,
+    )
+    action_noisy_to_video = ParallelStreamPolicyVariant(
+        ParallelStreamPolicyConfig(
+            hidden_size=32,
+            runtime_mode=ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
+            current_block_coupling=CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
+            frame_chunk_size=2,
+            action_per_frame=2,
+            attn_window=8,
+            video_condition_on_action=True,
+        ),
+        backbone_config=backbone_config,
+        training_config=training_config,
+        inference_config=inference_config,
+        action_dim=4,
+        action_horizon=4,
+        num_frames=2,
+    )
+
     assert canonical.exact_cache_write_mode() == ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED
     assert action_conditioned.exact_cache_write_mode() == ParallelExactCacheWriteMode.JOINT_PACKED
+    assert video_noisy_to_action.exact_cache_write_mode() == ParallelExactCacheWriteMode.JOINT_PACKED
+    assert action_noisy_to_video.exact_cache_write_mode() == ParallelExactCacheWriteMode.JOINT_PACKED
 
 
 def test_exact_cache_warmup_allows_shorter_video_history_than_action_history() -> None:

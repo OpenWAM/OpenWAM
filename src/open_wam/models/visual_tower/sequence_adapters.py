@@ -413,6 +413,8 @@ def prepare_exact_dual_stream_train_sequence(
         "chunked_temporal_exact_joint",
         "chunked_temporal_exact_action_then_video",
         "chunked_temporal_exact_decoupled_same_step",
+        "chunked_temporal_exact_video_noisy_to_action",
+        "chunked_temporal_exact_action_noisy_to_video",
     }:
         exact_attention_profile = build_chunked_temporal_exact_attention_profile(
             latent_shape=tuple(int(dim) for dim in latent_dict["noisy_latents"].shape),
@@ -426,6 +428,9 @@ def prepare_exact_dual_stream_train_sequence(
             build_dense_masks=hidden_states.device.type != "cuda",
             build_flex_masks=hidden_states.device.type == "cuda",
             current_block_coupling=chunked_temporal_exact_coupling_from_profile_name(attention_profile_name),
+            preserve_video_pretrain_history=bool(
+                input_dict.get("preserve_video_pretrain_history", False)
+            ),
         )
     elif attention_profile_name not in (None, "none"):
         raise ValueError(

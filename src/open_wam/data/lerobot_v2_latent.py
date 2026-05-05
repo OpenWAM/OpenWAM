@@ -48,6 +48,7 @@ class LocalEpisodeWindow:
     start_frame: int
     end_frame: int
     observed_frame_ids: tuple[int, ...] = ()
+    latent_frame_count: int | None = None
 
     @property
     def observation_start(self) -> int:
@@ -60,6 +61,12 @@ class LocalEpisodeWindow:
         if self.observed_frame_ids:
             return tuple(int(value) for value in self.observed_frame_ids)
         return tuple(range(int(self.start_frame), int(self.end_frame)))
+
+    @property
+    def latent_num_frames(self) -> int:
+        if self.latent_frame_count is not None:
+            return int(self.latent_frame_count)
+        return len(self.observation_frame_indices)
 
 
 @dataclass(frozen=True)
@@ -125,9 +132,7 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             frame_stride = 1
             if len(observed_frame_ids) > 1:
                 frame_stride = max(1, int(observed_frame_ids[1] - observed_frame_ids[0]))
-            prefix_actions = frame_stride * int(
-                self.data_config.action_schema.action_horizon // max(1, self.data_config.num_frames)
-            )
+            prefix_actions = int(self.data_config.action_schema.action_horizon // max(1, self.data_config.num_frames))
             window_span = max(0, window.end_frame - window.start_frame)
             raw_action_steps = max(len(observed_frame_ids), window_span)
             return max(0, int(prefix_actions + raw_action_steps))
@@ -451,7 +456,7 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
         frame_stride = 1
         if len(observed_frame_ids) > 1:
             frame_stride = max(1, int(observed_frame_ids[1] - observed_frame_ids[0]))
-        prefix_actions = frame_stride * int(self.data_config.action_schema.action_horizon // max(1, self.data_config.num_frames))
+        prefix_actions = int(self.data_config.action_schema.action_horizon // max(1, self.data_config.num_frames))
         required_action_num = latent_num_frames * prefix_actions
 
         action_start_offset = max(0, int(observed_frame_ids[0] - window.start_frame))
@@ -835,9 +840,16 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
 
     def _build_virtual_index(self) -> tuple[tuple[int, int], ...]:
         virtual_index: list[tuple[int, int]] = []
+        min_segment_length = min(self._segment_length_candidates)
         for window_index, window in enumerate(self.windows):
-            source_latent_frames = max(1, len(window.observation_frame_indices))
+            source_latent_frames = max(1, int(window.latent_num_frames))
             for latent_start in range(source_latent_frames):
+                if self.data_config.sample_construction.require_full_segment:
+                    if source_latent_frames < min_segment_length and latent_start > 0:
+                        continue
+                    max_length_from_start = source_latent_frames - latent_start
+                    if source_latent_frames >= min_segment_length and max_length_from_start < min_segment_length:
+                        continue
                 virtual_index.append((window_index, latent_start))
         return tuple(virtual_index)
 
@@ -860,13 +872,14 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
     def _estimate_virtual_valid_action_steps(self, virtual_index: int) -> float:
         window_index, latent_start = self._virtual_index[virtual_index]
         window = self.windows[window_index]
+        source_latent_frames = int(window.latent_num_frames)
         estimates = [
             self._estimate_segment_valid_action_steps(
                 window=window,
                 latent_start=latent_start,
                 segment_length=segment_length,
             )
-            for segment_length in self._segment_length_candidates
+            for segment_length in self._eligible_segment_lengths(source_latent_frames=source_latent_frames)
         ]
         return float(sum(estimates) / len(estimates))
 
@@ -890,9 +903,7 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
         frame_stride = 1
         if len(observed_frame_ids) > 1:
             frame_stride = max(1, int(observed_frame_ids[1] - observed_frame_ids[0]))
-        prefix_actions = frame_stride * int(
-            self.data_config.action_schema.action_horizon // max(1, self.data_config.num_frames)
-        )
+        prefix_actions = int(self.data_config.action_schema.action_horizon // max(1, self.data_config.num_frames))
         valid_latent_end = min(source_latent_frames, latent_start + segment_length)
         boundaries = self._build_raw_bucket_boundaries(
             raw_frame_count=len(raw_frame_ids),
@@ -949,7 +960,7 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
         }
 
     def __getitem__(self, index: int) -> LatentWAMSample:
-        window_index, latent_start = self._virtual_index[index]
+        window_index, virtual_latent_start = self._virtual_index[index]
         window = self.windows[window_index]
         repo_bundle = self._repo_bundles[str(window.repo_root)]
         rows = self._load_episode_rows(window.repo_root, window.episode_index, repo_bundle.metadata)
@@ -957,7 +968,11 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
             window,
             repo_bundle.metadata,
         )
-        segment_length = self._sample_segment_length(index)
+        segment_length, latent_start = self._sample_segment_geometry(
+            index=index,
+            source_latent_frames=int(full_video_latents.shape[1]),
+            virtual_latent_start=virtual_latent_start,
+        )
         subwindow = self._build_uniform_segment(
             video_latents=full_video_latents,
             rows=rows,
@@ -1010,12 +1025,13 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
                 "action_representation": self.data_config.action_target.representation,
                 "virtual_sample_index": index,
                 "trajectory_window_index": window_index,
+                "virtual_latent_start": virtual_latent_start,
                 "subwindow_latent_start": latent_start,
                 "subwindow_latent_end": latent_start + segment_length,
                 "segment_length_frames": segment_length,
                 "segment_valid_latent_frames": subwindow["valid_latent_frames"],
                 "segment_padded_latent_frames": subwindow["padded_latent_frames"],
-                "tail_padding_mode": "zero_hold",
+                "tail_padding_mode": "none" if subwindow["padded_latent_frames"] == 0 else "zero_hold",
                 "subwindow_action_start": subwindow["action_start_index"],
                 "subwindow_action_end": subwindow["action_end_index"],
                 **subwindow["action_target_metadata"],
@@ -1024,15 +1040,55 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
             },
         )
 
-    def _sample_segment_length(self, index: int) -> int:
-        split_salt = 17 if self.data_config.split == DataSplit.TRAIN else 53
-        seed = (
-            int(self.data_config.split_seed)
-            + split_salt
-            + 1_000_003 * int(index + 1)
-        ) & 0x7FFF_FFFF_FFFF_FFFF
-        rng = random.Random(seed)
-        return int(self._segment_length_candidates[rng.randrange(len(self._segment_length_candidates))])
+    def _sample_segment_geometry(
+        self,
+        *,
+        index: int,
+        source_latent_frames: int,
+        virtual_latent_start: int,
+    ) -> tuple[int, int]:
+        candidates = self._eligible_segment_lengths(source_latent_frames=source_latent_frames)
+        if self.data_config.sample_construction.randomize_segment_length:
+            # Truly random per __getitem__ call: use the global random module
+            # which is auto-seeded per process / per worker. Same index across
+            # different calls/epochs draws different lengths.
+            segment_length = int(random.choice(candidates))
+        else:
+            split_salt = 17 if self.data_config.split == DataSplit.TRAIN else 53
+            seed = (
+                int(self.data_config.split_seed)
+                + split_salt
+                + 1_000_003 * int(index + 1)
+            ) & 0x7FFF_FFFF_FFFF_FFFF
+            rng = random.Random(seed)
+            segment_length = int(candidates[rng.randrange(len(candidates))])
+
+        if self.data_config.sample_construction.randomize_segment_start:
+            # With randomize_segment_start=True, virtual_latent_start is only
+            # a sampling-frequency slot: longer trajectories still contribute
+            # more virtual indices, while the actual segment start is drawn
+            # fresh for this __getitem__ call.
+            max_start = max(0, int(source_latent_frames) - int(segment_length))
+            latent_start = int(random.randint(0, max_start))
+        else:
+            latent_start = int(virtual_latent_start)
+            if self.data_config.sample_construction.require_full_segment:
+                max_start = max(0, int(source_latent_frames) - int(segment_length))
+                latent_start = min(latent_start, max_start)
+        return int(segment_length), int(latent_start)
+
+    def _eligible_segment_lengths(self, *, source_latent_frames: int) -> tuple[int, ...]:
+        if not self.data_config.sample_construction.require_full_segment:
+            return self._segment_length_candidates
+        candidates = tuple(length for length in self._segment_length_candidates if length <= int(source_latent_frames))
+        if not candidates and int(source_latent_frames) > 0:
+            return (int(source_latent_frames),)
+        if not candidates:
+            raise ValueError(
+                "Uniform segment sampling with require_full_segment=True found no eligible segment length for "
+                f"source_latent_frames={source_latent_frames}; minimum candidate={min(self._segment_length_candidates)}."
+            )
+        return candidates
 
     def _build_uniform_segment(
         self,
@@ -2108,9 +2164,15 @@ def scan_local_latent_windows(repo_root: Path, data_config: DataConfig) -> list[
                 continue
             payload = torch.load(latent_file, map_location="cpu", weights_only=False)
             observed_frame_ids: tuple[int, ...] = ()
+            latent_frame_count: int | None = None
             if isinstance(payload, dict):
+                raw_latent_num_frames = payload.get("latent_num_frames")
+                if raw_latent_num_frames is not None:
+                    latent_frame_count = int(raw_latent_num_frames)
                 raw_frame_ids = payload.get("frame_ids")
-                if isinstance(raw_frame_ids, (list, tuple)):
+                if isinstance(raw_frame_ids, torch.Tensor):
+                    observed_frame_ids = tuple(int(value) for value in raw_frame_ids.flatten().tolist())
+                elif isinstance(raw_frame_ids, (list, tuple)):
                     observed_frame_ids = tuple(int(value) for value in raw_frame_ids)
             windows.append(
                 LocalEpisodeWindow(
@@ -2119,6 +2181,7 @@ def scan_local_latent_windows(repo_root: Path, data_config: DataConfig) -> list[
                     start_frame=int(match.group("start")),
                     end_frame=int(match.group("end")),
                     observed_frame_ids=observed_frame_ids,
+                    latent_frame_count=latent_frame_count,
                 )
             )
     return windows

@@ -370,6 +370,17 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
     video_action_attention_scope: ParallelActionAttentionScope = ParallelActionAttentionScope.BLOCK_LOCAL
     current_block_coupling: CurrentBlockCoupling | None = None
     couple_action_to_video_timesteps: bool = True
+    # When true, restrict PAST-chunk attention (both clean_to_clean and
+    # noise_to_clean) so that any video-stream query (V_clean or V_noisy)
+    # only sees same-stream history (V_clean), never history A_*. Action
+    # queries (A_clean / A_noisy) keep full history visibility. Same-
+    # chunk cross-stream visibility is unchanged across all 6 coupling
+    # modes -- in particular staged modes' "current-chunk first-stage
+    # clean reads" still work. The goal is to keep the video stream's
+    # K/V context byte-aligned with the video-only pretrain distribution
+    # at all transformer depths. Default false preserves backward compat
+    # with existing checkpoints.
+    preserve_video_pretrain_history: bool = False
     temporal_position_mode: TemporalPositionMode = TemporalPositionMode.GLOBAL_SHIFTED
     used_action_channel_ids: tuple[int, ...] = field(default_factory=tuple)
     inverse_used_action_channel_ids: tuple[int, ...] = field(default_factory=tuple)

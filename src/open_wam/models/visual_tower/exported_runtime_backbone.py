@@ -66,6 +66,9 @@ def load_exported_runtime_backbone_into_replica_core(
             missing_reference_keys.append(target_key)
             continue
         source_value = source_value.detach()
+        if tuple(source_value.shape) != tuple(target_value.shape):
+            missing_reference_keys.append(target_key)
+            continue
         if torch.is_floating_point(source_value):
             source_value = source_value.to(dtype=target_value.dtype)
         target_state[target_key] = source_value.clone()

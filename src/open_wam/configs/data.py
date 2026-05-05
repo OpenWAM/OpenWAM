@@ -287,6 +287,20 @@ class SampleConstructionConfig:
     segment_max_frames: int | None = None
     segment_length_stride: int = 1
     segment_locality_block_size: int = 4
+    # When True (uniform_segment mode only): draw segment_length from the
+    # candidate list with an unseeded RNG so each __getitem__ call picks
+    # a fresh length even for the same virtual index. Default False keeps
+    # PR88's deterministic-per-index behavior for reproducibility.
+    randomize_segment_length: bool = False
+    # When True (uniform_segment mode only): ignore the virtual index's
+    # deterministic latent_start and draw a fresh valid start per __getitem__
+    # call. This is useful with randomize_segment_length for true segment
+    # augmentation while keeping the virtual index as a trajectory sampler.
+    randomize_segment_start: bool = False
+    # When True (uniform_segment mode only): only sample segments fully inside
+    # the source latent span. This disables tail zero-order-hold / action-mask
+    # padding for trajectories shorter than the requested segment.
+    require_full_segment: bool = False
     sample_weight_mode: SampleWeightMode = SampleWeightMode.UNIFORM
     sample_weight_min: float | None = None
     sample_weight_max: float | None = None

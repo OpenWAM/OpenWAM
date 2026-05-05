@@ -1004,6 +1004,9 @@ class SharedVideoTransformerCore(nn.Module):
                     ),
                     build_flex_masks=True,
                     current_block_coupling=str(current_block_coupling),
+                    preserve_video_pretrain_history=bool(
+                        metadata.get("preserve_video_pretrain_history", False)
+                    ),
                 )
             if profile.self_attention_mask is None and profile.cross_attention_mask is None:
                 return profile

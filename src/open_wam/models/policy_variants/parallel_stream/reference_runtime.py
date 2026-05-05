@@ -480,6 +480,9 @@ def prepare_parallel_exact_train_artifacts(
             "loss_frame_end": resolved_loss_frame_end,
             "frame_shift": int(frame_shift),
             "attention_profile_name": attention_profile_name,
+            "preserve_video_pretrain_history": bool(
+                getattr(policy_config, "preserve_video_pretrain_history", False)
+            ),
         },
         latent_scheduler=latent_scheduler,
         action_scheduler=action_scheduler,
@@ -503,7 +506,12 @@ def prepare_parallel_action_conditioned_train_artifacts(
 ) -> LingbotParallelTrainArtifacts:
     coupling = resolve_parallel_current_block_coupling(policy_config)
     if (
-        coupling == CurrentBlockCoupling.JOINT
+        coupling
+        in {
+            CurrentBlockCoupling.JOINT,
+            CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
+            CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
+        }
         and policy_config.current_block_coupling is None
         and not policy_config.video_condition_on_action
     ):
@@ -1089,9 +1097,14 @@ def run_parallel_exact_inference_rollout(
     cache_backend_name = cache_context.cache_backend_name
     current_frame_start = int(infer_cache.get("frame_start", 0))
     current_block_coupling = resolve_parallel_current_block_coupling(policy_config)
-    if current_block_coupling == CurrentBlockCoupling.JOINT:
+    joint_packed_couplings = {
+        CurrentBlockCoupling.JOINT,
+        CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
+        CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
+    }
+    if current_block_coupling in joint_packed_couplings:
         raise ValueError(
-            "Joint M1 coupling must use `run_parallel_action_conditioned_inference_rollout`; "
+            "Joint-like M1 coupling must use `run_parallel_action_conditioned_inference_rollout`; "
             "the staged exact rollout only supports ordered or decoupled same-step coupling."
         )
     cache_spec = _build_exact_cache_spec(
@@ -1367,6 +1380,9 @@ def _run_parallel_exact_joint_forward_manual(
                 str(attention_profile_name)
                 if attention_profile_name not in (None, "none")
                 else None
+            ),
+            preserve_video_pretrain_history=bool(
+                input_dict.get("preserve_video_pretrain_history", False)
             ),
         )
         exact_attention_profile = PreparedAttentionProfile(
@@ -1831,9 +1847,14 @@ def run_parallel_action_conditioned_inference_rollout(
     advance_frame_start: bool = False,
 ) -> LingbotParallelInferArtifacts:
     current_block_coupling = resolve_parallel_current_block_coupling(policy_config)
-    if current_block_coupling != CurrentBlockCoupling.JOINT:
+    joint_packed_couplings = {
+        CurrentBlockCoupling.JOINT,
+        CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
+        CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
+    }
+    if current_block_coupling not in joint_packed_couplings:
         raise ValueError(
-            "`run_parallel_action_conditioned_inference_rollout` only implements joint same-step coupling; "
+            "`run_parallel_action_conditioned_inference_rollout` only implements packed noisy same-step coupling; "
             f"got {current_block_coupling.value!r}."
         )
     if policy_config.current_block_coupling is None and not policy_config.video_condition_on_action:
@@ -2005,6 +2026,9 @@ def run_parallel_action_conditioned_inference_rollout(
             "chunk_size": max(1, int(training_config.chunk_size)),
             "window_size": max(1, int(training_config.window_size)),
             "attention_profile_name": attention_profile_name,
+            "preserve_video_pretrain_history": bool(
+                getattr(policy_config, "preserve_video_pretrain_history", False)
+            ),
         }
         video_noise_pred, action_noise_pred = _run_parallel_action_conditioned_forward(
             transformer,

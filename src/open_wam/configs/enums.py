@@ -584,6 +584,9 @@ class CurrentBlockCoupling(StrEnum):
     JOINT = "joint"
     ACTION_THEN_VIDEO = "action_then_video"
     DECOUPLED_SAME_STEP = "decoupled_same_step"
+    # Joint-like one-way modes: both streams are noisy, but same-block cross-stream visibility is directional.
+    VIDEO_NOISY_TO_ACTION = "video_noisy_to_action"
+    ACTION_NOISY_TO_VIDEO = "action_noisy_to_video"
 
 
 # Backward-compatible export for early Method-1 configs/code paths.

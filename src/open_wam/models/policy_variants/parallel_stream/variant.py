@@ -91,7 +91,11 @@ class ParallelStreamPolicyVariant(PolicyVariant):
     def exact_cache_write_mode(self) -> ParallelExactCacheWriteMode:
         """Cache write contract selected by the exact runtime program."""
 
-        if resolve_parallel_current_block_coupling(self.config) == CurrentBlockCoupling.JOINT:
+        if resolve_parallel_current_block_coupling(self.config) in {
+            CurrentBlockCoupling.JOINT,
+            CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
+            CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
+        }:
             return ParallelExactCacheWriteMode.JOINT_PACKED
         return ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED
 
@@ -448,7 +452,11 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             text_emb = text_context
             negative_text_emb = negative_text_context
             output_dtype = torch.float32 if parameter.device.type == "cpu" else parameter.dtype
-        if resolve_parallel_current_block_coupling(self.config) == CurrentBlockCoupling.JOINT:
+        if resolve_parallel_current_block_coupling(self.config) in {
+            CurrentBlockCoupling.JOINT,
+            CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
+            CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
+        }:
             infer_artifacts = run_parallel_action_conditioned_inference_rollout(
                 transformer=reference_transformer,
                 backbone_config=self.backbone_config,

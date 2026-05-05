@@ -106,6 +106,26 @@ def test_chunked_temporal_exact_joint_couples_same_block_noisy_streams() -> None
     assert bool(mask[a_noisy_0, v_clean_0].item()) is False
 
 
+def test_chunked_temporal_exact_video_noisy_to_action_is_one_way() -> None:
+    mask = _tiny_exact_mask("video_noisy_to_action")
+    v_noisy_0, v_clean_0, a_noisy_0, a_clean_0 = 0, 2, 4, 6
+
+    assert bool(mask[a_noisy_0, v_noisy_0].item()) is True
+    assert bool(mask[v_noisy_0, a_noisy_0].item()) is False
+    assert bool(mask[a_noisy_0, v_clean_0].item()) is False
+    assert bool(mask[v_noisy_0, a_clean_0].item()) is False
+
+
+def test_chunked_temporal_exact_action_noisy_to_video_is_one_way() -> None:
+    mask = _tiny_exact_mask("action_noisy_to_video")
+    v_noisy_0, v_clean_0, a_noisy_0, a_clean_0 = 0, 2, 4, 6
+
+    assert bool(mask[v_noisy_0, a_noisy_0].item()) is True
+    assert bool(mask[a_noisy_0, v_noisy_0].item()) is False
+    assert bool(mask[v_noisy_0, a_clean_0].item()) is False
+    assert bool(mask[a_noisy_0, v_clean_0].item()) is False
+
+
 def test_chunked_temporal_exact_decoupled_hides_same_step_cross_stream_context() -> None:
     mask = _tiny_exact_mask("decoupled_same_step")
     v_noisy_0, v_clean_0, a_noisy_0, a_clean_0 = 0, 2, 4, 6
@@ -116,6 +136,75 @@ def test_chunked_temporal_exact_decoupled_hides_same_step_cross_stream_context()
     assert bool(mask[a_noisy_0, a_noisy_0].item()) is True
     assert bool(mask[v_clean_0, a_clean_0].item()) is False
     assert bool(mask[a_clean_0, v_clean_0].item()) is False
+
+
+def test_preserve_video_pretrain_history_filters_video_queries_only() -> None:
+    profile = build_chunked_temporal_exact_attention_profile(
+        latent_shape=(1, 1, 4, 1, 1),
+        action_shape=(1, 1, 4, 1, 1),
+        padded_length=0,
+        chunk_size=2,
+        window_size=8,
+        patch_size=(1, 1, 1),
+        text_token_count=1,
+        device=torch.device("cpu"),
+        build_dense_masks=True,
+        build_flex_masks=False,
+        current_block_coupling="joint",
+        preserve_video_pretrain_history=True,
+    )
+    assert profile.self_attention_mask is not None
+    mask = profile.self_attention_mask
+    # Layout for four frames: V_noisy [0:4], V_clean [4:8], A_noisy [8:12], A_clean [12:16].
+    v_noisy_chunk1, v_clean_chunk1, a_noisy_chunk1 = 2, 6, 10
+    v_clean_history, a_clean_history = 4, 12
+
+    assert bool(mask[v_noisy_chunk1, v_clean_history].item()) is True
+    assert bool(mask[v_noisy_chunk1, a_clean_history].item()) is False
+    assert bool(mask[v_clean_chunk1, v_clean_history].item()) is True
+    assert bool(mask[v_clean_chunk1, a_clean_history].item()) is False
+    assert bool(mask[a_noisy_chunk1, v_clean_history].item()) is True
+    assert bool(mask[a_noisy_chunk1, a_clean_history].item()) is True
+    assert profile.metadata["preserve_video_pretrain_history"] is True
+
+
+def test_preserve_video_pretrain_history_keeps_staged_current_condition_visible() -> None:
+    video_then_action = build_chunked_temporal_exact_attention_profile(
+        latent_shape=(1, 1, 2, 1, 1),
+        action_shape=(1, 1, 2, 1, 1),
+        padded_length=0,
+        chunk_size=1,
+        window_size=8,
+        patch_size=(1, 1, 1),
+        text_token_count=1,
+        device=torch.device("cpu"),
+        build_dense_masks=True,
+        build_flex_masks=False,
+        current_block_coupling="video_then_action",
+        preserve_video_pretrain_history=True,
+    )
+    action_then_video = build_chunked_temporal_exact_attention_profile(
+        latent_shape=(1, 1, 2, 1, 1),
+        action_shape=(1, 1, 2, 1, 1),
+        padded_length=0,
+        chunk_size=1,
+        window_size=8,
+        patch_size=(1, 1, 1),
+        text_token_count=1,
+        device=torch.device("cpu"),
+        build_dense_masks=True,
+        build_flex_masks=False,
+        current_block_coupling="action_then_video",
+        preserve_video_pretrain_history=True,
+    )
+    assert video_then_action.self_attention_mask is not None
+    assert action_then_video.self_attention_mask is not None
+    v_noisy_0, v_clean_0, a_noisy_0, a_clean_0 = 0, 2, 4, 6
+
+    assert bool(video_then_action.self_attention_mask[a_noisy_0, v_clean_0].item()) is True
+    assert bool(video_then_action.self_attention_mask[v_noisy_0, a_clean_0].item()) is False
+    assert bool(action_then_video.self_attention_mask[v_noisy_0, a_clean_0].item()) is True
+    assert bool(action_then_video.self_attention_mask[a_noisy_0, v_clean_0].item()) is False
 
 
 def test_replica_core_exact_forward_train_supports_flex_profile_cpu_fallback() -> None:

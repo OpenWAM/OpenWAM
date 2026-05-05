@@ -64,12 +64,16 @@ VIDEO_THEN_ACTION_COUPLING = "video_then_action"
 JOINT_COUPLING = "joint"
 ACTION_THEN_VIDEO_COUPLING = "action_then_video"
 DECOUPLED_SAME_STEP_COUPLING = "decoupled_same_step"
+VIDEO_NOISY_TO_ACTION_COUPLING = "video_noisy_to_action"
+ACTION_NOISY_TO_VIDEO_COUPLING = "action_noisy_to_video"
 
 _CHUNKED_EXACT_PROFILE_BY_COUPLING: dict[str, str] = {
     VIDEO_THEN_ACTION_COUPLING: "chunked_temporal_exact",
     JOINT_COUPLING: "chunked_temporal_exact_joint",
     ACTION_THEN_VIDEO_COUPLING: "chunked_temporal_exact_action_then_video",
     DECOUPLED_SAME_STEP_COUPLING: "chunked_temporal_exact_decoupled_same_step",
+    VIDEO_NOISY_TO_ACTION_COUPLING: "chunked_temporal_exact_video_noisy_to_action",
+    ACTION_NOISY_TO_VIDEO_COUPLING: "chunked_temporal_exact_action_noisy_to_video",
 }
 _CHUNKED_EXACT_COUPLING_BY_PROFILE = {
     profile_name: coupling for coupling, profile_name in _CHUNKED_EXACT_PROFILE_BY_COUPLING.items()
@@ -80,6 +84,8 @@ _ATTENTION_PROFILE_ALIASES: dict[str, str] = {
     "chunked_temporal_exact_joint": "chunked_temporal_exact_joint",
     "chunked_temporal_exact_action_then_video": "chunked_temporal_exact_action_then_video",
     "chunked_temporal_exact_decoupled_same_step": "chunked_temporal_exact_decoupled_same_step",
+    "chunked_temporal_exact_video_noisy_to_action": "chunked_temporal_exact_video_noisy_to_action",
+    "chunked_temporal_exact_action_noisy_to_video": "chunked_temporal_exact_action_noisy_to_video",
     "lingbot_chunked_exact": "chunked_temporal_exact",
     "none": "none",
 }
@@ -213,7 +219,14 @@ def build_chunked_temporal_exact_attention_profile(
     build_flex_masks: bool = False,
     allow_joint_noisy_block_attention: bool | None = None,
     current_block_coupling: str | None = None,
+    preserve_video_pretrain_history: bool = False,
 ) -> PreparedAttentionProfile:
+    # When preserve_video_pretrain_history=True, restrict the noise_to_clean
+    # rule on PAST CHUNKS so that the video stream's K/V context matches the
+    # video-only pretrain distribution: current V_n attends only history
+    # V_clean (no history A_clean), while current A_n keeps full history
+    # access. Same-chunk cross-stream visibility is unchanged so all 6
+    # coupling modes still behave as before within the current chunk.
     if current_block_coupling is None:
         current_block_coupling = JOINT_COUPLING if allow_joint_noisy_block_attention else VIDEO_THEN_ACTION_COUPLING
     elif allow_joint_noisy_block_attention is not None:
@@ -254,7 +267,7 @@ def build_chunked_temporal_exact_attention_profile(
     )
     latent_chunk_id = latent_frame_id // chunk_size
     action_chunk_id = action_frame_id // chunk_size
-    if current_block_coupling == ACTION_THEN_VIDEO_COUPLING:
+    if current_block_coupling in {ACTION_THEN_VIDEO_COUPLING, ACTION_NOISY_TO_VIDEO_COUPLING}:
         latent_block_id = latent_chunk_id * 2 + 1
         action_block_id = action_chunk_id * 2
     else:
@@ -301,20 +314,71 @@ def build_chunked_temporal_exact_attention_profile(
         kv_block = torch.div(kv_frame, 2, rounding_mode="floor")
 
         same_seq = (q_seq == kv_seq) & (q_seq >= 0) & (kv_seq >= 0)
+        history_stream_ok = (
+            ((q_stream == kv_stream) | (q_stream == 1))
+            if preserve_video_pretrain_history
+            else torch.ones_like(q_seq, dtype=torch.bool)
+        )
         if current_block_coupling == DECOUPLED_SAME_STEP_COUPLING:
             clean_to_clean = (
                 (q_noise == 1)
                 & (kv_noise == 1)
-                & ((kv_block < q_block) | ((kv_block == q_block) & (kv_stream == q_stream)))
+                & (
+                    ((kv_block < q_block) & history_stream_ok)
+                    | ((kv_block == q_block) & (kv_stream == q_stream))
+                )
             )
         else:
-            clean_to_clean = (q_noise == 1) & (kv_noise == 1) & (kv_frame <= q_frame)
-        if current_block_coupling in {JOINT_COUPLING, DECOUPLED_SAME_STEP_COUPLING}:
-            noise_to_clean = (q_noise == 0) & (kv_noise == 1) & (kv_block < q_block)
+            clean_to_clean = (
+                (q_noise == 1)
+                & (kv_noise == 1)
+                & (
+                    ((kv_block < q_block) & history_stream_ok)
+                    | ((kv_block == q_block) & (kv_frame <= q_frame))
+                )
+            )
+        joint_like_couplings = {
+            JOINT_COUPLING,
+            DECOUPLED_SAME_STEP_COUPLING,
+            VIDEO_NOISY_TO_ACTION_COUPLING,
+            ACTION_NOISY_TO_VIDEO_COUPLING,
+        }
+        # History stream filter: when preserve_video_pretrain_history is on,
+        # current video queries see only same-stream (V) past clean; action
+        # queries keep full visibility.
+        if current_block_coupling in joint_like_couplings:
+            # Joint-like: noise_to_clean only fires on past chunks.
+            noise_to_clean = (
+                (q_noise == 0) & (kv_noise == 1) & (kv_block < q_block) & history_stream_ok
+            )
         else:
-            noise_to_clean = (q_noise == 0) & (kv_noise == 1) & (kv_frame < q_frame)
+            # Staged: split history (filtered) from current-chunk earlier-stage
+            # clean (unfiltered) so V_THEN_A's "A reads current Vc" and
+            # A_THEN_V's "V reads current Ac" still work after we tighten
+            # history visibility.
+            in_history = kv_block < q_block
+            in_current_chunk_earlier = (kv_block == q_block) & (kv_frame < q_frame)
+            noise_to_clean = (
+                (q_noise == 0)
+                & (kv_noise == 1)
+                & ((in_history & history_stream_ok) | in_current_chunk_earlier)
+            )
         if current_block_coupling == JOINT_COUPLING:
             noise_to_noise = (q_noise == 0) & (kv_noise == 0) & (kv_block == q_block)
+        elif current_block_coupling == VIDEO_NOISY_TO_ACTION_COUPLING:
+            noise_to_noise = (
+                (q_noise == 0)
+                & (kv_noise == 0)
+                & (kv_block == q_block)
+                & ((q_stream == kv_stream) | ((q_stream == 1) & (kv_stream == 0)))
+            )
+        elif current_block_coupling == ACTION_NOISY_TO_VIDEO_COUPLING:
+            noise_to_noise = (
+                (q_noise == 0)
+                & (kv_noise == 0)
+                & (kv_block == q_block)
+                & ((q_stream == kv_stream) | ((q_stream == 0) & (kv_stream == 1)))
+            )
         else:
             noise_to_noise = (q_noise == 0) & (kv_noise == 0) & (kv_frame == q_frame)
         within_window = (q_frame - kv_frame).abs() <= int(window_size)
@@ -346,52 +410,75 @@ def build_chunked_temporal_exact_attention_profile(
                 & (seq_ids_flex[q_idx] >= 0)
                 & (seq_ids_flex[kv_idx] >= 0)
             )
+            q_block = torch.div(frame_ids_flex[q_idx], 2, rounding_mode="floor")
+            kv_block = torch.div(frame_ids_flex[kv_idx], 2, rounding_mode="floor")
+            if preserve_video_pretrain_history:
+                history_stream_ok = (stream_ids_flex[q_idx] == stream_ids_flex[kv_idx]) | (
+                    stream_ids_flex[q_idx] == 1
+                )
+            else:
+                history_stream_ok = torch.ones((), dtype=torch.bool, device=q_idx.device)
             if current_block_coupling == DECOUPLED_SAME_STEP_COUPLING:
                 clean_to_clean = (
                     (noise_ids_flex[q_idx] == 1)
                     & (noise_ids_flex[kv_idx] == 1)
                     & (
-                        (
-                            torch.div(frame_ids_flex[kv_idx], 2, rounding_mode="floor")
-                            < torch.div(frame_ids_flex[q_idx], 2, rounding_mode="floor")
-                        )
-                        | (
-                            (
-                                torch.div(frame_ids_flex[kv_idx], 2, rounding_mode="floor")
-                                == torch.div(frame_ids_flex[q_idx], 2, rounding_mode="floor")
-                            )
-                            & (stream_ids_flex[kv_idx] == stream_ids_flex[q_idx])
-                        )
+                        ((kv_block < q_block) & history_stream_ok)
+                        | ((kv_block == q_block) & (stream_ids_flex[kv_idx] == stream_ids_flex[q_idx]))
                     )
                 )
             else:
                 clean_to_clean = (
                     (noise_ids_flex[q_idx] == 1)
                     & (noise_ids_flex[kv_idx] == 1)
-                    & (frame_ids_flex[kv_idx] <= frame_ids_flex[q_idx])
-                )
-            if current_block_coupling in {JOINT_COUPLING, DECOUPLED_SAME_STEP_COUPLING}:
-                noise_to_clean = (
-                    (noise_ids_flex[q_idx] == 0)
-                    & (noise_ids_flex[kv_idx] == 1)
                     & (
-                        torch.div(frame_ids_flex[kv_idx], 2, rounding_mode="floor")
-                        < torch.div(frame_ids_flex[q_idx], 2, rounding_mode="floor")
+                        ((kv_block < q_block) & history_stream_ok)
+                        | ((kv_block == q_block) & (frame_ids_flex[kv_idx] <= frame_ids_flex[q_idx]))
                     )
                 )
-            else:
+            joint_like_couplings = {
+                JOINT_COUPLING,
+                DECOUPLED_SAME_STEP_COUPLING,
+                VIDEO_NOISY_TO_ACTION_COUPLING,
+                ACTION_NOISY_TO_VIDEO_COUPLING,
+            }
+            if current_block_coupling in joint_like_couplings:
                 noise_to_clean = (
                     (noise_ids_flex[q_idx] == 0)
                     & (noise_ids_flex[kv_idx] == 1)
-                    & (frame_ids_flex[kv_idx] < frame_ids_flex[q_idx])
+                    & (kv_block < q_block)
+                    & history_stream_ok
+                )
+            else:
+                in_history = kv_block < q_block
+                in_current_chunk_earlier = (kv_block == q_block) & (
+                    frame_ids_flex[kv_idx] < frame_ids_flex[q_idx]
+                )
+                noise_to_clean = (
+                    (noise_ids_flex[q_idx] == 0)
+                    & (noise_ids_flex[kv_idx] == 1)
+                    & ((in_history & history_stream_ok) | in_current_chunk_earlier)
                 )
             if current_block_coupling == JOINT_COUPLING:
+                noise_to_noise = (noise_ids_flex[q_idx] == 0) & (noise_ids_flex[kv_idx] == 0) & (kv_block == q_block)
+            elif current_block_coupling == VIDEO_NOISY_TO_ACTION_COUPLING:
                 noise_to_noise = (
                     (noise_ids_flex[q_idx] == 0)
                     & (noise_ids_flex[kv_idx] == 0)
+                    & (kv_block == q_block)
                     & (
-                        torch.div(frame_ids_flex[kv_idx], 2, rounding_mode="floor")
-                        == torch.div(frame_ids_flex[q_idx], 2, rounding_mode="floor")
+                        (stream_ids_flex[q_idx] == stream_ids_flex[kv_idx])
+                        | ((stream_ids_flex[q_idx] == 1) & (stream_ids_flex[kv_idx] == 0))
+                    )
+                )
+            elif current_block_coupling == ACTION_NOISY_TO_VIDEO_COUPLING:
+                noise_to_noise = (
+                    (noise_ids_flex[q_idx] == 0)
+                    & (noise_ids_flex[kv_idx] == 0)
+                    & (kv_block == q_block)
+                    & (
+                        (stream_ids_flex[q_idx] == stream_ids_flex[kv_idx])
+                        | ((stream_ids_flex[q_idx] == 0) & (stream_ids_flex[kv_idx] == 1))
                     )
                 )
             else:
@@ -459,6 +546,7 @@ def build_chunked_temporal_exact_attention_profile(
             "text_token_count": int(text_token_count),
             "allow_joint_noisy_block_attention": current_block_coupling == JOINT_COUPLING,
             "current_block_coupling": current_block_coupling,
+            "preserve_video_pretrain_history": bool(preserve_video_pretrain_history),
         },
     )
 

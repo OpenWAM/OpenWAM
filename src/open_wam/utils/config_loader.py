@@ -532,6 +532,17 @@ def _load_policy_variant_config(
                 ),
             ),
             couple_action_to_video_timesteps=resolved_raw.get("couple_action_to_video_timesteps", True),
+            current_block_coupling=(
+                _coerce_enum(
+                    config_enums.CurrentBlockCoupling,
+                    resolved_raw["current_block_coupling"],
+                )
+                if "current_block_coupling" in resolved_raw
+                else None
+            ),
+            preserve_video_pretrain_history=resolved_raw.get(
+                "preserve_video_pretrain_history", False
+            ),
             temporal_position_mode=_coerce_enum(
                 config_enums.TemporalPositionMode,
                 resolved_raw.get(
@@ -967,6 +978,18 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
             segment_locality_block_size=sample_construction_raw.get(
                 "segment_locality_block_size",
                 data_defaults.sample_construction.segment_locality_block_size,
+            ),
+            randomize_segment_length=sample_construction_raw.get(
+                "randomize_segment_length",
+                data_defaults.sample_construction.randomize_segment_length,
+            ),
+            randomize_segment_start=sample_construction_raw.get(
+                "randomize_segment_start",
+                data_defaults.sample_construction.randomize_segment_start,
+            ),
+            require_full_segment=sample_construction_raw.get(
+                "require_full_segment",
+                data_defaults.sample_construction.require_full_segment,
             ),
             sample_weight_mode=_coerce_enum(
                 config_enums.SampleWeightMode,

@@ -152,14 +152,22 @@ def main() -> None:
             else:
                 chunk = runner.infer_chunk(session=session)
 
-            if chunk.raw_chunk_action_pred is None:
-                raise RuntimeError("Exact runner did not produce raw 7D LIBERO actions.")
+            action_adapter = runner.policy_variant.exact_action_adapter
+            adapter_spec = getattr(action_adapter, "spec", None)
+            raw_chunk_action_pred = chunk.raw_chunk_action_pred
+            if raw_chunk_action_pred is None:
+                if chunk.chunk_action_pred.shape[-1] != 7:
+                    raise RuntimeError(
+                        "Exact runner did not produce raw 7D LIBERO actions and model action dim is not 7: "
+                        f"chunk_action_pred_shape={tuple(chunk.chunk_action_pred.shape)}."
+                    )
+                raw_chunk_action_pred = chunk.chunk_action_pred
 
             predicted_latent_chunks.append(chunk.predicted_latents.detach().cpu())
             session = chunk.session
 
             raw_actions = rearrange(
-                chunk.raw_chunk_action_pred[0],
+                raw_chunk_action_pred[0],
                 "(f a) c -> f a c",
                 f=config.inference.frame_chunk_size,
                 a=config.policy_variant.action_per_frame,
@@ -171,12 +179,18 @@ def main() -> None:
                 a=config.policy_variant.action_per_frame,
             )
             raw_actions_batched = raw_actions.unsqueeze(0)
-            model_actions_from_raw = runner.policy_variant.exact_action_adapter.to_model_action_sequence(
-                raw_actions_batched,
-                action_space="raw",
-                device=chunk.chunk_action_pred.device,
-                dtype=chunk.chunk_action_pred.dtype,
-            )
+            if adapter_spec is None:
+                model_actions_from_raw = raw_chunk_action_pred.to(
+                    device=chunk.chunk_action_pred.device,
+                    dtype=chunk.chunk_action_pred.dtype,
+                )
+            else:
+                model_actions_from_raw = action_adapter.to_model_action_sequence(
+                    raw_actions_batched,
+                    action_space="raw",
+                    device=chunk.chunk_action_pred.device,
+                    dtype=chunk.chunk_action_pred.dtype,
+                )
             obs_stride = max(1, raw_actions.shape[1] // max(1, config.inference.frame_chunk_size))
             _print_log(
                 f"chunk_{chunk_count}",

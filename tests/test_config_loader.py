@@ -666,6 +666,9 @@ def test_sample_construction_yaml_strings_are_coerced_to_enum_members(tmp_path: 
         "segment_max_frames": 32,
         "segment_length_stride": 4,
         "segment_locality_block_size": 3,
+        "randomize_segment_length": True,
+        "randomize_segment_start": True,
+        "require_full_segment": True,
         "sample_weight_mode": "valid_action_steps_x_inverse_task_demo_count",
         "sample_weight_min": 0.25,
         "sample_weight_max": 4.0,
@@ -686,6 +689,9 @@ def test_sample_construction_yaml_strings_are_coerced_to_enum_members(tmp_path: 
     assert config.data.sample_construction.segment_max_frames == 32
     assert config.data.sample_construction.segment_length_stride == 4
     assert config.data.sample_construction.segment_locality_block_size == 3
+    assert config.data.sample_construction.randomize_segment_length is True
+    assert config.data.sample_construction.randomize_segment_start is True
+    assert config.data.sample_construction.require_full_segment is True
     assert config.data.sample_construction.sample_weight_mode == SampleWeightMode.VALID_ACTION_STEPS_X_INVERSE_TASK_DEMO_COUNT
     assert config.data.sample_construction.sample_weight_min == pytest.approx(0.25)
     assert config.data.sample_construction.sample_weight_max == pytest.approx(4.0)
@@ -848,12 +854,9 @@ def test_causal_video_prediction_config_loads() -> None:
     assert config.data.sample_construction.mode == WindowSamplingMode.CAUSAL_PREFIX_SUFFIX
     assert config.training.enabled_objectives == ("latent",)
     assert config.training.trainable_components == (
-        TrainingComponentSelector.VISUAL_TOWER_SHARED_VIDEO_BACKBONE,
+        TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE,
     )
-    assert config.training.frozen_components == (
-        TrainingComponentSelector.VISUAL_TOWER_SHARED_ACTION_RUNTIME,
-        TrainingComponentSelector.VISUAL_TOWER_SHARED_RUNTIME_ADAPTERS,
-    )
+    assert config.training.frozen_components == ()
     assert config.data.sample_construction.causal_prefix_suffix_buckets == (
         CausalPrefixSuffixBucketConfig(observed_frames=1, future_frames=3),
         CausalPrefixSuffixBucketConfig(observed_frames=2, future_frames=6),
