@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import importlib.util
+import json
 import os
 from pathlib import Path
 import sys
@@ -33,6 +34,11 @@ def test_allocate_proportional_counts_largest_remainder() -> None:
     allocations = sampled_eval.allocate_proportional_counts({"a": 3, "b": 2, "c": 1}, total=4)
 
     assert allocations == {"a": 2, "b": 1, "c": 1}
+
+
+def test_normalize_sample_mode_accepts_legacy_uniform_alias() -> None:
+    assert sampled_eval.normalize_sample_mode("uniform_task_distribution") == "dataset_distribution"
+    assert sampled_eval.normalize_sample_mode("task_episode_axis") == "task_episode_axis"
 
 
 def test_build_dataset_episodes_uses_task_local_rank() -> None:
@@ -397,6 +403,37 @@ def test_select_task_episode_axis_matches_upstream_task_ids() -> None:
     assert allocations == {"tomato": 2}
 
 
+def test_select_task_episode_axis_orders_init_major_across_tasks() -> None:
+    episodes = [
+        sampled_eval.DatasetEpisode(
+            dataset_episode_index=task_id * 10 + init_id,
+            task_text=f"task {task_id}",
+            task_index=task_id,
+            task_id=task_id,
+            task_name=f"task_{task_id}",
+            episode_idx=init_id,
+            length=10,
+        )
+        for task_id in (0, 1)
+        for init_id in range(2)
+    ]
+
+    selected, allocations = sampled_eval.select_task_episode_axis(
+        episodes,
+        count=2,
+        task_ids="0,1",
+        episode_indices=None,
+    )
+
+    assert [(episode.task_id, episode.episode_idx) for episode in selected] == [
+        (0, 0),
+        (1, 0),
+        (0, 1),
+        (1, 1),
+    ]
+    assert allocations == {"task 0": 2, "task 1": 2}
+
+
 def test_select_full_task_init_axis_enumerates_benchmark_init_ids() -> None:
     episodes = [
         sampled_eval.DatasetEpisode(
@@ -431,8 +468,8 @@ def test_select_full_task_init_axis_enumerates_benchmark_init_ids() -> None:
 
     assert [(episode.task_id, episode.init_id, episode.dataset_episode_index) for episode in selected] == [
         (0, 0, 0),
-        (0, 1, 1),
         (1, 0, 10),
+        (0, 1, 1),
         (1, 1, 11),
         (1, 2, 12),
     ]
@@ -598,6 +635,248 @@ def test_build_cases_uses_method_config_scheduler_and_device_templates() -> None
     assert cases[0].replay_status == "success"
 
 
+def test_acquire_case_claim_is_exclusive_and_stale_recoverable(tmp_path: Path) -> None:
+    case = sampled_eval.EvalCase(
+        index=0,
+        sample_index=0,
+        checkpoint_key="m5_posttrained",
+        checkpoint_label="M5",
+        checkpoint="/tmp/model_state.pt",
+        checkpoint_raw=None,
+        checkpoint_file=None,
+        checkpoint_dir=None,
+        runtime_transformer_dir=None,
+        runtime_transformer_source=None,
+        method_key="m5",
+        method_label="M5",
+        config="config.yaml",
+        scheduler_key="freeze_until_clean_chunk",
+        scheduler_label="freeze",
+        benchmark="libero_10",
+        task_id=0,
+        task_text="task",
+        task_name=None,
+        dataset_episode_index=0,
+        episode_id=0,
+        init_id=0,
+        episode_idx=0,
+        replay_status="success",
+        seed=0,
+        output_dir=str(tmp_path / "out"),
+        suffix="case",
+        summary_glob=str(tmp_path / "missing" / "*.json"),
+        command_template=[],
+    )
+    status_dir = tmp_path / "status"
+
+    first = sampled_eval.acquire_case_claim(case, status_dir=status_dir, stale_seconds=60)
+    second = sampled_eval.acquire_case_claim(case, status_dir=status_dir, stale_seconds=60)
+    assert first is not None
+    assert second is None
+
+    old_time = 1
+    assert first is not None
+    first.touch()
+    os.utime(first, (old_time, old_time))
+    recovered = sampled_eval.acquire_case_claim(case, status_dir=status_dir, stale_seconds=1)
+    assert recovered == first
+
+
+def test_run_case_releases_claim_after_child_exit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    case = sampled_eval.EvalCase(
+        index=0,
+        sample_index=0,
+        checkpoint_key="m5_posttrained",
+        checkpoint_label="M5",
+        checkpoint="/tmp/model_state.pt",
+        checkpoint_raw=None,
+        checkpoint_file=None,
+        checkpoint_dir=None,
+        runtime_transformer_dir=None,
+        runtime_transformer_source=None,
+        method_key="m5",
+        method_label="M5",
+        config="config.yaml",
+        scheduler_key="freeze_until_clean_chunk",
+        scheduler_label="freeze",
+        benchmark="libero_10",
+        task_id=0,
+        task_text="task",
+        task_name=None,
+        dataset_episode_index=0,
+        episode_id=0,
+        init_id=0,
+        episode_idx=0,
+        replay_status="success",
+        seed=0,
+        output_dir=str(tmp_path / "out"),
+        suffix="case",
+        summary_glob=str(tmp_path / "missing" / "*.json"),
+        command_template=["noop"],
+    )
+    args = argparse.Namespace(
+        local_paths=Path("configs/local_paths.yaml"),
+        libero_repo_root=Path("/data/lingbot_data_exp/LIBERO"),
+        mujoco_gl="egl",
+        clear_ld_library_path=False,
+        resume=True,
+        case_claim_stale_seconds=60,
+    )
+
+    def fake_run(*_args, **_kwargs):
+        return sampled_eval.subprocess.CompletedProcess(args=["noop"], returncode=1)
+
+    monkeypatch.setattr(sampled_eval.subprocess, "run", fake_run)
+    status_dir = tmp_path / "status"
+
+    returncode = sampled_eval.run_case(
+        case,
+        device="cuda:1",
+        args=args,
+        status_dir=status_dir,
+        logs_dir=tmp_path / "logs",
+    )
+
+    assert returncode == 1
+    assert not list((status_dir / "claims").glob("*.lock"))
+    status = json.loads((status_dir / "0000_m5_posttrained_sample000.json").read_text())
+    assert status["state"] == "failed"
+
+
+def test_run_case_releases_claim_when_summary_appears_after_claim(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    case = sampled_eval.EvalCase(
+        index=0,
+        sample_index=0,
+        checkpoint_key="m5_posttrained",
+        checkpoint_label="M5",
+        checkpoint="/tmp/model_state.pt",
+        checkpoint_raw=None,
+        checkpoint_file=None,
+        checkpoint_dir=None,
+        runtime_transformer_dir=None,
+        runtime_transformer_source=None,
+        method_key="m5",
+        method_label="M5",
+        config="config.yaml",
+        scheduler_key="freeze_until_clean_chunk",
+        scheduler_label="freeze",
+        benchmark="libero_10",
+        task_id=0,
+        task_text="task",
+        task_name=None,
+        dataset_episode_index=0,
+        episode_id=0,
+        init_id=0,
+        episode_idx=0,
+        replay_status="success",
+        seed=0,
+        output_dir=str(tmp_path / "out"),
+        suffix="case",
+        summary_glob=str(tmp_path / "summary.json"),
+        command_template=["noop"],
+    )
+    args = argparse.Namespace(
+        local_paths=Path("configs/local_paths.yaml"),
+        libero_repo_root=Path("/data/lingbot_data_exp/LIBERO"),
+        mujoco_gl="egl",
+        clear_ld_library_path=False,
+        resume=True,
+        case_claim_stale_seconds=60,
+    )
+    calls = 0
+
+    def fake_find_summary_paths(_case):
+        nonlocal calls
+        calls += 1
+        return [] if calls == 1 else [tmp_path / "summary.json"]
+
+    monkeypatch.setattr(sampled_eval, "find_summary_paths", fake_find_summary_paths)
+    status_dir = tmp_path / "status"
+
+    returncode = sampled_eval.run_case(
+        case,
+        device="cuda:0",
+        args=args,
+        status_dir=status_dir,
+        logs_dir=tmp_path / "logs",
+    )
+
+    assert returncode == 0
+    assert not list((status_dir / "claims").glob("*.lock"))
+    status = json.loads((status_dir / "0000_m5_posttrained_sample000.json").read_text())
+    assert status["state"] == "skipped_existing"
+
+
+def test_run_cases_retires_device_after_repeated_sigaborts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cases = [
+        sampled_eval.EvalCase(
+            index=index,
+            sample_index=index,
+            checkpoint_key="m5_posttrained",
+            checkpoint_label="M5",
+            checkpoint="/ckpt/model_state.pt",
+            checkpoint_raw="/ckpt",
+            checkpoint_file="/ckpt/model_state.pt",
+            checkpoint_dir="/ckpt",
+            runtime_transformer_dir="/ckpt/transformer",
+            runtime_transformer_source="checkpoint",
+            method_key="m5",
+            method_label="M5",
+            config="cfg.yaml",
+            scheduler_key="freeze_until_clean_chunk",
+            scheduler_label="freeze",
+            benchmark="libero_10",
+            task_id=0,
+            task_text="task",
+            task_name=None,
+            dataset_episode_index=index,
+            episode_id=index,
+            init_id=index,
+            episode_idx=index,
+            replay_status="success",
+            seed=0,
+            output_dir=str(tmp_path / "out"),
+            suffix=f"case-{index}",
+            summary_glob=str(tmp_path / "missing" / f"{index}" / "*.json"),
+            command_template=["noop"],
+        )
+        for index in range(3)
+    ]
+    args = argparse.Namespace(
+        devices="cuda:0",
+        local_paths=Path("configs/local_paths.yaml"),
+        libero_repo_root=Path("/data/lingbot_data_exp/LIBERO"),
+        mujoco_gl="egl",
+        clear_ld_library_path=False,
+        resume=True,
+        fail_fast=False,
+        max_device_sigaborts=2,
+        case_claim_stale_seconds=60,
+    )
+    calls = 0
+
+    def fake_run(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return sampled_eval.subprocess.CompletedProcess(args=["noop"], returncode=-6)
+
+    monkeypatch.setattr(sampled_eval.subprocess, "run", fake_run)
+    status_dir = tmp_path / "status"
+
+    sampled_eval.run_cases(cases, args=args, status_dir=status_dir, logs_dir=tmp_path / "logs")
+
+    assert calls == 2
+    assert json.loads((status_dir / "0000_m5_posttrained_sample000.json").read_text())["state"] == "failed"
+    assert json.loads((status_dir / "0001_m5_posttrained_sample001.json").read_text())["state"] == "failed"
+    assert not (status_dir / "0002_m5_posttrained_sample002.json").exists()
+
+
 def test_build_paired_rows_preserves_replay_status() -> None:
     rows = sampled_eval.build_paired_rows(
         [
@@ -665,6 +944,80 @@ def test_build_child_env_defaults_to_shell_mujoco_gl(monkeypatch: pytest.MonkeyP
 
     assert env["MUJOCO_GL"] == "egl"
     assert env["PYOPENGL_PLATFORM"] == "egl"
+
+
+def test_build_child_env_honors_requested_mujoco_gl_over_shell_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MUJOCO_GL", "egl")
+    monkeypatch.setenv("PYOPENGL_PLATFORM", "egl")
+    args = argparse.Namespace(
+        local_paths=Path("configs/local_paths.yaml"),
+        libero_repo_root=Path("/data/lingbot_data_exp/LIBERO"),
+        mujoco_gl="osmesa",
+        clear_ld_library_path=False,
+    )
+
+    env = sampled_eval.build_child_env(args)
+
+    assert env["MUJOCO_GL"] == "osmesa"
+    assert env["PYOPENGL_PLATFORM"] == "osmesa"
+
+
+def test_build_child_env_sets_egl_device_for_cuda_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MUJOCO_EGL_DEVICE_ID", raising=False)
+    monkeypatch.delenv("EGL_DEVICE_ID", raising=False)
+    args = argparse.Namespace(
+        local_paths=Path("configs/local_paths.yaml"),
+        libero_repo_root=Path("/data/lingbot_data_exp/LIBERO"),
+        mujoco_gl="egl",
+        clear_ld_library_path=False,
+    )
+
+    env = sampled_eval.build_child_env(args, device="cuda:1")
+
+    assert env["MUJOCO_EGL_DEVICE_ID"] == "1"
+    assert env["EGL_DEVICE_ID"] == "1"
+
+
+def test_build_child_env_prefers_local_cuda_visibility_for_egl_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+    monkeypatch.setenv("SLURM_JOB_GPUS", "4,7")
+    args = argparse.Namespace(
+        local_paths=Path("configs/local_paths.yaml"),
+        libero_repo_root=Path("/data/lingbot_data_exp/LIBERO"),
+        mujoco_gl="egl",
+        clear_ld_library_path=False,
+    )
+
+    env = sampled_eval.build_child_env(args, device="cuda:1")
+
+    assert env["CUDA_VISIBLE_DEVICES"] == "0,1"
+    assert env["MUJOCO_EGL_DEVICE_ID"] == "1"
+    assert env["EGL_DEVICE_ID"] == "1"
+    assert sampled_eval.child_env_report(env, clear_ld_library_path=False)["slurm_job_gpus"] == "4,7"
+
+
+def test_build_child_env_uses_slurm_gpu_allocation_when_cuda_visibility_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.setenv("SLURM_JOB_GPUS", "4,7")
+    args = argparse.Namespace(
+        local_paths=Path("configs/local_paths.yaml"),
+        libero_repo_root=Path("/data/lingbot_data_exp/LIBERO"),
+        mujoco_gl="egl",
+        clear_ld_library_path=False,
+    )
+
+    env = sampled_eval.build_child_env(args, device="cuda:1")
+
+    assert "CUDA_VISIBLE_DEVICES" not in env
+    assert env["MUJOCO_EGL_DEVICE_ID"] == "7"
+    assert env["EGL_DEVICE_ID"] == "7"
+
+
+def test_parse_allocated_gpu_ids_handles_ranges_and_uuid_suffixes() -> None:
+    assert sampled_eval.parse_allocated_gpu_ids("2-4") == [2, 3, 4]
+    assert sampled_eval.parse_allocated_gpu_ids("gpu0,gpu3") == [0, 3]
 
 
 def test_results_csv_uses_dynamic_target_columns(tmp_path: Path) -> None:

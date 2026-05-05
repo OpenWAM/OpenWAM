@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -13,12 +14,51 @@ from open_wam.configs import TrainingConfig
 from open_wam.models.policy_variants import PolicyTrainBatch
 from open_wam.training import TrainingRuntime
 from open_wam.training.loop_policies import StepLoopPolicy
+from open_wam.training.runtime import _normalize_optimizer_state_dtypes
 from open_wam.training.state import TrainState
 from open_wam.training.step_executor import resolve_sample_loss_weight
 from open_wam.utils.config_loader import load_experiment_config
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_normalize_optimizer_state_prefers_gradient_dtype_for_mixed_precision_resume() -> None:
+    parameter = torch.nn.Parameter(torch.ones(2, dtype=torch.bfloat16))
+    optimizer = torch.optim.AdamW([parameter], lr=1e-3)
+    parameter.grad = torch.ones_like(parameter)
+    optimizer.state[parameter]["step"] = torch.tensor(1.0)
+    optimizer.state[parameter]["exp_avg"] = torch.zeros(2, dtype=torch.float32)
+    optimizer.state[parameter]["exp_avg_sq"] = torch.zeros(2, dtype=torch.float32)
+
+    _normalize_optimizer_state_dtypes(optimizer)
+
+    assert optimizer.state[parameter]["step"].dtype == torch.float32
+    assert optimizer.state[parameter]["exp_avg"].dtype == torch.bfloat16
+    assert optimizer.state[parameter]["exp_avg_sq"].dtype == torch.bfloat16
+
+
+def test_normalize_optimizer_state_handles_wrapped_parameter_keys() -> None:
+    class WrappedParameter:
+        grad = torch.ones(2, dtype=torch.bfloat16)
+        dtype = torch.float32
+
+    parameter = WrappedParameter()
+    optimizer = SimpleNamespace(
+        state={
+            parameter: {
+                "step": torch.tensor(1.0),
+                "exp_avg": torch.zeros(2, dtype=torch.float32),
+                "exp_avg_sq": torch.zeros(2, dtype=torch.float32),
+            }
+        }
+    )
+
+    _normalize_optimizer_state_dtypes(optimizer)  # type: ignore[arg-type]
+
+    assert optimizer.state[parameter]["step"].dtype == torch.float32
+    assert optimizer.state[parameter]["exp_avg"].dtype == torch.bfloat16
+    assert optimizer.state[parameter]["exp_avg_sq"].dtype == torch.bfloat16
 
 
 def _write_temp_config(tmp_path: Path, *, source_name: str, output_name: str, mutate) -> Path:

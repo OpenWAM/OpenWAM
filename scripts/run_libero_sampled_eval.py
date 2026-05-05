@@ -16,6 +16,7 @@ import random
 import re
 import subprocess
 import sys
+import time
 from typing import Any
 
 
@@ -43,6 +44,12 @@ DEFAULT_POSTTRAINED_CHECKPOINT = (
 DEFAULT_DATASET_ROOT = "/data/lingbot_data_exp/libero_heng/libero_10"
 DEFAULT_LIBERO_REPO_ROOT = "/data/lingbot_data_exp/LIBERO"
 DEFAULT_LOCAL_PATHS = "configs/local_paths.yaml"
+SAMPLE_MODE_ALIASES = {"uniform_task_distribution": "dataset_distribution"}
+SAMPLE_MODE_CHOICES = ("dataset_distribution", "uniform_task_distribution", "task_episode_axis", "full")
+
+
+def normalize_sample_mode(mode: str) -> str:
+    return SAMPLE_MODE_ALIASES.get(mode, mode)
 
 
 @dataclass(frozen=True)
@@ -247,10 +254,11 @@ def main() -> None:
     parser.add_argument("--sample-seed", type=int, default=0)
     parser.add_argument(
         "--sample-mode",
-        choices=("dataset_distribution", "task_episode_axis", "full"),
+        choices=SAMPLE_MODE_CHOICES,
         default="dataset_distribution",
         help=(
             "`dataset_distribution` samples LeRobot episodes proportionally by dataset task distribution. "
+            "`uniform_task_distribution` is a legacy alias for `dataset_distribution`. "
             "`task_episode_axis` selects explicit upstream LIBERO task ids and per-task episode indices, "
             "which is the mode for #77-style task-0 parity checks. `full` enumerates every upstream "
             "LIBERO init state for every selected task before replay-status policy validation."
@@ -368,6 +376,12 @@ def main() -> None:
     parser.add_argument("--libero-repo-root", type=Path, default=Path(DEFAULT_LIBERO_REPO_ROOT))
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
     parser.add_argument("--devices", type=str, default="cuda:0,cuda:1")
+    parser.add_argument(
+        "--worker-start-stagger-seconds",
+        type=float,
+        default=0.0,
+        help="Delay worker startup by N seconds per worker index to avoid simultaneous MuJoCo initialization.",
+    )
     parser.add_argument("--execute", action="store_true", help="Run generated cases locally.")
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--ignore-missing", action="store_true")
@@ -415,7 +429,26 @@ def main() -> None:
     parser.add_argument("--write-fallback-timeline-video", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--collect", type=Path, default=None, help="Collect an existing run directory and exit.")
     parser.add_argument("--fail-fast", action="store_true")
+    parser.add_argument(
+        "--max-device-sigaborts",
+        type=int,
+        default=2,
+        help=(
+            "Stop scheduling new cases on a worker device after this many consecutive SIGABRT exits. "
+            "This keeps shared Slurm eval jobs moving when one EGL device is unstable."
+        ),
+    )
+    parser.add_argument(
+        "--case-claim-stale-seconds",
+        type=float,
+        default=6 * 60 * 60,
+        help=(
+            "Seconds after which an in-progress shared eval case claim may be stolen. "
+            "This lets overlapping Slurm jobs recover from preemption without duplicate live rollouts."
+        ),
+    )
     args = parser.parse_args()
+    args.sample_mode = normalize_sample_mode(args.sample_mode)
 
     if args.collect is not None:
         summary = collect_run(args.collect)
@@ -542,33 +575,30 @@ def main() -> None:
     cases_path = log_root / "cases.json"
     manifest_path = log_root / "manifest.json"
     sample_manifest_path = log_root / "sample_manifest.json"
-    cases_path.write_text(json.dumps([asdict(case) for case in cases], indent=2), encoding="utf-8")
-    sample_manifest_path.write_text(
-        json.dumps(
-            {
-                "dataset_root": str(args.dataset_root),
-                "num_episodes": args.num_episodes,
-                "sample_mode": args.sample_mode,
-                "sample_seed": args.sample_seed,
-                "distribution_episode_strategy": args.distribution_episode_strategy,
-                "eval_profile": args.eval_profile,
-                "rollout_artifact_profile": args.rollout_artifact_profile,
-                "task_ids": args.task_ids,
-                "episode_indices": args.episode_indices,
-                "full_init_counts_by_task_id": {
-                    str(task_id): count for task_id, count in sorted(full_init_counts_by_task_id.items())
-                },
-                "replay_status_path": str(replay_status_path) if replay_status_path is not None else None,
-                "replay_status_policy": args.replay_status_policy,
-                "require_replay_status": args.require_replay_status,
-                "replay_status_filter": replay_status_report.to_dict() if replay_status_report is not None else None,
-                "task_allocations": sample_allocations,
-                "sample_warnings": sample_warnings,
-                "episodes": [asdict(episode) for episode in sampled_episodes],
+    atomic_write_json(cases_path, [asdict(case) for case in cases])
+    atomic_write_json(
+        sample_manifest_path,
+        {
+            "dataset_root": str(args.dataset_root),
+            "num_episodes": args.num_episodes,
+            "sample_mode": args.sample_mode,
+            "sample_seed": args.sample_seed,
+            "distribution_episode_strategy": args.distribution_episode_strategy,
+            "eval_profile": args.eval_profile,
+            "rollout_artifact_profile": args.rollout_artifact_profile,
+            "task_ids": args.task_ids,
+            "episode_indices": args.episode_indices,
+            "full_init_counts_by_task_id": {
+                str(task_id): count for task_id, count in sorted(full_init_counts_by_task_id.items())
             },
-            indent=2,
-        ),
-        encoding="utf-8",
+            "replay_status_path": str(replay_status_path) if replay_status_path is not None else None,
+            "replay_status_policy": args.replay_status_policy,
+            "require_replay_status": args.require_replay_status,
+            "replay_status_filter": replay_status_report.to_dict() if replay_status_report is not None else None,
+            "task_allocations": sample_allocations,
+            "sample_warnings": sample_warnings,
+            "episodes": [asdict(episode) for episode in sampled_episodes],
+        },
     )
 
     missing = preflight(
@@ -615,7 +645,7 @@ def main() -> None:
         "missing": missing,
         "execute": bool(args.execute),
     }
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    atomic_write_json(manifest_path, manifest)
     write_status_note(log_root / "status.md", manifest=manifest, cases=cases)
 
     if missing and args.execute and not args.ignore_missing:
@@ -1084,8 +1114,8 @@ def select_task_episode_axis(
     by_key = {(int(episode.task_id), int(episode.episode_idx)): episode for episode in episodes}
     selected: list[DatasetEpisode] = []
     missing: list[str] = []
-    for task_id in selected_task_ids:
-        for episode_idx in selected_episode_indices:
+    for episode_idx in selected_episode_indices:
+        for task_id in selected_task_ids:
             episode = by_key.get((int(task_id), int(episode_idx)))
             if episode is None:
                 missing.append(f"task_id={task_id},episode_idx={episode_idx}")
@@ -1099,7 +1129,7 @@ def select_task_episode_axis(
     allocations: dict[str, int] = defaultdict(int)
     for episode in selected:
         allocations[episode.task_text] += 1
-    selected.sort(key=lambda item: (item.task_id, item.episode_idx, item.dataset_episode_index))
+    selected.sort(key=lambda item: (item.episode_idx, item.task_id, item.dataset_episode_index))
     return selected, dict(allocations)
 
 
@@ -1118,9 +1148,6 @@ def select_full_task_init_axis(
     if not selected_task_ids:
         raise ValueError("--task-ids did not select any task ids.")
 
-    by_key = {(int(episode.task_id), int(episode.init_id)): episode for episode in episodes}
-    selected: list[DatasetEpisode] = []
-    missing: list[str] = []
     for task_id in selected_task_ids:
         if task_id not in init_counts_by_task_id:
             available = ", ".join(str(item) for item in sorted(init_counts_by_task_id))
@@ -1128,7 +1155,16 @@ def select_full_task_init_axis(
         init_count = int(init_counts_by_task_id[task_id])
         if init_count <= 0:
             raise ValueError(f"Task id {task_id} has no LIBERO init states.")
-        for init_id in range(init_count):
+
+    by_key = {(int(episode.task_id), int(episode.init_id)): episode for episode in episodes}
+    selected: list[DatasetEpisode] = []
+    missing: list[str] = []
+    max_init_count = max(int(init_counts_by_task_id[task_id]) for task_id in selected_task_ids)
+    for init_id in range(max_init_count):
+        for task_id in selected_task_ids:
+            init_count = int(init_counts_by_task_id[task_id])
+            if init_id >= init_count:
+                continue
             episode = by_key.get((int(task_id), int(init_id)))
             if episode is None:
                 missing.append(f"task_id={task_id},init_id={init_id}")
@@ -1145,7 +1181,7 @@ def select_full_task_init_axis(
     allocations: dict[str, int] = defaultdict(int)
     for episode in selected:
         allocations[episode.task_text] += 1
-    selected.sort(key=lambda item: (item.task_id, item.init_id, item.dataset_episode_index))
+    selected.sort(key=lambda item: (item.init_id, item.task_id, item.dataset_episode_index))
     return selected, dict(allocations)
 
 
@@ -1704,19 +1740,40 @@ def run_cases(cases: list[EvalCase], *, args: argparse.Namespace, status_dir: Pa
     for case in cases:
         work_queue.put(case)
 
-    def worker(device: str) -> None:
+    def worker(device: str, worker_index: int) -> None:
+        stagger_seconds = float(getattr(args, "worker_start_stagger_seconds", 0.0) or 0.0)
+        if worker_index and stagger_seconds > 0:
+            time.sleep(worker_index * stagger_seconds)
+        consecutive_sigaborts = 0
         while True:
             try:
                 case = work_queue.get_nowait()
             except queue.Empty:
                 return
             try:
-                run_case(case, device=device, args=args, status_dir=status_dir, logs_dir=logs_dir)
+                returncode = run_case(case, device=device, args=args, status_dir=status_dir, logs_dir=logs_dir)
+                if returncode == -6:
+                    consecutive_sigaborts += 1
+                    if consecutive_sigaborts >= args.max_device_sigaborts:
+                        print(
+                            json.dumps(
+                                {
+                                    "event": "sampled_eval_device_retired",
+                                    "device": device,
+                                    "reason": "consecutive_sigaborts",
+                                    "count": consecutive_sigaborts,
+                                }
+                            ),
+                            flush=True,
+                        )
+                        return
+                elif returncode is not None:
+                    consecutive_sigaborts = 0
             finally:
                 work_queue.task_done()
 
     with ThreadPoolExecutor(max_workers=len(devices)) as executor:
-        futures = {executor.submit(worker, device): device for device in devices}
+        futures = {executor.submit(worker, device, index): device for index, device in enumerate(devices)}
         while futures:
             done, _ = wait(futures, return_when=FIRST_COMPLETED)
             for future in done:
@@ -1744,7 +1801,7 @@ def run_case(
     args: argparse.Namespace,
     status_dir: Path,
     logs_dir: Path,
-) -> None:
+) -> int | None:
     status_path = status_dir / f"{case.index:04d}_{case.checkpoint_key}_sample{case.sample_index:03d}.json"
     log_path = logs_dir / f"{case.index:04d}_{case.checkpoint_key}_sample{case.sample_index:03d}.log"
     existing = find_summary_paths(asdict(case))
@@ -1757,39 +1814,104 @@ def run_case(
             device=device,
             log_path=log_path,
         )
-        return
-
-    command = [part.replace("{device}", device) for part in case.command_template]
-    env = build_child_env(args)
-
-    write_case_status(status_path, state="running", returncode=None, case=case, device=device, log_path=log_path)
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("w", encoding="utf-8") as log:
-        log.write(
-            json.dumps(
-                {
-                    "event": "sampled_eval_case_start",
-                    "case": asdict(case),
-                    "device": device,
-                    "child_env": child_env_report(env, clear_ld_library_path=bool(args.clear_ld_library_path)),
-                },
-                indent=2,
+        return 0
+    claim_path = acquire_case_claim(case, status_dir=status_dir, stale_seconds=args.case_claim_stale_seconds)
+    if claim_path is None:
+        return None
+    try:
+        existing = find_summary_paths(asdict(case))
+        if args.resume and existing:
+            write_case_status(
+                status_path,
+                state="skipped_existing",
+                returncode=0,
+                case=case,
+                device=device,
+                log_path=log_path,
             )
+            return 0
+
+        command = [part.replace("{device}", device) for part in case.command_template]
+        env = build_child_env(args, device=device)
+
+        write_case_status(status_path, state="running", returncode=None, case=case, device=device, log_path=log_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        completed: subprocess.CompletedProcess[Any] | None = None
+        with log_path.open("w", encoding="utf-8") as log:
+            log.write(
+                json.dumps(
+                    {
+                        "event": "sampled_eval_case_start",
+                        "case": asdict(case),
+                        "device": device,
+                        "child_env": child_env_report(env, clear_ld_library_path=bool(args.clear_ld_library_path)),
+                    },
+                    indent=2,
+                )
+            )
+            log.write("\n")
+            log.flush()
+            completed = subprocess.run(command, cwd=REPO_ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
+        assert completed is not None
+        write_case_status(
+            status_path,
+            state="completed" if completed.returncode == 0 else "failed",
+            returncode=completed.returncode,
+            case=case,
+            device=device,
+            log_path=log_path,
         )
-        log.write("\n")
-        log.flush()
-        completed = subprocess.run(command, cwd=REPO_ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
-    write_case_status(
-        status_path,
-        state="completed" if completed.returncode == 0 else "failed",
-        returncode=completed.returncode,
-        case=case,
-        device=device,
-        log_path=log_path,
-    )
+        return int(completed.returncode)
+    finally:
+        try:
+            claim_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
-def build_child_env(args: argparse.Namespace) -> dict[str, str]:
+def acquire_case_claim(case: EvalCase, *, status_dir: Path, stale_seconds: float) -> Path | None:
+    claim_dir = status_dir / "claims"
+    claim_dir.mkdir(parents=True, exist_ok=True)
+    path = claim_dir / f"{case.index:04d}_{case.checkpoint_key}_sample{case.sample_index:03d}.lock"
+    payload = {
+        "pid": os.getpid(),
+        "hostname": os.uname().nodename,
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "case_index": case.index,
+        "checkpoint_key": case.checkpoint_key,
+        "sample_index": case.sample_index,
+        "task_id": case.task_id,
+        "init_id": case.init_id,
+    }
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    try:
+        fd = os.open(path, flags, 0o644)
+    except FileExistsError:
+        if stale_seconds > 0 and is_stale_claim(path, stale_seconds=stale_seconds):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            try:
+                fd = os.open(path, flags, 0o644)
+            except FileExistsError:
+                return None
+        else:
+            return None
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+        handle.write("\n")
+    return path
+
+
+def is_stale_claim(path: Path, *, stale_seconds: float) -> bool:
+    try:
+        return time.time() - path.stat().st_mtime > stale_seconds
+    except FileNotFoundError:
+        return False
+
+
+def build_child_env(args: argparse.Namespace, *, device: str | None = None) -> dict[str, str]:
     env = os.environ.copy()
     if getattr(args, "clear_ld_library_path", False):
         env.pop("LD_LIBRARY_PATH", None)
@@ -1799,16 +1921,70 @@ def build_child_env(args: argparse.Namespace) -> dict[str, str]:
     mujoco_gl = args.mujoco_gl or env.get("MUJOCO_GL") or "egl"
     env["MUJOCO_GL"] = mujoco_gl
     env["PYTHONUNBUFFERED"] = "1"
-    env.setdefault("PYOPENGL_PLATFORM", "egl" if mujoco_gl == "egl" else mujoco_gl)
+    env["PYOPENGL_PLATFORM"] = "egl" if mujoco_gl == "egl" else mujoco_gl
+    slurm_allocated_devices = env.get("SLURM_STEP_GPUS") or env.get("SLURM_JOB_GPUS")
+    egl_device_id = egl_device_id_for_runtime_device(
+        device,
+        allocated_devices=env.get("CUDA_VISIBLE_DEVICES") or slurm_allocated_devices,
+    )
+    if mujoco_gl == "egl" and egl_device_id is not None:
+        env["MUJOCO_EGL_DEVICE_ID"] = str(egl_device_id)
+        env["EGL_DEVICE_ID"] = str(egl_device_id)
     env.setdefault("WANDB_MODE", "disabled")
     return env
+
+
+def egl_device_id_for_runtime_device(device: str | None, *, allocated_devices: str | None = None) -> int | None:
+    if device is None:
+        return None
+    normalized = str(device).strip().lower()
+    if normalized == "cuda":
+        local_index = 0
+    else:
+        match = re.fullmatch(r"cuda:(\d+)", normalized)
+        if not match:
+            return None
+        local_index = int(match.group(1))
+    visible_devices = parse_allocated_gpu_ids(allocated_devices)
+    if visible_devices and local_index < len(visible_devices):
+        return visible_devices[local_index]
+    return local_index
+
+
+def parse_allocated_gpu_ids(value: str | None) -> list[int]:
+    if not value:
+        return []
+    ids: list[int] = []
+    for part in str(value).split(","):
+        token = part.strip()
+        if not token:
+            continue
+        range_match = re.fullmatch(r"(\d+)-(\d+)", token)
+        if range_match:
+            start = int(range_match.group(1))
+            end = int(range_match.group(2))
+            step = 1 if start <= end else -1
+            ids.extend(range(start, end + step, step))
+            continue
+        if token.isdigit():
+            ids.append(int(token))
+            continue
+        trailing_number = re.search(r"(\d+)$", token)
+        if trailing_number:
+            ids.append(int(trailing_number.group(1)))
+    return ids
 
 
 def child_env_report(env: dict[str, str], *, clear_ld_library_path: bool) -> dict[str, str | bool | None]:
     return {
         "clear_ld_library_path": clear_ld_library_path,
         "ld_library_path": env.get("LD_LIBRARY_PATH"),
+        "cuda_visible_devices": env.get("CUDA_VISIBLE_DEVICES"),
+        "slurm_job_gpus": env.get("SLURM_JOB_GPUS"),
+        "slurm_step_gpus": env.get("SLURM_STEP_GPUS"),
         "mujoco_gl": env.get("MUJOCO_GL"),
+        "mujoco_egl_device_id": env.get("MUJOCO_EGL_DEVICE_ID"),
+        "egl_device_id": env.get("EGL_DEVICE_ID"),
         "pyopengl_platform": env.get("PYOPENGL_PLATFORM"),
         "open_wam_local_paths": env.get("OPEN_WAM_LOCAL_PATHS"),
         "libero_repo_root": env.get("LIBERO_REPO_ROOT"),
@@ -1833,7 +2009,7 @@ def write_case_status(
         "log_path": str(log_path),
         "case": asdict(case),
     }
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    atomic_write_json(path, payload)
 
 
 def collect_run(path: Path) -> dict[str, Any]:
@@ -1869,7 +2045,7 @@ def collect_run(path: Path) -> dict[str, Any]:
         )
 
     summary_payload = build_summary_payload(manifest, reports)
-    (log_root / "summary.json").write_text(json.dumps(summary_payload, indent=2), encoding="utf-8")
+    atomic_write_json(log_root / "summary.json", summary_payload)
     write_results_csv(log_root / "results.csv", summary_payload)
     write_summary_md(log_root / "summary.md", summary_payload)
     return summary_payload
@@ -2009,11 +2185,13 @@ def write_results_csv(path: Path, summary: dict[str, Any]) -> None:
                 f"{key}_summary_path",
             ]
         )
-    with path.open("w", encoding="utf-8", newline="") as handle:
+    tmp_path = temporary_write_path(path)
+    with tmp_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
             writer.writerow({field: row.get(field) for field in fieldnames})
+    os.replace(tmp_path, path)
 
 
 def write_summary_md(path: Path, summary: dict[str, Any]) -> None:
@@ -2096,7 +2274,7 @@ def write_summary_md(path: Path, summary: dict[str, Any]) -> None:
         lines.append(
             "| " + " | ".join(md_escape(cell) for cell in cells) + " |"
         )
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic_write_text(path, "\n".join(lines) + "\n")
 
 
 def format_result_cell(success: Any, actions: Any, status: Any = None) -> str:
@@ -2176,7 +2354,28 @@ def write_status_note(path: Path, *, manifest: dict[str, Any], cases: list[EvalC
         lines.extend(["", "## Task Resolution Warnings", ""])
         for warning in manifest["task_resolution_warnings"]:
             lines.append(f"- {warning}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic_write_text(path, "\n".join(lines) + "\n")
+
+
+def atomic_write_json(path: Path, payload: Any) -> None:
+    atomic_write_text(path, json.dumps(payload, indent=2) + "\n")
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = temporary_write_path(path)
+    try:
+        tmp_path.write_text(text, encoding="utf-8")
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+
+def temporary_write_path(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    suffix = f".{os.getpid()}.{time.time_ns()}.tmp"
+    return path.with_name(f".{path.name}{suffix}")
 
 
 def parse_devices(value: str) -> list[str]:

@@ -37,13 +37,30 @@ from .step_executor import PipelineTrainStepExecutor, build_batch_adapter
 from .strategies import build_training_strategy
 
 
+def _is_floating_dtype(dtype: torch.dtype | None) -> bool:
+    if dtype is None:
+        return False
+    return torch.empty((), dtype=dtype).is_floating_point()
+
+
+def _optimizer_state_target_dtype(parameter: object) -> torch.dtype | None:
+    grad = getattr(parameter, "grad", None)
+    grad_dtype = getattr(grad, "dtype", None)
+    if _is_floating_dtype(grad_dtype):
+        return grad_dtype
+    parameter_dtype = getattr(parameter, "dtype", None)
+    if _is_floating_dtype(parameter_dtype):
+        return parameter_dtype
+    return None
+
+
 def _normalize_optimizer_state_dtypes(optimizer: torch.optim.Optimizer) -> None:
     for parameter, state in optimizer.state.items():
         if not isinstance(state, dict):
             continue
-        if not torch.is_tensor(parameter) or not torch.is_floating_point(parameter):
+        state_dtype = _optimizer_state_target_dtype(parameter)
+        if state_dtype is None:
             continue
-        state_dtype = parameter.dtype
         for key, value in list(state.items()):
             if key == "step":
                 continue
