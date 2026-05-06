@@ -14,6 +14,7 @@ from open_wam.configs import (
     CFGMode,
     CausalVideoPredictionPolicyConfig,
     ExportedRuntimeActionInitMode,
+    JointDenoiseTrainingMode,
     JointSampler,
     LatentWindowProfile,
     LoopPolicyName,
@@ -22,6 +23,7 @@ from open_wam.configs import (
     MoTPreset,
     ParallelRuntimeMode,
     ParallelStreamPolicyConfig,
+    ParallelStreamVariantProfile,
     PostDecodedPolicyConfig,
     PostLatentPolicyConfig,
     AnchorPolicy,
@@ -535,6 +537,90 @@ def test_heng_compatible_libero_yaml_config_loads() -> None:
     assert heng_libero.trainer.save_interval == 100
     assert heng_libero.trainer.enable_wandb is True
     assert heng_libero.trainer.wandb_project == "openwam-method1-libero"
+
+
+def test_m1_generalist_joint_denoising_yaml_config_loads() -> None:
+    config = load_experiment_config(
+        REPO_ROOT
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
+    )
+
+    assert isinstance(config.policy_variant, ParallelStreamPolicyConfig)
+    assert config.policy_variant.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED
+    assert config.policy_variant.variant_profile == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING
+    assert config.policy_variant.current_block_coupling == "joint"
+    probs = config.policy_variant.joint_denoise_training_mode_probs
+    assert probs[JointDenoiseTrainingMode.JOINT] == pytest.approx(0.6)
+    assert probs[JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO] == pytest.approx(0.2)
+    assert probs[JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION] == pytest.approx(0.2)
+    assert config.action_decoder.name == ActionDecoderName.LINGBOT_PARALLEL
+
+
+def test_m1_generalist_joint_denoising_defaults_mode_probabilities(tmp_path: Path) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
+    )
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    raw["policy_variant"].pop("joint_denoise_training_mode_probs")
+
+    config_path = tmp_path / "generalist_joint_default_probs.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    probs = config.policy_variant.joint_denoise_training_mode_probs
+    assert probs[JointDenoiseTrainingMode.JOINT] == pytest.approx(0.6)
+    assert probs[JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO] == pytest.approx(0.2)
+    assert probs[JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION] == pytest.approx(0.2)
+
+
+def test_m1_generalist_joint_denoising_rejects_invalid_probabilities(tmp_path: Path) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
+    )
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    raw["policy_variant"]["joint_denoise_training_mode_probs"] = {
+        "joint": 0.0,
+        "action_conditioned_video": 0.0,
+        "video_conditioned_action": 0.0,
+    }
+
+    config_path = tmp_path / "generalist_joint_bad_probs.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    with pytest.raises(ValueError, match="at least one positive probability"):
+        load_experiment_config(config_path)
+
+
+@pytest.mark.parametrize("bad_value", [True, float("nan"), float("inf")])
+def test_m1_generalist_joint_denoising_rejects_non_numeric_probabilities(
+    tmp_path: Path,
+    bad_value: object,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
+    )
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    raw["policy_variant"]["joint_denoise_training_mode_probs"] = {
+        "joint": 0.6,
+        "action_conditioned_video": bad_value,
+        "video_conditioned_action": 0.2,
+    }
+
+    config_path = tmp_path / "generalist_joint_non_numeric_probs.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    with pytest.raises(ValueError, match="finite numeric probabilities"):
+        load_experiment_config(config_path)
 
 
 def test_local_path_registry_overrides_sample_aliases(monkeypatch, tmp_path: Path) -> None:

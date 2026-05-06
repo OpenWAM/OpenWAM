@@ -564,6 +564,21 @@ class ParallelRuntimeMode(StrEnum):
     LINGBOT_EXACT_ACTION_CONDITIONED = "lingbot_exact_action_conditioned"
 
 
+class ParallelStreamVariantProfile(StrEnum):
+    """Named Method-1 variant profile layered on the exact parallel runtime."""
+
+    STANDARD = "standard"
+    GENERALIST_JOINT_DENOISING = "generalist_joint_denoising"
+
+
+class JointDenoiseTrainingMode(StrEnum):
+    """Per-segment training mode for generalist joint video/action denoising."""
+
+    JOINT = "joint"
+    ACTION_CONDITIONED_VIDEO = "action_conditioned_video"
+    VIDEO_CONDITIONED_ACTION = "video_conditioned_action"
+
+
 class ParallelActionConditionSource(StrEnum):
     """Which action stream should be exposed to video denoising."""
 

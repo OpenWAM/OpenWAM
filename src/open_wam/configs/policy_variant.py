@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 
 from .enums import (
     ActionChunkAnchorMode,
     ActionNormMethod,
     CurrentBlockCoupling,
+    JointDenoiseTrainingMode,
     ParallelActionAttentionScope,
     ParallelActionConditionSource,
     AttachSite,
@@ -18,6 +20,7 @@ from .enums import (
     ParallelMaskMode,
     ParallelRuntimeMode,
     ParallelSequenceComponent,
+    ParallelStreamVariantProfile,
     PolicyVariantName,
     PoolingMode,
     RegisterLayout,
@@ -39,6 +42,65 @@ from .enums import (
     coerce_fields,
 )
 from .visual_readout import VisualReadoutConfig
+
+
+def _default_joint_denoise_training_mode_probs(
+    variant_profile: ParallelStreamVariantProfile,
+) -> dict[JointDenoiseTrainingMode, float]:
+    if variant_profile == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING:
+        return {
+            JointDenoiseTrainingMode.JOINT: 0.6,
+            JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO: 0.2,
+            JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION: 0.2,
+        }
+    return {
+        JointDenoiseTrainingMode.JOINT: 1.0,
+        JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO: 0.0,
+        JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION: 0.0,
+    }
+
+
+def _coerce_joint_denoise_training_mode_probs(
+    raw_value: object,
+    *,
+    variant_profile: ParallelStreamVariantProfile | str,
+) -> dict[JointDenoiseTrainingMode, float]:
+    resolved_profile = ParallelStreamVariantProfile(variant_profile)
+    if raw_value is None:
+        return _default_joint_denoise_training_mode_probs(resolved_profile)
+    if not isinstance(raw_value, dict):
+        raise ValueError("`joint_denoise_training_mode_probs` must be a mapping from mode to probability.")
+
+    probs = {mode: 0.0 for mode in JointDenoiseTrainingMode}
+    for raw_mode, raw_prob in raw_value.items():
+        mode = JointDenoiseTrainingMode(raw_mode)
+        if isinstance(raw_prob, bool):
+            raise ValueError(
+                "`joint_denoise_training_mode_probs` entries must be finite numeric probabilities, "
+                f"got {mode.value}={raw_prob!r}."
+            )
+        try:
+            prob = float(raw_prob)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "`joint_denoise_training_mode_probs` entries must be finite numeric probabilities, "
+                f"got {mode.value}={raw_prob!r}."
+            ) from exc
+        if not math.isfinite(prob):
+            raise ValueError(
+                "`joint_denoise_training_mode_probs` entries must be finite numeric probabilities, "
+                f"got {mode.value}={raw_prob!r}."
+            )
+        if prob < 0.0:
+            raise ValueError(
+                "`joint_denoise_training_mode_probs` entries must be non-negative, "
+                f"got {mode.value}={prob}."
+            )
+        probs[mode] = prob
+    total = sum(probs.values())
+    if total <= 0.0:
+        raise ValueError("`joint_denoise_training_mode_probs` must contain at least one positive probability.")
+    return {mode: prob / total for mode, prob in probs.items()}
 
 
 @dataclass(frozen=True)
@@ -350,6 +412,7 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
     hidden_size: int = 256
     attach_site: AttachSite = AttachSite.WITHIN_VISUAL_CORE
     runtime_mode: ParallelRuntimeMode = ParallelRuntimeMode.LINGBOT_EXACT
+    variant_profile: ParallelStreamVariantProfile = ParallelStreamVariantProfile.STANDARD
     reference_profile: str | None = None
     frame_chunk_size: int = 2
     action_per_frame: int = 1
@@ -370,6 +433,7 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
     video_action_attention_scope: ParallelActionAttentionScope = ParallelActionAttentionScope.BLOCK_LOCAL
     current_block_coupling: CurrentBlockCoupling | None = None
     couple_action_to_video_timesteps: bool = True
+    joint_denoise_training_mode_probs: dict[JointDenoiseTrainingMode, float] | None = None
     # When true, restrict PAST-chunk attention (both clean_to_clean and
     # noise_to_clean) so that any video-stream query (V_clean or V_noisy)
     # only sees same-stream history (V_clean), never history A_*. Action
@@ -394,6 +458,7 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
             self,
             enum_fields={
                 "runtime_mode": ParallelRuntimeMode,
+                "variant_profile": ParallelStreamVariantProfile,
                 "mask_mode": ParallelMaskMode,
                 "cache_mode": ParallelCacheMode,
                 "video_action_condition_source": ParallelActionConditionSource,
@@ -403,4 +468,37 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
             },
             optional_enum_fields={"current_block_coupling": CurrentBlockCoupling},
             enum_tuple_fields={"sequence_order": ParallelSequenceComponent},
+            transforms={
+                "joint_denoise_training_mode_probs": lambda value: _coerce_joint_denoise_training_mode_probs(
+                    value,
+                    variant_profile=ParallelStreamVariantProfile(self.variant_profile),
+                )
+            },
         )
+        assert self.joint_denoise_training_mode_probs is not None
+        if self.variant_profile == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING:
+            if self.runtime_mode != ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
+                raise ValueError(
+                    "`variant_profile = generalist_joint_denoising` requires "
+                    "`runtime_mode = lingbot_exact_action_conditioned`."
+                )
+            if self.current_block_coupling not in {None, CurrentBlockCoupling.JOINT}:
+                raise ValueError(
+                    "`variant_profile = generalist_joint_denoising` requires joint current-block coupling, "
+                    f"got current_block_coupling={self.current_block_coupling!r}."
+                )
+            if not self.video_condition_on_action:
+                raise ValueError(
+                    "`variant_profile = generalist_joint_denoising` requires `video_condition_on_action = true`."
+                )
+        elif any(
+            self.joint_denoise_training_mode_probs[mode] > 0.0
+            for mode in (
+                JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+                JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
+            )
+        ):
+            raise ValueError(
+                "Conditional joint-denoise training modes require "
+                "`variant_profile = generalist_joint_denoising`."
+            )

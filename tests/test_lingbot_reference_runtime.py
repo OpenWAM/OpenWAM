@@ -6,9 +6,11 @@ from torch import nn
 from open_wam.configs import (
     InferenceConfig,
     CurrentBlockCoupling,
+    JointDenoiseTrainingMode,
     ParallelExactCacheWriteMode,
     ParallelRuntimeMode,
     ParallelStreamPolicyConfig,
+    ParallelStreamVariantProfile,
     TrainingConfig,
 )
 from open_wam.models.action_decoders.lingbot_parallel_decoder import LingbotParallelActionDecoder
@@ -754,3 +756,133 @@ def test_parallel_action_conditioned_train_artifacts_accept_contextual_overrides
     assert artifacts.input_dict["loss_frame_end"] == 6
     assert artifacts.input_dict["frame_shift"] == 9
     assert artifacts.input_dict["attention_profile_name"] == "chunked_temporal_exact_joint"
+
+
+def _generalist_policy_config(
+    mode: JointDenoiseTrainingMode,
+    *,
+    couple_action_to_video_timesteps: bool = True,
+) -> ParallelStreamPolicyConfig:
+    return ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode=ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
+        variant_profile=ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING,
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        frame_chunk_size=2,
+        action_per_frame=2,
+        attn_window=8,
+        video_condition_on_action=True,
+        video_action_condition_source="noisy_action",
+        couple_action_to_video_timesteps=couple_action_to_video_timesteps,
+        joint_denoise_training_mode_probs={mode: 1.0},
+    )
+
+
+def _small_generalist_artifacts(mode: JointDenoiseTrainingMode):
+    torch.manual_seed(7)
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=1,
+        patch_size_w=1,
+    )
+    policy_config = _generalist_policy_config(mode)
+    training_config = TrainingConfig(
+        chunk_size=2,
+        window_size=8,
+        video_num_train_timesteps=20,
+        action_num_train_timesteps=20,
+    )
+    video_latents = torch.randn(1, 3, 4, 2, 2)
+    actions = torch.randn(1, 8, 5)
+    artifacts = prepare_parallel_action_conditioned_train_artifacts(
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        video_latents=video_latents,
+        actions=actions,
+        action_mask=None,
+        text_emb=torch.randn(1, 512, 16),
+    )
+    action_latents = actions.reshape(1, 4, 2, 5).permute(0, 3, 1, 2).unsqueeze(-1)
+    return artifacts, video_latents, action_latents
+
+
+def test_generalist_joint_denoising_action_conditioned_video_uses_clean_action_slot() -> None:
+    artifacts, _, action_latents = _small_generalist_artifacts(
+        JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO
+    )
+    input_dict = artifacts.input_dict
+
+    assert input_dict["variant_profile"] == "generalist_joint_denoising"
+    assert input_dict["joint_denoise_training_mode"] == "action_conditioned_video"
+    assert torch.equal(input_dict["action_dict"]["noisy_latents"], action_latents)
+    assert torch.all(input_dict["action_dict"]["timesteps"] == 0)
+    assert torch.all(input_dict["action_dict"]["targets"] == 0)
+    assert torch.all(input_dict["action_dict"]["loss_mask"] == 0)
+    assert torch.all(input_dict["latent_dict"]["loss_mask"] == 1)
+    assert torch.all(input_dict["latent_dict"]["latent"] == 0)
+    assert torch.all(input_dict["action_dict"]["latent"] == 0)
+
+
+def test_generalist_joint_denoising_video_conditioned_action_uses_clean_video_slot() -> None:
+    artifacts, video_latents, _ = _small_generalist_artifacts(
+        JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION
+    )
+    input_dict = artifacts.input_dict
+
+    assert input_dict["joint_denoise_training_mode"] == "video_conditioned_action"
+    assert torch.equal(input_dict["latent_dict"]["noisy_latents"], video_latents)
+    assert torch.all(input_dict["latent_dict"]["timesteps"] == 0)
+    assert torch.all(input_dict["latent_dict"]["targets"] == 0)
+    assert torch.all(input_dict["latent_dict"]["loss_mask"] == 0)
+    assert torch.all(input_dict["action_dict"]["loss_mask"] == 1)
+    assert torch.all(input_dict["latent_dict"]["latent"] == 0)
+    assert torch.all(input_dict["action_dict"]["latent"] == 0)
+
+
+def test_generalist_joint_denoising_joint_mode_couples_noise_clarity() -> None:
+    artifacts, video_latents, action_latents = _small_generalist_artifacts(JointDenoiseTrainingMode.JOINT)
+    input_dict = artifacts.input_dict
+
+    assert input_dict["joint_denoise_training_mode"] == "joint"
+    assert torch.all(input_dict["latent_dict"]["loss_mask"] == 1)
+    assert torch.all(input_dict["action_dict"]["loss_mask"] == 1)
+    assert not torch.equal(input_dict["latent_dict"]["noisy_latents"], video_latents)
+    assert not torch.equal(input_dict["action_dict"]["noisy_latents"], action_latents)
+
+    shared_sigmas = input_dict["joint_denoise_shared_sigmas"]
+    assert shared_sigmas.shape == (4,)
+    assert torch.all(shared_sigmas >= 0)
+    assert torch.all(shared_sigmas <= 1)
+
+
+def test_lingbot_parallel_decoder_logs_generalist_mode_sums_and_counts() -> None:
+    artifacts, _, _ = _small_generalist_artifacts(JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO)
+    action_targets = artifacts.input_dict["action_dict"]["targets"].squeeze(-1).permute(0, 2, 3, 1).reshape(1, 8, 5)
+    latent_targets = artifacts.input_dict["latent_dict"]["targets"].permute(0, 2, 3, 4, 1).reshape(1, 16, 3)
+    decoder = LingbotParallelActionDecoder(hidden_size=32, action_dim=5, action_horizon=8)
+
+    output = decoder.forward_train(
+        PolicyTrainOutput(
+            policy_features=action_targets,
+            metrics={},
+            aux={
+                "latent_pred": latent_targets,
+                "lingbot_train_artifacts": artifacts,
+                "loss_weights": {"latent": 1.0, "action": 1.0},
+                "patch_size": (1, 1, 1),
+            },
+        ),
+        PolicyTrainBatch(actions=torch.zeros(1, 8, 5)),
+    )
+
+    assert output.metrics["joint_denoise/action_conditioned_video/count"].item() == 1.0
+    assert output.metrics["joint_denoise/joint/count"].item() == 0.0
+    assert output.metrics["joint_denoise/action_loss_active"].item() == 0.0
+    assert output.metrics["joint_denoise/latent_loss_active"].item() == 1.0

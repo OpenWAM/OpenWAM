@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange
 
+from open_wam.configs import JointDenoiseTrainingMode
 from open_wam.models.policy_variants.contracts import PolicyInferOutput, PolicyTrainBatch, PolicyTrainOutput
 
 from .base import ActionDecoder, ActionDecoderInferOutput, ActionDecoderTrainOutput, align_policy_features
@@ -92,16 +93,35 @@ class LingbotParallelActionDecoder(ActionDecoder):
         weighted_latent_loss = latent_loss * configured_latent_loss_weight
         weighted_action_loss = action_loss * configured_action_loss_weight
         loss = weighted_latent_loss + weighted_action_loss
+        metrics = {
+            "action_mse": action_loss.detach(),
+            "latent_mse": latent_loss.detach(),
+            "weighted_action_loss": weighted_action_loss.detach(),
+            "weighted_latent_loss": weighted_latent_loss.detach(),
+            "joint_loss": loss.detach(),
+        }
+        joint_denoise_mode = input_dict.get("joint_denoise_training_mode")
+        if joint_denoise_mode is not None:
+            mode_value = str(joint_denoise_mode)
+            metric_device = loss.device
+            one = torch.ones((), device=metric_device)
+            zero = torch.zeros((), device=metric_device)
+            for mode in JointDenoiseTrainingMode:
+                active = one if mode_value == mode.value else zero
+                prefix = f"joint_denoise/{mode.value}"
+                metrics[f"{prefix}/count"] = active.detach()
+                metrics[f"{prefix}/action_mse_sum"] = (action_loss * active).detach()
+                metrics[f"{prefix}/latent_mse_sum"] = (latent_loss * active).detach()
+            metrics["joint_denoise/action_loss_active"] = (
+                effective_action_mask.float().sum() > 0
+            ).to(dtype=torch.float32).detach()
+            metrics["joint_denoise/latent_loss_active"] = (
+                latent_loss_mask.float().sum() > 0
+            ).to(dtype=torch.float32).detach()
         return ActionDecoderTrainOutput(
             action_pred=action_pred,
             loss=loss,
-            metrics={
-                "action_mse": action_loss.detach(),
-                "latent_mse": latent_loss.detach(),
-                "weighted_action_loss": weighted_action_loss.detach(),
-                "weighted_latent_loss": weighted_latent_loss.detach(),
-                "joint_loss": loss.detach(),
-            },
+            metrics=metrics,
             aux={"decoder": self.__class__.__name__},
         )
 

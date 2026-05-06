@@ -179,6 +179,24 @@ def test_method1_coupling_and_segment_sampling_are_tracked(tmp_path: Path) -> No
     assert "sample_weight:task_virtual_start_count_power" in tags
 
 
+def test_method1_generalist_joint_denoising_tracking_metadata(tmp_path: Path) -> None:
+    config = load_experiment_config(
+        REPO_ROOT
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
+    )
+    metadata = build_run_tracking_metadata(config, run_name=config.name, output_dir=tmp_path / config.name)
+
+    assert metadata["method_family"] == "method_1"
+    assert metadata["variant_profile"] == "generalist_joint_denoising"
+    assert metadata["joint_denoise_training_mode_probs"] == {
+        "joint": 0.6,
+        "action_conditioned_video": 0.2,
+        "video_conditioned_action": 0.2,
+    }
+    tags = build_wandb_tags(metadata)
+    assert "variant_profile:generalist_joint_denoising" in tags
+
+
 def test_wandb_project_defaults_to_dataset_and_workload_bin(tmp_path: Path) -> None:
     config = load_experiment_config(REPO_ROOT / "configs/experiments/mot_robotwin_smoke.yaml")
     config = replace(config, trainer=replace(config.trainer, enable_wandb=True, wandb_project=None))

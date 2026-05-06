@@ -502,6 +502,10 @@ def _load_policy_variant_config(
                 config_enums.ParallelRuntimeMode,
                 resolved_raw.get("runtime_mode", config_enums.ParallelRuntimeMode.LINGBOT_EXACT),
             ),
+            variant_profile=_coerce_enum(
+                config_enums.ParallelStreamVariantProfile,
+                resolved_raw.get("variant_profile", config_enums.ParallelStreamVariantProfile.STANDARD),
+            ),
             reference_profile=resolved_raw.get("reference_profile"),
             frame_chunk_size=resolved_raw.get("frame_chunk_size", inference_config.frame_chunk_size),
             action_per_frame=resolved_raw.get("action_per_frame", default_action_per_frame),
@@ -532,6 +536,7 @@ def _load_policy_variant_config(
                 ),
             ),
             couple_action_to_video_timesteps=resolved_raw.get("couple_action_to_video_timesteps", True),
+            joint_denoise_training_mode_probs=resolved_raw.get("joint_denoise_training_mode_probs"),
             current_block_coupling=(
                 _coerce_enum(
                     config_enums.CurrentBlockCoupling,

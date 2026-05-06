@@ -11,8 +11,10 @@ from einops import rearrange
 
 from open_wam.configs.enums import (
     CurrentBlockCoupling,
+    JointDenoiseTrainingMode,
     ParallelExactCacheWriteMode,
     ParallelRuntimeMode,
+    ParallelStreamVariantProfile,
 )
 from open_wam.configs.inference import InferenceConfig
 from open_wam.configs.policy_variant import ParallelStreamPolicyConfig
@@ -280,21 +282,43 @@ def _add_noise(
     noisy_cond_prob: float,
     patch_size: tuple[int, int, int],
     frame_shift: int = 0,
+    timestep_values: torch.Tensor | None = None,
+    sigma_values: torch.Tensor | None = None,
 ) -> dict[str, torch.Tensor]:
     batch_size, _, num_frames, height, width = latent.shape
     # LingBot samples one timestep per frame, then broadcasts that scalar across
     # every channel/spatial location inside that frame. For video latents the
     # tensor is `[B, C_latent, F, H_latent, W_latent]`; for action latents it is
     # `[B, D_action, F, action_per_frame, 1]`.
-    timestep_ids = sample_timestep_id(
-        batch_size=num_frames,
-        num_train_timesteps=train_scheduler.num_train_timesteps,
-        device=latent.device,
-    )
     noise = torch.zeros_like(latent).normal_()
     scheduler_timesteps = train_scheduler.timesteps.to(device=latent.device)
-    timesteps = scheduler_timesteps[timestep_ids]
-    noisy_latents = train_scheduler.add_noise(latent, noise, timesteps, t_dim=2)
+    if timestep_values is None:
+        timestep_ids = sample_timestep_id(
+            batch_size=num_frames,
+            num_train_timesteps=train_scheduler.num_train_timesteps,
+            device=latent.device,
+        )
+        timesteps = scheduler_timesteps[timestep_ids]
+    else:
+        timesteps = timestep_values.to(device=latent.device, dtype=scheduler_timesteps.dtype)
+        if timesteps.ndim != 1 or timesteps.shape[0] != num_frames:
+            raise ValueError(
+                "Explicit denoise timestep values must be one scalar per frame, "
+                f"got shape={tuple(timesteps.shape)} and num_frames={num_frames}."
+            )
+    if sigma_values is None:
+        noisy_latents = train_scheduler.add_noise(latent, noise, timesteps, t_dim=2)
+    else:
+        sigmas = sigma_values.to(device=latent.device, dtype=latent.dtype)
+        if sigmas.ndim != 1 or sigmas.shape[0] != num_frames:
+            raise ValueError(
+                "Explicit denoise sigma values must be one scalar per frame, "
+                f"got shape={tuple(sigmas.shape)} and num_frames={num_frames}."
+            )
+        shape = [1] * noise.ndim
+        shape[2] = num_frames
+        sigmas = sigmas.view(shape)
+        noisy_latents = (1 - sigmas) * latent + sigmas * noise
     targets = train_scheduler.training_target(latent, noise, timesteps)
 
     patch_f, patch_h, patch_w = patch_size
@@ -343,6 +367,188 @@ def _add_noise(
         "cond_timesteps": cond_timesteps[None].repeat(batch_size, 1),
         "grid_id": latent_grid_id,
     }
+
+
+def _sample_joint_denoise_training_mode(
+    policy_config: ParallelStreamPolicyConfig,
+    *,
+    device: torch.device,
+) -> JointDenoiseTrainingMode:
+    probs = policy_config.joint_denoise_training_mode_probs
+    if probs is None:
+        return JointDenoiseTrainingMode.JOINT
+    modes = tuple(JointDenoiseTrainingMode)
+    weights = torch.tensor([float(probs.get(mode, 0.0)) for mode in modes], device=device, dtype=torch.float32)
+    if float(weights.sum().item()) <= 0.0:
+        raise ValueError("Generalist joint-denoise training mode probabilities must have positive total weight.")
+    index = int(torch.multinomial(weights, num_samples=1).item())
+    return modes[index]
+
+
+def _timesteps_matching_sigmas(
+    scheduler: FlowMatchScheduler,
+    sigma_values: torch.Tensor,
+) -> torch.Tensor:
+    scheduler_sigmas = scheduler.sigmas.to(device=sigma_values.device, dtype=sigma_values.dtype)
+    scheduler_timesteps = scheduler.timesteps.to(device=sigma_values.device)
+    indices = torch.argmin((scheduler_sigmas[:, None] - sigma_values[None]).abs(), dim=0)
+    return scheduler_timesteps[indices]
+
+
+def _sample_timestep_values(
+    scheduler: FlowMatchScheduler,
+    *,
+    num_frames: int,
+    device: torch.device,
+) -> torch.Tensor:
+    timestep_ids = sample_timestep_id(
+        batch_size=num_frames,
+        num_train_timesteps=scheduler.num_train_timesteps,
+        device=device,
+    )
+    return scheduler.timesteps.to(device=device)[timestep_ids]
+
+
+def _sample_coupled_timestep_values(
+    *,
+    latent_scheduler: FlowMatchScheduler,
+    action_scheduler: FlowMatchScheduler,
+    num_frames: int,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    timestep_ids = sample_timestep_id(
+        batch_size=num_frames,
+        num_train_timesteps=latent_scheduler.num_train_timesteps,
+        device=device,
+    )
+    sigma_values = latent_scheduler.sigmas.to(device=device)[timestep_ids]
+    return (
+        _timesteps_matching_sigmas(latent_scheduler, sigma_values),
+        _timesteps_matching_sigmas(action_scheduler, sigma_values),
+        sigma_values,
+    )
+
+
+def _force_clean_noisy_slot(
+    artifact_dict: dict[str, torch.Tensor],
+    clean_latent: torch.Tensor,
+    *,
+    action_mask: torch.Tensor | None = None,
+) -> None:
+    clean_slot = clean_latent
+    if action_mask is not None:
+        clean_slot = clean_slot * action_mask.float()
+    artifact_dict["noisy_latents"] = clean_slot
+    artifact_dict["targets"] = torch.zeros_like(clean_latent)
+    artifact_dict["timesteps"] = torch.zeros_like(artifact_dict["timesteps"])
+
+
+def _zero_condition_slot(artifact_dict: dict[str, torch.Tensor]) -> None:
+    artifact_dict["latent"] = torch.zeros_like(artifact_dict["latent"])
+    artifact_dict["cond_timesteps"] = torch.zeros_like(artifact_dict["cond_timesteps"])
+
+
+def _apply_generalist_joint_denoise_training_mode(
+    *,
+    artifacts: LingbotParallelTrainArtifacts,
+    policy_config: ParallelStreamPolicyConfig,
+    backbone_config: SharedVideoTransformerConfig,
+    video_latents: torch.Tensor,
+    action_latents: torch.Tensor,
+    action_mask_latents: torch.Tensor | None,
+    frame_shift: int,
+) -> None:
+    if int(video_latents.shape[0]) != 1:
+        raise ValueError(
+            "`generalist_joint_denoising` currently samples one conditioning mode per runtime batch. "
+            "Use train_batch_size=1 to preserve the intended one-mode-per-segment contract."
+        )
+    mode = _sample_joint_denoise_training_mode(policy_config, device=video_latents.device)
+    num_frames = int(video_latents.shape[2])
+    clean_zero_timesteps = torch.zeros(num_frames, device=video_latents.device)
+    shared_sigma_values: torch.Tensor | None = None
+    if mode == JointDenoiseTrainingMode.JOINT and policy_config.couple_action_to_video_timesteps:
+        latent_timestep_values, action_timestep_values, shared_sigma_values = _sample_coupled_timestep_values(
+            latent_scheduler=artifacts.latent_scheduler,
+            action_scheduler=artifacts.action_scheduler,
+            num_frames=num_frames,
+            device=video_latents.device,
+        )
+    else:
+        latent_timestep_values = (
+            clean_zero_timesteps
+            if mode == JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION
+            else _sample_timestep_values(
+                artifacts.latent_scheduler,
+                num_frames=num_frames,
+                device=video_latents.device,
+            )
+        )
+        action_timestep_values = (
+            clean_zero_timesteps
+            if mode == JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO
+            else _sample_timestep_values(
+                artifacts.action_scheduler,
+                num_frames=num_frames,
+                device=video_latents.device,
+            )
+        )
+
+    latent_dict = _add_noise(
+        video_latents,
+        train_scheduler=artifacts.latent_scheduler,
+        action_mask=None,
+        action_mode=False,
+        noisy_cond_prob=0.0,
+        patch_size=(backbone_config.patch_size_t, backbone_config.patch_size_h, backbone_config.patch_size_w),
+        frame_shift=frame_shift,
+        timestep_values=latent_timestep_values,
+        sigma_values=shared_sigma_values,
+    )
+    action_dict = _add_noise(
+        action_latents,
+        train_scheduler=artifacts.action_scheduler,
+        action_mask=action_mask_latents,
+        action_mode=True,
+        noisy_cond_prob=0.0,
+        patch_size=(backbone_config.patch_size_t, backbone_config.patch_size_h, backbone_config.patch_size_w),
+        frame_shift=frame_shift,
+        timestep_values=action_timestep_values,
+        sigma_values=shared_sigma_values,
+    )
+    _zero_condition_slot(latent_dict)
+    _zero_condition_slot(action_dict)
+
+    if mode == JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO:
+        _force_clean_noisy_slot(action_dict, action_latents, action_mask=action_mask_latents)
+        action_dict["loss_mask"] = torch.zeros_like(artifacts.input_dict["action_dict"]["loss_mask"])
+    else:
+        action_dict["loss_mask"] = artifacts.input_dict["action_dict"]["loss_mask"]
+
+    if mode == JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION:
+        _force_clean_noisy_slot(latent_dict, video_latents)
+        latent_dict["loss_mask"] = torch.zeros_like(artifacts.input_dict["latent_dict"]["loss_mask"])
+    else:
+        latent_dict["loss_mask"] = artifacts.input_dict["latent_dict"]["loss_mask"]
+
+    text_emb = artifacts.input_dict["latent_dict"]["text_emb"]
+    latent_dict["text_emb"] = text_emb
+    action_dict["text_emb"] = text_emb
+    action_dict["actions_mask"] = artifacts.input_dict["action_dict"]["actions_mask"]
+    if mode == JointDenoiseTrainingMode.JOINT:
+        latent_dict["loss_mask"] = artifacts.input_dict["latent_dict"]["loss_mask"]
+        action_dict["loss_mask"] = artifacts.input_dict["action_dict"]["loss_mask"]
+
+    artifacts.input_dict["latent_dict"] = latent_dict
+    artifacts.input_dict["action_dict"] = action_dict
+    artifacts.input_dict["variant_profile"] = policy_config.variant_profile.value
+    artifacts.input_dict["joint_denoise_training_mode"] = mode.value
+    artifacts.input_dict["joint_denoise_training_mode_probs"] = {
+        mode_key.value: float(prob)
+        for mode_key, prob in (policy_config.joint_denoise_training_mode_probs or {}).items()
+    }
+    if shared_sigma_values is not None:
+        artifacts.input_dict["joint_denoise_shared_sigmas"] = shared_sigma_values.detach().clone()
 
 
 def prepare_parallel_exact_train_artifacts(
@@ -579,6 +785,31 @@ def prepare_parallel_action_conditioned_train_artifacts(
         action_loss_frame_end=action_loss_frame_end,
         frame_shift=frame_shift,
     )
+    if policy_config.variant_profile == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING:
+        _, _, num_frames, _, _ = video_latents.shape
+        action_latents = rearrange(
+            actions,
+            "b (f a) c -> b c f a 1",
+            f=num_frames,
+            a=policy_config.action_per_frame,
+        )
+        action_mask_latents = None
+        if action_mask is not None:
+            action_mask_latents = rearrange(
+                action_mask,
+                "b (f a) c -> b c f a 1",
+                f=num_frames,
+                a=policy_config.action_per_frame,
+            )
+        _apply_generalist_joint_denoise_training_mode(
+            artifacts=artifacts,
+            policy_config=policy_config,
+            backbone_config=backbone_config,
+            video_latents=video_latents,
+            action_latents=action_latents,
+            action_mask_latents=action_mask_latents,
+            frame_shift=frame_shift,
+        )
     return artifacts
 
 

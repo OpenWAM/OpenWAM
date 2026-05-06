@@ -78,8 +78,10 @@ def build_run_tracking_metadata(
     workload_family = _resolve_workload_family(config)
     attach_site = getattr(config.policy_variant, "attach_site", None)
     runtime_mode = getattr(config.policy_variant, "runtime_mode", None)
+    variant_profile = getattr(config.policy_variant, "variant_profile", None)
     current_block_coupling = getattr(config.policy_variant, "current_block_coupling", None)
     reference_profile = getattr(config.policy_variant, "reference_profile", None)
+    joint_denoise_training_mode_probs = getattr(config.policy_variant, "joint_denoise_training_mode_probs", None)
     preserve_video_pretrain_history = getattr(config.policy_variant, "preserve_video_pretrain_history", None)
     train_video_condition_source = getattr(config.policy_variant, "train_video_condition_source", None)
     sample_construction = getattr(config.data, "sample_construction", None)
@@ -95,8 +97,14 @@ def build_run_tracking_metadata(
         "workload_family": workload_family,
         "policy_variant": str(config.policy_variant.name),
         "runtime_mode": (str(runtime_mode) if runtime_mode is not None else None),
+        "variant_profile": (str(variant_profile) if variant_profile is not None else None),
         "current_block_coupling": (str(current_block_coupling) if current_block_coupling is not None else None),
         "reference_profile": reference_profile,
+        "joint_denoise_training_mode_probs": (
+            {str(mode): float(prob) for mode, prob in joint_denoise_training_mode_probs.items()}
+            if joint_denoise_training_mode_probs is not None
+            else None
+        ),
         "preserve_video_pretrain_history": preserve_video_pretrain_history,
         "action_decoder": str(config.action_decoder.name),
         "attach_site": (str(attach_site) if attach_site is not None else None),
@@ -203,6 +211,8 @@ def build_wandb_tags(tracking_metadata: dict[str, Any]) -> tuple[str, ...]:
         ordered_tags.append(f"train_video_condition:{tracking_metadata['train_video_condition_source']}")
     if tracking_metadata.get("runtime_mode"):
         ordered_tags.append(f"runtime_mode:{tracking_metadata['runtime_mode']}")
+    if tracking_metadata.get("variant_profile") and tracking_metadata["variant_profile"] != "standard":
+        ordered_tags.append(f"variant_profile:{tracking_metadata['variant_profile']}")
     if tracking_metadata.get("current_block_coupling"):
         ordered_tags.append(f"coupling:{tracking_metadata['current_block_coupling']}")
     if tracking_metadata.get("reference_profile"):
