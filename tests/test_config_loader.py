@@ -25,6 +25,7 @@ from open_wam.configs import (
     PostDecodedPolicyConfig,
     PostLatentPolicyConfig,
     AnchorPolicy,
+    SampleLossWeightMode,
     SampleWeightMode,
     ReferenceCoreInitMode,
     RegisterAttachedPolicyConfig,
@@ -524,6 +525,9 @@ def test_heng_compatible_libero_yaml_config_loads() -> None:
     assert heng_libero.training.enabled_objectives == ("latent", "action")
     assert heng_libero.training.action_loss_weight == 1.0
     assert heng_libero.training.trainable_components == ("visual_tower.runtime_backbone",)
+    assert heng_libero.training.sample_loss_weight_mode == SampleLossWeightMode.VALID_ACTION_STEPS
+    assert heng_libero.training.sample_loss_weight_min == 0.25
+    assert heng_libero.training.sample_loss_weight_max == 4.0
     assert heng_libero.trainer.runtime == "composable"
     assert heng_libero.trainer.batch_adapter == "latents"
     assert heng_libero.trainer.loop_policy == "steps"
@@ -669,7 +673,9 @@ def test_sample_construction_yaml_strings_are_coerced_to_enum_members(tmp_path: 
         "randomize_segment_length": True,
         "randomize_segment_start": True,
         "require_full_segment": True,
+        "start_padding_frames": 3,
         "sample_weight_mode": "valid_action_steps_x_inverse_task_demo_count",
+        "sample_weight_length_power": 0.5,
         "sample_weight_min": 0.25,
         "sample_weight_max": 4.0,
     }
@@ -692,7 +698,9 @@ def test_sample_construction_yaml_strings_are_coerced_to_enum_members(tmp_path: 
     assert config.data.sample_construction.randomize_segment_length is True
     assert config.data.sample_construction.randomize_segment_start is True
     assert config.data.sample_construction.require_full_segment is True
+    assert config.data.sample_construction.start_padding_frames == 3
     assert config.data.sample_construction.sample_weight_mode == SampleWeightMode.VALID_ACTION_STEPS_X_INVERSE_TASK_DEMO_COUNT
+    assert config.data.sample_construction.sample_weight_length_power == pytest.approx(0.5)
     assert config.data.sample_construction.sample_weight_min == pytest.approx(0.25)
     assert config.data.sample_construction.sample_weight_max == pytest.approx(4.0)
 

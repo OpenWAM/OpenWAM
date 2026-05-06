@@ -137,6 +137,10 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 window_size_override=sampled_geometry["window_size"],
                 loss_frame_start=sampled_geometry["loss_frame_start"],
                 loss_frame_end=sampled_geometry["loss_frame_end"],
+                latent_loss_frame_start=sampled_geometry["latent_loss_frame_start"],
+                latent_loss_frame_end=sampled_geometry["latent_loss_frame_end"],
+                action_loss_frame_start=sampled_geometry["action_loss_frame_start"],
+                action_loss_frame_end=sampled_geometry["action_loss_frame_end"],
                 frame_shift=sampled_geometry["frame_shift"],
             )
         else:
@@ -152,6 +156,10 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 window_size_override=sampled_geometry["window_size"],
                 loss_frame_start=sampled_geometry["loss_frame_start"],
                 loss_frame_end=sampled_geometry["loss_frame_end"],
+                latent_loss_frame_start=sampled_geometry["latent_loss_frame_start"],
+                latent_loss_frame_end=sampled_geometry["latent_loss_frame_end"],
+                action_loss_frame_start=sampled_geometry["action_loss_frame_start"],
+                action_loss_frame_end=sampled_geometry["action_loss_frame_end"],
                 frame_shift=sampled_geometry["frame_shift"],
             )
         return PolicyPreparedInputs(batch=batch, variant_inputs={"lingbot_train_artifacts": train_artifacts})
@@ -173,12 +181,20 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         window_size: int | None = None
         loss_frame_start: int | None = None
         loss_frame_end: int | None = None
+        latent_loss_frame_start: int | None = None
+        latent_loss_frame_end: int | None = None
+        action_loss_frame_start: int | None = None
+        action_loss_frame_end: int | None = None
         frame_shift = 0
         if sample_metadata is not None:
             sampled_chunk_size = sample_metadata.get("sampled_chunk_size")
             sampled_window_size = sample_metadata.get("sampled_window_size")
             metadata_loss_frame_start = sample_metadata.get("loss_frame_start")
             metadata_loss_frame_end = sample_metadata.get("loss_frame_end")
+            metadata_latent_loss_frame_start = sample_metadata.get("latent_loss_frame_start")
+            metadata_latent_loss_frame_end = sample_metadata.get("latent_loss_frame_end")
+            metadata_action_loss_frame_start = sample_metadata.get("action_loss_frame_start")
+            metadata_action_loss_frame_end = sample_metadata.get("action_loss_frame_end")
             metadata_frame_shift = sample_metadata.get("frame_shift")
             if sampled_chunk_size is not None:
                 chunk_size = int(sampled_chunk_size)
@@ -188,6 +204,14 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 loss_frame_start = int(metadata_loss_frame_start)
             if metadata_loss_frame_end is not None:
                 loss_frame_end = int(metadata_loss_frame_end)
+            if metadata_latent_loss_frame_start is not None:
+                latent_loss_frame_start = int(metadata_latent_loss_frame_start)
+            if metadata_latent_loss_frame_end is not None:
+                latent_loss_frame_end = int(metadata_latent_loss_frame_end)
+            if metadata_action_loss_frame_start is not None:
+                action_loss_frame_start = int(metadata_action_loss_frame_start)
+            if metadata_action_loss_frame_end is not None:
+                action_loss_frame_end = int(metadata_action_loss_frame_end)
             if (
                 self.config.temporal_position_mode == TemporalPositionMode.GLOBAL_SHIFTED
                 and metadata_frame_shift is not None
@@ -198,16 +222,35 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             loss_frame_start = 0
         if loss_frame_end is None:
             loss_frame_end = observed_num_frames
-        if loss_frame_start < 0 or loss_frame_end < loss_frame_start or loss_frame_end > observed_num_frames:
-            raise ValueError(
-                "Invalid train loss-frame metadata for parallel-stream variant, "
-                f"got start={loss_frame_start}, end={loss_frame_end}, observed_num_frames={observed_num_frames}."
-            )
+        if latent_loss_frame_start is None:
+            latent_loss_frame_start = loss_frame_start
+        if latent_loss_frame_end is None:
+            latent_loss_frame_end = loss_frame_end
+        if action_loss_frame_start is None:
+            action_loss_frame_start = loss_frame_start
+        if action_loss_frame_end is None:
+            action_loss_frame_end = loss_frame_end
+
+        ranges = {
+            "loss": (loss_frame_start, loss_frame_end),
+            "latent_loss": (latent_loss_frame_start, latent_loss_frame_end),
+            "action_loss": (action_loss_frame_start, action_loss_frame_end),
+        }
+        for label, (start, end) in ranges.items():
+            if start < 0 or end < start or end > observed_num_frames:
+                raise ValueError(
+                    f"Invalid train {label}-frame metadata for parallel-stream variant, "
+                    f"got start={start}, end={end}, observed_num_frames={observed_num_frames}."
+                )
         return {
             "chunk_size": chunk_size,
             "window_size": window_size,
             "loss_frame_start": loss_frame_start,
             "loss_frame_end": loss_frame_end,
+            "latent_loss_frame_start": latent_loss_frame_start,
+            "latent_loss_frame_end": latent_loss_frame_end,
+            "action_loss_frame_start": action_loss_frame_start,
+            "action_loss_frame_end": action_loss_frame_end,
             "frame_shift": frame_shift,
         }
 
@@ -373,6 +416,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         action_history: torch.Tensor,
         infer_state: PolicyInferState,
         action_space: ActionSpace | str = ActionSpace.AUTO,
+        frame_start_override: int | None = None,
     ) -> PolicyInferState:
         # Warmup mirrors the original LingBot server lifecycle: observed video
         # and aligned action history are committed to the exact cache before any
@@ -404,6 +448,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             ),
             infer_cache=infer_state.cache,
             cache_write_mode=self.exact_cache_write_mode(),
+            frame_start_override=frame_start_override,
         )
         next_cache["backbone_cache"] = visual_tower.resolve_runtime_cache_state(
             next_cache.get("backbone_cache") if isinstance(next_cache.get("backbone_cache"), CacheState) else None,

@@ -29,7 +29,9 @@ data:
     state_horizon: 1
     frame_stride: 1
     chunk_size: 4
-    window_size: 64
+    # With chunk_size=4, window_size=30 gives 60 history frames, matching
+    # the current rollout cache lookback.
+    window_size: 30
     predict_blocks_per_sample: 1
     randomize_geometry: true
   episode_cache_size: 2

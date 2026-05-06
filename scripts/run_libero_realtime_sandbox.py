@@ -17,6 +17,7 @@ import imageio.v2 as imageio
 import numpy as np
 import os
 import torch
+import yaml
 from einops import rearrange
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +38,7 @@ from open_wam.integrations.realtime_control import build_live_rollout_summary  #
 from open_wam.models.policy_variants import PolicyInferContext  # noqa: E402
 from open_wam.pipelines import LingbotExactRunner, VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
 from open_wam.utils import (  # noqa: E402
+    find_checkpoint_resolved_config,
     load_experiment_config,
     merge_runtime_config_from_checkpoint,
     resolve_transformer_dir_override,
@@ -389,6 +391,19 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--exact-startup-bootstrap-padding",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Exact-runtime M1/M2 startup parity mode. The default is auto: enable only when the training "
+            "config declares data.sample_construction.start_padding_frames > 0. When enabled, duplicate "
+            "the initial raw observation into a full startup latent chunk, warm the exact cache at negative "
+            "frame ids, then generate the first executable chunk from frame 1. Use the positive flag to force "
+            "bootstrap padding or --no-exact-startup-bootstrap-padding for the legacy single-frame first-chunk "
+            "condition."
+        ),
+    )
+    parser.add_argument(
         "--fallback-history-policy",
         type=str,
         choices=tuple(policy.value for policy in FallbackHistoryPolicy),
@@ -500,6 +515,11 @@ def main() -> None:
     runtime_prep_device = exact_viz._resolve_device(args.runtime_prep_device, fallback=runtime_device)
     runtime_output_device = exact_viz._resolve_device(args.runtime_output_device, fallback=runtime_device)
     fallback_history_policy = FallbackHistoryPolicy(args.fallback_history_policy)
+    exact_startup_bootstrap_padding = _resolve_exact_startup_bootstrap_padding(
+        config,
+        cli_value=args.exact_startup_bootstrap_padding,
+        checkpoint_path=checkpoint_path,
+    )
 
     policy_name = str(config.policy_variant.name)
     if _is_exact_parallel_runtime(config):
@@ -533,6 +553,7 @@ def main() -> None:
             write_fallback_timeline_video=args.write_fallback_timeline_video,
             artifact_profile=args.artifact_profile,
             debug_startup_dump=args.debug_startup_dump,
+            exact_startup_bootstrap_padding=exact_startup_bootstrap_padding,
         )
     elif policy_name == "video_sequence_policy":
         summary = _run_sequence_policy_realtime_rollout(
@@ -659,6 +680,43 @@ def _is_exact_parallel_runtime(config) -> bool:
         ParallelRuntimeMode.LINGBOT_EXACT,
         ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
     }
+
+
+def _config_declares_exact_startup_padding(config) -> bool:
+    sample_construction = getattr(getattr(config, "data", None), "sample_construction", None)
+    if sample_construction is None:
+        return False
+    return int(getattr(sample_construction, "start_padding_frames", 0) or 0) > 0
+
+
+def _resolve_exact_startup_bootstrap_padding(
+    config,
+    *,
+    cli_value: bool | None,
+    checkpoint_path: Path | None = None,
+) -> bool:
+    if cli_value is not None:
+        return bool(cli_value)
+    checkpoint_declares_padding = _checkpoint_declares_exact_startup_padding(checkpoint_path)
+    if checkpoint_declares_padding is not None:
+        return bool(checkpoint_declares_padding)
+    return _config_declares_exact_startup_padding(config)
+
+
+def _checkpoint_declares_exact_startup_padding(checkpoint_path: Path | None) -> bool | None:
+    resolved_config_path = find_checkpoint_resolved_config(checkpoint_path)
+    if resolved_config_path is None:
+        return None
+    raw = yaml.safe_load(resolved_config_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        return False
+    data = raw.get("data")
+    if not isinstance(data, dict):
+        return False
+    sample_construction = data.get("sample_construction")
+    if not isinstance(sample_construction, dict):
+        return False
+    return int(sample_construction.get("start_padding_frames") or 0) > 0
 
 
 def _is_mot_non_joint_two_stream(config) -> bool:
@@ -1181,6 +1239,7 @@ def _run_exact_like_realtime_rollout(
     write_fallback_timeline_video: bool,
     artifact_profile: str,
     debug_startup_dump: bool,
+    exact_startup_bootstrap_padding: bool,
 ) -> dict[str, Any]:
     replan_low_watermark_actions = int(replan_low_watermark_actions)
     pipeline = build_variant_pipeline_from_config(config)
@@ -1220,6 +1279,7 @@ def _run_exact_like_realtime_rollout(
         "replan_low_watermark_actions": int(replan_low_watermark_actions),
         "periodic_replan_frames": int(replan_low_watermark_actions),
         "startup_seed": int(seed),
+        "exact_startup_bootstrap_padding": bool(exact_startup_bootstrap_padding),
     }
 
     task_spec, prompt = exact_viz._resolve_task_spec(benchmark, task_id)
@@ -1238,15 +1298,27 @@ def _run_exact_like_realtime_rollout(
     try:
         first_obs = exact_viz._init_single_env(env, init_states[episode_idx % len(init_states)])
         startup_debug_report: dict[str, Any] | None = None
+        startup_warmup_s = 0.0
+        startup_history_video_latents: torch.Tensor | None = None
+        startup_history_raw_actions: np.ndarray | None = None
+        startup_history_frame_index = 0
         with torch.inference_mode():
             session = runner.reset(task_text=(prompt,))
             # Match scripts/run_libero_exact_visualization.py, which seeds
             # immediately before each chunk instead of only at process start.
             with exact_sandbox._isolated_torch_rng(seed, frontend_device, runtime_device):
                 startup_prepare_t0 = time.perf_counter()
+                startup_obs_sequence = (
+                    exact_sandbox._exact_startup_bootstrap_obs_sequence(
+                        first_obs,
+                        frame_chunk_size=int(config.inference.frame_chunk_size),
+                    )
+                    if exact_startup_bootstrap_padding
+                    else [first_obs]
+                )
                 initial_inputs = exact_viz._prepare_exact_runtime_inputs(
                     runner,
-                    views=exact_viz._obs_list_to_views([first_obs], config=config, device=frontend_device),
+                    views=exact_viz._obs_list_to_views(startup_obs_sequence, config=config, device=frontend_device),
                     task_text=(prompt,),
                     frontend_device=frontend_device,
                     runtime_device=runtime_device,
@@ -1255,10 +1327,37 @@ def _run_exact_like_realtime_rollout(
                 startup_prepare_s = time.perf_counter() - startup_prepare_t0
 
                 rng_before_startup_infer = _debug_rng_state()
+                if exact_startup_bootstrap_padding:
+                    startup_warmup_t0 = time.perf_counter()
+                    startup_action_history = exact_sandbox._exact_startup_bootstrap_action_history(
+                        frame_chunk_size=int(config.inference.frame_chunk_size),
+                        action_per_frame=action_per_frame,
+                        action_dim=action_dim,
+                        device=runtime_device,
+                    )
+                    warmup = runner.warmup_cache(
+                        session=session,
+                        video_latents=initial_inputs["video_latents"],
+                        text_context=initial_inputs["text_context"],
+                        negative_text_context=initial_inputs["negative_text_context"],
+                        action_history=startup_action_history,
+                        action_space="raw",
+                        frame_start_override=exact_sandbox._exact_startup_bootstrap_frame_start(
+                            int(config.inference.frame_chunk_size)
+                        ),
+                    )
+                    exact_sandbox._synchronize_devices(runtime_device)
+                    startup_warmup_s = time.perf_counter() - startup_warmup_t0
+                    startup_history_video_latents = initial_inputs["video_latents"][:, :, -1:].detach()
+                    startup_history_raw_actions = np.zeros((action_per_frame, action_dim), dtype=np.float32)
+                    startup_infer_session = warmup.session
+                else:
+                    startup_history_video_latents = initial_inputs["video_latents"]
+                    startup_infer_session = session
                 startup_infer_t0 = time.perf_counter()
                 first_chunk = runner.infer_chunk(
-                    session=session,
-                    video_latents=initial_inputs["video_latents"],
+                    session=startup_infer_session,
+                    video_latents=None if exact_startup_bootstrap_padding else initial_inputs["video_latents"],
                     text_context=initial_inputs["text_context"],
                     negative_text_context=initial_inputs["negative_text_context"],
                 )
@@ -1278,6 +1377,8 @@ def _run_exact_like_realtime_rollout(
                         decode_device=decode_device,
                         rng_before_startup_infer=rng_before_startup_infer,
                         rng_after_startup_infer=_debug_rng_state(),
+                        exact_startup_bootstrap_padding=exact_startup_bootstrap_padding,
+                        startup_warmup_debug=None if not exact_startup_bootstrap_padding else warmup.debug,
                     )
 
         history_base_session, current_chunk_session, buffer_tail_session = exact_sandbox._resolve_exact_startup_sessions(
@@ -1300,10 +1401,16 @@ def _run_exact_like_realtime_rollout(
         pending_history: list[dict[str, Any]] = [
             _exact_startup_conditioning_history_record(
                 chunk=first_chunk,
-                initial_video_latents=initial_inputs["video_latents"],
+                initial_video_latents=(
+                    startup_history_video_latents
+                    if startup_history_video_latents is not None
+                    else initial_inputs["video_latents"]
+                ),
                 initial_obs=first_obs,
                 action_per_frame=action_per_frame,
                 frame_chunk_size=int(config.inference.frame_chunk_size),
+                conditioning_frame_index=startup_history_frame_index,
+                raw_actions_override=startup_history_raw_actions,
             )
         ]
         fallback_history_state = ExactFallbackHistoryState(policy=fallback_history_policy)
@@ -1350,6 +1457,7 @@ def _run_exact_like_realtime_rollout(
                 )
             startup_open_loop_s = time.perf_counter() - startup_open_loop_t0
             startup_infer_s += startup_open_loop_s
+        startup_infer_s += startup_warmup_s
         done = False
         current_obs = first_obs
         last_action = np.zeros((action_dim,), dtype=np.float32)
@@ -1903,6 +2011,8 @@ def _run_exact_like_realtime_rollout(
                 "periodic_replan_submit_count": int(periodic_replan_submit_count),
                 "startup_open_loop_chunks": int(startup_open_loop_chunks),
                 "startup_open_loop_s": float(startup_open_loop_s),
+                "startup_warmup_s": float(startup_warmup_s),
+                "exact_startup_bootstrap_padding": bool(exact_startup_bootstrap_padding),
                 "skipped_replan_submissions": int(skipped_replan_submissions),
                 "wait_for_plan_count": int(wait_for_plan_count),
                 "wait_for_plan_total_s": float(wait_for_plan_total_s),
@@ -2172,6 +2282,8 @@ def _exact_startup_conditioning_history_record(
     initial_obs: dict[str, np.ndarray],
     action_per_frame: int,
     frame_chunk_size: int,
+    conditioning_frame_index: int | None = None,
+    raw_actions_override: np.ndarray | None = None,
 ) -> dict[str, Any]:
     if chunk.raw_chunk_action_pred is None:
         raise RuntimeError("Exact runner did not produce raw 7D LIBERO actions.")
@@ -2181,12 +2293,21 @@ def _exact_startup_conditioning_history_record(
         f=frame_chunk_size,
         a=action_per_frame,
     )
-    conditioning_frame_index = int(chunk.debug.get("generation_frame_start", 0))
+    resolved_conditioning_frame_index = (
+        int(chunk.debug.get("generation_frame_start", 0))
+        if conditioning_frame_index is None
+        else int(conditioning_frame_index)
+    )
+    resolved_raw_actions = (
+        raw_actions[0].detach().to(dtype=torch.float32).cpu().numpy()
+        if raw_actions_override is None
+        else np.asarray(raw_actions_override, dtype=np.float32)
+    )
     return {
-        "absolute_frame_index": int(conditioning_frame_index),
+        "absolute_frame_index": int(resolved_conditioning_frame_index),
         "obs": {key: np.array(value, copy=True) for key, value in initial_obs.items()},
         "obs_sequence": [],
-        "raw_actions": raw_actions[0].detach().to(dtype=torch.float32).cpu().numpy(),
+        "raw_actions": resolved_raw_actions,
         "video_latents": initial_video_latents.detach(),
         "source": "startup_conditioning_frame",
     }
@@ -3661,6 +3782,8 @@ def _build_exact_startup_debug_report(
     decode_device: torch.device,
     rng_before_startup_infer: dict[str, Any],
     rng_after_startup_infer: dict[str, Any],
+    exact_startup_bootstrap_padding: bool = False,
+    startup_warmup_debug: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     cuda_device_name = None
     if runtime_device.type == "cuda" and torch.cuda.is_available():
@@ -3682,6 +3805,8 @@ def _build_exact_startup_debug_report(
         "action_num_inference_steps": int(config.inference.action_num_inference_steps),
         "guidance_scale": float(config.inference.guidance_scale),
         "action_guidance_scale": float(config.inference.action_guidance_scale),
+        "exact_startup_bootstrap_padding": bool(exact_startup_bootstrap_padding),
+        "startup_warmup_debug": None if startup_warmup_debug is None else dict(startup_warmup_debug),
         "first_obs": {key: _debug_array_summary(value) for key, value in sorted(first_obs.items())},
         "initial_inputs": {
             "video_latents": _debug_tensor_summary(initial_inputs.get("video_latents")),

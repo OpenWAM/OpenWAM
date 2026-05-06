@@ -144,6 +144,7 @@ def test_wandb_group_job_type_and_tags_follow_tracking_metadata(tmp_path: Path) 
     )
     assert "decoder:mot_decoder" in tags
     assert "method:m5" in tags
+    assert "segment_frames:None" not in tags
 
 
 def test_method4_generated_video_condition_source_is_tracked(tmp_path: Path) -> None:
@@ -154,6 +155,28 @@ def test_method4_generated_video_condition_source_is_tracked(tmp_path: Path) -> 
 
     assert metadata["train_video_condition_source"] == "generated_future"
     assert "train_video_condition:generated_future" in build_wandb_tags(metadata)
+
+
+def test_method1_coupling_and_segment_sampling_are_tracked(tmp_path: Path) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_video_then_action_heng_compatible.yaml"
+    )
+    metadata = build_run_tracking_metadata(config, run_name=config.name, output_dir=tmp_path / config.name)
+
+    assert metadata["runtime_mode"] == "lingbot_exact"
+    assert metadata["current_block_coupling"] == "video_then_action"
+    assert metadata["reference_profile"] == "libero"
+    assert metadata["sample_construction_mode"] == "uniform_segment"
+    assert metadata["segment_min_frames"] == 128
+    assert metadata["segment_max_frames"] == 128
+    assert metadata["start_padding_frames"] == 3
+    assert metadata["sample_weight_mode"] == "task_virtual_start_count_power"
+    tags = build_wandb_tags(metadata)
+    assert "coupling:video_then_action" in tags
+    assert "sample:uniform_segment" in tags
+    assert "segment_frames:128" in tags
+    assert "start_padding_frames:3" in tags
+    assert "sample_weight:task_virtual_start_count_power" in tags
 
 
 def test_wandb_project_defaults_to_dataset_and_workload_bin(tmp_path: Path) -> None:

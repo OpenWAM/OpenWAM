@@ -173,27 +173,80 @@ class MoTPolicyVariant(PolicyVariant):
             self._train_video_cache_detach_by_core_id[core_id] = detach_cache
         return bool(detach_cache)
 
-    def _resolve_train_loss_frame_range(
+    def _resolve_train_frame_range(
         self,
         *,
         batch: PolicyTrainBatch,
         observed_num_frames: int,
+        start_key: str,
+        end_key: str,
     ) -> tuple[int, int] | None:
         metadata = batch.extra.get("metadata")
         if not isinstance(metadata, tuple) or not metadata:
             return None
-        metadata_start = metadata[0].get("loss_frame_start")
-        metadata_end = metadata[0].get("loss_frame_end")
+        metadata_start = metadata[0].get(start_key)
+        metadata_end = metadata[0].get(end_key)
         if metadata_start is None and metadata_end is None:
             return None
         loss_frame_start = 0 if metadata_start is None else int(metadata_start)
         loss_frame_end = observed_num_frames if metadata_end is None else int(metadata_end)
         if loss_frame_start < 0 or loss_frame_end < loss_frame_start or loss_frame_end > observed_num_frames:
             raise ValueError(
-                "Invalid MoT train loss-frame metadata, "
+                f"Invalid MoT train frame-range metadata for {start_key}/{end_key}, "
                 f"got start={loss_frame_start}, end={loss_frame_end}, observed_num_frames={observed_num_frames}."
             )
         return loss_frame_start, loss_frame_end
+
+    def _resolve_train_loss_frame_range(
+        self,
+        *,
+        batch: PolicyTrainBatch,
+        observed_num_frames: int,
+    ) -> tuple[int, int] | None:
+        return self._resolve_train_frame_range(
+            batch=batch,
+            observed_num_frames=observed_num_frames,
+            start_key="loss_frame_start",
+            end_key="loss_frame_end",
+        )
+
+    def _resolve_train_action_loss_frame_range(
+        self,
+        *,
+        batch: PolicyTrainBatch,
+        observed_num_frames: int,
+    ) -> tuple[int, int] | None:
+        action_range = self._resolve_train_frame_range(
+            batch=batch,
+            observed_num_frames=observed_num_frames,
+            start_key="action_loss_frame_start",
+            end_key="action_loss_frame_end",
+        )
+        if action_range is not None:
+            return action_range
+        return self._resolve_train_loss_frame_range(
+            batch=batch,
+            observed_num_frames=observed_num_frames,
+        )
+
+    def _resolve_train_latent_loss_frame_range(
+        self,
+        *,
+        batch: PolicyTrainBatch,
+        observed_num_frames: int,
+    ) -> tuple[int, int] | None:
+        latent_range = self._resolve_train_frame_range(
+            batch=batch,
+            observed_num_frames=observed_num_frames,
+            start_key="latent_loss_frame_start",
+            end_key="latent_loss_frame_end",
+        )
+        if latent_range is not None:
+            return latent_range
+        return self._resolve_train_loss_frame_range(
+            batch=batch,
+            observed_num_frames=observed_num_frames,
+        )
 
     def _resolve_train_history_frames(
         self,
@@ -211,7 +264,7 @@ class MoTPolicyVariant(PolicyVariant):
             batch=batch,
             observed_num_frames=observed_num_frames,
         )
-        if loss_frame_range is not None:
+        if loss_frame_range is not None and int(loss_frame_range[0]) > 0:
             resolved_history_frames = int(loss_frame_range[0])
         if resolved_history_frames is None:
             resolved_history_frames = int(self.config.video_prefix_frames)
@@ -229,7 +282,7 @@ class MoTPolicyVariant(PolicyVariant):
         observed_num_frames: int,
     ) -> torch.Tensor | None:
         base_mask = batch.action_mask
-        loss_frame_range = self._resolve_train_loss_frame_range(
+        loss_frame_range = self._resolve_train_action_loss_frame_range(
             batch=batch,
             observed_num_frames=observed_num_frames,
         )
@@ -266,7 +319,7 @@ class MoTPolicyVariant(PolicyVariant):
             device=video_latents.device,
             dtype=video_latents.dtype,
         )
-        loss_frame_range = self._resolve_train_loss_frame_range(
+        loss_frame_range = self._resolve_train_latent_loss_frame_range(
             batch=batch,
             observed_num_frames=int(video_latents.shape[2]),
         )

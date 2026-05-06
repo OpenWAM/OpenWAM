@@ -991,12 +991,20 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
                 "require_full_segment",
                 data_defaults.sample_construction.require_full_segment,
             ),
+            start_padding_frames=sample_construction_raw.get(
+                "start_padding_frames",
+                data_defaults.sample_construction.start_padding_frames,
+            ),
             sample_weight_mode=_coerce_enum(
                 config_enums.SampleWeightMode,
                 sample_construction_raw.get(
                     "sample_weight_mode",
                     data_defaults.sample_construction.sample_weight_mode,
                 ),
+            ),
+            sample_weight_length_power=sample_construction_raw.get(
+                "sample_weight_length_power",
+                data_defaults.sample_construction.sample_weight_length_power,
             ),
             sample_weight_min=sample_construction_raw.get(
                 "sample_weight_min",

@@ -29,16 +29,23 @@ data:
   num_frames: 4
   frame_stride: 1
   sample_stride: 1
-  # Segment construction samples latent starts uniformly across all eligible
-  # trajectories, then samples a segment length from the configured range. Tail
-  # overflow is zero-order-held for video/state and masked for missing actions.
+  # Fixed 128-frame uniform segments. Every latent start remains eligible; tail
+  # overflow repeats the final observation while missing actions and held-video
+  # targets are masked from loss. chunk/window pin train attention to the
+  # current 60-frame rollout lookback.
   sample_construction:
     mode: uniform_segment
-    segment_min_frames: 16
-    segment_max_frames: 64
-    segment_length_stride: 4
+    segment_min_frames: 128
+    segment_max_frames: 128
+    segment_length_stride: 1
     segment_locality_block_size: 4
-    sample_weight_mode: inverse_task_demo_count
+    chunk_size: 4
+    window_size: 30
+    randomize_segment_length: false
+    randomize_segment_start: false
+    require_full_segment: false
+    sample_weight_mode: task_virtual_start_count_power
+    sample_weight_length_power: 0.5
     sample_weight_min: 0.25
     sample_weight_max: 4.0
   episode_cache_size: 2

@@ -97,6 +97,63 @@ def test_realtime_profiles_preserve_explicit_low_level_overrides() -> None:
     assert args.startup_open_loop_chunks == 1
 
 
+def test_exact_startup_bootstrap_padding_auto_requires_training_padding_marker() -> None:
+    sandbox = _load_sandbox_module()
+    config = SimpleNamespace(
+        data=SimpleNamespace(sample_construction=SimpleNamespace(start_padding_frames=0)),
+    )
+
+    assert sandbox._resolve_exact_startup_bootstrap_padding(config, cli_value=None, checkpoint_path=None) is False
+    assert sandbox._resolve_exact_startup_bootstrap_padding(config, cli_value=True, checkpoint_path=None) is True
+
+    config.data.sample_construction.start_padding_frames = 3
+
+    assert sandbox._resolve_exact_startup_bootstrap_padding(config, cli_value=None, checkpoint_path=None) is True
+    assert sandbox._resolve_exact_startup_bootstrap_padding(config, cli_value=False, checkpoint_path=None) is False
+
+
+def test_exact_startup_bootstrap_auto_prefers_checkpoint_training_marker(tmp_path: Path) -> None:
+    sandbox = _load_sandbox_module()
+    config = SimpleNamespace(
+        data=SimpleNamespace(sample_construction=SimpleNamespace(start_padding_frames=3)),
+    )
+    checkpoint_dir = tmp_path / "checkpoint_step_400"
+    checkpoint_dir.mkdir()
+    checkpoint_file = checkpoint_dir / "model_state.pt"
+    checkpoint_file.write_bytes(b"stub")
+    resolved_config = checkpoint_dir / "resolved_config.yaml"
+    resolved_config.write_text(
+        "data:\n"
+        "  sample_construction:\n"
+        "    mode: full_segment\n",
+        encoding="utf-8",
+    )
+
+    assert sandbox._resolve_exact_startup_bootstrap_padding(
+        config,
+        cli_value=None,
+        checkpoint_path=checkpoint_file,
+    ) is False
+    assert sandbox._resolve_exact_startup_bootstrap_padding(
+        config,
+        cli_value=True,
+        checkpoint_path=checkpoint_file,
+    ) is True
+
+    resolved_config.write_text(
+        "data:\n"
+        "  sample_construction:\n"
+        "    start_padding_frames: 3\n",
+        encoding="utf-8",
+    )
+
+    assert sandbox._resolve_exact_startup_bootstrap_padding(
+        config,
+        cli_value=None,
+        checkpoint_path=checkpoint_file,
+    ) is True
+
+
 def test_finalize_rollout_outputs_lean_skips_videos_and_traces(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -711,6 +768,30 @@ def test_exact_fallback_hold_last_repeats_full_raw_action() -> None:
     np.testing.assert_allclose(fallback, np.repeat(last_action[None, :], 2, axis=0))
 
 
+def test_exact_startup_bootstrap_helpers_build_negative_prefix_contract() -> None:
+    sandbox = _load_sandbox_module()
+    initial_obs = {"image": np.arange(6, dtype=np.uint8).reshape(1, 2, 3)}
+
+    obs_sequence = sandbox.exact_sandbox._exact_startup_bootstrap_obs_sequence(
+        initial_obs,
+        frame_chunk_size=4,
+    )
+    action_history = sandbox.exact_sandbox._exact_startup_bootstrap_action_history(
+        frame_chunk_size=4,
+        action_per_frame=4,
+        action_dim=7,
+        device=sandbox.torch.device("cpu"),
+    )
+
+    assert sandbox.exact_sandbox._exact_startup_bootstrap_frame_start(4) == -3
+    assert sandbox.exact_sandbox._exact_startup_bootstrap_raw_frame_count(4) == 15
+    assert len(obs_sequence) == 15
+    assert obs_sequence[0]["image"] is not initial_obs["image"]
+    np.testing.assert_array_equal(obs_sequence[-1]["image"], initial_obs["image"])
+    assert tuple(action_history.shape) == (1, 16, 7)
+    assert float(action_history.sum().item()) == 0.0
+
+
 def test_exact_startup_sessions_replan_from_first_chunk_state() -> None:
     sandbox = _load_sandbox_module()
     startup_session = SimpleNamespace(policy_state=SimpleNamespace(step_index=0))
@@ -742,6 +823,36 @@ def test_exact_startup_sessions_replan_from_first_chunk_state() -> None:
     assert buffer_tail_session.policy_state.step_index == 1
     assert buffer_tail_session.policy_state.cache["frame_start"] == 4
     assert buffer_tail_session.policy_state.cursor.current_start_frame == 4
+
+
+def test_exact_startup_sessions_bootstrap_first_chunk_advances_tail_from_frame_one() -> None:
+    sandbox = _load_sandbox_module()
+    startup_session = SimpleNamespace(policy_state=SimpleNamespace(step_index=0))
+    session = SimpleNamespace(
+        policy_state=SimpleNamespace(
+            step_index=1,
+            cache={"frame_start": 1},
+            cursor=SimpleNamespace(block_index=0),
+            decoder_state="decoder",
+        ),
+        task_text=("task",),
+        text_context="text",
+        negative_text_context="negative",
+    )
+    first_chunk = SimpleNamespace(
+        session=session,
+        debug={"generation_frame_start": 1},
+    )
+
+    _, _, buffer_tail_session = sandbox.exact_sandbox._resolve_exact_startup_sessions(
+        config=SimpleNamespace(policy_variant=SimpleNamespace(runtime_mode="lingbot_exact")),
+        startup_session=startup_session,
+        first_chunk=first_chunk,
+        frame_chunk_size=4,
+    )
+
+    assert buffer_tail_session.policy_state.cache["frame_start"] == 5
+    assert buffer_tail_session.policy_state.cursor.current_start_frame == 5
 
 
 def test_exact_action_conditioned_startup_sessions_keep_reset_history_base() -> None:
@@ -803,6 +914,29 @@ def test_exact_chunk_to_planned_steps_overwrites_conditioning_frame_actions() ->
     np.testing.assert_allclose(merged[11].raw_action, np.array([15.0], dtype=np.float32))
 
 
+def test_exact_chunk_to_planned_steps_bootstrap_frame_one_starts_at_action_zero() -> None:
+    sandbox = _load_sandbox_module()
+    raw_actions = sandbox.torch.arange(16, dtype=sandbox.torch.float32).view(1, 16, 1)
+    chunk = SimpleNamespace(
+        raw_chunk_action_pred=raw_actions,
+        debug={"generation_frame_start": 1},
+        session=SimpleNamespace(policy_state=SimpleNamespace(step_index=3)),
+    )
+
+    planned = sandbox._exact_chunk_to_planned_steps(
+        chunk=chunk,
+        action_per_frame=4,
+        frame_chunk_size=4,
+        source="startup_plan",
+        ready_monotonic_s=1.5,
+    )
+
+    assert len(planned) == 16
+    assert [step.absolute_action_index for step in planned] == list(range(16))
+    assert all(step.generation_frame_start == 1 for step in planned)
+    np.testing.assert_allclose(planned[0].raw_action, np.array([0.0], dtype=np.float32))
+
+
 def test_exact_startup_conditioning_history_preserves_skipped_frame_and_latent() -> None:
     sandbox = _load_sandbox_module()
     raw_actions = sandbox.torch.arange(16, dtype=sandbox.torch.float32).view(1, 16, 1)
@@ -824,6 +958,29 @@ def test_exact_startup_conditioning_history_preserves_skipped_frame_and_latent()
     assert record["obs_sequence"] == []
     sandbox.torch.testing.assert_close(record["video_latents"], initial_latents)
     np.testing.assert_allclose(record["raw_actions"], np.array([[0.0], [1.0], [2.0], [3.0]], dtype=np.float32))
+
+
+def test_exact_startup_conditioning_history_allows_bootstrap_hold_actions() -> None:
+    sandbox = _load_sandbox_module()
+    raw_actions = sandbox.torch.arange(16, dtype=sandbox.torch.float32).view(1, 16, 1)
+    initial_latents = sandbox.torch.ones(1, 2, 1, 1, 1)
+    chunk = SimpleNamespace(
+        raw_chunk_action_pred=raw_actions,
+        debug={"generation_frame_start": 1},
+    )
+
+    record = sandbox._exact_startup_conditioning_history_record(
+        chunk=chunk,
+        initial_video_latents=initial_latents,
+        initial_obs={"image": np.zeros((2, 2, 3), dtype=np.uint8)},
+        action_per_frame=4,
+        frame_chunk_size=4,
+        conditioning_frame_index=0,
+        raw_actions_override=np.zeros((4, 1), dtype=np.float32),
+    )
+
+    assert record["absolute_frame_index"] == 0
+    np.testing.assert_allclose(record["raw_actions"], np.zeros((4, 1), dtype=np.float32))
 
 
 def test_exact_history_worker_copy_preserves_raw_obs_sequences_and_latents() -> None:

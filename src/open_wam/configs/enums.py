@@ -151,6 +151,7 @@ class SampleWeightMode(StrEnum):
     VALID_ACTION_STEPS = "valid_action_steps"
     INVERSE_TASK_DEMO_COUNT = "inverse_task_demo_count"
     VALID_ACTION_STEPS_X_INVERSE_TASK_DEMO_COUNT = "valid_action_steps_x_inverse_task_demo_count"
+    TASK_VIRTUAL_START_COUNT_POWER = "task_virtual_start_count_power"
 
 
 class ConsortiumChannelSelectionMode(StrEnum):

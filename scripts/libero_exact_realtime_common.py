@@ -356,6 +356,58 @@ def _job_seed_for_session(seed_base: int | None, session) -> int | None:
     return int(seed_base) + int(session.policy_state.step_index)
 
 
+def _exact_startup_bootstrap_frame_start(frame_chunk_size: int) -> int:
+    frame_chunk_size = int(frame_chunk_size)
+    if frame_chunk_size <= 0:
+        raise ValueError(f"Expected positive frame_chunk_size, got {frame_chunk_size}.")
+    return 1 - frame_chunk_size
+
+
+def _exact_startup_bootstrap_raw_frame_count(frame_chunk_size: int) -> int:
+    frame_chunk_size = int(frame_chunk_size)
+    if frame_chunk_size <= 0:
+        raise ValueError(f"Expected positive frame_chunk_size, got {frame_chunk_size}.")
+    # Wan/LingBot temporal compression maps 15 raw frames to 4 latents:
+    # raw_window_frames = 4 * latent_num_frames - 1.
+    return 4 * frame_chunk_size - 1
+
+
+def _exact_startup_bootstrap_obs_sequence(
+    initial_obs: dict[str, np.ndarray],
+    *,
+    frame_chunk_size: int,
+) -> list[dict[str, np.ndarray]]:
+    raw_frame_count = _exact_startup_bootstrap_raw_frame_count(frame_chunk_size)
+    return [
+        {key: np.array(value, copy=True) for key, value in initial_obs.items()}
+        for _ in range(raw_frame_count)
+    ]
+
+
+def _exact_startup_bootstrap_action_history(
+    *,
+    frame_chunk_size: int,
+    action_per_frame: int,
+    action_dim: int,
+    device: torch.device,
+) -> torch.Tensor:
+    frame_chunk_size = int(frame_chunk_size)
+    action_per_frame = int(action_per_frame)
+    action_dim = int(action_dim)
+    if frame_chunk_size <= 0 or action_per_frame <= 0 or action_dim <= 0:
+        raise ValueError(
+            "Expected positive startup bootstrap action dimensions, "
+            f"got frame_chunk_size={frame_chunk_size}, action_per_frame={action_per_frame}, action_dim={action_dim}."
+        )
+    return torch.zeros(
+        1,
+        frame_chunk_size * action_per_frame,
+        action_dim,
+        device=device,
+        dtype=torch.float32,
+    )
+
+
 def _session_for_next_chunk(
     session,
     *,

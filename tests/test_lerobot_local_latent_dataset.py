@@ -448,6 +448,8 @@ def test_uniform_segment_sampling_pads_tail_with_zero_order_hold(tmp_path: Path)
                 segment_min_frames=4,
                 segment_max_frames=4,
                 segment_length_stride=1,
+                chunk_size=2,
+                window_size=4,
             ),
         ),
     )
@@ -465,6 +467,11 @@ def test_uniform_segment_sampling_pads_tail_with_zero_order_hold(tmp_path: Path)
     assert sample.metadata["segment_valid_latent_frames"] == 1
     assert sample.metadata["segment_padded_latent_frames"] == 3
     assert sample.metadata["tail_padding_mode"] == "zero_hold"
+    assert sample.metadata["latent_loss_frame_start"] == 0
+    assert sample.metadata["latent_loss_frame_end"] == 1
+    assert sample.metadata["sampled_chunk_size"] == 2
+    assert sample.metadata["sampled_window_size"] == 4
+    assert sample.metadata["history_frames"] == 2
     assert sample.metadata["observed_frame_ids"] == [5, 5, 5, 5]
     assert torch.equal(sample.video_latents[:, 0], sample.video_latents[:, 1])
     assert torch.equal(sample.video_latents[:, 1], sample.video_latents[:, 2])
@@ -552,6 +559,130 @@ def test_uniform_segment_require_full_segment_drops_short_tail_starts(tmp_path: 
     assert sample.metadata["tail_padding_mode"] == "none"
 
 
+def test_uniform_segment_start_padding_repeats_first_latent_and_masks_virtual_actions(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent_uniform_segment_start_padding"
+    _build_local_robotwin_latent_repo(repo_root, total_rows=6, latent_num_frames=6)
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.UNIFORM_SEGMENT,
+                segment_min_frames=6,
+                segment_max_frames=6,
+                segment_length_stride=1,
+                chunk_size=2,
+                window_size=4,
+                start_padding_frames=3,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    sample = train_dataset[0]
+    prefix_actions = config.data.action_schema.action_horizon // config.data.num_frames
+    virtual_action_steps = 4 * prefix_actions
+
+    assert len(train_dataset) == 9
+    assert train_dataset._virtual_index[:4] == ((0, -3), (0, -2), (0, -1), (0, 0))
+    assert sample.metadata["subwindow_latent_start"] == -3
+    assert sample.metadata["subwindow_latent_end"] == 3
+    assert sample.metadata["latent_frame_start"] == -3
+    assert sample.metadata["frame_shift"] == -3
+    assert sample.metadata["sample_start_frame"] == 0
+    assert sample.metadata["observed_frame_ids"] == [0, 0, 0, 0, 1, 2]
+    assert sample.metadata["start_padding_frames"] == 3
+    assert sample.metadata["segment_pre_start_frames"] == 4
+    assert sample.metadata["start_padding_mode"] == "repeat_first_latent"
+    assert sample.metadata["loss_frame_start"] == 4
+    assert sample.metadata["loss_frame_end"] == 6
+    assert sample.metadata["latent_loss_frame_start"] == 4
+    assert sample.metadata["latent_loss_frame_end"] == 6
+    assert sample.metadata["action_loss_frame_start"] == 4
+    assert sample.metadata["action_loss_frame_end"] == 6
+    assert sample.metadata["segment_valid_latent_frames"] == 6
+    assert sample.metadata["segment_padded_latent_frames"] == 0
+    assert sample.metadata["tail_padding_mode"] == "none"
+    assert torch.equal(sample.video_latents[:, 0], sample.video_latents[:, 1])
+    assert torch.equal(sample.video_latents[:, 1], sample.video_latents[:, 2])
+    assert torch.equal(sample.video_latents[:, 2], sample.video_latents[:, 3])
+    assert sample.action_mask[:virtual_action_steps].sum().item() == 0
+    assert sample.action_mask[virtual_action_steps:].sum().item() == 3 * 30
+    assert torch.allclose(sample.actions[virtual_action_steps], torch.zeros(30))
+    assert torch.allclose(sample.actions[virtual_action_steps + 1], torch.ones(30))
+    assert sample.metadata["lingbot_window_action_alignment"]["leading_zero_action_frames"] == 4
+    assert sample.metadata["lingbot_window_action_alignment"]["leading_zero_action_mask"] == 0.0
+    assert sample.metadata["valid_action_steps"] == 3
+
+    frame_zero_sample = train_dataset[3]
+    assert frame_zero_sample.metadata["subwindow_latent_start"] == 0
+    assert frame_zero_sample.metadata["observed_frame_ids"] == [0, 1, 2, 3, 4, 5]
+    assert frame_zero_sample.metadata["segment_pre_start_frames"] == 1
+    assert frame_zero_sample.metadata["loss_frame_start"] == 1
+    assert frame_zero_sample.action_mask[:prefix_actions].sum().item() == 0
+    assert frame_zero_sample.metadata["valid_action_steps"] == 6
+
+
+def test_uniform_segment_randomized_start_samples_head_and_tail_padding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root = tmp_path / "robotwin_local_latent_uniform_segment_random_head_tail"
+    _build_local_robotwin_latent_repo(repo_root, total_rows=6, latent_num_frames=6)
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.UNIFORM_SEGMENT,
+                segment_min_frames=4,
+                segment_max_frames=4,
+                segment_length_stride=1,
+                randomize_segment_start=True,
+                start_padding_frames=3,
+            ),
+        ),
+    )
+
+    observed_bounds: list[tuple[int, int]] = []
+
+    def choose_upper_bound(low: int, high: int) -> int:
+        observed_bounds.append((low, high))
+        return high
+
+    monkeypatch.setattr(random, "randint", choose_upper_bound)
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    sample = train_dataset[0]
+
+    assert observed_bounds == [(-3, 5)]
+    assert sample.metadata["subwindow_latent_start"] == 5
+    assert sample.metadata["subwindow_latent_end"] == 9
+    assert sample.metadata["segment_valid_latent_frames"] == 1
+    assert sample.metadata["segment_padded_latent_frames"] == 3
+    assert sample.metadata["tail_padding_mode"] == "zero_hold"
+    assert sample.metadata["observed_frame_ids"] == [5, 5, 5, 5]
+    assert torch.equal(sample.video_latents[:, 0], sample.video_latents[:, 1])
+    assert torch.equal(sample.video_latents[:, 1], sample.video_latents[:, 2])
+
+
 def test_uniform_segment_require_full_segment_uses_short_payload_as_full_segment(tmp_path: Path) -> None:
     repo_root = tmp_path / "robotwin_local_latent_uniform_segment_payload_count"
     _build_local_robotwin_latent_repo(repo_root, total_rows=80, latent_num_frames=24)
@@ -636,6 +767,45 @@ def test_uniform_segment_action_count_uses_configured_actions_per_latent_frame(t
     assert sample.metadata["lingbot_window_action_alignment"]["prefix_actions"] == expected_actions_per_frame
     assert sample.metadata["lingbot_window_action_alignment"]["required_action_num"] == 80 * expected_actions_per_frame
 
+
+def test_uniform_segment_frame_shift_uses_latent_frame_not_raw_frame(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent_uniform_segment_latent_frame_shift"
+    _build_local_robotwin_latent_repo(repo_root, total_rows=400, latent_num_frames=80)
+    for latent_path in (repo_root / "latents" / "chunk-000").glob("*/episode_000000_0_80.pth"):
+        payload = dict(torch.load(latent_path, map_location="cpu", weights_only=False))
+        payload["frame_ids"] = list(range(0, 320, 4))
+        torch.save(payload, latent_path)
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.UNIFORM_SEGMENT,
+                segment_min_frames=4,
+                segment_max_frames=4,
+                segment_length_stride=1,
+                require_full_segment=True,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    sample = train_dataset[1]
+
+    assert sample.metadata["subwindow_latent_start"] == 1
+    assert sample.metadata["sample_start_frame"] == 4
+    assert sample.metadata["latent_frame_start"] == 1
+    assert sample.metadata["frame_shift"] == 1
+
 def test_uniform_segment_length_is_deterministic_for_virtual_sample(tmp_path: Path) -> None:
     repo_root = tmp_path / "robotwin_local_latent_uniform_segment_deterministic"
     _build_local_robotwin_latent_repo(repo_root, total_rows=8, latent_num_frames=8)
@@ -714,6 +884,62 @@ def test_uniform_segment_sampler_round_robins_trajectory_blocks(tmp_path: Path) 
     assert len(train_dataset) == 10
     assert sorted(order) == list(range(len(train_dataset)))
     assert first_windows == {0, 1}
+
+
+def test_uniform_segment_task_virtual_start_power_balances_task_mass(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent_uniform_segment_task_power"
+    _build_local_robotwin_latent_repo(repo_root, total_rows=4, latent_num_frames=4)
+    _append_latent_episode(
+        repo_root,
+        episode_index=1,
+        task_index=1,
+        task_text="long task",
+        total_rows=16,
+        latent_num_frames=16,
+    )
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            split_seed=0,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.UNIFORM_SEGMENT,
+                segment_min_frames=2,
+                segment_max_frames=2,
+                segment_length_stride=1,
+                sample_weight_mode=SampleWeightMode.TASK_VIRTUAL_START_COUNT_POWER,
+                sample_weight_length_power=0.5,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    weights_by_task: dict[str, list[float]] = {"pick up block": [], "long task": []}
+    for virtual_index, (window_index, _) in enumerate(train_dataset._virtual_index):
+        weights_by_task[train_dataset._window_task_texts[window_index]].append(train_dataset.sample_weights[virtual_index])
+
+    short_mass = sum(weights_by_task["pick up block"])
+    long_mass = sum(weights_by_task["long task"])
+
+    assert len(weights_by_task["pick up block"]) == 4
+    assert len(weights_by_task["long task"]) == 16
+    assert weights_by_task["pick up block"][0] > weights_by_task["long task"][0]
+    assert long_mass / short_mass == pytest.approx(2.0)
+
+    sample = train_dataset[0]
+    assert sample.metadata["train_sample_weight_mode"] == SampleWeightMode.TASK_VIRTUAL_START_COUNT_POWER
+    assert sample.metadata["sample_weight_length_power"] == pytest.approx(0.5)
+    assert sample.metadata["eligible_task_virtual_start_count"] == 4
+    assert sample.metadata["dataset_mean_eligible_task_virtual_start_count"] == pytest.approx(10.0)
 
 
 def test_standard_policy_full_segment_latent_profile_uses_schema_horizon(tmp_path: Path) -> None:

@@ -77,7 +77,12 @@ def build_run_tracking_metadata(
     method_label = _resolve_method_label(method_family)
     workload_family = _resolve_workload_family(config)
     attach_site = getattr(config.policy_variant, "attach_site", None)
+    runtime_mode = getattr(config.policy_variant, "runtime_mode", None)
+    current_block_coupling = getattr(config.policy_variant, "current_block_coupling", None)
+    reference_profile = getattr(config.policy_variant, "reference_profile", None)
+    preserve_video_pretrain_history = getattr(config.policy_variant, "preserve_video_pretrain_history", None)
     train_video_condition_source = getattr(config.policy_variant, "train_video_condition_source", None)
+    sample_construction = getattr(config.data, "sample_construction", None)
     checkpoint_dir = Path(config.trainer.checkpoint_dir) if config.trainer.checkpoint_dir else output_dir / "checkpoints"
     metadata: dict[str, Any] = {
         "tracking_schema_version": 1,
@@ -89,11 +94,42 @@ def build_run_tracking_metadata(
         "method_label": method_label,
         "workload_family": workload_family,
         "policy_variant": str(config.policy_variant.name),
+        "runtime_mode": (str(runtime_mode) if runtime_mode is not None else None),
+        "current_block_coupling": (str(current_block_coupling) if current_block_coupling is not None else None),
+        "reference_profile": reference_profile,
+        "preserve_video_pretrain_history": preserve_video_pretrain_history,
         "action_decoder": str(config.action_decoder.name),
         "attach_site": (str(attach_site) if attach_site is not None else None),
         "dataset_name": config.data.dataset_name,
         "dataset_type": config.data.dataset_type,
+        "sample_construction_mode": (
+            str(sample_construction.mode) if sample_construction is not None else None
+        ),
+        "segment_min_frames": (
+            int(sample_construction.segment_min_frames)
+            if sample_construction is not None and sample_construction.segment_min_frames is not None
+            else None
+        ),
+        "segment_max_frames": (
+            int(sample_construction.segment_max_frames)
+            if sample_construction is not None and sample_construction.segment_max_frames is not None
+            else None
+        ),
+        "start_padding_frames": (
+            int(sample_construction.start_padding_frames)
+            if sample_construction is not None
+            else 0
+        ),
+        "sample_weight_mode": (
+            str(sample_construction.sample_weight_mode) if sample_construction is not None else None
+        ),
+        "sample_weight_length_power": (
+            float(sample_construction.sample_weight_length_power)
+            if sample_construction is not None and sample_construction.sample_weight_length_power is not None
+            else None
+        ),
         "backbone_implementation": str(config.backbone.implementation),
+        "backbone_transformer_subdir": config.backbone.transformer_subdir,
         "runtime": str(config.trainer.runtime),
         "batch_adapter": str(config.trainer.batch_adapter),
         "strategy": str(config.trainer.strategy),
@@ -165,6 +201,28 @@ def build_wandb_tags(tracking_metadata: dict[str, Any]) -> tuple[str, ...]:
         ordered_tags.append("dirty_worktree")
     if tracking_metadata.get("train_video_condition_source"):
         ordered_tags.append(f"train_video_condition:{tracking_metadata['train_video_condition_source']}")
+    if tracking_metadata.get("runtime_mode"):
+        ordered_tags.append(f"runtime_mode:{tracking_metadata['runtime_mode']}")
+    if tracking_metadata.get("current_block_coupling"):
+        ordered_tags.append(f"coupling:{tracking_metadata['current_block_coupling']}")
+    if tracking_metadata.get("reference_profile"):
+        ordered_tags.append(f"reference_profile:{tracking_metadata['reference_profile']}")
+    if tracking_metadata.get("sample_construction_mode"):
+        ordered_tags.append(f"sample:{tracking_metadata['sample_construction_mode']}")
+    segment_min_frames = tracking_metadata.get("segment_min_frames")
+    segment_max_frames = tracking_metadata.get("segment_max_frames")
+    if (
+        segment_min_frames is not None
+        and segment_max_frames is not None
+        and segment_min_frames == segment_max_frames
+    ):
+        ordered_tags.append(f"segment_frames:{tracking_metadata['segment_min_frames']}")
+    if int(tracking_metadata.get("start_padding_frames") or 0) > 0:
+        ordered_tags.append(f"start_padding_frames:{tracking_metadata['start_padding_frames']}")
+    if tracking_metadata.get("sample_weight_mode"):
+        ordered_tags.append(f"sample_weight:{tracking_metadata['sample_weight_mode']}")
+    if tracking_metadata.get("preserve_video_pretrain_history") is True:
+        ordered_tags.append("video_pretrain_history:preserved")
     deduped: list[str] = []
     for tag in ordered_tags:
         if tag not in deduped:

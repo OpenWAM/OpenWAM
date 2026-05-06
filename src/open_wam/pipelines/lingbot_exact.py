@@ -150,6 +150,7 @@ class LingbotExactRunner:
         text_context: torch.Tensor | None = None,
         negative_text_context: torch.Tensor | None = None,
         action_space: ActionSpace | str = ActionSpace.AUTO,
+        frame_start_override: int | None = None,
     ) -> LingbotExactWarmupOutput:
         # Warmup uses the same shared frontend/runtime owner as the normal
         # pipeline path, while preserving the exact slot-pool cache lifecycle
@@ -169,6 +170,7 @@ class LingbotExactRunner:
             action_history=action_history,
             infer_state=session.policy_state,
             action_space=action_space,
+            frame_start_override=frame_start_override,
         )
         return LingbotExactWarmupOutput(
             session=LingbotExactSession(

@@ -301,7 +301,16 @@ class SampleConstructionConfig:
     # the source latent span. This disables tail zero-order-hold / action-mask
     # padding for trajectories shorter than the requested segment.
     require_full_segment: bool = False
+    # Number of virtual frames to expose before trajectory frame 0 in
+    # uniform_segment mode. These frames repeat the first stored latent and are
+    # useful for fixed-geometry cold-start training without rewriting latent
+    # datasets on disk.
+    start_padding_frames: int = 0
     sample_weight_mode: SampleWeightMode = SampleWeightMode.UNIFORM
+    # Used by task_virtual_start_count_power: task mass is proportional to the
+    # number of eligible virtual starts raised to this power. 0 is task-uniform,
+    # 1 is transition-uniform.
+    sample_weight_length_power: float = 1.0
     sample_weight_min: float | None = None
     sample_weight_max: float | None = None
     causal_prefix_suffix_buckets: tuple[CausalPrefixSuffixBucketConfig, ...] = field(default_factory=tuple)
@@ -319,6 +328,8 @@ class SampleConstructionConfig:
             raise ValueError("`sample_construction.sample_weight_min` must be non-negative when set.")
         if self.sample_weight_max is not None and self.sample_weight_max <= 0:
             raise ValueError("`sample_construction.sample_weight_max` must be positive when set.")
+        if self.sample_weight_length_power < 0:
+            raise ValueError("`sample_construction.sample_weight_length_power` must be non-negative.")
         if (
             self.sample_weight_min is not None
             and self.sample_weight_max is not None
@@ -339,6 +350,8 @@ class SampleConstructionConfig:
             raise ValueError("`sample_construction.segment_length_stride` must be positive.")
         if self.segment_locality_block_size <= 0:
             raise ValueError("`sample_construction.segment_locality_block_size` must be positive.")
+        if self.start_padding_frames < 0:
+            raise ValueError("`sample_construction.start_padding_frames` must be non-negative.")
         for bucket in self.causal_prefix_suffix_buckets:
             if bucket.observed_frames <= 0 or bucket.future_frames <= 0:
                 raise ValueError(

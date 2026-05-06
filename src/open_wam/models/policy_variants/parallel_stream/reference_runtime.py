@@ -358,6 +358,10 @@ def prepare_parallel_exact_train_artifacts(
     window_size_override: int | None = None,
     loss_frame_start: int | None = None,
     loss_frame_end: int | None = None,
+    latent_loss_frame_start: int | None = None,
+    latent_loss_frame_end: int | None = None,
+    action_loss_frame_start: int | None = None,
+    action_loss_frame_end: int | None = None,
     frame_shift: int = 0,
 ) -> LingbotParallelTrainArtifacts:
     batch_size, _, num_frames, _, _ = video_latents.shape
@@ -434,17 +438,48 @@ def prepare_parallel_exact_train_artifacts(
         if action_mask_latents is not None
         else torch.ones_like(action_latents, device=video_latents.device)
     )
-    resolved_loss_frame_start = 0 if loss_frame_start is None else int(loss_frame_start)
-    resolved_loss_frame_end = num_frames if loss_frame_end is None else int(loss_frame_end)
-    if resolved_loss_frame_start < 0 or resolved_loss_frame_end < resolved_loss_frame_start or resolved_loss_frame_end > num_frames:
-        raise ValueError(
-            "Invalid current-loss frame range for parallel exact training, "
-            f"got start={resolved_loss_frame_start}, end={resolved_loss_frame_end}, num_frames={num_frames}."
-        )
+    def _resolve_frame_range(
+        *,
+        start: int | None,
+        end: int | None,
+        default_start: int | None = None,
+        default_end: int | None = None,
+        label: str,
+    ) -> tuple[int, int]:
+        start_value = default_start if start is None else start
+        end_value = default_end if end is None else end
+        resolved_start = 0 if start_value is None else int(start_value)
+        resolved_end = num_frames if end_value is None else int(end_value)
+        if resolved_start < 0 or resolved_end < resolved_start or resolved_end > num_frames:
+            raise ValueError(
+                f"Invalid {label} frame range for parallel exact training, "
+                f"got start={resolved_start}, end={resolved_end}, num_frames={num_frames}."
+            )
+        return resolved_start, resolved_end
+
+    resolved_loss_frame_start, resolved_loss_frame_end = _resolve_frame_range(
+        start=loss_frame_start,
+        end=loss_frame_end,
+        label="current-loss",
+    )
+    resolved_latent_loss_frame_start, resolved_latent_loss_frame_end = _resolve_frame_range(
+        start=latent_loss_frame_start,
+        end=latent_loss_frame_end,
+        default_start=loss_frame_start,
+        default_end=loss_frame_end,
+        label="latent-loss",
+    )
+    resolved_action_loss_frame_start, resolved_action_loss_frame_end = _resolve_frame_range(
+        start=action_loss_frame_start,
+        end=action_loss_frame_end,
+        default_start=loss_frame_start,
+        default_end=loss_frame_end,
+        label="action-loss",
+    )
     latent_loss_mask = torch.zeros_like(video_latents, device=video_latents.device)
-    latent_loss_mask[:, :, resolved_loss_frame_start:resolved_loss_frame_end] = 1.0
+    latent_loss_mask[:, :, resolved_latent_loss_frame_start:resolved_latent_loss_frame_end] = 1.0
     action_loss_mask = torch.zeros_like(action_latents, device=video_latents.device)
-    action_loss_mask[:, :, resolved_loss_frame_start:resolved_loss_frame_end] = 1.0
+    action_loss_mask[:, :, resolved_action_loss_frame_start:resolved_action_loss_frame_end] = 1.0
     latent_dict["loss_mask"] = latent_loss_mask
     action_dict["loss_mask"] = action_loss_mask
 
@@ -478,6 +513,10 @@ def prepare_parallel_exact_train_artifacts(
             "window_size": sampled_window_size,
             "loss_frame_start": resolved_loss_frame_start,
             "loss_frame_end": resolved_loss_frame_end,
+            "latent_loss_frame_start": resolved_latent_loss_frame_start,
+            "latent_loss_frame_end": resolved_latent_loss_frame_end,
+            "action_loss_frame_start": resolved_action_loss_frame_start,
+            "action_loss_frame_end": resolved_action_loss_frame_end,
             "frame_shift": int(frame_shift),
             "attention_profile_name": attention_profile_name,
             "preserve_video_pretrain_history": bool(
@@ -502,6 +541,10 @@ def prepare_parallel_action_conditioned_train_artifacts(
     window_size_override: int | None = None,
     loss_frame_start: int | None = None,
     loss_frame_end: int | None = None,
+    latent_loss_frame_start: int | None = None,
+    latent_loss_frame_end: int | None = None,
+    action_loss_frame_start: int | None = None,
+    action_loss_frame_end: int | None = None,
     frame_shift: int = 0,
 ) -> LingbotParallelTrainArtifacts:
     coupling = resolve_parallel_current_block_coupling(policy_config)
@@ -530,6 +573,10 @@ def prepare_parallel_action_conditioned_train_artifacts(
         window_size_override=window_size_override,
         loss_frame_start=loss_frame_start,
         loss_frame_end=loss_frame_end,
+        latent_loss_frame_start=latent_loss_frame_start,
+        latent_loss_frame_end=latent_loss_frame_end,
+        action_loss_frame_start=action_loss_frame_start,
+        action_loss_frame_end=action_loss_frame_end,
         frame_shift=frame_shift,
     )
     return artifacts
@@ -965,6 +1012,7 @@ def run_parallel_exact_cache_warmup(
     action_channel_mask: torch.Tensor | None,
     infer_cache: dict[str, Any],
     cache_write_mode: ParallelExactCacheWriteMode | str = ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED,
+    frame_start_override: int | None = None,
 ) -> dict[str, Any]:
     device = observed_video_latents.device
     batch_size, _, observed_frames, latent_height, latent_width = observed_video_latents.shape
@@ -985,7 +1033,11 @@ def run_parallel_exact_cache_warmup(
         batch_size=batch_size,
         use_cfg=cache_context.use_cfg,
     )
-    current_frame_start = int(infer_cache.get("frame_start", 0))
+    current_frame_start = (
+        int(infer_cache.get("frame_start", 0))
+        if frame_start_override is None
+        else int(frame_start_override)
+    )
     cached_batch_size = int(infer_cache.get("batch_size", batch_size))
     cached_latent_height = int(infer_cache.get("latent_height", latent_height))
     cached_latent_width = int(infer_cache.get("latent_width", latent_width))
@@ -1003,7 +1055,8 @@ def run_parallel_exact_cache_warmup(
             cache_context=cache_context,
             cache_spec=cache_spec,
         )
-        current_frame_start = 0
+        if frame_start_override is None:
+            current_frame_start = 0
 
     if inference_config.use_cache:
         _clear_exact_prediction_cache(transformer, cache_name=cache_context.cache_name)
@@ -1033,6 +1086,7 @@ def run_parallel_exact_cache_warmup(
         "batch_size": batch_size,
         "observed_frames": observed_frames,
         "frame_start_before": int(infer_cache.get("frame_start", 0)),
+        "frame_start_override": None if frame_start_override is None else int(frame_start_override),
         "frame_start_after": current_frame_start + observed_frames,
         "cache_write_mode": str(cache_spec.write_mode),
     }

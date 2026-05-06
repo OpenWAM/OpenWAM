@@ -20,21 +20,24 @@ data:
   episode_cache_size: 2
   train_fraction: 1.0
   split_seed: 0
-  # PR88 uniform_segment sampling: each virtual index selects a trajectory,
-  # then every __getitem__ randomly draws a full in-bounds (start, length)
-  # segment. Length is uniform over [64, 256] in stride 4. No tail padding
-  # is used when require_full_segment=true. Train sampler weights by inverse
-  # task demo count to rebalance depleted tasks.
+  # Fixed 128-frame uniform segments. Every latent start remains eligible; tail
+  # overflow repeats the final observation while missing actions and held-video
+  # targets are masked from loss. chunk/window pin train attention to the
+  # current 60-frame rollout lookback.
   sample_construction:
     mode: uniform_segment
-    segment_min_frames: 64
-    segment_max_frames: 256
-    segment_length_stride: 4
+    segment_min_frames: 128
+    segment_max_frames: 128
+    segment_length_stride: 1
     segment_locality_block_size: 4
-    randomize_segment_length: true
-    randomize_segment_start: true
-    require_full_segment: true
-    sample_weight_mode: inverse_task_demo_count
+    chunk_size: 4
+    window_size: 30
+    randomize_segment_length: false
+    randomize_segment_start: false
+    require_full_segment: false
+    start_padding_frames: 3
+    sample_weight_mode: task_virtual_start_count_power
+    sample_weight_length_power: 0.5
     sample_weight_min: 0.25
     sample_weight_max: 4.0
   train_batch_size: 1
