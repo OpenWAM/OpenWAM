@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -61,6 +62,72 @@ def test_normalize_optimizer_state_handles_wrapped_parameter_keys() -> None:
     assert optimizer.state[parameter]["step"].dtype == torch.float32
     assert optimizer.state[parameter]["exp_avg"].dtype == torch.bfloat16
     assert optimizer.state[parameter]["exp_avg_sq"].dtype == torch.bfloat16
+
+
+def test_train_micro_step_normalizes_optimizer_state_after_gradients() -> None:
+    class WrappedParameter:
+        grad = None
+        dtype = torch.float32
+
+    parameter = WrappedParameter()
+    optimizer = SimpleNamespace(
+        state={
+            parameter: {
+                "step": torch.tensor(1.0),
+                "exp_avg": torch.zeros(2, dtype=torch.float32),
+                "exp_avg_sq": torch.zeros(2, dtype=torch.float32),
+            }
+        }
+    )
+    step_called = False
+
+    class Strategy:
+        device = torch.device("cpu")
+
+        def set_gradient_sync(self, model, *, enabled: bool) -> None:
+            del model, enabled
+
+        def autocast_context(self):
+            return nullcontext()
+
+        def backward(self, loss: torch.Tensor) -> None:
+            del loss
+            parameter.grad = torch.ones(2, dtype=torch.bfloat16)
+
+        def unscale_(self, optimizer_arg) -> None:
+            del optimizer_arg
+
+        def optimizer_step(self, optimizer_arg) -> None:
+            nonlocal step_called
+            assert optimizer_arg.state[parameter]["exp_avg"].dtype == torch.bfloat16
+            assert optimizer_arg.state[parameter]["exp_avg_sq"].dtype == torch.bfloat16
+            step_called = True
+
+        def zero_grad(self, optimizer_arg) -> None:
+            del optimizer_arg
+            parameter.grad = None
+
+    runtime = TrainingRuntime.__new__(TrainingRuntime)
+    runtime.step_executor = SimpleNamespace(
+        batch_adapter=SimpleNamespace(move_to_device=lambda batch, device: batch),
+        forward_train=lambda batch: SimpleNamespace(loss=torch.tensor(1.0, requires_grad=True), metrics={}),
+    )
+    runtime.strategy = Strategy()
+    runtime.optimizer = optimizer
+    runtime.scheduler = SimpleNamespace(step=lambda: None, get_last_lr=lambda: [1e-4])
+    runtime.model = SimpleNamespace(train=lambda: None)
+    runtime.train_state = TrainState(run_name="dtype-normalize-test")
+    runtime.config = SimpleNamespace(
+        training=SimpleNamespace(gradient_accumulation_steps=1, max_grad_norm=None),
+        trainer=SimpleNamespace(log_every_n_steps=1, save_interval=None),
+    )
+    runtime.log_sink = SimpleNamespace(log_metrics=lambda **kwargs: None)
+    runtime._accumulated_train_metrics = {}
+
+    runtime._train_micro_step(batch={})
+
+    assert step_called is True
+    assert runtime.train_state.optimizer_step == 1
 
 
 def _write_temp_config(tmp_path: Path, *, source_name: str, output_name: str, mutate) -> Path:
@@ -150,6 +217,23 @@ def test_step_loop_reshuffles_distributed_sampler_each_loader_pass(monkeypatch: 
 
     assert seen_epochs == [0, 1, 2]
     assert runtime.train_state.epoch_index == 3
+
+
+def test_epoch_loop_resume_cursor_skips_seen_batches_within_current_epoch() -> None:
+    runtime = TrainingRuntime.__new__(TrainingRuntime)
+    runtime.train_loader = range(10)
+    runtime.train_state = TrainState(seen_batches=23, resume_source="/tmp/checkpoint_step_2/full_training_state.pt")
+    runtime.config = SimpleNamespace(trainer=SimpleNamespace(limit_train_batches=None))
+
+    assert runtime._current_epoch_resume_batch_index() == 3
+
+    runtime.config = SimpleNamespace(trainer=SimpleNamespace(limit_train_batches=7))
+
+    assert runtime._current_epoch_resume_batch_index() == 2
+
+    runtime.train_state.resume_source = None
+
+    assert runtime._current_epoch_resume_batch_index() == 0
 
 
 def test_sample_loss_weight_can_scale_by_valid_action_steps() -> None:

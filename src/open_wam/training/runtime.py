@@ -223,7 +223,19 @@ class TrainingRuntime:
     def _run_epoch_loop(self, policy: EpochLoopPolicy) -> None:
         while policy.should_continue(self.train_state):
             _set_sampler_epoch(self.train_loader, self.train_state.epoch_index)
+            resume_batch_idx = self._current_epoch_resume_batch_index()
+            if resume_batch_idx > 0 and self.strategy.is_main_process:
+                self.log_sink.log_event(
+                    name="resume_epoch_cursor",
+                    payload={
+                        "epoch_index": self.train_state.epoch_index,
+                        "skip_batches": resume_batch_idx,
+                        "seen_batches": self.train_state.seen_batches,
+                    },
+                )
             for batch_idx, batch in enumerate(self.train_loader):
+                if batch_idx < resume_batch_idx:
+                    continue
                 if policy.limit_train_batches is not None and batch_idx >= policy.limit_train_batches:
                     break
                 self._train_micro_step(batch)
@@ -248,6 +260,21 @@ class TrainingRuntime:
         self._run_validation(limit_batches=policy.limit_val_batches)
         self._save_checkpoint(final=True)
 
+    def _current_epoch_resume_batch_index(self) -> int:
+        if self.train_state.resume_source is None or self.train_state.seen_batches <= 0:
+            return 0
+        try:
+            epoch_batches = len(self.train_loader)
+        except TypeError:
+            return 0
+        if epoch_batches <= 0:
+            return 0
+        if self.config.trainer.limit_train_batches is not None:
+            epoch_batches = min(epoch_batches, int(self.config.trainer.limit_train_batches))
+        if epoch_batches <= 0:
+            return 0
+        return int(self.train_state.seen_batches % epoch_batches)
+
     def _train_micro_step(self, batch) -> None:
         device_batch = self.step_executor.batch_adapter.move_to_device(batch, self.strategy.device)
         self.model.train()
@@ -270,6 +297,7 @@ class TrainingRuntime:
             grad_norm = self.strategy.clip_grad_norm_(self.model.parameters(), self.config.training.max_grad_norm)
         else:
             grad_norm = None
+        _normalize_optimizer_state_dtypes(self.optimizer)
         self.strategy.optimizer_step(self.optimizer)
         self.scheduler.step()
         self.strategy.zero_grad(self.optimizer)
