@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import math
 
 from .enums import (
     ActionChunkAnchorMode,
@@ -42,23 +41,17 @@ from .enums import (
     VisualStateSource,
     coerce_fields,
 )
+from .variant_semantics import coerce_probability_map, default_video_action_conditioning_mode_probs
 from .visual_readout import VisualReadoutConfig
 
 
 def _default_joint_denoise_training_mode_probs(
     variant_profile: ParallelStreamVariantProfile,
 ) -> dict[JointDenoiseTrainingMode, float]:
-    if variant_profile == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING:
-        return {
-            JointDenoiseTrainingMode.JOINT: 0.6,
-            JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO: 0.2,
-            JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION: 0.2,
-        }
-    return {
-        JointDenoiseTrainingMode.JOINT: 1.0,
-        JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO: 0.0,
-        JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION: 0.0,
-    }
+    return default_video_action_conditioning_mode_probs(
+        JointDenoiseTrainingMode,
+        generalist=variant_profile == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING,
+    )
 
 
 def _coerce_joint_denoise_training_mode_probs(
@@ -69,39 +62,11 @@ def _coerce_joint_denoise_training_mode_probs(
     resolved_profile = ParallelStreamVariantProfile(variant_profile)
     if raw_value is None:
         return _default_joint_denoise_training_mode_probs(resolved_profile)
-    if not isinstance(raw_value, dict):
-        raise ValueError("`joint_denoise_training_mode_probs` must be a mapping from mode to probability.")
-
-    probs = {mode: 0.0 for mode in JointDenoiseTrainingMode}
-    for raw_mode, raw_prob in raw_value.items():
-        mode = JointDenoiseTrainingMode(raw_mode)
-        if isinstance(raw_prob, bool):
-            raise ValueError(
-                "`joint_denoise_training_mode_probs` entries must be finite numeric probabilities, "
-                f"got {mode.value}={raw_prob!r}."
-            )
-        try:
-            prob = float(raw_prob)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "`joint_denoise_training_mode_probs` entries must be finite numeric probabilities, "
-                f"got {mode.value}={raw_prob!r}."
-            ) from exc
-        if not math.isfinite(prob):
-            raise ValueError(
-                "`joint_denoise_training_mode_probs` entries must be finite numeric probabilities, "
-                f"got {mode.value}={raw_prob!r}."
-            )
-        if prob < 0.0:
-            raise ValueError(
-                "`joint_denoise_training_mode_probs` entries must be non-negative, "
-                f"got {mode.value}={prob}."
-            )
-        probs[mode] = prob
-    total = sum(probs.values())
-    if total <= 0.0:
-        raise ValueError("`joint_denoise_training_mode_probs` must contain at least one positive probability.")
-    return {mode: prob / total for mode, prob in probs.items()}
+    return coerce_probability_map(
+        raw_value,
+        enum_cls=JointDenoiseTrainingMode,
+        field_name="joint_denoise_training_mode_probs",
+    )
 
 
 
@@ -117,42 +82,11 @@ def _coerce_mot_generalist_training_mode_probs(
 
     if raw_value is None:
         return None
-    if not isinstance(raw_value, dict):
-        raise ValueError(
-            "`mot_generalist_training_mode_probs` must be a mapping from mode to probability."
-        )
-    probs = {mode: 0.0 for mode in MoTGeneralistTrainingMode}
-    for raw_mode, raw_prob in raw_value.items():
-        mode = MoTGeneralistTrainingMode(raw_mode)
-        if isinstance(raw_prob, bool):
-            raise ValueError(
-                "`mot_generalist_training_mode_probs` entries must be finite numeric probabilities, "
-                f"got {mode.value}={raw_prob!r}."
-            )
-        try:
-            prob = float(raw_prob)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "`mot_generalist_training_mode_probs` entries must be finite numeric probabilities, "
-                f"got {mode.value}={raw_prob!r}."
-            ) from exc
-        if not math.isfinite(prob):
-            raise ValueError(
-                "`mot_generalist_training_mode_probs` entries must be finite numeric probabilities, "
-                f"got {mode.value}={raw_prob!r}."
-            )
-        if prob < 0.0:
-            raise ValueError(
-                "`mot_generalist_training_mode_probs` entries must be non-negative, "
-                f"got {mode.value}={prob}."
-            )
-        probs[mode] = prob
-    total = sum(probs.values())
-    if total <= 0.0:
-        raise ValueError(
-            "`mot_generalist_training_mode_probs` must contain at least one positive probability."
-        )
-    return {mode: prob / total for mode, prob in probs.items()}
+    return coerce_probability_map(
+        raw_value,
+        enum_cls=MoTGeneralistTrainingMode,
+        field_name="mot_generalist_training_mode_probs",
+    )
 
 
 @dataclass(frozen=True)

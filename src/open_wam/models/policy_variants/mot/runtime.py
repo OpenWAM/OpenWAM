@@ -12,9 +12,10 @@ from open_wam.configs import CurrentBlockCoupling, MoTConditionMode
 from open_wam.models.common.attention_profiles import (
     PreparedAttentionProfile,
     apply_attention_backend,
-    build_chunked_temporal_exact_attention_profile,
     select_attention_profile_mask,
 )
+from open_wam.models.common.coupling_profiles import build_exact_packed_video_action_coupling_profile
+from open_wam.models.common.video_geometry import video_token_grid_from_latent_shape
 from open_wam.models.visual_tower.grid_ids import build_video_grid_ids
 from open_wam.models.policy_variants.parallel_stream.reference_runtime import data_seq_to_patch
 from open_wam.models.visual_tower.shared_transformer_support import (
@@ -36,6 +37,13 @@ try:  # pragma: no cover - import surface depends on torch build
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 except Exception:  # pragma: no cover - CPU-only or non-FSDP env
     FSDP = None
+
+
+def _video_token_grid_for_latents(visual_tower, video_latents: torch.Tensor):
+    return video_token_grid_from_latent_shape(
+        video_latents,
+        patch_size=visual_tower.core.patch_size,
+    )
 
 
 def move_mot_video_cache(
@@ -479,36 +487,17 @@ def build_mot_packed_coupling_attention_profile(
     if chunk_size_frames <= 0:
         raise ValueError(f"M5 packed coupling mask requires positive chunk_size_frames, got {chunk_size_frames}.")
 
-    resolved_build_dense = device.type != "cuda" if build_dense_masks is None else bool(build_dense_masks)
-    resolved_build_flex = device.type == "cuda" if build_flex_masks is None else bool(build_flex_masks)
-    return build_chunked_temporal_exact_attention_profile(
-        latent_shape=(
-            1,
-            1,
-            int(num_video_frames),
-            1,
-            int(video_tokens_per_frame),
-        ),
-        action_shape=(
-            1,
-            1,
-            int(num_action_frames),
-            1,
-            int(action_tokens_per_frame),
-        ),
-        padded_length=0,
-        chunk_size=int(chunk_size_frames),
-        window_size=(
-            int(attention_window_size)
-            if attention_window_size is not None
-            else max(int(num_video_frames), int(num_action_frames)) * 2
-        ),
-        patch_size=(1, 1, 1),
-        text_token_count=1,
+    return build_exact_packed_video_action_coupling_profile(
+        num_video_frames=num_video_frames,
+        video_tokens_per_frame=video_tokens_per_frame,
+        num_action_frames=num_action_frames,
+        action_tokens_per_frame=action_tokens_per_frame,
+        chunk_size_frames=chunk_size_frames,
         device=device,
-        build_dense_masks=resolved_build_dense,
-        build_flex_masks=resolved_build_flex,
-        current_block_coupling=CurrentBlockCoupling(current_block_coupling).value,
+        build_dense_masks=build_dense_masks,
+        build_flex_masks=build_flex_masks,
+        attention_window_size=attention_window_size,
+        current_block_coupling=current_block_coupling,
         preserve_video_pretrain_history=True,
     )
 
@@ -1292,12 +1281,12 @@ def forward_mot_packed_coupling_denoise(
             "grid_id": torch.cat(
                 [
                     build_video_grid_ids(
-                        visual_tower.frontend.tokenize_video_latents(noisy_video_latents)[1],
+                        _video_token_grid_for_latents(visual_tower, noisy_video_latents),
                         device=noisy_video_latents.device,
                         frame_shift=float(frame_start),
                     ),
                     build_video_grid_ids(
-                        visual_tower.frontend.tokenize_video_latents(clean_video_latents)[1],
+                        _video_token_grid_for_latents(visual_tower, clean_video_latents),
                         device=clean_video_latents.device,
                         frame_shift=float(frame_start),
                     ),
@@ -1676,7 +1665,7 @@ def forward_joint_video_action_denoise(
             "noisy_latents": noisy_video_latents,
             "text_emb": resolved_text,
             "grid_id": build_video_grid_ids(
-                visual_tower.frontend.tokenize_video_latents(noisy_video_latents)[1],
+                _video_token_grid_for_latents(visual_tower, noisy_video_latents),
                 device=noisy_video_latents.device,
                 frame_shift=float(frame_start),
             )[None].expand(batch_size, -1, -1),

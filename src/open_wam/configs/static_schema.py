@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 from pathlib import Path
 import re
 from typing import Any, Iterable, Mapping
@@ -34,6 +33,7 @@ from open_wam.configs.enums import (
     TrainerAccelerator,
     TrainerPrecision,
 )
+from open_wam.configs.variant_semantics import probability_map_static_issues
 
 
 LOCAL_PATH_PATTERN = re.compile(r"\$\{paths\.([A-Za-z0-9_.-]+)\}")
@@ -347,51 +347,11 @@ def _validate_probability_map(
     enum_cls: type[StrEnum],
 ) -> None:
     raw_probs = policy_variant.get(field_name)
-    if raw_probs is None:
-        return
-    if not isinstance(raw_probs, Mapping):
-        issues.error(f"policy_variant.{field_name}", "Expected a mapping of mode to probability.")
-        return
-    total = 0.0
-    for raw_mode, raw_prob in raw_probs.items():
-        if not isinstance(raw_mode, str):
-            issues.error(f"policy_variant.{field_name}", "Expected string mode keys.")
-            continue
-        if raw_mode not in {mode.value for mode in enum_cls}:
-            issues.error(
-                f"policy_variant.{field_name}.{raw_mode}",
-                f"Invalid {enum_cls.__name__} value {raw_mode!r}.",
-            )
-            continue
-        if isinstance(raw_prob, bool):
-            issues.error(
-                f"policy_variant.{field_name}.{raw_mode}",
-                "Expected a numeric probability.",
-            )
-            continue
-        try:
-            prob = float(raw_prob)
-        except (TypeError, ValueError):
-            issues.error(
-                f"policy_variant.{field_name}.{raw_mode}",
-                "Expected a numeric probability.",
-            )
-            continue
-        if not math.isfinite(prob):
-            issues.error(
-                f"policy_variant.{field_name}.{raw_mode}",
-                "Expected a finite probability.",
-            )
-            continue
-        if prob < 0.0:
-            issues.error(
-                f"policy_variant.{field_name}.{raw_mode}",
-                "Expected a non-negative probability.",
-            )
-            continue
-        total += prob
-    if not math.isfinite(total) or total <= 0.0:
-        issues.error(f"policy_variant.{field_name}", "Expected at least one positive probability.")
+    for issue in probability_map_static_issues(raw_probs, enum_cls=enum_cls):
+        path = f"policy_variant.{field_name}"
+        if issue.path_suffix is not None:
+            path = f"{path}.{issue.path_suffix}"
+        issues.error(path, issue.message)
 
 
 def _validate_local_path_placeholders(value: Any, issues: "_IssueBuilder", *, path: str = "") -> None:

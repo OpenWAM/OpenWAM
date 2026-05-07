@@ -282,6 +282,33 @@ def test_action_conditioned_video_replaces_action_slots() -> None:
     assert torch.all(out_action_mask == 0)
 
 
+def test_action_conditioned_video_masks_clean_action_conditioning() -> None:
+    video_artifacts = _make_video_artifacts()
+    noisy_actions = torch.randn(1, 4, 3)
+    clean_actions = torch.arange(12, dtype=torch.float32).view(1, 4, 3)
+    noisy_slot_timesteps = torch.full((1, 4), 0.5)
+    future_loss_mask = torch.ones(1, 1, 4, 1, 1)
+    effective_action_mask = torch.tensor(
+        [[[1.0, 0.0, 1.0], [0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 1.0]]]
+    )
+
+    out = _apply_mot_generalist_training_mode(
+        sampled_mode=MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
+        video_artifacts=video_artifacts,
+        noisy_actions=noisy_actions,
+        clean_actions=clean_actions,
+        noisy_slot_timesteps=noisy_slot_timesteps,
+        future_loss_mask=future_loss_mask,
+        effective_action_mask=effective_action_mask,
+    )
+
+    out_noisy_actions = out[1]
+    out_action_mask = out[5]
+    assert torch.equal(out_noisy_actions, clean_actions * effective_action_mask)
+    assert out_action_mask is not None
+    assert torch.all(out_action_mask == 0)
+
+
 def test_video_conditioned_action_replaces_video_slots() -> None:
     video_artifacts = _make_video_artifacts()
     original_condition = video_artifacts.condition_latents.clone()
@@ -427,6 +454,12 @@ def test_forced_joint_keeps_both_losses_active() -> None:
     assert metrics["mot_generalist/video_conditioned_action/count"].item() == 0.0
     assert metrics["mot_generalist/action_loss_active"].item() == 1.0
     assert metrics["mot_generalist/latent_loss_active"].item() == 1.0
+    assert "mot_generalist/joint/action_denoised_mse_sum" in metrics
+    assert "mot_generalist/joint/action_mse_sum" in metrics
+    assert torch.equal(
+        metrics["mot_generalist/joint/action_mse_sum"],
+        metrics["mot_generalist/joint/action_denoised_mse_sum"],
+    )
     assert metrics["weighted_action_diffusion_loss"].item() > 0.0
     assert metrics["weighted_video_diffusion_loss"].item() > 0.0
 

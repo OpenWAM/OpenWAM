@@ -16,6 +16,9 @@ from open_wam.models.common.flow_matching import (
     denoised_actions_from_flow,
     denoised_video_latents_from_flow,
 )
+from open_wam.models.common.flow_noise_plan import frame_sigmas_for_timesteps
+from open_wam.models.common.joint_conditioning import sample_conditioning_mode
+from open_wam.models.common.modality_slots import clean_noisy_slot_tensor, zero_loss_mask_like
 from open_wam.configs import (
     CurrentBlockCoupling,
     InferenceConfig,
@@ -126,14 +129,12 @@ def _sample_mot_generalist_training_mode(
     stays deterministic under a seeded RNG state.
     """
 
-    ordered_modes = list(MoTGeneralistTrainingMode)
-    weights = torch.tensor(
-        [float(probs.get(mode, 0.0)) for mode in ordered_modes],
+    return sample_conditioning_mode(
+        probs,
+        enum_cls=MoTGeneralistTrainingMode,
         device=device,
-        dtype=torch.float32,
+        error_label="M5 generalist training mode",
     )
-    index = int(torch.multinomial(weights, num_samples=1).item())
-    return ordered_modes[index]
 
 
 def _apply_mot_generalist_training_mode(
@@ -188,13 +189,13 @@ def _apply_mot_generalist_training_mode(
         # Clean action overwrites the A_noisy slot at timestep 0; A_clean
         # condition slot is zeroed; action loss is masked out so video-only
         # gradients drive this segment.
-        new_noisy_actions = clean_actions.clone()
+        new_noisy_actions = clean_noisy_slot_tensor(
+            clean_actions.clone(),
+            action_mask=effective_action_mask,
+        )
         new_clean_actions = zero_clean_actions
         new_noisy_slot_timesteps = torch.zeros_like(noisy_slot_timesteps)
-        if effective_action_mask is None:
-            new_action_mask: torch.Tensor | None = torch.zeros_like(noisy_actions)
-        else:
-            new_action_mask = torch.zeros_like(effective_action_mask)
+        new_action_mask = zero_loss_mask_like(effective_action_mask, fallback_like=noisy_actions)
         return (
             zero_condition_video_artifacts,
             new_noisy_actions,
@@ -353,14 +354,14 @@ class MoTPolicyVariant(PolicyVariant):
         self.action_expert.blocks = torch.nn.ModuleList()
 
     def restore_packed_blocks_for_legacy_inference(self, visual_tower: VisualTower) -> bool:
-        """Reattach packed-owned blocks for inference-only legacy cache rollout.
+        """Move packed-owned blocks back for inference-only legacy cache rollout.
 
         Packed training transfers block ownership into ``packed_block_stack`` so
-        FSDP can shard paired video/action blocks cleanly. In single-process
-        inference there is no optimizer/FSDP state to confuse, so we can expose
-        the same block objects back through ``visual_tower.core.blocks`` and
-        ``action_expert.blocks`` to reuse the pre-packed Method-1-aligned cache
-        path. This does not copy weights.
+        FSDP can shard paired video/action blocks cleanly. Legacy split-cache
+        inference needs the pre-packed module lists, so this performs a
+        one-way ownership transfer back to ``visual_tower.core.blocks`` and
+        ``action_expert.blocks``. ``packed_block_stack`` is cleared afterward
+        so the module tree has a single owner for each block.
         """
 
         if self.packed_block_stack is None:
@@ -371,6 +372,7 @@ class MoTPolicyVariant(PolicyVariant):
             return False
         visual_tower.core.blocks = torch.nn.ModuleList(video_blocks)
         self.action_expert.blocks = torch.nn.ModuleList(action_blocks)
+        self.packed_block_stack = None
         self._legacy_inference_blocks_restored = True
         return True
 
@@ -1130,7 +1132,7 @@ class MoTPolicyVariant(PolicyVariant):
             else float(self.config.noisy_video_condition_prob),
         )
         coupled_action_sigma_values = (
-            video_artifacts.scheduler.sigma_for_timesteps(video_artifacts.timesteps)
+            frame_sigmas_for_timesteps(video_artifacts.scheduler, video_artifacts.timesteps)
             if sampled_generalist_mode == MoTGeneralistTrainingMode.JOINT
             else None
         )

@@ -6,6 +6,7 @@ from einops import rearrange
 
 from open_wam.configs import JointDenoiseTrainingMode
 from open_wam.models.policy_variants.contracts import PolicyInferOutput, PolicyTrainBatch, PolicyTrainOutput
+from open_wam.models.common.metric_rollups import add_joint_conditioning_mode_metrics
 
 from .base import ActionDecoder, ActionDecoderInferOutput, ActionDecoderTrainOutput, align_policy_features
 from open_wam.models.policy_variants.parallel_stream.reference_runtime import data_seq_to_patch
@@ -102,22 +103,26 @@ class LingbotParallelActionDecoder(ActionDecoder):
         }
         joint_denoise_mode = input_dict.get("joint_denoise_training_mode")
         if joint_denoise_mode is not None:
-            mode_value = str(joint_denoise_mode)
-            metric_device = loss.device
-            one = torch.ones((), device=metric_device)
-            zero = torch.zeros((), device=metric_device)
-            for mode in JointDenoiseTrainingMode:
-                active = one if mode_value == mode.value else zero
-                prefix = f"joint_denoise/{mode.value}"
-                metrics[f"{prefix}/count"] = active.detach()
-                metrics[f"{prefix}/action_mse_sum"] = (action_loss * active).detach()
-                metrics[f"{prefix}/latent_mse_sum"] = (latent_loss * active).detach()
-            metrics["joint_denoise/action_loss_active"] = (
+            action_loss_active = (
                 effective_action_mask.float().sum() > 0
-            ).to(dtype=torch.float32).detach()
-            metrics["joint_denoise/latent_loss_active"] = (
+            ).to(dtype=torch.float32)
+            latent_loss_active = (
                 latent_loss_mask.float().sum() > 0
-            ).to(dtype=torch.float32).detach()
+            ).to(dtype=torch.float32)
+            add_joint_conditioning_mode_metrics(
+                metrics,
+                namespace="joint_denoise",
+                mode_value=str(joint_denoise_mode),
+                modes=JointDenoiseTrainingMode,
+                action_loss=action_loss,
+                latent_loss=latent_loss,
+                action_loss_active=action_loss_active,
+                latent_loss_active=latent_loss_active,
+                action_metric_name="action_flow_loss_sum",
+                latent_metric_name="latent_flow_loss_sum",
+                action_metric_aliases=("action_mse_sum",),
+                latent_metric_aliases=("latent_mse_sum",),
+            )
         return ActionDecoderTrainOutput(
             action_pred=action_pred,
             loss=loss,

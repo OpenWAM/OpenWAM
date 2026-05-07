@@ -5,6 +5,40 @@ import torch
 from open_wam.models.video_backbone.contracts import TokenGridMetadata
 
 
+def video_token_grid_from_latent_shape(
+    video_latents: torch.Tensor,
+    *,
+    patch_size: tuple[int, int, int],
+) -> TokenGridMetadata:
+    """Return token-grid metadata without materializing patch embeddings."""
+
+    if video_latents.ndim != 5:
+        raise ValueError(
+            "Expected video latents with shape [B, C, T, H, W], "
+            f"got {tuple(video_latents.shape)}."
+        )
+    _, _, num_frames, latent_height, latent_width = video_latents.shape
+    patch_t, patch_h, patch_w = patch_size
+    if num_frames % patch_t != 0 or latent_height % patch_h != 0 or latent_width % patch_w != 0:
+        raise ValueError(
+            "Latent tensor must be divisible by patch size. "
+            f"latents={tuple(video_latents.shape)}, patch={patch_size}"
+        )
+    patches_per_frame_h = latent_height // patch_h
+    patches_per_frame_w = latent_width // patch_w
+    tokens_per_frame = patches_per_frame_h * patches_per_frame_w
+    return TokenGridMetadata(
+        num_frames=num_frames,
+        latent_height=latent_height,
+        latent_width=latent_width,
+        patch_size=patch_size,
+        patches_per_frame_h=patches_per_frame_h,
+        patches_per_frame_w=patches_per_frame_w,
+        tokens_per_frame=tokens_per_frame,
+        sequence_length=(num_frames // patch_t) * tokens_per_frame,
+    )
+
+
 def slice_token_grid_frames(
     token_grid: TokenGridMetadata,
     *,
@@ -22,6 +56,12 @@ def slice_token_grid_frames(
         raise ValueError(
             f"Expected `num_frames` in [1, {token_grid.num_frames}], got {num_frames}."
         )
+    patch_t, _, _ = token_grid.patch_size
+    if num_frames % patch_t != 0:
+        raise ValueError(
+            "Frame-sliced token grids must remain divisible by temporal patch size, "
+            f"got num_frames={num_frames}, patch_t={patch_t}."
+        )
     return TokenGridMetadata(
         num_frames=num_frames,
         latent_height=token_grid.latent_height,
@@ -30,7 +70,7 @@ def slice_token_grid_frames(
         patches_per_frame_h=token_grid.patches_per_frame_h,
         patches_per_frame_w=token_grid.patches_per_frame_w,
         tokens_per_frame=token_grid.tokens_per_frame,
-        sequence_length=num_frames * token_grid.tokens_per_frame,
+        sequence_length=(num_frames // patch_t) * token_grid.tokens_per_frame,
     )
 
 

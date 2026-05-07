@@ -75,7 +75,7 @@ from .runtime_controls import (
     should_update_cache_during_denoise,
 )
 from .rollout import RolloutCursor, advance_rollout_cursor
-from .video_geometry import slice_token_grid_frames, unpatchify_video_tokens
+from .video_geometry import slice_token_grid_frames, unpatchify_video_tokens, video_token_grid_from_latent_shape
 
 __all__ = [
     "AttentionProfileSpec",
@@ -149,4 +149,5 @@ __all__ = [
     "init_cache_backend_payload",
     "update_slot_pool_layer_state",
     "unpatchify_video_tokens",
+    "video_token_grid_from_latent_shape",
 ]

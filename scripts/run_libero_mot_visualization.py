@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import time
+from collections.abc import Iterable
 from collections import deque
 from pathlib import Path
 
@@ -25,11 +26,14 @@ if str(Path(__file__).resolve().parent) not in sys.path:
 
 import run_libero_video_sequence_visualization as video_viz  # noqa: E402
 
-from open_wam.configs import ReferenceCoreInitMode  # noqa: E402
+from open_wam.configs import CurrentBlockCoupling, ReferenceCoreInitMode  # noqa: E402
 from open_wam.integrations import (  # noqa: E402
     LiberoTaskSpec,
     ensure_local_libero_config,
     load_libero_task_init_states,
+)
+from open_wam.models.common.rollout_history import (  # noqa: E402
+    build_executed_action_history_tensor as _build_shared_executed_action_history_tensor,
 )
 from open_wam.models.policy_variants import PolicyInferContext  # noqa: E402
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
@@ -97,6 +101,16 @@ def main() -> None:
     parser.add_argument("--suffix", type=str, default="open_wam_mot")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--save-rollout-video", action="store_true")
+    parser.add_argument(
+        "--max-imagined-latent-frames",
+        type=int,
+        default=None,
+        help=(
+            "Optional cap on predicted latent frames retained for the imagined-video panel. "
+            "Default keeps all imagined latent frames for full comparison videos. "
+            "Use 0 to disable imagined-video decode for long memory-constrained rollouts."
+        ),
+    )
     parser.add_argument("--runtime-device", type=str, default=None)
     parser.add_argument("--action-device", type=str, default=None)
     parser.add_argument("--frontend-device", type=str, default=None)
@@ -164,7 +178,7 @@ def main() -> None:
     if hasattr(pipeline.policy_variant, "_maybe_initialize_action_expert"):
         pipeline.policy_variant._maybe_initialize_action_expert(pipeline.visual_tower)
     legacy_restore = getattr(pipeline.policy_variant, "restore_packed_blocks_for_legacy_inference", None)
-    if callable(legacy_restore):
+    if callable(legacy_restore) and _should_restore_mot_legacy_blocks(config):
         restored = bool(legacy_restore(pipeline.visual_tower))
         if restored:
             _print_log("stage", {"name": "mot_legacy_cache_inference_blocks_restored"})
@@ -298,7 +312,11 @@ def main() -> None:
             if not isinstance(predicted_latents, torch.Tensor):
                 predicted_latents = infer_output.policy_output.aux.get("predicted_latents")
             if isinstance(predicted_latents, torch.Tensor):
-                predicted_latent_chunks.append(predicted_latents.detach().cpu())
+                _append_predicted_latent_chunk(
+                    predicted_latent_chunks,
+                    predicted_latents,
+                    max_imagined_latent_frames=args.max_imagined_latent_frames,
+                )
 
             chunk_log = {
                 "chunk_index": chunk_count,
@@ -391,6 +409,7 @@ def main() -> None:
             pipeline,
             predicted_latent_chunks,
             decode_device=decode_device,
+            restore_vae=False,
         )
 
         output_path = _build_output_path(
@@ -403,16 +422,22 @@ def main() -> None:
             suffix=args.suffix,
         )
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        comparison_frames = _build_comparison_video_frames(
-            real_obs_list=rollout_frames,
-            imagined_video=imagined_video,
+        _write_video_frames(
+            output_path,
+            _iter_comparison_video_frames(
+                real_obs_list=rollout_frames,
+                imagined_video=imagined_video,
+            ),
+            fps=args.video_fps,
         )
-        imageio.mimsave(output_path, comparison_frames, fps=args.video_fps)
         rollout_path = None
         if args.save_rollout_video:
             rollout_path = output_path.with_name(f"{output_path.stem}_rollout.mp4")
-            rollout_video_frames = _build_rollout_video_frames(real_obs_list=rollout_frames)
-            imageio.mimsave(rollout_path, rollout_video_frames, fps=args.video_fps)
+            _write_video_frames(
+                rollout_path,
+                _iter_rollout_video_frames(real_obs_list=rollout_frames),
+                fps=args.video_fps,
+            )
 
         summary = {
             "benchmark": args.benchmark,
@@ -466,6 +491,18 @@ def _validate_mot_config(config) -> None:
             "run_libero_mot_visualization.py requires a `mot` policy variant, "
             f"got policy_variant.name={config.policy_variant.name!r}."
         )
+
+
+def _should_restore_mot_legacy_blocks(config) -> bool:
+    policy_variant = getattr(config, "policy_variant", None)
+    raw_coupling = getattr(policy_variant, "current_block_coupling", None)
+    if raw_coupling is None:
+        return False
+    coupling = CurrentBlockCoupling(raw_coupling)
+    return coupling in {
+        CurrentBlockCoupling.VIDEO_THEN_ACTION,
+        CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+    }
 
 
 def _resolve_mot_checkpoint_path(
@@ -930,23 +967,12 @@ def _build_executed_action_history_tensor(
     action_per_frame: int,
     action_dim: int,
 ) -> torch.Tensor | None:
-    if action_per_frame <= 0:
-        raise ValueError(f"Expected action_per_frame > 0, got {action_per_frame}.")
-    if action_dim <= 0:
-        raise ValueError(f"Expected action_dim > 0, got {action_dim}.")
-    if not executed_control_actions:
-        return None
-    executed = np.stack(executed_control_actions, axis=0).astype(np.float32, copy=False)
-    if executed.ndim != 2 or int(executed.shape[-1]) != int(action_dim):
-        raise ValueError(
-            "Executed control action history must be [T, D_action], "
-            f"got {tuple(executed.shape)}, action_dim={action_dim}."
-        )
-    skipped_tokens = max(0, int(start_frame_group)) * int(action_per_frame)
-    if skipped_tokens > 0:
-        bootstrap_actions = np.zeros((skipped_tokens, action_dim), dtype=np.float32)
-        executed = np.concatenate([bootstrap_actions, executed], axis=0)
-    return torch.from_numpy(executed).unsqueeze(0)
+    return _build_shared_executed_action_history_tensor(
+        executed_control_actions,
+        start_frame_group=start_frame_group,
+        action_per_frame=action_per_frame,
+        action_dim=action_dim,
+    )
 
 
 def _future_frame_count(config) -> int:
@@ -983,19 +1009,64 @@ def _action_per_frame(config) -> int:
     return max(1, int(config.data.action_schema.action_horizon) // _frame_chunk_size(config))
 
 
+def _append_predicted_latent_chunk(
+    predicted_latent_chunks: list[torch.Tensor],
+    predicted_latents: torch.Tensor,
+    *,
+    max_imagined_latent_frames: int | None,
+) -> None:
+    if predicted_latents.ndim != 5:
+        raise ValueError(
+            "Predicted latent chunks must have shape [B, C, T, H, W], "
+            f"got {tuple(predicted_latents.shape)}."
+        )
+    if max_imagined_latent_frames is not None:
+        cap = int(max_imagined_latent_frames)
+        if cap <= 0:
+            return
+        retained_frames = sum(int(chunk.shape[2]) for chunk in predicted_latent_chunks)
+        if retained_frames >= cap:
+            return
+        remaining_frames = cap - retained_frames
+        predicted_latents = predicted_latents[:, :, :remaining_frames]
+    if int(predicted_latents.shape[2]) <= 0:
+        return
+    predicted_latent_chunks.append(predicted_latents.detach().cpu())
+
+
+def _write_video_frames(
+    output_path: Path,
+    frames: Iterable[np.ndarray],
+    *,
+    fps: float,
+) -> None:
+    wrote_frame = False
+    with imageio.get_writer(output_path, fps=fps) as writer:
+        for frame in frames:
+            writer.append_data(np.ascontiguousarray(frame))
+            wrote_frame = True
+    if not wrote_frame:
+        raise ValueError(f"No frames were produced for video output {output_path}.")
+
+
 def _build_rollout_video_frames(
     *,
     real_obs_list: list[dict[str, np.ndarray]],
 ) -> list[np.ndarray]:
-    final_frames: list[np.ndarray] = []
+    return list(_iter_rollout_video_frames(real_obs_list=real_obs_list))
+
+
+def _iter_rollout_video_frames(
+    *,
+    real_obs_list: list[dict[str, np.ndarray]],
+) -> Iterable[np.ndarray]:
     for obs in real_obs_list:
         agentview = np.ascontiguousarray(obs[LIBERO_OBS_KEYS[0]])
         wrist = np.ascontiguousarray(obs[LIBERO_OBS_KEYS[1]])
         row_real = np.hstack([agentview, wrist])
         row_real = np.ascontiguousarray(row_real)
         row_real = np.array(_with_title(Image.fromarray(row_real), "MoT Rollout (AgentView / Wrist)"), copy=True)
-        final_frames.append(np.ascontiguousarray(row_real))
-    return final_frames
+        yield np.ascontiguousarray(row_real)
 
 
 def _build_comparison_video_frames(
@@ -1003,32 +1074,37 @@ def _build_comparison_video_frames(
     real_obs_list: list[dict[str, np.ndarray]],
     imagined_video: np.ndarray | None,
 ) -> list[np.ndarray]:
-    frames: list[np.ndarray] = []
-    panel_height = 300
-    aligned_imagined_frames = _align_imagined_video_to_rollout(
-        imagined_video=imagined_video,
-        target_length=len(real_obs_list),
+    return list(
+        _iter_comparison_video_frames(
+            real_obs_list=real_obs_list,
+            imagined_video=imagined_video,
+        )
     )
-    total = max(len(real_obs_list), len(aligned_imagined_frames))
+
+
+def _iter_comparison_video_frames(
+    *,
+    real_obs_list: list[dict[str, np.ndarray]],
+    imagined_video: np.ndarray | None,
+) -> Iterable[np.ndarray]:
+    panel_height = 300
+    total = len(real_obs_list)
     for frame_index in range(total):
-        real_obs = None if frame_index >= len(real_obs_list) else real_obs_list[frame_index]
-        imagined_frame = None if frame_index >= len(aligned_imagined_frames) else aligned_imagined_frames[frame_index]
-        if real_obs is None:
-            target_width = 256
-            row_real = np.array(
-                _with_title(Image.new("RGB", (target_width, panel_height), color=(0, 0, 0)), "Missing Rollout Frame"),
-                copy=True,
-            )
-        else:
-            agentview = np.ascontiguousarray(real_obs[LIBERO_OBS_KEYS[0]])
-            wrist = np.ascontiguousarray(real_obs[LIBERO_OBS_KEYS[1]])
-            row_real = np.hstack([agentview, wrist])
-            row_real = np.ascontiguousarray(row_real)
-            row_real = np.array(
-                _with_title(Image.fromarray(row_real), f"Real Rollout Frame {frame_index}"),
-                copy=True,
-            )
-            target_width = row_real.shape[1]
+        real_obs = real_obs_list[frame_index]
+        imagined_frame = _imagined_frame_for_rollout_index(
+            imagined_video=imagined_video,
+            frame_index=frame_index,
+            target_length=total,
+        )
+        agentview = np.ascontiguousarray(real_obs[LIBERO_OBS_KEYS[0]])
+        wrist = np.ascontiguousarray(real_obs[LIBERO_OBS_KEYS[1]])
+        row_real = np.hstack([agentview, wrist])
+        row_real = np.ascontiguousarray(row_real)
+        row_real = np.array(
+            _with_title(Image.fromarray(row_real), f"Real Rollout Frame {frame_index}"),
+            copy=True,
+        )
+        target_width = row_real.shape[1]
         if imagined_frame is None:
             row_imagined = Image.new("RGB", (target_width, panel_height), color=(0, 0, 0))
             draw = ImageDraw.Draw(row_imagined)
@@ -1046,8 +1122,28 @@ def _build_comparison_video_frames(
             row_imagined,
             f"Imagined Frame {frame_index}",
         )
-        frames.append(np.ascontiguousarray(np.vstack([row_real, np.array(row_imagined, copy=True)])))
-    return frames
+        yield np.ascontiguousarray(np.vstack([row_real, np.array(row_imagined, copy=True)]))
+
+
+def _imagined_frame_for_rollout_index(
+    *,
+    imagined_video: np.ndarray | None,
+    frame_index: int,
+    target_length: int,
+) -> np.ndarray | None:
+    if imagined_video is None or target_length <= 0:
+        return None
+    imagined_frame_count = len(imagined_video)
+    if imagined_frame_count <= 0:
+        return None
+    if imagined_frame_count == 1 or target_length == 1:
+        imagined_index = 0
+    elif imagined_frame_count == target_length:
+        imagined_index = frame_index
+    else:
+        imagined_index = int(round(frame_index * (imagined_frame_count - 1) / (target_length - 1)))
+    imagined_index = max(0, min(imagined_frame_count - 1, imagined_index))
+    return np.array(imagined_video[imagined_index], copy=True)
 
 
 def _align_imagined_video_to_rollout(
@@ -1091,6 +1187,7 @@ def _decode_latent_video_chunks(
     latent_chunks: list[torch.Tensor],
     *,
     decode_device: torch.device,
+    restore_vae: bool = True,
 ) -> np.ndarray | None:
     if not latent_chunks:
         return None
@@ -1098,6 +1195,7 @@ def _decode_latent_video_chunks(
         pipeline,
         torch.cat(latent_chunks, dim=2),
         decode_device=decode_device,
+        restore_vae=restore_vae,
     )
 
 
@@ -1106,6 +1204,7 @@ def _decode_latent_video(
     latents: torch.Tensor,
     *,
     decode_device: torch.device,
+    restore_vae: bool = True,
 ) -> np.ndarray | None:
     assets = pipeline.visual_tower.frontend.reference_assets
     if not assets.has_vae:
@@ -1132,7 +1231,13 @@ def _decode_latent_video(
     with torch.no_grad():
         decoded = vae.decode(latents, return_dict=False)[0]
     imagined_video = video_processor.postprocess_video(decoded, output_type="np")[0]
-    if next(assets.vae.parameters()).device != original_device or next(assets.vae.parameters()).dtype != original_dtype:
+    if (
+        restore_vae
+        and (
+            next(assets.vae.parameters()).device != original_device
+            or next(assets.vae.parameters()).dtype != original_dtype
+        )
+    ):
         assets.vae = assets.vae.to(device=original_device, dtype=original_dtype)
     return imagined_video
 

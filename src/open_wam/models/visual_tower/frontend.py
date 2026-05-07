@@ -7,6 +7,7 @@ from torch import nn
 
 from open_wam.data.raw_video import ViewPlacement
 from open_wam.configs.enums import serialize_enum_values
+from open_wam.models.common.video_geometry import video_token_grid_from_latent_shape
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.video_backbone.contracts import ChunkMetadata, ConditioningState, TokenGridMetadata
 
@@ -207,18 +208,9 @@ class SharedVideoFrontend(nn.Module):
         )
         patches = patches.to(dtype=self.token_embed.weight.dtype)
         tokens = self.token_embed(patches)
-        patches_per_frame_h = latent_height // patch_h
-        patches_per_frame_w = latent_width // patch_w
-        tokens_per_frame = patches_per_frame_h * patches_per_frame_w
-        token_grid = TokenGridMetadata(
-            num_frames=num_frames,
-            latent_height=latent_height,
-            latent_width=latent_width,
+        token_grid = video_token_grid_from_latent_shape(
+            video_latents,
             patch_size=patch_size,
-            patches_per_frame_h=patches_per_frame_h,
-            patches_per_frame_w=patches_per_frame_w,
-            tokens_per_frame=tokens_per_frame,
-            sequence_length=tokens.shape[1],
         )
         return tokens, token_grid
 

@@ -26,6 +26,13 @@ from open_wam.models.common import (
     chunked_temporal_exact_profile_name_for_coupling,
     materialize_cache_backend_entries,
 )
+from open_wam.models.common.flow_noise_plan import (
+    clean_timestep_values,
+    sample_coupled_timestep_values as sample_shared_coupled_timestep_values,
+    sample_timestep_values as sample_shared_timestep_values,
+)
+from open_wam.models.common.joint_conditioning import sample_conditioning_mode
+from open_wam.models.common.modality_slots import force_clean_noisy_slot, zero_condition_slot
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig, resolve_stage_attention_mode
 from open_wam.models.video_backbone.contracts import CacheState
 from open_wam.models.visual_tower import (
@@ -377,22 +384,12 @@ def _sample_joint_denoise_training_mode(
     probs = policy_config.joint_denoise_training_mode_probs
     if probs is None:
         return JointDenoiseTrainingMode.JOINT
-    modes = tuple(JointDenoiseTrainingMode)
-    weights = torch.tensor([float(probs.get(mode, 0.0)) for mode in modes], device=device, dtype=torch.float32)
-    if float(weights.sum().item()) <= 0.0:
-        raise ValueError("Generalist joint-denoise training mode probabilities must have positive total weight.")
-    index = int(torch.multinomial(weights, num_samples=1).item())
-    return modes[index]
-
-
-def _timesteps_matching_sigmas(
-    scheduler: FlowMatchScheduler,
-    sigma_values: torch.Tensor,
-) -> torch.Tensor:
-    scheduler_sigmas = scheduler.sigmas.to(device=sigma_values.device, dtype=sigma_values.dtype)
-    scheduler_timesteps = scheduler.timesteps.to(device=sigma_values.device)
-    indices = torch.argmin((scheduler_sigmas[:, None] - sigma_values[None]).abs(), dim=0)
-    return scheduler_timesteps[indices]
+    return sample_conditioning_mode(
+        probs,
+        enum_cls=JointDenoiseTrainingMode,
+        device=device,
+        error_label="Generalist joint-denoise training mode",
+    )
 
 
 def _sample_timestep_values(
@@ -401,12 +398,11 @@ def _sample_timestep_values(
     num_frames: int,
     device: torch.device,
 ) -> torch.Tensor:
-    timestep_ids = sample_timestep_id(
-        batch_size=num_frames,
-        num_train_timesteps=scheduler.num_train_timesteps,
+    return sample_shared_timestep_values(
+        scheduler,
+        num_frames=num_frames,
         device=device,
     )
-    return scheduler.timesteps.to(device=device)[timestep_ids]
 
 
 def _sample_coupled_timestep_values(
@@ -416,36 +412,13 @@ def _sample_coupled_timestep_values(
     num_frames: int,
     device: torch.device,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    timestep_ids = sample_timestep_id(
-        batch_size=num_frames,
-        num_train_timesteps=latent_scheduler.num_train_timesteps,
+    values = sample_shared_coupled_timestep_values(
+        video_scheduler=latent_scheduler,
+        action_scheduler=action_scheduler,
+        num_frames=num_frames,
         device=device,
     )
-    sigma_values = latent_scheduler.sigmas.to(device=device)[timestep_ids]
-    return (
-        _timesteps_matching_sigmas(latent_scheduler, sigma_values),
-        _timesteps_matching_sigmas(action_scheduler, sigma_values),
-        sigma_values,
-    )
-
-
-def _force_clean_noisy_slot(
-    artifact_dict: dict[str, torch.Tensor],
-    clean_latent: torch.Tensor,
-    *,
-    action_mask: torch.Tensor | None = None,
-) -> None:
-    clean_slot = clean_latent
-    if action_mask is not None:
-        clean_slot = clean_slot * action_mask.float()
-    artifact_dict["noisy_latents"] = clean_slot
-    artifact_dict["targets"] = torch.zeros_like(clean_latent)
-    artifact_dict["timesteps"] = torch.zeros_like(artifact_dict["timesteps"])
-
-
-def _zero_condition_slot(artifact_dict: dict[str, torch.Tensor]) -> None:
-    artifact_dict["latent"] = torch.zeros_like(artifact_dict["latent"])
-    artifact_dict["cond_timesteps"] = torch.zeros_like(artifact_dict["cond_timesteps"])
+    return values.video_timesteps, values.action_timesteps, values.sigma_values
 
 
 def _apply_generalist_joint_denoise_training_mode(
@@ -465,7 +438,7 @@ def _apply_generalist_joint_denoise_training_mode(
         )
     mode = _sample_joint_denoise_training_mode(policy_config, device=video_latents.device)
     num_frames = int(video_latents.shape[2])
-    clean_zero_timesteps = torch.zeros(num_frames, device=video_latents.device)
+    clean_zero_timesteps = clean_timestep_values(num_frames=num_frames, device=video_latents.device)
     shared_sigma_values: torch.Tensor | None = None
     if mode == JointDenoiseTrainingMode.JOINT and policy_config.couple_action_to_video_timesteps:
         latent_timestep_values, action_timestep_values, shared_sigma_values = _sample_coupled_timestep_values(
@@ -516,17 +489,17 @@ def _apply_generalist_joint_denoise_training_mode(
         timestep_values=action_timestep_values,
         sigma_values=shared_sigma_values,
     )
-    _zero_condition_slot(latent_dict)
-    _zero_condition_slot(action_dict)
+    zero_condition_slot(latent_dict)
+    zero_condition_slot(action_dict)
 
     if mode == JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO:
-        _force_clean_noisy_slot(action_dict, action_latents, action_mask=action_mask_latents)
+        force_clean_noisy_slot(action_dict, action_latents, action_mask=action_mask_latents)
         action_dict["loss_mask"] = torch.zeros_like(artifacts.input_dict["action_dict"]["loss_mask"])
     else:
         action_dict["loss_mask"] = artifacts.input_dict["action_dict"]["loss_mask"]
 
     if mode == JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION:
-        _force_clean_noisy_slot(latent_dict, video_latents)
+        force_clean_noisy_slot(latent_dict, video_latents)
         latent_dict["loss_mask"] = torch.zeros_like(artifacts.input_dict["latent_dict"]["loss_mask"])
     else:
         latent_dict["loss_mask"] = artifacts.input_dict["latent_dict"]["loss_mask"]

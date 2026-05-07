@@ -884,5 +884,11 @@ def test_lingbot_parallel_decoder_logs_generalist_mode_sums_and_counts() -> None
 
     assert output.metrics["joint_denoise/action_conditioned_video/count"].item() == 1.0
     assert output.metrics["joint_denoise/joint/count"].item() == 0.0
+    assert "joint_denoise/action_conditioned_video/action_flow_loss_sum" in output.metrics
+    assert "joint_denoise/action_conditioned_video/action_mse_sum" in output.metrics
+    assert torch.equal(
+        output.metrics["joint_denoise/action_conditioned_video/action_mse_sum"],
+        output.metrics["joint_denoise/action_conditioned_video/action_flow_loss_sum"],
+    )
     assert output.metrics["joint_denoise/action_loss_active"].item() == 0.0
     assert output.metrics["joint_denoise/latent_loss_active"].item() == 1.0
