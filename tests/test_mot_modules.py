@@ -869,6 +869,150 @@ def test_mot_joint_denoise_infer_supports_same_step_couplings(
     assert output.policy_output.aux["current_block_coupling"] == current_block_coupling.value
 
 
+@pytest.mark.parametrize(
+    "current_block_coupling",
+    [
+        CurrentBlockCoupling.VIDEO_THEN_ACTION,
+        CurrentBlockCoupling.JOINT,
+        CurrentBlockCoupling.ACTION_THEN_VIDEO,
+        CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+        CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
+        CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
+    ],
+)
+def test_mot_packed_infer_six_modes_keep_two_chunk_history(
+    current_block_coupling: CurrentBlockCoupling,
+) -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=MoTPolicyConfig(
+            hidden_size=32,
+            runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=current_block_coupling,
+            video_prefix_frames=1,
+            num_action_layers=1,
+        ),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
+        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    text_context = torch.randn(1, 5, 16)
+    first_latents = torch.randn(1, 48, 1, 8, 8)
+    first = pipeline.forward_infer_step_from_latents(
+        first_latents,
+        context=PolicyInferContext(),
+        text_context=text_context,
+    )
+    first_state = first.policy_output.next_state.variant_state
+    assert isinstance(first_state, MoTRuntimeState)
+    assert first_state.past_clean_latents is not None
+    assert first_state.past_clean_actions is not None
+
+    second_latents = torch.randn(1, 48, 2, 8, 8)
+    second = pipeline.forward_infer_step_from_latents(
+        second_latents,
+        context=PolicyInferContext(),
+        infer_state=first.policy_output.next_state,
+        text_context=text_context,
+    )
+
+    debug = second.policy_output.aux["mot_packed_history_debug"]
+    assert debug["shared_history_frames"] >= 1
+    assert debug["past_clean_latent_frames"] >= 1
+    assert debug["past_clean_action_frames"] >= 1
+    assert debug["packed_video_frames"] == debug["shared_history_frames"] + 2
+    assert debug["packed_action_frames"] == debug["shared_history_frames"] + 2
+    second_state = second.policy_output.next_state.variant_state
+    assert isinstance(second_state, MoTRuntimeState)
+    assert second_state.past_clean_latents is not None
+    assert second_state.past_clean_actions is not None
+    assert second_state.past_clean_actions.shape[1] % 2 == 0
+
+
+def test_mot_packed_infer_chunk0_matches_method1_first_step_bootstrap() -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=MoTPolicyConfig(
+            hidden_size=32,
+            runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.VIDEO_THEN_ACTION,
+            video_prefix_frames=1,
+            num_action_layers=1,
+        ),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
+        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    video_latents = torch.randn(1, 48, 1, 8, 8)
+    text_context = torch.randn(1, 5, 16)
+
+    first = pipeline.forward_infer_step_from_latents(
+        video_latents,
+        context=PolicyInferContext(),
+        text_context=text_context,
+    )
+
+    assert first.policy_output.aux["mot_first_step_bootstrap"] is True
+    assert first.policy_output.aux["mot_action_cond_tokens"] == 2
+    assert torch.allclose(first.policy_output.aux["predicted_latents"][:, :, 0:1], video_latents)
+    assert torch.allclose(first.decoder_output.action_pred[:, :2], torch.zeros_like(first.decoder_output.action_pred[:, :2]))
+
+    packed_state = first.policy_output.next_state.variant_state
+    assert isinstance(packed_state, MoTRuntimeState)
+    history_anchor = packed_state.past_clean_latents[:, :, -1:].clone()
+    second_latents = torch.randn(1, 48, 2, 8, 8)
+    second = pipeline.forward_infer_step_from_latents(
+        second_latents,
+        context=PolicyInferContext(),
+        infer_state=first.policy_output.next_state,
+        text_context=text_context,
+    )
+
+    assert second.policy_output.aux["mot_first_step_bootstrap"] is False
+    assert second.policy_output.aux["mot_action_cond_tokens"] == 0
+    assert second.policy_output.aux["mot_history_anchor_frames"] >= 1
+    history_debug = second.policy_output.aux["mot_packed_history_debug"]
+    assert history_debug["past_clean_latent_frames"] >= 2
+    assert history_debug["past_clean_action_frames"] >= 2
+    assert history_debug["shared_history_frames"] >= 1
+    assert history_debug["current_observed_latent_frames"] == 2
+    assert history_debug["current_clean_condition_frames"] == 2
+
+
 def test_mot_variant_builds_with_interpolated_action_expert_ffn() -> None:
     config = ExperimentConfig(
         data=RobotWinDataConfig(

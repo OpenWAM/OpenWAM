@@ -72,6 +72,26 @@ def main() -> None:
     parser.add_argument("--max-timestep", type=int, default=800)
     parser.add_argument("--max-chunks", type=int, default=None)
     parser.add_argument("--raw-window-frames", type=int, default=None)
+    parser.add_argument(
+        "--startup-model-obs-frames",
+        type=int,
+        default=1,
+        help=(
+            "Number of initial observations fed to the model on chunk 0. "
+            "Defaults to 1 to match Method-1 exact startup; the rolling window "
+            "used after chunk 0 still keeps `--raw-window-frames`."
+        ),
+    )
+    parser.add_argument(
+        "--startup-env-init-steps",
+        type=int,
+        default=5,
+        help=(
+            "Number of zero-action environment steps before chunk 0. "
+            "Defaults to 5 to match Method-1 exact startup; if smaller than "
+            "--startup-model-obs-frames, it is raised to keep enough observations."
+        ),
+    )
     parser.add_argument("--video-fps", type=float, default=15.0)
     parser.add_argument("--output-dir", type=str, default="outputs/libero_mot_visualization")
     parser.add_argument("--suffix", type=str, default="open_wam_mot")
@@ -122,12 +142,32 @@ def main() -> None:
         if args.raw_window_frames is not None
         else _default_raw_window_frames(int(config.data.num_frames))
     )
+    startup_model_obs_frames = int(args.startup_model_obs_frames)
+    if startup_model_obs_frames <= 0:
+        raise ValueError(
+            f"Expected --startup-model-obs-frames to be positive, got {startup_model_obs_frames}."
+        )
+    if startup_model_obs_frames > raw_window_frames:
+        raise ValueError(
+            "--startup-model-obs-frames must be <= --raw-window-frames, "
+            f"got startup_model_obs_frames={startup_model_obs_frames}, raw_window_frames={raw_window_frames}."
+        )
+    startup_env_init_steps = int(args.startup_env_init_steps)
+    if startup_env_init_steps <= 0:
+        raise ValueError(
+            f"Expected --startup-env-init-steps to be positive, got {startup_env_init_steps}."
+        )
 
     pipeline = build_variant_pipeline_from_config(config)
     video_viz._load_pipeline_checkpoint(pipeline, checkpoint_path)
     pipeline.to(device=runtime_device)
     if hasattr(pipeline.policy_variant, "_maybe_initialize_action_expert"):
         pipeline.policy_variant._maybe_initialize_action_expert(pipeline.visual_tower)
+    legacy_restore = getattr(pipeline.policy_variant, "restore_packed_blocks_for_legacy_inference", None)
+    if callable(legacy_restore):
+        restored = bool(legacy_restore(pipeline.visual_tower))
+        if restored:
+            _print_log("stage", {"name": "mot_legacy_cache_inference_blocks_restored"})
     if hasattr(pipeline.policy_variant, "action_expert"):
         pipeline.policy_variant.action_expert.to(device=action_device)
     runner = VariantRolloutRunner(pipeline)
@@ -154,9 +194,19 @@ def main() -> None:
         initial_obs_window = _init_single_env(
             env,
             init_states[args.episode_idx % len(init_states)],
-            num_frames=raw_window_frames,
+            num_frames=startup_model_obs_frames,
+            init_steps=startup_env_init_steps,
         )
-        _print_log("stage", {"name": "init_env_rollout_done", "initial_window": len(initial_obs_window)})
+        _print_log(
+            "stage",
+            {
+                "name": "init_env_rollout_done",
+                "initial_window": len(initial_obs_window),
+                "startup_model_obs_frames": int(startup_model_obs_frames),
+                "startup_env_init_steps": int(startup_env_init_steps),
+                "startup_env_steps_executed": int(max(startup_env_init_steps, startup_model_obs_frames)),
+            },
+        )
         frame_window: deque[dict[str, np.ndarray]] = deque(maxlen=raw_window_frames)
         for obs in initial_obs_window:
             frame_window.append({key: np.array(value, copy=True) for key, value in obs.items()})
@@ -188,13 +238,19 @@ def main() -> None:
                         "env_timestep": int(env.env.timestep),
                     },
                 )
-                views = _obs_list_to_views(list(frame_window), device=frontend_device)
-                visual_outputs = _prepare_visual_outputs_offline(
+                model_obs_window = _select_model_obs_window(
+                    list(frame_window),
+                    chunk_index=chunk_count,
+                    startup_model_obs_frames=startup_model_obs_frames,
+                )
+                views = _obs_list_to_views(model_obs_window, device=frontend_device)
+                visual_outputs = _prepare_mot_visual_outputs(
                     pipeline,
                     views=views,
                     task_text=(prompt,),
                     frontend_device=frontend_device,
                     runtime_device=runtime_device,
+                    use_streaming_frontend=chunk_count == 0,
                 )
                 _print_log(
                     "stage",
@@ -202,6 +258,9 @@ def main() -> None:
                         "name": "chunk_infer_start",
                         "chunk_index": int(chunk_count),
                         "env_timestep": int(env.env.timestep),
+                        "model_obs_frames": int(len(model_obs_window)),
+                        "video_latent_frames": int(visual_outputs.frontend.video_latents.shape[2]),
+                        "frontend_path": "streaming" if chunk_count == 0 else "offline",
                     },
                 )
                 infer_output = pipeline._forward_infer_with_visual_outputs(
@@ -246,6 +305,9 @@ def main() -> None:
                 "phase": "infer",
                 "env_timestep_before": int(env.env.timestep),
                 "window_size": len(frame_window),
+                "model_obs_frames": len(model_obs_window),
+                "video_latent_frames": int(visual_outputs.frontend.video_latents.shape[2]),
+                "frontend_path": "streaming" if chunk_count == 0 else "offline",
                 "action_shape": list(actions.shape),
                 "predicted_latents_shape": None if not isinstance(predicted_latents, torch.Tensor) else list(predicted_latents.shape),
                 "first_action_preview": [float(v) for v in actions[0].tolist()],
@@ -261,11 +323,13 @@ def main() -> None:
                 future_frame_count=future_frame_count,
             )
             executed_actions = 0
+            executed_control_actions: list[np.ndarray] = []
             start_frame_group = 1 if chunk_count == 0 else 0
             for frame_group in range(start_frame_group, frame_actions.shape[0]):
                 for action_offset, action in enumerate(frame_actions[frame_group]):
                     absolute_action_index = frame_group * action_per_frame + action_offset
                     control_action = np.clip(action.astype(np.float32, copy=False), -1.0, 1.0)
+                    executed_control_actions.append(np.array(control_action, copy=True))
                     action_trace.append(np.array(control_action, copy=True))
                     obs, _, done, _ = env.step(control_action)
                     executed_actions += 1
@@ -290,6 +354,36 @@ def main() -> None:
             }
             _print_log(f"chunk_{chunk_count}", chunk_result_log)
             chunk_logs.append(chunk_result_log)
+
+            warmup_action_history = _build_executed_action_history_tensor(
+                executed_control_actions,
+                start_frame_group=start_frame_group,
+                action_per_frame=action_per_frame,
+                action_dim=actions.shape[-1],
+            )
+            if (
+                real_future_frames
+                and warmup_action_history is not None
+                and not done
+                and env.env.timestep < args.max_timestep
+                and "mot_packed_history_debug" in infer_output.policy_output.aux
+            ):
+                warmup_debug = _warmup_mot_packed_history_from_observations(
+                    pipeline,
+                    session=session,
+                    obs_list=real_future_frames,
+                    action_history=warmup_action_history,
+                    task_text=(prompt,),
+                    frontend_device=frontend_device,
+                    runtime_device=runtime_device,
+                )
+                warmup_log = {
+                    "chunk_index": chunk_count,
+                    "phase": "packed_history_warmup",
+                    **warmup_debug,
+                }
+                _print_log(f"chunk_{chunk_count}", warmup_log)
+                chunk_logs.append(warmup_log)
 
             chunk_count += 1
 
@@ -335,6 +429,9 @@ def main() -> None:
             "pipeline": "open_wam_mot",
             "runtime_mode": str(config.policy_variant.runtime_mode),
             "condition_mode": str(config.policy_variant.condition_mode),
+            "startup_model_obs_frames": int(startup_model_obs_frames),
+            "startup_env_init_steps": int(startup_env_init_steps),
+            "startup_env_steps_executed": int(max(startup_env_init_steps, startup_model_obs_frames)),
             "action_count": len(action_trace),
             "checkpoint_file": str(checkpoint_path.resolve()),
         }
@@ -440,13 +537,22 @@ def _construct_single_env(task_spec: LiberoTaskSpec):
     return env
 
 
-def _init_single_env(env, init_state, *, num_frames: int) -> list[dict[str, np.ndarray]]:
+def _init_single_env(
+    env,
+    init_state,
+    *,
+    num_frames: int,
+    init_steps: int = 5,
+) -> list[dict[str, np.ndarray]]:
     env.reset()
     env.set_init_state(init_state)
     if num_frames <= 0:
         raise ValueError(f"Expected positive num_frames, got {num_frames}.")
+    if init_steps <= 0:
+        raise ValueError(f"Expected positive init_steps, got {init_steps}.")
+    resolved_init_steps = max(init_steps, num_frames)
     obs_window: list[dict[str, np.ndarray]] = []
-    for _ in range(max(5, num_frames)):
+    for _ in range(resolved_init_steps):
         obs, _, _, _ = env.step([0.0] * 7)
         obs_window.append(_extract_obs(obs))
     if not obs_window:
@@ -470,6 +576,80 @@ def _obs_list_to_views(
         LIBERO_OBS_KEYS[0]: torch.from_numpy(np.stack([obs[LIBERO_OBS_KEYS[0]] for obs in obs_list], axis=0)).to(device=device),
         LIBERO_OBS_KEYS[1]: torch.from_numpy(np.stack([obs[LIBERO_OBS_KEYS[1]] for obs in obs_list], axis=0)).to(device=device),
     }
+
+
+def _select_model_obs_window(
+    frame_window: list[dict[str, np.ndarray]],
+    *,
+    chunk_index: int,
+    startup_model_obs_frames: int,
+) -> list[dict[str, np.ndarray]]:
+    if not frame_window:
+        raise ValueError("MoT visualization requires at least one observation frame.")
+    if chunk_index == 0:
+        if startup_model_obs_frames <= 0:
+            raise ValueError(
+                f"Expected positive startup_model_obs_frames, got {startup_model_obs_frames}."
+            )
+        if startup_model_obs_frames > len(frame_window):
+            raise ValueError(
+                "startup_model_obs_frames cannot exceed the available startup window, "
+                f"got startup_model_obs_frames={startup_model_obs_frames}, window={len(frame_window)}."
+            )
+        return list(frame_window[-startup_model_obs_frames:])
+    return list(frame_window)
+
+
+def _prepare_mot_visual_outputs(
+    pipeline,
+    *,
+    views: dict[str, torch.Tensor],
+    task_text: tuple[str | None, ...] | None,
+    frontend_device: torch.device,
+    runtime_device: torch.device,
+    use_streaming_frontend: bool,
+    text_context: torch.Tensor | None = None,
+    negative_text_context: torch.Tensor | None = None,
+):
+    if use_streaming_frontend:
+        canonical_batch = pipeline.canonicalize(views)
+        canonical_video = canonical_batch.video.to(device=frontend_device)
+        frontend_output = pipeline.visual_tower.run_frontend(
+            canonical_video,
+            placements=canonical_batch.placements,
+            task_text=task_text,
+            text_context=text_context,
+            negative_text_context=negative_text_context,
+            preserve_stream_cache=False,
+        )
+        runtime_dtype = pipeline.visual_tower.core.patch_embedding_mlp.weight.dtype
+        return pipeline.prepare_visual_outputs_from_latents(
+            frontend_output.video_latents.to(device=runtime_device, dtype=runtime_dtype),
+            task_text=task_text,
+            text_context=(
+                None
+                if frontend_output.conditioning.text_context is None
+                else frontend_output.conditioning.text_context.to(device=runtime_device, dtype=runtime_dtype)
+            ),
+            negative_text_context=(
+                None
+                if frontend_output.conditioning.negative_text_context is None
+                else frontend_output.conditioning.negative_text_context.to(
+                    device=runtime_device,
+                    dtype=runtime_dtype,
+                )
+            ),
+            canonical_video=canonical_video.to(device=runtime_device),
+        )
+    return _prepare_visual_outputs_offline(
+        pipeline,
+        views=views,
+        task_text=task_text,
+        frontend_device=frontend_device,
+        runtime_device=runtime_device,
+        text_context=text_context,
+        negative_text_context=negative_text_context,
+    )
 
 
 def _prepare_visual_outputs_offline(
@@ -545,6 +725,112 @@ def _build_output_path(
 ) -> Path:
     safe_prompt = prompt.replace(" ", "_")
     return root / benchmark_name / f"{task_id}_{safe_prompt}" / f"{episode_idx}_{done}_{suffix}.mp4"
+
+
+def _warmup_mot_packed_history_from_observations(
+    pipeline,
+    *,
+    session,
+    obs_list: list[dict[str, np.ndarray]],
+    action_history: torch.Tensor | None,
+    task_text: tuple[str | None, ...] | None,
+    frontend_device: torch.device,
+    runtime_device: torch.device,
+) -> dict[str, object]:
+    if not obs_list:
+        return {"warmup_skipped": True, "reason": "empty_obs_list"}
+    policy_state = session.policy_state
+    runtime_state = getattr(policy_state, "variant_state", None) if policy_state is not None else None
+    if runtime_state is None or not hasattr(runtime_state, "past_clean_latents"):
+        return {"warmup_skipped": True, "reason": "no_mot_runtime_state"}
+
+    views = _obs_list_to_views(obs_list, device=frontend_device)
+    warmup_outputs = _prepare_mot_visual_outputs(
+        pipeline,
+        views=views,
+        task_text=task_text,
+        frontend_device=frontend_device,
+        runtime_device=runtime_device,
+        use_streaming_frontend=False,
+        text_context=session.text_context,
+        negative_text_context=session.negative_text_context,
+    )
+    runtime_dtype = pipeline.visual_tower.core.patch_embedding_mlp.weight.dtype
+    real_latents = warmup_outputs.frontend.video_latents.to(device=runtime_device, dtype=runtime_dtype)
+    past_latents = runtime_state.past_clean_latents
+    history_window_frames = max(
+        int(real_latents.shape[2]),
+        int(getattr(pipeline.policy_variant.training_config, "window_size", real_latents.shape[2])),
+    )
+    frame_chunk_size = _frame_chunk_size(pipeline.config)
+    dropped_pred_latent_frames = 0
+    if past_latents is None:
+        base_latents = None
+    else:
+        past_latents = past_latents.to(device=runtime_device, dtype=runtime_dtype)
+        dropped_pred_latent_frames = min(int(frame_chunk_size), int(past_latents.shape[2]))
+        if dropped_pred_latent_frames <= 0:
+            base_latents = past_latents
+        elif int(getattr(policy_state, "step_index", 0)) <= 1 and dropped_pred_latent_frames >= int(past_latents.shape[2]):
+            # Chunk 0 keeps the single bootstrap observation; real_future_frames
+            # only contains frames collected after executing the first action
+            # chunk, mirroring M1's initial_latents + key_frame_latents warmup.
+            base_latents = past_latents[:, :, :1]
+            dropped_pred_latent_frames = max(0, int(past_latents.shape[2]) - 1)
+        else:
+            base_latents = past_latents[:, :, :-dropped_pred_latent_frames]
+    if base_latents is None or int(base_latents.shape[2]) == 0:
+        combined = real_latents
+    else:
+        combined = torch.cat([base_latents, real_latents], dim=2)
+    runtime_state.past_clean_latents = combined[:, :, -history_window_frames:].detach()
+
+    appended_action_tokens = 0
+    dropped_pred_action_tokens = 0
+    if action_history is not None and hasattr(runtime_state, "past_clean_actions"):
+        action_dim = int(getattr(pipeline.policy_variant, "action_dim", action_history.shape[-1]))
+        if action_history.ndim != 3 or action_history.shape[-1] != action_dim:
+            raise ValueError(
+                "MoT packed warmup action history must be [B, T_action, D_action], "
+                f"got {tuple(action_history.shape)}, action_dim={action_dim}."
+            )
+        action_tokens_per_frame = _action_per_frame(pipeline.config)
+        action_horizon = int(pipeline.config.data.action_schema.action_horizon)
+        warm_actions = action_history[:, :action_horizon].to(device=runtime_device, dtype=runtime_dtype)
+        if warm_actions.shape[1] > 0:
+            past_actions = runtime_state.past_clean_actions
+            if past_actions is None:
+                base_actions = None
+            else:
+                past_actions = past_actions.to(device=runtime_device, dtype=runtime_dtype)
+                dropped_pred_action_tokens = min(int(action_horizon), int(past_actions.shape[1]))
+                base_actions = past_actions[:, :-dropped_pred_action_tokens] if dropped_pred_action_tokens > 0 else past_actions
+            if base_actions is None or int(base_actions.shape[1]) == 0:
+                combined_actions = warm_actions
+            else:
+                combined_actions = torch.cat([base_actions, warm_actions], dim=1)
+            max_action_history_tokens = int(history_window_frames) * int(action_tokens_per_frame)
+            runtime_state.past_clean_actions = combined_actions[:, -max_action_history_tokens:].detach()
+            appended_action_tokens = int(warm_actions.shape[1])
+    if warmup_outputs.frontend.conditioning.text_context is not None:
+        session.text_context = warmup_outputs.frontend.conditioning.text_context
+    if warmup_outputs.frontend.conditioning.negative_text_context is not None:
+        session.negative_text_context = warmup_outputs.frontend.conditioning.negative_text_context
+    return {
+        "warmup_skipped": False,
+        "real_obs_frames": int(len(obs_list)),
+        "real_latent_frames": int(real_latents.shape[2]),
+        "past_clean_latent_frames_after": int(runtime_state.past_clean_latents.shape[2]),
+        "past_clean_action_frames_after": (
+            0
+            if getattr(runtime_state, "past_clean_actions", None) is None
+            else int(runtime_state.past_clean_actions.shape[1] // _action_per_frame(pipeline.config))
+        ),
+        "appended_action_tokens": int(appended_action_tokens),
+        "dropped_pred_latent_frames": int(dropped_pred_latent_frames),
+        "dropped_pred_action_tokens": int(dropped_pred_action_tokens),
+        "history_window_frames": int(history_window_frames),
+    }
 
 
 def _encode_video_window_offline(
@@ -634,6 +920,33 @@ def _offline_encode_chunk(assets, video: torch.Tensor) -> torch.Tensor:
         raise TypeError(f"Unsupported VAE encode output type: {type(posterior)!r}")
     normalized = assets._normalize_reference_latents(latents)
     return normalized.to(device=video.device)
+
+
+
+def _build_executed_action_history_tensor(
+    executed_control_actions: list[np.ndarray],
+    *,
+    start_frame_group: int,
+    action_per_frame: int,
+    action_dim: int,
+) -> torch.Tensor | None:
+    if action_per_frame <= 0:
+        raise ValueError(f"Expected action_per_frame > 0, got {action_per_frame}.")
+    if action_dim <= 0:
+        raise ValueError(f"Expected action_dim > 0, got {action_dim}.")
+    if not executed_control_actions:
+        return None
+    executed = np.stack(executed_control_actions, axis=0).astype(np.float32, copy=False)
+    if executed.ndim != 2 or int(executed.shape[-1]) != int(action_dim):
+        raise ValueError(
+            "Executed control action history must be [T, D_action], "
+            f"got {tuple(executed.shape)}, action_dim={action_dim}."
+        )
+    skipped_tokens = max(0, int(start_frame_group)) * int(action_per_frame)
+    if skipped_tokens > 0:
+        bootstrap_actions = np.zeros((skipped_tokens, action_dim), dtype=np.float32)
+        executed = np.concatenate([bootstrap_actions, executed], axis=0)
+    return torch.from_numpy(executed).unsqueeze(0)
 
 
 def _future_frame_count(config) -> int:

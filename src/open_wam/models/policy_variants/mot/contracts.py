@@ -52,6 +52,11 @@ class MoTRuntimeState:
     # denoise can attend the full generated-so-far sequence instead of
     # only the driver's sliding observation window. Shape [B, C, T, H, W].
     past_clean_latents: torch.Tensor | None = None
+    # Packed-coupling inference keeps denoised action chunks as clean action
+    # history. The native packed path does not use the shared exact slot-pool
+    # cache, so this tensor provides the action-side continuation that Method 1
+    # gets from its joint video/action cache. Shape [B, T_action, D_action].
+    past_clean_actions: torch.Tensor | None = None
     video_tokens_per_frame: int | None = None
     next_condition_frame_start: int = 0
     chunk_advance_frames: int = 0

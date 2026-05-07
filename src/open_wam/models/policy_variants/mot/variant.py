@@ -97,6 +97,22 @@ def _is_mot_same_step_coupling(coupling: CurrentBlockCoupling) -> bool:
     }
 
 
+def _mot_legacy_cache_inference_couplings() -> set[CurrentBlockCoupling]:
+    return {
+        CurrentBlockCoupling.VIDEO_THEN_ACTION,
+        CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+    }
+
+
+def _mot_packed_cache_inference_couplings() -> set[CurrentBlockCoupling]:
+    return {
+        CurrentBlockCoupling.JOINT,
+        CurrentBlockCoupling.ACTION_THEN_VIDEO,
+        CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
+        CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
+    }
+
+
 def _sample_mot_generalist_training_mode(
     probs: dict[MoTGeneralistTrainingMode, float],
     *,
@@ -301,6 +317,7 @@ class MoTPolicyVariant(PolicyVariant):
         # so FSDP can wrap the packed unit cleanly without aliasing.
         self.packed_block_stack: MoTPackedBlockStack | None = None
         self._packed_block_stack_attached = False
+        self._legacy_inference_blocks_restored = False
 
     def attach_visual_tower(self, visual_tower: VisualTower) -> None:
         """Pipeline-time hook: build the packed-coupling block stack.
@@ -334,6 +351,28 @@ class MoTPolicyVariant(PolicyVariant):
         self.packed_block_stack = MoTPackedBlockStack(video_blocks, action_blocks)
         visual_tower.core.blocks = torch.nn.ModuleList()
         self.action_expert.blocks = torch.nn.ModuleList()
+
+    def restore_packed_blocks_for_legacy_inference(self, visual_tower: VisualTower) -> bool:
+        """Reattach packed-owned blocks for inference-only legacy cache rollout.
+
+        Packed training transfers block ownership into ``packed_block_stack`` so
+        FSDP can shard paired video/action blocks cleanly. In single-process
+        inference there is no optimizer/FSDP state to confuse, so we can expose
+        the same block objects back through ``visual_tower.core.blocks`` and
+        ``action_expert.blocks`` to reuse the pre-packed Method-1-aligned cache
+        path. This does not copy weights.
+        """
+
+        if self.packed_block_stack is None:
+            return False
+        video_blocks = [packed_block.video_block for packed_block in self.packed_block_stack.packed_blocks]
+        action_blocks = [packed_block.action_block for packed_block in self.packed_block_stack.packed_blocks]
+        if not video_blocks or not action_blocks:
+            return False
+        visual_tower.core.blocks = torch.nn.ModuleList(video_blocks)
+        self.action_expert.blocks = torch.nn.ModuleList(action_blocks)
+        self._legacy_inference_blocks_restored = True
+        return True
 
     def _should_detach_train_video_cache(self, visual_tower: VisualTower) -> bool:
         core_id = id(visual_tower.core)
@@ -1263,8 +1302,9 @@ class MoTPolicyVariant(PolicyVariant):
                         # `_apply_mot_generalist_training_mode` to actually
                         # mask the action loss — but `action_artifacts` still
                         # holds the pre-A1 mask reference (the builder just
-                        # stores-and-returns the input tensor), so threading
-                        # the post-A1 mask here is the only place the masking
+                        # stores-and-returns the input tensor at
+                        # `flow_matching.py` line 417), so threading the
+                        # post-A1 mask here is the only place the masking
                         # actually takes effect downstream.
                         action_mask=effective_action_mask,
                     ),
@@ -1317,17 +1357,93 @@ class MoTPolicyVariant(PolicyVariant):
         video_latents = visual_outputs.frontend.video_latents.to(device=device, dtype=dtype)
         latent_height = int(video_latents.shape[-2])
         latent_width = int(video_latents.shape[-1])
-        if video_latents.shape[2] >= frame_chunk_size:
-            clean_video_condition = video_latents[:, :, -frame_chunk_size:].contiguous()
+        video_tokens_per_frame = int(visual_outputs.frontend.token_grid.tokens_per_frame)
+        first_step_bootstrap = int(infer_state.step_index) == 0 and int(infer_state.cursor.current_start_frame) == 0
+
+        past_clean_latents = runtime_state.past_clean_latents
+        if past_clean_latents is not None:
+            past_clean_latents = past_clean_latents.to(device=device, dtype=dtype)
+            if past_clean_latents.shape[0] != batch_size or past_clean_latents.shape[1] != video_latents.shape[1]:
+                raise ValueError(
+                    "M5 packed video history shape does not match current video latents, "
+                    f"got past={tuple(past_clean_latents.shape)}, current={tuple(video_latents.shape)}."
+                )
+            if past_clean_latents.shape[-2:] != video_latents.shape[-2:]:
+                raise ValueError(
+                    "M5 packed video history spatial shape does not match current video latents, "
+                    f"got past={tuple(past_clean_latents.shape)}, current={tuple(video_latents.shape)}."
+                )
+        past_clean_actions = runtime_state.past_clean_actions
+        if past_clean_actions is not None:
+            past_clean_actions = past_clean_actions.to(device=device, dtype=dtype)
+            if past_clean_actions.shape[0] != batch_size or past_clean_actions.shape[-1] != self.action_dim:
+                raise ValueError(
+                    "M5 packed action history shape does not match current action shape, "
+                    f"got past_actions={tuple(past_clean_actions.shape)}, batch_size={batch_size}, action_dim={self.action_dim}."
+                )
+            if past_clean_actions.shape[1] % action_tokens_per_frame != 0:
+                raise ValueError(
+                    "M5 packed action history length must be divisible by action_tokens_per_frame, "
+                    f"got past_action_tokens={past_clean_actions.shape[1]}, action_tokens_per_frame={action_tokens_per_frame}."
+                )
+
+        current_video_observation = video_latents[:, :, -1:].contiguous() if first_step_bootstrap else video_latents
+        current_video_frames = int(current_video_observation.shape[2])
+        if current_video_frames >= frame_chunk_size:
+            current_video_condition = current_video_observation[:, :, -frame_chunk_size:].contiguous()
         else:
-            repeat_count = int(frame_chunk_size - video_latents.shape[2])
-            clean_video_condition = torch.cat(
-                [video_latents, video_latents[:, :, -1:].expand(-1, -1, repeat_count, -1, -1)],
+            pad_frames = frame_chunk_size - current_video_frames
+            current_video_condition = torch.cat(
+                [
+                    current_video_observation,
+                    current_video_observation[:, :, -1:].expand(-1, -1, pad_frames, -1, -1),
+                ],
                 dim=2,
             ).contiguous()
-        noisy_video = torch.randn_like(clean_video_condition, device=device, dtype=dtype)
-        action_sample = torch.randn(batch_size, self.action_horizon, self.action_dim, device=device, dtype=dtype)
-        clean_action_condition = torch.zeros_like(action_sample)
+        current_noisy_video = torch.randn_like(current_video_condition, device=device, dtype=dtype)
+        current_clean_video = torch.zeros_like(current_noisy_video)
+        current_action_sample = torch.randn(batch_size, self.action_horizon, self.action_dim, device=device, dtype=dtype)
+        first_frame_video_cond = first_step_bootstrap and current_video_condition.shape[2] > 0
+        first_action_tokens = action_tokens_per_frame if first_step_bootstrap else 0
+        if first_frame_video_cond:
+            current_noisy_video[:, :, 0:1] = current_video_condition[:, :, 0:1]
+        if first_action_tokens > 0:
+            current_action_sample[:, :first_action_tokens] = 0.0
+
+        history_window_frames = max(frame_chunk_size, int(self.training_config.window_size))
+        history_video_frames = 0 if past_clean_latents is None else int(past_clean_latents.shape[2])
+        history_action_tokens = 0 if past_clean_actions is None else int(past_clean_actions.shape[1])
+        history_action_frames = history_action_tokens // action_tokens_per_frame
+        shared_history_frames = min(history_video_frames, history_action_frames)
+        max_history_frames = max(0, history_window_frames - frame_chunk_size)
+        if max_history_frames > 0:
+            shared_history_frames = min(shared_history_frames, max_history_frames)
+        else:
+            shared_history_frames = 0
+        if shared_history_frames > 0:
+            history_video = past_clean_latents[:, :, -shared_history_frames:].contiguous()
+            history_action_tokens = shared_history_frames * action_tokens_per_frame
+            history_actions = past_clean_actions[:, -history_action_tokens:].contiguous()
+        else:
+            history_video = None
+            history_actions = None
+            history_action_tokens = 0
+
+        if history_video is None:
+            noisy_video_sequence = current_noisy_video
+            clean_video_sequence = current_clean_video
+        else:
+            noisy_video_sequence = torch.cat([history_video, current_noisy_video], dim=2)
+            clean_video_sequence = torch.cat([history_video, current_clean_video], dim=2)
+        history_video_timesteps = torch.zeros(batch_size, shared_history_frames, device=device, dtype=torch.float32)
+        current_zero_video_timesteps = torch.zeros(batch_size, frame_chunk_size, device=device, dtype=torch.float32)
+        zero_action_current_timesteps = torch.zeros(batch_size, self.action_horizon, device=device, dtype=torch.float32)
+
+        if history_actions is None:
+            clean_action_condition = current_action_sample.new_zeros(batch_size, self.action_horizon, self.action_dim)
+        else:
+            clean_action_condition = torch.cat([history_actions, torch.zeros_like(current_action_sample)], dim=1)
+
         text_context = runtime_state.text_context
         if text_context is None:
             text_context = visual_outputs.frontend.conditioning.text_context
@@ -1356,9 +1472,9 @@ class MoTPolicyVariant(PolicyVariant):
                 f"got video_steps={len(video_scheduler.timesteps)}, action_steps={len(action_scheduler.timesteps)}."
             )
         attention_profile = build_mot_packed_coupling_attention_profile(
-            num_video_frames=frame_chunk_size,
-            video_tokens_per_frame=int(visual_outputs.frontend.token_grid.tokens_per_frame),
-            num_action_frames=frame_chunk_size,
+            num_video_frames=shared_history_frames + frame_chunk_size,
+            video_tokens_per_frame=video_tokens_per_frame,
+            num_action_frames=shared_history_frames + frame_chunk_size,
             action_tokens_per_frame=action_tokens_per_frame,
             chunk_size_frames=frame_chunk_size,
             device=device,
@@ -1367,6 +1483,7 @@ class MoTPolicyVariant(PolicyVariant):
             build_dense_masks=True,
             build_flex_masks=False,
         )
+        sequence_frame_start = int(infer_state.cursor.current_start_frame) - shared_history_frames
         action_grid_ids = self._build_action_grid_ids_for_sequence(
             batch_size=batch_size,
             seq_len=self.action_horizon,
@@ -1374,49 +1491,222 @@ class MoTPolicyVariant(PolicyVariant):
             device=device,
             frame_shift=int(infer_state.cursor.current_start_frame),
         )
-        packed_action_grid_ids = torch.cat([action_grid_ids, action_grid_ids], dim=-1)
-        zero_video_timesteps = torch.zeros(batch_size, frame_chunk_size, device=device, dtype=torch.float32)
-        zero_action_timesteps = torch.zeros(batch_size, self.action_horizon, device=device, dtype=torch.float32)
-        predicted_latents = noisy_video
-        for video_timestep, action_timestep in zip(video_scheduler.timesteps, action_scheduler.timesteps, strict=True):
-            dense_video_timestep = torch.full(
-                (batch_size, frame_chunk_size),
-                float(video_timestep),
+        if shared_history_frames > 0:
+            history_action_grid_ids = self._build_action_grid_ids_for_sequence(
+                batch_size=batch_size,
+                seq_len=history_action_tokens,
+                action_tokens_per_frame=action_tokens_per_frame,
                 device=device,
-                dtype=torch.float32,
+                frame_shift=int(sequence_frame_start),
             )
-            dense_action_timestep = torch.full(
-                (batch_size, self.action_horizon),
-                float(action_timestep),
-                device=device,
-                dtype=torch.float32,
+            action_sequence_grid_ids = torch.cat([history_action_grid_ids, action_grid_ids], dim=2)
+        else:
+            action_sequence_grid_ids = action_grid_ids
+        packed_action_grid_ids = torch.cat([action_sequence_grid_ids, action_sequence_grid_ids], dim=2)
+
+        predicted_video_sequence = noisy_video_sequence
+        action_sample = current_action_sample
+        zero_current_video_timestep = torch.zeros(
+            batch_size,
+            frame_chunk_size,
+            device=device,
+            dtype=torch.float32,
+        )
+        zero_current_action_timestep = torch.zeros(
+            batch_size,
+            self.action_horizon,
+            device=device,
+            dtype=torch.float32,
+        )
+        zero_current_action_condition = torch.zeros_like(current_action_sample)
+
+        def _compose_clean_video_sequence(current_clean_video_for_step: torch.Tensor) -> torch.Tensor:
+            if history_video is None:
+                return current_clean_video_for_step
+            return torch.cat([history_video, current_clean_video_for_step], dim=2)
+
+        def _build_packed_action_pre(
+            *,
+            action_tokens: torch.Tensor,
+            action_timestep: torch.Tensor,
+            current_clean_action_for_step: torch.Tensor,
+        ):
+            if history_actions is None:
+                noisy_action_sequence = action_tokens
+                noisy_action_timesteps = action_timestep
+                clean_action_sequence = current_clean_action_for_step
+            else:
+                noisy_action_sequence = torch.cat([history_actions, action_tokens], dim=1)
+                noisy_action_timesteps = torch.cat(
+                    [
+                        torch.zeros(batch_size, history_action_tokens, device=device, dtype=torch.float32),
+                        action_timestep,
+                    ],
+                    dim=1,
+                )
+                clean_action_sequence = torch.cat([history_actions, current_clean_action_for_step], dim=1)
+            packed_action_tokens = torch.cat([noisy_action_sequence, clean_action_sequence], dim=1)
+            packed_action_timesteps = torch.cat(
+                [
+                    noisy_action_timesteps,
+                    torch.zeros(
+                        batch_size,
+                        history_action_tokens + self.action_horizon,
+                        device=device,
+                        dtype=torch.float32,
+                    ),
+                ],
+                dim=1,
             )
-            packed_action_pre = self.action_expert.pre_dit(
-                action_tokens=torch.cat([action_sample, clean_action_condition], dim=1),
-                timestep=torch.cat([dense_action_timestep, zero_action_timesteps], dim=1),
+            return self.action_expert.pre_dit(
+                action_tokens=packed_action_tokens,
+                timestep=packed_action_timesteps,
                 context=text_context,
                 action_grid_ids=packed_action_grid_ids,
             )
-            video_flow_pred, packed_action_hidden = forward_mot_packed_coupling_denoise(
+
+        def _run_packed_step(
+            *,
+            video_timestep: torch.Tensor,
+            action_timestep: torch.Tensor,
+            current_clean_video_for_step: torch.Tensor,
+            current_clean_action_for_step: torch.Tensor,
+        ):
+            dense_video_timestep = torch.cat([history_video_timesteps, video_timestep], dim=1)
+            packed_action_pre = _build_packed_action_pre(
+                action_tokens=action_sample,
+                action_timestep=action_timestep,
+                current_clean_action_for_step=current_clean_action_for_step,
+            )
+            return forward_mot_packed_coupling_denoise(
                 visual_tower=visual_tower,
-                noisy_video_latents=predicted_latents,
-                clean_video_latents=clean_video_condition,
+                noisy_video_latents=predicted_video_sequence,
+                clean_video_latents=_compose_clean_video_sequence(current_clean_video_for_step),
                 noisy_video_timesteps=dense_video_timestep,
-                clean_video_timesteps=zero_video_timesteps,
+                clean_video_timesteps=torch.zeros_like(dense_video_timestep),
                 action_expert=self.action_expert,
                 packed_action_pre=packed_action_pre,
                 attention_profile=attention_profile,
                 text_context=text_context,
-                frame_start=int(infer_state.cursor.current_start_frame),
+                frame_start=int(sequence_frame_start),
                 use_activation_checkpointing=False,
                 packed_block_stack=self.packed_block_stack,
                 prefer_flex_attention=False,
+            ) + (packed_action_pre,)
+
+        def _video_timestep(value: torch.Tensor) -> torch.Tensor:
+            timestep = torch.full(
+                (batch_size, frame_chunk_size),
+                float(value),
+                device=device,
+                dtype=torch.float32,
             )
-            predicted_latents = video_scheduler.step(video_flow_pred, video_timestep, predicted_latents)
+            if first_frame_video_cond:
+                timestep[:, 0:1] = 0.0
+                predicted_video_sequence[:, :, shared_history_frames : shared_history_frames + 1] = current_video_condition[:, :, 0:1]
+            return timestep
+
+        def _action_timestep(value: torch.Tensor) -> torch.Tensor:
+            timestep = torch.full(
+                (batch_size, self.action_horizon),
+                float(value),
+                device=device,
+                dtype=torch.float32,
+            )
+            if first_action_tokens > 0:
+                timestep[:, :first_action_tokens] = 0.0
+                action_sample[:, :first_action_tokens] = 0.0
+            return timestep
+
+        def _update_video(video_flow_pred: torch.Tensor, video_timestep: torch.Tensor) -> None:
+            nonlocal predicted_video_sequence
+            current_video_flow = video_flow_pred[:, :, -frame_chunk_size:].contiguous()
+            current_predicted_video = predicted_video_sequence[:, :, -frame_chunk_size:].contiguous()
+            current_predicted_video = video_scheduler.step(current_video_flow, video_timestep, current_predicted_video)
+            if first_frame_video_cond:
+                current_predicted_video[:, :, 0:1] = current_video_condition[:, :, 0:1]
+            predicted_video_sequence = torch.cat(
+                [predicted_video_sequence[:, :, :shared_history_frames], current_predicted_video],
+                dim=2,
+            )
+
+        def _update_action(
+            packed_action_hidden: torch.Tensor,
+            packed_action_pre,
+            action_timestep: torch.Tensor,
+        ) -> None:
+            nonlocal action_sample
             packed_action_flow = self.action_expert.post_dit(packed_action_hidden, packed_action_pre)
             action_flow_pred = packed_action_flow[:, : self.action_horizon]
             action_sample = action_scheduler.step(action_flow_pred, action_timestep, action_sample)
+            if first_action_tokens > 0:
+                action_sample[:, :first_action_tokens] = 0.0
 
+        if current_block_coupling == CurrentBlockCoupling.VIDEO_THEN_ACTION:
+            for video_timestep in video_scheduler.timesteps:
+                current_video_timestep = _video_timestep(video_timestep)
+                video_flow_pred, _, _ = _run_packed_step(
+                    video_timestep=current_video_timestep,
+                    action_timestep=zero_current_action_timestep,
+                    current_clean_video_for_step=current_clean_video,
+                    current_clean_action_for_step=zero_current_action_condition,
+                )
+                _update_video(video_flow_pred, video_timestep)
+            current_clean_video = predicted_video_sequence[:, :, -frame_chunk_size:].contiguous()
+            for action_timestep in action_scheduler.timesteps:
+                current_action_timestep = _action_timestep(action_timestep)
+                _, packed_action_hidden, packed_action_pre = _run_packed_step(
+                    video_timestep=zero_current_video_timestep,
+                    action_timestep=current_action_timestep,
+                    current_clean_video_for_step=current_clean_video,
+                    current_clean_action_for_step=zero_current_action_condition,
+                )
+                _update_action(packed_action_hidden, packed_action_pre, action_timestep)
+        elif current_block_coupling == CurrentBlockCoupling.ACTION_THEN_VIDEO:
+            for action_timestep in action_scheduler.timesteps:
+                current_action_timestep = _action_timestep(action_timestep)
+                _, packed_action_hidden, packed_action_pre = _run_packed_step(
+                    video_timestep=zero_current_video_timestep,
+                    action_timestep=current_action_timestep,
+                    current_clean_video_for_step=current_clean_video,
+                    current_clean_action_for_step=zero_current_action_condition,
+                )
+                _update_action(packed_action_hidden, packed_action_pre, action_timestep)
+            current_clean_action = action_sample
+            for video_timestep in video_scheduler.timesteps:
+                current_video_timestep = _video_timestep(video_timestep)
+                video_flow_pred, _, _ = _run_packed_step(
+                    video_timestep=current_video_timestep,
+                    action_timestep=zero_current_action_timestep,
+                    current_clean_video_for_step=current_clean_video,
+                    current_clean_action_for_step=current_clean_action,
+                )
+                _update_video(video_flow_pred, video_timestep)
+        else:
+            for video_timestep, action_timestep in zip(video_scheduler.timesteps, action_scheduler.timesteps, strict=True):
+                current_video_timestep = _video_timestep(video_timestep)
+                current_action_timestep = _action_timestep(action_timestep)
+                video_flow_pred, packed_action_hidden, packed_action_pre = _run_packed_step(
+                    video_timestep=current_video_timestep,
+                    action_timestep=current_action_timestep,
+                    current_clean_video_for_step=current_clean_video,
+                    current_clean_action_for_step=zero_current_action_condition,
+                )
+                _update_video(video_flow_pred, video_timestep)
+                _update_action(packed_action_hidden, packed_action_pre, action_timestep)
+
+        predicted_chunk_latents = predicted_video_sequence[:, :, -frame_chunk_size:].contiguous()
+        if first_frame_video_cond:
+            predicted_chunk_latents[:, :, 0:1] = current_video_condition[:, :, 0:1]
+        next_clean_context = torch.cat([clean_video_sequence[:, :, :shared_history_frames], predicted_chunk_latents], dim=2)
+        runtime_state.past_clean_latents = next_clean_context[:, :, -history_window_frames:].detach()
+        if history_actions is None:
+            next_clean_actions = action_sample
+        else:
+            next_clean_actions = torch.cat([history_actions, action_sample], dim=1)
+        max_action_history_tokens = history_window_frames * action_tokens_per_frame
+        runtime_state.past_clean_actions = next_clean_actions[:, -max_action_history_tokens:].detach()
+        runtime_state.next_condition_frame_start = int(infer_state.cursor.current_start_frame + frame_chunk_size)
         next_state = infer_state
         next_state.step_index += 1
         next_state.cursor.current_start_frame = int(infer_state.cursor.current_start_frame + frame_chunk_size)
@@ -1429,11 +1719,29 @@ class MoTPolicyVariant(PolicyVariant):
                 "method_family": "mot",
                 "condition_mode": str(self.config.condition_mode),
                 "current_block_coupling": current_block_coupling.value,
-                "predicted_latents": predicted_latents.detach(),
-                "predicted_video_latents": predicted_latents.detach(),
+                "predicted_latents": predicted_chunk_latents.detach(),
+                "predicted_video_latents": predicted_chunk_latents.detach(),
+                "mot_first_step_bootstrap": first_step_bootstrap,
+                "mot_action_cond_tokens": first_action_tokens,
+                "mot_history_anchor_frames": int(shared_history_frames),
+                "mot_packed_history_debug": {
+                    "past_clean_latent_frames": 0 if past_clean_latents is None else int(past_clean_latents.shape[2]),
+                    "past_clean_action_frames": 0 if past_clean_actions is None else int(past_clean_actions.shape[1] // action_tokens_per_frame),
+                    "shared_history_frames": int(shared_history_frames),
+                    "current_observed_latent_frames": int(video_latents.shape[2]),
+                    "current_clean_condition_frames": int(current_clean_video.shape[2]),
+                    "packed_video_frames": int(shared_history_frames + frame_chunk_size),
+                    "packed_action_frames": int(shared_history_frames + frame_chunk_size),
+                    "history_window_frames": int(history_window_frames),
+                    "next_past_clean_latent_frames": int(runtime_state.past_clean_latents.shape[2]),
+                    "next_past_clean_action_frames": int(runtime_state.past_clean_actions.shape[1] // action_tokens_per_frame),
+                    "sequence_frame_start": int(sequence_frame_start),
+                    "current_frame_start": int(infer_state.cursor.current_start_frame),
+                    "mode_uses_packed_cache": True,
+                },
                 "mot_infer_artifacts": MoTInferArtifacts(
                     action_pred=action_sample,
-                    predicted_latents=predicted_latents.detach(),
+                    predicted_latents=predicted_chunk_latents.detach(),
                     condition_mode=str(self.config.condition_mode),
                     runtime_mode=str(self.config.runtime_mode),
                 ),
@@ -1521,7 +1829,13 @@ class MoTPolicyVariant(PolicyVariant):
             infer_state.variant_state if isinstance(infer_state.variant_state, MoTRuntimeState) else MoTRuntimeState()
         )
         self._maybe_initialize_action_expert(visual_tower)
-        if self.config.current_block_coupling is not None:
+        current_block_coupling_for_infer = resolve_mot_current_block_coupling(self.config)
+        use_legacy_cache_infer = (
+            self.config.current_block_coupling is not None
+            and bool(self._legacy_inference_blocks_restored)
+            and current_block_coupling_for_infer in _mot_legacy_cache_inference_couplings()
+        )
+        if self.config.current_block_coupling is not None and not use_legacy_cache_infer:
             return self._forward_infer_packed_coupling(
                 visual_tower=visual_tower,
                 visual_outputs=visual_outputs,
@@ -1715,19 +2029,10 @@ class MoTPolicyVariant(PolicyVariant):
             )
         action_tokens_per_frame = self.action_horizon // chunk_frames
         current_block_coupling = resolve_mot_current_block_coupling(self.config)
-        if current_block_coupling in {
-            CurrentBlockCoupling.JOINT,
-            CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
-            CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
-        }:
+        if current_block_coupling not in _mot_legacy_cache_inference_couplings():
             raise NotImplementedError(
-                "M5 non_joint_two_stream inference cannot express same-step noisy cross-stream coupling; "
-                f"got current_block_coupling={current_block_coupling.value!r}. "
-                "Use runtime_mode='joint_denoise' for same-step video/action coupling."
-            )
-        if current_block_coupling == CurrentBlockCoupling.ACTION_THEN_VIDEO:
-            raise NotImplementedError(
-                "M5 current_block_coupling='action_then_video' requires staged action-before-video orchestration."
+                "M5 legacy split-cache inference only supports staged video_then_action and decoupled_same_step; "
+                f"got current_block_coupling={current_block_coupling.value!r}."
             )
         video_commit_before_action = current_block_coupling == CurrentBlockCoupling.VIDEO_THEN_ACTION
 
