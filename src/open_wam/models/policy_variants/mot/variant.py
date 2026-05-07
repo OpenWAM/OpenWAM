@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace as _dataclass_replace
 
 import torch
 import torch.nn.functional as F
 
 from open_wam.models.common.flow_matching import (
+    VideoFlowMatchTrainArtifacts,
     build_video_flow_match_train_artifacts,
     build_video_flow_match_inference_scheduler,
     build_action_flow_match_inference_scheduler,
@@ -14,7 +16,14 @@ from open_wam.models.common.flow_matching import (
     denoised_actions_from_flow,
     denoised_video_latents_from_flow,
 )
-from open_wam.configs import CurrentBlockCoupling, InferenceConfig, MoTPolicyConfig, MoTRuntimeMode, TrainingConfig
+from open_wam.configs import (
+    CurrentBlockCoupling,
+    InferenceConfig,
+    MoTGeneralistTrainingMode,
+    MoTPolicyConfig,
+    MoTRuntimeMode,
+    TrainingConfig,
+)
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 from open_wam.models.visual_tower.grid_ids import build_action_grid_ids
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
@@ -41,19 +50,18 @@ from .contracts import (
     MoTVideoTrainArtifacts,
 )
 from .modules import MoTActionExpert, init_action_expert_from_video_core
+from .packed_block import MoTPackedBlock, MoTPackedBlockStack
 from .runtime import (
     append_mot_action_cache,
     append_mot_video_cache,
     build_chunk_causal_video_mask,
     build_mot_attention_mask,
     build_mot_inference_action_attention_mask,
-    build_packed_action_attention_mask,
-    build_packed_video_self_attention_mask,
+    build_mot_packed_coupling_attention_profile,
     forward_joint_video_action_denoise,
+    forward_mot_packed_coupling_denoise,
     forward_action_with_video_and_action_cache,
     forward_action_with_video_cache,
-    forward_packed_action_with_video_cache,
-    forward_packed_video_denoise,
     move_mot_action_cache,
     move_mot_video_cache,
     prefill_video_kv_cache,
@@ -74,8 +82,132 @@ def resolve_mot_current_block_coupling(config: MoTPolicyConfig) -> CurrentBlockC
     """Resolve Method-5 current-block coupling, defaulting to current behavior."""
 
     if config.current_block_coupling is None:
+        if config.runtime_mode == MoTRuntimeMode.JOINT_DENOISE:
+            return CurrentBlockCoupling.JOINT
         return CurrentBlockCoupling.VIDEO_THEN_ACTION
     return CurrentBlockCoupling(config.current_block_coupling)
+
+
+def _is_mot_same_step_coupling(coupling: CurrentBlockCoupling) -> bool:
+    return coupling in {
+        CurrentBlockCoupling.JOINT,
+        CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+        CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
+        CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
+    }
+
+
+def _sample_mot_generalist_training_mode(
+    probs: dict[MoTGeneralistTrainingMode, float],
+    *,
+    device: torch.device,
+) -> MoTGeneralistTrainingMode:
+    """Sample one M5 generalist regime per segment.
+
+    Mirrors PR #95's ``_sample_joint_denoise_training_mode``: builds a
+    categorical from the (already-normalized) probs dict and draws a single
+    mode. Sampling runs on the same device as the training segment so it
+    stays deterministic under a seeded RNG state.
+    """
+
+    ordered_modes = list(MoTGeneralistTrainingMode)
+    weights = torch.tensor(
+        [float(probs.get(mode, 0.0)) for mode in ordered_modes],
+        device=device,
+        dtype=torch.float32,
+    )
+    index = int(torch.multinomial(weights, num_samples=1).item())
+    return ordered_modes[index]
+
+
+def _apply_mot_generalist_training_mode(
+    *,
+    sampled_mode: MoTGeneralistTrainingMode,
+    video_artifacts: VideoFlowMatchTrainArtifacts,
+    noisy_actions: torch.Tensor,
+    clean_actions: torch.Tensor,
+    noisy_slot_timesteps: torch.Tensor,
+    future_loss_mask: torch.Tensor,
+    effective_action_mask: torch.Tensor | None,
+) -> tuple[
+    VideoFlowMatchTrainArtifacts,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor | None,
+]:
+    """A1 strict parity with M1 PR #95 for M5's two-expert architecture.
+
+    Realizes the conditional sub-modes by placing the clean modality into its
+    noisy slot, zeroing the corresponding condition slot, forcing per-frame
+    timesteps to 0 on the conditioned side, and masking that side's loss.
+    Returns updated copies of every tensor that the conditional branch needs
+    to override; ``JOINT`` keeps both noisy slots active and zeroes unused clean condition slots.
+
+    The conditioned-side ``noisy_video_condition_prob`` augmentation is
+    cancelled here (we force ``condition_timesteps`` to zero) so that the
+    "clean condition" the model receives is genuinely clean — matching PR
+    #95 where ``_zero_condition_slot`` zeros the unused condition slot.
+    """
+
+    zero_condition_video_artifacts = _dataclass_replace(
+        video_artifacts,
+        condition_latents=torch.zeros_like(video_artifacts.condition_latents),
+        condition_timesteps=torch.zeros_like(video_artifacts.condition_timesteps),
+    )
+    zero_clean_actions = torch.zeros_like(clean_actions)
+
+    if sampled_mode == MoTGeneralistTrainingMode.JOINT:
+        return (
+            zero_condition_video_artifacts,
+            noisy_actions,
+            zero_clean_actions,
+            noisy_slot_timesteps,
+            future_loss_mask,
+            effective_action_mask,
+        )
+
+    if sampled_mode == MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO:
+        # Clean action overwrites the A_noisy slot at timestep 0; A_clean
+        # condition slot is zeroed; action loss is masked out so video-only
+        # gradients drive this segment.
+        new_noisy_actions = clean_actions.clone()
+        new_clean_actions = zero_clean_actions
+        new_noisy_slot_timesteps = torch.zeros_like(noisy_slot_timesteps)
+        if effective_action_mask is None:
+            new_action_mask: torch.Tensor | None = torch.zeros_like(noisy_actions)
+        else:
+            new_action_mask = torch.zeros_like(effective_action_mask)
+        return (
+            zero_condition_video_artifacts,
+            new_noisy_actions,
+            new_clean_actions,
+            new_noisy_slot_timesteps,
+            future_loss_mask,
+            new_action_mask,
+        )
+
+    if sampled_mode == MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION:
+        # Clean video overwrites the V_noisy slot at timestep 0; V_clean
+        # condition slot is zeroed; video loss is masked out so action-only
+        # gradients drive this segment.
+        new_video_artifacts = _dataclass_replace(
+            zero_condition_video_artifacts,
+            noisy_latents=video_artifacts.condition_latents.clone(),
+            timesteps=torch.zeros_like(video_artifacts.timesteps),
+        )
+        new_future_loss_mask = torch.zeros_like(future_loss_mask)
+        return (
+            new_video_artifacts,
+            noisy_actions,
+            zero_clean_actions,
+            noisy_slot_timesteps,
+            new_future_loss_mask,
+            effective_action_mask,
+        )
+
+    raise ValueError(f"Unsupported MoTGeneralistTrainingMode {sampled_mode!r}.")
 
 
 def _rewind_runtime_action_cache_to_frame(
@@ -164,6 +296,44 @@ class MoTPolicyVariant(PolicyVariant):
         )
         self._action_expert_initialized = False
         self._train_video_cache_detach_by_core_id: dict[int, bool] = {}
+        # Lazy-initialized at pipeline assembly time when current_block_coupling
+        # is set. Owns video_block + action_block pairs after ownership transfer
+        # so FSDP can wrap the packed unit cleanly without aliasing.
+        self.packed_block_stack: MoTPackedBlockStack | None = None
+        self._packed_block_stack_attached = False
+
+    def attach_visual_tower(self, visual_tower: VisualTower) -> None:
+        """Pipeline-time hook: build the packed-coupling block stack.
+
+        Must run AFTER both ``visual_tower`` and ``self.action_expert`` exist
+        but BEFORE FSDP sharding. Transfers ownership of video core blocks and
+        action expert blocks into ``self.packed_block_stack`` so FSDP only
+        sees a single owner per nn.Parameter (no shared-module aliasing).
+        Non-packed runtime modes are no-ops.
+
+        ``_maybe_initialize_action_expert`` runs BEFORE the transfer because
+        the init helper reads from ``visual_tower.core.blocks`` and writes to
+        ``self.action_expert.blocks``; after transfer both ModuleLists are
+        empty.
+        """
+        if self._packed_block_stack_attached:
+            return
+        self._packed_block_stack_attached = True
+        if self.config.current_block_coupling is None:
+            return
+        # Run lazy action-expert init now, while blocks still live under
+        # visual_tower.core / self.action_expert.
+        self._maybe_initialize_action_expert(visual_tower)
+        video_blocks = list(visual_tower.core.blocks)
+        action_blocks = list(self.action_expert.blocks)
+        # Build the stack first so it owns the children; then drop them from
+        # the original ModuleList containers. Param identity is preserved
+        # across the move (same nn.Parameter objects, just under a new parent),
+        # so any optimizer built from `model.parameters()` after this hook runs
+        # sees the same set.
+        self.packed_block_stack = MoTPackedBlockStack(video_blocks, action_blocks)
+        visual_tower.core.blocks = torch.nn.ModuleList()
+        self.action_expert.blocks = torch.nn.ModuleList()
 
     def _should_detach_train_video_cache(self, visual_tower: VisualTower) -> bool:
         core_id = id(visual_tower.core)
@@ -173,80 +343,39 @@ class MoTPolicyVariant(PolicyVariant):
             self._train_video_cache_detach_by_core_id[core_id] = detach_cache
         return bool(detach_cache)
 
-    def _resolve_train_frame_range(
+    def _resolve_train_loss_frame_range(
         self,
         *,
         batch: PolicyTrainBatch,
         observed_num_frames: int,
-        start_key: str,
-        end_key: str,
+        start_key: str = "loss_frame_start",
+        end_key: str = "loss_frame_end",
+        fallback_to_generic: bool = True,
     ) -> tuple[int, int] | None:
         metadata = batch.extra.get("metadata")
         if not isinstance(metadata, tuple) or not metadata:
             return None
         metadata_start = metadata[0].get(start_key)
         metadata_end = metadata[0].get(end_key)
+        if (
+            metadata_start is None
+            and metadata_end is None
+            and fallback_to_generic
+            and (start_key, end_key) != ("loss_frame_start", "loss_frame_end")
+        ):
+            metadata_start = metadata[0].get("loss_frame_start")
+            metadata_end = metadata[0].get("loss_frame_end")
         if metadata_start is None and metadata_end is None:
             return None
         loss_frame_start = 0 if metadata_start is None else int(metadata_start)
         loss_frame_end = observed_num_frames if metadata_end is None else int(metadata_end)
         if loss_frame_start < 0 or loss_frame_end < loss_frame_start or loss_frame_end > observed_num_frames:
             raise ValueError(
-                f"Invalid MoT train frame-range metadata for {start_key}/{end_key}, "
+                "Invalid MoT train loss-frame metadata, "
+                f"keys=({start_key!r}, {end_key!r}), "
                 f"got start={loss_frame_start}, end={loss_frame_end}, observed_num_frames={observed_num_frames}."
             )
         return loss_frame_start, loss_frame_end
-
-    def _resolve_train_loss_frame_range(
-        self,
-        *,
-        batch: PolicyTrainBatch,
-        observed_num_frames: int,
-    ) -> tuple[int, int] | None:
-        return self._resolve_train_frame_range(
-            batch=batch,
-            observed_num_frames=observed_num_frames,
-            start_key="loss_frame_start",
-            end_key="loss_frame_end",
-        )
-
-    def _resolve_train_action_loss_frame_range(
-        self,
-        *,
-        batch: PolicyTrainBatch,
-        observed_num_frames: int,
-    ) -> tuple[int, int] | None:
-        action_range = self._resolve_train_frame_range(
-            batch=batch,
-            observed_num_frames=observed_num_frames,
-            start_key="action_loss_frame_start",
-            end_key="action_loss_frame_end",
-        )
-        if action_range is not None:
-            return action_range
-        return self._resolve_train_loss_frame_range(
-            batch=batch,
-            observed_num_frames=observed_num_frames,
-        )
-
-    def _resolve_train_latent_loss_frame_range(
-        self,
-        *,
-        batch: PolicyTrainBatch,
-        observed_num_frames: int,
-    ) -> tuple[int, int] | None:
-        latent_range = self._resolve_train_frame_range(
-            batch=batch,
-            observed_num_frames=observed_num_frames,
-            start_key="latent_loss_frame_start",
-            end_key="latent_loss_frame_end",
-        )
-        if latent_range is not None:
-            return latent_range
-        return self._resolve_train_loss_frame_range(
-            batch=batch,
-            observed_num_frames=observed_num_frames,
-        )
 
     def _resolve_train_history_frames(
         self,
@@ -264,7 +393,7 @@ class MoTPolicyVariant(PolicyVariant):
             batch=batch,
             observed_num_frames=observed_num_frames,
         )
-        if loss_frame_range is not None and int(loss_frame_range[0]) > 0:
+        if loss_frame_range is not None:
             resolved_history_frames = int(loss_frame_range[0])
         if resolved_history_frames is None:
             resolved_history_frames = int(self.config.video_prefix_frames)
@@ -282,9 +411,11 @@ class MoTPolicyVariant(PolicyVariant):
         observed_num_frames: int,
     ) -> torch.Tensor | None:
         base_mask = batch.action_mask
-        loss_frame_range = self._resolve_train_action_loss_frame_range(
+        loss_frame_range = self._resolve_train_loss_frame_range(
             batch=batch,
             observed_num_frames=observed_num_frames,
+            start_key="action_loss_frame_start",
+            end_key="action_loss_frame_end",
         )
         if loss_frame_range is None:
             return base_mask
@@ -319,9 +450,11 @@ class MoTPolicyVariant(PolicyVariant):
             device=video_latents.device,
             dtype=video_latents.dtype,
         )
-        loss_frame_range = self._resolve_train_latent_loss_frame_range(
+        loss_frame_range = self._resolve_train_loss_frame_range(
             batch=batch,
             observed_num_frames=int(video_latents.shape[2]),
+            start_key="latent_loss_frame_start",
+            end_key="latent_loss_frame_end",
         )
         if loss_frame_range is None:
             future_loss_mask[:, :, default_history_frames:] = 1.0
@@ -542,6 +675,12 @@ class MoTPolicyVariant(PolicyVariant):
         prepared_inputs: PolicyPreparedInputs,
     ) -> PolicyTrainOutput:
         self._maybe_initialize_action_expert(visual_tower)
+        if self.config.current_block_coupling is not None:
+            return self._forward_train_packed_coupling(
+                visual_tower=visual_tower,
+                visual_outputs=visual_outputs,
+                prepared_inputs=prepared_inputs,
+            )
         if self.config.runtime_mode == MoTRuntimeMode.JOINT_DENOISE:
             return self._forward_train_joint_denoise(
                 visual_tower=visual_tower,
@@ -726,6 +865,13 @@ class MoTPolicyVariant(PolicyVariant):
     ) -> PolicyTrainOutput:
         video_latents = prepared_inputs.variant_inputs["video_latents"]
         text_context = prepared_inputs.variant_inputs["text_context"]
+        current_block_coupling = resolve_mot_current_block_coupling(self.config)
+        if not _is_mot_same_step_coupling(current_block_coupling):
+            raise NotImplementedError(
+                "M5 joint_denoise train supports same-step couplings only; "
+                f"got current_block_coupling={current_block_coupling.value!r}. "
+                "Use runtime_mode='non_joint_two_stream' for staged video_then_action."
+            )
         history_frames = self._resolve_train_history_frames(
             batch=prepared_inputs.batch,
             observed_num_frames=int(video_latents.shape[2]),
@@ -759,6 +905,10 @@ class MoTPolicyVariant(PolicyVariant):
         sampled_window_size = self._resolve_train_sampled_window_size(
             batch=prepared_inputs.batch,
         )
+        if sampled_chunk_size is None:
+            sampled_chunk_size = max(1, int(self.training_config.chunk_size))
+        if sampled_window_size is None:
+            sampled_window_size = max(1, int(self.training_config.window_size))
         frame_shift = self._resolve_train_frame_shift(batch=prepared_inputs.batch)
 
         train_artifacts = build_action_flow_match_train_artifacts(
@@ -802,6 +952,8 @@ class MoTPolicyVariant(PolicyVariant):
                 action_tokens_per_frame=action_tokens_per_frame,
                 action_chunk_size_frames=sampled_chunk_size,
                 clean_video_frames=history_frames,
+                attention_window_size=sampled_window_size,
+                current_block_coupling=current_block_coupling,
             ),
             use_activation_checkpointing=self.config.use_activation_checkpointing,
         )
@@ -830,6 +982,7 @@ class MoTPolicyVariant(PolicyVariant):
                 "method_family": "mot",
                 "condition_mode": str(self.config.condition_mode),
                 "runtime_mode": str(self.config.runtime_mode),
+                "current_block_coupling": current_block_coupling.value,
                 "sampled_chunk_size": sampled_chunk_size,
                 "sampled_window_size": sampled_window_size,
                 "mot_train_artifacts": MoTTrainArtifacts(
@@ -857,40 +1010,16 @@ class MoTPolicyVariant(PolicyVariant):
             },
         )
 
-    def _forward_train_non_joint_two_stream(
+    def _forward_train_packed_coupling(
         self,
         visual_tower: VisualTower,
         visual_outputs: VisualStageOutputs,
         prepared_inputs: PolicyPreparedInputs,
     ) -> PolicyTrainOutput:
-        # Method-1 non-joint aligned training via packed [noisy | clean] copies
-        # on BOTH video and action streams. Direct structural port of Method 1's
-        # ``chunked_temporal_exact`` packed layout to MoT's two-expert
-        # architecture.
-        #
-        # Structure (matches Method 1's packed sequence semantics):
-        #
-        #   Forward V -- packed ``[V_noisy | V_clean]`` through the video core.
-        #     Both halves share the same frame positions (identical rotary
-        #     embeddings); only the attention mask's ``noise_id`` distinguishes
-        #     them. Mask enforces the Method 1 rules over chunk ids:
-        #       clean_to_clean: kv_chunk <= q_chunk
-        #       noise_to_clean: kv_chunk <  q_chunk   (key insight)
-        #       noise_to_noisy: kv_chunk == q_chunk
-        #     The ``V_noisy`` half output is the video flow prediction; the
-        #     ``V_clean`` half K/V is extracted per layer for the action
-        #     stream to attend in the next forward.
-        #
-        #   Forward A -- packed ``[A_noisy | A_clean]`` through the action
-        #     expert, joint K/V = ``[V_clean_cache | A_noisy | A_clean]``.
-        #     Method 1's mask rules apply across three segments, with video
-        #     chunk ids = ``2*chunk`` (even), action chunk ids =
-        #     ``2*chunk + 1`` (odd). The ``A_noisy`` half output is the
-        #     action flow prediction.
-        #
-        # Loss is taken only from the noisy halves; clean halves are
-        # teacher-forced conditioning. Both losses backprop through the shared
-        # video core (V_clean K/V are NOT detached).
+        # Method-1-style four-branch packed training for M5's two-expert
+        # architecture. Query/key layout is [V_noisy, V_clean, A_noisy,
+        # A_clean]; the coupling mask determines current-chunk visibility for
+        # all six modes while both experts remain separate transformer stacks.
         self._maybe_initialize_action_expert(visual_tower)
         video_latents = prepared_inputs.variant_inputs["video_latents"]
         text_context = prepared_inputs.variant_inputs["text_context"]
@@ -946,61 +1075,38 @@ class MoTPolicyVariant(PolicyVariant):
                 "`sampled_chunk_size` resolvable from the batch metadata or full-segment fallback, got None."
             )
 
-        # ---- Video side: build noisy/clean pair and run packed forward. ----
-        # Per-frame timesteps sampled for every frame (including history);
-        # Method 1 parity -- no ``history`` pin, the loss mask handles what
-        # counts. The ``condition_latents`` / ``condition_timesteps`` carry
-        # the (possibly augmented) V_clean copy per Method 1's
-        # ``noisy_video_condition_prob`` logic.
+        sampled_generalist_mode: MoTGeneralistTrainingMode | None = None
+        generalist_probs = self.config.mot_generalist_training_mode_probs
+        if generalist_probs is not None:
+            sampled_generalist_mode = _sample_mot_generalist_training_mode(
+                generalist_probs,
+                device=video_latents.device,
+            )
+
         video_artifacts = build_video_flow_match_train_artifacts(
             video_latents,
             training_config=self.training_config,
-            noisy_condition_prob=float(self.config.noisy_video_condition_prob),
+            noisy_condition_prob=0.0
+            if sampled_generalist_mode is not None
+            else float(self.config.noisy_video_condition_prob),
+        )
+        coupled_action_sigma_values = (
+            video_artifacts.scheduler.sigma_for_timesteps(video_artifacts.timesteps)
+            if sampled_generalist_mode == MoTGeneralistTrainingMode.JOINT
+            else None
         )
         future_loss_mask = self._build_effective_video_loss_mask(
             video_latents=video_latents,
             batch=prepared_inputs.batch,
             default_history_frames=history_frames,
         )
-        packed_video_mask = build_packed_video_self_attention_mask(
-            num_frames=num_video_frames,
-            video_tokens_per_frame=video_tokens_per_frame,
-            action_chunk_size_frames=sampled_chunk_size,
-            device=video_latents.device,
-            attention_window_size=sampled_window_size,
-        )
-        video_flow_pred, v_clean_cache = forward_packed_video_denoise(
-            visual_tower=visual_tower,
-            noisy_video_latents=video_artifacts.noisy_latents,
-            clean_video_latents=video_artifacts.condition_latents,
-            noisy_timesteps=video_artifacts.timesteps,
-            clean_timesteps=video_artifacts.condition_timesteps,
-            packed_attention_mask=packed_video_mask,
-            text_context=text_context,
-            frame_start=frame_shift,
-            use_activation_checkpointing=bool(self.config.use_activation_checkpointing),
-        )
-        predicted_latents = denoised_video_latents_from_flow(
-            noisy_latents=video_artifacts.noisy_latents,
-            flow_pred=video_flow_pred,
-            timesteps=video_artifacts.timesteps,
-            scheduler=video_artifacts.scheduler,
-        )
-
-        # ---- Action side: pack [A_noisy | A_clean] and run against V_clean. ----
-        # No history pin on A_noisy either (Method 1 parity); the effective
-        # action mask already zeros out loss on history positions.
-        #
-        # Timesteps are sampled per-frame (F values) and broadcast across the
-        # `action_per_frame` slots in each frame via `slot_timesteps`. This
-        # matches Method 1's `_add_noise(action_mode=True)` which samples
-        # `batch_size=num_frames` timesteps and adds noise along `t_dim=2`.
         action_artifacts = build_frame_aligned_action_flow_match_train_artifacts(
             prepared_inputs.batch.actions,
             effective_action_mask,
             training_config=self.training_config,
             num_frames=num_video_frames,
             action_per_frame=int(action_tokens_per_frame),
+            frame_sigma_values=coupled_action_sigma_values,
         )
         noisy_actions = action_artifacts.noisy_actions
         clean_actions = action_artifacts.condition_actions.to(
@@ -1012,22 +1118,38 @@ class MoTPolicyVariant(PolicyVariant):
                 f"got noisy={tuple(noisy_actions.shape)}, clean={tuple(clean_actions.shape)}."
             )
         current_block_coupling = resolve_mot_current_block_coupling(self.config)
-        if current_block_coupling == CurrentBlockCoupling.JOINT:
-            raise NotImplementedError(
-                "M5 current_block_coupling='joint' is reserved as placeholder 2. "
-                "Use runtime_mode='joint_denoise' for the existing packed joint path."
-            )
-        if current_block_coupling == CurrentBlockCoupling.ACTION_THEN_VIDEO:
-            raise NotImplementedError(
-                "M5 current_block_coupling='action_then_video' is reserved as placeholder 3."
-            )
         action_seq_len = int(noisy_actions.shape[1])
         num_action_frames = action_seq_len // int(action_tokens_per_frame)
 
-        packed_action_tokens = torch.cat([noisy_actions, clean_actions], dim=1)
         # Per-token timesteps broadcast from the per-frame sample (matches
         # Method 1's `_time_embed` repeat-interleave of per-frame timesteps).
         noisy_slot_timesteps = action_artifacts.slot_timesteps
+
+        # ---- A1 generalist mode sampling (strict M1 PR #95 parity) ----
+        # When ``mot_generalist_training_mode_probs`` is set, sample one
+        # regime per segment. Sampling lives at the segment top so the same
+        # mode flows through every layer / block of this forward; it must
+        # NOT be re-sampled at block granularity (would break attention
+        # profile cache + cause same-step layers to disagree).
+        if sampled_generalist_mode is not None:
+            (
+                video_artifacts,
+                noisy_actions,
+                clean_actions,
+                noisy_slot_timesteps,
+                future_loss_mask,
+                effective_action_mask,
+            ) = _apply_mot_generalist_training_mode(
+                sampled_mode=sampled_generalist_mode,
+                video_artifacts=video_artifacts,
+                noisy_actions=noisy_actions,
+                clean_actions=clean_actions,
+                noisy_slot_timesteps=noisy_slot_timesteps,
+                future_loss_mask=future_loss_mask,
+                effective_action_mask=effective_action_mask,
+            )
+
+        packed_action_tokens = torch.cat([noisy_actions, clean_actions], dim=1)
         clean_slot_timesteps = torch.zeros_like(noisy_slot_timesteps)
         packed_action_timesteps = torch.cat(
             [noisy_slot_timesteps, clean_slot_timesteps], dim=1
@@ -1056,21 +1178,35 @@ class MoTPolicyVariant(PolicyVariant):
             context=resolved_text,
             action_grid_ids=packed_action_grid,
         )
-        packed_action_mask = build_packed_action_attention_mask(
+        packed_attention_profile = build_mot_packed_coupling_attention_profile(
             num_video_frames=num_video_frames,
             video_tokens_per_frame=video_tokens_per_frame,
             num_action_frames=num_action_frames,
             action_tokens_per_frame=int(action_tokens_per_frame),
-            action_chunk_size_frames=sampled_chunk_size,
+            chunk_size_frames=sampled_chunk_size,
             device=noisy_actions.device,
             attention_window_size=sampled_window_size,
             current_block_coupling=current_block_coupling,
         )
-        packed_action_hidden = forward_packed_action_with_video_cache(
+        video_flow_pred, packed_action_hidden = forward_mot_packed_coupling_denoise(
+            visual_tower=visual_tower,
+            noisy_video_latents=video_artifacts.noisy_latents,
+            clean_video_latents=video_artifacts.condition_latents,
+            noisy_video_timesteps=video_artifacts.timesteps,
+            clean_video_timesteps=video_artifacts.condition_timesteps,
             action_expert=self.action_expert,
             packed_action_pre=packed_action_pre,
-            v_clean_cache=v_clean_cache,
-            action_attention_mask=packed_action_mask,
+            attention_profile=packed_attention_profile,
+            text_context=text_context,
+            frame_start=frame_shift,
+            use_activation_checkpointing=bool(self.config.use_activation_checkpointing),
+            packed_block_stack=self.packed_block_stack,
+        )
+        predicted_latents = denoised_video_latents_from_flow(
+            noisy_latents=video_artifacts.noisy_latents,
+            flow_pred=video_flow_pred,
+            timesteps=video_artifacts.timesteps,
+            scheduler=video_artifacts.scheduler,
         )
         packed_action_flow = self.action_expert.post_dit(packed_action_hidden, packed_action_pre)
         # Loss from the A_noisy half only (first action_seq_len tokens).
@@ -1110,6 +1246,9 @@ class MoTPolicyVariant(PolicyVariant):
                 "current_block_coupling": current_block_coupling.value,
                 "sampled_chunk_size": sampled_chunk_size,
                 "sampled_window_size": sampled_window_size,
+                "mot_generalist_training_mode": (
+                    sampled_generalist_mode.value if sampled_generalist_mode is not None else None
+                ),
                 "mot_train_artifacts": MoTTrainArtifacts(
                     action=MoTActionTrainArtifacts(
                         flow_pred=action_flow_pred,
@@ -1117,12 +1256,186 @@ class MoTPolicyVariant(PolicyVariant):
                         timesteps=noisy_slot_timesteps,
                         scheduler=action_artifacts.scheduler,
                         denoised_actions=denoised_actions,
-                        action_mask=action_artifacts.action_mask,
+                        # Use the post-A1 mask, not the dataset-derived one
+                        # baked into `action_artifacts.action_mask`. When the
+                        # generalist sampler picks ACTION_CONDITIONED_VIDEO,
+                        # `effective_action_mask` was zeroed by
+                        # `_apply_mot_generalist_training_mode` to actually
+                        # mask the action loss — but `action_artifacts` still
+                        # holds the pre-A1 mask reference (the builder just
+                        # stores-and-returns the input tensor), so threading
+                        # the post-A1 mask here is the only place the masking
+                        # actually takes effect downstream.
+                        action_mask=effective_action_mask,
                     ),
                     video=video_rollout,
                     condition_mode=str(self.config.condition_mode),
                     runtime_mode=str(self.config.runtime_mode),
                     history_frames=int(history_frames),
+                ),
+            },
+        )
+
+    def _forward_train_non_joint_two_stream(
+        self,
+        visual_tower: VisualTower,
+        visual_outputs: VisualStageOutputs,
+        prepared_inputs: PolicyPreparedInputs,
+    ) -> PolicyTrainOutput:
+        return self._forward_train_packed_coupling(
+            visual_tower=visual_tower,
+            visual_outputs=visual_outputs,
+            prepared_inputs=prepared_inputs,
+        )
+
+    def _forward_infer_packed_coupling(
+        self,
+        visual_tower: VisualTower,
+        visual_outputs: VisualStageOutputs,
+        context: PolicyInferContext,
+        infer_state: PolicyInferState,
+        runtime_state: MoTRuntimeState,
+    ) -> PolicyInferOutput:
+        del context
+        current_block_coupling = resolve_mot_current_block_coupling(self.config)
+        device = next(visual_tower.core.parameters()).device
+        action_device = next(self.action_expert.parameters()).device
+        if action_device != device:
+            raise ValueError(
+                "M5 packed coupling inference currently requires visual tower and action expert on the same device, "
+                f"got visual_device={device}, action_device={action_device}."
+            )
+        dtype = next(self.action_expert.parameters()).dtype
+        batch_size = int(visual_outputs.frontend.video_latents.shape[0])
+        frame_chunk_size = max(1, int(self.inference_config.frame_chunk_size))
+        if self.action_horizon % frame_chunk_size != 0:
+            raise ValueError(
+                "M5 packed coupling inference expects `action_horizon` to divide by `inference.frame_chunk_size`, "
+                f"got action_horizon={self.action_horizon}, frame_chunk_size={frame_chunk_size}."
+            )
+        action_tokens_per_frame = self.action_horizon // frame_chunk_size
+        video_latents = visual_outputs.frontend.video_latents.to(device=device, dtype=dtype)
+        latent_height = int(video_latents.shape[-2])
+        latent_width = int(video_latents.shape[-1])
+        if video_latents.shape[2] >= frame_chunk_size:
+            clean_video_condition = video_latents[:, :, -frame_chunk_size:].contiguous()
+        else:
+            repeat_count = int(frame_chunk_size - video_latents.shape[2])
+            clean_video_condition = torch.cat(
+                [video_latents, video_latents[:, :, -1:].expand(-1, -1, repeat_count, -1, -1)],
+                dim=2,
+            ).contiguous()
+        noisy_video = torch.randn_like(clean_video_condition, device=device, dtype=dtype)
+        action_sample = torch.randn(batch_size, self.action_horizon, self.action_dim, device=device, dtype=dtype)
+        clean_action_condition = torch.zeros_like(action_sample)
+        text_context = runtime_state.text_context
+        if text_context is None:
+            text_context = visual_outputs.frontend.conditioning.text_context
+        if text_context is None:
+            text_context = torch.zeros(
+                batch_size,
+                visual_tower.config.max_text_tokens,
+                visual_tower.config.text_dim,
+                device=device,
+                dtype=dtype,
+            )
+        else:
+            text_context = text_context.to(device=device, dtype=dtype)
+
+        video_scheduler = build_video_flow_match_inference_scheduler(
+            training_config=self.training_config,
+            inference_config=self.inference_config,
+        )
+        action_scheduler = build_action_flow_match_inference_scheduler(
+            training_config=self.training_config,
+            inference_config=self.inference_config,
+        )
+        if len(video_scheduler.timesteps) != len(action_scheduler.timesteps):
+            raise ValueError(
+                "M5 packed coupling inference expects matched video/action denoise step counts, "
+                f"got video_steps={len(video_scheduler.timesteps)}, action_steps={len(action_scheduler.timesteps)}."
+            )
+        attention_profile = build_mot_packed_coupling_attention_profile(
+            num_video_frames=frame_chunk_size,
+            video_tokens_per_frame=int(visual_outputs.frontend.token_grid.tokens_per_frame),
+            num_action_frames=frame_chunk_size,
+            action_tokens_per_frame=action_tokens_per_frame,
+            chunk_size_frames=frame_chunk_size,
+            device=device,
+            attention_window_size=max(1, int(self.training_config.window_size)),
+            current_block_coupling=current_block_coupling,
+            build_dense_masks=True,
+            build_flex_masks=False,
+        )
+        action_grid_ids = self._build_action_grid_ids_for_sequence(
+            batch_size=batch_size,
+            seq_len=self.action_horizon,
+            action_tokens_per_frame=action_tokens_per_frame,
+            device=device,
+            frame_shift=int(infer_state.cursor.current_start_frame),
+        )
+        packed_action_grid_ids = torch.cat([action_grid_ids, action_grid_ids], dim=-1)
+        zero_video_timesteps = torch.zeros(batch_size, frame_chunk_size, device=device, dtype=torch.float32)
+        zero_action_timesteps = torch.zeros(batch_size, self.action_horizon, device=device, dtype=torch.float32)
+        predicted_latents = noisy_video
+        for video_timestep, action_timestep in zip(video_scheduler.timesteps, action_scheduler.timesteps, strict=True):
+            dense_video_timestep = torch.full(
+                (batch_size, frame_chunk_size),
+                float(video_timestep),
+                device=device,
+                dtype=torch.float32,
+            )
+            dense_action_timestep = torch.full(
+                (batch_size, self.action_horizon),
+                float(action_timestep),
+                device=device,
+                dtype=torch.float32,
+            )
+            packed_action_pre = self.action_expert.pre_dit(
+                action_tokens=torch.cat([action_sample, clean_action_condition], dim=1),
+                timestep=torch.cat([dense_action_timestep, zero_action_timesteps], dim=1),
+                context=text_context,
+                action_grid_ids=packed_action_grid_ids,
+            )
+            video_flow_pred, packed_action_hidden = forward_mot_packed_coupling_denoise(
+                visual_tower=visual_tower,
+                noisy_video_latents=predicted_latents,
+                clean_video_latents=clean_video_condition,
+                noisy_video_timesteps=dense_video_timestep,
+                clean_video_timesteps=zero_video_timesteps,
+                action_expert=self.action_expert,
+                packed_action_pre=packed_action_pre,
+                attention_profile=attention_profile,
+                text_context=text_context,
+                frame_start=int(infer_state.cursor.current_start_frame),
+                use_activation_checkpointing=False,
+                packed_block_stack=self.packed_block_stack,
+                prefer_flex_attention=False,
+            )
+            predicted_latents = video_scheduler.step(video_flow_pred, video_timestep, predicted_latents)
+            packed_action_flow = self.action_expert.post_dit(packed_action_hidden, packed_action_pre)
+            action_flow_pred = packed_action_flow[:, : self.action_horizon]
+            action_sample = action_scheduler.step(action_flow_pred, action_timestep, action_sample)
+
+        next_state = infer_state
+        next_state.step_index += 1
+        next_state.cursor.current_start_frame = int(infer_state.cursor.current_start_frame + frame_chunk_size)
+        next_state.variant_state = runtime_state
+        return PolicyInferOutput(
+            policy_features=action_sample.new_zeros(batch_size, 0, self.action_expert.hidden_size),
+            next_state=next_state,
+            aux={
+                "variant": self.config.name,
+                "method_family": "mot",
+                "condition_mode": str(self.config.condition_mode),
+                "current_block_coupling": current_block_coupling.value,
+                "predicted_latents": predicted_latents.detach(),
+                "predicted_video_latents": predicted_latents.detach(),
+                "mot_infer_artifacts": MoTInferArtifacts(
+                    action_pred=action_sample,
+                    predicted_latents=predicted_latents.detach(),
+                    condition_mode=str(self.config.condition_mode),
+                    runtime_mode=str(self.config.runtime_mode),
                 ),
             },
         )
@@ -1208,6 +1521,14 @@ class MoTPolicyVariant(PolicyVariant):
             infer_state.variant_state if isinstance(infer_state.variant_state, MoTRuntimeState) else MoTRuntimeState()
         )
         self._maybe_initialize_action_expert(visual_tower)
+        if self.config.current_block_coupling is not None:
+            return self._forward_infer_packed_coupling(
+                visual_tower=visual_tower,
+                visual_outputs=visual_outputs,
+                context=context,
+                infer_state=infer_state,
+                runtime_state=runtime_state,
+            )
         # Only `joint_denoise` uses the simultaneous video+action denoise
         # branch below. `non_joint_two_stream` falls through to the
         # method-1-aligned default path at the bottom of this function, which
@@ -1215,6 +1536,12 @@ class MoTPolicyVariant(PolicyVariant):
         # `visual_tower.generate_conditioned_future_latents` and then runs the
         # action expert against the resulting all-clean video K/V cache.
         if self.config.runtime_mode == MoTRuntimeMode.JOINT_DENOISE:
+            current_block_coupling = resolve_mot_current_block_coupling(self.config)
+            if not _is_mot_same_step_coupling(current_block_coupling):
+                raise NotImplementedError(
+                    "M5 joint_denoise inference supports same-step couplings only; "
+                    f"got current_block_coupling={current_block_coupling.value!r}."
+                )
             device = next(visual_tower.core.parameters()).device
             action_device = next(self.action_expert.parameters()).device
             if action_device != device:
@@ -1239,6 +1566,12 @@ class MoTPolicyVariant(PolicyVariant):
                     f"got video_num_inference_steps={self.inference_config.video_num_inference_steps}, "
                     f"action_num_inference_steps={self.inference_config.action_num_inference_steps}, "
                     f"runtime_mode={self.config.runtime_mode!r}."
+                )
+            frame_chunk_size = max(1, int(self.inference_config.frame_chunk_size))
+            if self.action_horizon % frame_chunk_size != 0:
+                raise ValueError(
+                    "MoT joint_denoise inference expects `action_horizon` to divide by `inference.frame_chunk_size`, "
+                    f"got action_horizon={self.action_horizon}, frame_chunk_size={frame_chunk_size}."
                 )
             observed_prefix = video_latents[:, :, :observed_prefix_frames]
             future_template = video_latents[:, :, observed_prefix_frames:]
@@ -1282,6 +1615,10 @@ class MoTPolicyVariant(PolicyVariant):
                 condition_mode=self.config.condition_mode,
                 video_tokens_per_frame=visual_outputs.frontend.token_grid.tokens_per_frame,
                 video_can_attend_action=self.config.video_can_attend_action,
+                action_tokens_per_frame=self.action_horizon // frame_chunk_size,
+                action_chunk_size_frames=frame_chunk_size,
+                clean_video_frames=observed_prefix_frames,
+                current_block_coupling=current_block_coupling,
             )
             for video_timestep, action_timestep in zip(video_scheduler.timesteps, action_scheduler.timesteps, strict=True):
                 dense_video_timestep = torch.full(
@@ -1327,6 +1664,7 @@ class MoTPolicyVariant(PolicyVariant):
                     "variant": self.config.name,
                     "method_family": "mot",
                     "condition_mode": str(self.config.condition_mode),
+                    "current_block_coupling": current_block_coupling.value,
                     "predicted_latents": predicted_latents,
                     "predicted_video_latents": predicted_latents,
                     "mot_infer_artifacts": MoTInferArtifacts(
@@ -1377,14 +1715,19 @@ class MoTPolicyVariant(PolicyVariant):
             )
         action_tokens_per_frame = self.action_horizon // chunk_frames
         current_block_coupling = resolve_mot_current_block_coupling(self.config)
-        if current_block_coupling == CurrentBlockCoupling.JOINT:
+        if current_block_coupling in {
+            CurrentBlockCoupling.JOINT,
+            CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
+            CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
+        }:
             raise NotImplementedError(
-                "M5 current_block_coupling='joint' is reserved as placeholder 2. "
-                "Use runtime_mode='joint_denoise' for the existing packed joint path."
+                "M5 non_joint_two_stream inference cannot express same-step noisy cross-stream coupling; "
+                f"got current_block_coupling={current_block_coupling.value!r}. "
+                "Use runtime_mode='joint_denoise' for same-step video/action coupling."
             )
         if current_block_coupling == CurrentBlockCoupling.ACTION_THEN_VIDEO:
             raise NotImplementedError(
-                "M5 current_block_coupling='action_then_video' is reserved as placeholder 3."
+                "M5 current_block_coupling='action_then_video' requires staged action-before-video orchestration."
             )
         video_commit_before_action = current_block_coupling == CurrentBlockCoupling.VIDEO_THEN_ACTION
 

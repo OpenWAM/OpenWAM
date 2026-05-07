@@ -320,9 +320,12 @@ class TrainingRuntime:
     def _save_checkpoint(self, *, final: bool) -> None:
         should_write = (
             self.config.trainer.enable_checkpointing
-            or self.config.trainer.save_interval is not None
+            or (self.config.trainer.save_interval is not None and self.config.trainer.save_interval > 0)
         )
         if not should_write:
+            return
+        checkpoint_dir = self.checkpoint_manager.checkpoint_dir_for_step(self.train_state.optimizer_step)
+        if final and self.train_state.last_checkpoint_path == str(checkpoint_dir):
             return
         checkpoint_dir = self.checkpoint_manager.save(
             step=self.train_state.optimizer_step,

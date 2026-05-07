@@ -19,9 +19,14 @@ from open_wam.configs.enums import (
     AttachSite,
     AttentionMode,
     BackboneImplementation,
+    CurrentBlockCoupling,
     DataSplit,
     EvalMode,
     JointDenoiseTrainingMode,
+    MoTActionExpertInitMode,
+    MoTConditionMode,
+    MoTGeneralistTrainingMode,
+    MoTRuntimeMode,
     ParallelRuntimeMode,
     ParallelStreamVariantProfile,
     PolicyVariantName,
@@ -161,6 +166,12 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
             _validate_enum(policy_variant, "runtime_mode", ParallelRuntimeMode, issues, "policy_variant")
             _validate_enum(policy_variant, "variant_profile", ParallelStreamVariantProfile, issues, "policy_variant")
             _validate_joint_denoise_training_mode_probs(policy_variant, issues)
+        if policy_variant.get("name") == PolicyVariantName.MOT.value:
+            _validate_enum(policy_variant, "runtime_mode", MoTRuntimeMode, issues, "policy_variant")
+            _validate_enum(policy_variant, "condition_mode", MoTConditionMode, issues, "policy_variant")
+            _validate_enum(policy_variant, "action_expert_init_mode", MoTActionExpertInitMode, issues, "policy_variant")
+            _validate_enum(policy_variant, "current_block_coupling", CurrentBlockCoupling, issues, "policy_variant")
+            _validate_mot_generalist_training_mode_probs(policy_variant, issues)
         _validate_positive_ints(policy_variant, issues, "policy_variant", ("hidden_size",))
     if action_decoder is not None:
         _validate_enum(action_decoder, "name", ActionDecoderName, issues, "action_decoder")
@@ -300,26 +311,61 @@ def _validate_joint_denoise_training_mode_probs(
     policy_variant: Mapping[str, Any],
     issues: "_IssueBuilder",
 ) -> None:
-    raw_probs = policy_variant.get("joint_denoise_training_mode_probs")
+    _validate_probability_map(
+        policy_variant,
+        issues,
+        field_name="joint_denoise_training_mode_probs",
+        enum_cls=JointDenoiseTrainingMode,
+    )
+
+
+def _validate_mot_generalist_training_mode_probs(
+    policy_variant: Mapping[str, Any],
+    issues: "_IssueBuilder",
+) -> None:
+    raw_probs = policy_variant.get("mot_generalist_training_mode_probs")
+    if raw_probs is None:
+        return
+    if policy_variant.get("current_block_coupling") != CurrentBlockCoupling.JOINT.value:
+        issues.error(
+            "policy_variant.mot_generalist_training_mode_probs",
+            "Expected `current_block_coupling: joint` when MoT generalist sampling is enabled.",
+        )
+    _validate_probability_map(
+        policy_variant,
+        issues,
+        field_name="mot_generalist_training_mode_probs",
+        enum_cls=MoTGeneralistTrainingMode,
+    )
+
+
+def _validate_probability_map(
+    policy_variant: Mapping[str, Any],
+    issues: "_IssueBuilder",
+    *,
+    field_name: str,
+    enum_cls: type[StrEnum],
+) -> None:
+    raw_probs = policy_variant.get(field_name)
     if raw_probs is None:
         return
     if not isinstance(raw_probs, Mapping):
-        issues.error("policy_variant.joint_denoise_training_mode_probs", "Expected a mapping of mode to probability.")
+        issues.error(f"policy_variant.{field_name}", "Expected a mapping of mode to probability.")
         return
     total = 0.0
     for raw_mode, raw_prob in raw_probs.items():
         if not isinstance(raw_mode, str):
-            issues.error("policy_variant.joint_denoise_training_mode_probs", "Expected string mode keys.")
+            issues.error(f"policy_variant.{field_name}", "Expected string mode keys.")
             continue
-        if raw_mode not in {mode.value for mode in JointDenoiseTrainingMode}:
+        if raw_mode not in {mode.value for mode in enum_cls}:
             issues.error(
-                f"policy_variant.joint_denoise_training_mode_probs.{raw_mode}",
-                f"Invalid JointDenoiseTrainingMode value {raw_mode!r}.",
+                f"policy_variant.{field_name}.{raw_mode}",
+                f"Invalid {enum_cls.__name__} value {raw_mode!r}.",
             )
             continue
         if isinstance(raw_prob, bool):
             issues.error(
-                f"policy_variant.joint_denoise_training_mode_probs.{raw_mode}",
+                f"policy_variant.{field_name}.{raw_mode}",
                 "Expected a numeric probability.",
             )
             continue
@@ -327,25 +373,25 @@ def _validate_joint_denoise_training_mode_probs(
             prob = float(raw_prob)
         except (TypeError, ValueError):
             issues.error(
-                f"policy_variant.joint_denoise_training_mode_probs.{raw_mode}",
+                f"policy_variant.{field_name}.{raw_mode}",
                 "Expected a numeric probability.",
             )
             continue
         if not math.isfinite(prob):
             issues.error(
-                f"policy_variant.joint_denoise_training_mode_probs.{raw_mode}",
+                f"policy_variant.{field_name}.{raw_mode}",
                 "Expected a finite probability.",
             )
             continue
         if prob < 0.0:
             issues.error(
-                f"policy_variant.joint_denoise_training_mode_probs.{raw_mode}",
+                f"policy_variant.{field_name}.{raw_mode}",
                 "Expected a non-negative probability.",
             )
             continue
         total += prob
     if not math.isfinite(total) or total <= 0.0:
-        issues.error("policy_variant.joint_denoise_training_mode_probs", "Expected at least one positive probability.")
+        issues.error(f"policy_variant.{field_name}", "Expected at least one positive probability.")
 
 
 def _validate_local_path_placeholders(value: Any, issues: "_IssueBuilder", *, path: str = "") -> None:

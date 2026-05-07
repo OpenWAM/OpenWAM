@@ -11,8 +11,10 @@ from torch.utils.data.distributed import DistributedSampler
 import yaml
 
 from open_wam.configs import TrainingConfig
+from open_wam.configs.enums import CheckpointMode
 from open_wam.models.policy_variants import PolicyTrainBatch
 from open_wam.training import TrainingRuntime
+from open_wam.training.checkpoints import CheckpointManager
 from open_wam.training.loop_policies import StepLoopPolicy
 from open_wam.training.runtime import _normalize_optimizer_state_dtypes
 from open_wam.training.state import TrainState
@@ -212,6 +214,107 @@ def test_training_runtime_initializes_mot_variant_before_strategy_wrap(tmp_path:
     pipeline = runtime.strategy.unwrap_model(runtime.model)
 
     assert pipeline.policy_variant._action_expert_initialized is True
+
+
+def test_generalist_checkpoint_writes_yaml_safe_enum_dict_keys(tmp_path: Path) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml"
+    )
+    manager = CheckpointManager(
+        root_dir=tmp_path / "checkpoints",
+        config=config,
+        checkpoint_mode=CheckpointMode.MODEL_ONLY,
+    )
+    checkpoint_dir = manager.checkpoint_dir_for_step(1)
+    checkpoint_dir.mkdir(parents=True)
+
+    manager._write_resolved_config(checkpoint_dir)
+
+    resolved_text = (checkpoint_dir / "resolved_config.yaml").read_text(encoding="utf-8")
+    assert "mot_generalist_training_mode_probs:" in resolved_text
+    assert "joint:" in resolved_text
+
+
+def test_model_only_checkpoint_does_not_collect_optimizer_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
+    manager = CheckpointManager(
+        root_dir=tmp_path / "checkpoints",
+        config=config,
+        checkpoint_mode=CheckpointMode.MODEL_ONLY,
+    )
+    model = torch.nn.Linear(2, 2)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    calls = {"optimizer_state": 0}
+
+    def fake_model_state_dict(model, options):
+        del model, options
+        return {"weight": torch.ones(1)}
+
+    def fail_optimizer_state_dict(*args, **kwargs):
+        del args, kwargs
+        calls["optimizer_state"] += 1
+        raise AssertionError("model_only checkpoints must not collect optimizer state")
+
+    monkeypatch.setattr("open_wam.training.checkpoints.get_model_state_dict", fake_model_state_dict)
+    monkeypatch.setattr("open_wam.training.checkpoints.get_optimizer_state_dict", fail_optimizer_state_dict)
+
+    checkpoint_dir = manager.save(
+        step=1,
+        model=model,
+        optimizer=optimizer,
+        scheduler=None,
+        train_state=TrainState(),
+    )
+
+    assert calls["optimizer_state"] == 0
+    assert (checkpoint_dir / "model_state.pt").exists()
+    assert not (checkpoint_dir / "full_training_state.pt").exists()
+    assert (checkpoint_dir / ".checkpoint_complete").exists()
+
+
+def test_final_checkpoint_skips_when_interval_checkpoint_already_saved(tmp_path: Path) -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
+    config = replace(
+        config,
+        trainer=replace(
+            config.trainer,
+            enable_checkpointing=False,
+            save_interval=5,
+        ),
+    )
+    runtime = SimpleNamespace(
+        config=config,
+        train_state=TrainState(optimizer_step=5),
+        checkpoint_manager=SimpleNamespace(
+            checkpoint_dir_for_step=lambda step: tmp_path / "checkpoints" / f"checkpoint_step_{step}",
+            save=lambda **kwargs: (_ for _ in ()).throw(AssertionError("duplicate final checkpoint")),
+        ),
+    )
+    runtime.train_state.last_checkpoint_path = str(tmp_path / "checkpoints" / "checkpoint_step_5")
+
+    TrainingRuntime._save_checkpoint(runtime, final=True)
+
+
+def test_save_interval_zero_disables_final_checkpoint(tmp_path: Path) -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
+    config = replace(
+        config,
+        trainer=replace(
+            config.trainer,
+            enable_checkpointing=False,
+            save_interval=0,
+        ),
+    )
+    runtime = SimpleNamespace(
+        config=config,
+        train_state=TrainState(optimizer_step=5),
+        checkpoint_manager=SimpleNamespace(
+            checkpoint_dir_for_step=lambda step: tmp_path / "checkpoints" / f"checkpoint_step_{step}",
+            save=lambda **kwargs: (_ for _ in ()).throw(AssertionError("checkpoint should be disabled")),
+        ),
+    )
+
+    TrainingRuntime._save_checkpoint(runtime, final=True)
 
 
 def test_composable_runtime_logs_checkpoints_and_resume(tmp_path: Path) -> None:

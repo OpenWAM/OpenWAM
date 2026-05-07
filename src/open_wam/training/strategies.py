@@ -47,33 +47,64 @@ def _apply_composable_fsdp_sharding(
 ) -> nn.Module:
     from torch.distributed.fsdp import fully_shard
 
+    # Optional CPU offload of params + grads + optimizer state. Enabled via
+    # `OPEN_WAM_FSDP_CPU_OFFLOAD=1`. Useful when the M5 packed-coupling path
+    # makes both video DiT and action expert trainable on a 4×L40S box.
+    cpu_offload = os.environ.get("OPEN_WAM_FSDP_CPU_OFFLOAD", "0") == "1"
+    offload_policy = None
+    if cpu_offload:
+        from torch.distributed.fsdp import CPUOffloadPolicy
+
+        offload_policy = CPUOffloadPolicy(pin_memory=True)
+
+    def _shard_kwargs() -> dict:
+        kwargs = {
+            "mesh": mesh,
+            "mp_policy": mp_policy,
+            "reshard_after_forward": True,
+        }
+        if offload_policy is not None:
+            kwargs["offload_policy"] = offload_policy
+        return kwargs
+
     def _shard_block_stack(owner: nn.Module | None) -> None:
         if owner is None:
             return
         blocks = getattr(owner, "blocks", None)
         if not isinstance(blocks, nn.ModuleList):
             return
-        shard_kwargs = {
-            "mesh": mesh,
-            "mp_policy": mp_policy,
-            "reshard_after_forward": True,
-        }
         for block in blocks:
             if hasattr(block, "attn1"):
-                fully_shard(block.attn1, **shard_kwargs)
+                fully_shard(block.attn1, **_shard_kwargs())
             if hasattr(block, "attn2"):
-                fully_shard(block.attn2, **shard_kwargs)
+                fully_shard(block.attn2, **_shard_kwargs())
             if hasattr(block, "ffn"):
-                fully_shard(block.ffn, **shard_kwargs)
-            fully_shard(block, **shard_kwargs)
+                fully_shard(block.ffn, **_shard_kwargs())
+            fully_shard(block, **_shard_kwargs())
 
     visual_tower = getattr(model, "visual_tower", None)
     core = getattr(visual_tower, "core", None) if visual_tower is not None else None
     policy_variant = getattr(model, "policy_variant", None)
     action_expert = getattr(policy_variant, "action_expert", None) if policy_variant is not None else None
 
-    _shard_block_stack(core)
-    _shard_block_stack(action_expert)
+    # MoT packed-coupling path: blocks have been transferred from
+    # core.blocks / action_expert.blocks into a MoTPackedBlockStack at
+    # pipeline-build time. FSDP wraps each MoTPackedBlock as one unit so the
+    # joint video+action attention runs through standard FSDP pre/post-forward
+    # hooks (no manual `_summon_full_params` / `linear_with_materialized_params`
+    # bypass during forward, which was causing
+    # `setStorage out of bounds for storage of size 0` during backward).
+    packed_block_stack = getattr(policy_variant, "packed_block_stack", None)
+    if packed_block_stack is not None:
+        for packed_block in packed_block_stack.packed_blocks:
+            fully_shard(packed_block, **_shard_kwargs())
+        # core.blocks and action_expert.blocks are intentionally empty in this
+        # path; calling `_shard_block_stack` on them is a no-op.
+        _shard_block_stack(core)
+        _shard_block_stack(action_expert)
+    else:
+        _shard_block_stack(core)
+        _shard_block_stack(action_expert)
 
     return model
 

@@ -8,15 +8,18 @@ import torch
 import open_wam.configs  # Ensure config/video-backbone modules finish initialization before policy-variant imports.
 from open_wam.configs import (
     ActionSchemaConfig,
+    CurrentBlockCoupling,
     ExperimentConfig,
     InferenceConfig,
     MLPActionDecoderConfig,
     MoTActionExpertInitMode,
     MoTConditionMode,
     MoTPolicyConfig,
+    MoTRuntimeMode,
     RobotWinDataConfig,
     TrainingConfig,
 )
+from open_wam.models.common.attention_profiles import build_chunked_temporal_exact_attention_profile
 from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
 from open_wam.models.policy_variants.mot.contracts import (
     MoTActionCache,
@@ -30,6 +33,8 @@ from open_wam.models.policy_variants.mot.modules import (
 from open_wam.models.policy_variants.mot.runtime import (
     build_mot_inference_action_attention_mask,
     build_mot_attention_mask,
+    build_mot_packed_coupling_attention_mask,
+    build_mot_packed_coupling_attention_profile,
     build_packed_action_attention_mask,
     resolve_mot_condition_latents,
     trim_mot_action_cache_prefix,
@@ -255,6 +260,194 @@ def test_build_packed_action_mask_decouples_same_step_clean_video() -> None:
     assert mask[action_noisy_frame_1_query, video_clean_frame_0_key]
 
 
+@pytest.mark.parametrize(
+    ("coupling", "video_reads_action", "action_reads_video"),
+    [
+        ("joint", True, True),
+        ("decoupled_same_step", False, False),
+        ("video_noisy_to_action", False, True),
+        ("action_noisy_to_video", True, False),
+    ],
+)
+def test_build_mot_attention_mask_same_step_coupling_visibility(
+    coupling: str,
+    video_reads_action: bool,
+    action_reads_video: bool,
+) -> None:
+    mask = build_mot_attention_mask(
+        video_seq_len=4,
+        action_seq_len=4,
+        device=torch.device("cpu"),
+        condition_mode=MoTConditionMode.FIRST_FRAME,
+        video_tokens_per_frame=2,
+        action_tokens_per_frame=2,
+        action_chunk_size_frames=1,
+        clean_video_frames=0,
+        clean_action_frames=0,
+        current_block_coupling=coupling,
+    )
+
+    video_query_frame_0 = 0
+    action_query_frame_0 = 4
+    video_key_frame_0 = 0
+    action_key_frame_0 = 4
+    assert bool(mask[video_query_frame_0, action_key_frame_0]) is video_reads_action
+    assert bool(mask[action_query_frame_0, video_key_frame_0]) is action_reads_video
+
+
+@pytest.mark.parametrize(
+    ("coupling", "video_reads_action", "action_reads_video"),
+    [
+        (CurrentBlockCoupling.VIDEO_THEN_ACTION, False, True),
+        (CurrentBlockCoupling.JOINT, True, True),
+        (CurrentBlockCoupling.ACTION_THEN_VIDEO, True, False),
+        (CurrentBlockCoupling.DECOUPLED_SAME_STEP, False, False),
+        (CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION, False, True),
+        (CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO, True, False),
+    ],
+)
+def test_build_mot_packed_coupling_mask_six_mode_visibility(
+    coupling: CurrentBlockCoupling,
+    video_reads_action: bool,
+    action_reads_video: bool,
+) -> None:
+    mask = build_mot_packed_coupling_attention_mask(
+        num_video_frames=1,
+        video_tokens_per_frame=1,
+        num_action_frames=1,
+        action_tokens_per_frame=1,
+        chunk_size_frames=1,
+        device=torch.device("cpu"),
+        current_block_coupling=coupling,
+    )
+
+    video_noisy_query = 0
+    video_clean_key = 1
+    action_noisy_query = 2
+    action_noisy_key = 2
+    action_clean_key = 3
+    video_key = (
+        action_noisy_key
+        if coupling in {CurrentBlockCoupling.JOINT, CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO}
+        else action_clean_key
+    )
+    action_key = (
+        video_noisy_query
+        if coupling in {CurrentBlockCoupling.JOINT, CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION}
+        else video_clean_key
+    )
+    assert bool(mask[video_noisy_query, video_key]) is video_reads_action
+    assert bool(mask[action_noisy_query, action_key]) is action_reads_video
+
+
+@pytest.mark.parametrize(
+    "coupling",
+    [
+        CurrentBlockCoupling.VIDEO_THEN_ACTION,
+        CurrentBlockCoupling.JOINT,
+        CurrentBlockCoupling.ACTION_THEN_VIDEO,
+        CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+        CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
+        CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
+    ],
+)
+def test_build_mot_packed_coupling_mask_preserves_video_history_for_all_modes(
+    coupling: CurrentBlockCoupling,
+) -> None:
+    mask = build_mot_packed_coupling_attention_mask(
+        num_video_frames=2,
+        video_tokens_per_frame=1,
+        num_action_frames=2,
+        action_tokens_per_frame=1,
+        chunk_size_frames=1,
+        device=torch.device("cpu"),
+        current_block_coupling=coupling,
+    )
+
+    # Layout for two frames: V_noisy [0:2], V_clean [2:4], A_noisy [4:6], A_clean [6:8].
+    video_noisy_chunk1 = 1
+    action_noisy_chunk1 = 5
+    video_clean_history = 2
+    action_clean_history = 6
+
+    assert bool(mask[video_noisy_chunk1, video_clean_history]) is True
+    assert bool(mask[video_noisy_chunk1, action_clean_history]) is False
+    assert bool(mask[action_noisy_chunk1, video_clean_history]) is True
+    assert bool(mask[action_noisy_chunk1, action_clean_history]) is True
+
+
+@pytest.mark.parametrize(
+    "coupling",
+    [
+        CurrentBlockCoupling.VIDEO_THEN_ACTION,
+        CurrentBlockCoupling.JOINT,
+        CurrentBlockCoupling.ACTION_THEN_VIDEO,
+        CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+        CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
+        CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
+    ],
+)
+@pytest.mark.parametrize(
+    ("num_frames", "video_tokens_per_frame", "action_tokens_per_frame", "chunk_size"),
+    [
+        (2, 1, 1, 1),
+        (4, 2, 1, 2),
+    ],
+)
+def test_build_mot_packed_coupling_profile_matches_method1_dense_mask(
+    coupling: CurrentBlockCoupling,
+    num_frames: int,
+    video_tokens_per_frame: int,
+    action_tokens_per_frame: int,
+    chunk_size: int,
+) -> None:
+    m5_profile = build_mot_packed_coupling_attention_profile(
+        num_video_frames=num_frames,
+        video_tokens_per_frame=video_tokens_per_frame,
+        num_action_frames=num_frames,
+        action_tokens_per_frame=action_tokens_per_frame,
+        chunk_size_frames=chunk_size,
+        attention_window_size=8,
+        device=torch.device("cpu"),
+        current_block_coupling=coupling,
+    )
+    method1_profile = build_chunked_temporal_exact_attention_profile(
+        latent_shape=(1, 1, num_frames, 1, video_tokens_per_frame),
+        action_shape=(1, 1, num_frames, 1, action_tokens_per_frame),
+        padded_length=0,
+        chunk_size=chunk_size,
+        window_size=8,
+        patch_size=(1, 1, 1),
+        text_token_count=1,
+        device=torch.device("cpu"),
+        build_dense_masks=True,
+        build_flex_masks=False,
+        current_block_coupling=coupling.value,
+        preserve_video_pretrain_history=True,
+    )
+
+    assert m5_profile.self_attention_mask is not None
+    assert method1_profile.self_attention_mask is not None
+    assert torch.equal(m5_profile.self_attention_mask, method1_profile.self_attention_mask)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="Flex block mask requires CUDA in this setup")
+def test_build_mot_packed_coupling_profile_uses_flex_on_cuda() -> None:
+    profile = build_mot_packed_coupling_attention_profile(
+        num_video_frames=4,
+        video_tokens_per_frame=2,
+        num_action_frames=4,
+        action_tokens_per_frame=1,
+        chunk_size_frames=2,
+        attention_window_size=8,
+        device=torch.device("cuda"),
+        current_block_coupling=CurrentBlockCoupling.VIDEO_THEN_ACTION,
+    )
+
+    assert profile.self_attention_mask is None
+    assert profile.self_attention_block_mask is not None
+
+
 def test_trim_mot_action_cache_prefix_keeps_oldest_tokens() -> None:
     key = torch.arange(1 * 1 * 6 * 1, dtype=torch.float32).reshape(1, 1, 6, 1)
     value = key + 100
@@ -310,6 +503,53 @@ def test_runtime_action_cache_rewind_clears_cache_before_window() -> None:
 
     assert state.action_cache is None
     assert state.action_cache_start_frame == 8
+
+
+def test_mot_train_loss_masks_use_objective_specific_metadata() -> None:
+    variant = MoTPolicyVariant(
+        config=MoTPolicyConfig(),
+        backbone_config=SharedVideoTransformerConfig(
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+        ),
+        training_config=TrainingConfig(),
+        inference_config=InferenceConfig(),
+        action_dim=1,
+        action_horizon=8,
+        state_dim=4,
+    )
+    batch = PolicyTrainBatch(
+        actions=torch.ones(1, 8, 1),
+        action_mask=torch.ones(1, 8, 1),
+        extra={
+            "metadata": (
+                {
+                    "loss_frame_start": 1,
+                    "loss_frame_end": 3,
+                    "latent_loss_frame_start": 2,
+                    "latent_loss_frame_end": 4,
+                    "action_loss_frame_start": 1,
+                    "action_loss_frame_end": 2,
+                },
+            )
+        },
+    )
+
+    action_mask = variant._build_effective_action_mask(batch=batch, observed_num_frames=4)
+    assert action_mask is not None
+    assert torch.equal(action_mask[:, :, 0], torch.tensor([[0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0]]))
+
+    video_mask = variant._build_effective_video_loss_mask(
+        video_latents=torch.ones(1, 2, 4, 1, 1),
+        batch=batch,
+        default_history_frames=1,
+    )
+    assert torch.equal(video_mask.flatten(), torch.tensor([0.0, 0.0, 1.0, 1.0]))
 
 
 def test_mot_train_video_cache_detach_decision_is_cached_per_core() -> None:
@@ -513,6 +753,120 @@ def test_mot_variant_train_from_latents_supports_joint_action_and_video_objectiv
     assert torch.isfinite(output.decoder_output.metrics["weighted_action_diffusion_loss"])
     assert torch.isfinite(output.decoder_output.metrics["weighted_video_diffusion_loss"])
     assert output.decoder_output.aux["predicted_latents"].shape == video_latents.shape
+
+
+@pytest.mark.parametrize(
+    "current_block_coupling",
+    [
+        CurrentBlockCoupling.VIDEO_THEN_ACTION,
+        CurrentBlockCoupling.JOINT,
+        CurrentBlockCoupling.ACTION_THEN_VIDEO,
+        CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+        CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
+        CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
+    ],
+)
+def test_mot_joint_denoise_train_supports_same_step_couplings(
+    current_block_coupling: CurrentBlockCoupling,
+) -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=MoTPolicyConfig(
+            hidden_size=32,
+            runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=current_block_coupling,
+            video_prefix_frames=1,
+            num_action_layers=1,
+        ),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(
+            chunk_size=2,
+            window_size=8,
+            enabled_objectives=("action", "latent"),
+            action_loss_weight=1.0,
+            latent_loss_weight=1.0,
+        ),
+        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    batch = PolicyTrainBatch(actions=torch.randn(1, 4, 4))
+    video_latents = torch.randn(1, 48, 4, 8, 8)
+    text_context = torch.randn(1, 5, 16)
+
+    output = pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    assert torch.isfinite(output.decoder_output.loss)
+    assert output.policy_output.aux["current_block_coupling"] == current_block_coupling.value
+
+
+@pytest.mark.parametrize(
+    "current_block_coupling",
+    [
+        CurrentBlockCoupling.VIDEO_THEN_ACTION,
+        CurrentBlockCoupling.JOINT,
+        CurrentBlockCoupling.ACTION_THEN_VIDEO,
+        CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+        CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
+        CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
+    ],
+)
+def test_mot_joint_denoise_infer_supports_same_step_couplings(
+    current_block_coupling: CurrentBlockCoupling,
+) -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=MoTPolicyConfig(
+            hidden_size=32,
+            runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=current_block_coupling,
+            video_prefix_frames=1,
+            num_action_layers=1,
+        ),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
+        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    video_latents = torch.randn(1, 48, 4, 8, 8)
+    text_context = torch.randn(1, 5, 16)
+    visual_outputs = pipeline.prepare_visual_outputs_from_latents(video_latents, text_context=text_context)
+
+    output = pipeline._forward_infer_with_visual_outputs(visual_outputs, context=PolicyInferContext())
+
+    assert output.decoder_output.action_pred.shape == (1, 4, 4)
+    assert output.policy_output.aux["current_block_coupling"] == current_block_coupling.value
 
 
 def test_mot_variant_builds_with_interpolated_action_expert_ffn() -> None:

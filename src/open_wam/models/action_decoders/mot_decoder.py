@@ -4,7 +4,7 @@ from typing import Any
 
 import torch
 
-from open_wam.configs import InferenceConfig, TrainingConfig
+from open_wam.configs import InferenceConfig, MoTGeneralistTrainingMode, TrainingConfig
 from open_wam.models.action_decoders.base import (
     ActionDecoder,
     ActionDecoderInferOutput,
@@ -167,18 +167,49 @@ class MoTActionDecoder(ActionDecoder):
                     "future_video_flow_pred": train_artifacts.video.flow_pred.detach(),
                 }
             )
+        metrics = {
+            "action_mse": action_mse.detach(),
+            "action_diffusion_loss": diffusion_loss.detach(),
+            "weighted_action_diffusion_loss": weighted_action_loss.detach(),
+            "latent_mse": latent_mse.detach(),
+            "video_diffusion_loss": latent_loss.detach(),
+            "weighted_video_diffusion_loss": weighted_video_loss.detach(),
+            "joint_loss": total_loss.detach(),
+        }
+        # A1 generalist per-mode metrics. Only populated when the variant ran
+        # the M5 generalist sampler this segment; mirrors the M1 PR #95
+        # ``joint_denoise/<mode>/{count,action_mse_sum,latent_mse_sum}``
+        # rollup so per-mode statistics are aggregable across steps.
+        generalist_mode = policy_output.aux.get("mot_generalist_training_mode")
+        if generalist_mode is not None:
+            metric_device = total_loss.device
+            one = torch.ones((), device=metric_device)
+            zero = torch.zeros((), device=metric_device)
+            mode_value = str(generalist_mode)
+            for mode in MoTGeneralistTrainingMode:
+                active = one if mode_value == mode.value else zero
+                prefix = f"mot_generalist/{mode.value}"
+                metrics[f"{prefix}/count"] = active.detach()
+                metrics[f"{prefix}/action_mse_sum"] = (action_mse * active).detach()
+                metrics[f"{prefix}/latent_mse_sum"] = (latent_mse * active).detach()
+            action_mask = train_artifacts.action.action_mask
+            action_active = (
+                (action_mask.float().sum() > 0).to(dtype=torch.float32)
+                if action_mask is not None
+                else one
+            )
+            metrics["mot_generalist/action_loss_active"] = action_active.detach()
+            if train_artifacts.video is not None:
+                latent_active = (
+                    train_artifacts.video.future_loss_mask.float().sum() > 0
+                ).to(dtype=torch.float32)
+            else:
+                latent_active = zero
+            metrics["mot_generalist/latent_loss_active"] = latent_active.detach()
         return ActionDecoderTrainOutput(
             action_pred=train_artifacts.action.denoised_actions,
             loss=total_loss,
-            metrics={
-                "action_mse": action_mse.detach(),
-                "action_diffusion_loss": diffusion_loss.detach(),
-                "weighted_action_diffusion_loss": weighted_action_loss.detach(),
-                "latent_mse": latent_mse.detach(),
-                "video_diffusion_loss": latent_loss.detach(),
-                "weighted_video_diffusion_loss": weighted_video_loss.detach(),
-                "joint_loss": total_loss.detach(),
-            },
+            metrics=metrics,
             aux=aux,
         )
 

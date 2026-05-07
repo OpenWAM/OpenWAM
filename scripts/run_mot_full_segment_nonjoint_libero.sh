@@ -18,6 +18,11 @@ export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-false}
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-"expandable_segments:True"}
 export WANDB_PROJECT=${WANDB_PROJECT:-"openwam-libero-policy-train"}
 export WANDB_MODE=${WANDB_MODE:-"online"}
+# M5 packed-coupling configs jointly train video DiT (~5B) + action expert
+# (~2B). On 4×L40S that 7.66B trainable footprint exceeds GPU memory; FSDP2
+# CPU offload is needed to fit. Override with OPEN_WAM_FSDP_CPU_OFFLOAD=0
+# when running on hardware with enough VRAM to skip the offload.
+export OPEN_WAM_FSDP_CPU_OFFLOAD=${OPEN_WAM_FSDP_CPU_OFFLOAD:-1}
 
 if [ "${NGPU}" -gt 1 ]; then
   uv run python -m torch.distributed.run \

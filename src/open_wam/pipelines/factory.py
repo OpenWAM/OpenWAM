@@ -566,6 +566,11 @@ def build_variant_pipeline_from_config(config: ExperimentConfig) -> VariantPipel
         state_dim=config.data.action_schema.state_dim,
     )
     policy_variant = build_policy_variant(config)
+    # Pipeline-time hook for variants that need cross-module surgery (e.g. MoT
+    # packed coupling transfers video core/action expert blocks into one
+    # MoTPackedBlockStack). Must run before FSDP sharding.
+    if hasattr(policy_variant, "attach_visual_tower"):
+        policy_variant.attach_visual_tower(visual_tower)
     action_decoder = build_action_decoder(config)
     if (
         config.action_decoder.name == ActionDecoderName.VIDEO_CONDITIONED

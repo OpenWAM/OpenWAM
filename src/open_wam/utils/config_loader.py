@@ -403,9 +403,15 @@ def _load_policy_variant_config(
             action_hidden_size=resolved_raw.get("action_hidden_size"),
             action_ffn_dim=resolved_raw.get("action_ffn_dim"),
             video_can_attend_action=resolved_raw.get("video_can_attend_action", True),
+            current_block_coupling=(
+                _coerce_enum(config_enums.CurrentBlockCoupling, resolved_raw["current_block_coupling"])
+                if "current_block_coupling" in resolved_raw
+                else None
+            ),
             use_text_conditioning=resolved_raw.get("use_text_conditioning", True),
             use_state_conditioning=resolved_raw.get("use_state_conditioning", False),
             use_activation_checkpointing=resolved_raw.get("use_activation_checkpointing", False),
+            mot_generalist_training_mode_probs=resolved_raw.get("mot_generalist_training_mode_probs"),
         )
     if name == config_enums.PolicyVariantName.REGISTER_ATTACHED:
         return RegisterAttachedPolicyConfig(

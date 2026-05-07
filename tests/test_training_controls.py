@@ -85,6 +85,143 @@ def test_apply_training_component_controls_supports_mot_action_expert_selector()
     assert all(parameter.requires_grad for parameter in pipeline.policy_variant.action_expert.parameters())
 
 
+def _build_mot_packed_smoke_pipeline():
+    """Build the MoT smoke pipeline with packed coupling on (CPU-only).
+
+    ``mot_robotwin_smoke.yaml`` keeps the backbone/action-expert tiny (1
+    layer, hidden=256), so the pipeline is cheap to construct and we can
+    exercise the ownership-transfer surgery and selector resolution without
+    spinning up the full LingBot-scale stack.
+    """
+
+    from dataclasses import replace as _replace
+
+    from open_wam.configs.enums import (
+        CurrentBlockCoupling,
+        MoTRuntimeMode,
+    )
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/mot_robotwin_smoke.yaml")
+    policy_variant_config = _replace(
+        config.policy_variant,
+        current_block_coupling=CurrentBlockCoupling.VIDEO_THEN_ACTION,
+        runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+    )
+    config = _replace(config, policy_variant=policy_variant_config)
+    pipeline = build_variant_pipeline_from_config(config)
+    return config, pipeline
+
+
+def test_packed_coupling_action_expert_selector_only_trains_action_side() -> None:
+    config, pipeline = _build_mot_packed_smoke_pipeline()
+    assert pipeline.policy_variant.packed_block_stack is not None
+    config = replace(
+        config,
+        training=replace(
+            config.training,
+            trainable_components=("policy_variant.action_expert",),
+        ),
+    )
+
+    apply_training_component_controls(pipeline, config.training)
+
+    # action_expert (embedder/conditioner/proj) is trainable.
+    assert all(
+        parameter.requires_grad
+        for parameter in pipeline.policy_variant.action_expert.action_embedder.parameters()
+    )
+    # Each packed_block.action_block is trainable.
+    for packed_block in pipeline.policy_variant.packed_block_stack.packed_blocks:
+        assert all(parameter.requires_grad for parameter in packed_block.action_block.parameters())
+        # And video_block is NOT trainable.
+        assert all(not parameter.requires_grad for parameter in packed_block.video_block.parameters())
+    # Visual tower core (non-block parts) is NOT trainable.
+    assert all(not parameter.requires_grad for parameter in pipeline.visual_tower.core.parameters())
+
+
+def test_packed_coupling_runtime_backbone_selector_only_trains_video_side() -> None:
+    config, pipeline = _build_mot_packed_smoke_pipeline()
+    assert pipeline.policy_variant.packed_block_stack is not None
+    config = replace(
+        config,
+        training=replace(
+            config.training,
+            trainable_components=("visual_tower.runtime_backbone",),
+        ),
+    )
+
+    apply_training_component_controls(pipeline, config.training)
+
+    # Visual tower core (non-block parts: patch_embed, norm_out, scale_shift_table) is trainable.
+    assert any(
+        parameter.requires_grad for parameter in pipeline.visual_tower.core.parameters()
+    )
+    # Each packed_block.video_block is trainable.
+    for packed_block in pipeline.policy_variant.packed_block_stack.packed_blocks:
+        assert all(parameter.requires_grad for parameter in packed_block.video_block.parameters())
+        # And action_block is NOT trainable.
+        assert all(not parameter.requires_grad for parameter in packed_block.action_block.parameters())
+    # action_expert (embedder/conditioner/proj) is NOT trainable.
+    assert all(
+        not parameter.requires_grad
+        for parameter in pipeline.policy_variant.action_expert.action_embedder.parameters()
+    )
+
+
+def test_packed_coupling_combined_selector_trains_both_sides() -> None:
+    config, pipeline = _build_mot_packed_smoke_pipeline()
+    assert pipeline.policy_variant.packed_block_stack is not None
+    config = replace(
+        config,
+        training=replace(
+            config.training,
+            trainable_components=(
+                "policy_variant.action_expert",
+                "visual_tower.runtime_backbone",
+            ),
+        ),
+    )
+
+    apply_training_component_controls(pipeline, config.training)
+
+    for packed_block in pipeline.policy_variant.packed_block_stack.packed_blocks:
+        assert all(parameter.requires_grad for parameter in packed_block.video_block.parameters())
+        assert all(parameter.requires_grad for parameter in packed_block.action_block.parameters())
+    assert any(
+        parameter.requires_grad for parameter in pipeline.visual_tower.core.parameters()
+    )
+    assert all(
+        parameter.requires_grad
+        for parameter in pipeline.policy_variant.action_expert.action_embedder.parameters()
+    )
+
+
+def test_packed_coupling_freeze_video_train_action() -> None:
+    config, pipeline = _build_mot_packed_smoke_pipeline()
+    assert pipeline.policy_variant.packed_block_stack is not None
+    config = replace(
+        config,
+        training=replace(
+            config.training,
+            trainable_components=("policy_variant.action_expert",),
+            frozen_components=("visual_tower.runtime_backbone",),
+        ),
+    )
+
+    apply_training_component_controls(pipeline, config.training)
+
+    # Video side fully frozen even though the previous resolver collision
+    # would otherwise have re-frozen action blocks.
+    for packed_block in pipeline.policy_variant.packed_block_stack.packed_blocks:
+        assert all(not parameter.requires_grad for parameter in packed_block.video_block.parameters())
+        assert all(parameter.requires_grad for parameter in packed_block.action_block.parameters())
+    assert all(not parameter.requires_grad for parameter in pipeline.visual_tower.core.parameters())
+    assert all(
+        parameter.requires_grad
+        for parameter in pipeline.policy_variant.action_expert.action_embedder.parameters()
+    )
+
+
 def test_apply_training_component_controls_supports_action_decoder_adapter_selector() -> None:
     config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml")
     config = replace(

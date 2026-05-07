@@ -14,6 +14,7 @@ from .enums import (
     DecodeFeatureMode,
     MoTConditionMode,
     MoTActionExpertInitMode,
+    MoTGeneralistTrainingMode,
     MoTPreset,
     MoTRuntimeMode,
     ParallelCacheMode,
@@ -100,6 +101,57 @@ def _coerce_joint_denoise_training_mode_probs(
     total = sum(probs.values())
     if total <= 0.0:
         raise ValueError("`joint_denoise_training_mode_probs` must contain at least one positive probability.")
+    return {mode: prob / total for mode, prob in probs.items()}
+
+
+
+def _coerce_mot_generalist_training_mode_probs(
+    raw_value: object,
+) -> dict[MoTGeneralistTrainingMode, float] | None:
+    """Coerce an optional M5 generalist sampling distribution.
+
+    ``None`` keeps the existing fixed ``current_block_coupling`` path. When a
+    mapping is provided, missing modes default to 0 and probabilities are
+    normalized to sum to one.
+    """
+
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, dict):
+        raise ValueError(
+            "`mot_generalist_training_mode_probs` must be a mapping from mode to probability."
+        )
+    probs = {mode: 0.0 for mode in MoTGeneralistTrainingMode}
+    for raw_mode, raw_prob in raw_value.items():
+        mode = MoTGeneralistTrainingMode(raw_mode)
+        if isinstance(raw_prob, bool):
+            raise ValueError(
+                "`mot_generalist_training_mode_probs` entries must be finite numeric probabilities, "
+                f"got {mode.value}={raw_prob!r}."
+            )
+        try:
+            prob = float(raw_prob)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "`mot_generalist_training_mode_probs` entries must be finite numeric probabilities, "
+                f"got {mode.value}={raw_prob!r}."
+            ) from exc
+        if not math.isfinite(prob):
+            raise ValueError(
+                "`mot_generalist_training_mode_probs` entries must be finite numeric probabilities, "
+                f"got {mode.value}={raw_prob!r}."
+            )
+        if prob < 0.0:
+            raise ValueError(
+                "`mot_generalist_training_mode_probs` entries must be non-negative, "
+                f"got {mode.value}={prob}."
+            )
+        probs[mode] = prob
+    total = sum(probs.values())
+    if total <= 0.0:
+        raise ValueError(
+            "`mot_generalist_training_mode_probs` must contain at least one positive probability."
+        )
     return {mode: prob / total for mode, prob in probs.items()}
 
 
@@ -309,6 +361,10 @@ class MoTPolicyConfig(PolicyVariantConfig):
     # activations. Only affects two-stream train paths that run through
     # `forward_joint_video_action_denoise`.
     use_activation_checkpointing: bool = False
+    # Optional M5 generalist joint-denoise sampling distribution. ``None``
+    # preserves the fixed six-mode path; a dict samples one of joint /
+    # action_conditioned_video / video_conditioned_action per segment.
+    mot_generalist_training_mode_probs: dict[MoTGeneralistTrainingMode, float] | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -358,7 +414,16 @@ class MoTPolicyConfig(PolicyVariantConfig):
                 "preset": MoTPreset,
                 "current_block_coupling": CurrentBlockCoupling,
             },
+            transforms={
+                "mot_generalist_training_mode_probs": _coerce_mot_generalist_training_mode_probs,
+            },
         )
+        if self.mot_generalist_training_mode_probs is not None:
+            if self.current_block_coupling != CurrentBlockCoupling.JOINT:
+                raise ValueError(
+                    "`mot_generalist_training_mode_probs` requires `current_block_coupling = joint`, "
+                    f"got current_block_coupling={self.current_block_coupling!r}."
+                )
 
 
 @dataclass(frozen=True)

@@ -141,7 +141,33 @@ def _resolve_component_modules(pipeline: nn.Module, selector: TrainingComponentS
                 "Training component selector `policy_variant.action_expert` requires "
                 "`pipeline.policy_variant.action_expert`."
             )
-        return [action_expert]
+        resolved: list[nn.Module] = [action_expert]
+        # Packed-coupling path: action_expert.blocks is empty after ownership
+        # transfer, so add the per-packed-block action_block children to keep
+        # the action-side selector self-contained. Video blocks live under
+        # _resolve_visual_tower_runtime_backbone — keeping them out of this
+        # resolver preserves "freeze video, train action" semantics.
+        packed_block_stack = getattr(module.policy_variant, "packed_block_stack", None)
+        if packed_block_stack is not None:
+            for packed_block in packed_block_stack.packed_blocks:
+                action_block = getattr(packed_block, "action_block", None)
+                if action_block is not None:
+                    resolved.append(action_block)
+        return resolved
+
+    def _resolve_visual_tower_runtime_backbone(module: nn.Module) -> list[nn.Module]:
+        resolved: list[nn.Module] = [module.visual_tower.core]
+        # Packed-coupling path: core.blocks is empty after ownership transfer,
+        # so add the per-packed-block video_block children to keep the
+        # video-side selector self-contained. action_block stays under
+        # _resolve_policy_action_expert.
+        packed_block_stack = getattr(getattr(module, "policy_variant", None), "packed_block_stack", None)
+        if packed_block_stack is not None:
+            for packed_block in packed_block_stack.packed_blocks:
+                video_block = getattr(packed_block, "video_block", None)
+                if video_block is not None:
+                    resolved.append(video_block)
+        return resolved
 
     def _resolve_action_decoder_adapters(module: nn.Module) -> list[nn.Module]:
         adapter_modules = getattr(module.action_decoder, "trainable_adapter_modules", None)
@@ -159,7 +185,7 @@ def _resolve_component_modules(pipeline: nn.Module, selector: TrainingComponentS
         TrainingComponentSelector.VISUAL_TOWER: lambda module: [module.visual_tower],
         TrainingComponentSelector.VISUAL_TOWER_FRONTEND: lambda module: [module.visual_tower.frontend],
         TrainingComponentSelector.VISUAL_TOWER_CORE: lambda module: [module.visual_tower.core],
-        TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE: lambda module: [module.visual_tower.core],
+        TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE: _resolve_visual_tower_runtime_backbone,
         TrainingComponentSelector.VISUAL_TOWER_DECODER: lambda module: [module.visual_tower.decoder],
         TrainingComponentSelector.POLICY_VARIANT: lambda module: [module.policy_variant],
         TrainingComponentSelector.POLICY_VARIANT_ACTION_EXPERT: _resolve_policy_action_expert,

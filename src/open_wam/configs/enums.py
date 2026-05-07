@@ -609,6 +609,21 @@ class CurrentBlockCoupling(StrEnum):
 ParallelCurrentBlockCoupling = CurrentBlockCoupling
 
 
+class MoTGeneralistTrainingMode(StrEnum):
+    """Per-segment training regime for the M5 generalist joint-denoise variant.
+
+    Mirrors Method-1 generalist joint denoising: under a fixed JOINT
+    coupling, each training segment samples one regime. ``joint`` denoises
+    both modalities; the two conditional modes place the clean modality into
+    its noisy slot, zero the corresponding condition slot, force its per-frame
+    timesteps to 0, and mask its loss.
+    """
+
+    JOINT = "joint"
+    ACTION_CONDITIONED_VIDEO = "action_conditioned_video"
+    VIDEO_CONDITIONED_ACTION = "video_conditioned_action"
+
+
 class ParallelSequenceComponent(StrEnum):
     """Sequence components packed by the exact method-1 runtime."""
 
@@ -903,7 +918,7 @@ def serialize_enum_values(value: Any) -> Any:
     if is_dataclass(value):
         return serialize_enum_values(asdict(value))
     if isinstance(value, dict):
-        return {key: serialize_enum_values(item) for key, item in value.items()}
+        return {serialize_enum_values(key): serialize_enum_values(item) for key, item in value.items()}
     if isinstance(value, tuple):
         return [serialize_enum_values(item) for item in value]
     if isinstance(value, list):

@@ -110,6 +110,51 @@ trainer:
 
 
 @pytest.mark.unit
+def test_static_validator_checks_mot_generalist_mode_probabilities(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_mot_probs.yaml"
+    config_path.write_text(
+        """
+name: bad_mot_probs
+data:
+  dataset_name: libero
+  dataset_type: lerobot_v2_latent_local
+  action_schema:
+    action_dim: 7
+    action_horizon: 16
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: mot
+  attach_site: post_visual_core
+  runtime_mode: non_joint_two_stream
+  current_block_coupling: video_then_action
+  mot_generalist_training_mode_probs:
+    joint: 0.0
+    typo_mode: 1.0
+    action_conditioned_video: -0.2
+    video_conditioned_action: .nan
+action_decoder:
+  name: mot_decoder
+  action_dim: 7
+  action_horizon: 16
+trainer:
+  accelerator: gpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any("current_block_coupling: joint" in issue.message for issue in report.errors)
+    assert any("Invalid MoTGeneralistTrainingMode" in issue.message for issue in report.errors)
+    assert any(issue.path.endswith("action_conditioned_video") for issue in report.errors)
+    assert any(issue.path.endswith("video_conditioned_action") and "finite" in issue.message for issue in report.errors)
+
+
+@pytest.mark.unit
 def test_static_validator_rejects_boolean_joint_denoise_probability(tmp_path: Path) -> None:
     config_path = tmp_path / "bad_joint_bool_prob.yaml"
     config_path.write_text(

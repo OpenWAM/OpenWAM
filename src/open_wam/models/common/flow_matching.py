@@ -124,7 +124,11 @@ class FlowMatchScheduler:
         return self.linear_timesteps_weights.to(timestep.device)[timestep_id].to(timestep.device)
 
     def sigma_for_timesteps(self, timestep: torch.Tensor) -> torch.Tensor:
-        timestep_id = torch.argmin((self.timesteps[:, None].to(timestep.device) - timestep[None]).abs(), dim=0)
+        flat_timestep = timestep.reshape(-1)
+        timestep_id = torch.argmin(
+            (self.timesteps[:, None].to(flat_timestep.device) - flat_timestep[None]).abs(),
+            dim=0,
+        ).reshape(timestep.shape)
         return self.sigmas.to(timestep.device)[timestep_id]
 
     def step(
@@ -159,6 +163,17 @@ def sample_timestep_id(
     u = torch.rand(size=shape, device=device)
     u = u * (max_timestep_bd - min_timestep_bd) + min_timestep_bd
     return (u * num_train_timesteps).clamp(min=0, max=num_train_timesteps - 1).to(torch.int64)
+
+
+def timesteps_matching_sigmas(
+    scheduler: FlowMatchScheduler,
+    sigma_values: torch.Tensor,
+) -> torch.Tensor:
+    scheduler_sigmas = scheduler.sigmas.to(device=sigma_values.device, dtype=sigma_values.dtype)
+    scheduler_timesteps = scheduler.timesteps.to(device=sigma_values.device)
+    flat_sigmas = sigma_values.reshape(-1)
+    indices = torch.argmin((scheduler_sigmas[:, None] - flat_sigmas[None]).abs(), dim=0)
+    return scheduler_timesteps[indices].reshape(sigma_values.shape)
 
 
 @dataclass
@@ -291,6 +306,7 @@ def build_video_flow_match_train_artifacts(
     *,
     training_config: TrainingConfig,
     noisy_condition_prob: float = 0.0,
+    timestep_ids: torch.Tensor | None = None,
 ) -> VideoFlowMatchTrainArtifacts:
     """Create LingBot-style noisy video latents with one timestep per frame.
 
@@ -312,12 +328,20 @@ def build_video_flow_match_train_artifacts(
     )
     scheduler.set_timesteps(training_config.video_num_train_timesteps, training=True)
     batch_size = video_latents.shape[0]
-    timestep_ids = sample_timestep_id(
-        batch_size=batch_size,
-        sample_shape=(num_frames,),
-        num_train_timesteps=training_config.video_num_train_timesteps,
-        device=video_latents.device,
-    )
+    if timestep_ids is None:
+        timestep_ids = sample_timestep_id(
+            batch_size=batch_size,
+            sample_shape=(num_frames,),
+            num_train_timesteps=training_config.video_num_train_timesteps,
+            device=video_latents.device,
+        )
+    else:
+        if tuple(timestep_ids.shape) != (batch_size, num_frames):
+            raise ValueError(
+                "Video flow-match timestep_ids must have shape [B, F], "
+                f"got {tuple(timestep_ids.shape)}, expected={(batch_size, num_frames)}."
+            )
+        timestep_ids = timestep_ids.to(device=video_latents.device, dtype=torch.int64)
     timesteps = scheduler.timesteps.to(device=video_latents.device)[timestep_ids]
     noise = torch.randn_like(video_latents)
     noisy_latents = scheduler.add_noise(video_latents, noise, timesteps, t_dim=2)
@@ -361,6 +385,7 @@ def build_frame_aligned_action_flow_match_train_artifacts(
     training_config: TrainingConfig,
     num_frames: int,
     action_per_frame: int,
+    frame_sigma_values: torch.Tensor | None = None,
 ) -> FrameAlignedActionFlowMatchTrainArtifacts:
     """Create frame-granular noisy actions for LingBot-style parallel-stream.
 
@@ -392,13 +417,24 @@ def build_frame_aligned_action_flow_match_train_artifacts(
     action_mask_volume = None
     if action_mask is not None:
         action_mask_volume = action_mask.view(batch_size, num_frames, action_per_frame, action_dim).permute(0, 3, 1, 2).unsqueeze(-1)
-    timestep_ids = sample_timestep_id(
-        batch_size=batch_size,
-        sample_shape=(num_frames,),
-        num_train_timesteps=training_config.action_num_train_timesteps,
-        device=actions.device,
-    )
-    frame_timesteps = scheduler.timesteps.to(device=actions.device)[timestep_ids]
+    if frame_sigma_values is None:
+        timestep_ids = sample_timestep_id(
+            batch_size=batch_size,
+            sample_shape=(num_frames,),
+            num_train_timesteps=training_config.action_num_train_timesteps,
+            device=actions.device,
+        )
+        frame_timesteps = scheduler.timesteps.to(device=actions.device)[timestep_ids]
+    else:
+        if tuple(frame_sigma_values.shape) != (batch_size, num_frames):
+            raise ValueError(
+                "Frame-aligned action sigma values must have shape [B, F], "
+                f"got {tuple(frame_sigma_values.shape)}, expected={(batch_size, num_frames)}."
+            )
+        frame_timesteps = timesteps_matching_sigmas(
+            scheduler,
+            frame_sigma_values.to(device=actions.device, dtype=scheduler.sigmas.dtype),
+        )
     action_noise = torch.randn_like(action_volume)
     noisy_action_volume = scheduler.add_noise(action_volume, action_noise, frame_timesteps, t_dim=2)
     targets_volume = scheduler.training_target(action_volume, action_noise, frame_timesteps)
