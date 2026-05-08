@@ -246,8 +246,20 @@ class TrainingRuntime:
     def _run_step_loop(self, policy: StepLoopPolicy) -> None:
         while policy.should_continue(self.train_state):
             _set_sampler_epoch(self.train_loader, self.train_state.epoch_index)
+            resume_batch_idx = self._current_epoch_resume_batch_index()
+            if resume_batch_idx > 0 and self.strategy.is_main_process:
+                self.log_sink.log_event(
+                    name="resume_step_loop_cursor",
+                    payload={
+                        "epoch_index": self.train_state.epoch_index,
+                        "skip_batches": resume_batch_idx,
+                        "seen_batches": self.train_state.seen_batches,
+                    },
+                )
             saw_batch = False
             for batch_idx, batch in enumerate(self.train_loader):
+                if batch_idx < resume_batch_idx:
+                    continue
                 if policy.limit_train_batches is not None and batch_idx >= policy.limit_train_batches:
                     break
                 saw_batch = True

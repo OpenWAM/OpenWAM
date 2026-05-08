@@ -27,8 +27,10 @@ from open_wam.configs import (
     PostDecodedPolicyConfig,
     PostLatentPolicyConfig,
     AnchorPolicy,
+    PaddedTargetPolicy,
     SampleLossWeightMode,
     SampleWeightMode,
+    TailPaddingPolicy,
     ReferenceCoreInitMode,
     RegisterAttachedPolicyConfig,
     TemporalPositionMode,
@@ -789,6 +791,59 @@ def test_sample_construction_yaml_strings_are_coerced_to_enum_members(tmp_path: 
     assert config.data.sample_construction.sample_weight_length_power == pytest.approx(0.5)
     assert config.data.sample_construction.sample_weight_min == pytest.approx(0.25)
     assert config.data.sample_construction.sample_weight_max == pytest.approx(4.0)
+
+
+def test_hierarchical_fixed_segment_sample_construction_loads_explicit_sampler_fields(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/register_attached_libero_latent_local.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw.setdefault("data", {})
+    raw["data"]["sample_construction"] = {
+        "mode": "hierarchical_fixed_segment",
+        "segment_frames": 128,
+        "start_padding_frames": 3,
+        "tail_padding_policy": "zero_order_hold",
+        "padded_target_policy": "mask_loss",
+        "task_start_power": 0.5,
+        "demo_count_power": 0.0,
+        "trajectory_start_power": 1.0,
+    }
+
+    config_path = tmp_path / "register_attached_hierarchical_fixed_segment.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    assert config.data.sample_construction.mode == WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT
+    assert config.data.sample_construction.segment_frames == 128
+    assert config.data.sample_construction.start_padding_frames == 3
+    assert config.data.sample_construction.tail_padding_policy == TailPaddingPolicy.ZERO_ORDER_HOLD
+    assert config.data.sample_construction.padded_target_policy == PaddedTargetPolicy.MASK_LOSS
+    assert config.data.sample_construction.task_start_power == pytest.approx(0.5)
+    assert config.data.sample_construction.demo_count_power == pytest.approx(0.0)
+    assert config.data.sample_construction.trajectory_start_power == pytest.approx(1.0)
+
+
+def test_hierarchical_fixed_segment_rejects_legacy_full_segment_flag(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/register_attached_libero_latent_local.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw.setdefault("data", {})
+    raw["data"]["sample_construction"] = {
+        "mode": "hierarchical_fixed_segment",
+        "segment_frames": 128,
+        "require_full_segment": False,
+    }
+
+    config_path = tmp_path / "register_attached_bad_hierarchical_fixed_segment.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    with pytest.raises(ValueError, match="remove legacy fields: `require_full_segment`"):
+        load_experiment_config(config_path)
 
 
 def test_contextual_sample_construction_and_temporal_position_mode_load(tmp_path: Path) -> None:

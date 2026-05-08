@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 
 from .enums import (
     AnchorPolicy,
@@ -23,9 +24,11 @@ from .enums import (
     DataSplit,
     GripperRepresentation,
     LatentWindowProfile,
+    PaddedTargetPolicy,
     ReplayStatusPolicy,
     RotationRepresentation,
     SampleWeightMode,
+    TailPaddingPolicy,
     TemporalPositionMode,
     WindowSamplingMode,
     coerce_fields,
@@ -283,6 +286,7 @@ class SampleConstructionConfig:
     window_size: int = 1
     predict_blocks_per_sample: int = 1
     randomize_geometry: bool = True
+    segment_frames: int | None = None
     segment_min_frames: int | None = None
     segment_max_frames: int | None = None
     segment_length_stride: int = 1
@@ -306,6 +310,14 @@ class SampleConstructionConfig:
     # useful for fixed-geometry cold-start training without rewriting latent
     # datasets on disk.
     start_padding_frames: int = 0
+    tail_padding_policy: TailPaddingPolicy = TailPaddingPolicy.ZERO_ORDER_HOLD
+    padded_target_policy: PaddedTargetPolicy = PaddedTargetPolicy.MASK_LOSS
+    # Hierarchical fixed-segment sampler factors. `task_start_power=0.5`
+    # preserves the historical midpoint between task-uniform and
+    # transition-uniform M1 fixed-128 sampling.
+    task_start_power: float = 0.5
+    demo_count_power: float = 0.0
+    trajectory_start_power: float = 1.0
     sample_weight_mode: SampleWeightMode = SampleWeightMode.UNIFORM
     # Used by task_virtual_start_count_power: task mass is proportional to the
     # number of eligible virtual starts raised to this power. 0 is task-uniform,
@@ -322,14 +334,24 @@ class SampleConstructionConfig:
                 "mode": WindowSamplingMode,
                 "anchor_policy": AnchorPolicy,
                 "sample_weight_mode": SampleWeightMode,
+                "tail_padding_policy": TailPaddingPolicy,
+                "padded_target_policy": PaddedTargetPolicy,
             },
         )
+        if self.segment_frames is not None and self.segment_frames <= 0:
+            raise ValueError("`sample_construction.segment_frames` must be positive when set.")
         if self.sample_weight_min is not None and self.sample_weight_min < 0:
             raise ValueError("`sample_construction.sample_weight_min` must be non-negative when set.")
         if self.sample_weight_max is not None and self.sample_weight_max <= 0:
             raise ValueError("`sample_construction.sample_weight_max` must be positive when set.")
         if self.sample_weight_length_power < 0:
             raise ValueError("`sample_construction.sample_weight_length_power` must be non-negative.")
+        if not math.isfinite(float(self.task_start_power)) or self.task_start_power < 0:
+            raise ValueError("`sample_construction.task_start_power` must be finite and non-negative.")
+        if not math.isfinite(float(self.demo_count_power)):
+            raise ValueError("`sample_construction.demo_count_power` must be finite.")
+        if not math.isfinite(float(self.trajectory_start_power)) or self.trajectory_start_power < 0:
+            raise ValueError("`sample_construction.trajectory_start_power` must be finite and non-negative.")
         if (
             self.sample_weight_min is not None
             and self.sample_weight_max is not None
@@ -352,6 +374,36 @@ class SampleConstructionConfig:
             raise ValueError("`sample_construction.segment_locality_block_size` must be positive.")
         if self.start_padding_frames < 0:
             raise ValueError("`sample_construction.start_padding_frames` must be non-negative.")
+        if self.mode == WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT:
+            if self.segment_frames is None:
+                raise ValueError(
+                    "`sample_construction.segment_frames` is required when "
+                    "`sample_construction.mode=hierarchical_fixed_segment`."
+                )
+            if self.segment_min_frames is not None or self.segment_max_frames is not None:
+                raise ValueError(
+                    "`hierarchical_fixed_segment` uses `segment_frames`; do not set "
+                    "`segment_min_frames` or `segment_max_frames`."
+                )
+            if self.randomize_segment_length or self.randomize_segment_start:
+                raise ValueError(
+                    "`hierarchical_fixed_segment` samples starts through the hierarchical sampler; "
+                    "do not set `randomize_segment_length` or `randomize_segment_start`."
+                )
+            if self.require_full_segment:
+                raise ValueError(
+                    "`hierarchical_fixed_segment` uses explicit padding policies; "
+                    "do not set `require_full_segment`."
+                )
+            if self.sample_weight_mode != SampleWeightMode.UNIFORM:
+                raise ValueError(
+                    "`hierarchical_fixed_segment` uses task/trajectory power fields; "
+                    "do not set legacy `sample_weight_mode`."
+                )
+            if self.tail_padding_policy != TailPaddingPolicy.ZERO_ORDER_HOLD:
+                raise ValueError("`hierarchical_fixed_segment` currently supports only zero-order-hold tail padding.")
+            if self.padded_target_policy != PaddedTargetPolicy.MASK_LOSS:
+                raise ValueError("`hierarchical_fixed_segment` currently supports only masked padded targets.")
         for bucket in self.causal_prefix_suffix_buckets:
             if bucket.observed_frames <= 0 or bucket.future_frames <= 0:
                 raise ValueError(

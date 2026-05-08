@@ -9,9 +9,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import torch
+from torch.utils.data import DataLoader
 
 from open_wam.configs import ReplayStatusPolicy, SampleWeightMode, WindowSamplingMode
-from open_wam.data import build_train_val_latent_datasets
+from open_wam.data import build_train_val_latent_datasets, collate_latent_wam_samples
 from open_wam.training import TrainingRuntime
 from open_wam.utils.config_loader import load_experiment_config
 
@@ -683,6 +684,72 @@ def test_uniform_segment_randomized_start_samples_head_and_tail_padding(
     assert torch.equal(sample.video_latents[:, 1], sample.video_latents[:, 2])
 
 
+def test_hierarchical_fixed_segment_samples_padded_start_range_and_masks_targets(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent_hierarchical_fixed_segment"
+    _build_local_robotwin_latent_repo(repo_root, total_rows=6, latent_num_frames=6)
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            split_seed=7,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+                segment_frames=4,
+                start_padding_frames=3,
+                task_start_power=0.5,
+                demo_count_power=0.0,
+                trajectory_start_power=1.0,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+
+    assert len(train_dataset) == 9
+    assert train_dataset._window_start_ranges == ((-3, 5, 9),)
+    tail_sample = next(
+        train_dataset[index]
+        for index in range(200)
+        if train_dataset[index].metadata["subwindow_latent_start"] == 5
+    )
+    head_sample = next(
+        train_dataset[index]
+        for index in range(200)
+        if train_dataset[index].metadata["subwindow_latent_start"] == -3
+    )
+
+    assert tail_sample.metadata["window_sampling_mode"] == WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT
+    assert tail_sample.metadata["hierarchical_start_min"] == -3
+    assert tail_sample.metadata["hierarchical_start_max"] == 5
+    assert tail_sample.metadata["hierarchical_start_count"] == 9
+    assert tail_sample.metadata["subwindow_latent_end"] == 9
+    assert tail_sample.metadata["segment_valid_latent_frames"] == 1
+    assert tail_sample.metadata["segment_padded_latent_frames"] == 3
+    assert tail_sample.metadata["tail_padding_mode"] == "zero_order_hold"
+    assert tail_sample.metadata["latent_loss_frame_start"] == 0
+    assert tail_sample.metadata["latent_loss_frame_end"] == 1
+    assert tail_sample.metadata["observed_frame_ids"] == [5, 5, 5, 5]
+    assert torch.equal(tail_sample.video_latents[:, 0], tail_sample.video_latents[:, 1])
+    assert torch.equal(tail_sample.video_latents[:, 1], tail_sample.video_latents[:, 2])
+
+    assert head_sample.metadata["subwindow_latent_start"] == -3
+    assert head_sample.metadata["segment_pre_start_frames"] == 4
+    assert head_sample.metadata["latent_loss_frame_start"] == 4
+    assert head_sample.metadata["latent_loss_frame_end"] == 4
+    assert head_sample.action_mask.sum().item() == 0
+    assert head_sample.metadata["tail_padding_policy"] == "zero_order_hold"
+    assert head_sample.metadata["padded_target_policy"] == "mask_loss"
+
+
 def test_uniform_segment_require_full_segment_uses_short_payload_as_full_segment(tmp_path: Path) -> None:
     repo_root = tmp_path / "robotwin_local_latent_uniform_segment_payload_count"
     _build_local_robotwin_latent_repo(repo_root, total_rows=80, latent_num_frames=24)
@@ -940,6 +1007,119 @@ def test_uniform_segment_task_virtual_start_power_balances_task_mass(tmp_path: P
     assert sample.metadata["sample_weight_length_power"] == pytest.approx(0.5)
     assert sample.metadata["eligible_task_virtual_start_count"] == 4
     assert sample.metadata["dataset_mean_eligible_task_virtual_start_count"] == pytest.approx(10.0)
+
+
+def test_hierarchical_fixed_segment_task_power_is_explicit_task_mass(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent_hierarchical_task_power"
+    _build_local_robotwin_latent_repo(repo_root, total_rows=4, latent_num_frames=4)
+    _append_latent_episode(
+        repo_root,
+        episode_index=1,
+        task_index=1,
+        task_text="long task",
+        total_rows=16,
+        latent_num_frames=16,
+    )
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            split_seed=0,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+                segment_frames=2,
+                task_start_power=0.5,
+                demo_count_power=0.0,
+                trajectory_start_power=1.0,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    short_task = train_dataset._task_specs_by_text["pick up block"]
+    long_task = train_dataset._task_specs_by_text["long task"]
+    sample = next(
+        train_dataset[index]
+        for index in range(200)
+        if train_dataset[index].metadata["hierarchical_task_text"] == "pick up block"
+    )
+
+    assert len(train_dataset) == 20
+    assert short_task.eligible_start_count == 4
+    assert long_task.eligible_start_count == 16
+    assert long_task.task_mass / short_task.task_mass == pytest.approx(2.0)
+    assert sample.metadata["hierarchical_task_start_power"] == pytest.approx(0.5)
+    assert sample.metadata["hierarchical_demo_count_power"] == pytest.approx(0.0)
+    assert sample.metadata["hierarchical_trajectory_start_power"] == pytest.approx(1.0)
+    assert sample.metadata["hierarchical_task_eligible_start_count"] == 4
+    assert sample.metadata["hierarchical_epoch_sample_count"] == 20
+
+
+def test_hierarchical_fixed_segment_dataloader_samples_stepwise_valid_keys(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent_hierarchical_dataloader_stepwise"
+    _build_local_robotwin_latent_repo(repo_root, total_rows=4, latent_num_frames=4)
+    _append_latent_episode(
+        repo_root,
+        episode_index=1,
+        task_index=1,
+        task_text="long task",
+        total_rows=16,
+        latent_num_frames=16,
+    )
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            split_seed=0,
+            num_workers=0,
+            train_batch_size=3,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+                segment_frames=2,
+                task_start_power=0.5,
+                demo_count_power=0.0,
+                trajectory_start_power=1.0,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    sampler = train_dataset.build_train_sampler(world_size=1, rank=0)
+    sampler.set_epoch(0)
+    loader = DataLoader(
+        train_dataset,
+        batch_size=config.data.train_batch_size,
+        shuffle=False,
+        sampler=sampler,
+        num_workers=0,
+        collate_fn=collate_latent_wam_samples,
+    )
+    seen = {
+        (metadata["trajectory_window_index"], metadata["virtual_latent_start"])
+        for batch in loader
+        for metadata in batch.metadata
+    }
+    expected = set(train_dataset.iter_hierarchical_eligible_start_keys())
+
+    assert seen
+    assert seen.issubset(expected)
+    assert len(train_dataset) == 20
 
 
 def test_standard_policy_full_segment_latent_profile_uses_schema_horizon(tmp_path: Path) -> None:

@@ -236,6 +236,42 @@ def test_epoch_loop_resume_cursor_skips_seen_batches_within_current_epoch() -> N
     assert runtime._current_epoch_resume_batch_index() == 0
 
 
+def test_step_loop_resume_cursor_skips_seen_batches_within_current_loader_pass() -> None:
+    runtime = TrainingRuntime.__new__(TrainingRuntime)
+    runtime.train_loader = range(5)
+    runtime.train_state = TrainState(
+        seen_batches=2,
+        resume_source="/tmp/checkpoint_step_2/full_training_state.pt",
+    )
+    runtime.config = SimpleNamespace(trainer=SimpleNamespace(limit_train_batches=None))
+    runtime.strategy = SimpleNamespace(is_main_process=True)
+    logged_events: list[tuple[str, dict[str, int]]] = []
+    runtime.log_sink = SimpleNamespace(
+        log_event=lambda *, name, payload: logged_events.append((name, payload)),
+    )
+    runtime._run_validation = lambda *, limit_batches: None
+    runtime._save_checkpoint = lambda *, final: None
+    processed_batches: list[int] = []
+
+    def train_one_batch(batch) -> None:
+        processed_batches.append(int(batch))
+        runtime.train_state.global_step += 1
+        runtime.train_state.seen_batches += 1
+        runtime.train_state.optimizer_step += 1
+
+    runtime._train_micro_step = train_one_batch
+
+    TrainingRuntime._run_step_loop(runtime, StepLoopPolicy(max_steps=2))
+
+    assert processed_batches == [2, 3]
+    assert logged_events == [
+        (
+            "resume_step_loop_cursor",
+            {"epoch_index": 0, "skip_batches": 2, "seen_batches": 2},
+        )
+    ]
+
+
 def test_sample_loss_weight_can_scale_by_valid_action_steps() -> None:
     actions = torch.zeros(1, 6, 7)
     action_mask = torch.zeros_like(actions)

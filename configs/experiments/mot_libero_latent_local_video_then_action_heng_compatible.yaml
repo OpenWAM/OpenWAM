@@ -1,7 +1,7 @@
 name: mot_libero_latent_local_video_then_action_heng_compatible
 
 data:
-  # Long-segment LIBERO training with randomized contextual windows
+  # Shared fixed-128 hierarchical LIBERO training windows
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
   local_root: "${paths.datasets.libero_heng_root}"
@@ -14,22 +14,20 @@ data:
   num_frames: 4
   frame_stride: 1
   sample_stride: 1
-  # Match Method1 random segment sampling while remaining compatible with
-  # short trajectories: each __getitem__ randomly draws an in-bounds segment
-  # length from [64, 256] in stride 4 when possible; trajectories shorter than
-  # 64 frames fall back to their full segment instead of being dropped.
+  # Match the M1 benchmark-facing sampler: task/trajectory/start are sampled
+  # hierarchically, boundary samples use head/tail padding, and padded targets
+  # are masked from loss.
   sample_construction:
-    mode: uniform_segment
-    segment_min_frames: 64
-    segment_max_frames: 256
-    segment_length_stride: 4
-    segment_locality_block_size: 4
-    randomize_segment_length: true
-    randomize_segment_start: true
-    require_full_segment: true
-    sample_weight_mode: inverse_task_demo_count
-    sample_weight_min: 0.25
-    sample_weight_max: 4.0
+    mode: hierarchical_fixed_segment
+    segment_frames: 128
+    chunk_size: 4
+    window_size: 30
+    start_padding_frames: 3
+    tail_padding_policy: zero_order_hold
+    padded_target_policy: mask_loss
+    task_start_power: 0.5
+    demo_count_power: 0.0
+    trajectory_start_power: 1.0
   episode_cache_size: 2
   train_fraction: 1.0
   split_seed: 0
@@ -84,7 +82,7 @@ backbone:
   reference_assets_device_policy: cpu_offload
 
 policy_variant:
-  # M5-native packed coupling over one randomized contextual long-history window
+  # M5-native packed coupling over one shared fixed-128 history window
   name: mot
   hidden_size: 3072
   attach_site: post_visual_core
@@ -115,6 +113,8 @@ training:
   video_sigma_shift: 5.0
   action_sigma_shift: 1.0
   use_teacher_forcing: false
+  chunk_size: 4
+  window_size: 30
   optimizer_name: adamw
   scheduler_name: constant_with_warmup
   learning_rate: 1.0e-5

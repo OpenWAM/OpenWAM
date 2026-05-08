@@ -40,9 +40,10 @@ paths:
     parallel_stream_joint_libero_step_600: /path/to/runs/parallel_stream_libero_lingbot_joint_denoise_heng_compatible/checkpoints/checkpoint_step_600/transformer
     parallel_stream_joint_libero_contextual_fixed_geometry_step_800: /path/to/runs/parallel_stream_libero_lingbot_joint_denoise_heng_compatible_contextual_fixed_geometry/checkpoints/checkpoint_step_800/transformer
 
-    # Shared video-only exports used by method-3 / method-4 LIBERO variants.
+    # Shared video-only exports used by LIBERO variants.
     libero_videoonly_step_600: /path/to/runs/libero_videoonly/checkpoints/checkpoint_step_600/transformer
     libero_videoonly_step_850: /path/to/runs/libero_videoonly/checkpoints/checkpoint_step_850/transformer
+    libero_videoonly_all_subsets_step_3500: /path/to/runs/causal_video_prediction_libero_video_only_base_all_subsets/checkpoints/checkpoint_step_3500/transformer
 
     # OBSOLETE traditional Method-2 register-attached export. Kept only so
     # historical configs can resolve paths before failing at pipeline build.

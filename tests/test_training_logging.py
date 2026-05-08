@@ -166,17 +166,17 @@ def test_method1_coupling_and_segment_sampling_are_tracked(tmp_path: Path) -> No
     assert metadata["runtime_mode"] == "lingbot_exact"
     assert metadata["current_block_coupling"] == "video_then_action"
     assert metadata["reference_profile"] == "libero"
-    assert metadata["sample_construction_mode"] == "uniform_segment"
-    assert metadata["segment_min_frames"] == 128
-    assert metadata["segment_max_frames"] == 128
+    assert metadata["sample_construction_mode"] == "hierarchical_fixed_segment"
+    assert metadata["segment_frames"] == 128
     assert metadata["start_padding_frames"] == 3
-    assert metadata["sample_weight_mode"] == "task_virtual_start_count_power"
+    assert metadata["task_start_power"] == 0.5
+    assert metadata["demo_count_power"] == 0.0
+    assert metadata["trajectory_start_power"] == 1.0
     tags = build_wandb_tags(metadata)
     assert "coupling:video_then_action" in tags
-    assert "sample:uniform_segment" in tags
+    assert "sample:hierarchical_fixed_segment" in tags
     assert "segment_frames:128" in tags
     assert "start_padding_frames:3" in tags
-    assert "sample_weight:task_virtual_start_count_power" in tags
 
 
 def test_method1_generalist_joint_denoising_tracking_metadata(tmp_path: Path) -> None:

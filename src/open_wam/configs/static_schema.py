@@ -28,10 +28,13 @@ from open_wam.configs.enums import (
     MoTRuntimeMode,
     ParallelRuntimeMode,
     ParallelStreamVariantProfile,
+    PaddedTargetPolicy,
     PolicyVariantName,
     StrEnum,
+    TailPaddingPolicy,
     TrainerAccelerator,
     TrainerPrecision,
+    WindowSamplingMode,
 )
 from open_wam.configs.variant_semantics import probability_map_static_issues
 
@@ -142,6 +145,9 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
             "data.action_mapping",
         )
         _validate_action_mapping(action_mapping, action_schema, issues)
+    sample_construction = _mapping(data.get("sample_construction"))
+    if sample_construction is not None:
+        _validate_sample_construction(sample_construction, issues)
 
     backbone = _mapping(raw.get("backbone"))
     if backbone is not None:
@@ -274,6 +280,54 @@ def _validate_action_schema_compatibility(
                 "Expected "
                 f"{section_name}.action_horizon={decoder_horizon} to match "
                 f"data.action_schema.action_horizon={schema_horizon}.",
+            )
+
+
+def _validate_sample_construction(
+    sample_construction: Mapping[str, Any],
+    issues: "_IssueBuilder",
+) -> None:
+    _validate_enum(sample_construction, "mode", WindowSamplingMode, issues, "data.sample_construction")
+    _validate_enum(sample_construction, "tail_padding_policy", TailPaddingPolicy, issues, "data.sample_construction")
+    _validate_enum(sample_construction, "padded_target_policy", PaddedTargetPolicy, issues, "data.sample_construction")
+    _validate_positive_ints(
+        sample_construction,
+        issues,
+        "data.sample_construction",
+        (
+            "segment_frames",
+            "segment_min_frames",
+            "segment_max_frames",
+            "segment_length_stride",
+            "segment_locality_block_size",
+        ),
+    )
+    if "start_padding_frames" in sample_construction and sample_construction["start_padding_frames"] is not None:
+        value = _optional_int(sample_construction["start_padding_frames"])
+        if value is None or value < 0:
+            issues.error("data.sample_construction.start_padding_frames", "Expected a non-negative integer.")
+    mode = sample_construction.get("mode")
+    if mode != WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT.value:
+        return
+    if "segment_frames" not in sample_construction:
+        issues.error(
+            "data.sample_construction.segment_frames",
+            "Expected `segment_frames` when mode is `hierarchical_fixed_segment`.",
+        )
+    for legacy_key in (
+        "segment_min_frames",
+        "segment_max_frames",
+        "randomize_segment_length",
+        "randomize_segment_start",
+        "require_full_segment",
+        "sample_weight_mode",
+        "sample_weight_length_power",
+    ):
+        if legacy_key in sample_construction:
+            issues.error(
+                f"data.sample_construction.{legacy_key}",
+                "`hierarchical_fixed_segment` uses fixed segment and hierarchical power fields; "
+                f"do not set `{legacy_key}`.",
             )
 
 

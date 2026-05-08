@@ -29,25 +29,21 @@ data:
   num_frames: 4
   frame_stride: 1
   sample_stride: 1
-  # Fixed 128-frame uniform segments. Every latent start remains eligible; tail
+  # Shared fixed-128 hierarchical segments. Every latent start remains eligible; tail
   # overflow repeats the final observation while missing actions and held-video
   # targets are masked from loss. chunk/window pin train attention to the
   # current 60-frame rollout lookback.
   sample_construction:
-    mode: uniform_segment
-    segment_min_frames: 128
-    segment_max_frames: 128
-    segment_length_stride: 1
-    segment_locality_block_size: 4
+    mode: hierarchical_fixed_segment
+    segment_frames: 128
     chunk_size: 4
     window_size: 30
-    randomize_segment_length: false
-    randomize_segment_start: false
-    require_full_segment: false
-    sample_weight_mode: task_virtual_start_count_power
-    sample_weight_length_power: 0.5
-    sample_weight_min: 0.25
-    sample_weight_max: 4.0
+    start_padding_frames: 3
+    tail_padding_policy: zero_order_hold
+    padded_target_policy: mask_loss
+    task_start_power: 0.5
+    demo_count_power: 0.0
+    trajectory_start_power: 1.0
   episode_cache_size: 2
   train_fraction: 1.0
   split_seed: 0
@@ -138,7 +134,7 @@ training:
   action_sigma_shift: 1.0
   use_teacher_forcing: false
   chunk_size: 4
-  window_size: 64
+  window_size: 30
   optimizer_name: adamw
   scheduler_name: constant_with_warmup
   learning_rate: 1.0e-5

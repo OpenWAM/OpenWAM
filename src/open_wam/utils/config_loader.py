@@ -828,6 +828,28 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         data_defaults = GenericDataConfig(dataset_name=dataset_name, dataset_type=resolved_type)
         data_config_cls = GenericDataConfig
 
+    sample_construction_mode = _coerce_enum(
+        config_enums.WindowSamplingMode,
+        sample_construction_raw.get("mode", data_defaults.sample_construction.mode),
+    )
+    if sample_construction_mode == config_enums.WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT:
+        legacy_hierarchical_keys = (
+            "segment_min_frames",
+            "segment_max_frames",
+            "randomize_segment_length",
+            "randomize_segment_start",
+            "require_full_segment",
+            "sample_weight_mode",
+            "sample_weight_length_power",
+        )
+        present_legacy_keys = [key for key in legacy_hierarchical_keys if key in sample_construction_raw]
+        if present_legacy_keys:
+            joined = ", ".join(f"`{key}`" for key in present_legacy_keys)
+            raise ValueError(
+                "`sample_construction.mode=hierarchical_fixed_segment` uses `segment_frames`, padding policies, "
+                f"and hierarchical powers; remove legacy fields: {joined}."
+            )
+
     default_view_layout = [
         {
             "source_name": view.source_name,
@@ -931,10 +953,7 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
             data_defaults.action_mapping,
         ),
         sample_construction=SampleConstructionConfig(
-            mode=_coerce_enum(
-                config_enums.WindowSamplingMode,
-                sample_construction_raw.get("mode", data_defaults.sample_construction.mode),
-            ),
+            mode=sample_construction_mode,
             anchor_policy=_coerce_enum(
                 config_enums.AnchorPolicy,
                 sample_construction_raw.get(
@@ -974,6 +993,10 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
                 "randomize_geometry",
                 data_defaults.sample_construction.randomize_geometry,
             ),
+            segment_frames=sample_construction_raw.get(
+                "segment_frames",
+                data_defaults.sample_construction.segment_frames,
+            ),
             segment_min_frames=sample_construction_raw.get(
                 "segment_min_frames",
                 data_defaults.sample_construction.segment_min_frames,
@@ -1005,6 +1028,32 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
             start_padding_frames=sample_construction_raw.get(
                 "start_padding_frames",
                 data_defaults.sample_construction.start_padding_frames,
+            ),
+            tail_padding_policy=_coerce_enum(
+                config_enums.TailPaddingPolicy,
+                sample_construction_raw.get(
+                    "tail_padding_policy",
+                    data_defaults.sample_construction.tail_padding_policy,
+                ),
+            ),
+            padded_target_policy=_coerce_enum(
+                config_enums.PaddedTargetPolicy,
+                sample_construction_raw.get(
+                    "padded_target_policy",
+                    data_defaults.sample_construction.padded_target_policy,
+                ),
+            ),
+            task_start_power=sample_construction_raw.get(
+                "task_start_power",
+                data_defaults.sample_construction.task_start_power,
+            ),
+            demo_count_power=sample_construction_raw.get(
+                "demo_count_power",
+                data_defaults.sample_construction.demo_count_power,
+            ),
+            trajectory_start_power=sample_construction_raw.get(
+                "trajectory_start_power",
+                data_defaults.sample_construction.trajectory_start_power,
             ),
             sample_weight_mode=_coerce_enum(
                 config_enums.SampleWeightMode,

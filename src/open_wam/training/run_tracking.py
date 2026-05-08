@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess
 from typing import Any
 
-from open_wam.configs import ExperimentConfig, PolicyVariantName
+from open_wam.configs import ExperimentConfig, PolicyVariantName, SampleWeightMode
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -123,13 +123,35 @@ def build_run_tracking_metadata(
             if sample_construction is not None and sample_construction.segment_max_frames is not None
             else None
         ),
+        "segment_frames": (
+            int(sample_construction.segment_frames)
+            if sample_construction is not None and sample_construction.segment_frames is not None
+            else None
+        ),
         "start_padding_frames": (
             int(sample_construction.start_padding_frames)
             if sample_construction is not None
             else 0
         ),
+        "tail_padding_policy": (
+            str(sample_construction.tail_padding_policy) if sample_construction is not None else None
+        ),
+        "padded_target_policy": (
+            str(sample_construction.padded_target_policy) if sample_construction is not None else None
+        ),
+        "task_start_power": (
+            float(sample_construction.task_start_power) if sample_construction is not None else None
+        ),
+        "demo_count_power": (
+            float(sample_construction.demo_count_power) if sample_construction is not None else None
+        ),
+        "trajectory_start_power": (
+            float(sample_construction.trajectory_start_power) if sample_construction is not None else None
+        ),
         "sample_weight_mode": (
-            str(sample_construction.sample_weight_mode) if sample_construction is not None else None
+            str(sample_construction.sample_weight_mode)
+            if sample_construction is not None and sample_construction.sample_weight_mode != SampleWeightMode.UNIFORM
+            else None
         ),
         "sample_weight_length_power": (
             float(sample_construction.sample_weight_length_power)
@@ -219,6 +241,8 @@ def build_wandb_tags(tracking_metadata: dict[str, Any]) -> tuple[str, ...]:
         ordered_tags.append(f"reference_profile:{tracking_metadata['reference_profile']}")
     if tracking_metadata.get("sample_construction_mode"):
         ordered_tags.append(f"sample:{tracking_metadata['sample_construction_mode']}")
+    if tracking_metadata.get("segment_frames") is not None:
+        ordered_tags.append(f"segment_frames:{tracking_metadata['segment_frames']}")
     segment_min_frames = tracking_metadata.get("segment_min_frames")
     segment_max_frames = tracking_metadata.get("segment_max_frames")
     if (

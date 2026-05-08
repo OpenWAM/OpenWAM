@@ -58,6 +58,88 @@ trainer:
 
 
 @pytest.mark.unit
+def test_static_validator_accepts_hierarchical_fixed_segment_sampler(tmp_path: Path) -> None:
+    config_path = tmp_path / "hierarchical_fixed_segment.yaml"
+    config_path.write_text(
+        """
+name: hierarchical_fixed_segment
+data:
+  dataset_name: libero
+  dataset_type: lerobot_v2_latent_local
+  sample_construction:
+    mode: hierarchical_fixed_segment
+    segment_frames: 128
+    start_padding_frames: 3
+    tail_padding_policy: zero_order_hold
+    padded_target_policy: mask_loss
+    task_start_power: 0.5
+    demo_count_power: 0.0
+    trajectory_start_power: 1.0
+  action_schema:
+    action_dim: 7
+    action_horizon: 16
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: post_latent
+  attach_site: post_visual_core
+action_decoder:
+  name: mlp_decoder
+  action_dim: 7
+  action_horizon: 16
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert report.ok
+
+
+@pytest.mark.unit
+def test_static_validator_rejects_legacy_full_segment_flag_on_hierarchical_sampler(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_hierarchical_fixed_segment.yaml"
+    config_path.write_text(
+        """
+name: bad_hierarchical_fixed_segment
+data:
+  dataset_name: libero
+  dataset_type: lerobot_v2_latent_local
+  sample_construction:
+    mode: hierarchical_fixed_segment
+    segment_frames: 128
+    require_full_segment: false
+  action_schema:
+    action_dim: 7
+    action_horizon: 16
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: post_latent
+  attach_site: post_visual_core
+action_decoder:
+  name: mlp_decoder
+  action_dim: 7
+  action_horizon: 16
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any(issue.path == "data.sample_construction.require_full_segment" for issue in report.errors)
+
+
+@pytest.mark.unit
 def test_static_validator_warns_for_legacy_action_head() -> None:
     report = validate_config_file(REPO_ROOT / "configs/experiments/contract_only_robotwin.yaml")
 
