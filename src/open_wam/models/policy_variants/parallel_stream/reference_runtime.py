@@ -2281,8 +2281,8 @@ def run_parallel_action_conditioned_inference_rollout(
                 "cond_timesteps": torch.zeros_like(action_timestep_values),
                 "actions_mask": torch.ones_like(actions),
             },
-            "chunk_size": max(1, int(training_config.chunk_size)),
-            "window_size": max(1, int(training_config.window_size)),
+            "chunk_size": max(1, int(inference_config.frame_chunk_size)),
+            "window_size": max(1, int(policy_config.attn_window)),
             "attention_profile_name": attention_profile_name,
             "preserve_video_pretrain_history": bool(
                 getattr(policy_config, "preserve_video_pretrain_history", False)

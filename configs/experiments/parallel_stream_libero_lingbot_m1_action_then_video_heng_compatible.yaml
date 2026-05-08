@@ -107,6 +107,7 @@ policy_variant:
   sequence_order: [video_noisy, video_condition, action_noisy, action_condition]
   mask_mode: lingbot_chunked
   cache_mode: metadata_only
+  preserve_video_pretrain_history: true
 
 action_decoder:
   # Decoder surface knobs

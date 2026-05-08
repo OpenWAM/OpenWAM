@@ -558,6 +558,19 @@ def test_m1_generalist_joint_denoising_yaml_config_loads() -> None:
     assert config.action_decoder.name == ActionDecoderName.LINGBOT_PARALLEL
 
 
+def test_m1_step3500_variant_yaml_configs_preserve_video_pretrain_history() -> None:
+    config_paths = sorted(
+        (REPO_ROOT / "configs/experiments").glob(
+            "parallel_stream_libero_lingbot_m1_*_heng_compatible.yaml"
+        )
+    )
+    assert len(config_paths) == 7
+    for config_path in config_paths:
+        config = load_experiment_config(config_path)
+        assert isinstance(config.policy_variant, ParallelStreamPolicyConfig)
+        assert config.policy_variant.preserve_video_pretrain_history is True
+
+
 def test_m1_generalist_joint_denoising_defaults_mode_probabilities(tmp_path: Path) -> None:
     source_path = (
         REPO_ROOT

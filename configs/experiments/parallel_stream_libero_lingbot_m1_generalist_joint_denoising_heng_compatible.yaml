@@ -102,6 +102,7 @@ policy_variant:
   video_action_condition_source: noisy_action
   video_action_attention_scope: block_local
   couple_action_to_video_timesteps: true
+  preserve_video_pretrain_history: true
   joint_denoise_training_mode_probs:
     joint: 0.6
     action_conditioned_video: 0.2

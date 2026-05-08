@@ -18,10 +18,12 @@ from open_wam.models.policy_variants.contracts import PolicyTrainBatch, PolicyTr
 from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
     prepare_parallel_action_conditioned_train_artifacts,
     prepare_parallel_exact_train_artifacts,
+    run_parallel_action_conditioned_inference_rollout,
     run_parallel_exact_cache_warmup,
     run_parallel_exact_inference_rollout,
     run_reference_single_stream_forward,
 )
+from open_wam.models.policy_variants.parallel_stream import reference_runtime as reference_runtime_module
 from open_wam.models.policy_variants.parallel_stream.variant import ParallelStreamPolicyVariant
 from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
 
@@ -756,6 +758,103 @@ def test_parallel_action_conditioned_train_artifacts_accept_contextual_overrides
     assert artifacts.input_dict["loss_frame_end"] == 6
     assert artifacts.input_dict["frame_shift"] == 9
     assert artifacts.input_dict["attention_profile_name"] == "chunked_temporal_exact_joint"
+
+
+def test_parallel_action_conditioned_inference_uses_policy_attention_geometry(monkeypatch) -> None:
+    captured: list[tuple[int, int]] = []
+
+    def fake_action_conditioned_forward(transformer, *, input_dict, **kwargs):
+        del transformer, kwargs
+        captured.append((int(input_dict["chunk_size"]), int(input_dict["window_size"])))
+        latent_noisy = input_dict["latent_dict"]["noisy_latents"]
+        action_noisy = input_dict["action_dict"]["noisy_latents"]
+        batch_size = latent_noisy.shape[0]
+        video_tokens = (
+            latent_noisy.shape[2]
+            // 1
+            * latent_noisy.shape[3]
+            // 2
+            * latent_noisy.shape[4]
+            // 2
+        )
+        video_channels = latent_noisy.shape[1] * 1 * 2 * 2
+        action_tokens = action_noisy.shape[2] * action_noisy.shape[3]
+        return (
+            torch.zeros(
+                batch_size,
+                video_tokens,
+                video_channels,
+                device=latent_noisy.device,
+                dtype=latent_noisy.dtype,
+            ),
+            torch.zeros(
+                batch_size,
+                action_tokens,
+                action_noisy.shape[1],
+                device=action_noisy.device,
+                dtype=action_noisy.dtype,
+            ),
+        )
+
+    monkeypatch.setattr(
+        reference_runtime_module,
+        "_run_parallel_action_conditioned_forward",
+        fake_action_conditioned_forward,
+    )
+    monkeypatch.setattr(reference_runtime_module, "_summarize_slot_pool_cache_state", lambda *_args, **_kwargs: None)
+
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=2,
+        patch_size_w=2,
+    )
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode="lingbot_exact_action_conditioned",
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        frame_chunk_size=4,
+        action_per_frame=4,
+        attn_window=30,
+        video_condition_on_action=True,
+        video_action_condition_source="noisy_action",
+    )
+    training_config = TrainingConfig(
+        chunk_size=4,
+        window_size=64,
+        video_num_train_timesteps=10,
+        action_num_train_timesteps=10,
+    )
+    inference_config = InferenceConfig(
+        frame_chunk_size=4,
+        use_cache=False,
+        guidance_scale=1.0,
+        action_guidance_scale=1.0,
+        video_num_inference_steps=2,
+        action_num_inference_steps=2,
+    )
+
+    run_parallel_action_conditioned_inference_rollout(
+        transformer=_FakeReferenceTransformer(),
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        inference_config=inference_config,
+        action_dim=30,
+        condition_latents=torch.randn(1, 48, 4, 8, 8),
+        text_emb=torch.randn(1, 512, 16),
+        negative_text_emb=None,
+        action_channel_mask=None,
+        infer_cache={},
+    )
+
+    assert captured
+    assert set(captured) == {(4, 30)}
 
 
 def _generalist_policy_config(
