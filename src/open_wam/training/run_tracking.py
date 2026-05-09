@@ -82,9 +82,12 @@ def build_run_tracking_metadata(
     current_block_coupling = getattr(config.policy_variant, "current_block_coupling", None)
     reference_profile = getattr(config.policy_variant, "reference_profile", None)
     joint_denoise_training_mode_probs = getattr(config.policy_variant, "joint_denoise_training_mode_probs", None)
+    mot_generalist_training_mode_probs = getattr(config.policy_variant, "mot_generalist_training_mode_probs", None)
+    generalist_training_paradigm = getattr(config.policy_variant, "generalist_training_paradigm", None)
     preserve_video_pretrain_history = getattr(config.policy_variant, "preserve_video_pretrain_history", None)
     train_video_condition_source = getattr(config.policy_variant, "train_video_condition_source", None)
     sample_construction = getattr(config.data, "sample_construction", None)
+    dynamics_mixture = getattr(config.data, "generalist_dynamics_mixture", None)
     checkpoint_dir = Path(config.trainer.checkpoint_dir) if config.trainer.checkpoint_dir else output_dir / "checkpoints"
     metadata: dict[str, Any] = {
         "tracking_schema_version": 1,
@@ -104,6 +107,20 @@ def build_run_tracking_metadata(
             {str(mode): float(prob) for mode, prob in joint_denoise_training_mode_probs.items()}
             if joint_denoise_training_mode_probs is not None
             else None
+        ),
+        "mot_generalist_training_mode_probs": (
+            {str(mode): float(prob) for mode, prob in mot_generalist_training_mode_probs.items()}
+            if mot_generalist_training_mode_probs is not None
+            else None
+        ),
+        "generalist_training_paradigm": (
+            str(generalist_training_paradigm) if generalist_training_paradigm is not None else None
+        ),
+        "generalist_dynamics_train_latent_root": (
+            dynamics_mixture.train_latent_root if dynamics_mixture is not None else None
+        ),
+        "generalist_dynamics_val_latent_root": (
+            dynamics_mixture.val_latent_root if dynamics_mixture is not None else None
         ),
         "preserve_video_pretrain_history": preserve_video_pretrain_history,
         "action_decoder": str(config.action_decoder.name),
@@ -257,6 +274,8 @@ def build_wandb_tags(tracking_metadata: dict[str, Any]) -> tuple[str, ...]:
         ordered_tags.append(f"sample_weight:{tracking_metadata['sample_weight_mode']}")
     if tracking_metadata.get("preserve_video_pretrain_history") is True:
         ordered_tags.append("video_pretrain_history:preserved")
+    if tracking_metadata.get("generalist_training_paradigm"):
+        ordered_tags.append(f"generalist_paradigm:{tracking_metadata['generalist_training_paradigm']}")
     deduped: list[str] = []
     for tag in ordered_tags:
         if tag not in deduped:

@@ -11,6 +11,7 @@ from .enums import (
     ParallelActionConditionSource,
     AttachSite,
     DecodeFeatureMode,
+    GeneralistTrainingParadigm,
     MoTConditionMode,
     MoTActionExpertInitMode,
     MoTGeneralistTrainingMode,
@@ -299,6 +300,7 @@ class MoTPolicyConfig(PolicyVariantConfig):
     # preserves the fixed six-mode path; a dict samples one of joint /
     # action_conditioned_video / video_conditioned_action per segment.
     mot_generalist_training_mode_probs: dict[MoTGeneralistTrainingMode, float] | None = None
+    generalist_training_paradigm: GeneralistTrainingParadigm = GeneralistTrainingParadigm.DEMO_ONLY
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -343,6 +345,7 @@ class MoTPolicyConfig(PolicyVariantConfig):
                 "runtime_mode": MoTRuntimeMode,
                 "condition_mode": MoTConditionMode,
                 "action_expert_init_mode": MoTActionExpertInitMode,
+                "generalist_training_paradigm": GeneralistTrainingParadigm,
             },
             optional_enum_fields={
                 "preset": MoTPreset,
@@ -358,6 +361,14 @@ class MoTPolicyConfig(PolicyVariantConfig):
                     "`mot_generalist_training_mode_probs` requires `current_block_coupling = joint`, "
                     f"got current_block_coupling={self.current_block_coupling!r}."
                 )
+        if (
+            self.generalist_training_paradigm == GeneralistTrainingParadigm.MIXED_DYNAMICS
+            and self.mot_generalist_training_mode_probs is None
+        ):
+            raise ValueError(
+                "`generalist_training_paradigm = mixed_dynamics` requires "
+                "`mot_generalist_training_mode_probs` so the runtime can consume forced GJD modes."
+            )
 
 
 @dataclass(frozen=True)
@@ -433,6 +444,7 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
     current_block_coupling: CurrentBlockCoupling | None = None
     couple_action_to_video_timesteps: bool = True
     joint_denoise_training_mode_probs: dict[JointDenoiseTrainingMode, float] | None = None
+    generalist_training_paradigm: GeneralistTrainingParadigm = GeneralistTrainingParadigm.DEMO_ONLY
     # When true, restrict PAST-chunk attention (both clean_to_clean and
     # noise_to_clean) so that any video-stream query (V_clean or V_noisy)
     # only sees same-stream history (V_clean), never history A_*. Action
@@ -462,6 +474,7 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
                 "cache_mode": ParallelCacheMode,
                 "video_action_condition_source": ParallelActionConditionSource,
                 "video_action_attention_scope": ParallelActionAttentionScope,
+                "generalist_training_paradigm": GeneralistTrainingParadigm,
                 "temporal_position_mode": TemporalPositionMode,
                 "action_norm_method": ActionNormMethod,
             },
@@ -499,5 +512,13 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
         ):
             raise ValueError(
                 "Conditional joint-denoise training modes require "
+                "`variant_profile = generalist_joint_denoising`."
+            )
+        if (
+            self.generalist_training_paradigm == GeneralistTrainingParadigm.MIXED_DYNAMICS
+            and self.variant_profile != ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING
+        ):
+            raise ValueError(
+                "`generalist_training_paradigm = mixed_dynamics` requires "
                 "`variant_profile = generalist_joint_denoising`."
             )

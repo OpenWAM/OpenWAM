@@ -461,6 +461,58 @@ def test_exact_train_artifacts_default_to_flex_attention_profile() -> None:
     assert artifacts.input_dict["attention_profile_name"] == "chunked_temporal_exact"
 
 
+def test_generalist_action_conditioned_override_drops_text_and_masks_action_loss() -> None:
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        implementation="shared_transformer",
+        attn_mode="torch",
+        train_attn_mode=None,
+        infer_attn_mode=None,
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+    )
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode=ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
+        variant_profile=ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING,
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        frame_chunk_size=2,
+        action_per_frame=2,
+        attn_window=8,
+        video_condition_on_action=True,
+    )
+    training_config = TrainingConfig(chunk_size=2, window_size=8)
+    video_latents = torch.randn(1, 48, 2, 8, 8)
+    actions = torch.randn(1, 4, 4)
+    action_mask = torch.ones_like(actions, dtype=torch.bool)
+    text_emb = torch.randn(1, 512, 16)
+
+    artifacts = prepare_parallel_action_conditioned_train_artifacts(
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        video_latents=video_latents,
+        actions=actions,
+        action_mask=action_mask,
+        text_emb=text_emb,
+        generalist_training_mode_override=JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+        generalist_drop_text_conditioning=True,
+        generalist_training_source="counterfactual_dynamics",
+    )
+
+    assert artifacts.input_dict["joint_denoise_training_mode"] == "action_conditioned_video"
+    assert artifacts.input_dict["joint_denoise_training_mode_override"] == "action_conditioned_video"
+    assert artifacts.input_dict["joint_denoise_text_dropped"] is True
+    assert artifacts.input_dict["generalist_training_source"] == "counterfactual_dynamics"
+    assert torch.equal(artifacts.input_dict["latent_dict"]["text_emb"], torch.zeros_like(text_emb))
+    assert torch.equal(artifacts.input_dict["action_dict"]["text_emb"], torch.zeros_like(text_emb))
+    assert artifacts.input_dict["action_dict"]["loss_mask"].sum().item() == 0
+    assert artifacts.input_dict["latent_dict"]["loss_mask"].sum().item() > 0
+
+
 def test_exact_runtime_applies_action_channel_mask_to_action_stream() -> None:
     transformer = _FakeReferenceTransformer()
     backbone_config = LingbotCompatibleVideoBackboneConfig(
@@ -803,6 +855,7 @@ def test_parallel_action_conditioned_inference_uses_policy_attention_geometry(mo
     )
     monkeypatch.setattr(reference_runtime_module, "_summarize_slot_pool_cache_state", lambda *_args, **_kwargs: None)
 
+
     backbone_config = LingbotCompatibleVideoBackboneConfig(
         hidden_size=32,
         num_layers=1,
@@ -855,6 +908,61 @@ def test_parallel_action_conditioned_inference_uses_policy_attention_geometry(mo
 
     assert captured
     assert set(captured) == {(4, 30)}
+
+
+def test_parallel_action_conditioned_train_artifacts_can_force_clean_video_condition() -> None:
+    torch.manual_seed(0)
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+    )
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode="lingbot_exact_action_conditioned",
+        frame_chunk_size=4,
+        action_per_frame=4,
+        attn_window=8,
+        video_condition_on_action=True,
+        video_action_condition_source="noisy_action",
+        noisy_video_condition_prob=1.0,
+    )
+    training_config = TrainingConfig(
+        chunk_size=4,
+        window_size=64,
+        video_num_train_timesteps=10,
+        action_num_train_timesteps=10,
+    )
+    video_latents = torch.randn(1, 48, 6, 8, 8)
+    actions = torch.randn(1, 24, 30)
+
+    augmented = prepare_parallel_action_conditioned_train_artifacts(
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        video_latents=video_latents,
+        actions=actions,
+        action_mask=None,
+        text_emb=torch.randn(1, 512, 16),
+    )
+    forced_clean = prepare_parallel_action_conditioned_train_artifacts(
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        video_latents=video_latents,
+        actions=actions,
+        action_mask=None,
+        text_emb=torch.randn(1, 512, 16),
+        force_clean_video_condition=True,
+    )
+
+    assert torch.count_nonzero(augmented.input_dict["latent_dict"]["cond_timesteps"]) > 0
+    assert torch.count_nonzero(forced_clean.input_dict["latent_dict"]["cond_timesteps"]) == 0
+    assert torch.allclose(forced_clean.input_dict["latent_dict"]["latent"], video_latents)
+    assert forced_clean.input_dict["force_clean_video_condition"] is True
 
 
 def _generalist_policy_config(

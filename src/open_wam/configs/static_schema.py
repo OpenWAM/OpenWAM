@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 import re
 from typing import Any, Iterable, Mapping
@@ -17,10 +18,12 @@ from open_wam.configs.enums import (
     ActionTargetStateEncoding,
     AttachSite,
     AttentionMode,
+    AuxiliaryValidationSource,
     BackboneImplementation,
     CurrentBlockCoupling,
     DataSplit,
     EvalMode,
+    GeneralistTrainingParadigm,
     JointDenoiseTrainingMode,
     MoTActionExpertInitMode,
     MoTConditionMode,
@@ -148,6 +151,9 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
     sample_construction = _mapping(data.get("sample_construction"))
     if sample_construction is not None:
         _validate_sample_construction(sample_construction, issues)
+    generalist_dynamics = _mapping(data.get("generalist_dynamics_mixture"))
+    if generalist_dynamics is not None:
+        _validate_generalist_dynamics_mixture(generalist_dynamics, issues)
 
     backbone = _mapping(raw.get("backbone"))
     if backbone is not None:
@@ -171,12 +177,26 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
         if policy_variant.get("name") == PolicyVariantName.PARALLEL_STREAM.value:
             _validate_enum(policy_variant, "runtime_mode", ParallelRuntimeMode, issues, "policy_variant")
             _validate_enum(policy_variant, "variant_profile", ParallelStreamVariantProfile, issues, "policy_variant")
+            _validate_enum(
+                policy_variant,
+                "generalist_training_paradigm",
+                GeneralistTrainingParadigm,
+                issues,
+                "policy_variant",
+            )
             _validate_joint_denoise_training_mode_probs(policy_variant, issues)
         if policy_variant.get("name") == PolicyVariantName.MOT.value:
             _validate_enum(policy_variant, "runtime_mode", MoTRuntimeMode, issues, "policy_variant")
             _validate_enum(policy_variant, "condition_mode", MoTConditionMode, issues, "policy_variant")
             _validate_enum(policy_variant, "action_expert_init_mode", MoTActionExpertInitMode, issues, "policy_variant")
             _validate_enum(policy_variant, "current_block_coupling", CurrentBlockCoupling, issues, "policy_variant")
+            _validate_enum(
+                policy_variant,
+                "generalist_training_paradigm",
+                GeneralistTrainingParadigm,
+                issues,
+                "policy_variant",
+            )
             _validate_mot_generalist_training_mode_probs(policy_variant, issues)
         _validate_positive_ints(policy_variant, issues, "policy_variant", ("hidden_size",))
     if action_decoder is not None:
@@ -189,7 +209,16 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
     if trainer is not None:
         _validate_enum(trainer, "accelerator", TrainerAccelerator, issues, "trainer")
         _validate_enum(trainer, "precision", TrainerPrecision, issues, "trainer")
-        _validate_positive_ints(trainer, issues, "trainer", ("max_epochs", "devices", "log_every_n_steps"))
+        _validate_positive_ints(
+            trainer,
+            issues,
+            "trainer",
+            ("max_epochs", "devices", "log_every_n_steps", "validation_interval"),
+        )
+
+    validation = _mapping(raw.get("validation"))
+    if validation is not None:
+        _validate_validation_config(validation, issues)
 
 
 def _validate_eval_config(raw: Mapping[str, Any], issues: "_IssueBuilder") -> None:
@@ -210,6 +239,52 @@ def _validate_eval_config(raw: Mapping[str, Any], issues: "_IssueBuilder") -> No
         "",
         ("max_batches", "max_trajectories", "max_steps_per_trajectory", "batch_size"),
     )
+
+
+def _validate_validation_config(validation: Mapping[str, Any], issues: "_IssueBuilder") -> None:
+    tasks = validation.get("auxiliary_tasks", ())
+    if tasks is None:
+        return
+    if not isinstance(tasks, list):
+        issues.error("validation.auxiliary_tasks", "Expected a list of auxiliary validation task mappings.")
+        return
+    seen_names: set[str] = set()
+    seen_phases: set[str] = set()
+    for index, task in enumerate(tasks):
+        task_path = f"validation.auxiliary_tasks[{index}]"
+        if not isinstance(task, Mapping):
+            issues.error(task_path, "Expected a mapping.")
+            continue
+        name = task.get("name")
+        if not isinstance(name, str) or not name:
+            issues.error(f"{task_path}.name", "Expected a non-empty string.")
+        elif name in seen_names:
+            issues.error(f"{task_path}.name", f"Duplicate auxiliary validation task name {name!r}.")
+        else:
+            seen_names.add(name)
+        report_prefix = task.get("report_prefix", name)
+        task_runs = task.get("enabled", True) is not False and task.get("max_batches", 16) != 0
+        if report_prefix is not None:
+            if not isinstance(report_prefix, str) or not report_prefix:
+                issues.error(f"{task_path}.report_prefix", "Expected a non-empty string when set.")
+            elif task_runs and report_prefix in seen_phases:
+                issues.error(
+                    f"{task_path}.report_prefix",
+                    f"Duplicate auxiliary validation report prefix {report_prefix!r}.",
+                )
+            elif task_runs:
+                seen_phases.add(report_prefix)
+        _validate_enum(task, "mode_override", JointDenoiseTrainingMode, issues, task_path)
+        _validate_enum(task, "dataset_split", DataSplit, issues, task_path)
+        _validate_enum(task, "source", AuxiliaryValidationSource, issues, task_path)
+        max_batches = task.get("max_batches", 16)
+        if max_batches is not None:
+            value = _optional_int(max_batches)
+            if value is None or value < 0:
+                issues.error(f"{task_path}.max_batches", "Expected a non-negative integer or null.")
+        for bool_key in ("enabled", "drop_text_conditioning"):
+            if bool_key in task and task[bool_key] is not None and not isinstance(task[bool_key], bool):
+                issues.error(f"{task_path}.{bool_key}", "Expected a boolean or null.")
 
 
 def _validate_action_mapping(
@@ -329,6 +404,76 @@ def _validate_sample_construction(
                 "`hierarchical_fixed_segment` uses fixed segment and hierarchical power fields; "
                 f"do not set `{legacy_key}`.",
             )
+
+
+def _validate_generalist_dynamics_mixture(
+    mixture: Mapping[str, Any],
+    issues: "_IssueBuilder",
+) -> None:
+    weight_keys = (
+        "real_joint_weight",
+        "real_action_conditioned_video_weight",
+        "real_video_conditioned_action_weight",
+        "counterfactual_action_conditioned_video_weight",
+        "counterfactual_video_conditioned_action_weight",
+    )
+    total = 0.0
+    for key in weight_keys:
+        if key not in mixture:
+            continue
+        value = mixture[key]
+        if isinstance(value, bool):
+            issues.error(f"data.generalist_dynamics_mixture.{key}", "Expected a numeric weight.")
+            continue
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            issues.error(f"data.generalist_dynamics_mixture.{key}", "Expected a numeric weight.")
+            continue
+        if not math.isfinite(numeric):
+            issues.error(f"data.generalist_dynamics_mixture.{key}", "Expected a finite weight.")
+            continue
+        if numeric < 0.0:
+            issues.error(f"data.generalist_dynamics_mixture.{key}", "Expected a non-negative weight.")
+            continue
+        total += numeric
+    if total <= 0.0 and any(key in mixture for key in weight_keys):
+        issues.error("data.generalist_dynamics_mixture", "Expected at least one positive mixture weight.")
+    for key in ("train_latent_root", "val_latent_root"):
+        if key in mixture and mixture[key] is not None and not isinstance(mixture[key], str):
+            issues.error(f"data.generalist_dynamics_mixture.{key}", "Expected a string path.")
+    if "allow_train_latent_root_for_val" in mixture and not isinstance(
+        mixture["allow_train_latent_root_for_val"],
+        bool,
+    ):
+        issues.error("data.generalist_dynamics_mixture.allow_train_latent_root_for_val", "Expected a boolean.")
+    if "length_multiplier" in mixture:
+        value = mixture["length_multiplier"]
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            issues.error("data.generalist_dynamics_mixture.length_multiplier", "Expected a numeric value.")
+            return
+        if not math.isfinite(numeric) or numeric <= 0.0:
+            issues.error("data.generalist_dynamics_mixture.length_multiplier", "Expected a finite positive value.")
+    if "conditional_history_frames" in mixture and mixture["conditional_history_frames"] is not None:
+        value = mixture["conditional_history_frames"]
+        if isinstance(value, bool):
+            issues.error("data.generalist_dynamics_mixture.conditional_history_frames", "Expected a positive integer or null.")
+        else:
+            try:
+                numeric = int(value)
+            except (TypeError, ValueError):
+                issues.error(
+                    "data.generalist_dynamics_mixture.conditional_history_frames",
+                    "Expected a positive integer or null.",
+                )
+                return
+            if numeric <= 0:
+                issues.error(
+                    "data.generalist_dynamics_mixture.conditional_history_frames",
+                    "Expected a positive integer or null.",
+                )
 
 
 def _validate_action_horizons(

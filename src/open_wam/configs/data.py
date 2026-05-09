@@ -418,6 +418,49 @@ class SampleConstructionConfig:
 
 
 @dataclass(frozen=True)
+class GeneralistDynamicsMixtureConfig:
+    """Optional encoded-dynamics source mixed into generalist training.
+
+    The five weights define the new GJD training paradigm at the data-sample
+    level. Dataset wrappers stamp the selected bucket into sample metadata so
+    M1/M5 runtimes can force the corresponding joint/FDM/IDM mode.
+    """
+
+    train_latent_root: str | None = None
+    val_latent_root: str | None = None
+    allow_train_latent_root_for_val: bool = False
+    real_joint_weight: float = 0.6
+    real_action_conditioned_video_weight: float = 0.1
+    real_video_conditioned_action_weight: float = 0.1
+    counterfactual_action_conditioned_video_weight: float = 0.1
+    counterfactual_video_conditioned_action_weight: float = 0.1
+    conditional_history_frames: int | None = 16
+    seed: int = 0
+    length_multiplier: float = 1.0
+
+    def __post_init__(self) -> None:
+        weights = {
+            "real_joint_weight": self.real_joint_weight,
+            "real_action_conditioned_video_weight": self.real_action_conditioned_video_weight,
+            "real_video_conditioned_action_weight": self.real_video_conditioned_action_weight,
+            "counterfactual_action_conditioned_video_weight": self.counterfactual_action_conditioned_video_weight,
+            "counterfactual_video_conditioned_action_weight": self.counterfactual_video_conditioned_action_weight,
+        }
+        for name, value in weights.items():
+            numeric = float(value)
+            if not math.isfinite(numeric) or numeric < 0.0:
+                raise ValueError(f"`data.generalist_dynamics_mixture.{name}` must be finite and non-negative.")
+        if sum(float(value) for value in weights.values()) <= 0.0:
+            raise ValueError("`data.generalist_dynamics_mixture` must contain at least one positive weight.")
+        if not isinstance(self.allow_train_latent_root_for_val, bool):
+            raise ValueError("`data.generalist_dynamics_mixture.allow_train_latent_root_for_val` must be boolean.")
+        if self.conditional_history_frames is not None and int(self.conditional_history_frames) <= 0:
+            raise ValueError("`data.generalist_dynamics_mixture.conditional_history_frames` must be positive or null.")
+        if not math.isfinite(float(self.length_multiplier)) or float(self.length_multiplier) <= 0.0:
+            raise ValueError("`data.generalist_dynamics_mixture.length_multiplier` must be finite and positive.")
+
+
+@dataclass(frozen=True)
 class DataConfig:
     """Shared data-layer config independent from head choice."""
 
@@ -454,6 +497,9 @@ class DataConfig:
     action_target: ActionTargetConfig
     action_mapping: ActionMappingConfig
     sample_construction: SampleConstructionConfig
+    generalist_dynamics_mixture: GeneralistDynamicsMixtureConfig = field(
+        default_factory=GeneralistDynamicsMixtureConfig
+    )
 
     def __post_init__(self) -> None:
         coerce_fields(

@@ -11,11 +11,13 @@ from einops import rearrange
 
 from open_wam.configs.enums import (
     CurrentBlockCoupling,
+    GeneralistTrainingParadigm,
     JointDenoiseTrainingMode,
     ParallelExactCacheWriteMode,
     ParallelRuntimeMode,
     ParallelStreamVariantProfile,
 )
+from open_wam.configs.variant_semantics import GENERALIST_TRAINING_SOURCE_METADATA_KEY
 from open_wam.configs.inference import InferenceConfig
 from open_wam.configs.policy_variant import ParallelStreamPolicyConfig
 from open_wam.configs.training import TrainingConfig
@@ -430,13 +432,20 @@ def _apply_generalist_joint_denoise_training_mode(
     action_latents: torch.Tensor,
     action_mask_latents: torch.Tensor | None,
     frame_shift: int,
+    training_mode_override: JointDenoiseTrainingMode | str | None = None,
+    drop_text_conditioning: bool = False,
+    training_source: str | None = None,
 ) -> None:
     if int(video_latents.shape[0]) != 1:
         raise ValueError(
             "`generalist_joint_denoising` currently samples one conditioning mode per runtime batch. "
             "Use train_batch_size=1 to preserve the intended one-mode-per-segment contract."
         )
-    mode = _sample_joint_denoise_training_mode(policy_config, device=video_latents.device)
+    mode = (
+        JointDenoiseTrainingMode(training_mode_override)
+        if training_mode_override is not None
+        else _sample_joint_denoise_training_mode(policy_config, device=video_latents.device)
+    )
     num_frames = int(video_latents.shape[2])
     clean_zero_timesteps = clean_timestep_values(num_frames=num_frames, device=video_latents.device)
     shared_sigma_values: torch.Tensor | None = None
@@ -505,6 +514,12 @@ def _apply_generalist_joint_denoise_training_mode(
         latent_dict["loss_mask"] = artifacts.input_dict["latent_dict"]["loss_mask"]
 
     text_emb = artifacts.input_dict["latent_dict"]["text_emb"]
+    text_dropped = bool(drop_text_conditioning) or (
+        policy_config.generalist_training_paradigm == GeneralistTrainingParadigm.MIXED_DYNAMICS
+        and mode != JointDenoiseTrainingMode.JOINT
+    )
+    if text_dropped:
+        text_emb = torch.zeros_like(text_emb)
     latent_dict["text_emb"] = text_emb
     action_dict["text_emb"] = text_emb
     action_dict["actions_mask"] = artifacts.input_dict["action_dict"]["actions_mask"]
@@ -515,7 +530,13 @@ def _apply_generalist_joint_denoise_training_mode(
     artifacts.input_dict["latent_dict"] = latent_dict
     artifacts.input_dict["action_dict"] = action_dict
     artifacts.input_dict["variant_profile"] = policy_config.variant_profile.value
+    artifacts.input_dict["generalist_training_paradigm"] = policy_config.generalist_training_paradigm.value
+    artifacts.input_dict[GENERALIST_TRAINING_SOURCE_METADATA_KEY] = training_source
     artifacts.input_dict["joint_denoise_training_mode"] = mode.value
+    artifacts.input_dict["joint_denoise_training_mode_override"] = (
+        None if training_mode_override is None else mode.value
+    )
+    artifacts.input_dict["joint_denoise_text_dropped"] = bool(text_dropped)
     artifacts.input_dict["joint_denoise_training_mode_probs"] = {
         mode_key.value: float(prob)
         for mode_key, prob in (policy_config.joint_denoise_training_mode_probs or {}).items()
@@ -542,6 +563,7 @@ def prepare_parallel_exact_train_artifacts(
     action_loss_frame_start: int | None = None,
     action_loss_frame_end: int | None = None,
     frame_shift: int = 0,
+    force_clean_video_condition: bool = False,
 ) -> LingbotParallelTrainArtifacts:
     batch_size, _, num_frames, _, _ = video_latents.shape
     train_attn_mode = resolve_stage_attention_mode(backbone_config, stage="train", exact_runtime=True)
@@ -579,12 +601,16 @@ def prepare_parallel_exact_train_artifacts(
     )
     action_scheduler.set_timesteps(training_config.action_num_train_timesteps, training=True)
 
+    # FDM/IDM-style objectives need clean condition streams to be marked as
+    # clean-from-start, not "almost denoised" targets. Keep the legacy joint
+    # policy augmentation by default, but allow objective-specific callers to
+    # force zero condition timesteps for the video condition copy.
     latent_dict = _add_noise(
         video_latents,
         train_scheduler=latent_scheduler,
         action_mask=None,
         action_mode=False,
-        noisy_cond_prob=policy_config.noisy_video_condition_prob,
+        noisy_cond_prob=0.0 if force_clean_video_condition else policy_config.noisy_video_condition_prob,
         patch_size=(backbone_config.patch_size_t, backbone_config.patch_size_h, backbone_config.patch_size_w),
         frame_shift=frame_shift,
     )
@@ -701,6 +727,7 @@ def prepare_parallel_exact_train_artifacts(
             "preserve_video_pretrain_history": bool(
                 getattr(policy_config, "preserve_video_pretrain_history", False)
             ),
+            "force_clean_video_condition": bool(force_clean_video_condition),
         },
         latent_scheduler=latent_scheduler,
         action_scheduler=action_scheduler,
@@ -725,6 +752,10 @@ def prepare_parallel_action_conditioned_train_artifacts(
     action_loss_frame_start: int | None = None,
     action_loss_frame_end: int | None = None,
     frame_shift: int = 0,
+    force_clean_video_condition: bool = False,
+    generalist_training_mode_override: JointDenoiseTrainingMode | str | None = None,
+    generalist_drop_text_conditioning: bool = False,
+    generalist_training_source: str | None = None,
 ) -> LingbotParallelTrainArtifacts:
     coupling = resolve_parallel_current_block_coupling(policy_config)
     if (
@@ -757,6 +788,7 @@ def prepare_parallel_action_conditioned_train_artifacts(
         action_loss_frame_start=action_loss_frame_start,
         action_loss_frame_end=action_loss_frame_end,
         frame_shift=frame_shift,
+        force_clean_video_condition=force_clean_video_condition,
     )
     if policy_config.variant_profile == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING:
         _, _, num_frames, _, _ = video_latents.shape
@@ -782,6 +814,9 @@ def prepare_parallel_action_conditioned_train_artifacts(
             action_latents=action_latents,
             action_mask_latents=action_mask_latents,
             frame_shift=frame_shift,
+            training_mode_override=generalist_training_mode_override,
+            drop_text_conditioning=generalist_drop_text_conditioning,
+            training_source=generalist_training_source,
         )
     return artifacts
 
@@ -2089,7 +2124,7 @@ def _summarize_slot_pool_cache_state(
     }
 
 
-def run_parallel_action_conditioned_inference_rollout(
+def _run_parallel_action_conditioned_inference_rollout_impl(
     *,
     transformer: torch.nn.Module,
     backbone_config: SharedVideoTransformerConfig,
@@ -2103,6 +2138,10 @@ def run_parallel_action_conditioned_inference_rollout(
     action_channel_mask: torch.Tensor | None,
     infer_cache: dict[str, Any],
     advance_frame_start: bool = False,
+    forced_action_latents: torch.Tensor | None = None,
+    commit_action_latents: torch.Tensor | None = None,
+    forced_action_noise: torch.Tensor | None = None,
+    action_conditioning_mode: str = "vanilla_joint_rollout",
 ) -> LingbotParallelInferArtifacts:
     current_block_coupling = resolve_parallel_current_block_coupling(policy_config)
     joint_packed_couplings = {
@@ -2184,6 +2223,29 @@ def run_parallel_action_conditioned_inference_rollout(
         device=device,
         dtype=model_dtype,
     )
+    if forced_action_latents is not None:
+        forced_action_latents = forced_action_latents.to(device=device, dtype=model_dtype)
+        if tuple(forced_action_latents.shape) != tuple(actions.shape):
+            raise ValueError(
+                "Forced joint-denoise action latents must match the generated action chunk shape, "
+                f"got forced={tuple(forced_action_latents.shape)} and expected={tuple(actions.shape)}."
+            )
+        if forced_action_noise is None:
+            forced_action_noise = torch.randn_like(forced_action_latents)
+        else:
+            forced_action_noise = forced_action_noise.to(device=device, dtype=model_dtype)
+            if tuple(forced_action_noise.shape) != tuple(actions.shape):
+                raise ValueError(
+                    "Forced joint-denoise action noise must match the generated action chunk shape, "
+                    f"got noise={tuple(forced_action_noise.shape)} and expected={tuple(actions.shape)}."
+                )
+    if commit_action_latents is not None:
+        commit_action_latents = commit_action_latents.to(device=device, dtype=model_dtype)
+        if tuple(commit_action_latents.shape) != tuple(actions.shape):
+            raise ValueError(
+                "Committed joint-denoise action latents must match the generated action chunk shape, "
+                f"got commit={tuple(commit_action_latents.shape)} and expected={tuple(actions.shape)}."
+            )
     # Keep the packed four-branch sequence contract for compatibility with the
     # trained backbone, but do not provide any explicit clean conditioning
     # signal at inference time. History should come only from the runtime
@@ -2242,6 +2304,13 @@ def run_parallel_action_conditioned_inference_rollout(
                 float(action_timestep),
                 device=device,
                 dtype=torch.float32,
+            )
+        if forced_action_latents is not None:
+            actions = action_scheduler.add_noise(
+                forced_action_latents,
+                forced_action_noise,
+                action_timestep,
+                t_dim=2,
             )
         latent_grid_id = get_mesh_id(
             inference_config.frame_chunk_size // backbone_config.patch_size_t,
@@ -2311,7 +2380,14 @@ def run_parallel_action_conditioned_inference_rollout(
             "b (f n) c -> b c f n 1",
             f=inference_config.frame_chunk_size,
         )
-        actions = action_scheduler.step(action_noise_pred, action_timestep, actions)
+        if forced_action_latents is None:
+            actions = action_scheduler.step(action_noise_pred, action_timestep, actions)
+
+    final_action_latents = (
+        commit_action_latents
+        if commit_action_latents is not None
+        else (forced_action_latents if forced_action_latents is not None else actions)
+    )
 
     if inference_config.use_cache:
         _write_exact_cache_chunk(
@@ -2321,7 +2397,7 @@ def run_parallel_action_conditioned_inference_rollout(
             frame_start=generation_frame_start,
             backbone_config=backbone_config,
             video_latents=latents,
-            action_latents=actions,
+            action_latents=final_action_latents,
             text_emb=text_emb,
             negative_text_emb=negative_text_emb,
             use_cfg=cache_context.use_cfg,
@@ -2361,17 +2437,97 @@ def run_parallel_action_conditioned_inference_rollout(
         "use_cfg": cache_context.use_cfg,
         "video_num_inference_steps": int(inference_config.video_num_inference_steps),
         "action_num_inference_steps": int(inference_config.action_num_inference_steps),
+        "action_conditioning_mode": action_conditioning_mode,
+        "forced_action_denoise": forced_action_latents is not None,
+        "commit_action_override": commit_action_latents is not None,
     }
     cache_summary = _summarize_slot_pool_cache_state(transformer, cache_name)
     if cache_summary is not None:
         debug.update(cache_summary)
     output_dtype = condition_latents.dtype if condition_latents is not None else model_dtype
-    action_pred = rearrange(actions, "b c f n 1 -> b (f n) c").to(dtype=output_dtype)
+    action_pred = rearrange(final_action_latents, "b c f n 1 -> b (f n) c").to(dtype=output_dtype)
     return LingbotParallelInferArtifacts(
         action_pred=action_pred,
         predicted_latents=latents.to(dtype=output_dtype),
         next_cache=next_cache,
         debug=debug,
+    )
+
+
+def run_parallel_action_conditioned_inference_rollout(
+    *,
+    transformer: torch.nn.Module,
+    backbone_config: SharedVideoTransformerConfig,
+    policy_config: ParallelStreamPolicyConfig,
+    training_config: TrainingConfig,
+    inference_config: InferenceConfig,
+    action_dim: int,
+    condition_latents: torch.Tensor | None,
+    text_emb: torch.Tensor | None,
+    negative_text_emb: torch.Tensor | None,
+    action_channel_mask: torch.Tensor | None,
+    infer_cache: dict[str, Any],
+    advance_frame_start: bool = False,
+) -> LingbotParallelInferArtifacts:
+    return _run_parallel_action_conditioned_inference_rollout_impl(
+        transformer=transformer,
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        inference_config=inference_config,
+        action_dim=action_dim,
+        condition_latents=condition_latents,
+        text_emb=text_emb,
+        negative_text_emb=negative_text_emb,
+        action_channel_mask=action_channel_mask,
+        infer_cache=infer_cache,
+        advance_frame_start=advance_frame_start,
+    )
+
+
+def run_parallel_action_conditioned_action_override_inference_rollout(
+    *,
+    transformer: torch.nn.Module,
+    backbone_config: SharedVideoTransformerConfig,
+    policy_config: ParallelStreamPolicyConfig,
+    training_config: TrainingConfig,
+    inference_config: InferenceConfig,
+    action_dim: int,
+    condition_latents: torch.Tensor | None,
+    text_emb: torch.Tensor | None,
+    negative_text_emb: torch.Tensor | None,
+    action_channel_mask: torch.Tensor | None,
+    infer_cache: dict[str, Any],
+    advance_frame_start: bool,
+    forced_action_latents: torch.Tensor | None = None,
+    commit_action_latents: torch.Tensor | None = None,
+    forced_action_noise: torch.Tensor | None = None,
+    action_conditioning_mode: str = "forced_action_joint_fdm",
+) -> LingbotParallelInferArtifacts:
+    """Run joint-denoise inference with ablation-owned action overrides.
+
+    `forced_action_latents` replaces the noisy action branch at every
+    denoising timestep. `commit_action_latents` only changes the clean action
+    tokens committed into history after the chunk is generated.
+    """
+
+    return _run_parallel_action_conditioned_inference_rollout_impl(
+        transformer=transformer,
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        inference_config=inference_config,
+        action_dim=action_dim,
+        condition_latents=condition_latents,
+        text_emb=text_emb,
+        negative_text_emb=negative_text_emb,
+        action_channel_mask=action_channel_mask,
+        infer_cache=infer_cache,
+        advance_frame_start=advance_frame_start,
+        forced_action_latents=forced_action_latents,
+        commit_action_latents=commit_action_latents,
+        forced_action_noise=forced_action_noise,
+        action_conditioning_mode=action_conditioning_mode,
     )
 
 

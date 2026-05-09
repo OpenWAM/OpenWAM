@@ -24,6 +24,11 @@ GENERALIST_JOINT_CONDITIONING_DEFAULT_PROBS: dict[str, float] = {
     "video_conditioned_action": 0.2,
 }
 
+GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY = "generalist_training_mode_override"
+GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY = "generalist_drop_text_conditioning"
+GENERALIST_TRAINING_SOURCE_METADATA_KEY = "generalist_training_source"
+GENERALIST_TRAINING_BUCKET_METADATA_KEY = "generalist_training_bucket"
+
 JOINT_ONLY_CONDITIONING_DEFAULT_PROBS: dict[str, float] = {
     "joint": 1.0,
     "action_conditioned_video": 0.0,

@@ -36,11 +36,14 @@ from open_wam.configs import (
     DataConfig,
     ExperimentConfig,
     GenericDataConfig,
+    GeneralistDynamicsMixtureConfig,
     LeRobotConsortiumDataConfig,
     LiberoDataConfig,
     RobotWinDataConfig,
     SampleConstructionConfig,
     TrainerConfig,
+    AuxiliaryValidationTaskConfig,
+    ValidationConfig,
     ViewLayoutConfig,
     VisualReadoutConfig,
 )
@@ -194,6 +197,82 @@ def _load_action_mapping_config(raw_value: Any, defaults: ActionMappingConfig) -
         ),
         normalization=normalization,
     )
+
+
+def _load_generalist_dynamics_mixture_config(
+    raw_value: Any,
+    defaults: GeneralistDynamicsMixtureConfig,
+) -> GeneralistDynamicsMixtureConfig:
+    raw = raw_value or {}
+    if not isinstance(raw, dict):
+        raise ValueError("Expected `data.generalist_dynamics_mixture` to be a mapping.")
+    return GeneralistDynamicsMixtureConfig(
+        train_latent_root=raw.get("train_latent_root", defaults.train_latent_root),
+        val_latent_root=raw.get("val_latent_root", defaults.val_latent_root),
+        allow_train_latent_root_for_val=raw.get(
+            "allow_train_latent_root_for_val",
+            defaults.allow_train_latent_root_for_val,
+        ),
+        real_joint_weight=raw.get("real_joint_weight", defaults.real_joint_weight),
+        real_action_conditioned_video_weight=raw.get(
+            "real_action_conditioned_video_weight",
+            defaults.real_action_conditioned_video_weight,
+        ),
+        real_video_conditioned_action_weight=raw.get(
+            "real_video_conditioned_action_weight",
+            defaults.real_video_conditioned_action_weight,
+        ),
+        counterfactual_action_conditioned_video_weight=raw.get(
+            "counterfactual_action_conditioned_video_weight",
+            defaults.counterfactual_action_conditioned_video_weight,
+        ),
+        counterfactual_video_conditioned_action_weight=raw.get(
+            "counterfactual_video_conditioned_action_weight",
+            defaults.counterfactual_video_conditioned_action_weight,
+        ),
+        conditional_history_frames=raw.get("conditional_history_frames", defaults.conditional_history_frames),
+        seed=raw.get("seed", defaults.seed),
+        length_multiplier=raw.get("length_multiplier", defaults.length_multiplier),
+    )
+
+
+def _load_validation_config(raw_value: Any) -> ValidationConfig:
+    raw = raw_value or {}
+    if not isinstance(raw, dict):
+        raise ValueError("Expected `validation` to be a mapping.")
+    tasks_raw = raw.get("auxiliary_tasks", ())
+    if tasks_raw is None:
+        tasks_raw = ()
+    if not isinstance(tasks_raw, (list, tuple)):
+        raise ValueError("Expected `validation.auxiliary_tasks` to be a list.")
+    tasks: list[AuxiliaryValidationTaskConfig] = []
+    for item in tasks_raw:
+        if not isinstance(item, dict):
+            raise ValueError("Expected each `validation.auxiliary_tasks` entry to be a mapping.")
+        if "name" not in item:
+            raise ValueError("Expected each `validation.auxiliary_tasks` entry to include `name`.")
+        tasks.append(
+            AuxiliaryValidationTaskConfig(
+                name=item["name"],
+                mode_override=_coerce_optional_enum(
+                    config_enums.JointDenoiseTrainingMode,
+                    item.get("mode_override"),
+                ),
+                dataset_split=_coerce_enum(
+                    config_enums.DataSplit,
+                    item.get("dataset_split", config_enums.DataSplit.VAL),
+                ),
+                source=_coerce_enum(
+                    config_enums.AuxiliaryValidationSource,
+                    item.get("source", config_enums.AuxiliaryValidationSource.DATASET),
+                ),
+                max_batches=item.get("max_batches", 16),
+                report_prefix=item.get("report_prefix"),
+                drop_text_conditioning=item.get("drop_text_conditioning"),
+                enabled=item.get("enabled", True),
+            )
+        )
+    return ValidationConfig(auxiliary_tasks=tuple(tasks))
 
 
 def _load_policy_variant_config(
@@ -412,6 +491,13 @@ def _load_policy_variant_config(
             use_state_conditioning=resolved_raw.get("use_state_conditioning", False),
             use_activation_checkpointing=resolved_raw.get("use_activation_checkpointing", False),
             mot_generalist_training_mode_probs=resolved_raw.get("mot_generalist_training_mode_probs"),
+            generalist_training_paradigm=_coerce_enum(
+                config_enums.GeneralistTrainingParadigm,
+                resolved_raw.get(
+                    "generalist_training_paradigm",
+                    config_enums.GeneralistTrainingParadigm.DEMO_ONLY,
+                ),
+            ),
         )
     if name == config_enums.PolicyVariantName.REGISTER_ATTACHED:
         return RegisterAttachedPolicyConfig(
@@ -543,6 +629,13 @@ def _load_policy_variant_config(
             ),
             couple_action_to_video_timesteps=resolved_raw.get("couple_action_to_video_timesteps", True),
             joint_denoise_training_mode_probs=resolved_raw.get("joint_denoise_training_mode_probs"),
+            generalist_training_paradigm=_coerce_enum(
+                config_enums.GeneralistTrainingParadigm,
+                resolved_raw.get(
+                    "generalist_training_paradigm",
+                    config_enums.GeneralistTrainingParadigm.DEMO_ONLY,
+                ),
+            ),
             current_block_coupling=(
                 _coerce_enum(
                     config_enums.CurrentBlockCoupling,
@@ -1091,6 +1184,10 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
                 )
             ),
         ),
+        generalist_dynamics_mixture=_load_generalist_dynamics_mixture_config(
+            data_raw.get("generalist_dynamics_mixture"),
+            data_defaults.generalist_dynamics_mixture,
+        ),
     )
     if data_config_cls is LeRobotConsortiumDataConfig:
         common_data_kwargs.update(
@@ -1412,6 +1509,7 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         max_epochs=trainer_raw.get("max_epochs", 1),
         limit_train_batches=trainer_raw.get("limit_train_batches", 2),
         limit_val_batches=trainer_raw.get("limit_val_batches", 1),
+        validation_interval=trainer_raw.get("validation_interval"),
         log_every_n_steps=trainer_raw.get("log_every_n_steps", 1),
         accelerator=_coerce_enum(
             config_enums.TrainerAccelerator,
@@ -1460,6 +1558,7 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         ),
         run_name=trainer_raw.get("run_name"),
     )
+    validation_config = _load_validation_config(raw.get("validation", {}))
 
     return ExperimentConfig(
         name=raw.get("name", "unnamed_experiment"),
@@ -1470,4 +1569,5 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         training=training_config,
         inference=inference_config,
         trainer=trainer_config,
+        validation=validation_config,
     )

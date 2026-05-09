@@ -25,6 +25,7 @@ from .data import (
     ConsortiumMemberConfig,
     DataConfig,
     GenericDataConfig,
+    GeneralistDynamicsMixtureConfig,
     LeRobotConsortiumDataConfig,
     LiberoDataConfig,
     RobotWinDataConfig,
@@ -48,6 +49,7 @@ from .enums import (
     ActionTargetStateEncoding,
     AttachSite,
     AttentionMode,
+    AuxiliaryValidationSource,
     BackboneImplementation,
     BatchAdapterName,
     CFGMode,
@@ -73,6 +75,7 @@ from .enums import (
     ExportedRuntimeActionInitMode,
     GoalConditioningAdapterFamily,
     GripperRepresentation,
+    GeneralistTrainingParadigm,
     JointCfgApplication,
     JointDenoiseTrainingMode,
     JointSampler,
@@ -151,6 +154,7 @@ from .policy_variant import (
 from .static_schema import StaticConfigIssue, StaticConfigReport, validate_config_file, validate_config_files
 from .trainer import TrainerConfig
 from .training import TrainingConfig
+from .validation import AuxiliaryValidationTaskConfig, ValidationConfig
 from .visual_readout import VisualReadoutConfig
 
 __all__ = [
@@ -175,6 +179,8 @@ __all__ = [
     "ActionNormMethod",
     "AttachSite",
     "AttentionMode",
+    "AuxiliaryValidationTaskConfig",
+    "AuxiliaryValidationSource",
     "BatchAdapterName",
     "BackboneImplementation",
     "CalvinDataConfig",
@@ -210,6 +216,8 @@ __all__ = [
     "EvalPredictionSource",
     "ExportedRuntimeActionInitMode",
     "GenericDataConfig",
+    "GeneralistDynamicsMixtureConfig",
+    "GeneralistTrainingParadigm",
     "LeRobotConsortiumDataConfig",
     "GoalConditioningAdapterFamily",
     "GripperRepresentation",
@@ -291,6 +299,7 @@ __all__ = [
     "TrainingConfig",
     "TrainingComponentSelector",
     "TrainingObjective",
+    "ValidationConfig",
     "VPPActionDecoderConfig",
     "VideoOnlyActionDecoderConfig",
     "VideoConditionedActionDecoderConfig",

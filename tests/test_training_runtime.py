@@ -7,17 +7,22 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, Dataset, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 import yaml
 
-from open_wam.configs import TrainingConfig
+from open_wam.configs import AuxiliaryValidationTaskConfig, TrainingConfig
 from open_wam.configs.enums import CheckpointMode
+from open_wam.data import LatentWAMSample
 from open_wam.models.policy_variants import PolicyTrainBatch
 from open_wam.training import TrainingRuntime
 from open_wam.training.checkpoints import CheckpointManager
 from open_wam.training.loop_policies import StepLoopPolicy
-from open_wam.training.runtime import _normalize_optimizer_state_dtypes
+from open_wam.training.runtime import (
+    AuxiliaryValidationDataset,
+    _normalize_optimizer_state_dtypes,
+    _resolve_auxiliary_validation_source,
+)
 from open_wam.training.state import TrainState
 from open_wam.training.step_executor import resolve_sample_loss_weight
 from open_wam.utils.config_loader import load_experiment_config
@@ -314,6 +319,192 @@ def test_sample_loss_weight_rejects_reduced_multi_sample_batches() -> None:
             training_config=TrainingConfig(sample_loss_weight_mode="valid_action_steps"),
             batch=batch,
         )
+
+
+def test_auxiliary_validation_dataset_forces_generalist_metadata_and_drops_text() -> None:
+    sample = LatentWAMSample(
+        video_latents=torch.zeros(2, 3),
+        actions=torch.zeros(4, 7),
+        task_text="put the mug on the plate",
+        text_context=torch.ones(1, 2),
+        negative_text_context=torch.zeros(1, 2),
+        metadata={"existing": "kept"},
+    )
+    task = AuxiliaryValidationTaskConfig(
+        name="fdm_val",
+        mode_override="action_conditioned_video",
+        report_prefix="val_fdm",
+    )
+
+    wrapped = AuxiliaryValidationDataset([sample], task=task)
+    forced = wrapped[0]
+
+    assert forced.task_text is None
+    assert torch.equal(forced.text_context, torch.zeros(1, 2))
+    assert forced.metadata["existing"] == "kept"
+    assert forced.metadata["generalist_training_mode_override"] == "action_conditioned_video"
+    assert forced.metadata["generalist_drop_text_conditioning"] is True
+    assert forced.metadata["generalist_training_source"] == "auxiliary_validation"
+    assert forced.metadata["generalist_training_bucket"] == "fdm_val"
+    assert sample.task_text == "put the mug on the plate"
+
+
+def test_auxiliary_validation_source_can_select_pure_counterfactual_dataset() -> None:
+    class MixedDataset(Dataset):
+        def __init__(self) -> None:
+            self.real_dataset = TensorDataset(torch.ones(1, 1))
+            self.counterfactual_dataset = TensorDataset(torch.zeros(1, 1))
+
+        def __len__(self) -> int:
+            return 1
+
+        def __getitem__(self, index: int):
+            return self.real_dataset[index]
+
+    mixed = MixedDataset()
+    task = AuxiliaryValidationTaskConfig(name="fdm_val", source="counterfactual_dynamics")
+
+    selected, resolved_source = _resolve_auxiliary_validation_source(mixed, task=task)
+
+    assert selected is mixed.counterfactual_dataset
+    assert resolved_source == "counterfactual_dynamics"
+    with pytest.raises(ValueError, match="does not expose"):
+        _resolve_auxiliary_validation_source(TensorDataset(torch.ones(1, 1)), task=task)
+
+
+def test_auxiliary_validation_source_can_fallback_when_counterfactual_is_unavailable() -> None:
+    dataset = TensorDataset(torch.ones(1, 1))
+    task = AuxiliaryValidationTaskConfig(name="fdm_val", source="counterfactual_dynamics_if_available")
+
+    selected, resolved_source = _resolve_auxiliary_validation_source(dataset, task=task)
+
+    assert selected is dataset
+    assert resolved_source == "dataset"
+
+
+def test_training_runtime_runs_primary_and_auxiliary_validation_phases() -> None:
+    task = AuxiliaryValidationTaskConfig(
+        name="fdm_val",
+        mode_override="action_conditioned_video",
+        max_batches=2,
+        report_prefix="val_fdm",
+    )
+    runtime = TrainingRuntime.__new__(TrainingRuntime)
+    runtime.val_loader = [1]
+    runtime.auxiliary_validation_runs = (SimpleNamespace(config=task, loader=[2, 4, 6]),)
+    runtime.model = SimpleNamespace(eval=lambda: None)
+    runtime.strategy = SimpleNamespace(
+        device=torch.device("cpu"),
+        autocast_context=lambda: nullcontext(),
+    )
+    runtime.train_state = TrainState(optimizer_step=7)
+    logged: list[tuple[str, int, dict[str, float]]] = []
+    runtime.log_sink = SimpleNamespace(
+        log_metrics=lambda *, step, phase, metrics: logged.append((phase, step, metrics)),
+    )
+
+    class Adapter:
+        def move_to_device(self, batch, device):
+            del device
+            return batch
+
+    class Executor:
+        batch_adapter = Adapter()
+
+        def forward_train(self, batch):
+            value = torch.tensor(float(batch))
+            return SimpleNamespace(
+                loss=value,
+                metrics={
+                    "loss": value,
+                    "joint_denoise/action_loss_active": torch.tensor(0.0),
+                    "joint_denoise/latent_loss_active": torch.tensor(1.0),
+                    "joint_denoise/action_conditioned_video/count": torch.tensor(1.0),
+                },
+            )
+
+    runtime.step_executor = Executor()
+
+    runtime._run_all_validation(limit_batches=1)
+
+    assert logged[0] == ("val", 7, {
+        "loss": 1.0,
+        "joint_denoise/action_loss_active": 0.0,
+        "joint_denoise/latent_loss_active": 1.0,
+        "joint_denoise/action_conditioned_video/count": 1.0,
+    })
+    assert logged[1][0] == "val_fdm"
+    assert logged[1][1] == 7
+    assert logged[1][2]["loss"] == pytest.approx(3.0)
+    assert logged[1][2]["count"] == 2.0
+    assert logged[1][2]["action_loss_active"] == 0.0
+    assert logged[1][2]["latent_loss_active"] == 1.0
+    assert logged[1][2]["mode_fraction"] == 1.0
+
+
+def test_validation_metrics_reduce_sums_and_counts_across_ranks(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = TrainingRuntime.__new__(TrainingRuntime)
+    runtime.val_loader = [1, 3]
+    runtime.model = SimpleNamespace(eval=lambda: None)
+    runtime.strategy = SimpleNamespace(
+        device=torch.device("cpu"),
+        autocast_context=lambda: nullcontext(),
+    )
+    runtime.train_state = TrainState(optimizer_step=5)
+    logged: list[tuple[int, str, dict[str, float]]] = []
+    runtime.log_sink = SimpleNamespace(
+        log_metrics=lambda *, step, phase, metrics: logged.append((step, phase, metrics)),
+    )
+    runtime.step_executor = SimpleNamespace(
+        batch_adapter=SimpleNamespace(move_to_device=lambda batch, device: batch),
+        forward_train=lambda batch: SimpleNamespace(
+            loss=torch.tensor(float(batch)),
+            metrics={"loss": torch.tensor(float(batch))},
+        ),
+    )
+
+    def fake_all_reduce(tensor: torch.Tensor, op) -> None:
+        del op
+        if tensor.item() == pytest.approx(2.0):
+            tensor.add_(2.0)
+        elif tensor.item() == pytest.approx(4.0):
+            tensor.add_(8.0)
+
+    monkeypatch.setattr("open_wam.training.runtime.dist.is_initialized", lambda: True)
+    monkeypatch.setattr("open_wam.training.runtime.dist.all_reduce", fake_all_reduce)
+
+    assert runtime._run_validation(limit_batches=None) is True
+
+    assert logged == [(5, "val", {"loss": pytest.approx(3.0)})]
+
+
+def test_step_loop_runs_validation_interval_without_duplicate_final_validation() -> None:
+    runtime = TrainingRuntime.__new__(TrainingRuntime)
+    runtime.train_loader = range(4)
+    runtime.train_state = TrainState(run_name="validation-interval")
+    runtime.config = SimpleNamespace(trainer=SimpleNamespace(limit_train_batches=None, validation_interval=2))
+    runtime.strategy = SimpleNamespace(is_main_process=True)
+    validation_steps: list[int] = []
+
+    def record_validation(*, limit_batches) -> bool:
+        del limit_batches
+        validation_steps.append(runtime.train_state.optimizer_step)
+        return True
+
+    runtime._run_validation = record_validation
+    runtime._save_checkpoint = lambda *, final: None
+
+    def train_one_batch(batch) -> None:
+        del batch
+        runtime.train_state.global_step += 1
+        runtime.train_state.seen_batches += 1
+        runtime.train_state.optimizer_step += 1
+
+    runtime._train_micro_step = train_one_batch
+
+    TrainingRuntime._run_step_loop(runtime, StepLoopPolicy(max_steps=4, limit_val_batches=1))
+
+    assert validation_steps == [2, 4]
 
 
 def test_composable_runtime_trains_causal_video_prediction_smoke(tmp_path: Path) -> None:

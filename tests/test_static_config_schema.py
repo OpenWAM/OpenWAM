@@ -101,6 +101,51 @@ trainer:
 
 
 @pytest.mark.unit
+def test_static_validator_checks_auxiliary_validation_tasks(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_aux_validation.yaml"
+    config_path.write_text(
+        """
+name: bad_aux_validation
+data:
+  dataset_name: robotwin
+  dataset_type: synthetic_multiview
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: post_latent
+  attach_site: post_visual_core
+action_decoder:
+  name: mlp_decoder
+validation:
+  auxiliary_tasks:
+    - name: fdm_val
+      mode_override: not_a_mode
+      dataset_split: val
+      max_batches: -1
+      report_prefix: val_probe
+    - name: fdm_val
+      mode_override: action_conditioned_video
+      dataset_split: made_up
+      source: bad_source
+      report_prefix: val_probe
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any("Invalid JointDenoiseTrainingMode" in issue.message for issue in report.errors)
+    assert any("Invalid DataSplit" in issue.message for issue in report.errors)
+    assert any("Invalid AuxiliaryValidationSource" in issue.message for issue in report.errors)
+    assert any(issue.path.endswith("max_batches") for issue in report.errors)
+    assert any("Duplicate auxiliary validation task name" in issue.message for issue in report.errors)
+    assert any("Duplicate auxiliary validation report prefix" in issue.message for issue in report.errors)
+
+
+@pytest.mark.unit
 def test_static_validator_rejects_legacy_full_segment_flag_on_hierarchical_sampler(tmp_path: Path) -> None:
     config_path = tmp_path / "bad_hierarchical_fixed_segment.yaml"
     config_path.write_text(

@@ -21,12 +21,14 @@ from open_wam.models.common.joint_conditioning import sample_conditioning_mode
 from open_wam.models.common.modality_slots import clean_noisy_slot_tensor, zero_loss_mask_like
 from open_wam.configs import (
     CurrentBlockCoupling,
+    GeneralistTrainingParadigm,
     InferenceConfig,
     MoTGeneralistTrainingMode,
     MoTPolicyConfig,
     MoTRuntimeMode,
     TrainingConfig,
 )
+from open_wam.data.sample_metadata import SampleConstructionMetadata
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 from open_wam.models.visual_tower.grid_ids import build_action_grid_ids
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
@@ -135,6 +137,17 @@ def _sample_mot_generalist_training_mode(
         device=device,
         error_label="M5 generalist training mode",
     )
+
+
+def _resolve_mot_generalist_training_metadata(
+    batch: PolicyTrainBatch,
+) -> tuple[MoTGeneralistTrainingMode | None, bool, str | None]:
+    sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
+    if sample_metadata is None:
+        return None, False, None
+    raw_mode = sample_metadata.generalist.mode_override
+    mode = None if raw_mode is None else MoTGeneralistTrainingMode(raw_mode)
+    return mode, sample_metadata.generalist.drop_text_conditioning, sample_metadata.generalist.source
 
 
 def _apply_mot_generalist_training_mode(
@@ -393,30 +406,16 @@ class MoTPolicyVariant(PolicyVariant):
         end_key: str = "loss_frame_end",
         fallback_to_generic: bool = True,
     ) -> tuple[int, int] | None:
-        metadata = batch.extra.get("metadata")
-        if not isinstance(metadata, tuple) or not metadata:
+        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
+        if sample_metadata is None:
             return None
-        metadata_start = metadata[0].get(start_key)
-        metadata_end = metadata[0].get(end_key)
-        if (
-            metadata_start is None
-            and metadata_end is None
-            and fallback_to_generic
-            and (start_key, end_key) != ("loss_frame_start", "loss_frame_end")
-        ):
-            metadata_start = metadata[0].get("loss_frame_start")
-            metadata_end = metadata[0].get("loss_frame_end")
-        if metadata_start is None and metadata_end is None:
-            return None
-        loss_frame_start = 0 if metadata_start is None else int(metadata_start)
-        loss_frame_end = observed_num_frames if metadata_end is None else int(metadata_end)
-        if loss_frame_start < 0 or loss_frame_end < loss_frame_start or loss_frame_end > observed_num_frames:
-            raise ValueError(
-                "Invalid MoT train loss-frame metadata, "
-                f"keys=({start_key!r}, {end_key!r}), "
-                f"got start={loss_frame_start}, end={loss_frame_end}, observed_num_frames={observed_num_frames}."
-            )
-        return loss_frame_start, loss_frame_end
+        return sample_metadata.optional_frame_range(
+            observed_num_frames=observed_num_frames,
+            start_key=start_key,
+            end_key=end_key,
+            fallback_to_generic=fallback_to_generic,
+            error_label="MoT train loss-frame metadata",
+        )
 
     def _resolve_train_history_frames(
         self,
@@ -424,12 +423,10 @@ class MoTPolicyVariant(PolicyVariant):
         batch: PolicyTrainBatch,
         observed_num_frames: int,
     ) -> int:
-        metadata = batch.extra.get("metadata")
+        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
         resolved_history_frames: int | None = None
-        if isinstance(metadata, tuple) and metadata:
-            raw_history_frames = metadata[0].get("history_frames")
-            if raw_history_frames is not None:
-                resolved_history_frames = int(raw_history_frames)
+        if sample_metadata is not None:
+            resolved_history_frames = sample_metadata.history_frames
         loss_frame_range = self._resolve_train_loss_frame_range(
             batch=batch,
             observed_num_frames=observed_num_frames,
@@ -523,41 +520,28 @@ class MoTPolicyVariant(PolicyVariant):
         batch: PolicyTrainBatch,
         observed_num_frames: int,
     ) -> int | None:
-        metadata = batch.extra.get("metadata")
-        if not isinstance(metadata, tuple) or not metadata:
+        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
+        if sample_metadata is None:
             return None
-        sampled_chunk_size = metadata[0].get("sampled_chunk_size")
-        if sampled_chunk_size is None:
-            return None
-        resolved_chunk_size = int(sampled_chunk_size)
-        if resolved_chunk_size <= 0:
-            return None
-        return min(resolved_chunk_size, observed_num_frames)
+        return sample_metadata.sampled_chunk_size_for(observed_num_frames)
 
     def _resolve_train_sampled_window_size(
         self,
         *,
         batch: PolicyTrainBatch,
     ) -> int | None:
-        metadata = batch.extra.get("metadata")
-        if not isinstance(metadata, tuple) or not metadata:
-            return None
-        sampled_window_size = metadata[0].get("sampled_window_size")
-        if sampled_window_size is None:
-            return None
-        resolved_window_size = int(sampled_window_size)
-        return resolved_window_size if resolved_window_size > 0 else None
+        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
+        return None if sample_metadata is None else sample_metadata.sampled_window_size
 
     def _resolve_train_frame_shift(
         self,
         *,
         batch: PolicyTrainBatch,
     ) -> int:
-        metadata = batch.extra.get("metadata")
-        if not isinstance(metadata, tuple) or not metadata:
+        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
+        if sample_metadata is None or sample_metadata.frame_shift is None:
             return 0
-        raw_frame_shift = metadata[0].get("frame_shift")
-        return 0 if raw_frame_shift is None else int(raw_frame_shift)
+        return int(sample_metadata.frame_shift)
 
     def _sample_full_segment_train_geometry(
         self,
@@ -1117,8 +1101,13 @@ class MoTPolicyVariant(PolicyVariant):
             )
 
         sampled_generalist_mode: MoTGeneralistTrainingMode | None = None
+        forced_generalist_mode, metadata_drop_text, generalist_source = _resolve_mot_generalist_training_metadata(
+            prepared_inputs.batch
+        )
         generalist_probs = self.config.mot_generalist_training_mode_probs
-        if generalist_probs is not None:
+        if forced_generalist_mode is not None:
+            sampled_generalist_mode = forced_generalist_mode
+        elif generalist_probs is not None:
             sampled_generalist_mode = _sample_mot_generalist_training_mode(
                 generalist_probs,
                 device=video_latents.device,
@@ -1196,6 +1185,11 @@ class MoTPolicyVariant(PolicyVariant):
             [noisy_slot_timesteps, clean_slot_timesteps], dim=1
         )
 
+        text_dropped = bool(metadata_drop_text) or (
+            self.config.generalist_training_paradigm == GeneralistTrainingParadigm.MIXED_DYNAMICS
+            and sampled_generalist_mode is not None
+            and sampled_generalist_mode != MoTGeneralistTrainingMode.JOINT
+        )
         resolved_text = text_context
         if resolved_text is None:
             resolved_text = video_latents.new_zeros(
@@ -1203,6 +1197,8 @@ class MoTPolicyVariant(PolicyVariant):
                 visual_tower.config.max_text_tokens,
                 visual_tower.config.text_dim,
             )
+        elif text_dropped:
+            resolved_text = torch.zeros_like(resolved_text)
 
         single_action_grid = self._build_action_grid_ids_for_sequence(
             batch_size=noisy_actions.shape[0],
@@ -1238,7 +1234,7 @@ class MoTPolicyVariant(PolicyVariant):
             action_expert=self.action_expert,
             packed_action_pre=packed_action_pre,
             attention_profile=packed_attention_profile,
-            text_context=text_context,
+            text_context=resolved_text,
             frame_start=frame_shift,
             use_activation_checkpointing=bool(self.config.use_activation_checkpointing),
             packed_block_stack=self.packed_block_stack,
@@ -1287,6 +1283,12 @@ class MoTPolicyVariant(PolicyVariant):
                 "current_block_coupling": current_block_coupling.value,
                 "sampled_chunk_size": sampled_chunk_size,
                 "sampled_window_size": sampled_window_size,
+                "generalist_training_paradigm": self.config.generalist_training_paradigm.value,
+                "generalist_training_source": generalist_source,
+                "mot_generalist_training_mode_override": (
+                    forced_generalist_mode.value if forced_generalist_mode is not None else None
+                ),
+                "mot_generalist_text_dropped": bool(text_dropped),
                 "mot_generalist_training_mode": (
                     sampled_generalist_mode.value if sampled_generalist_mode is not None else None
                 ),

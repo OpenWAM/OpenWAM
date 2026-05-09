@@ -76,6 +76,15 @@ class DataSplit(StrEnum):
     VAL = "val"
 
 
+class AuxiliaryValidationSource(StrEnum):
+    """Dataset source used by an auxiliary validation probe."""
+
+    DATASET = "dataset"
+    REAL_DEMO = "real_demo"
+    COUNTERFACTUAL_DYNAMICS = "counterfactual_dynamics"
+    COUNTERFACTUAL_DYNAMICS_IF_AVAILABLE = "counterfactual_dynamics_if_available"
+
+
 class ReplayStatusPolicy(StrEnum):
     """How dataset replay labels constrain episode selection."""
 
@@ -635,6 +644,13 @@ class MoTGeneralistTrainingMode(StrEnum):
     JOINT = "joint"
     ACTION_CONDITIONED_VIDEO = "action_conditioned_video"
     VIDEO_CONDITIONED_ACTION = "video_conditioned_action"
+
+
+class GeneralistTrainingParadigm(StrEnum):
+    """High-level data/objective mixture used by generalist video-action methods."""
+
+    DEMO_ONLY = "demo_only"
+    MIXED_DYNAMICS = "mixed_dynamics"
 
 
 class ParallelSequenceComponent(StrEnum):

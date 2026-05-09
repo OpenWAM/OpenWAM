@@ -31,6 +31,7 @@ def test_cli_overrides_map_save_root_and_env_defaults(tmp_path: Path) -> None:
             "trainer.loop_policy=steps",
             "trainer.strategy=single_device",
             "trainer.save_interval=50",
+            "trainer.validation_interval=25",
         ),
     )
 
@@ -57,6 +58,7 @@ def test_cli_overrides_map_save_root_and_env_defaults(tmp_path: Path) -> None:
     assert config.trainer.strategy == StrategyName.SINGLE_DEVICE
     assert config.training.num_steps == 4
     assert config.trainer.save_interval == 50
+    assert config.trainer.validation_interval == 25
     assert config.trainer.enable_wandb is True
     assert config.trainer.wandb_project == "lingbot-va-posttrain-libero"
     assert config.trainer.wandb_entity == "codefishy-stanford-university"

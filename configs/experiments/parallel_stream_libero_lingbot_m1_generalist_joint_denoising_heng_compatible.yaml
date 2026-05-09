@@ -65,6 +65,20 @@ data:
     include_gripper: true
     gripper_representation: action_command
     gripper_action_index: -1
+  # Opt-in dynamics mixture for GJD training. Leave roots null for the legacy
+  # demo-only sampler; set `policy_variant.generalist_training_paradigm:
+  # mixed_dynamics` and point these roots at encoded counterfactual latents to
+  # activate the 60/10/10/10/10 real/counterfactual bucket mixer.
+  generalist_dynamics_mixture:
+    train_latent_root: null
+    val_latent_root: null
+    allow_train_latent_root_for_val: false
+    real_joint_weight: 0.6
+    real_action_conditioned_video_weight: 0.1
+    real_video_conditioned_action_weight: 0.1
+    counterfactual_action_conditioned_video_weight: 0.1
+    counterfactual_video_conditioned_action_weight: 0.1
+    conditional_history_frames: 16
 
 backbone:
   implementation: shared_transformer
@@ -90,6 +104,7 @@ policy_variant:
   name: parallel_stream
   runtime_mode: lingbot_exact_action_conditioned
   variant_profile: generalist_joint_denoising
+  generalist_training_paradigm: demo_only
   current_block_coupling: joint
   reference_profile: libero_joint
   hidden_size: 3072
@@ -154,10 +169,28 @@ inference:
   action_guidance_scale: 1.0
   video_exec_step: -1
 
+validation:
+  # Auxiliary held-out conditional probes. Primary trainer validation remains
+  # disabled below; these tasks run from the validation loop independently.
+  auxiliary_tasks:
+    - name: fdm_val
+      mode_override: action_conditioned_video
+      dataset_split: val
+      source: counterfactual_dynamics_if_available
+      max_batches: 16
+      report_prefix: val_fdm
+    - name: idm_val
+      mode_override: video_conditioned_action
+      dataset_split: val
+      source: counterfactual_dynamics_if_available
+      max_batches: 16
+      report_prefix: val_idm
+
 trainer:
   max_epochs: 1
   limit_train_batches: null
-  limit_val_batches: 0
+  limit_val_batches: 0  # Primary val is off; GJD probes above still run.
+  validation_interval: 100
   log_every_n_steps: 1
   accelerator: gpu
   devices: 1

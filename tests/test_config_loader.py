@@ -7,6 +7,7 @@ import yaml
 from open_wam.configs import (
     ActionChunkAnchorMode,
     ActionDecoderName,
+    AuxiliaryValidationSource,
     AttentionMode,
     BatchAdapterName,
     CacheWarmupSource,
@@ -14,6 +15,7 @@ from open_wam.configs import (
     CFGMode,
     CausalVideoPredictionPolicyConfig,
     ExportedRuntimeActionInitMode,
+    GeneralistTrainingParadigm,
     JointDenoiseTrainingMode,
     JointSampler,
     LatentWindowProfile,
@@ -112,6 +114,105 @@ def test_new_variant_yaml_configs_load() -> None:
     assert register.policy_variant.structured_cache_kernel == "branchwise_rollout_explicit"
     assert register.policy_variant.stream_input_adapter_family == "structured_register_streams"
     assert register.policy_variant.stream_output_head_family == "structured_joint_flow"
+
+
+def test_generalist_mixed_dynamics_knob_loads_from_yaml(tmp_path: Path) -> None:
+    config_path = tmp_path / "mixed_dynamics.yaml"
+    config_path.write_text(
+        """
+name: mixed_dynamics
+data:
+  dataset_name: libero
+  dataset_type: lerobot_v2_latent_local
+  action_schema:
+    action_dim: 7
+    action_horizon: 16
+    state_dim: 8
+    state_horizon: 1
+  generalist_dynamics_mixture:
+    train_latent_root: /tmp/counterfactual_train/encoded_latents
+    val_latent_root: /tmp/counterfactual_val/encoded_latents
+    allow_train_latent_root_for_val: false
+    real_joint_weight: 0.6
+    real_action_conditioned_video_weight: 0.1
+    real_video_conditioned_action_weight: 0.1
+    counterfactual_action_conditioned_video_weight: 0.1
+    counterfactual_video_conditioned_action_weight: 0.1
+    conditional_history_frames: 8
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: parallel_stream
+  attach_site: within_visual_core
+  runtime_mode: lingbot_exact_action_conditioned
+  variant_profile: generalist_joint_denoising
+  current_block_coupling: joint
+  video_condition_on_action: true
+  generalist_training_paradigm: mixed_dynamics
+action_decoder:
+  name: lingbot_parallel_decoder
+  action_dim: 7
+  action_horizon: 16
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    config = load_experiment_config(config_path)
+
+    assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.MIXED_DYNAMICS
+    assert config.data.generalist_dynamics_mixture.train_latent_root == "/tmp/counterfactual_train/encoded_latents"
+    assert config.data.generalist_dynamics_mixture.allow_train_latent_root_for_val is False
+    assert config.data.generalist_dynamics_mixture.real_joint_weight == 0.6
+    assert config.data.generalist_dynamics_mixture.conditional_history_frames == 8
+
+
+def test_auxiliary_validation_tasks_load_from_yaml(tmp_path: Path) -> None:
+    config_path = tmp_path / "auxiliary_validation.yaml"
+    config_path.write_text(
+        """
+name: auxiliary_validation
+data:
+  dataset_name: robotwin
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: parallel_stream
+  attach_site: within_visual_core
+  runtime_mode: lingbot_exact_action_conditioned
+action_decoder:
+  name: lingbot_parallel_decoder
+validation:
+  auxiliary_tasks:
+    - name: fdm_val
+      mode_override: action_conditioned_video
+      dataset_split: val
+      source: counterfactual_dynamics_if_available
+      max_batches: 16
+      report_prefix: val_fdm
+    - name: idm_val
+      mode_override: video_conditioned_action
+      max_batches: 8
+      report_prefix: val_idm
+      drop_text_conditioning: false
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    config = load_experiment_config(config_path)
+
+    fdm, idm = config.validation.auxiliary_tasks
+    assert fdm.name == "fdm_val"
+    assert fdm.mode_override == JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO
+    assert fdm.source == AuxiliaryValidationSource.COUNTERFACTUAL_DYNAMICS_IF_AVAILABLE
+    assert fdm.phase == "val_fdm"
+    assert fdm.should_drop_text is True
+    assert idm.mode_override == JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION
+    assert idm.max_batches == 8
+    assert idm.should_drop_text is False
 
 
 def test_raw_libero_smoke_variant_yaml_configs_load() -> None:

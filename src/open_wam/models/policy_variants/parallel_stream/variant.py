@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 import torch
 
 from open_wam.configs import (
@@ -13,6 +12,7 @@ from open_wam.configs import (
     TemporalPositionMode,
     TrainingConfig,
 )
+from open_wam.data.sample_metadata import SampleConstructionMetadata
 from open_wam.models.video_backbone.contracts import CacheState
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.policy_variants.common.layouts import expand_previous_action
@@ -124,6 +124,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             dtype=visual_outputs.frontend.video_latents.dtype,
         )
         sampled_geometry = self._resolve_train_sampling_metadata(batch, observed_num_frames=observed_num_frames)
+        generalist_metadata = self._resolve_generalist_training_metadata(batch)
         if self.config.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
             train_artifacts = prepare_parallel_action_conditioned_train_artifacts(
                 backbone_config=self.backbone_config,
@@ -142,6 +143,9 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 action_loss_frame_start=sampled_geometry["action_loss_frame_start"],
                 action_loss_frame_end=sampled_geometry["action_loss_frame_end"],
                 frame_shift=sampled_geometry["frame_shift"],
+                generalist_training_mode_override=generalist_metadata["mode_override"],
+                generalist_drop_text_conditioning=bool(generalist_metadata["drop_text"]),
+                generalist_training_source=generalist_metadata["source"],
             )
         else:
             train_artifacts = prepare_parallel_exact_train_artifacts(
@@ -164,87 +168,57 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             )
         return PolicyPreparedInputs(batch=batch, variant_inputs={"lingbot_train_artifacts": train_artifacts})
 
+    def _resolve_generalist_training_metadata(
+        self,
+        batch: PolicyTrainBatch,
+    ) -> dict[str, object | None]:
+        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
+        if sample_metadata is None:
+            return {"mode_override": None, "drop_text": False, "source": None}
+        return {
+            "mode_override": sample_metadata.generalist.mode_override,
+            "drop_text": sample_metadata.generalist.drop_text_conditioning,
+            "source": sample_metadata.generalist.source,
+        }
+
     def _resolve_train_sampling_metadata(
         self,
         batch: PolicyTrainBatch,
         *,
         observed_num_frames: int,
     ) -> dict[str, int | None]:
-        metadata_seq = batch.extra.get("metadata")
-        sample_metadata: Mapping[str, object] | None = None
-        if isinstance(metadata_seq, tuple) and len(metadata_seq) == 1 and isinstance(metadata_seq[0], Mapping):
-            sample_metadata = metadata_seq[0]
-        elif isinstance(metadata_seq, list) and len(metadata_seq) == 1 and isinstance(metadata_seq[0], Mapping):
-            sample_metadata = metadata_seq[0]
-
-        chunk_size: int | None = None
-        window_size: int | None = None
-        loss_frame_start: int | None = None
-        loss_frame_end: int | None = None
-        latent_loss_frame_start: int | None = None
-        latent_loss_frame_end: int | None = None
-        action_loss_frame_start: int | None = None
-        action_loss_frame_end: int | None = None
-        frame_shift = 0
-        if sample_metadata is not None:
-            sampled_chunk_size = sample_metadata.get("sampled_chunk_size")
-            sampled_window_size = sample_metadata.get("sampled_window_size")
-            metadata_loss_frame_start = sample_metadata.get("loss_frame_start")
-            metadata_loss_frame_end = sample_metadata.get("loss_frame_end")
-            metadata_latent_loss_frame_start = sample_metadata.get("latent_loss_frame_start")
-            metadata_latent_loss_frame_end = sample_metadata.get("latent_loss_frame_end")
-            metadata_action_loss_frame_start = sample_metadata.get("action_loss_frame_start")
-            metadata_action_loss_frame_end = sample_metadata.get("action_loss_frame_end")
-            metadata_frame_shift = sample_metadata.get("frame_shift")
-            if sampled_chunk_size is not None:
-                chunk_size = int(sampled_chunk_size)
-            if sampled_window_size is not None:
-                window_size = int(sampled_window_size)
-            if metadata_loss_frame_start is not None:
-                loss_frame_start = int(metadata_loss_frame_start)
-            if metadata_loss_frame_end is not None:
-                loss_frame_end = int(metadata_loss_frame_end)
-            if metadata_latent_loss_frame_start is not None:
-                latent_loss_frame_start = int(metadata_latent_loss_frame_start)
-            if metadata_latent_loss_frame_end is not None:
-                latent_loss_frame_end = int(metadata_latent_loss_frame_end)
-            if metadata_action_loss_frame_start is not None:
-                action_loss_frame_start = int(metadata_action_loss_frame_start)
-            if metadata_action_loss_frame_end is not None:
-                action_loss_frame_end = int(metadata_action_loss_frame_end)
-            if (
-                self.config.temporal_position_mode == TemporalPositionMode.GLOBAL_SHIFTED
-                and metadata_frame_shift is not None
-            ):
-                frame_shift = int(metadata_frame_shift)
-
-        if loss_frame_start is None:
-            loss_frame_start = 0
-        if loss_frame_end is None:
-            loss_frame_end = observed_num_frames
-        if latent_loss_frame_start is None:
-            latent_loss_frame_start = loss_frame_start
-        if latent_loss_frame_end is None:
-            latent_loss_frame_end = loss_frame_end
-        if action_loss_frame_start is None:
-            action_loss_frame_start = loss_frame_start
-        if action_loss_frame_end is None:
-            action_loss_frame_end = loss_frame_end
-
-        ranges = {
-            "loss": (loss_frame_start, loss_frame_end),
-            "latent_loss": (latent_loss_frame_start, latent_loss_frame_end),
-            "action_loss": (action_loss_frame_start, action_loss_frame_end),
-        }
-        for label, (start, end) in ranges.items():
-            if start < 0 or end < start or end > observed_num_frames:
-                raise ValueError(
-                    f"Invalid train {label}-frame metadata for parallel-stream variant, "
-                    f"got start={start}, end={end}, observed_num_frames={observed_num_frames}."
-                )
+        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
+        if sample_metadata is None:
+            sample_metadata = SampleConstructionMetadata(raw={})
+        loss_frame_start, loss_frame_end = sample_metadata.frame_range_or_default(
+            observed_num_frames=observed_num_frames,
+            error_label="parallel-stream train loss-frame metadata",
+        )
+        latent_loss_frame_start, latent_loss_frame_end = sample_metadata.frame_range_or_default(
+            observed_num_frames=observed_num_frames,
+            start_key="latent_loss_frame_start",
+            end_key="latent_loss_frame_end",
+            default_start=loss_frame_start,
+            default_end=loss_frame_end,
+            error_label="parallel-stream train latent-loss metadata",
+        )
+        action_loss_frame_start, action_loss_frame_end = sample_metadata.frame_range_or_default(
+            observed_num_frames=observed_num_frames,
+            start_key="action_loss_frame_start",
+            end_key="action_loss_frame_end",
+            default_start=loss_frame_start,
+            default_end=loss_frame_end,
+            error_label="parallel-stream train action-loss metadata",
+        )
+        frame_shift = (
+            int(sample_metadata.frame_shift)
+            if self.config.temporal_position_mode == TemporalPositionMode.GLOBAL_SHIFTED
+            and sample_metadata.frame_shift is not None
+            else 0
+        )
         return {
-            "chunk_size": chunk_size,
-            "window_size": window_size,
+            "chunk_size": sample_metadata.sampled_chunk_size_for(observed_num_frames),
+            "window_size": sample_metadata.sampled_window_size,
             "loss_frame_start": loss_frame_start,
             "loss_frame_end": loss_frame_end,
             "latent_loss_frame_start": latent_loss_frame_start,

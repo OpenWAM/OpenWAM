@@ -9,6 +9,7 @@ from open_wam.configs.inference import InferenceConfig
 from open_wam.configs.policy_variant import PolicyVariantConfig, PostLatentPolicyConfig
 from open_wam.configs.trainer import TrainerConfig
 from open_wam.configs.training import TrainingConfig
+from open_wam.configs.validation import ValidationConfig
 
 if TYPE_CHECKING:
     from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
@@ -38,3 +39,4 @@ class ExperimentConfig:
     training: TrainingConfig = field(default_factory=TrainingConfig)
     inference: InferenceConfig = field(default_factory=InferenceConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
+    validation: ValidationConfig = field(default_factory=ValidationConfig)

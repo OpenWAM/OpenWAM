@@ -23,6 +23,7 @@ class TrainerConfig:
     max_epochs: int = 1
     limit_train_batches: int = 2
     limit_val_batches: int = 1
+    validation_interval: int | None = None
     log_every_n_steps: int = 1
 
     # Device/runtime-selection knobs
@@ -67,3 +68,7 @@ class TrainerConfig:
                 "wandb_mode": WandBMode,
             },
         )
+        if self.validation_interval is not None:
+            if isinstance(self.validation_interval, bool) or int(self.validation_interval) <= 0:
+                raise ValueError("`trainer.validation_interval` must be a positive integer or null.")
+            object.__setattr__(self, "validation_interval", int(self.validation_interval))
