@@ -237,7 +237,7 @@ SCHEDULERS: tuple[SchedulerSpec, ...] = (
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Sample LIBERO dataset episodes according to the dataset task distribution, then run local "
+            "Sample LIBERO dataset episodes in an init-major task axis by default, then run local "
             "realtime rollout comparisons for one or more method/checkpoint targets."
         )
     )
@@ -255,13 +255,14 @@ def main() -> None:
     parser.add_argument(
         "--sample-mode",
         choices=SAMPLE_MODE_CHOICES,
-        default="dataset_distribution",
+        default="task_episode_axis",
         help=(
             "`dataset_distribution` samples LeRobot episodes proportionally by dataset task distribution. "
             "`uniform_task_distribution` is a legacy alias for `dataset_distribution`. "
             "`task_episode_axis` selects explicit upstream LIBERO task ids and per-task episode indices, "
-            "which is the mode for #77-style task-0 parity checks. `full` enumerates every upstream "
-            "LIBERO init state for every selected task before replay-status policy validation."
+            "or, when episode indices are omitted, an init-major balanced task sweep from eligible episodes. "
+            "`full` enumerates every upstream LIBERO init state for every selected task before replay-status "
+            "policy validation."
         ),
     )
     parser.add_argument(
@@ -278,8 +279,9 @@ def main() -> None:
         choices=tuple(sorted(REPLAY_STATUS_POLICIES)),
         default="successful_only",
         help=(
-            "Dataset episode filter applied before dataset-distribution sampling and validated after explicit "
-            "task/init-axis selection. The default samples only successful demos when replay labels exist."
+            "Dataset episode filter applied before dataset-distribution sampling and before implicit "
+            "task/init-axis sampling. Explicit task/init-axis selections are validated after selection. "
+            "The default samples only successful demos when replay labels exist."
         ),
     )
     parser.add_argument(
@@ -308,8 +310,8 @@ def main() -> None:
         default=None,
         help=(
             "Task selector for --sample-mode task_episode_axis or full. Supports comma-separated ids and "
-            "Python-style half-open ranges, e.g. `0`, `0,2,5`, or `0:10`. Defaults to task 0 for "
-            "task_episode_axis and all benchmark tasks for full."
+            "Python-style half-open ranges, e.g. `0`, `0,2,5`, or `0:10`. Defaults to all task ids present "
+            "in dataset metadata for task_episode_axis and all benchmark tasks for full."
         ),
     )
     parser.add_argument(
@@ -318,8 +320,8 @@ def main() -> None:
         default=None,
         help=(
             "Per-task episode selector for --sample-mode task_episode_axis. Supports comma-separated ids "
-            "and Python-style half-open ranges. Defaults to `0:<num-episodes>`. Not used by "
-            "--sample-mode full."
+            "and Python-style half-open ranges. When omitted, task_episode_axis selects exactly "
+            "--num-episodes in init-major order across the selected tasks. Not used by --sample-mode full."
         ),
     )
     parser.add_argument(
@@ -527,7 +529,9 @@ def main() -> None:
                 libero_repo_root=args.libero_repo_root,
                 local_paths=args.local_paths,
             )
-        if args.sample_mode == "dataset_distribution":
+        if args.sample_mode == "dataset_distribution" or (
+            args.sample_mode == "task_episode_axis" and args.episode_indices is None
+        ):
             dataset_episodes, replay_status_report = filter_dataset_episodes_by_replay_status(
                 dataset_episodes,
                 policy=args.replay_status_policy,
@@ -545,7 +549,9 @@ def main() -> None:
             distribution_episode_strategy=args.distribution_episode_strategy,
             full_init_counts_by_task_id=full_init_counts_by_task_id,
         )
-        if args.sample_mode in {"task_episode_axis", "full"}:
+        if args.sample_mode == "full" or (
+            args.sample_mode == "task_episode_axis" and args.episode_indices is not None
+        ):
             sampled_episodes, replay_status_report = filter_dataset_episodes_by_replay_status(
                 sampled_episodes,
                 policy=args.replay_status_policy,
@@ -1104,10 +1110,48 @@ def select_task_episode_axis(
     task_ids: str | None,
     episode_indices: str | None,
 ) -> tuple[list[DatasetEpisode], dict[str, int]]:
-    selected_task_ids = parse_int_selector(task_ids or "0")
+    selected_task_ids = (
+        parse_int_selector(task_ids) if task_ids is not None else sorted({int(item.task_id) for item in episodes})
+    )
     if not selected_task_ids:
         raise ValueError("--task-ids did not select any task ids.")
-    selected_episode_indices = parse_int_selector(episode_indices or f"0:{count}")
+
+    if episode_indices is None:
+        by_task: dict[int, list[DatasetEpisode]] = defaultdict(list)
+        for episode in episodes:
+            by_task[int(episode.task_id)].append(episode)
+        missing_task_ids = [task_id for task_id in selected_task_ids if task_id not in by_task]
+        if missing_task_ids:
+            preview = ", ".join(str(task_id) for task_id in missing_task_ids[:10])
+            suffix = "" if len(missing_task_ids) <= 10 else f", ... ({len(missing_task_ids)} missing total)"
+            raise ValueError(f"Requested LIBERO task ids are not present in dataset metadata: {preview}{suffix}")
+        for task_episodes in by_task.values():
+            task_episodes.sort(key=lambda item: (item.episode_idx, item.dataset_episode_index))
+
+        available = sum(len(by_task[task_id]) for task_id in selected_task_ids)
+        if count > available:
+            raise ValueError(
+                f"Cannot select {count} task/init-axis episodes from only {available} eligible episodes "
+                "for the selected tasks."
+            )
+
+        selected: list[DatasetEpisode] = []
+        max_task_episodes = max(len(by_task[task_id]) for task_id in selected_task_ids)
+        for task_local_rank in range(max_task_episodes):
+            for task_id in selected_task_ids:
+                task_episodes = by_task[task_id]
+                if task_local_rank >= len(task_episodes):
+                    continue
+                selected.append(task_episodes[task_local_rank])
+                if len(selected) >= count:
+                    allocations: dict[str, int] = defaultdict(int)
+                    for episode in selected:
+                        allocations[episode.task_text] += 1
+                    return selected, dict(allocations)
+
+        raise RuntimeError("task/init-axis selection exhausted eligible episodes before reaching requested count.")
+
+    selected_episode_indices = parse_int_selector(episode_indices)
     if not selected_episode_indices:
         raise ValueError("--episode-indices did not select any episode indices.")
 
@@ -1921,11 +1965,15 @@ def build_child_env(args: argparse.Namespace, *, device: str | None = None) -> d
     mujoco_gl = args.mujoco_gl or env.get("MUJOCO_GL") or "egl"
     env["MUJOCO_GL"] = mujoco_gl
     env["PYTHONUNBUFFERED"] = "1"
+    env.setdefault("PYTHONFAULTHANDLER", "1")
+    env.setdefault("TORCH_SHOW_CPP_STACKTRACES", "1")
     env["PYOPENGL_PLATFORM"] = "egl" if mujoco_gl == "egl" else mujoco_gl
+    cuda_visible_devices = env.get("CUDA_VISIBLE_DEVICES")
     slurm_allocated_devices = env.get("SLURM_STEP_GPUS") or env.get("SLURM_JOB_GPUS")
+    egl_allocated_devices = cuda_visible_devices or slurm_allocated_devices
     egl_device_id = egl_device_id_for_runtime_device(
         device,
-        allocated_devices=env.get("CUDA_VISIBLE_DEVICES") or slurm_allocated_devices,
+        allocated_devices=egl_allocated_devices,
     )
     if mujoco_gl == "egl" and egl_device_id is not None:
         env["MUJOCO_EGL_DEVICE_ID"] = str(egl_device_id)

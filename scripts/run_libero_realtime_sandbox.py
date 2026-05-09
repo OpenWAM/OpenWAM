@@ -38,7 +38,6 @@ from open_wam.integrations.realtime_control import build_live_rollout_summary  #
 from open_wam.models.policy_variants import PolicyInferContext  # noqa: E402
 from open_wam.pipelines import LingbotExactRunner, VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
 from open_wam.utils import (  # noqa: E402
-    find_checkpoint_resolved_config,
     load_experiment_config,
     merge_runtime_config_from_checkpoint,
     resolve_transformer_dir_override,
@@ -397,7 +396,7 @@ def main() -> None:
         help=(
             "Exact-runtime M1/M2 startup parity mode. The default is auto: enable only when the training "
             "config declares data.sample_construction.start_padding_frames > 0. When enabled, duplicate "
-            "the initial raw observation into a full startup latent chunk, warm the exact cache at negative "
+            "the initial encoded latent into a full startup latent chunk, warm the exact cache at negative "
             "frame ids, then generate the first executable chunk from frame 1. Use the positive flag to force "
             "bootstrap padding or --no-exact-startup-bootstrap-padding for the legacy single-frame first-chunk "
             "condition."
@@ -700,11 +699,13 @@ def _resolve_exact_startup_bootstrap_padding(
     checkpoint_declares_padding = _checkpoint_declares_exact_startup_padding(checkpoint_path)
     if checkpoint_declares_padding is not None:
         return bool(checkpoint_declares_padding)
+    if checkpoint_path is not None:
+        return False
     return _config_declares_exact_startup_padding(config)
 
 
 def _checkpoint_declares_exact_startup_padding(checkpoint_path: Path | None) -> bool | None:
-    resolved_config_path = find_checkpoint_resolved_config(checkpoint_path)
+    resolved_config_path = exact_viz._find_checkpoint_resolved_config_for_startup(checkpoint_path)
     if resolved_config_path is None:
         return None
     raw = yaml.safe_load(resolved_config_path.read_text(encoding="utf-8")) or {}
@@ -717,6 +718,37 @@ def _checkpoint_declares_exact_startup_padding(checkpoint_path: Path | None) -> 
     if not isinstance(sample_construction, dict):
         return False
     return int(sample_construction.get("start_padding_frames") or 0) > 0
+
+
+def _repeat_exact_startup_bootstrap_latents(
+    initial_inputs: dict[str, Any],
+    *,
+    frame_chunk_size: int,
+) -> dict[str, Any]:
+    frame_chunk_size = int(frame_chunk_size)
+    if frame_chunk_size <= 0:
+        raise ValueError(f"Expected positive frame_chunk_size, got {frame_chunk_size}.")
+    video_latents = initial_inputs.get("video_latents")
+    if not isinstance(video_latents, torch.Tensor):
+        raise TypeError("Exact startup bootstrap requires tensor `video_latents` in prepared inputs.")
+    if video_latents.ndim != 5:
+        raise ValueError(
+            "Expected exact startup video latents with shape [B, C, T, H, W], "
+            f"got {tuple(video_latents.shape)}."
+        )
+    if video_latents.shape[2] == frame_chunk_size:
+        return initial_inputs
+    if video_latents.shape[2] != 1:
+        raise ValueError(
+            "Expected exact startup bootstrap to encode exactly one real observation before latent padding, "
+            f"got latent length {video_latents.shape[2]} for frame_chunk_size={frame_chunk_size}."
+        )
+
+    updated_inputs = dict(initial_inputs)
+    updated_inputs["video_latents"] = (
+        video_latents[:, :, :1].expand(-1, -1, frame_chunk_size, -1, -1).contiguous()
+    )
+    return updated_inputs
 
 
 def _is_mot_non_joint_two_stream(config) -> bool:
@@ -1308,23 +1340,33 @@ def _run_exact_like_realtime_rollout(
             # immediately before each chunk instead of only at process start.
             with exact_sandbox._isolated_torch_rng(seed, frontend_device, runtime_device):
                 startup_prepare_t0 = time.perf_counter()
-                startup_obs_sequence = (
-                    exact_sandbox._exact_startup_bootstrap_obs_sequence(
-                        first_obs,
-                        frame_chunk_size=int(config.inference.frame_chunk_size),
+                if VERBOSE:
+                    print(
+                        "[exact_startup] prepare_frontend "
+                        f"bootstrap_padding={exact_startup_bootstrap_padding}",
+                        flush=True,
                     )
-                    if exact_startup_bootstrap_padding
-                    else [first_obs]
-                )
                 initial_inputs = exact_viz._prepare_exact_runtime_inputs(
                     runner,
-                    views=exact_viz._obs_list_to_views(startup_obs_sequence, config=config, device=frontend_device),
+                    views=exact_viz._obs_list_to_views([first_obs], config=config, device=frontend_device),
                     task_text=(prompt,),
                     frontend_device=frontend_device,
                     runtime_device=runtime_device,
                 )
+                if exact_startup_bootstrap_padding:
+                    initial_inputs = _repeat_exact_startup_bootstrap_latents(
+                        initial_inputs,
+                        frame_chunk_size=int(config.inference.frame_chunk_size),
+                    )
                 exact_sandbox._synchronize_devices(frontend_device, runtime_device)
                 startup_prepare_s = time.perf_counter() - startup_prepare_t0
+                if VERBOSE:
+                    print(
+                        "[exact_startup] prepared "
+                        f"video_latents_shape={tuple(initial_inputs['video_latents'].shape)} "
+                        f"elapsed_s={startup_prepare_s:.3f}",
+                        flush=True,
+                    )
 
                 rng_before_startup_infer = _debug_rng_state()
                 if exact_startup_bootstrap_padding:
@@ -1335,6 +1377,13 @@ def _run_exact_like_realtime_rollout(
                         action_dim=action_dim,
                         device=runtime_device,
                     )
+                    if VERBOSE:
+                        print(
+                            "[exact_startup] warmup_cache "
+                            f"frame_start={exact_sandbox._exact_startup_bootstrap_frame_start(int(config.inference.frame_chunk_size))} "
+                            f"action_history_shape={tuple(startup_action_history.shape)}",
+                            flush=True,
+                        )
                     warmup = runner.warmup_cache(
                         session=session,
                         video_latents=initial_inputs["video_latents"],
@@ -1348,6 +1397,12 @@ def _run_exact_like_realtime_rollout(
                     )
                     exact_sandbox._synchronize_devices(runtime_device)
                     startup_warmup_s = time.perf_counter() - startup_warmup_t0
+                    if VERBOSE:
+                        print(
+                            "[exact_startup] warmup_done "
+                            f"elapsed_s={startup_warmup_s:.3f} debug={warmup.debug}",
+                            flush=True,
+                        )
                     startup_history_video_latents = initial_inputs["video_latents"][:, :, -1:].detach()
                     startup_history_raw_actions = np.zeros((action_per_frame, action_dim), dtype=np.float32)
                     startup_infer_session = warmup.session
@@ -1355,6 +1410,8 @@ def _run_exact_like_realtime_rollout(
                     startup_history_video_latents = initial_inputs["video_latents"]
                     startup_infer_session = session
                 startup_infer_t0 = time.perf_counter()
+                if VERBOSE:
+                    print("[exact_startup] infer_first_chunk", flush=True)
                 first_chunk = runner.infer_chunk(
                     session=startup_infer_session,
                     video_latents=None if exact_startup_bootstrap_padding else initial_inputs["video_latents"],
@@ -1363,6 +1420,12 @@ def _run_exact_like_realtime_rollout(
                 )
                 exact_sandbox._synchronize_devices(runtime_device)
                 startup_infer_s = time.perf_counter() - startup_infer_t0
+                if VERBOSE:
+                    print(
+                        "[exact_startup] infer_done "
+                        f"elapsed_s={startup_infer_s:.3f} debug={first_chunk.debug}",
+                        flush=True,
+                    )
                 if debug_startup_dump:
                     startup_debug_report = _build_exact_startup_debug_report(
                         first_obs=first_obs,

@@ -30,6 +30,7 @@ from open_wam.evals.evaluate import EvaluationRequest, resolve_evaluation_reques
 from open_wam.models.visual_tower.reference_loader import resolve_pretrained_component_dir  # noqa: E402
 from open_wam.pipelines import build_exact_runtime_runner_from_config  # noqa: E402
 from open_wam.utils import (  # noqa: E402
+    find_checkpoint_resolved_config,
     load_experiment_config,
     resolve_transformer_dir_override,
     seed_everywhere,
@@ -84,6 +85,17 @@ def main() -> None:
             "at an eval wrapper."
         ),
     )
+    parser.add_argument(
+        "--exact-startup-bootstrap-padding",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Exact-runtime startup parity mode. The default is auto: when the checkpoint or config "
+            "declares data.sample_construction.start_padding_frames > 0, encode the first observation once, "
+            "repeat that latent to a full startup chunk, warm negative frames, and execute from generated frame 1. "
+            "Use --no-exact-startup-bootstrap-padding for Heng's legacy single-frame first-chunk startup."
+        ),
+    )
     args = parser.parse_args()
 
     request = _resolve_visualization_request(args.config)
@@ -98,6 +110,15 @@ def main() -> None:
             "transformer_subdir",
             effective_transformer_subdir,
         )
+    startup_checkpoint_path = _resolve_visualization_startup_checkpoint_path(
+        request=request,
+        effective_transformer_subdir=effective_transformer_subdir,
+    )
+    exact_startup_bootstrap_padding = _resolve_exact_startup_bootstrap_padding(
+        config,
+        cli_value=args.exact_startup_bootstrap_padding,
+        checkpoint_path=startup_checkpoint_path,
+    )
     runner = build_exact_runtime_runner_from_config(config)
     runtime_device = _resolve_device(args.runtime_device)
     frontend_device = _resolve_device(args.frontend_device, fallback=runtime_device)
@@ -143,12 +164,36 @@ def main() -> None:
                     frontend_device=frontend_device,
                     runtime_device=runtime_device,
                 )
-                chunk = runner.infer_chunk(
-                    session=session,
-                    video_latents=first_chunk_inputs["video_latents"],
-                    text_context=first_chunk_inputs["text_context"],
-                    negative_text_context=first_chunk_inputs["negative_text_context"],
-                )
+                if exact_startup_bootstrap_padding:
+                    first_chunk_inputs = _repeat_exact_startup_bootstrap_latents(
+                        first_chunk_inputs,
+                        frame_chunk_size=int(config.inference.frame_chunk_size),
+                    )
+                    startup_action_history = _exact_startup_bootstrap_action_history(
+                        frame_chunk_size=int(config.inference.frame_chunk_size),
+                        action_per_frame=int(config.policy_variant.action_per_frame),
+                        action_dim=_exact_startup_bootstrap_raw_action_dim(config),
+                        device=runtime_device,
+                    )
+                    warmup = runner.warmup_cache(
+                        session=session,
+                        video_latents=first_chunk_inputs["video_latents"],
+                        text_context=first_chunk_inputs["text_context"],
+                        negative_text_context=first_chunk_inputs["negative_text_context"],
+                        action_history=startup_action_history,
+                        action_space="raw",
+                        frame_start_override=_exact_startup_bootstrap_frame_start(
+                            int(config.inference.frame_chunk_size)
+                        ),
+                    )
+                    chunk = runner.infer_chunk(session=warmup.session)
+                else:
+                    chunk = runner.infer_chunk(
+                        session=session,
+                        video_latents=first_chunk_inputs["video_latents"],
+                        text_context=first_chunk_inputs["text_context"],
+                        negative_text_context=first_chunk_inputs["negative_text_context"],
+                    )
             else:
                 chunk = runner.infer_chunk(session=session)
 
@@ -234,7 +279,7 @@ def main() -> None:
             )
 
             key_frame_list: list[dict[str, np.ndarray]] = []
-            start_frame_group = 1 if first_chunk else 0
+            start_frame_group = 0 if (first_chunk and exact_startup_bootstrap_padding) else (1 if first_chunk else 0)
             for frame_group in range(start_frame_group, raw_actions.shape[0]):
                 for action_index in range(raw_actions.shape[1]):
                     action_step = raw_actions[frame_group, action_index].detach().to(dtype=torch.float32).cpu().numpy()
@@ -277,8 +322,12 @@ def main() -> None:
                     runtime_device=runtime_device,
                     preserve_stream_cache=True,
                 )
-                initial_latents = chunk.visual_outputs.frontend.video_latents
-                combined_latents = torch.cat([initial_latents, new_visual_outputs["video_latents"]], dim=2)
+                if exact_startup_bootstrap_padding:
+                    initial_latents = first_chunk_inputs["video_latents"][:, :, -1:]
+                    combined_latents = new_visual_outputs["video_latents"]
+                else:
+                    initial_latents = chunk.visual_outputs.frontend.video_latents
+                    combined_latents = torch.cat([initial_latents, new_visual_outputs["video_latents"]], dim=2)
                 _print_log(
                     f"chunk_{chunk_count - 1}",
                     {
@@ -360,6 +409,7 @@ def main() -> None:
             "seed": args.seed,
             "video_path": str(output_path.resolve()),
             "pipeline": "open_wam",
+            "exact_startup_bootstrap_padding": bool(exact_startup_bootstrap_padding),
         }
         summary_path = output_path.with_suffix(".json")
         summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -382,6 +432,147 @@ def _resolve_visualization_transformer_subdir(*, config, transformer_dir_arg: st
     if transformer_dir_arg is None:
         return str(config.backbone.transformer_subdir)
     return str(resolve_transformer_dir_override(transformer_dir_arg))
+
+
+def _resolve_visualization_startup_checkpoint_path(
+    *,
+    request: EvaluationRequest,
+    effective_transformer_subdir: str,
+) -> Path | None:
+    if request.checkpoint_path is not None:
+        return Path(request.checkpoint_path)
+    transformer_dir = Path(effective_transformer_subdir)
+    if transformer_dir.name == "transformer":
+        return transformer_dir.parent
+    return None
+
+
+def _resolve_exact_startup_bootstrap_padding(
+    config,
+    *,
+    cli_value: bool | None,
+    checkpoint_path: Path | None,
+) -> bool:
+    if cli_value is not None:
+        return bool(cli_value)
+    checkpoint_declares_padding = _checkpoint_declares_exact_startup_padding(checkpoint_path)
+    if checkpoint_declares_padding is not None:
+        return bool(checkpoint_declares_padding)
+    if checkpoint_path is not None:
+        return False
+    return _config_declares_exact_startup_padding(config)
+
+
+def _checkpoint_declares_exact_startup_padding(checkpoint_path: Path | None) -> bool | None:
+    resolved_config_path = _find_checkpoint_resolved_config_for_startup(checkpoint_path)
+    if resolved_config_path is None:
+        return None
+    raw = yaml.safe_load(resolved_config_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        return False
+    data = raw.get("data")
+    if not isinstance(data, dict):
+        return False
+    sample_construction = data.get("sample_construction")
+    if not isinstance(sample_construction, dict):
+        return False
+    return int(sample_construction.get("start_padding_frames") or 0) > 0
+
+
+def _find_checkpoint_resolved_config_for_startup(path: Path | None) -> Path | None:
+    if path is None:
+        return None
+    candidate = Path(path).expanduser()
+    direct_candidates: list[Path] = []
+    if candidate.is_file():
+        direct_candidates.append(candidate.parent / "resolved_config.yaml")
+    else:
+        direct_candidates.append(candidate / "resolved_config.yaml")
+        if candidate.name == "transformer":
+            direct_candidates.append(candidate.parent / "resolved_config.yaml")
+    for resolved_config_path in direct_candidates:
+        if resolved_config_path.is_file():
+            return resolved_config_path.resolve()
+    try:
+        return find_checkpoint_resolved_config(candidate)
+    except FileNotFoundError:
+        return None
+
+
+def _config_declares_exact_startup_padding(config) -> bool:
+    data = getattr(config, "data", None)
+    sample_construction = getattr(data, "sample_construction", None)
+    return int(getattr(sample_construction, "start_padding_frames", 0) or 0) > 0
+
+
+def _exact_startup_bootstrap_raw_action_dim(config) -> int:
+    action_schema = getattr(getattr(config, "data", None), "action_schema", None)
+    action_dim = int(getattr(action_schema, "action_dim", 0) or 0)
+    if action_dim <= 0:
+        raise ValueError("Exact startup bootstrap requires positive data.action_schema.action_dim for raw actions.")
+    return action_dim
+
+
+def _repeat_exact_startup_bootstrap_latents(
+    initial_inputs: dict[str, torch.Tensor | None],
+    *,
+    frame_chunk_size: int,
+) -> dict[str, torch.Tensor | None]:
+    frame_chunk_size = int(frame_chunk_size)
+    if frame_chunk_size <= 0:
+        raise ValueError(f"Expected positive frame_chunk_size, got {frame_chunk_size}.")
+    video_latents = initial_inputs.get("video_latents")
+    if not isinstance(video_latents, torch.Tensor):
+        raise TypeError("Exact startup bootstrap requires tensor `video_latents` in prepared inputs.")
+    if video_latents.ndim != 5:
+        raise ValueError(
+            "Expected exact startup video latents with shape [B, C, T, H, W], "
+            f"got {tuple(video_latents.shape)}."
+        )
+    if video_latents.shape[2] == frame_chunk_size:
+        return initial_inputs
+    if video_latents.shape[2] != 1:
+        raise ValueError(
+            "Expected exact startup bootstrap to encode exactly one real observation before latent padding, "
+            f"got latent length {video_latents.shape[2]} for frame_chunk_size={frame_chunk_size}."
+        )
+
+    updated_inputs = dict(initial_inputs)
+    updated_inputs["video_latents"] = (
+        video_latents[:, :, :1].expand(-1, -1, frame_chunk_size, -1, -1).contiguous()
+    )
+    return updated_inputs
+
+
+def _exact_startup_bootstrap_frame_start(frame_chunk_size: int) -> int:
+    frame_chunk_size = int(frame_chunk_size)
+    if frame_chunk_size <= 0:
+        raise ValueError(f"Expected positive frame_chunk_size, got {frame_chunk_size}.")
+    return 1 - frame_chunk_size
+
+
+def _exact_startup_bootstrap_action_history(
+    *,
+    frame_chunk_size: int,
+    action_per_frame: int,
+    action_dim: int,
+    device: torch.device,
+) -> torch.Tensor:
+    frame_chunk_size = int(frame_chunk_size)
+    action_per_frame = int(action_per_frame)
+    action_dim = int(action_dim)
+    if frame_chunk_size <= 0 or action_per_frame <= 0 or action_dim <= 0:
+        raise ValueError(
+            "Expected positive startup bootstrap action dimensions, "
+            f"got frame_chunk_size={frame_chunk_size}, action_per_frame={action_per_frame}, action_dim={action_dim}."
+        )
+    return torch.zeros(
+        1,
+        frame_chunk_size * action_per_frame,
+        action_dim,
+        device=device,
+        dtype=torch.float32,
+    )
 
 
 def _resolve_task_spec(benchmark_name: str, task_id: int) -> tuple[LiberoTaskSpec, str]:

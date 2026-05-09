@@ -154,6 +154,56 @@ def test_exact_startup_bootstrap_auto_prefers_checkpoint_training_marker(tmp_pat
     ) is True
 
 
+def test_exact_startup_bootstrap_auto_does_not_infer_from_config_for_unknown_checkpoint(
+    tmp_path: Path,
+) -> None:
+    sandbox = _load_sandbox_module()
+    config = SimpleNamespace(
+        data=SimpleNamespace(sample_construction=SimpleNamespace(start_padding_frames=3)),
+    )
+    checkpoint_file = tmp_path / "model_state.pt"
+    checkpoint_file.write_bytes(b"stub")
+
+    assert sandbox._resolve_exact_startup_bootstrap_padding(
+        config,
+        cli_value=None,
+        checkpoint_path=checkpoint_file,
+    ) is False
+    assert sandbox._resolve_exact_startup_bootstrap_padding(
+        config,
+        cli_value=True,
+        checkpoint_path=checkpoint_file,
+    ) is True
+
+
+def test_exact_startup_bootstrap_auto_tolerates_transformer_only_export(tmp_path: Path) -> None:
+    sandbox = _load_sandbox_module()
+    config = SimpleNamespace(
+        data=SimpleNamespace(sample_construction=SimpleNamespace(start_padding_frames=3)),
+    )
+    transformer_dir = tmp_path / "checkpoint_step_2000" / "transformer"
+    transformer_dir.mkdir(parents=True)
+    (transformer_dir / "config.json").write_text("{}", encoding="utf-8")
+    checkpoint_dir = transformer_dir.parent
+
+    assert sandbox._resolve_exact_startup_bootstrap_padding(
+        config,
+        cli_value=None,
+        checkpoint_path=checkpoint_dir,
+    ) is False
+
+    (checkpoint_dir / "resolved_config.yaml").write_text(
+        "data:\n  sample_construction:\n    start_padding_frames: 3\n",
+        encoding="utf-8",
+    )
+
+    assert sandbox._resolve_exact_startup_bootstrap_padding(
+        config,
+        cli_value=None,
+        checkpoint_path=checkpoint_dir,
+    ) is True
+
+
 def test_finalize_rollout_outputs_lean_skips_videos_and_traces(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -790,6 +840,35 @@ def test_exact_startup_bootstrap_helpers_build_negative_prefix_contract() -> Non
     np.testing.assert_array_equal(obs_sequence[-1]["image"], initial_obs["image"])
     assert tuple(action_history.shape) == (1, 16, 7)
     assert float(action_history.sum().item()) == 0.0
+
+
+def test_exact_startup_bootstrap_repeats_single_encoded_latent_chunk() -> None:
+    sandbox = _load_sandbox_module()
+    video_latents = sandbox.torch.arange(24, dtype=sandbox.torch.float32).view(2, 3, 1, 2, 2)
+    inputs = {
+        "video_latents": video_latents,
+        "text_context": "text",
+        "negative_text_context": "negative",
+    }
+
+    padded = sandbox._repeat_exact_startup_bootstrap_latents(inputs, frame_chunk_size=4)
+
+    assert padded is not inputs
+    assert padded["text_context"] == "text"
+    assert tuple(padded["video_latents"].shape) == (2, 3, 4, 2, 2)
+    assert padded["video_latents"].is_contiguous()
+    for frame_index in range(4):
+        sandbox.torch.testing.assert_close(padded["video_latents"][:, :, frame_index], video_latents[:, :, 0])
+
+
+def test_exact_startup_bootstrap_keeps_already_padded_latents() -> None:
+    sandbox = _load_sandbox_module()
+    video_latents = sandbox.torch.zeros(1, 3, 4, 2, 2)
+    inputs = {"video_latents": video_latents}
+
+    padded = sandbox._repeat_exact_startup_bootstrap_latents(inputs, frame_chunk_size=4)
+
+    assert padded is inputs
 
 
 def test_exact_startup_sessions_replan_from_first_chunk_state() -> None:

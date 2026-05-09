@@ -420,7 +420,7 @@ def test_select_task_episode_axis_orders_init_major_across_tasks() -> None:
 
     selected, allocations = sampled_eval.select_task_episode_axis(
         episodes,
-        count=2,
+        count=4,
         task_ids="0,1",
         episode_indices=None,
     )
@@ -432,6 +432,38 @@ def test_select_task_episode_axis_orders_init_major_across_tasks() -> None:
         (1, 1),
     ]
     assert allocations == {"task 0": 2, "task 1": 2}
+
+
+def test_select_task_episode_axis_defaults_to_all_tasks_and_truncates_init_major() -> None:
+    episodes = [
+        sampled_eval.DatasetEpisode(
+            dataset_episode_index=task_id * 10 + init_id,
+            task_text=f"task {task_id}",
+            task_index=task_id,
+            task_id=task_id,
+            task_name=f"task_{task_id}",
+            episode_idx=init_id,
+            length=10,
+        )
+        for task_id in (0, 1)
+        for init_id in range(3)
+    ]
+
+    selected, allocations = sampled_eval.select_task_episode_axis(
+        episodes,
+        count=5,
+        task_ids=None,
+        episode_indices=None,
+    )
+
+    assert [(episode.task_id, episode.episode_idx) for episode in selected] == [
+        (0, 0),
+        (1, 0),
+        (0, 1),
+        (1, 1),
+        (0, 2),
+    ]
+    assert allocations == {"task 0": 3, "task 1": 2}
 
 
 def test_select_full_task_init_axis_enumerates_benchmark_init_ids() -> None:
@@ -915,6 +947,8 @@ def test_build_child_env_preserves_ld_library_path_by_default(monkeypatch: pytes
 
     assert env["LD_LIBRARY_PATH"] == "/usr/local/lib"
     assert env["PYOPENGL_PLATFORM"] == "egl"
+    assert env["PYTHONFAULTHANDLER"] == "1"
+    assert env["TORCH_SHOW_CPP_STACKTRACES"] == "1"
 
 
 def test_build_child_env_can_clear_ld_library_path(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -978,7 +1012,7 @@ def test_build_child_env_sets_egl_device_for_cuda_worker(monkeypatch: pytest.Mon
     assert env["EGL_DEVICE_ID"] == "1"
 
 
-def test_build_child_env_prefers_local_cuda_visibility_for_egl_device(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_child_env_prefers_cuda_visible_devices_for_egl_device(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
     monkeypatch.setenv("SLURM_JOB_GPUS", "4,7")
     args = argparse.Namespace(
