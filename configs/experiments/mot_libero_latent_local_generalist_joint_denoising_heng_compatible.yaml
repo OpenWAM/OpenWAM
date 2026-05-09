@@ -32,6 +32,7 @@ data:
     segment_frames: 128
     chunk_size: 4
     window_size: 30
+    randomize_geometry: true
     start_padding_frames: 3
     tail_padding_policy: zero_order_hold
     padded_target_policy: mask_loss

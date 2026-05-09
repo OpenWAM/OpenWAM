@@ -82,10 +82,11 @@ class LocalRepoBundle:
 
 @dataclass(frozen=True)
 class HierarchicalFixedSegmentWindowSpec:
-    """One eligible trajectory window for hierarchical fixed-segment sampling."""
+    """One eligible trajectory/chunk geometry for hierarchical fixed-segment sampling."""
 
     window_index: int
     task_text: str
+    sampled_chunk_size: int
     start_min: int
     start_max: int
     eligible_start_count: int
@@ -225,14 +226,36 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             "dataset_mean_eligible_task_demo_count": self.dataset_mean_task_demo_count,
         }
 
-    def _action_loss_metadata(self, action_mask: torch.Tensor | None) -> dict[str, Any]:
+    def _action_loss_metadata(
+        self,
+        action_mask: torch.Tensor | None,
+        *,
+        loss_frame_start: int | None = None,
+        loss_frame_end: int | None = None,
+        latent_num_frames: int | None = None,
+    ) -> dict[str, Any]:
         if action_mask is None:
             valid_steps = int(self.data_config.action_schema.action_horizon)
             valid_values = valid_steps * int(self.data_config.action_schema.action_dim)
         else:
-            reduced = action_mask.float().sum(dim=-1)
+            effective_mask = action_mask.float()
+            if (
+                loss_frame_start is not None
+                and loss_frame_end is not None
+                and latent_num_frames is not None
+                and int(latent_num_frames) > 0
+                and effective_mask.shape[0] % int(latent_num_frames) == 0
+            ):
+                action_per_frame = effective_mask.shape[0] // int(latent_num_frames)
+                frame_mask = torch.zeros_like(effective_mask)
+                frame_start = max(0, int(loss_frame_start)) * action_per_frame
+                frame_end = min(int(latent_num_frames), int(loss_frame_end)) * action_per_frame
+                if frame_end > frame_start:
+                    frame_mask[frame_start:frame_end] = 1.0
+                effective_mask = effective_mask * frame_mask
+            reduced = effective_mask.sum(dim=-1)
             valid_steps = int((reduced > 0).sum().item())
-            valid_values = int(action_mask.float().sum().item())
+            valid_values = int(effective_mask.sum().item())
         return {
             "valid_action_steps": valid_steps,
             "valid_action_values": valid_values,
@@ -1199,6 +1222,9 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
         sample_start_frame: int,
         start_padding_frames: int,
         pre_start_frames: int,
+        emit_explicit_loss_ranges: bool = False,
+        sampled_chunk_size: int | None = None,
+        sampled_window_size: int | None = None,
     ) -> dict[str, Any]:
         sample_cfg = self.data_config.sample_construction
         metadata: dict[str, Any] = {
@@ -1212,7 +1238,7 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
             "segment_pre_start_frames": int(pre_start_frames),
             "start_padding_mode": "repeat_first_latent" if int(pre_start_frames) > 0 else "none",
         }
-        if int(pre_start_frames) > 0:
+        if int(pre_start_frames) > 0 or bool(emit_explicit_loss_ranges):
             metadata.update(
                 {
                     "loss_frame_start": int(loss_frame_start),
@@ -1221,9 +1247,9 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
                     "action_loss_frame_end": int(loss_frame_end),
                 }
             )
-        if int(sample_cfg.chunk_size) > 1 or int(sample_cfg.window_size) > 1:
-            chunk_size = max(1, int(sample_cfg.chunk_size))
-            window_size = max(1, int(sample_cfg.window_size))
+        chunk_size = max(1, int(sampled_chunk_size if sampled_chunk_size is not None else sample_cfg.chunk_size))
+        window_size = max(1, int(sampled_window_size if sampled_window_size is not None else sample_cfg.window_size))
+        if chunk_size > 1 or window_size > 1 or sampled_chunk_size is not None or sampled_window_size is not None:
             metadata["sampled_chunk_size"] = chunk_size
             metadata["sampled_window_size"] = window_size
             history_frames = int(math.ceil(window_size / 2.0)) * chunk_size
@@ -1308,13 +1334,61 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
         window: LocalEpisodeWindow,
         latent_start: int,
         segment_length: int,
+        compact_boundary_padding: bool = False,
+        compact_boundary_chunk_size: int | None = None,
     ) -> dict[str, Any]:
         source_latent_frames = int(video_latents.shape[1])
         if source_latent_frames <= 0:
             raise ValueError("Uniform segment sampling requires at least one source latent frame.")
         start_padding_frames = self._window_start_padding_frames(window)
-        min_latent_start = -start_padding_frames
-        if latent_start < min_latent_start or latent_start >= source_latent_frames:
+        if compact_boundary_padding:
+            chunk_size_for_boundary = max(
+                1,
+                int(
+                    compact_boundary_chunk_size
+                    if compact_boundary_chunk_size is not None
+                    else self.data_config.sample_construction.chunk_size
+                ),
+            )
+            boundary = self._resolve_compact_boundary_segment(
+                source_latent_frames=source_latent_frames,
+                latent_start=latent_start,
+                segment_length=segment_length,
+                start_padding_frames=start_padding_frames,
+                chunk_size=chunk_size_for_boundary,
+            )
+            tensor_latent_start = int(boundary["effective_start"])
+            tensor_segment_length = int(boundary["effective_segment_frames"])
+            loss_frame_start = int(boundary["loss_frame_start"])
+            loss_frame_end = int(boundary["supervised_end"])
+            pre_start_frames = int(boundary["startup_context_frames"])
+            valid_latent_frames = tensor_segment_length
+            padded_latent_frames = int(boundary["head_padded_frame_count"]) + int(boundary["tail_padded_frame_count"])
+        else:
+            min_latent_start = -start_padding_frames
+            if latent_start < min_latent_start or latent_start >= source_latent_frames:
+                raise IndexError(f"latent_start={latent_start} is outside source_latent_frames={source_latent_frames}.")
+            tensor_latent_start = int(latent_start)
+            tensor_segment_length = int(segment_length)
+            valid_latent_frames = max(0, min(segment_length, source_latent_frames - latent_start))
+            padded_latent_frames = max(0, segment_length - valid_latent_frames)
+            pre_start_frames = 0
+            if start_padding_frames > 0 and latent_start <= 0:
+                pre_start_frames = max(0, min(segment_length, 1 - latent_start))
+            loss_frame_start = min(pre_start_frames, valid_latent_frames)
+            loss_frame_end = valid_latent_frames
+            boundary = {
+                "logical_frame_start": int(latent_start),
+                "logical_frame_end": int(latent_start + segment_length),
+                "effective_frame_start": int(tensor_latent_start),
+                "effective_frame_end": int(tensor_latent_start + tensor_segment_length),
+                "effective_segment_frames": int(tensor_segment_length),
+                "head_padded_frame_count": 0,
+                "tail_padded_frame_count": int(padded_latent_frames),
+                "startup_context_frames": int(pre_start_frames),
+                "compact_boundary_padding": False,
+            }
+        if tensor_segment_length <= 0:
             raise IndexError(f"latent_start={latent_start} is outside source_latent_frames={source_latent_frames}.")
         raw_frame_ids = [int(value) for value in list(primary_payload.get("frame_ids", []))]
         if not raw_frame_ids:
@@ -1322,26 +1396,19 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
         if not raw_frame_ids:
             raise ValueError("Uniform segment sampling requires non-empty frame ids.")
 
-        valid_latent_frames = max(0, min(segment_length, source_latent_frames - latent_start))
-        padded_latent_frames = max(0, segment_length - valid_latent_frames)
-        pre_start_frames = 0
-        if start_padding_frames > 0 and latent_start <= 0:
-            pre_start_frames = max(0, min(segment_length, 1 - latent_start))
-        loss_frame_start = min(pre_start_frames, valid_latent_frames)
-        loss_frame_end = valid_latent_frames
         observed_frame_ids = self._segment_observed_frame_ids(
             raw_frame_ids=raw_frame_ids,
             source_latent_frames=source_latent_frames,
-            latent_start=latent_start,
-            segment_length=segment_length,
+            latent_start=tensor_latent_start,
+            segment_length=tensor_segment_length,
         )
         boundaries = self._build_raw_bucket_boundaries(
             raw_frame_count=len(raw_frame_ids),
             latent_num_frames=source_latent_frames,
         )
-        source_latent_start = max(0, latent_start)
+        source_latent_start = max(0, tensor_latent_start)
         raw_start_position = min(boundaries[source_latent_start], len(raw_frame_ids) - 1)
-        valid_latent_end = min(source_latent_frames, max(0, latent_start + segment_length))
+        valid_latent_end = min(source_latent_frames, max(0, tensor_latent_start + tensor_segment_length))
         raw_end_position = boundaries[valid_latent_end]
         if raw_end_position <= raw_start_position:
             raw_end_position = raw_start_position + 1
@@ -1359,7 +1426,7 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
             rows=rows,
             window=sampled_window,
             observed_frame_ids=observed_frame_ids,
-            latent_num_frames=segment_length,
+            latent_num_frames=tensor_segment_length,
             leading_zero_action_frames=pre_start_frames if pre_start_frames > 0 else 1,
             leading_zero_action_mask=0.0 if pre_start_frames > 0 else 1.0,
         )
@@ -1375,8 +1442,8 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
         return {
             "video_latents": self._slice_video_latents_with_zero_hold(
                 video_latents=video_latents,
-                latent_start=latent_start,
-                segment_length=segment_length,
+                latent_start=tensor_latent_start,
+                segment_length=tensor_segment_length,
             ),
             "actions": actions,
             "action_mask": action_mask,
@@ -1395,6 +1462,93 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
             "loss_frame_end": loss_frame_end,
             "start_padding_frames": start_padding_frames,
             "pre_start_frames": pre_start_frames,
+            "boundary_metadata": boundary,
+        }
+
+    @staticmethod
+    def _compact_boundary_start_range(
+        *,
+        source_latent_frames: int,
+        segment_length: int,
+        start_padding_frames: int,
+        chunk_size: int,
+    ) -> tuple[int, int, int]:
+        source_latent_frames = int(source_latent_frames)
+        segment_length = int(segment_length)
+        start_padding_frames = max(0, int(start_padding_frames))
+        chunk_size = max(1, int(chunk_size))
+        if source_latent_frames + start_padding_frames <= max(chunk_size, start_padding_frames):
+            return (0, -1, 0)
+        if start_padding_frames > 0:
+            start_min = max(chunk_size, start_padding_frames) - segment_length - start_padding_frames + 1
+        else:
+            start_min = 0
+        start_max = source_latent_frames - chunk_size - 1
+        eligible_start_count = max(0, start_max - start_min + 1)
+        return int(start_min), int(start_max), int(eligible_start_count)
+
+    @staticmethod
+    def _resolve_compact_boundary_segment(
+        *,
+        source_latent_frames: int,
+        latent_start: int,
+        segment_length: int,
+        start_padding_frames: int,
+        chunk_size: int,
+    ) -> dict[str, int | bool]:
+        source_latent_frames = int(source_latent_frames)
+        latent_start = int(latent_start)
+        segment_length = int(segment_length)
+        start_padding_frames = max(0, int(start_padding_frames))
+        chunk_size = max(1, int(chunk_size))
+        start_min, start_max, eligible_start_count = (
+            UniformSegmentLocalLeRobotLatentDataset._compact_boundary_start_range(
+                source_latent_frames=source_latent_frames,
+                segment_length=segment_length,
+                start_padding_frames=start_padding_frames,
+                chunk_size=chunk_size,
+            )
+        )
+        if eligible_start_count <= 0 or latent_start < start_min or latent_start > start_max:
+            raise IndexError(
+                "Compact boundary segment start is not eligible: "
+                f"latent_start={latent_start}, start_min={start_min}, start_max={start_max}, "
+                f"source_latent_frames={source_latent_frames}, segment_length={segment_length}, "
+                f"start_padding_frames={start_padding_frames}, chunk_size={chunk_size}."
+            )
+
+        logical_start = latent_start
+        logical_end = latent_start + segment_length
+        effective_start = max(logical_start, -start_padding_frames)
+        effective_end = min(logical_end, source_latent_frames)
+        effective_segment_frames = effective_end - effective_start
+        supervised_start = max(0, 0 - effective_start)
+        supervised_end = max(supervised_start, min(source_latent_frames, logical_end) - effective_start)
+        loss_frame_start = max(chunk_size, supervised_start)
+        if effective_segment_frames <= chunk_size or supervised_end <= loss_frame_start:
+            raise IndexError(
+                "Compact boundary segment has no supervised frame after the conditioning chunk: "
+                f"latent_start={latent_start}, effective_segment_frames={effective_segment_frames}, "
+                f"supervised_start={supervised_start}, supervised_end={supervised_end}, "
+                f"loss_frame_start={loss_frame_start}, chunk_size={chunk_size}."
+            )
+        return {
+            "logical_frame_start": int(logical_start),
+            "logical_frame_end": int(logical_end),
+            "effective_start": int(effective_start),
+            "effective_end": int(effective_end),
+            "effective_frame_start": int(effective_start),
+            "effective_frame_end": int(effective_end),
+            "effective_segment_frames": int(effective_segment_frames),
+            "supervised_start": int(supervised_start),
+            "supervised_end": int(supervised_end),
+            "loss_frame_start": int(loss_frame_start),
+            "loss_frame_end": int(supervised_end),
+            "head_padded_frame_count": max(0, int(effective_start - logical_start)),
+            "tail_padded_frame_count": max(0, int(logical_end - effective_end)),
+            "startup_context_frames": max(0, min(0, effective_end) - effective_start),
+            "chunk_size_for_boundary": int(chunk_size),
+            "compact_boundary_padding": True,
         }
 
     @staticmethod
@@ -1476,17 +1630,18 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
             raise ValueError("Hierarchical fixed-segment sampling currently requires masked padded targets.")
         if sample_cfg.segment_frames is None:
             raise ValueError("Hierarchical fixed-segment sampling requires `sample_construction.segment_frames`.")
+        if max(int(data_config.train_batch_size), int(data_config.val_batch_size)) > 1:
+            raise ValueError(
+                "Hierarchical fixed-segment compact boundary sampling currently requires "
+                "`data.train_batch_size <= 1` and `data.val_batch_size <= 1` because the latent collate "
+                "path stacks compact variable-length tensors directly."
+            )
         self.segment_frames = int(sample_cfg.segment_frames)
-        self._window_start_ranges = self._build_window_start_ranges()
+        self._window_start_ranges_by_chunk = self._build_window_start_ranges_by_chunk()
         self._task_specs = self._build_task_specs()
         self._task_weights = tuple(float(task.task_mass) for task in self._task_specs)
         self._task_mass_total = float(sum(self._task_weights))
         self._task_specs_by_text = {task.task_text: task for task in self._task_specs}
-        self._window_specs_by_index = {
-            window_spec.window_index: window_spec
-            for task_spec in self._task_specs
-            for window_spec in task_spec.windows
-        }
         self._epoch_sample_count = sum(
             int(window_spec.eligible_start_count)
             for task_spec in self._task_specs
@@ -1501,35 +1656,60 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
     def build_train_sampler(self, *, world_size: int = 1, rank: int = 0) -> Sampler[int]:
         return HierarchicalFixedSegmentTrainSampler(self, world_size=world_size, rank=rank)
 
-    def _build_window_start_ranges(self) -> tuple[tuple[int, int, int], ...]:
-        ranges: list[tuple[int, int, int]] = []
+    def _hierarchical_chunk_size_candidates(self) -> tuple[int, ...]:
+        sample_cfg = self.data_config.sample_construction
+        max_chunk_size = max(1, int(sample_cfg.chunk_size))
+        if bool(sample_cfg.randomize_geometry) and max_chunk_size > 1:
+            return tuple(range(1, max_chunk_size + 1))
+        return (max_chunk_size,)
+
+    def _build_window_start_ranges_by_chunk(self) -> tuple[tuple[tuple[int, int, int, int], ...], ...]:
+        ranges_by_window: list[tuple[tuple[int, int, int, int], ...]] = []
+        chunk_size_candidates = self._hierarchical_chunk_size_candidates()
         for window in self.windows:
             source_latent_frames = max(1, int(window.latent_num_frames))
-            start_min = -self._window_start_padding_frames(window)
-            start_max = source_latent_frames - 1
-            eligible_start_count = max(0, start_max - start_min + 1)
-            ranges.append((start_min, start_max, eligible_start_count))
-        return tuple(ranges)
+            window_ranges: list[tuple[int, int, int, int]] = []
+            for chunk_size in chunk_size_candidates:
+                start_min, start_max, eligible_start_count = self._compact_boundary_start_range(
+                    source_latent_frames=source_latent_frames,
+                    segment_length=self.segment_frames,
+                    start_padding_frames=self._window_start_padding_frames(window),
+                    chunk_size=chunk_size,
+                )
+                if eligible_start_count > 0:
+                    window_ranges.append(
+                        (
+                            int(chunk_size),
+                            int(start_min),
+                            int(start_max),
+                            int(eligible_start_count),
+                        )
+                    )
+            ranges_by_window.append(tuple(window_ranges))
+        return tuple(ranges_by_window)
 
     def _build_task_specs(self) -> tuple[HierarchicalFixedSegmentTaskSpec, ...]:
         sample_cfg = self.data_config.sample_construction
         window_specs_by_task: dict[str, list[HierarchicalFixedSegmentWindowSpec]] = {}
         eligible_starts_by_task: Counter[str] = Counter()
         for window_index, task_text in enumerate(self._window_task_texts):
-            start_min, start_max, eligible_start_count = self._window_start_ranges[window_index]
-            if eligible_start_count <= 0:
-                continue
-            trajectory_mass = float(eligible_start_count) ** float(sample_cfg.trajectory_start_power)
-            window_spec = HierarchicalFixedSegmentWindowSpec(
-                window_index=window_index,
-                task_text=task_text,
-                start_min=start_min,
-                start_max=start_max,
-                eligible_start_count=eligible_start_count,
-                mass_within_task=trajectory_mass,
-            )
-            window_specs_by_task.setdefault(task_text, []).append(window_spec)
-            eligible_starts_by_task[task_text] += int(eligible_start_count)
+            for sampled_chunk_size, start_min, start_max, eligible_start_count in self._window_start_ranges_by_chunk[
+                window_index
+            ]:
+                if eligible_start_count <= 0:
+                    continue
+                trajectory_mass = float(eligible_start_count) ** float(sample_cfg.trajectory_start_power)
+                window_spec = HierarchicalFixedSegmentWindowSpec(
+                    window_index=window_index,
+                    task_text=task_text,
+                    sampled_chunk_size=int(sampled_chunk_size),
+                    start_min=int(start_min),
+                    start_max=int(start_max),
+                    eligible_start_count=int(eligible_start_count),
+                    mass_within_task=trajectory_mass,
+                )
+                window_specs_by_task.setdefault(task_text, []).append(window_spec)
+                eligible_starts_by_task[task_text] += int(eligible_start_count)
 
         task_specs: list[HierarchicalFixedSegmentTaskSpec] = []
         for task_text in sorted(window_specs_by_task):
@@ -1547,6 +1727,7 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
                     HierarchicalFixedSegmentWindowSpec(
                         window_index=window.window_index,
                         task_text=window.task_text,
+                        sampled_chunk_size=window.sampled_chunk_size,
                         start_min=window.start_min,
                         start_max=window.start_max,
                         eligible_start_count=window.eligible_start_count,
@@ -1572,7 +1753,7 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
     def _draw_hierarchical_sample(
         self,
         index: int,
-    ) -> tuple[HierarchicalFixedSegmentTaskSpec, HierarchicalFixedSegmentWindowSpec, int]:
+    ) -> tuple[HierarchicalFixedSegmentTaskSpec, HierarchicalFixedSegmentWindowSpec, int, int]:
         split_salt = 17 if self.data_config.split == DataSplit.TRAIN else 53
         rng = random.Random(_stable_int_seed(int(self.data_config.split_seed), split_salt, int(index)))
         task_index = _weighted_choice_index(self._task_weights, rng)
@@ -1581,13 +1762,21 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
         window_index = _weighted_choice_index(window_weights, rng)
         window_spec = task_spec.windows[window_index]
         latent_start = int(rng.randint(window_spec.start_min, window_spec.start_max))
-        return task_spec, window_spec, latent_start
+        return task_spec, window_spec, latent_start, int(window_spec.sampled_chunk_size)
 
     def resolve_hierarchical_sample_key(self, index: int) -> dict[str, Any]:
         """Resolve one sampler/dataloader index without loading tensors."""
 
         epoch, epoch_index = divmod(int(index), len(self))
-        task_spec, window_spec, latent_start = self._draw_hierarchical_sample(index)
+        task_spec, window_spec, latent_start, sampled_chunk_size = self._draw_hierarchical_sample(index)
+        window = self.windows[int(window_spec.window_index)]
+        boundary = self._resolve_compact_boundary_segment(
+            source_latent_frames=max(1, int(window.latent_num_frames)),
+            latent_start=latent_start,
+            segment_length=self.segment_frames,
+            start_padding_frames=self._window_start_padding_frames(window),
+            chunk_size=sampled_chunk_size,
+        )
         return {
             "epoch": int(epoch),
             "epoch_sample_index": int(epoch_index),
@@ -1597,14 +1786,33 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
             "start_min": int(window_spec.start_min),
             "start_max": int(window_spec.start_max),
             "window_eligible_start_count": int(window_spec.eligible_start_count),
+            "logical_frame_start": int(boundary["logical_frame_start"]),
+            "logical_frame_end": int(boundary["logical_frame_end"]),
+            "effective_frame_start": int(boundary["effective_frame_start"]),
+            "effective_frame_end": int(boundary["effective_frame_end"]),
+            "effective_segment_frames": int(boundary["effective_segment_frames"]),
+            "supervised_frame_start": int(boundary["supervised_start"]),
+            "supervised_frame_end": int(boundary["supervised_end"]),
+            "loss_frame_start": int(boundary["loss_frame_start"]),
+            "loss_frame_end": int(boundary["loss_frame_end"]),
+            "head_padded_frame_count": int(boundary["head_padded_frame_count"]),
+            "tail_padded_frame_count": int(boundary["tail_padded_frame_count"]),
+            "chunk_size_for_boundary": int(boundary["chunk_size_for_boundary"]),
+            "sampled_chunk_size": int(sampled_chunk_size),
+            "sampled_window_size": max(1, int(self.data_config.sample_construction.window_size)),
         }
 
-    def iter_hierarchical_eligible_start_keys(self) -> Iterator[tuple[int, int]]:
-        """Yield every concrete trajectory/start key that must be reachable."""
+    def iter_hierarchical_eligible_start_keys(self) -> Iterator[tuple[int, int, int]]:
+        """Yield every concrete trajectory/start/chunk key that must be reachable."""
 
-        for window_spec in self._window_specs_by_index.values():
-            for latent_start in range(int(window_spec.start_min), int(window_spec.start_max) + 1):
-                yield (int(window_spec.window_index), int(latent_start))
+        for task_spec in self._task_specs:
+            for window_spec in task_spec.windows:
+                for latent_start in range(int(window_spec.start_min), int(window_spec.start_max) + 1):
+                    yield (
+                        int(window_spec.window_index),
+                        int(latent_start),
+                        int(window_spec.sampled_chunk_size),
+                    )
 
     def _hierarchical_sample_metadata(
         self,
@@ -1639,7 +1847,7 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
         }
 
     def __getitem__(self, index: int) -> LatentWAMSample:
-        task_spec, window_spec, latent_start = self._draw_hierarchical_sample(index)
+        task_spec, window_spec, latent_start, sampled_chunk_size = self._draw_hierarchical_sample(index)
         window_index = int(window_spec.window_index)
         window = self.windows[window_index]
         repo_bundle = self._repo_bundles[str(window.repo_root)]
@@ -1655,6 +1863,8 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
             window=window,
             latent_start=latent_start,
             segment_length=self.segment_frames,
+            compact_boundary_padding=True,
+            compact_boundary_chunk_size=sampled_chunk_size,
         )
 
         task_index = int(rows[min(subwindow["sample_start_frame"], len(rows) - 1)].get("task_index", 0)) if rows else 0
@@ -1669,6 +1879,10 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
         else:
             text_context = None
         negative_text_context = self.empty_text_embedding.clone() if self.empty_text_embedding is not None else None
+
+        boundary_metadata = dict(subwindow["boundary_metadata"])
+        effective_latent_start = int(boundary_metadata.get("effective_frame_start", latent_start))
+        tail_padded_frame_count = int(boundary_metadata.get("tail_padded_frame_count", subwindow["padded_latent_frames"]))
 
         return LatentWAMSample(
             video_latents=subwindow["video_latents"],
@@ -1706,21 +1920,30 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
                 "segment_length_frames": self.segment_frames,
                 "segment_valid_latent_frames": subwindow["valid_latent_frames"],
                 "segment_padded_latent_frames": subwindow["padded_latent_frames"],
-                "tail_padding_mode": "none" if subwindow["padded_latent_frames"] == 0 else "zero_order_hold",
+                "tail_padding_mode": "none" if tail_padded_frame_count == 0 else "zero_order_hold",
                 "subwindow_action_start": subwindow["action_start_index"],
                 "subwindow_action_end": subwindow["action_end_index"],
                 **self._uniform_segment_attention_metadata(
-                    latent_start=latent_start,
-                    segment_length=self.segment_frames,
+                    latent_start=effective_latent_start,
+                    segment_length=int(boundary_metadata.get("effective_segment_frames", self.segment_frames)),
                     valid_latent_frames=subwindow["valid_latent_frames"],
                     loss_frame_start=subwindow["loss_frame_start"],
                     loss_frame_end=subwindow["loss_frame_end"],
                     sample_start_frame=subwindow["sample_start_frame"],
                     start_padding_frames=subwindow["start_padding_frames"],
                     pre_start_frames=subwindow["pre_start_frames"],
+                    emit_explicit_loss_ranges=True,
+                    sampled_chunk_size=sampled_chunk_size,
+                    sampled_window_size=max(1, int(self.data_config.sample_construction.window_size)),
                 ),
+                **boundary_metadata,
                 **subwindow["action_target_metadata"],
-                **self._action_loss_metadata(subwindow["action_mask"]),
+                **self._action_loss_metadata(
+                    subwindow["action_mask"],
+                    loss_frame_start=subwindow["loss_frame_start"],
+                    loss_frame_end=subwindow["loss_frame_end"],
+                    latent_num_frames=int(boundary_metadata.get("effective_segment_frames", self.segment_frames)),
+                ),
                 **self._hierarchical_sample_metadata(
                     index=index,
                     task_spec=task_spec,

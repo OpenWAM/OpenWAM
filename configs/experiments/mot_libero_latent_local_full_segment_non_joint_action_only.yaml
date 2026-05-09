@@ -29,15 +29,16 @@ data:
   num_frames: 4
   frame_stride: 1
   sample_stride: 1
-  # Shared fixed-128 hierarchical segments. Every latent start remains eligible; tail
-  # overflow repeats the final observation while missing actions and held-video
-  # targets are masked from loss. chunk/window pin train attention to the
-  # current 60-frame rollout lookback.
+  # Shared fixed-128 hierarchical segments. Boundary starts stay eligible, but
+  # compact boundary tensors do not materialize held head/tail frames. Missing
+  # actions and padded targets are excluded from loss. chunk_size is the max sampled train chunk
+  # (randomized 1..4); window_size keeps the rollout lookback bounded.
   sample_construction:
     mode: hierarchical_fixed_segment
     segment_frames: 128
     chunk_size: 4
     window_size: 30
+    randomize_geometry: true
     start_padding_frames: 3
     tail_padding_policy: zero_order_hold
     padded_target_policy: mask_loss

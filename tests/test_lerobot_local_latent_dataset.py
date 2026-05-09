@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+import math
 from pathlib import Path
 import random
 
@@ -714,12 +715,12 @@ def test_hierarchical_fixed_segment_samples_padded_start_range_and_masks_targets
 
     train_dataset, _ = build_train_val_latent_datasets(config.data)
 
-    assert len(train_dataset) == 9
-    assert train_dataset._window_start_ranges == ((-3, 5, 9),)
+    assert len(train_dataset) == 8
+    assert train_dataset._window_start_ranges_by_chunk == (((1, -3, 4, 8),),)
     tail_sample = next(
         train_dataset[index]
         for index in range(200)
-        if train_dataset[index].metadata["subwindow_latent_start"] == 5
+        if train_dataset[index].metadata["subwindow_latent_start"] == 4
     )
     head_sample = next(
         train_dataset[index]
@@ -729,25 +730,138 @@ def test_hierarchical_fixed_segment_samples_padded_start_range_and_masks_targets
 
     assert tail_sample.metadata["window_sampling_mode"] == WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT
     assert tail_sample.metadata["hierarchical_start_min"] == -3
-    assert tail_sample.metadata["hierarchical_start_max"] == 5
-    assert tail_sample.metadata["hierarchical_start_count"] == 9
-    assert tail_sample.metadata["subwindow_latent_end"] == 9
-    assert tail_sample.metadata["segment_valid_latent_frames"] == 1
-    assert tail_sample.metadata["segment_padded_latent_frames"] == 3
+    assert tail_sample.metadata["hierarchical_start_max"] == 4
+    assert tail_sample.metadata["hierarchical_start_count"] == 8
+    assert tail_sample.metadata["subwindow_latent_end"] == 8
+    assert tail_sample.metadata["effective_frame_start"] == 4
+    assert tail_sample.metadata["effective_frame_end"] == 6
+    assert tail_sample.metadata["effective_segment_frames"] == 2
+    assert tail_sample.metadata["tail_padded_frame_count"] == 2
+    assert tail_sample.metadata["segment_valid_latent_frames"] == 2
+    assert tail_sample.metadata["segment_padded_latent_frames"] == 2
     assert tail_sample.metadata["tail_padding_mode"] == "zero_order_hold"
-    assert tail_sample.metadata["latent_loss_frame_start"] == 0
-    assert tail_sample.metadata["latent_loss_frame_end"] == 1
-    assert tail_sample.metadata["observed_frame_ids"] == [5, 5, 5, 5]
-    assert torch.equal(tail_sample.video_latents[:, 0], tail_sample.video_latents[:, 1])
-    assert torch.equal(tail_sample.video_latents[:, 1], tail_sample.video_latents[:, 2])
+    assert tail_sample.metadata["latent_loss_frame_start"] == 1
+    assert tail_sample.metadata["latent_loss_frame_end"] == 2
+    assert tail_sample.metadata["observed_frame_ids"] == [4, 5]
+    assert tail_sample.video_latents.shape[1] == 2
 
     assert head_sample.metadata["subwindow_latent_start"] == -3
-    assert head_sample.metadata["segment_pre_start_frames"] == 4
-    assert head_sample.metadata["latent_loss_frame_start"] == 4
+    assert head_sample.metadata["effective_frame_start"] == -3
+    assert head_sample.metadata["effective_frame_end"] == 1
+    assert head_sample.metadata["effective_segment_frames"] == 4
+    assert head_sample.metadata["head_padded_frame_count"] == 0
+    assert head_sample.metadata["segment_pre_start_frames"] == 3
+    assert head_sample.metadata["latent_loss_frame_start"] == 3
     assert head_sample.metadata["latent_loss_frame_end"] == 4
-    assert head_sample.action_mask.sum().item() == 0
+    assert head_sample.action_mask[:6].sum().item() == 0
+    assert head_sample.action_mask.sum().item() == 30
+    assert head_sample.video_latents.shape[1] == 4
     assert head_sample.metadata["tail_padding_policy"] == "zero_order_hold"
     assert head_sample.metadata["padded_target_policy"] == "mask_loss"
+
+
+def test_hierarchical_fixed_segment_rejects_multi_sample_compact_batches(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent_hierarchical_fixed_segment_batch_guard"
+    _build_local_robotwin_latent_repo(repo_root, total_rows=6, latent_num_frames=6)
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            split_seed=7,
+            num_workers=0,
+            train_batch_size=2,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+                segment_frames=4,
+                start_padding_frames=3,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="compact boundary sampling"):
+        build_train_val_latent_datasets(config.data)
+
+
+def test_hierarchical_fixed_segment_randomizes_chunk_geometry(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent_hierarchical_fixed_segment_random_chunk"
+    _build_local_robotwin_latent_repo(repo_root, total_rows=16, latent_num_frames=16)
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            split_seed=11,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+                segment_frames=8,
+                chunk_size=4,
+                window_size=30,
+                start_padding_frames=3,
+                randomize_geometry=True,
+                task_start_power=0.5,
+                demo_count_power=0.0,
+                trajectory_start_power=1.0,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    expected_keys = set(train_dataset.iter_hierarchical_eligible_start_keys())
+    records = [train_dataset.resolve_hierarchical_sample_key(index) for index in range(256)]
+
+    assert len(train_dataset) == 81
+    assert train_dataset._window_start_ranges_by_chunk == (
+        (
+            (1, -7, 14, 22),
+            (2, -7, 13, 21),
+            (3, -7, 12, 20),
+            (4, -6, 11, 18),
+        ),
+    )
+    assert (0, 14, 1) in expected_keys
+    assert (0, 13, 2) in expected_keys
+    assert (0, 12, 3) in expected_keys
+    assert (0, 11, 4) in expected_keys
+    assert (0, 14, 4) not in expected_keys
+    assert {int(record["sampled_chunk_size"]) for record in records} == {1, 2, 3, 4}
+    assert {int(record["sampled_window_size"]) for record in records} == {30}
+    for record in records:
+        assert (
+            int(record["trajectory_window_index"]),
+            int(record["latent_start"]),
+            int(record["sampled_chunk_size"]),
+        ) in expected_keys
+        expected_loss_start = max(
+            int(record["sampled_chunk_size"]),
+            int(record["supervised_frame_start"]),
+        )
+        assert int(record["loss_frame_start"]) == expected_loss_start
+        assert int(record["chunk_size_for_boundary"]) == int(record["sampled_chunk_size"])
+
+    samples = [train_dataset[index] for index in range(256)]
+    assert {int(sample.metadata["sampled_chunk_size"]) for sample in samples} == {1, 2, 3, 4}
+    for sample in samples:
+        sampled_chunk_size = int(sample.metadata["sampled_chunk_size"])
+        expected_loss_start = max(sampled_chunk_size, int(sample.metadata["supervised_start"]))
+        assert int(sample.metadata["sampled_window_size"]) == 30
+        assert int(sample.metadata["loss_frame_start"]) == expected_loss_start
+        assert int(sample.metadata["latent_loss_frame_start"]) == expected_loss_start
+        assert int(sample.metadata["action_loss_frame_start"]) == expected_loss_start
 
 
 def test_uniform_segment_require_full_segment_uses_short_payload_as_full_segment(tmp_path: Path) -> None:
@@ -1053,15 +1167,15 @@ def test_hierarchical_fixed_segment_task_power_is_explicit_task_mass(tmp_path: P
         if train_dataset[index].metadata["hierarchical_task_text"] == "pick up block"
     )
 
-    assert len(train_dataset) == 20
-    assert short_task.eligible_start_count == 4
-    assert long_task.eligible_start_count == 16
-    assert long_task.task_mass / short_task.task_mass == pytest.approx(2.0)
+    assert len(train_dataset) == 18
+    assert short_task.eligible_start_count == 3
+    assert long_task.eligible_start_count == 15
+    assert long_task.task_mass / short_task.task_mass == pytest.approx(math.sqrt(5.0))
     assert sample.metadata["hierarchical_task_start_power"] == pytest.approx(0.5)
     assert sample.metadata["hierarchical_demo_count_power"] == pytest.approx(0.0)
     assert sample.metadata["hierarchical_trajectory_start_power"] == pytest.approx(1.0)
-    assert sample.metadata["hierarchical_task_eligible_start_count"] == 4
-    assert sample.metadata["hierarchical_epoch_sample_count"] == 20
+    assert sample.metadata["hierarchical_task_eligible_start_count"] == 3
+    assert sample.metadata["hierarchical_epoch_sample_count"] == 18
 
 
 def test_hierarchical_fixed_segment_dataloader_samples_stepwise_valid_keys(tmp_path: Path) -> None:
@@ -1086,7 +1200,7 @@ def test_hierarchical_fixed_segment_dataloader_samples_stepwise_valid_keys(tmp_p
             train_fraction=1.0,
             split_seed=0,
             num_workers=0,
-            train_batch_size=3,
+            train_batch_size=1,
             val_batch_size=1,
             sample_construction=replace(
                 config.data.sample_construction,
@@ -1111,7 +1225,11 @@ def test_hierarchical_fixed_segment_dataloader_samples_stepwise_valid_keys(tmp_p
         collate_fn=collate_latent_wam_samples,
     )
     seen = {
-        (metadata["trajectory_window_index"], metadata["virtual_latent_start"])
+        (
+            metadata["trajectory_window_index"],
+            metadata["virtual_latent_start"],
+            metadata["sampled_chunk_size"],
+        )
         for batch in loader
         for metadata in batch.metadata
     }
@@ -1119,7 +1237,7 @@ def test_hierarchical_fixed_segment_dataloader_samples_stepwise_valid_keys(tmp_p
 
     assert seen
     assert seen.issubset(expected)
-    assert len(train_dataset) == 20
+    assert len(train_dataset) == 18
 
 
 def test_standard_policy_full_segment_latent_profile_uses_schema_horizon(tmp_path: Path) -> None:
