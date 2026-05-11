@@ -182,7 +182,24 @@ def test_generalist_dynamics_mixture_trims_conditional_history(tmp_path: Path) -
             "latent_loss_frame_end": 8,
             "action_loss_frame_start": 6,
             "action_loss_frame_end": 8,
+            "supervised_start": 6,
+            "supervised_end": 8,
             "segment_length_frames": 8,
+            "effective_start": 100,
+            "effective_end": 108,
+            "effective_frame_start": 100,
+            "effective_frame_end": 108,
+            "logical_frame_start": 100,
+            "logical_frame_end": 108,
+            "target_frame_start": 106,
+            "target_frame_end": 108,
+            "subwindow_latent_start": 106,
+            "subwindow_latent_end": 108,
+            "virtual_latent_start": 106,
+            "context_prefix_frames_requested": 6,
+            "context_prefix_frames_in_sample": 6,
+            "context_prefix_real_frames": 6,
+            "context_prefix_truncated_frames": 0,
             "subwindow_action_start": 100,
             "subwindow_action_end": 116,
         },
@@ -213,6 +230,19 @@ def test_generalist_dynamics_mixture_trims_conditional_history(tmp_path: Path) -
     assert sample.metadata["sample_start_frame"] == 104
     assert sample.metadata["observation_frame_indices"] == [104, 105, 106, 107]
     assert sample.metadata["frame_shift"] == 104
+    assert sample.metadata["effective_frame_start"] == 104
+    assert sample.metadata["effective_frame_end"] == 108
+    assert sample.metadata["logical_frame_start"] == 104
+    assert sample.metadata["target_frame_start"] == 106
+    assert sample.metadata["target_frame_end"] == 108
+    assert sample.metadata["subwindow_latent_start"] == 106
+    assert sample.metadata["subwindow_latent_end"] == 108
+    assert sample.metadata["virtual_latent_start"] == 106
+    assert sample.metadata["supervised_start"] == 2
+    assert sample.metadata["supervised_end"] == 4
+    assert sample.metadata["context_prefix_frames_in_sample"] == 2
+    assert sample.metadata["context_prefix_real_frames"] == 2
+    assert sample.metadata["context_prefix_truncated_frames"] == 4
     assert sample.metadata["subwindow_action_start"] == 108
     assert sample.metadata["valid_action_steps"] == 8
     assert sample.metadata["valid_action_values"] == 56
@@ -233,6 +263,96 @@ def test_generalist_dynamics_mixture_trims_conditional_history(tmp_path: Path) -
     assert view_sample.metadata[GENERALIST_TRAINING_SOURCE_METADATA_KEY] == "real_demo"
     assert view_sample.metadata[GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY] == "action_conditioned_video"
     assert view_sample.metadata["generalist_training_bucket"] == "val_fdm"
+
+
+def test_generalist_dynamics_mixture_trims_partially_unavailable_prefix(tmp_path: Path) -> None:
+    encoded_root, empty_text_path = _write_encoded_counterfactual_fixture(tmp_path)
+    data_config = _data_config(empty_text_path)
+    counterfactual = EncodedCounterfactualDynamicsLatentDataset(data_config, encoded_root, split="train")
+    real_sample = LatentWAMSample(
+        video_latents=torch.arange(2 * 13 * 2 * 2, dtype=torch.float32).reshape(2, 13, 2, 2),
+        actions=torch.arange(26 * 7, dtype=torch.float32).reshape(26, 7),
+        action_mask=torch.ones(26, 7),
+        task_text="real task",
+        text_context=torch.ones(3, 4),
+        negative_text_context=torch.zeros(3, 4),
+        metadata={
+            "dataset_kind": "real",
+            "sample_start_frame": 0,
+            "observation_start": 0,
+            "window_start_frame": 0,
+            "observation_frame_indices": list(range(13)),
+            "observed_frame_ids": list(range(13)),
+            "frame_shift": 0,
+            "history_frames": 8,
+            "loss_frame_start": 8,
+            "loss_frame_end": 13,
+            "latent_loss_frame_start": 8,
+            "latent_loss_frame_end": 13,
+            "action_loss_frame_start": 8,
+            "action_loss_frame_end": 13,
+            "supervised_start": 5,
+            "supervised_end": 13,
+            "segment_length_frames": 13,
+            "segment_valid_latent_frames": 13,
+            "segment_padded_latent_frames": 0,
+            "effective_start": 0,
+            "effective_end": 13,
+            "effective_frame_start": 0,
+            "effective_frame_end": 13,
+            "logical_frame_start": -3,
+            "logical_frame_end": 13,
+            "target_frame_start": 5,
+            "target_frame_end": 13,
+            "subwindow_latent_start": 5,
+            "subwindow_latent_end": 13,
+            "virtual_latent_start": 5,
+            "context_prefix_frames_requested": 8,
+            "context_prefix_frames_in_sample": 5,
+            "context_prefix_real_frames": 5,
+            "context_prefix_truncated_frames": 3,
+            "subwindow_action_start": 0,
+            "subwindow_action_end": 26,
+        },
+    )
+    mixture = GeneralistDynamicsMixtureDataset(
+        real_dataset=_OneSampleLatentDataset(real_sample),
+        counterfactual_dataset=counterfactual,
+        mixture_config=GeneralistDynamicsMixtureConfig(
+            real_action_conditioned_video_weight=1.0,
+            real_joint_weight=0.0,
+            real_video_conditioned_action_weight=0.0,
+            counterfactual_action_conditioned_video_weight=0.0,
+            counterfactual_video_conditioned_action_weight=0.0,
+            conditional_history_frames=2,
+        ),
+        split="train",
+    )
+
+    sample = mixture[0]
+
+    assert sample.video_latents.shape == (2, 7, 2, 2)
+    assert sample.actions.shape == (14, 7)
+    assert sample.metadata["history_frames"] == 2
+    assert sample.metadata["loss_frame_start"] == 2
+    assert sample.metadata["loss_frame_end"] == 7
+    assert sample.metadata["sample_start_frame"] == 6
+    assert sample.metadata["observation_frame_indices"] == list(range(6, 13))
+    assert sample.metadata["frame_shift"] == 6
+    assert sample.metadata["effective_frame_start"] == 6
+    assert sample.metadata["effective_frame_end"] == 13
+    assert sample.metadata["target_frame_start"] == 6
+    assert sample.metadata["target_frame_end"] == 13
+    assert sample.metadata["subwindow_latent_start"] == 6
+    assert sample.metadata["subwindow_latent_end"] == 13
+    assert sample.metadata["virtual_latent_start"] == 6
+    assert sample.metadata["supervised_start"] == 0
+    assert sample.metadata["supervised_end"] == 7
+    assert sample.metadata["context_prefix_frames_in_sample"] == 0
+    assert sample.metadata["context_prefix_real_frames"] == 0
+    assert sample.metadata["context_prefix_truncated_frames"] == 8
+    assert sample.metadata["context_prefix_truncated_frames"] <= sample.metadata["context_prefix_frames_requested"]
+    assert sample.metadata["generalist_history_trimmed_frames"] == 6
 
 
 def test_generalist_dynamics_mixture_preserves_epoch_offset_sampler(tmp_path: Path) -> None:

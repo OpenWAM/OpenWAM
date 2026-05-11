@@ -70,6 +70,7 @@ data:
     mode: hierarchical_fixed_segment
     segment_frames: 128
     start_padding_frames: 3
+    context_prefix_policy: rollout_history
     tail_padding_policy: zero_order_hold
     padded_target_policy: mask_loss
     task_start_power: 0.5
@@ -98,6 +99,46 @@ trainer:
     report = validate_config_file(config_path, repo_root=tmp_path)
 
     assert report.ok
+
+
+@pytest.mark.unit
+def test_static_validator_rejects_negative_context_prefix(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_hierarchical_context_prefix.yaml"
+    config_path.write_text(
+        """
+name: bad_hierarchical_context_prefix
+data:
+  dataset_name: libero
+  dataset_type: lerobot_v2_latent_local
+  sample_construction:
+    mode: hierarchical_fixed_segment
+    segment_frames: 8
+    context_prefix_policy: fixed
+    context_prefix_frames: -1
+  action_schema:
+    action_dim: 7
+    action_horizon: 16
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: post_latent
+  attach_site: post_visual_core
+action_decoder:
+  name: mlp_decoder
+  action_dim: 7
+  action_horizon: 16
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any(issue.path == "data.sample_construction.context_prefix_frames" for issue in report.errors)
 
 
 @pytest.mark.unit

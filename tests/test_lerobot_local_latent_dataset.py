@@ -12,7 +12,7 @@ import pytest
 import torch
 from torch.utils.data import DataLoader
 
-from open_wam.configs import ReplayStatusPolicy, SampleWeightMode, WindowSamplingMode
+from open_wam.configs import ReplayStatusPolicy, SampleWeightMode, SegmentContextPolicy, WindowSamplingMode
 from open_wam.data import build_train_val_latent_datasets, collate_latent_wam_samples
 from open_wam.training import TrainingRuntime
 from open_wam.utils.config_loader import load_experiment_config
@@ -862,6 +862,203 @@ def test_hierarchical_fixed_segment_randomizes_chunk_geometry(tmp_path: Path) ->
         assert int(sample.metadata["loss_frame_start"]) == expected_loss_start
         assert int(sample.metadata["latent_loss_frame_start"]) == expected_loss_start
         assert int(sample.metadata["action_loss_frame_start"]) == expected_loss_start
+
+
+def test_hierarchical_fixed_segment_rollout_context_prefix_masks_context(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent_hierarchical_fixed_segment_context_prefix"
+    _build_local_robotwin_latent_repo(repo_root, total_rows=16, latent_num_frames=16)
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            split_seed=13,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+                segment_frames=8,
+                chunk_size=2,
+                window_size=4,
+                start_padding_frames=3,
+                randomize_geometry=False,
+                context_prefix_policy=SegmentContextPolicy.ROLLOUT_HISTORY,
+                task_start_power=0.5,
+                demo_count_power=0.0,
+                trajectory_start_power=1.0,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    assert train_dataset._window_start_ranges_by_chunk == (((2, -3, 15, 19),),)
+    sample_index = next(
+        index
+        for index in range(500)
+        if train_dataset.resolve_hierarchical_sample_key(index)["latent_start"] == 5
+    )
+    startup_sample_index = next(
+        index
+        for index in range(500)
+        if train_dataset.resolve_hierarchical_sample_key(index)["latent_start"] == 0
+    )
+    padded_start_sample_index = next(
+        index
+        for index in range(500)
+        if train_dataset.resolve_hierarchical_sample_key(index)["latent_start"] == -3
+    )
+    sample = train_dataset[sample_index]
+    startup_sample = train_dataset[startup_sample_index]
+    padded_start_sample = train_dataset[padded_start_sample_index]
+
+    assert sample.metadata["virtual_latent_start"] == 5
+    assert sample.metadata["logical_frame_start"] == 1
+    assert sample.metadata["effective_frame_start"] == 1
+    assert sample.metadata["effective_frame_end"] == 13
+    assert sample.metadata["target_frame_start"] == 5
+    assert sample.metadata["target_frame_end"] == 13
+    assert sample.metadata["context_prefix_policy"] == "rollout_history"
+    assert sample.metadata["context_prefix_frames_requested"] == 4
+    assert sample.metadata["context_prefix_frames_in_sample"] == 4
+    assert sample.metadata["context_prefix_real_frames"] == 4
+    assert sample.metadata["context_prefix_truncated_frames"] == 0
+    assert sample.metadata["supervised_start"] == 4
+    assert sample.metadata["latent_loss_frame_start"] == 4
+    assert sample.metadata["latent_loss_frame_end"] == 12
+    assert sample.metadata["action_loss_frame_start"] == 4
+    assert sample.metadata["action_loss_frame_end"] == 12
+    assert sample.metadata["history_frames"] == 4
+    assert sample.video_latents.shape[1] == 12
+
+    assert padded_start_sample.metadata["virtual_latent_start"] == -3
+    assert padded_start_sample.metadata["logical_frame_start"] == -7
+    assert padded_start_sample.metadata["effective_frame_start"] == -3
+    assert padded_start_sample.metadata["startup_context_frames"] == 3
+    assert padded_start_sample.metadata["head_padded_frame_count"] == 4
+    assert padded_start_sample.metadata["context_prefix_frames_in_sample"] == 0
+    assert padded_start_sample.metadata["context_prefix_real_frames"] == 0
+    assert padded_start_sample.metadata["context_prefix_truncated_frames"] == 4
+    assert padded_start_sample.metadata["latent_loss_frame_start"] == 4
+    assert padded_start_sample.metadata["history_frames"] == 4
+    assert padded_start_sample.video_latents.shape[1] == 8
+    for offset in (1, 2, 3):
+        assert torch.equal(padded_start_sample.video_latents[:, 0], padded_start_sample.video_latents[:, offset])
+
+    assert startup_sample.metadata["virtual_latent_start"] == 0
+    assert startup_sample.metadata["logical_frame_start"] == -4
+    assert startup_sample.metadata["effective_frame_start"] == 0
+    assert startup_sample.metadata["startup_context_frames"] == 0
+    assert startup_sample.metadata["head_padded_frame_count"] == 4
+    assert startup_sample.metadata["context_prefix_frames_in_sample"] == 0
+    assert startup_sample.metadata["context_prefix_real_frames"] == 0
+    assert startup_sample.metadata["context_prefix_truncated_frames"] == 4
+    assert startup_sample.metadata["segment_valid_latent_frames"] == startup_sample.video_latents.shape[1]
+    assert startup_sample.metadata["segment_padded_latent_frames"] == 4
+    assert startup_sample.metadata["latent_loss_frame_start"] == 2
+    assert startup_sample.metadata["history_frames"] == 2
+    assert startup_sample.video_latents.shape[1] == 8
+
+
+def test_hierarchical_fixed_segment_context_prefix_aligns_loss_to_chunk_boundary(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent_hierarchical_fixed_segment_context_chunk_alignment"
+    _build_local_robotwin_latent_repo(repo_root, total_rows=20, latent_num_frames=20)
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            split_seed=19,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+                segment_frames=16,
+                chunk_size=4,
+                window_size=4,
+                start_padding_frames=3,
+                randomize_geometry=False,
+                context_prefix_policy=SegmentContextPolicy.ROLLOUT_HISTORY,
+                task_start_power=0.5,
+                demo_count_power=0.0,
+                trajectory_start_power=1.0,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    sample_index = next(
+        index
+        for index in range(500)
+        if train_dataset.resolve_hierarchical_sample_key(index)["latent_start"] == 5
+    )
+    sample = train_dataset[sample_index]
+
+    assert sample.metadata["context_prefix_frames_requested"] == 8
+    assert sample.metadata["context_prefix_frames_in_sample"] == 5
+    assert sample.metadata["context_prefix_real_frames"] == 5
+    assert sample.metadata["startup_context_frames"] == 0
+    assert sample.metadata["supervised_start"] == 5
+    assert sample.metadata["latent_loss_frame_start"] == 8
+    assert sample.metadata["action_loss_frame_start"] == 8
+    assert sample.metadata["history_frames"] == 8
+    assert sample.metadata["latent_loss_frame_start"] % sample.metadata["sampled_chunk_size"] == 0
+
+
+def test_hierarchical_fixed_segment_without_context_keeps_geometry_history_frames(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent_hierarchical_fixed_segment_no_context_history"
+    _build_local_robotwin_latent_repo(repo_root, total_rows=16, latent_num_frames=16)
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            split_seed=23,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+                segment_frames=8,
+                chunk_size=2,
+                window_size=4,
+                start_padding_frames=3,
+                randomize_geometry=False,
+                context_prefix_policy=SegmentContextPolicy.NONE,
+                task_start_power=0.5,
+                demo_count_power=0.0,
+                trajectory_start_power=1.0,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    sample_index = next(
+        index
+        for index in range(500)
+        if train_dataset.resolve_hierarchical_sample_key(index)["latent_start"] == 5
+    )
+    sample = train_dataset[sample_index]
+
+    assert sample.metadata["context_prefix_frames_requested"] == 0
+    assert sample.metadata["latent_loss_frame_start"] == 2
+    assert sample.metadata["history_frames"] == 4
 
 
 def test_uniform_segment_require_full_segment_uses_short_payload_as_full_segment(tmp_path: Path) -> None:

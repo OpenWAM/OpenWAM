@@ -6,12 +6,18 @@ fi
 
 umask 007
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/libero_fixed128_rollout_context_defaults.sh"
+
 NGPU=${NGPU:-"1"}
 MASTER_PORT=${MASTER_PORT:-"29501"}
 LOG_RANK=${LOG_RANK:-"0"}
 # Maintained method-4 launcher defaults to the new video-conditioned config.
 # Override CONFIG_NAME to run an explicit legacy baseline instead.
 CONFIG_NAME=${CONFIG_NAME:-"post_decoded_libero_latent_local_video_conditioned"}
+open_wam_reject_cli_config_override_args "$@"
+OPEN_WAM_FIXED128_ROLLOUT_CONTEXT_ARGS=()
+open_wam_append_fixed128_rollout_context_args OPEN_WAM_FIXED128_ROLLOUT_CONTEXT_ARGS "${CONFIG_NAME}"
 
 export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-false}
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-"expandable_segments:True"}
@@ -27,10 +33,12 @@ if [ "${NGPU}" -gt 1 ]; then
     -m open_wam.training.train \
     --config-name "${CONFIG_NAME}" \
     --devices "${NGPU}" \
+    "${OPEN_WAM_FIXED128_ROLLOUT_CONTEXT_ARGS[@]}" \
     "$@"
 else
   uv run python -m open_wam.training.train \
     --config-name "${CONFIG_NAME}" \
     --devices "${NGPU}" \
+    "${OPEN_WAM_FIXED128_ROLLOUT_CONTEXT_ARGS[@]}" \
     "$@"
 fi

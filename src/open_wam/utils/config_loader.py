@@ -1122,6 +1122,17 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
                 "start_padding_frames",
                 data_defaults.sample_construction.start_padding_frames,
             ),
+            context_prefix_policy=_coerce_enum(
+                config_enums.SegmentContextPolicy,
+                sample_construction_raw.get(
+                    "context_prefix_policy",
+                    data_defaults.sample_construction.context_prefix_policy,
+                ),
+            ),
+            context_prefix_frames=sample_construction_raw.get(
+                "context_prefix_frames",
+                data_defaults.sample_construction.context_prefix_frames,
+            ),
             tail_padding_policy=_coerce_enum(
                 config_enums.TailPaddingPolicy,
                 sample_construction_raw.get(

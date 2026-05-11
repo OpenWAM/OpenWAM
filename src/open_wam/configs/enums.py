@@ -134,6 +134,14 @@ class WindowSamplingMode(StrEnum):
     CAUSAL_PREFIX_SUFFIX = "causal_prefix_suffix"
 
 
+class SegmentContextPolicy(StrEnum):
+    """How fixed-segment samplers reserve rollout context before supervised frames."""
+
+    NONE = "none"
+    FIXED = "fixed"
+    ROLLOUT_HISTORY = "rollout_history"
+
+
 class TailPaddingPolicy(StrEnum):
     """How fixed segment samplers fill positions beyond the real trajectory tail."""
 

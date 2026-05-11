@@ -24,6 +24,7 @@ data:
     window_size: 30
     randomize_geometry: true
     start_padding_frames: 3
+    context_prefix_policy: rollout_history
     tail_padding_policy: zero_order_hold
     padded_target_policy: mask_loss
     task_start_power: 0.5

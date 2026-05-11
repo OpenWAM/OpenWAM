@@ -125,6 +125,10 @@ def build_coverage_report(
     loss_frame_counts: list[int] = []
     head_padded_frame_counts: list[int] = []
     tail_padded_frame_counts: list[int] = []
+    context_prefix_requested_counts: list[int] = []
+    context_prefix_in_sample_counts: list[int] = []
+    context_prefix_real_counts: list[int] = []
+    context_prefix_truncated_counts: list[int] = []
     sampled_chunk_counts: Counter[int] = Counter()
     rank_sample_counts: dict[str, int] = {}
 
@@ -173,6 +177,14 @@ def build_coverage_report(
                         head_padded_frame_counts.append(int(record["head_padded_frame_count"]))
                     if "tail_padded_frame_count" in record:
                         tail_padded_frame_counts.append(int(record["tail_padded_frame_count"]))
+                    if "context_prefix_frames_requested" in record:
+                        context_prefix_requested_counts.append(int(record["context_prefix_frames_requested"]))
+                    if "context_prefix_frames_in_sample" in record:
+                        context_prefix_in_sample_counts.append(int(record["context_prefix_frames_in_sample"]))
+                    if "context_prefix_real_frames" in record:
+                        context_prefix_real_counts.append(int(record["context_prefix_real_frames"]))
+                    if "context_prefix_truncated_frames" in record:
+                        context_prefix_truncated_counts.append(int(record["context_prefix_truncated_frames"]))
                     if "sampled_chunk_size" in record:
                         sampled_chunk_counts[int(record["sampled_chunk_size"])] += 1
         consumed_draws += epoch_draw_count
@@ -216,6 +228,10 @@ def build_coverage_report(
         "loss_frame_counts": summarize_ints(loss_frame_counts),
         "head_padded_frame_counts": summarize_ints(head_padded_frame_counts),
         "tail_padded_frame_counts": summarize_ints(tail_padded_frame_counts),
+        "context_prefix_requested_counts": summarize_ints(context_prefix_requested_counts),
+        "context_prefix_in_sample_counts": summarize_ints(context_prefix_in_sample_counts),
+        "context_prefix_real_counts": summarize_ints(context_prefix_real_counts),
+        "context_prefix_truncated_counts": summarize_ints(context_prefix_truncated_counts),
         "sampled_chunk_counts": dict(sorted(sampled_chunk_counts.items())),
         "rank_sample_counts": rank_sample_counts,
         "batch_task_diversity": summarize_ints(batch_task_diversity),
@@ -280,6 +296,13 @@ def materialize_dataloader_batches(
                 "loss_frame_start": [int(metadata.get("loss_frame_start", 0)) for metadata in batch.metadata],
                 "loss_frame_end": [
                     int(metadata.get("loss_frame_end", batch.video_latents.shape[2])) for metadata in batch.metadata
+                ],
+                "history_frames": [int(metadata.get("history_frames", 0)) for metadata in batch.metadata],
+                "context_prefix_frames_requested": [
+                    int(metadata.get("context_prefix_frames_requested", 0)) for metadata in batch.metadata
+                ],
+                "context_prefix_frames_in_sample": [
+                    int(metadata.get("context_prefix_frames_in_sample", 0)) for metadata in batch.metadata
                 ],
                 "valid_action_steps": [int(metadata.get("valid_action_steps", 0)) for metadata in batch.metadata],
                 "video_latents_shape": tuple(int(dim) for dim in batch.video_latents.shape),

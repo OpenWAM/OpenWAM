@@ -33,6 +33,7 @@ from open_wam.configs.enums import (
     ParallelStreamVariantProfile,
     PaddedTargetPolicy,
     PolicyVariantName,
+    SegmentContextPolicy,
     StrEnum,
     TailPaddingPolicy,
     TrainerAccelerator,
@@ -363,6 +364,13 @@ def _validate_sample_construction(
     issues: "_IssueBuilder",
 ) -> None:
     _validate_enum(sample_construction, "mode", WindowSamplingMode, issues, "data.sample_construction")
+    _validate_enum(
+        sample_construction,
+        "context_prefix_policy",
+        SegmentContextPolicy,
+        issues,
+        "data.sample_construction",
+    )
     _validate_enum(sample_construction, "tail_padding_policy", TailPaddingPolicy, issues, "data.sample_construction")
     _validate_enum(sample_construction, "padded_target_policy", PaddedTargetPolicy, issues, "data.sample_construction")
     _validate_positive_ints(
@@ -381,6 +389,10 @@ def _validate_sample_construction(
         value = _optional_int(sample_construction["start_padding_frames"])
         if value is None or value < 0:
             issues.error("data.sample_construction.start_padding_frames", "Expected a non-negative integer.")
+    if "context_prefix_frames" in sample_construction and sample_construction["context_prefix_frames"] is not None:
+        value = _optional_int(sample_construction["context_prefix_frames"])
+        if value is None or value < 0:
+            issues.error("data.sample_construction.context_prefix_frames", "Expected a non-negative integer.")
     mode = sample_construction.get("mode")
     if mode != WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT.value:
         return

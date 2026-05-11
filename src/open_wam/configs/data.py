@@ -28,6 +28,7 @@ from .enums import (
     ReplayStatusPolicy,
     RotationRepresentation,
     SampleWeightMode,
+    SegmentContextPolicy,
     TailPaddingPolicy,
     TemporalPositionMode,
     WindowSamplingMode,
@@ -310,6 +311,13 @@ class SampleConstructionConfig:
     # useful for fixed-geometry cold-start training without rewriting latent
     # datasets on disk.
     start_padding_frames: int = 0
+    # Hierarchical fixed-segment context reservation. Prefix frames are
+    # prepended outside `segment_frames`, so the configured segment length
+    # remains the target horizon. `none` keeps legacy behavior; `fixed` uses
+    # `context_prefix_frames`; `rollout_history` derives the prefix from sampled
+    # chunk/window geometry.
+    context_prefix_policy: SegmentContextPolicy = SegmentContextPolicy.NONE
+    context_prefix_frames: int = 0
     tail_padding_policy: TailPaddingPolicy = TailPaddingPolicy.ZERO_ORDER_HOLD
     padded_target_policy: PaddedTargetPolicy = PaddedTargetPolicy.MASK_LOSS
     # Hierarchical fixed-segment sampler factors. `task_start_power=0.5`
@@ -334,6 +342,7 @@ class SampleConstructionConfig:
                 "mode": WindowSamplingMode,
                 "anchor_policy": AnchorPolicy,
                 "sample_weight_mode": SampleWeightMode,
+                "context_prefix_policy": SegmentContextPolicy,
                 "tail_padding_policy": TailPaddingPolicy,
                 "padded_target_policy": PaddedTargetPolicy,
             },
@@ -374,6 +383,8 @@ class SampleConstructionConfig:
             raise ValueError("`sample_construction.segment_locality_block_size` must be positive.")
         if self.start_padding_frames < 0:
             raise ValueError("`sample_construction.start_padding_frames` must be non-negative.")
+        if self.context_prefix_frames < 0:
+            raise ValueError("`sample_construction.context_prefix_frames` must be non-negative.")
         if self.mode == WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT:
             if self.segment_frames is None:
                 raise ValueError(

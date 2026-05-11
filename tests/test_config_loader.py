@@ -32,6 +32,7 @@ from open_wam.configs import (
     PaddedTargetPolicy,
     SampleLossWeightMode,
     SampleWeightMode,
+    SegmentContextPolicy,
     TailPaddingPolicy,
     ReferenceCoreInitMode,
     RegisterAttachedPolicyConfig,
@@ -876,6 +877,8 @@ def test_sample_construction_yaml_strings_are_coerced_to_enum_members(tmp_path: 
         "randomize_segment_start": True,
         "require_full_segment": True,
         "start_padding_frames": 3,
+        "context_prefix_policy": "fixed",
+        "context_prefix_frames": 5,
         "sample_weight_mode": "valid_action_steps_x_inverse_task_demo_count",
         "sample_weight_length_power": 0.5,
         "sample_weight_min": 0.25,
@@ -901,6 +904,8 @@ def test_sample_construction_yaml_strings_are_coerced_to_enum_members(tmp_path: 
     assert config.data.sample_construction.randomize_segment_start is True
     assert config.data.sample_construction.require_full_segment is True
     assert config.data.sample_construction.start_padding_frames == 3
+    assert config.data.sample_construction.context_prefix_policy == SegmentContextPolicy.FIXED
+    assert config.data.sample_construction.context_prefix_frames == 5
     assert config.data.sample_construction.sample_weight_mode == SampleWeightMode.VALID_ACTION_STEPS_X_INVERSE_TASK_DEMO_COUNT
     assert config.data.sample_construction.sample_weight_length_power == pytest.approx(0.5)
     assert config.data.sample_construction.sample_weight_min == pytest.approx(0.25)
@@ -917,6 +922,7 @@ def test_hierarchical_fixed_segment_sample_construction_loads_explicit_sampler_f
         "mode": "hierarchical_fixed_segment",
         "segment_frames": 128,
         "start_padding_frames": 3,
+        "context_prefix_policy": "rollout_history",
         "tail_padding_policy": "zero_order_hold",
         "padded_target_policy": "mask_loss",
         "task_start_power": 0.5,
@@ -933,6 +939,7 @@ def test_hierarchical_fixed_segment_sample_construction_loads_explicit_sampler_f
     assert config.data.sample_construction.mode == WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT
     assert config.data.sample_construction.segment_frames == 128
     assert config.data.sample_construction.start_padding_frames == 3
+    assert config.data.sample_construction.context_prefix_policy == SegmentContextPolicy.ROLLOUT_HISTORY
     assert config.data.sample_construction.tail_padding_policy == TailPaddingPolicy.ZERO_ORDER_HOLD
     assert config.data.sample_construction.padded_target_policy == PaddedTargetPolicy.MASK_LOSS
     assert config.data.sample_construction.task_start_power == pytest.approx(0.5)

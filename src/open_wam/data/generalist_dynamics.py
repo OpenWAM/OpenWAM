@@ -825,6 +825,14 @@ def _trim_conditional_history_metadata(
         if "observed_frame_ids" in updated:
             updated["observed_frame_ids"] = list(trimmed_observed)
     new_observation_start = int(trimmed_observed[0]) if trimmed_observed else None
+    original_context_prefix_in_sample = max(0, int(metadata.get("context_prefix_frames_in_sample", 0) or 0))
+    original_context_prefix_real = max(
+        0,
+        int(metadata.get("context_prefix_real_frames", original_context_prefix_in_sample) or 0),
+    )
+    # Cropping can consume real prefix context before it reaches chunk-alignment target frames.
+    cropped_context_prefix_frames = min(crop_frames, original_context_prefix_in_sample)
+    cropped_real_prefix_frames = min(crop_frames, original_context_prefix_real)
 
     for key in (
         "loss_frame_start",
@@ -835,6 +843,8 @@ def _trim_conditional_history_metadata(
         "action_loss_frame_end",
         "current_start_frame_in_sample",
         "current_end_frame_in_sample",
+        "supervised_start",
+        "supervised_end",
     ):
         if key in updated and updated[key] is not None:
             updated[key] = min(new_total_frames, max(0, int(updated[key]) - crop_frames))
@@ -863,13 +873,58 @@ def _trim_conditional_history_metadata(
             int(new_total_frames) - int(updated["segment_valid_latent_frames"]),
         )
         updated["tail_padding_mode"] = "none" if int(updated["segment_padded_latent_frames"]) == 0 else "zero_order_hold"
+    if "head_padded_frame_count" in updated and updated["head_padded_frame_count"] is not None:
+        updated["head_padded_frame_count"] = max(0, int(updated["head_padded_frame_count"]) - crop_frames)
+    if "context_prefix_frames_in_sample" in updated and updated["context_prefix_frames_in_sample"] is not None:
+        updated["context_prefix_frames_in_sample"] = max(
+            0,
+            int(updated["context_prefix_frames_in_sample"]) - cropped_context_prefix_frames,
+        )
+    if "context_prefix_real_frames" in updated and updated["context_prefix_real_frames"] is not None:
+        updated["context_prefix_real_frames"] = max(
+            0,
+            int(updated["context_prefix_real_frames"]) - cropped_real_prefix_frames,
+        )
+    if "context_prefix_truncated_frames" in updated and updated["context_prefix_truncated_frames"] is not None:
+        truncated_prefix = max(0, int(updated["context_prefix_truncated_frames"])) + cropped_context_prefix_frames
+        requested_prefix = updated.get("context_prefix_frames_requested")
+        if requested_prefix is not None:
+            truncated_prefix = min(max(0, int(requested_prefix)), truncated_prefix)
+        updated["context_prefix_truncated_frames"] = truncated_prefix
 
     for key in ("sample_start_frame", "observation_start", "window_start_frame"):
         if key in updated and updated[key] is not None:
             updated[key] = int(new_observation_start) if new_observation_start is not None else int(updated[key]) + crop_frames
-    for key in ("latent_frame_start", "frame_shift", "subwindow_latent_start", "virtual_latent_start"):
+    for key in ("latent_frame_start", "frame_shift", "effective_start", "effective_frame_start", "logical_frame_start"):
         if key in updated and updated[key] is not None:
             updated[key] = int(updated[key]) + crop_frames
+    for start_key, end_key in (("effective_start", "effective_end"), ("effective_frame_start", "effective_frame_end")):
+        if start_key in updated and end_key in updated and updated[start_key] is not None:
+            updated[end_key] = int(updated[start_key]) + int(new_total_frames)
+    target_start = updated.get("target_frame_start")
+    target_end = updated.get("target_frame_end")
+    if target_start is not None or target_end is not None:
+        adjusted_target_start = int(target_start) if target_start is not None else None
+        new_effective_start = _metadata_frame_boundary(
+            updated,
+            ("effective_frame_start", "effective_start", "frame_shift"),
+        )
+        if adjusted_target_start is not None and new_effective_start is not None:
+            adjusted_target_start = max(adjusted_target_start, int(new_effective_start))
+        if adjusted_target_start is not None and target_end is not None:
+            adjusted_target_start = min(adjusted_target_start, int(target_end))
+        if adjusted_target_start is not None:
+            updated["target_frame_start"] = int(adjusted_target_start)
+        if target_start is not None:
+            for key in ("subwindow_latent_start", "virtual_latent_start"):
+                if key in updated and updated[key] is not None:
+                    updated[key] = int(adjusted_target_start)
+        if target_end is not None and "subwindow_latent_end" in updated and updated["subwindow_latent_end"] is not None:
+            updated["subwindow_latent_end"] = int(target_end)
+    else:
+        for key in ("subwindow_latent_start", "virtual_latent_start"):
+            if key in updated and updated[key] is not None:
+                updated[key] = int(updated[key]) + crop_frames
     if "subwindow_action_start" in updated and updated["subwindow_action_start"] is not None:
         updated["subwindow_action_start"] = int(updated["subwindow_action_start"]) + int(source_action_crop)
 

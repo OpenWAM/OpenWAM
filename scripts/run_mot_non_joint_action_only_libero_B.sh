@@ -16,4 +16,8 @@ if [ -z "${TRANSFORMER_SUBDIR:-}" ]; then
   exit 2
 fi
 
-NGPU="${NGPU}" MASTER_PORT="${MASTER_PORT}" CONFIG_NAME=mot_libero_latent_local_full_segment_non_joint_action_only bash scripts/run_mot_full_segment_nonjoint_libero.sh --save-root "${SAVE_ROOT}" --transformer-subdir "${TRANSFORMER_SUBDIR}" "$@"
+NGPU="${NGPU}" MASTER_PORT="${MASTER_PORT}" CONFIG_NAME=mot_libero_latent_local_full_segment_non_joint_action_only \
+  bash scripts/run_mot_full_segment_nonjoint_libero.sh \
+    --save-root "${SAVE_ROOT}" \
+    --transformer-subdir "${TRANSFORMER_SUBDIR}" \
+    "$@"
