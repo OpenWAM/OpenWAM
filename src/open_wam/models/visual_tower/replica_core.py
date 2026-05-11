@@ -13,6 +13,7 @@ from torch import nn
 
 from open_wam.models.common import (
     PreparedAttentionProfile,
+    SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS,
     apply_attention_backend,
     build_chunked_temporal_exact_attention_profile,
     cache_backend_uses_slot_pool,
@@ -219,33 +220,90 @@ def _resolve_slot_pool_prefix_visibility(
     *,
     prefix_len: int,
     prefix_visibility_mode: str,
+    query_stream_ids: torch.Tensor | None = None,
+    cached_prefix_stream_ids: torch.Tensor | None = None,
+    allow_video_query_to_action_prefix_tail_tokens: int = 0,
 ) -> torch.Tensor | None:
     if attention_mask is None or prefix_len <= 0:
         return attention_mask
-    if prefix_visibility_mode != "full_history":
-        raise ValueError(f"Unsupported slot-pool prefix_visibility_mode {prefix_visibility_mode!r}.")
-    if attention_mask.ndim == 2:
-        cached_prefix_visibility = torch.ones(
-            attention_mask.shape[0],
+
+    def _normalize_stream_ids(
+        stream_ids: torch.Tensor | None,
+        *,
+        expected_len: int,
+        label: str,
+    ) -> torch.Tensor:
+        if stream_ids is None:
+            raise ValueError(
+                f"Slot-pool prefix_visibility_mode={prefix_visibility_mode!r} requires `{label}`."
+            )
+        if stream_ids.ndim == 2:
+            if stream_ids.shape[0] != 1:
+                raise ValueError(
+                    f"Slot-pool `{label}` must be rank-1 or batch-shared rank-2, "
+                    f"got shape {tuple(stream_ids.shape)}."
+                )
+            stream_ids = stream_ids.squeeze(0)
+        if stream_ids.ndim != 1 or int(stream_ids.shape[0]) != expected_len:
+            raise ValueError(
+                f"Slot-pool `{label}` must have length {expected_len}, "
+                f"got shape {tuple(stream_ids.shape)}."
+            )
+        return stream_ids.to(device=attention_mask.device, dtype=torch.long)
+
+    if prefix_visibility_mode == "full_history":
+        cached_prefix_visibility_2d = torch.ones(
+            attention_mask.shape[-2],
             prefix_len,
             device=attention_mask.device,
             dtype=attention_mask.dtype,
         )
+    elif prefix_visibility_mode == "preserve_video_pretrain_history":
+        q_stream = _normalize_stream_ids(
+            query_stream_ids,
+            expected_len=int(attention_mask.shape[-2]),
+            label="query_stream_ids",
+        )
+        kv_stream = _normalize_stream_ids(
+            cached_prefix_stream_ids,
+            expected_len=prefix_len,
+            label="cached_prefix_stream_ids",
+        )
+        valid_streams = (q_stream[:, None] >= 0) & (kv_stream[None, :] >= 0)
+        cached_prefix_visibility_2d = (
+            ((q_stream[:, None] == kv_stream[None, :]) | (q_stream[:, None] == 1))
+            & valid_streams
+        )
+        tail_tokens = max(0, min(int(allow_video_query_to_action_prefix_tail_tokens), int(prefix_len)))
+        if tail_tokens > 0:
+            tail_positions = torch.arange(prefix_len, device=attention_mask.device) >= (prefix_len - tail_tokens)
+            # Staged action-then-video commits the current clean action before
+            # denoising current video. Training permits that same-current-chunk
+            # action context while still hiding older action history from video.
+            cached_prefix_visibility_2d = cached_prefix_visibility_2d | (
+                (q_stream[:, None] == 0)
+                & (kv_stream[None, :] == 1)
+                & tail_positions[None, :]
+                & valid_streams
+            )
+        cached_prefix_visibility_2d = cached_prefix_visibility_2d.to(dtype=attention_mask.dtype)
+    else:
+        raise ValueError(f"Unsupported slot-pool prefix_visibility_mode {prefix_visibility_mode!r}.")
+
+    if attention_mask.ndim == 2:
+        cached_prefix_visibility = cached_prefix_visibility_2d
     elif attention_mask.ndim == 3:
-        cached_prefix_visibility = torch.ones(
+        cached_prefix_visibility = cached_prefix_visibility_2d[None].expand(
             attention_mask.shape[0],
-            attention_mask.shape[1],
-            prefix_len,
-            device=attention_mask.device,
-            dtype=attention_mask.dtype,
+            -1,
+            -1,
         )
     elif attention_mask.ndim == 4:
-        cached_prefix_visibility = torch.ones(
+        cached_prefix_visibility = cached_prefix_visibility_2d[None, None].expand(
             attention_mask.shape[0],
-            attention_mask.shape[2],
-            prefix_len,
-            device=attention_mask.device,
-            dtype=attention_mask.dtype,
+            attention_mask.shape[1],
+            -1,
+            -1,
         )
     else:  # pragma: no cover - defensive guard
         raise ValueError(
@@ -351,6 +409,7 @@ class SharedTransformerAttention(nn.Module):
         cache_backend_name: str | None = None,
         cache_backend_state=None,
         cache_backend_update_mode: int = 0,
+        cache_backend_stream_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, AttentionCacheEntry | None]:
         q = q.contiguous().clone()
         k = k.contiguous().clone()
@@ -441,6 +500,7 @@ class SharedTransformerAttention(nn.Module):
                 key=key.detach(),
                 value=value.detach(),
                 is_pred=cache_backend_update_mode == 1,
+                stream_ids=cache_backend_stream_ids,
             )
             if cache_backend_state.slot_mask is None or cache_backend_state.key is None or cache_backend_state.value is None:
                 raise ValueError("LingBot slot-pool backend requires initialized slot mask and KV tensors.")
@@ -449,6 +509,13 @@ class SharedTransformerAttention(nn.Module):
                 valid = valid[torch.argsort(cache_backend_state.slot_ids[valid], stable=True)]
             key = cache_backend_state.key[:, valid].transpose(1, 2).to(device=q.device, dtype=query.dtype)
             value = cache_backend_state.value[:, valid].transpose(1, 2).to(device=q.device, dtype=query.dtype)
+            valid_stream_ids = (
+                cache_backend_state.stream_ids[valid].to(device=q.device)
+                if cache_backend_state.stream_ids is not None
+                else None
+            )
+        else:
+            valid_stream_ids = None
         if cached_key_value is not None and cached_key_value.key is not None and cached_key_value.value is not None:
             key = torch.cat([cached_key_value.key.to(device=q.device, dtype=key.dtype), key], dim=2)
             value = torch.cat([cached_key_value.value.to(device=q.device, dtype=value.dtype), value], dim=2)
@@ -472,21 +539,42 @@ class SharedTransformerAttention(nn.Module):
             is_cross_attention=is_cross_attention,
         )
         resolved_attention_mask = attention_mask if attention_mask is not None else profile_attention_mask
-        if (
-            use_slot_pool_backend
-            and resolved_attention_mask is not None
-            and key.shape[2] > query.shape[2]
-        ):
+        if use_slot_pool_backend and key.shape[2] > query.shape[2]:
             prefix_len = int(key.shape[2] - query.shape[2])
-            resolved_attention_mask = _resolve_slot_pool_prefix_visibility(
-                resolved_attention_mask,
-                prefix_len=prefix_len,
-                prefix_visibility_mode=str(
-                    cache_backend_state.metadata.get("prefix_visibility_mode", "full_history")
-                )
+            prefix_visibility_mode = (
+                str(cache_backend_state.metadata.get("prefix_visibility_mode", "full_history"))
                 if cache_backend_state is not None
-                else "full_history",
+                else "full_history"
             )
+            if resolved_attention_mask is None and prefix_visibility_mode != "full_history":
+                query_len = int(query.shape[2])
+                resolved_attention_mask = torch.ones(
+                    query_len,
+                    query_len,
+                    device=query.device,
+                    dtype=torch.bool,
+                )
+            if resolved_attention_mask is not None:
+                resolved_attention_mask = _resolve_slot_pool_prefix_visibility(
+                    resolved_attention_mask,
+                    prefix_len=prefix_len,
+                    prefix_visibility_mode=prefix_visibility_mode,
+                    query_stream_ids=cache_backend_stream_ids,
+                    cached_prefix_stream_ids=(
+                        valid_stream_ids[:prefix_len]
+                        if valid_stream_ids is not None
+                        else None
+                    ),
+                    allow_video_query_to_action_prefix_tail_tokens=int(
+                        cache_backend_state.metadata.get(
+                            SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS,
+                            0,
+                        )
+                    )
+                    if cache_backend_state is not None
+                    else 0,
+                )
+                profile_block_mask = None
         sdpa_mask = _prepare_sdpa_mask(resolved_attention_mask, device=query.device)
         hidden_states = apply_attention_backend(
             query=query,
@@ -658,6 +746,7 @@ class SharedTransformerBlock(nn.Module):
         self_attention_cache_backend_name: str | None = None,
         self_attention_cache_backend_state=None,
         self_attention_cache_update_mode: int = 0,
+        self_attention_cache_stream_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, AttentionCacheEntry | None, AttentionCacheEntry | None]:
         temb_scale_shift_table = self.scale_shift_table[None] + temb.float()
         shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = _select_chunk_slices(
@@ -710,6 +799,7 @@ class SharedTransformerBlock(nn.Module):
             cache_backend_name=self_attention_cache_backend_name,
             cache_backend_state=self_attention_cache_backend_state,
             cache_backend_update_mode=self_attention_cache_update_mode,
+            cache_backend_stream_ids=self_attention_cache_stream_ids,
         )
         hidden_states = (hidden_states.float() + attn_output.float() * gate_msa).type_as(hidden_states)
 
@@ -1043,7 +1133,7 @@ class SharedVideoTransformerCore(nn.Module):
     ) -> SlotPoolLayerState | None:
         if layer_state is None:
             return None
-        for name in ("key", "value", "slot_ids", "slot_mask", "prediction_mask"):
+        for name in ("key", "value", "slot_ids", "stream_ids", "slot_mask", "prediction_mask"):
             tensor = getattr(layer_state, name)
             if tensor is not None and tensor.device != device:
                 setattr(layer_state, name, tensor.to(device=device))
@@ -1608,6 +1698,13 @@ class SharedVideoTransformerCore(nn.Module):
             cache_current_token_count = max(0, min(cache_current_token_count, int(hidden_states.shape[1])))
         next_self_attention_kv: list[AttentionCacheEntry] = []
         attention_mask = input_dict.get("attention_mask")
+        stream_id_value = 1 if action_mode else 0
+        cache_backend_stream_ids = torch.full(
+            (int(hidden_states.shape[1]),),
+            stream_id_value,
+            device=hidden_states.device,
+            dtype=torch.long,
+        )
         moved_tensor_cache: dict[tuple[str, torch.device, torch.dtype | None], torch.Tensor] = {}
 
         for layer_index, block in enumerate(self.blocks):
@@ -1644,6 +1741,12 @@ class SharedVideoTransformerCore(nn.Module):
                 name="attention_mask",
                 device=block_device,
             )
+            block_cache_backend_stream_ids = self._cached_optional_tensor(
+                cache_backend_stream_ids,
+                cache=moved_tensor_cache,
+                name="cache_backend_stream_ids",
+                device=block_device,
+            )
             block_cache_backend_state = (
                 cache_backend_payload.layer_states[layer_index]
                 if cache_backend_uses_slot_pool(cache_backend_name)
@@ -1663,6 +1766,7 @@ class SharedVideoTransformerCore(nn.Module):
                 cache_current_token_count=cache_current_token_count,
                 detach_self_attention_cache=detach_self_attention_cache,
                 self_attention_cache_update_mode=update_cache,
+                self_attention_cache_stream_ids=block_cache_backend_stream_ids,
             )
             next_self_attention_kv.append(current_self_cache_entry or AttentionCacheEntry())
 
@@ -1713,6 +1817,16 @@ class SharedVideoTransformerCore(nn.Module):
         timestep_proj = prepared.timestep_proj
         split_list = prepared.split_list
         exact_attention_profile = prepared.attention_profile
+        cache_backend_stream_ids = torch.cat(
+            [
+                torch.zeros(int(split_list[0]), device=hidden_states.device, dtype=torch.long),
+                torch.zeros(int(split_list[1]), device=hidden_states.device, dtype=torch.long),
+                torch.ones(int(split_list[2]), device=hidden_states.device, dtype=torch.long),
+                torch.ones(int(split_list[3]), device=hidden_states.device, dtype=torch.long),
+                torch.full((int(split_list[4]),), -1, device=hidden_states.device, dtype=torch.long),
+            ],
+            dim=0,
+        )
 
         cache_state = self._resolve_exact_cache_state(cache_name)
         cache_backend_name = cache_state.backend_name if cache_state is not None else None
@@ -1754,6 +1868,12 @@ class SharedVideoTransformerCore(nn.Module):
                 cache=attention_profile_cache,
                 device=block_device,
             )
+            block_cache_backend_stream_ids = self._cached_optional_tensor(
+                cache_backend_stream_ids,
+                cache=moved_tensor_cache,
+                name="cache_backend_stream_ids",
+                device=block_device,
+            )
             block_cache_backend_state = (
                 cache_backend_payload.layer_states[layer_index]
                 if cache_backend_uses_slot_pool(cache_backend_name)
@@ -1771,6 +1891,7 @@ class SharedVideoTransformerCore(nn.Module):
                 self_attention_cache_backend_name=cache_backend_name,
                 self_attention_cache_backend_state=block_cache_backend_state,
                 self_attention_cache_update_mode=update_cache,
+                self_attention_cache_stream_ids=block_cache_backend_stream_ids,
             )
             next_self_attention_kv.append(current_self_cache_entry or AttentionCacheEntry())
 

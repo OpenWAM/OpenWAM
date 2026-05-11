@@ -23,6 +23,7 @@ from open_wam.configs.policy_variant import ParallelStreamPolicyConfig
 from open_wam.configs.training import TrainingConfig
 from open_wam.models.common import (
     PreparedAttentionProfile,
+    SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS,
     build_chunked_temporal_exact_attention_profile,
     cache_backend_uses_slot_pool,
     chunked_temporal_exact_profile_name_for_coupling,
@@ -194,6 +195,88 @@ class ExactCacheContext:
     use_cfg: bool
     device: torch.device
     model_dtype: torch.dtype
+
+
+def _prefix_visibility_mode_for_policy(policy_config: ParallelStreamPolicyConfig) -> str:
+    return (
+        "preserve_video_pretrain_history"
+        if bool(getattr(policy_config, "preserve_video_pretrain_history", False))
+        else "full_history"
+    )
+
+
+def _stream_ids_for_exact_dual_stream_split(
+    split_list: list[int] | tuple[int, ...],
+    *,
+    device: torch.device,
+) -> torch.Tensor:
+    return torch.cat(
+        [
+            torch.zeros(int(split_list[0]), device=device, dtype=torch.long),
+            torch.zeros(int(split_list[1]), device=device, dtype=torch.long),
+            torch.ones(int(split_list[2]), device=device, dtype=torch.long),
+            torch.ones(int(split_list[3]), device=device, dtype=torch.long),
+            torch.full((int(split_list[4]),), -1, device=device, dtype=torch.long),
+        ],
+        dim=0,
+    )
+
+
+def _stream_ids_for_clean_video_action_tokens(
+    *,
+    video_token_count: int,
+    action_token_count: int,
+    device: torch.device,
+) -> torch.Tensor:
+    return torch.cat(
+        [
+            torch.zeros(int(video_token_count), device=device, dtype=torch.long),
+            torch.ones(int(action_token_count), device=device, dtype=torch.long),
+        ],
+        dim=0,
+    )
+
+
+def _single_stream_action_token_count(actions: torch.Tensor) -> int:
+    if actions.ndim != 5:
+        raise ValueError(f"Expected action latents shaped [B, C, F, A, W], got {tuple(actions.shape)}.")
+    return int(actions.shape[2]) * int(actions.shape[3]) * int(actions.shape[4])
+
+
+def _set_slot_pool_layer_metadata(
+    transformer: torch.nn.Module,
+    *,
+    cache_name: str,
+    updates: dict[str, Any],
+) -> list[tuple[Any, dict[str, tuple[bool, Any]]]]:
+    if not updates or not hasattr(transformer, "_resolve_exact_cache_state"):
+        return []
+    cache_state = transformer._resolve_exact_cache_state(cache_name)
+    if cache_state is None or not cache_backend_uses_slot_pool(cache_state.backend_name):
+        return []
+    cache_payload = cache_state.backend_payload
+    layer_states = getattr(cache_payload, "layer_states", None)
+    if layer_states is None:
+        return []
+    previous: list[tuple[Any, dict[str, tuple[bool, Any]]]] = []
+    for layer_state in layer_states:
+        layer_previous: dict[str, tuple[bool, Any]] = {}
+        for key, value in updates.items():
+            layer_previous[key] = (key in layer_state.metadata, layer_state.metadata.get(key))
+            layer_state.metadata[key] = value
+        previous.append((layer_state, layer_previous))
+    return previous
+
+
+def _restore_slot_pool_layer_metadata(
+    previous: list[tuple[Any, dict[str, tuple[bool, Any]]]],
+) -> None:
+    for layer_state, layer_previous in previous:
+        for key, (was_present, value) in layer_previous.items():
+            if was_present:
+                layer_state.metadata[key] = value
+            else:
+                layer_state.metadata.pop(key, None)
 
 
 def get_mesh_id(
@@ -901,6 +984,7 @@ def _build_exact_cache_spec(
     write_mode: ParallelExactCacheWriteMode | str,
     batch_size: int,
     use_cfg: bool,
+    prefix_visibility_mode: str = "full_history",
 ) -> ExactCacheInterfaceSpec:
     write_mode = ParallelExactCacheWriteMode(write_mode)
     if write_mode == ParallelExactCacheWriteMode.JOINT_PACKED:
@@ -911,11 +995,11 @@ def _build_exact_cache_spec(
         # tensors for a `[1, ...]` cache allocation.
         return ExactCacheInterfaceSpec(
             write_mode=write_mode,
-            prefix_visibility_mode="full_history",
+            prefix_visibility_mode=prefix_visibility_mode,
         )
     return ExactCacheInterfaceSpec(
         write_mode=write_mode,
-        prefix_visibility_mode="full_history",
+        prefix_visibility_mode=prefix_visibility_mode,
     )
 
 
@@ -1271,6 +1355,7 @@ def run_parallel_exact_cache_warmup(
         write_mode=cache_write_mode,
         batch_size=batch_size,
         use_cfg=cache_context.use_cfg,
+        prefix_visibility_mode=_prefix_visibility_mode_for_policy(policy_config),
     )
     current_frame_start = (
         int(infer_cache.get("frame_start", 0))
@@ -1317,6 +1402,12 @@ def run_parallel_exact_cache_warmup(
         use_cfg=cache_context.use_cfg and inference_config.use_cache,
         action_channel_mask=action_channel_mask,
         update_cache=2 if inference_config.use_cache else 0,
+        chunk_size=inference_config.frame_chunk_size,
+        window_size=policy_config.attn_window,
+        current_block_coupling=resolve_parallel_current_block_coupling(policy_config),
+        preserve_video_pretrain_history=bool(
+            getattr(policy_config, "preserve_video_pretrain_history", False)
+        ),
     )
     debug = {
         "cache_name": cache_context.cache_name,
@@ -1404,6 +1495,7 @@ def run_parallel_exact_inference_rollout(
         write_mode=ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED,
         batch_size=batch_size,
         use_cfg=cache_context.use_cfg,
+        prefix_visibility_mode=_prefix_visibility_mode_for_policy(policy_config),
     )
     if inference_config.use_cache and not cache_context.cache_initialized:
         if condition_latents is None:
@@ -1554,7 +1646,17 @@ def run_parallel_exact_inference_rollout(
     elif current_block_coupling == CurrentBlockCoupling.ACTION_THEN_VIDEO:
         cache_commit_strategy = "action_then_video_staged"
         denoise_action_chunk(commit_to_cache=True)
-        denoise_video_chunk(commit_to_cache=True)
+        metadata_previous = _set_slot_pool_layer_metadata(
+            transformer,
+            cache_name=cache_name,
+            updates={
+                SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS: _single_stream_action_token_count(actions),
+            },
+        )
+        try:
+            denoise_video_chunk(commit_to_cache=True)
+        finally:
+            _restore_slot_pool_layer_metadata(metadata_previous)
     elif current_block_coupling == CurrentBlockCoupling.DECOUPLED_SAME_STEP:
         cache_commit_strategy = "decoupled_same_step_deferred"
         denoise_video_chunk(commit_to_cache=False)
@@ -1573,6 +1675,12 @@ def run_parallel_exact_inference_rollout(
                 use_cfg=cache_context.use_cfg,
                 action_channel_mask=action_channel_mask,
                 update_cache=1,
+                chunk_size=inference_config.frame_chunk_size,
+                window_size=policy_config.attn_window,
+                current_block_coupling=current_block_coupling,
+                preserve_video_pretrain_history=bool(
+                    getattr(policy_config, "preserve_video_pretrain_history", False)
+                ),
             )
     else:  # pragma: no cover - enum guard
         raise ValueError(f"Unsupported M1 current-block coupling: {current_block_coupling!r}")
@@ -1649,6 +1757,10 @@ def _run_parallel_exact_joint_forward_manual(
     timestep_proj = prepared.timestep_proj
     split_list = prepared.split_list
     exact_attention_profile = prepared.attention_profile
+    cache_stream_ids = _stream_ids_for_exact_dual_stream_split(
+        split_list,
+        device=hidden_states.device,
+    )
     cache_state = transformer._resolve_exact_cache_state(cache_name)
     cache_backend_name = cache_state.backend_name if cache_state is not None else None
     cache_backend_payload = cache_state.backend_payload if cache_state is not None else None
@@ -1703,6 +1815,7 @@ def _run_parallel_exact_joint_forward_manual(
                 else None
             ),
             self_attention_cache_update_mode=update_cache,
+            self_attention_cache_stream_ids=cache_stream_ids,
         )
 
     temb_scale_shift_table = transformer.scale_shift_table[None] + temb[:, :, None, ...]
@@ -1884,6 +1997,67 @@ def _build_action_condition_volume(
     )
 
 
+def _build_joint_clean_cache_attention_mask(
+    *,
+    latents: torch.Tensor,
+    actions: torch.Tensor,
+    text_token_count: int,
+    backbone_config: SharedVideoTransformerConfig,
+    chunk_size: int,
+    window_size: int,
+    current_block_coupling: CurrentBlockCoupling | str,
+    preserve_video_pretrain_history: bool,
+) -> torch.Tensor:
+    profile = build_chunked_temporal_exact_attention_profile(
+        latent_shape=tuple(int(dim) for dim in latents.shape),
+        action_shape=tuple(int(dim) for dim in actions.shape),
+        padded_length=0,
+        chunk_size=max(1, int(chunk_size)),
+        window_size=max(1, int(window_size)),
+        patch_size=(
+            backbone_config.patch_size_t,
+            backbone_config.patch_size_h,
+            backbone_config.patch_size_w,
+        ),
+        text_token_count=int(text_token_count),
+        device=latents.device,
+        build_dense_masks=True,
+        build_flex_masks=False,
+        current_block_coupling=CurrentBlockCoupling(current_block_coupling).value,
+        preserve_video_pretrain_history=bool(preserve_video_pretrain_history),
+    )
+    if profile.self_attention_mask is None:
+        raise ValueError("Joint clean cache attention profile did not materialize a dense mask.")
+    video_token_count = int(latents.shape[0]) * (
+        int(latents.shape[2])
+        // max(1, int(backbone_config.patch_size_t))
+        * (int(latents.shape[3]) // max(1, int(backbone_config.patch_size_h)))
+        * (int(latents.shape[4]) // max(1, int(backbone_config.patch_size_w)))
+    )
+    action_token_count = (
+        int(actions.shape[0])
+        * int(actions.shape[2])
+        * int(actions.shape[3])
+        * int(actions.shape[4])
+    )
+    clean_indices = torch.cat(
+        [
+            torch.arange(
+                video_token_count,
+                2 * video_token_count,
+                device=profile.self_attention_mask.device,
+            ),
+            torch.arange(
+                2 * video_token_count + action_token_count,
+                2 * video_token_count + 2 * action_token_count,
+                device=profile.self_attention_mask.device,
+            ),
+        ],
+        dim=0,
+    )
+    return profile.self_attention_mask.index_select(0, clean_indices).index_select(1, clean_indices)
+
+
 def _write_joint_clean_tokens_to_exact_cache(
     *,
     transformer: torch.nn.Module,
@@ -1897,6 +2071,10 @@ def _write_joint_clean_tokens_to_exact_cache(
     action_channel_mask: torch.Tensor | None,
     update_cache: int,
     backbone_config: SharedVideoTransformerConfig,
+    chunk_size: int,
+    window_size: int,
+    current_block_coupling: CurrentBlockCoupling | str,
+    preserve_video_pretrain_history: bool,
 ) -> None:
     model_dtype = reference_runtime_dtype(transformer)
     video_cache_input = prepare_reference_single_stream_input(
@@ -1931,6 +2109,11 @@ def _write_joint_clean_tokens_to_exact_cache(
         input_type="action",
     ).flatten(0, 1).contiguous()[None].clone()
     hidden_states = torch.cat([latent_hidden_states, action_hidden_states], dim=1)
+    cache_stream_ids = _stream_ids_for_clean_video_action_tokens(
+        video_token_count=int(latent_hidden_states.shape[1]),
+        action_token_count=int(action_hidden_states.shape[1]),
+        device=hidden_states.device,
+    )
 
     text_hidden_states = transformer._exact_text_hidden_states(
         video_cache_input["text_emb"],
@@ -1957,6 +2140,16 @@ def _write_joint_clean_tokens_to_exact_cache(
         action_mode=True,
     )
     timestep_proj = torch.cat([latent_timestep_proj, action_timestep_proj], dim=1)
+    attention_mask = _build_joint_clean_cache_attention_mask(
+        latents=video_cache_input["noisy_latents"],
+        actions=action_cache_input["noisy_latents"],
+        text_token_count=int(video_cache_input["text_emb"].shape[1]),
+        backbone_config=backbone_config,
+        chunk_size=chunk_size,
+        window_size=window_size,
+        current_block_coupling=current_block_coupling,
+        preserve_video_pretrain_history=preserve_video_pretrain_history,
+    )
 
     cache_state = transformer._resolve_exact_cache_state(cache_name)
     cache_backend_name = cache_state.backend_name if cache_state is not None else None
@@ -1967,6 +2160,7 @@ def _write_joint_clean_tokens_to_exact_cache(
             encoder_hidden_states=text_hidden_states,
             temb=timestep_proj,
             rotary_emb=rotary_emb,
+            attention_mask=attention_mask,
             self_attention_cache_backend_name=cache_backend_name,
             self_attention_cache_backend_state=(
                 cache_backend_payload.layer_states[layer_index]
@@ -1976,6 +2170,7 @@ def _write_joint_clean_tokens_to_exact_cache(
                 else None
             ),
             self_attention_cache_update_mode=update_cache,
+            self_attention_cache_stream_ids=cache_stream_ids,
         )
 
     if cache_state is not None and cache_backend_uses_slot_pool(cache_backend_name):
@@ -2009,6 +2204,10 @@ def _write_exact_cache_chunk(
     use_cfg: bool,
     action_channel_mask: torch.Tensor | None,
     update_cache: int,
+    chunk_size: int,
+    window_size: int,
+    current_block_coupling: CurrentBlockCoupling | str = CurrentBlockCoupling.VIDEO_THEN_ACTION,
+    preserve_video_pretrain_history: bool = False,
 ) -> None:
     if cache_spec.write_mode == ParallelExactCacheWriteMode.JOINT_PACKED:
         _write_joint_clean_tokens_to_exact_cache(
@@ -2023,6 +2222,10 @@ def _write_exact_cache_chunk(
             action_channel_mask=action_channel_mask,
             update_cache=update_cache,
             backbone_config=backbone_config,
+            chunk_size=chunk_size,
+            window_size=window_size,
+            current_block_coupling=current_block_coupling,
+            preserve_video_pretrain_history=preserve_video_pretrain_history,
         )
         return
     if cache_spec.write_mode == ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED:
@@ -2074,6 +2277,7 @@ def _commit_joint_chunk_to_exact_cache(
     transformer: torch.nn.Module,
     backbone_config: SharedVideoTransformerConfig,
     inference_config: InferenceConfig,
+    policy_config: ParallelStreamPolicyConfig | None = None,
     cache_name: str,
     frame_start: int,
     latents: torch.Tensor,
@@ -2095,6 +2299,22 @@ def _commit_joint_chunk_to_exact_cache(
         action_channel_mask=action_channel_mask,
         update_cache=1,
         backbone_config=backbone_config,
+        chunk_size=inference_config.frame_chunk_size,
+        window_size=(
+            int(policy_config.attn_window)
+            if policy_config is not None
+            else int(inference_config.frame_chunk_size)
+        ),
+        current_block_coupling=(
+            resolve_parallel_current_block_coupling(policy_config)
+            if policy_config is not None
+            else CurrentBlockCoupling.JOINT
+        ),
+        preserve_video_pretrain_history=bool(
+            getattr(policy_config, "preserve_video_pretrain_history", False)
+        )
+        if policy_config is not None
+        else False,
     )
 
 
@@ -2192,6 +2412,7 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
         write_mode=ParallelExactCacheWriteMode.JOINT_PACKED,
         batch_size=batch_size,
         use_cfg=cache_context.use_cfg,
+        prefix_visibility_mode=_prefix_visibility_mode_for_policy(policy_config),
     )
     if inference_config.use_cache and not cache_context.cache_initialized:
         if condition_latents is None:
@@ -2403,6 +2624,12 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             use_cfg=cache_context.use_cfg,
             action_channel_mask=action_channel_mask,
             update_cache=1,
+            chunk_size=inference_config.frame_chunk_size,
+            window_size=policy_config.attn_window,
+            current_block_coupling=current_block_coupling,
+            preserve_video_pretrain_history=bool(
+                getattr(policy_config, "preserve_video_pretrain_history", False)
+            ),
         )
 
     next_cache = {

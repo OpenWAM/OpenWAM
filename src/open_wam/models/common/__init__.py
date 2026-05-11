@@ -16,6 +16,7 @@ from .attention_profiles import (
 from .cache_backends import (
     CacheBackendSpec,
     MergedPrefixCachePayload,
+    SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS,
     SlotPoolCachePayload,
     SlotPoolLayerState,
     allocate_slot_pool_slots,
@@ -95,6 +96,7 @@ __all__ = [
     "RegisterSequenceLayout",
     "RolloutCursor",
     "RuntimeGuidanceConfig",
+    "SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS",
     "SlotPoolCachePayload",
     "SlotPoolLayerState",
     "allocate_slot_pool_slots",

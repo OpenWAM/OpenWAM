@@ -195,6 +195,8 @@ def apply_attention_backend(
     block_mask: BlockMask | None = None,
     kernel_options: dict[str, Any] | None = None,
 ) -> torch.Tensor:
+    if attention_mask is not None:
+        return torch.nn.functional.scaled_dot_product_attention(query, key, value, attn_mask=attention_mask)
     if block_mask is not None:
         if flex_attention is None:
             raise RuntimeError("FlexAttention is not available in this torch build.")
@@ -202,7 +204,7 @@ def apply_attention_backend(
         if compiled_flex_attention is not None:
             return compiled_flex_attention(query, key, value, block_mask=block_mask, kernel_options=kernel_options)
         return flex_attention(query, key, value, block_mask=block_mask, kernel_options=kernel_options)
-    return torch.nn.functional.scaled_dot_product_attention(query, key, value, attn_mask=attention_mask)
+    return torch.nn.functional.scaled_dot_product_attention(query, key, value)
 
 
 def build_chunked_temporal_exact_attention_profile(

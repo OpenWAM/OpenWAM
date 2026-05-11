@@ -8,6 +8,9 @@ import torch
 from open_wam.models.video_backbone.contracts import AttentionCacheEntry
 
 
+SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS = "allow_video_query_to_action_prefix_tail_tokens"
+
+
 @dataclass(frozen=True)
 class CacheBackendSpec:
     """Declarative description of a reusable cache backend."""
@@ -31,6 +34,7 @@ class SlotPoolLayerState:
     key: torch.Tensor | None = None
     value: torch.Tensor | None = None
     slot_ids: torch.Tensor | None = None
+    stream_ids: torch.Tensor | None = None
     slot_mask: torch.Tensor | None = None
     prediction_mask: torch.Tensor | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -113,12 +117,14 @@ def init_cache_backend_payload(
             key = torch.empty(batch_size, total_tokens, num_heads, head_dim, device=device, dtype=dtype)
             value = torch.empty(batch_size, total_tokens, num_heads, head_dim, device=device, dtype=dtype)
             slot_ids = torch.full((total_tokens,), -1, device=device, dtype=torch.long)
+            stream_ids = torch.full((total_tokens,), -1, device=device, dtype=torch.long)
             slot_mask = torch.zeros((total_tokens,), dtype=torch.bool, device=device)
             prediction_mask = torch.zeros((total_tokens,), dtype=torch.bool, device=device)
         else:
             key = None
             value = None
             slot_ids = None
+            stream_ids = None
             slot_mask = None
             prediction_mask = None
         layer_states.append(
@@ -126,6 +132,7 @@ def init_cache_backend_payload(
                 key=key,
                 value=value,
                 slot_ids=slot_ids,
+                stream_ids=stream_ids,
                 slot_mask=slot_mask,
                 prediction_mask=prediction_mask,
                 metadata=dict(metadata or {}),
@@ -163,6 +170,7 @@ def clear_cache_backend_payload(
                 key=layer_state.key,
                 value=layer_state.value,
                 slot_ids=layer_state.slot_ids,
+                stream_ids=layer_state.stream_ids,
                 slot_mask=next_slot_mask,
                 prediction_mask=next_prediction_mask,
                 metadata=dict(layer_state.metadata),
@@ -197,6 +205,8 @@ def allocate_slot_pool_slots(layer_state: SlotPoolLayerState, key_size: int) -> 
         ids[to_free] = -1
         if layer_state.prediction_mask is not None:
             layer_state.prediction_mask[to_free] = False
+        if layer_state.stream_ids is not None:
+            layer_state.stream_ids[to_free] = -1
         free = (~mask).nonzero(as_tuple=False).squeeze(-1)
 
     if free.numel() < key_size:  # pragma: no cover - defensive runtime guard
@@ -218,6 +228,7 @@ def update_slot_pool_layer_state(
     key: torch.Tensor,
     value: torch.Tensor,
     is_pred: bool,
+    stream_ids: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Insert one layer's current KV tensors into the LingBot-style slot pool.
 
@@ -226,6 +237,8 @@ def update_slot_pool_layer_state(
         key: tensor shaped `[B, tokens, heads, dim]`
         value: tensor shaped `[B, tokens, heads, dim]`
         is_pred: whether these slots should be treated as predicted cache
+        stream_ids: optional per-token stream ids, using 0 for video, 1 for
+            action, and -1 for padded/non-semantic slots.
 
     Returns:
         The allocated slot indices, shaped `[tokens]`.
@@ -236,6 +249,19 @@ def update_slot_pool_layer_state(
     if key.ndim != 4 or value.ndim != 4:
         raise ValueError(f"Expected slot-pool KV tensors with rank 4, got {tuple(key.shape)} / {tuple(value.shape)}")
     key_size = int(key.shape[1])
+    if stream_ids is not None:
+        if stream_ids.ndim == 2:
+            if stream_ids.shape[0] != 1:
+                raise ValueError(
+                    "Slot-pool stream ids must be shared across batch or rank-1, "
+                    f"got shape {tuple(stream_ids.shape)}."
+                )
+            stream_ids = stream_ids.squeeze(0)
+        if stream_ids.ndim != 1 or int(stream_ids.shape[0]) != key_size:
+            raise ValueError(
+                "Slot-pool stream ids must have one value per KV token, "
+                f"got shape {tuple(stream_ids.shape)} for key_size={key_size}."
+            )
     slots = allocate_slot_pool_slots(layer_state, key_size)
     new_id = next_slot_pool_cache_id(layer_state)
 
@@ -247,6 +273,14 @@ def update_slot_pool_layer_state(
         layer_state.slot_ids[slots] = new_id
     if layer_state.prediction_mask is not None:
         layer_state.prediction_mask[slots] = bool(is_pred)
+    if layer_state.stream_ids is not None:
+        if stream_ids is None:
+            layer_state.stream_ids[slots] = -1
+        else:
+            layer_state.stream_ids[slots] = stream_ids.to(
+                device=layer_state.stream_ids.device,
+                dtype=layer_state.stream_ids.dtype,
+            )
     return slots
 
 
@@ -255,6 +289,8 @@ def restore_slot_pool_slots(layer_state: SlotPoolLayerState, slots: torch.Tensor
         return
     if layer_state.slot_mask is not None:
         layer_state.slot_mask[slots] = False
+    if layer_state.stream_ids is not None:
+        layer_state.stream_ids[slots] = -1
 
 
 def materialize_slot_pool_layer_entry(layer_state: SlotPoolLayerState) -> AttentionCacheEntry:
@@ -276,6 +312,8 @@ def materialize_slot_pool_layer_entry(layer_state: SlotPoolLayerState) -> Attent
         metadata["slot_ids"] = layer_state.slot_ids[valid].clone()
     if layer_state.prediction_mask is not None:
         metadata["prediction_mask"] = layer_state.prediction_mask[valid].clone()
+    if layer_state.stream_ids is not None:
+        metadata["stream_ids"] = layer_state.stream_ids[valid].clone()
     return AttentionCacheEntry(key=key, value=value, metadata=metadata)
 
 

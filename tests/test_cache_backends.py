@@ -2,15 +2,23 @@ from __future__ import annotations
 
 import torch
 
+from open_wam.configs.enums import CurrentBlockCoupling
 from open_wam.models.common import (
+    apply_attention_backend,
     clear_cache_backend_payload,
     init_cache_backend_payload,
     materialize_cache_backend_entries,
     update_slot_pool_layer_state,
 )
-from open_wam.models.policy_variants.parallel_stream.reference_runtime import prepare_reference_single_stream_input
+from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
+    _build_joint_clean_cache_attention_mask,
+    prepare_reference_single_stream_input,
+)
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
-from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore
+from open_wam.models.visual_tower.replica_core import (
+    SharedVideoTransformerCore,
+    _resolve_slot_pool_prefix_visibility,
+)
 
 
 def test_slot_pool_backend_materializes_and_clears_predicted_entries() -> None:
@@ -31,6 +39,7 @@ def test_slot_pool_backend_materializes_and_clears_predicted_entries() -> None:
         key=torch.randn(1, 2, 2, 4),
         value=torch.randn(1, 2, 2, 4),
         is_pred=False,
+        stream_ids=torch.tensor([0, 0]),
     )
     entries = materialize_cache_backend_entries(payload)
     assert len(entries) == 1
@@ -43,17 +52,152 @@ def test_slot_pool_backend_materializes_and_clears_predicted_entries() -> None:
         key=torch.randn(1, 1, 2, 4),
         value=torch.randn(1, 1, 2, 4),
         is_pred=True,
+        stream_ids=torch.tensor([1]),
     )
     entries = materialize_cache_backend_entries(payload)
     assert entries[0].key is not None
     assert entries[0].key.shape[2] == 3
     assert torch.equal(entries[0].metadata["prediction_mask"], torch.tensor([False, False, True]))
+    assert torch.equal(entries[0].metadata["stream_ids"], torch.tensor([0, 0, 1]))
 
     cleared = clear_cache_backend_payload(payload, clear_predictions_only=True)
     entries = materialize_cache_backend_entries(cleared)
     assert entries[0].key is not None
     assert entries[0].key.shape[2] == 2
     assert torch.equal(entries[0].metadata["prediction_mask"], torch.tensor([False, False]))
+    assert torch.equal(entries[0].metadata["stream_ids"], torch.tensor([0, 0]))
+
+
+def test_slot_pool_prefix_visibility_preserves_video_pretrain_history() -> None:
+    current_mask = torch.ones(3, 2, dtype=torch.bool)
+
+    resolved = _resolve_slot_pool_prefix_visibility(
+        current_mask,
+        prefix_len=2,
+        prefix_visibility_mode="preserve_video_pretrain_history",
+        query_stream_ids=torch.tensor([0, 1, -1]),
+        cached_prefix_stream_ids=torch.tensor([0, 1]),
+    )
+
+    assert resolved is not None
+    expected_prefix = torch.tensor(
+        [
+            [True, False],
+            [True, True],
+            [False, False],
+        ]
+    )
+    assert torch.equal(resolved[:, :2], expected_prefix)
+    assert torch.equal(resolved[:, 2:], current_mask)
+
+
+def test_slot_pool_prefix_visibility_allows_staged_current_action_tail() -> None:
+    current_mask = torch.ones(3, 2, dtype=torch.bool)
+
+    resolved = _resolve_slot_pool_prefix_visibility(
+        current_mask,
+        prefix_len=3,
+        prefix_visibility_mode="preserve_video_pretrain_history",
+        query_stream_ids=torch.tensor([0, 1, -1]),
+        cached_prefix_stream_ids=torch.tensor([0, 1, 1]),
+        allow_video_query_to_action_prefix_tail_tokens=1,
+    )
+
+    assert resolved is not None
+    expected_prefix = torch.tensor(
+        [
+            [True, False, True],
+            [True, True, True],
+            [False, False, False],
+        ]
+    )
+    assert torch.equal(resolved[:, :3], expected_prefix)
+    assert torch.equal(resolved[:, 3:], current_mask)
+
+
+def test_attention_backend_prefers_dense_mask_over_block_mask() -> None:
+    query = torch.randn(1, 1, 2, 4)
+    key = torch.randn(1, 1, 2, 4)
+    value = torch.randn(1, 1, 2, 4)
+    attention_mask = torch.ones(2, 2, dtype=torch.bool)
+
+    output = apply_attention_backend(
+        query=query,
+        key=key,
+        value=value,
+        attention_mask=attention_mask,
+        block_mask=object(),
+    )
+
+    assert output.shape == query.shape
+
+
+def test_joint_clean_cache_commit_mask_matches_preserved_history_rule() -> None:
+    backbone_config = SharedVideoTransformerConfig(
+        implementation="shared_transformer",
+        attn_mode="torch",
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        ffn_dim=64,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=1,
+        patch_size_w=1,
+    )
+    latents = torch.randn(1, backbone_config.latent_channels, 1, 1, 1)
+    actions = torch.randn(1, 4, 1, 1, 1)
+
+    mask = _build_joint_clean_cache_attention_mask(
+        latents=latents,
+        actions=actions,
+        text_token_count=1,
+        backbone_config=backbone_config,
+        chunk_size=1,
+        window_size=4,
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        preserve_video_pretrain_history=True,
+    )
+
+    assert mask.shape == (2, 2)
+    assert bool(mask[0, 0].item()) is True
+    assert bool(mask[0, 1].item()) is False
+    assert bool(mask[1, 0].item()) is True
+    assert bool(mask[1, 1].item()) is True
+
+
+def test_joint_clean_cache_commit_mask_counts_action_width() -> None:
+    backbone_config = SharedVideoTransformerConfig(
+        implementation="shared_transformer",
+        attn_mode="torch",
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        ffn_dim=64,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=1,
+        patch_size_w=1,
+    )
+    latents = torch.randn(1, backbone_config.latent_channels, 1, 1, 1)
+    actions = torch.randn(1, 4, 1, 2, 3)
+
+    mask = _build_joint_clean_cache_attention_mask(
+        latents=latents,
+        actions=actions,
+        text_token_count=1,
+        backbone_config=backbone_config,
+        chunk_size=1,
+        window_size=4,
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        preserve_video_pretrain_history=True,
+    )
+
+    assert mask.shape == (7, 7)
 
 
 def test_exact_replica_core_uses_slot_pool_cache_backend() -> None:
