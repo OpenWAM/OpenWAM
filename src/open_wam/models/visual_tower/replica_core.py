@@ -24,7 +24,6 @@ from open_wam.models.common import (
     materialize_cache_backend_entries,
     normalize_attention_profile_name,
     resolve_cache_backend_spec,
-    restore_slot_pool_slots,
     select_attention_profile_mask,
     SlotPoolLayerState,
     unpatchify_video_tokens,
@@ -222,6 +221,8 @@ def _resolve_slot_pool_prefix_visibility(
     prefix_visibility_mode: str,
     query_stream_ids: torch.Tensor | None = None,
     cached_prefix_stream_ids: torch.Tensor | None = None,
+    query_sequence_ids: torch.Tensor | None = None,
+    cached_prefix_sequence_ids: torch.Tensor | None = None,
     allow_video_query_to_action_prefix_tail_tokens: int = 0,
 ) -> torch.Tensor | None:
     if attention_mask is None or prefix_len <= 0:
@@ -289,6 +290,24 @@ def _resolve_slot_pool_prefix_visibility(
         cached_prefix_visibility_2d = cached_prefix_visibility_2d.to(dtype=attention_mask.dtype)
     else:
         raise ValueError(f"Unsupported slot-pool prefix_visibility_mode {prefix_visibility_mode!r}.")
+    if query_sequence_ids is not None or cached_prefix_sequence_ids is not None:
+        q_seq = _normalize_stream_ids(
+            query_sequence_ids,
+            expected_len=int(attention_mask.shape[-2]),
+            label="query_sequence_ids",
+        )
+        kv_seq = _normalize_stream_ids(
+            cached_prefix_sequence_ids,
+            expected_len=prefix_len,
+            label="cached_prefix_sequence_ids",
+        )
+        same_sequence = (q_seq[:, None] == kv_seq[None, :]) & (q_seq[:, None] >= 0) & (kv_seq[None, :] >= 0)
+        if cached_prefix_visibility_2d.dtype == torch.bool:
+            cached_prefix_visibility_2d = cached_prefix_visibility_2d & same_sequence
+        else:
+            cached_prefix_visibility_2d = cached_prefix_visibility_2d * same_sequence.to(
+                dtype=cached_prefix_visibility_2d.dtype
+            )
 
     if attention_mask.ndim == 2:
         cached_prefix_visibility = cached_prefix_visibility_2d
@@ -315,6 +334,87 @@ def _resolve_slot_pool_prefix_visibility(
         cached_prefix_visibility=cached_prefix_visibility,
         prefix_len=prefix_len,
     )
+
+
+def _packed_slot_pool_query_sequence_ids(
+    *,
+    attention_profile: PreparedAttentionProfile | None,
+    query_stream_ids: torch.Tensor | None,
+    query_len: int,
+    cache_batch_size: int,
+    device: torch.device,
+) -> torch.Tensor | None:
+    """Return sequence ids for exact joint current tokens packed into batch 1."""
+
+    if attention_profile is None:
+        return None
+    profile_batch_size = int(attention_profile.metadata.get("batch_size", 0))
+    if profile_batch_size != int(cache_batch_size) or profile_batch_size <= 1:
+        return None
+    if query_stream_ids is None:
+        return None
+    stream_ids = query_stream_ids.to(device=device, dtype=torch.long)
+    if stream_ids.ndim == 2:
+        if int(stream_ids.shape[0]) != 1:
+            raise ValueError(
+                "Packed slot-pool query stream ids must be rank-1 or batch-shared rank-2, "
+                f"got shape {tuple(stream_ids.shape)}."
+            )
+        stream_ids = stream_ids.squeeze(0)
+    if stream_ids.ndim != 1 or int(stream_ids.shape[0]) != int(query_len):
+        raise ValueError(
+            "Packed slot-pool query stream ids must have one value per current KV token, "
+            f"got shape {tuple(stream_ids.shape)} for query_len={int(query_len)}."
+        )
+
+    sequence_parts: list[torch.Tensor] = []
+    offset = 0
+    while offset < int(query_len):
+        stream_value = int(stream_ids[offset].item())
+        run_end = offset + 1
+        while run_end < int(query_len) and int(stream_ids[run_end].item()) == stream_value:
+            run_end += 1
+        run_length = run_end - offset
+        if stream_value < 0:
+            sequence_parts.append(torch.full((run_length,), -1, device=device, dtype=torch.long))
+        else:
+            if run_length % (2 * profile_batch_size) != 0:
+                raise ValueError(
+                    "Packed exact slot-pool stream run must contain noisy+condition components "
+                    "for every packed sequence row, "
+                    f"got run_length={run_length}, packed_batch={profile_batch_size}."
+                )
+            tokens_per_component = run_length // (2 * profile_batch_size)
+            component_ids = torch.arange(profile_batch_size, device=device, dtype=torch.long).repeat_interleave(
+                tokens_per_component
+            )
+            sequence_parts.append(torch.cat([component_ids, component_ids], dim=0))
+        offset = run_end
+    return torch.cat(sequence_parts, dim=0)
+
+
+def _retained_slot_pool_indices_for_current_write(
+    layer_state: SlotPoolLayerState,
+    *,
+    valid: torch.Tensor,
+    current_token_count: int,
+    update_mode: int,
+) -> torch.Tensor:
+    """Return the prefix slots visible after a non-mutating slot allocation."""
+
+    if int(update_mode) == 0 or int(current_token_count) <= 0 or int(valid.numel()) == 0:
+        return valid
+    if layer_state.slot_mask is None or layer_state.slot_ids is None:
+        raise ValueError("Slot-pool backend requires initialized `slot_mask` and `slot_ids` tensors.")
+    free_count = int(layer_state.slot_mask.numel()) - int(valid.numel())
+    evict_count = max(0, int(current_token_count) - free_count)
+    if evict_count <= 0:
+        return valid
+    if evict_count >= int(valid.numel()):
+        return valid.new_empty((0,), dtype=valid.dtype)
+    slot_ids = layer_state.slot_ids[valid]
+    order = torch.argsort(slot_ids, stable=True)
+    return valid[order[evict_count:]]
 
 
 def _merge_attention_cache_entries(
@@ -493,27 +593,101 @@ class SharedTransformerAttention(nn.Module):
             elif rotary_emb is not None:
                 query = _apply_rotary_emb(query, rotary_emb)
             query = query.transpose(1, 2)
-        temporary_slot_allocation = None
+        slot_pool_update_key = None
+        slot_pool_update_value = None
+        slot_pool_update_stream_ids = cache_backend_stream_ids
         if use_slot_pool_backend and kv_cache_override is None:
-            temporary_slot_allocation = update_slot_pool_layer_state(
-                cache_backend_state,
-                key=key.detach(),
-                value=value.detach(),
-                is_pred=cache_backend_update_mode == 1,
-                stream_ids=cache_backend_stream_ids,
-            )
             if cache_backend_state.slot_mask is None or cache_backend_state.key is None or cache_backend_state.value is None:
                 raise ValueError("LingBot slot-pool backend requires initialized slot mask and KV tensors.")
             valid = cache_backend_state.slot_mask.nonzero(as_tuple=False).squeeze(-1)
             if cache_backend_state.slot_ids is not None and valid.numel() > 1:
                 valid = valid[torch.argsort(cache_backend_state.slot_ids[valid], stable=True)]
-            key = cache_backend_state.key[:, valid].transpose(1, 2).to(device=q.device, dtype=query.dtype)
-            value = cache_backend_state.value[:, valid].transpose(1, 2).to(device=q.device, dtype=query.dtype)
-            valid_stream_ids = (
+            current_key = key.transpose(1, 2)
+            current_value = value.transpose(1, 2)
+            valid = _retained_slot_pool_indices_for_current_write(
+                cache_backend_state,
+                valid=valid,
+                current_token_count=int(current_key.shape[2]),
+                update_mode=int(cache_backend_update_mode),
+            )
+            prefix_key = cache_backend_state.key[:, valid].transpose(1, 2).to(device=q.device, dtype=query.dtype)
+            prefix_value = cache_backend_state.value[:, valid].transpose(1, 2).to(device=q.device, dtype=query.dtype)
+            prefix_stream_ids = (
                 cache_backend_state.stream_ids[valid].to(device=q.device)
                 if cache_backend_state.stream_ids is not None
                 else None
             )
+            query_sequence_ids = None
+            cached_prefix_sequence_ids = None
+            if valid.numel() > 0 and int(prefix_key.shape[0]) != int(current_key.shape[0]):
+                if int(current_key.shape[0]) != 1:
+                    raise ValueError(
+                        "Slot-pool prefix/current batch mismatch is only supported for packed exact-runtime "
+                        f"current tokens, got prefix_batch={int(prefix_key.shape[0])}, "
+                        f"current_batch={int(current_key.shape[0])}."
+                    )
+                prefix_batch_size = int(prefix_key.shape[0])
+                prefix_token_count = int(prefix_key.shape[2])
+                query_sequence_ids = _packed_slot_pool_query_sequence_ids(
+                    attention_profile=attention_profile,
+                    query_stream_ids=cache_backend_stream_ids,
+                    query_len=int(current_key.shape[2]),
+                    cache_batch_size=prefix_batch_size,
+                    device=q.device,
+                )
+                if query_sequence_ids is None:
+                    raise ValueError(
+                        "Slot-pool prefix/current batch mismatch requires packed exact-runtime attention metadata."
+                    )
+                cached_prefix_sequence_ids = torch.arange(
+                    prefix_batch_size,
+                    device=q.device,
+                    dtype=torch.long,
+                ).repeat_interleave(prefix_token_count)
+                prefix_key = (
+                    prefix_key.permute(1, 0, 2, 3)
+                    .reshape(prefix_key.shape[1], prefix_batch_size * prefix_token_count, prefix_key.shape[3])
+                    .unsqueeze(0)
+                )
+                prefix_value = (
+                    prefix_value.permute(1, 0, 2, 3)
+                    .reshape(prefix_value.shape[1], prefix_batch_size * prefix_token_count, prefix_value.shape[3])
+                    .unsqueeze(0)
+                )
+                if prefix_stream_ids is not None:
+                    prefix_stream_ids = prefix_stream_ids.repeat(prefix_batch_size)
+            key = torch.cat([prefix_key, current_key], dim=2) if valid.numel() > 0 else current_key
+            value = torch.cat([prefix_value, current_value], dim=2) if valid.numel() > 0 else current_value
+            if prefix_stream_ids is not None:
+                if cache_backend_stream_ids is None:
+                    current_stream_ids = torch.full(
+                        (int(current_key.shape[2]),),
+                        -1,
+                        device=prefix_stream_ids.device,
+                        dtype=prefix_stream_ids.dtype,
+                    )
+                else:
+                    current_stream_ids = cache_backend_stream_ids.to(
+                        device=prefix_stream_ids.device,
+                        dtype=prefix_stream_ids.dtype,
+                    )
+                    if current_stream_ids.ndim == 2:
+                        if current_stream_ids.shape[0] != 1:
+                            raise ValueError(
+                                "Slot-pool current stream ids must be rank-1 or batch-shared rank-2, "
+                                f"got shape {tuple(current_stream_ids.shape)}."
+                        )
+                        current_stream_ids = current_stream_ids.squeeze(0)
+                    if current_stream_ids.ndim != 1 or int(current_stream_ids.shape[0]) != int(current_key.shape[2]):
+                        raise ValueError(
+                            "Slot-pool current stream ids must have one value per current KV token, "
+                            f"got shape {tuple(current_stream_ids.shape)} for key_size={int(current_key.shape[2])}."
+                        )
+                valid_stream_ids = torch.cat([prefix_stream_ids, current_stream_ids], dim=0)
+            else:
+                valid_stream_ids = None
+            slot_pool_update_key = current_key.transpose(1, 2).detach()
+            slot_pool_update_value = current_value.transpose(1, 2).detach()
         else:
             valid_stream_ids = None
         if cached_key_value is not None and cached_key_value.key is not None and cached_key_value.value is not None:
@@ -565,6 +739,8 @@ class SharedTransformerAttention(nn.Module):
                         if valid_stream_ids is not None
                         else None
                     ),
+                    query_sequence_ids=query_sequence_ids,
+                    cached_prefix_sequence_ids=cached_prefix_sequence_ids,
                     allow_video_query_to_action_prefix_tail_tokens=int(
                         cache_backend_state.metadata.get(
                             SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS,
@@ -596,8 +772,26 @@ class SharedTransformerAttention(nn.Module):
         hidden_states = hidden_states.transpose(1, 2).flatten(2, 3)
         hidden_states = _linear_with_materialized_params(self.to_out[0], hidden_states)
         hidden_states = self.to_out[1](hidden_states)
-        if use_slot_pool_backend and cache_backend_update_mode == 0:
-            restore_slot_pool_slots(cache_backend_state, temporary_slot_allocation)
+        if (
+            use_slot_pool_backend
+            and kv_cache_override is None
+            and cache_backend_update_mode != 0
+            and slot_pool_update_key is not None
+            and slot_pool_update_value is not None
+        ):
+            if int(slot_pool_update_key.shape[0]) != int(cache_backend_state.key.shape[0]):
+                raise ValueError(
+                    "Cannot persist batch-packed current K/V into a slot-pool cache with a different batch size; "
+                    f"got current_batch={int(slot_pool_update_key.shape[0])}, "
+                    f"cache_batch={int(cache_backend_state.key.shape[0])}."
+                )
+            update_slot_pool_layer_state(
+                cache_backend_state,
+                key=slot_pool_update_key,
+                value=slot_pool_update_value,
+                is_pred=cache_backend_update_mode == 1,
+                stream_ids=slot_pool_update_stream_ids,
+            )
         return hidden_states, current_cache_entry
 
 

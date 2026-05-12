@@ -198,7 +198,7 @@ def allocate_slot_pool_slots(layer_state: SlotPoolLayerState, key_size: int) -> 
     if free.numel() < key_size:
         used = mask.nonzero(as_tuple=False).squeeze(-1)
         used_ids = ids[used]
-        order = torch.argsort(used_ids)
+        order = torch.argsort(used_ids, stable=True)
         need = key_size - free.numel()
         to_free = used[order[:need]]
         mask[to_free] = False
