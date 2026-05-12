@@ -30,7 +30,6 @@ from open_wam.evals.evaluate import EvaluationRequest, resolve_evaluation_reques
 from open_wam.models.visual_tower.reference_loader import resolve_pretrained_component_dir  # noqa: E402
 from open_wam.pipelines import build_exact_runtime_runner_from_config  # noqa: E402
 from open_wam.utils import (  # noqa: E402
-    find_checkpoint_resolved_config,
     load_experiment_config,
     resolve_transformer_dir_override,
     seed_everywhere,
@@ -90,10 +89,9 @@ def main() -> None:
         action=argparse.BooleanOptionalAction,
         default=None,
         help=(
-            "Exact-runtime startup parity mode. The default is auto: when the checkpoint or config "
-            "declares data.sample_construction.start_padding_frames > 0, encode the first observation once, "
-            "repeat that latent to a full startup chunk, warm negative frames, and execute from generated frame 1. "
-            "Use --no-exact-startup-bootstrap-padding for Heng's legacy single-frame first-chunk startup."
+            "Exact-runtime startup parity mode. The default is the legacy single-frame first-chunk startup. "
+            "Pass --exact-startup-bootstrap-padding to encode the first observation once, repeat that latent "
+            "to a full startup chunk, warm negative frames, and execute from generated frame 1."
         ),
     )
     args = parser.parse_args()
@@ -453,56 +451,10 @@ def _resolve_exact_startup_bootstrap_padding(
     cli_value: bool | None,
     checkpoint_path: Path | None,
 ) -> bool:
+    del config, checkpoint_path
     if cli_value is not None:
         return bool(cli_value)
-    checkpoint_declares_padding = _checkpoint_declares_exact_startup_padding(checkpoint_path)
-    if checkpoint_declares_padding is not None:
-        return bool(checkpoint_declares_padding)
-    if checkpoint_path is not None:
-        return False
-    return _config_declares_exact_startup_padding(config)
-
-
-def _checkpoint_declares_exact_startup_padding(checkpoint_path: Path | None) -> bool | None:
-    resolved_config_path = _find_checkpoint_resolved_config_for_startup(checkpoint_path)
-    if resolved_config_path is None:
-        return None
-    raw = yaml.safe_load(resolved_config_path.read_text(encoding="utf-8")) or {}
-    if not isinstance(raw, dict):
-        return False
-    data = raw.get("data")
-    if not isinstance(data, dict):
-        return False
-    sample_construction = data.get("sample_construction")
-    if not isinstance(sample_construction, dict):
-        return False
-    return int(sample_construction.get("start_padding_frames") or 0) > 0
-
-
-def _find_checkpoint_resolved_config_for_startup(path: Path | None) -> Path | None:
-    if path is None:
-        return None
-    candidate = Path(path).expanduser()
-    direct_candidates: list[Path] = []
-    if candidate.is_file():
-        direct_candidates.append(candidate.parent / "resolved_config.yaml")
-    else:
-        direct_candidates.append(candidate / "resolved_config.yaml")
-        if candidate.name == "transformer":
-            direct_candidates.append(candidate.parent / "resolved_config.yaml")
-    for resolved_config_path in direct_candidates:
-        if resolved_config_path.is_file():
-            return resolved_config_path.resolve()
-    try:
-        return find_checkpoint_resolved_config(candidate)
-    except FileNotFoundError:
-        return None
-
-
-def _config_declares_exact_startup_padding(config) -> bool:
-    data = getattr(config, "data", None)
-    sample_construction = getattr(data, "sample_construction", None)
-    return int(getattr(sample_construction, "start_padding_frames", 0) or 0) > 0
+    return False
 
 
 def _exact_startup_bootstrap_raw_action_dim(config) -> int:

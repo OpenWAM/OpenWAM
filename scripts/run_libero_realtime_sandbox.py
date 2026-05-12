@@ -17,7 +17,6 @@ import imageio.v2 as imageio
 import numpy as np
 import os
 import torch
-import yaml
 from einops import rearrange
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -394,12 +393,10 @@ def main() -> None:
         action=argparse.BooleanOptionalAction,
         default=None,
         help=(
-            "Exact-runtime M1/M2 startup parity mode. The default is auto: enable only when the training "
-            "config declares data.sample_construction.start_padding_frames > 0. When enabled, duplicate "
-            "the initial encoded latent into a full startup latent chunk, warm the exact cache at negative "
-            "frame ids, then generate the first executable chunk from frame 1. Use the positive flag to force "
-            "bootstrap padding or --no-exact-startup-bootstrap-padding for the legacy single-frame first-chunk "
-            "condition."
+            "Exact-runtime M1/M2 startup parity mode. The default is the legacy single-frame first-chunk "
+            "condition. Pass --exact-startup-bootstrap-padding to duplicate the initial encoded latent into "
+            "a full startup latent chunk, warm the exact cache at negative frame ids, then generate the first "
+            "executable chunk from frame 1."
         ),
     )
     parser.add_argument(
@@ -681,43 +678,16 @@ def _is_exact_parallel_runtime(config) -> bool:
     }
 
 
-def _config_declares_exact_startup_padding(config) -> bool:
-    sample_construction = getattr(getattr(config, "data", None), "sample_construction", None)
-    if sample_construction is None:
-        return False
-    return int(getattr(sample_construction, "start_padding_frames", 0) or 0) > 0
-
-
 def _resolve_exact_startup_bootstrap_padding(
     config,
     *,
     cli_value: bool | None,
     checkpoint_path: Path | None = None,
 ) -> bool:
+    del config, checkpoint_path
     if cli_value is not None:
         return bool(cli_value)
-    checkpoint_declares_padding = _checkpoint_declares_exact_startup_padding(checkpoint_path)
-    if checkpoint_declares_padding is not None:
-        return bool(checkpoint_declares_padding)
-    if checkpoint_path is not None:
-        return False
-    return _config_declares_exact_startup_padding(config)
-
-
-def _checkpoint_declares_exact_startup_padding(checkpoint_path: Path | None) -> bool | None:
-    resolved_config_path = exact_viz._find_checkpoint_resolved_config_for_startup(checkpoint_path)
-    if resolved_config_path is None:
-        return None
-    raw = yaml.safe_load(resolved_config_path.read_text(encoding="utf-8")) or {}
-    if not isinstance(raw, dict):
-        return False
-    data = raw.get("data")
-    if not isinstance(data, dict):
-        return False
-    sample_construction = data.get("sample_construction")
-    if not isinstance(sample_construction, dict):
-        return False
-    return int(sample_construction.get("start_padding_frames") or 0) > 0
+    return False
 
 
 def _repeat_exact_startup_bootstrap_latents(

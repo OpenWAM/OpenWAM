@@ -12,6 +12,7 @@ from open_wam.configs import (
     ExperimentConfig,
     InferenceConfig,
     MLPActionDecoderConfig,
+    MoTGeneralistTrainingMode,
     MoTActionExpertInitMode,
     MoTConditionMode,
     MoTPolicyConfig,
@@ -20,7 +21,7 @@ from open_wam.configs import (
     TrainingConfig,
 )
 from open_wam.models.common.attention_profiles import build_chunked_temporal_exact_attention_profile
-from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
+from open_wam.models.policy_variants import PolicyInferContext, PolicyInferState, PolicyTrainBatch
 from open_wam.models.policy_variants.mot.contracts import (
     MoTActionCache,
     MoTActionLayerCache,
@@ -867,6 +868,76 @@ def test_mot_joint_denoise_infer_supports_same_step_couplings(
 
     assert output.decoder_output.action_pred.shape == (1, 4, 4)
     assert output.policy_output.aux["current_block_coupling"] == current_block_coupling.value
+
+
+def test_mot_generalist_packed_infer_couples_action_to_video_sigma_schedule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=MoTPolicyConfig(
+            hidden_size=32,
+            runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.JOINT,
+            mot_generalist_training_mode_probs={MoTGeneralistTrainingMode.JOINT: 1.0},
+            video_prefix_frames=1,
+            num_action_layers=1,
+        ),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(
+            chunk_size=2,
+            window_size=8,
+            video_sigma_shift=5.0,
+            action_sigma_shift=1.0,
+            action_loss_weight=1.0,
+            latent_loss_weight=1.0,
+        ),
+        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    captured_action_timesteps: list[torch.Tensor] = []
+    original_pre_dit = pipeline.policy_variant.action_expert.pre_dit
+
+    def capture_pre_dit(*args, **kwargs):
+        captured_action_timesteps.append(kwargs["timestep"].detach().clone())
+        return original_pre_dit(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline.policy_variant.action_expert, "pre_dit", capture_pre_dit)
+    infer_state = PolicyInferState(step_index=1)
+    infer_state.cursor.current_start_frame = 2
+    video_latents = torch.randn(1, 48, 2, 8, 8)
+    text_context = torch.randn(1, 5, 16)
+
+    output = pipeline.forward_infer_step_from_latents(
+        video_latents,
+        context=PolicyInferContext(),
+        infer_state=infer_state,
+        text_context=text_context,
+    )
+
+    assert output.policy_output.aux["mot_packed_history_debug"]["coupled_action_video_sigmas"] is True
+    assert len(captured_action_timesteps) == 2
+    first_step_noisy_action_t = captured_action_timesteps[0][0, :4]
+    second_step_noisy_action_t = captured_action_timesteps[1][0, :4]
+    assert torch.allclose(first_step_noisy_action_t, torch.full_like(first_step_noisy_action_t, 1000.0))
+    assert torch.allclose(second_step_noisy_action_t, torch.full_like(second_step_noisy_action_t, 833.0))
+    assert not torch.allclose(second_step_noisy_action_t, torch.full_like(second_step_noisy_action_t, 500.0))
 
 
 @pytest.mark.parametrize(

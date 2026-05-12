@@ -1630,7 +1630,7 @@ def run_parallel_exact_inference_rollout(
     action_timesteps = F.pad(action_scheduler.timesteps.to(device=device), (0, 1), mode="constant", value=0)
 
     action_cond = None
-    if infer_cache.get("step_index", 0) == 0:
+    if generation_frame_start == 0:
         action_cond = torch.zeros(
             batch_size,
             actions.shape[1],
@@ -2635,6 +2635,10 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
         device=device,
         dtype=model_dtype,
     )
+    action_denoise_mask = None
+    if action_channel_mask is not None:
+        action_denoise_mask = action_channel_mask.to(device=device, dtype=model_dtype)
+        actions = actions * action_denoise_mask
     if forced_action_latents is not None:
         forced_action_latents = forced_action_latents.to(device=device, dtype=model_dtype)
         if tuple(forced_action_latents.shape) != tuple(actions.shape):
@@ -2642,6 +2646,8 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
                 "Forced joint-denoise action latents must match the generated action chunk shape, "
                 f"got forced={tuple(forced_action_latents.shape)} and expected={tuple(actions.shape)}."
             )
+        if action_denoise_mask is not None:
+            forced_action_latents = forced_action_latents * action_denoise_mask
         if forced_action_noise is None:
             forced_action_noise = torch.randn_like(forced_action_latents)
         else:
@@ -2651,6 +2657,8 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
                     "Forced joint-denoise action noise must match the generated action chunk shape, "
                     f"got noise={tuple(forced_action_noise.shape)} and expected={tuple(actions.shape)}."
                 )
+        if action_denoise_mask is not None:
+            forced_action_noise = forced_action_noise * action_denoise_mask
     if commit_action_latents is not None:
         commit_action_latents = commit_action_latents.to(device=device, dtype=model_dtype)
         if tuple(commit_action_latents.shape) != tuple(actions.shape):
@@ -2658,6 +2666,8 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
                 "Committed joint-denoise action latents must match the generated action chunk shape, "
                 f"got commit={tuple(commit_action_latents.shape)} and expected={tuple(actions.shape)}."
             )
+        if action_denoise_mask is not None:
+            commit_action_latents = commit_action_latents * action_denoise_mask
     # Keep the packed four-branch sequence contract for compatibility with the
     # trained backbone, but do not provide any explicit clean conditioning
     # signal at inference time. History should come only from the runtime
@@ -2741,6 +2751,13 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
                     action_timestep,
                     t_dim=2,
                 )
+            if action_denoise_mask is not None:
+                actions = actions * action_denoise_mask
+        action_mask_latents = (
+            action_denoise_mask.expand_as(actions)
+            if action_denoise_mask is not None
+            else torch.ones_like(actions)
+        )
         latent_grid_id = get_mesh_id(
             inference_config.frame_chunk_size // backbone_config.patch_size_t,
             latent_height // backbone_config.patch_size_h,
@@ -2777,7 +2794,7 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
                 "grid_id": action_grid_id,
                 "timesteps": action_timestep_values,
                 "cond_timesteps": torch.zeros_like(action_timestep_values),
-                "actions_mask": torch.ones_like(actions),
+                "actions_mask": action_mask_latents,
             },
             "chunk_size": max(1, int(inference_config.frame_chunk_size)),
             "window_size": max(1, int(policy_config.attn_window)),
@@ -2827,6 +2844,8 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
                 )
             else:
                 actions = action_scheduler.step(action_noise_pred, action_timestep, actions)
+            if action_denoise_mask is not None:
+                actions = actions * action_denoise_mask
 
     final_action_latents = (
         commit_action_latents

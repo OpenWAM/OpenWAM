@@ -97,7 +97,7 @@ def test_realtime_profiles_preserve_explicit_low_level_overrides() -> None:
     assert args.startup_open_loop_chunks == 1
 
 
-def test_exact_startup_bootstrap_padding_auto_requires_training_padding_marker() -> None:
+def test_exact_startup_bootstrap_padding_defaults_to_single_init() -> None:
     sandbox = _load_sandbox_module()
     config = SimpleNamespace(
         data=SimpleNamespace(sample_construction=SimpleNamespace(start_padding_frames=0)),
@@ -108,11 +108,11 @@ def test_exact_startup_bootstrap_padding_auto_requires_training_padding_marker()
 
     config.data.sample_construction.start_padding_frames = 3
 
-    assert sandbox._resolve_exact_startup_bootstrap_padding(config, cli_value=None, checkpoint_path=None) is True
+    assert sandbox._resolve_exact_startup_bootstrap_padding(config, cli_value=None, checkpoint_path=None) is False
     assert sandbox._resolve_exact_startup_bootstrap_padding(config, cli_value=False, checkpoint_path=None) is False
 
 
-def test_exact_startup_bootstrap_auto_prefers_checkpoint_training_marker(tmp_path: Path) -> None:
+def test_exact_startup_bootstrap_padding_ignores_checkpoint_training_marker_by_default(tmp_path: Path) -> None:
     sandbox = _load_sandbox_module()
     config = SimpleNamespace(
         data=SimpleNamespace(sample_construction=SimpleNamespace(start_padding_frames=3)),
@@ -151,10 +151,10 @@ def test_exact_startup_bootstrap_auto_prefers_checkpoint_training_marker(tmp_pat
         config,
         cli_value=None,
         checkpoint_path=checkpoint_file,
-    ) is True
+    ) is False
 
 
-def test_exact_startup_bootstrap_auto_does_not_infer_from_config_for_unknown_checkpoint(
+def test_exact_startup_bootstrap_padding_defaults_to_single_init_for_unknown_checkpoint(
     tmp_path: Path,
 ) -> None:
     sandbox = _load_sandbox_module()
@@ -176,7 +176,7 @@ def test_exact_startup_bootstrap_auto_does_not_infer_from_config_for_unknown_che
     ) is True
 
 
-def test_exact_startup_bootstrap_auto_tolerates_transformer_only_export(tmp_path: Path) -> None:
+def test_exact_startup_bootstrap_padding_transformer_export_defaults_to_single_init(tmp_path: Path) -> None:
     sandbox = _load_sandbox_module()
     config = SimpleNamespace(
         data=SimpleNamespace(sample_construction=SimpleNamespace(start_padding_frames=3)),
@@ -200,6 +200,11 @@ def test_exact_startup_bootstrap_auto_tolerates_transformer_only_export(tmp_path
     assert sandbox._resolve_exact_startup_bootstrap_padding(
         config,
         cli_value=None,
+        checkpoint_path=checkpoint_dir,
+    ) is False
+    assert sandbox._resolve_exact_startup_bootstrap_padding(
+        config,
+        cli_value=True,
         checkpoint_path=checkpoint_dir,
     ) is True
 

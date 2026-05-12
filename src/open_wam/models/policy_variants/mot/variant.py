@@ -15,6 +15,7 @@ from open_wam.models.common.flow_matching import (
     build_frame_aligned_action_flow_match_train_artifacts,
     denoised_actions_from_flow,
     denoised_video_latents_from_flow,
+    timesteps_matching_sigmas,
 )
 from open_wam.models.common.flow_noise_plan import frame_sigmas_for_timesteps
 from open_wam.models.common.joint_conditioning import sample_conditioning_mode
@@ -100,6 +101,47 @@ def _is_mot_same_step_coupling(coupling: CurrentBlockCoupling) -> bool:
         CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
         CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
     }
+
+
+def _should_couple_mot_action_to_video_sigmas(
+    config: MoTPolicyConfig,
+    coupling: CurrentBlockCoupling,
+) -> bool:
+    """Match M5 generalist joint training's shared-sigma denoise contract."""
+
+    return config.mot_generalist_training_mode_probs is not None and _is_mot_same_step_coupling(coupling)
+
+
+def _scheduler_next_sigma(scheduler, step_index: int) -> torch.Tensor:
+    if int(step_index) + 1 >= len(scheduler.sigmas):
+        return scheduler.sigmas.new_tensor(0.0)
+    return scheduler.sigmas[int(step_index) + 1]
+
+
+def _flow_step_with_sigmas(
+    sample: torch.Tensor,
+    flow_pred: torch.Tensor,
+    *,
+    sigma: torch.Tensor,
+    sigma_next: torch.Tensor,
+) -> torch.Tensor:
+    return sample + flow_pred * (
+        sigma_next.to(device=sample.device, dtype=sample.dtype)
+        - sigma.to(device=sample.device, dtype=sample.dtype)
+    )
+
+
+def _expand_scalar_timestep(
+    value: torch.Tensor | float,
+    *,
+    shape: tuple[int, ...],
+    device: torch.device,
+) -> torch.Tensor:
+    if isinstance(value, torch.Tensor):
+        if value.numel() != 1:
+            raise ValueError(f"Expected scalar timestep value, got shape {tuple(value.shape)}.")
+        return value.to(device=device, dtype=torch.float32).reshape(()).expand(shape).clone()
+    return torch.full(shape, float(value), device=device, dtype=torch.float32)
 
 
 def _mot_legacy_cache_inference_couplings() -> set[CurrentBlockCoupling]:
@@ -1475,6 +1517,17 @@ class MoTPolicyVariant(PolicyVariant):
                 "M5 packed coupling inference expects matched video/action denoise step counts, "
                 f"got video_steps={len(video_scheduler.timesteps)}, action_steps={len(action_scheduler.timesteps)}."
             )
+        couple_action_video_sigmas = _should_couple_mot_action_to_video_sigmas(
+            self.config,
+            current_block_coupling,
+        )
+        action_timestep_lookup_scheduler = None
+        if couple_action_video_sigmas:
+            action_timestep_lookup_scheduler = build_action_flow_match_inference_scheduler(
+                training_config=self.training_config,
+                inference_config=self.inference_config,
+                num_inference_steps_override=self.training_config.action_num_train_timesteps,
+            )
         attention_profile = build_mot_packed_coupling_attention_profile(
             num_video_frames=shared_history_frames + frame_chunk_size,
             video_tokens_per_frame=video_tokens_per_frame,
@@ -1599,11 +1652,10 @@ class MoTPolicyVariant(PolicyVariant):
             ) + (packed_action_pre,)
 
         def _video_timestep(value: torch.Tensor) -> torch.Tensor:
-            timestep = torch.full(
-                (batch_size, frame_chunk_size),
-                float(value),
+            timestep = _expand_scalar_timestep(
+                value,
+                shape=(batch_size, frame_chunk_size),
                 device=device,
-                dtype=torch.float32,
             )
             if first_frame_video_cond:
                 timestep[:, 0:1] = 0.0
@@ -1611,22 +1663,35 @@ class MoTPolicyVariant(PolicyVariant):
             return timestep
 
         def _action_timestep(value: torch.Tensor) -> torch.Tensor:
-            timestep = torch.full(
-                (batch_size, self.action_horizon),
-                float(value),
+            timestep = _expand_scalar_timestep(
+                value,
+                shape=(batch_size, self.action_horizon),
                 device=device,
-                dtype=torch.float32,
             )
             if first_action_tokens > 0:
                 timestep[:, :first_action_tokens] = 0.0
                 action_sample[:, :first_action_tokens] = 0.0
             return timestep
 
-        def _update_video(video_flow_pred: torch.Tensor, video_timestep: torch.Tensor) -> None:
+        def _update_video(
+            video_flow_pred: torch.Tensor,
+            video_timestep: torch.Tensor,
+            *,
+            sigma: torch.Tensor | None = None,
+            sigma_next: torch.Tensor | None = None,
+        ) -> None:
             nonlocal predicted_video_sequence
             current_video_flow = video_flow_pred[:, :, -frame_chunk_size:].contiguous()
             current_predicted_video = predicted_video_sequence[:, :, -frame_chunk_size:].contiguous()
-            current_predicted_video = video_scheduler.step(current_video_flow, video_timestep, current_predicted_video)
+            if sigma is None or sigma_next is None:
+                current_predicted_video = video_scheduler.step(current_video_flow, video_timestep, current_predicted_video)
+            else:
+                current_predicted_video = _flow_step_with_sigmas(
+                    current_predicted_video,
+                    current_video_flow,
+                    sigma=sigma,
+                    sigma_next=sigma_next,
+                )
             if first_frame_video_cond:
                 current_predicted_video[:, :, 0:1] = current_video_condition[:, :, 0:1]
             predicted_video_sequence = torch.cat(
@@ -1638,11 +1703,22 @@ class MoTPolicyVariant(PolicyVariant):
             packed_action_hidden: torch.Tensor,
             packed_action_pre,
             action_timestep: torch.Tensor,
+            *,
+            sigma: torch.Tensor | None = None,
+            sigma_next: torch.Tensor | None = None,
         ) -> None:
             nonlocal action_sample
             packed_action_flow = self.action_expert.post_dit(packed_action_hidden, packed_action_pre)
             action_flow_pred = packed_action_flow[:, : self.action_horizon]
-            action_sample = action_scheduler.step(action_flow_pred, action_timestep, action_sample)
+            if sigma is None or sigma_next is None:
+                action_sample = action_scheduler.step(action_flow_pred, action_timestep, action_sample)
+            else:
+                action_sample = _flow_step_with_sigmas(
+                    action_sample,
+                    action_flow_pred,
+                    sigma=sigma,
+                    sigma_next=sigma_next,
+                )
             if first_action_tokens > 0:
                 action_sample[:, :first_action_tokens] = 0.0
 
@@ -1687,7 +1763,22 @@ class MoTPolicyVariant(PolicyVariant):
                 )
                 _update_video(video_flow_pred, video_timestep)
         else:
-            for video_timestep, action_timestep in zip(video_scheduler.timesteps, action_scheduler.timesteps, strict=True):
+            for step_index, video_timestep in enumerate(video_scheduler.timesteps):
+                action_timestep = action_scheduler.timesteps[step_index]
+                shared_sigma = None
+                shared_sigma_next = None
+                if couple_action_video_sigmas:
+                    if action_timestep_lookup_scheduler is None:  # pragma: no cover - defensive guard
+                        raise RuntimeError("M5 coupled same-step inference requires an action timestep lookup scheduler.")
+                    shared_sigma = video_scheduler.sigmas[step_index].to(device=device, dtype=torch.float32)
+                    shared_sigma_next = _scheduler_next_sigma(video_scheduler, step_index).to(
+                        device=device,
+                        dtype=torch.float32,
+                    )
+                    action_timestep = timesteps_matching_sigmas(
+                        action_timestep_lookup_scheduler,
+                        shared_sigma.reshape(1),
+                    )[0].to(device=device, dtype=torch.float32)
                 current_video_timestep = _video_timestep(video_timestep)
                 current_action_timestep = _action_timestep(action_timestep)
                 video_flow_pred, packed_action_hidden, packed_action_pre = _run_packed_step(
@@ -1696,8 +1787,19 @@ class MoTPolicyVariant(PolicyVariant):
                     current_clean_video_for_step=current_clean_video,
                     current_clean_action_for_step=zero_current_action_condition,
                 )
-                _update_video(video_flow_pred, video_timestep)
-                _update_action(packed_action_hidden, packed_action_pre, action_timestep)
+                _update_video(
+                    video_flow_pred,
+                    video_timestep,
+                    sigma=shared_sigma,
+                    sigma_next=shared_sigma_next,
+                )
+                _update_action(
+                    packed_action_hidden,
+                    packed_action_pre,
+                    action_timestep,
+                    sigma=shared_sigma,
+                    sigma_next=shared_sigma_next,
+                )
 
         predicted_chunk_latents = predicted_video_sequence[:, :, -frame_chunk_size:].contiguous()
         if first_frame_video_cond:
@@ -1742,6 +1844,7 @@ class MoTPolicyVariant(PolicyVariant):
                     "sequence_frame_start": int(sequence_frame_start),
                     "current_frame_start": int(infer_state.cursor.current_start_frame),
                     "mode_uses_packed_cache": True,
+                    "coupled_action_video_sigmas": bool(couple_action_video_sigmas),
                 },
                 "mot_infer_artifacts": MoTInferArtifacts(
                     action_pred=action_sample,
@@ -1908,6 +2011,17 @@ class MoTPolicyVariant(PolicyVariant):
                 training_config=self.training_config,
                 inference_config=self.inference_config,
             )
+            couple_action_video_sigmas = _should_couple_mot_action_to_video_sigmas(
+                self.config,
+                current_block_coupling,
+            )
+            action_timestep_lookup_scheduler = None
+            if couple_action_video_sigmas:
+                action_timestep_lookup_scheduler = build_action_flow_match_inference_scheduler(
+                    training_config=self.training_config,
+                    inference_config=self.inference_config,
+                    num_inference_steps_override=self.training_config.action_num_train_timesteps,
+                )
             sample = torch.randn(
                 batch_size,
                 self.action_horizon,
@@ -1938,19 +2052,32 @@ class MoTPolicyVariant(PolicyVariant):
                 clean_video_frames=observed_prefix_frames,
                 current_block_coupling=current_block_coupling,
             )
-            for video_timestep, action_timestep in zip(video_scheduler.timesteps, action_scheduler.timesteps, strict=True):
-                dense_video_timestep = torch.full(
-                    (batch_size, video_latents.shape[2]),
-                    float(video_timestep),
+            for step_index, video_timestep in enumerate(video_scheduler.timesteps):
+                action_timestep = action_scheduler.timesteps[step_index]
+                shared_sigma = None
+                shared_sigma_next = None
+                if couple_action_video_sigmas:
+                    if action_timestep_lookup_scheduler is None:  # pragma: no cover - defensive guard
+                        raise RuntimeError("M5 coupled joint denoise requires an action timestep lookup scheduler.")
+                    shared_sigma = video_scheduler.sigmas[step_index].to(device=device, dtype=torch.float32)
+                    shared_sigma_next = _scheduler_next_sigma(video_scheduler, step_index).to(
+                        device=device,
+                        dtype=torch.float32,
+                    )
+                    action_timestep = timesteps_matching_sigmas(
+                        action_timestep_lookup_scheduler,
+                        shared_sigma.reshape(1),
+                    )[0].to(device=device, dtype=torch.float32)
+                dense_video_timestep = _expand_scalar_timestep(
+                    video_timestep,
+                    shape=(batch_size, video_latents.shape[2]),
                     device=device,
-                    dtype=torch.float32,
                 )
                 dense_video_timestep[:, :observed_prefix_frames] = 0.0
-                dense_action_timestep = torch.full(
-                    (batch_size, self.action_horizon),
-                    float(action_timestep),
+                dense_action_timestep = _expand_scalar_timestep(
+                    action_timestep,
+                    shape=(batch_size, self.action_horizon),
                     device=device,
-                    dtype=torch.float32,
                 )
                 action_pre = self.action_expert.pre_dit(
                     action_tokens=sample,
@@ -1968,9 +2095,25 @@ class MoTPolicyVariant(PolicyVariant):
                     frame_start=int(infer_state.cursor.current_start_frame),
                 )
                 flow_pred = self.action_expert.post_dit(action_hidden_states, action_pre)
-                noisy_video_latents = video_scheduler.step(video_flow_pred, video_timestep, noisy_video_latents)
+                if shared_sigma is None or shared_sigma_next is None:
+                    noisy_video_latents = video_scheduler.step(video_flow_pred, video_timestep, noisy_video_latents)
+                else:
+                    noisy_video_latents = _flow_step_with_sigmas(
+                        noisy_video_latents,
+                        video_flow_pred,
+                        sigma=shared_sigma,
+                        sigma_next=shared_sigma_next,
+                    )
                 noisy_video_latents[:, :, :observed_prefix_frames] = observed_prefix
-                sample = action_scheduler.step(flow_pred, action_timestep, sample)
+                if shared_sigma is None or shared_sigma_next is None:
+                    sample = action_scheduler.step(flow_pred, action_timestep, sample)
+                else:
+                    sample = _flow_step_with_sigmas(
+                        sample,
+                        flow_pred,
+                        sigma=shared_sigma,
+                        sigma_next=shared_sigma_next,
+                    )
             predicted_latents = noisy_video_latents[:, :, observed_prefix_frames:].detach()
             next_state = infer_state
             next_state.step_index += 1
@@ -1991,6 +2134,7 @@ class MoTPolicyVariant(PolicyVariant):
                         condition_mode=str(self.config.condition_mode),
                         runtime_mode=str(self.config.runtime_mode),
                     ),
+                    "coupled_action_video_sigmas": bool(couple_action_video_sigmas),
                 },
             )
         # True Method-1-aligned NON_JOINT_TWO_STREAM rollout with persistent
