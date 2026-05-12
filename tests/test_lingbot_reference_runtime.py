@@ -1085,7 +1085,15 @@ def test_coupled_inference_steps_action_on_shared_video_sigma_schedule() -> None
     model_output = torch.ones(1, 1, 1, 1, 1)
     sample = torch.zeros_like(model_output)
 
-    coupled_action_timestep = action_scheduler.timestep_for_sigma(shared_sigma)
+    action_lookup_scheduler = FlowMatchScheduler(
+        shift=1.0,
+        sigma_min=0.0,
+        extra_one_step=True,
+        num_train_timesteps=500,
+    )
+    action_lookup_scheduler.set_timesteps(500)
+
+    coupled_action_timestep = action_lookup_scheduler.timestep_matching_sigma(shared_sigma)
     coupled_action_step = action_scheduler.step_with_sigmas(
         model_output,
         sigma=shared_sigma,
@@ -1098,7 +1106,12 @@ def test_coupled_inference_steps_action_on_shared_video_sigma_schedule() -> None
         sample,
     )
 
-    assert torch.allclose(coupled_action_timestep, shared_sigma * 500)
+    assert torch.allclose(
+        action_lookup_scheduler.sigma_for_timesteps(coupled_action_timestep),
+        shared_sigma,
+        atol=2e-3,
+        rtol=0.0,
+    )
     assert not torch.allclose(coupled_action_timestep, video_scheduler.timesteps[step_index])
     assert torch.allclose(coupled_action_step, model_output * (shared_sigma_next - shared_sigma))
     assert not torch.allclose(coupled_action_step, independent_action_step)

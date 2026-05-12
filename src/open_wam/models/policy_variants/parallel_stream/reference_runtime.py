@@ -148,10 +148,15 @@ class FlowMatchScheduler:
         ).reshape(timestep.shape)
         return self.sigmas.to(timestep.device)[timestep_id]
 
-    def timestep_for_sigma(self, sigma: torch.Tensor | float) -> torch.Tensor:
+    def timestep_matching_sigma(self, sigma: torch.Tensor | float) -> torch.Tensor:
         if not isinstance(sigma, torch.Tensor):
             sigma = torch.tensor(float(sigma), dtype=self.timesteps.dtype)
-        return sigma.to(dtype=self.timesteps.dtype) * float(self.num_train_timesteps)
+        flat_sigma = sigma.reshape(-1)
+        timestep_id = torch.argmin(
+            (self.sigmas[:, None].to(flat_sigma.device) - flat_sigma[None]).abs(),
+            dim=0,
+        ).reshape(sigma.shape)
+        return self.timesteps.to(flat_sigma.device)[timestep_id]
 
     def next_sigma(self, timestep_index: int) -> torch.Tensor:
         if int(timestep_index) + 1 >= len(self.sigmas):
@@ -2572,26 +2577,35 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
         )
 
     couple_action_video_timesteps = should_couple_action_to_video_timesteps(policy_config)
+    action_timestep_lookup_scheduler: FlowMatchScheduler | None = None
+    if couple_action_video_timesteps:
+        action_timestep_lookup_scheduler = FlowMatchScheduler(
+            shift=training_config.action_sigma_shift,
+            sigma_min=0.0,
+            extra_one_step=True,
+            num_train_timesteps=training_config.action_num_train_timesteps,
+        )
+        action_timestep_lookup_scheduler.set_timesteps(training_config.action_num_train_timesteps)
+        action_timestep_lookup_scheduler.sigmas = action_timestep_lookup_scheduler.sigmas.to(device=device)
+        action_timestep_lookup_scheduler.timesteps = action_timestep_lookup_scheduler.timesteps.to(device=device)
     attention_profile_name = None
     if str(policy_config.video_action_attention_scope) == "block_local":
         if resolve_stage_attention_mode(backbone_config, stage="train", exact_runtime=True) == "flex":
             attention_profile_name = _attention_profile_name_for_current_block_coupling(current_block_coupling)
 
-    video_timestep_values_list = list(video_scheduler.timesteps.to(device=device))
-    action_timestep_values_list = list(action_scheduler.timesteps.to(device=device))
+    video_timestep_values_list = list(video_scheduler.timesteps.to(device=device, dtype=torch.float32))
+    action_timestep_values_list = list(action_scheduler.timesteps.to(device=device, dtype=torch.float32))
+    video_sigma_values_list = list(video_scheduler.sigmas.to(device=device, dtype=torch.float32))
     for index, (video_timestep, action_timestep) in enumerate(
         zip(video_timestep_values_list, action_timestep_values_list)
     ):
-        video_timestep_values = torch.full(
-            (batch_size, inference_config.frame_chunk_size),
-            float(video_timestep),
-            device=device,
-            dtype=torch.float32,
-        )
+        video_timestep_values = video_timestep.expand(batch_size, inference_config.frame_chunk_size)
         if couple_action_video_timesteps:
-            shared_sigma = video_scheduler.sigmas[index].to(device=device, dtype=torch.float32)
+            if action_timestep_lookup_scheduler is None:  # pragma: no cover - defensive guard
+                raise RuntimeError("Coupled joint denoise requires an action timestep lookup scheduler.")
+            shared_sigma = video_sigma_values_list[index]
             shared_sigma_next = video_scheduler.next_sigma(index).to(device=device, dtype=torch.float32)
-            action_timestep = action_scheduler.timestep_for_sigma(shared_sigma).to(
+            action_timestep = action_timestep_lookup_scheduler.timestep_matching_sigma(shared_sigma).to(
                 device=device,
                 dtype=torch.float32,
             )
@@ -2599,12 +2613,7 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
         else:
             shared_sigma = None
             shared_sigma_next = None
-            action_timestep_values = torch.full(
-                (batch_size, inference_config.frame_chunk_size),
-                float(action_timestep),
-                device=device,
-                dtype=torch.float32,
-            )
+            action_timestep_values = action_timestep.expand(batch_size, inference_config.frame_chunk_size)
         if forced_action_latents is not None:
             if couple_action_video_timesteps:
                 sigma = shared_sigma.to(device=device, dtype=model_dtype).view(1, 1, 1, 1, 1)
