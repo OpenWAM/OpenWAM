@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import torch
 from torch import nn
 
@@ -14,9 +16,13 @@ from open_wam.configs import (
     TrainingConfig,
 )
 from open_wam.models.action_decoders.lingbot_parallel_decoder import LingbotParallelActionDecoder
+from open_wam.models.common import SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS
 from open_wam.models.policy_variants.contracts import PolicyTrainBatch, PolicyTrainOutput
 from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
+    ExactCacheInterfaceSpec,
     FlowMatchScheduler,
+    _write_exact_cache_chunk,
+    initialize_reference_cache,
     prepare_parallel_action_conditioned_train_artifacts,
     prepare_parallel_exact_train_artifacts,
     run_parallel_action_conditioned_inference_rollout,
@@ -26,7 +32,8 @@ from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
 )
 from open_wam.models.policy_variants.parallel_stream import reference_runtime as reference_runtime_module
 from open_wam.models.policy_variants.parallel_stream.variant import ParallelStreamPolicyVariant
-from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
+from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig, SharedVideoTransformerConfig
+from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore
 
 
 class _FakeReferenceTransformer(nn.Module):
@@ -178,6 +185,438 @@ def test_exact_runtime_forces_cfg_batch_when_cache_is_shared() -> None:
 
     assert rollout.action_pred.shape == (2, 4, 4)
     assert rollout.predicted_latents.shape == (2, 48, 2, 24, 20)
+
+
+def test_staged_cache_write_respects_action_then_video_order(monkeypatch) -> None:
+    calls: list[tuple[bool, int, dict[str, int]]] = []
+    layer_state = SimpleNamespace(metadata={})
+
+    class _FakeSlotPoolTransformer:
+        def _resolve_exact_cache_state(self, cache_name: str):
+            assert cache_name == "cache"
+            return SimpleNamespace(
+                backend_name="slot_pool_exact",
+                backend_payload=SimpleNamespace(layer_states=(layer_state,)),
+            )
+
+    def fake_single_stream_forward(
+        transformer,
+        *,
+        input_dict,
+        update_cache,
+        cache_name,
+        action_mode,
+        guidance_scale,
+        negative_text_emb,
+        combine_cfg=True,
+        force_cfg_batch=False,
+    ):
+        del (
+            transformer,
+            update_cache,
+            cache_name,
+            guidance_scale,
+            negative_text_emb,
+            combine_cfg,
+            force_cfg_batch,
+        )
+        calls.append(
+            (
+                bool(action_mode),
+                int(input_dict["noisy_latents"].shape[2]),
+                dict(layer_state.metadata),
+            )
+        )
+        return torch.empty(1, 0, 0)
+
+    monkeypatch.setattr(
+        reference_runtime_module,
+        "run_reference_single_stream_forward",
+        fake_single_stream_forward,
+    )
+
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=2,
+        patch_size_w=2,
+    )
+    text_emb = torch.zeros(1, 4, 16)
+    video_latents = torch.zeros(1, backbone_config.latent_channels, 4, 4, 4)
+    action_latents = torch.zeros(1, 4, 4, 2, 1)
+
+    _write_exact_cache_chunk(
+        transformer=_FakeSlotPoolTransformer(),
+        cache_spec=ExactCacheInterfaceSpec(write_mode=ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED),
+        cache_name="cache",
+        frame_start=0,
+        backbone_config=backbone_config,
+        video_latents=video_latents,
+        action_latents=action_latents,
+        text_emb=text_emb,
+        negative_text_emb=None,
+        use_cfg=False,
+        action_channel_mask=None,
+        update_cache=2,
+        chunk_size=2,
+        window_size=8,
+        current_block_coupling=CurrentBlockCoupling.ACTION_THEN_VIDEO,
+        preserve_video_pretrain_history=True,
+    )
+
+    assert [(action_mode, frame_count) for action_mode, frame_count, _metadata in calls] == [
+        (True, 2),
+        (False, 2),
+        (True, 2),
+        (False, 2),
+    ]
+    assert calls[1][2][SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS] == 4
+    assert calls[3][2][SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS] == 4
+    assert SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS not in layer_state.metadata
+
+
+def test_staged_cache_write_scopes_action_then_video_tail_for_unequal_history(monkeypatch) -> None:
+    calls: list[tuple[bool, int, dict[str, int]]] = []
+    layer_state = SimpleNamespace(metadata={})
+
+    class _FakeSlotPoolTransformer:
+        def _resolve_exact_cache_state(self, cache_name: str):
+            assert cache_name == "cache"
+            return SimpleNamespace(
+                backend_name="slot_pool_exact",
+                backend_payload=SimpleNamespace(layer_states=(layer_state,)),
+            )
+
+    def fake_single_stream_forward(
+        transformer,
+        *,
+        input_dict,
+        update_cache,
+        cache_name,
+        action_mode,
+        guidance_scale,
+        negative_text_emb,
+        combine_cfg=True,
+        force_cfg_batch=False,
+    ):
+        del (
+            transformer,
+            update_cache,
+            cache_name,
+            guidance_scale,
+            negative_text_emb,
+            combine_cfg,
+            force_cfg_batch,
+        )
+        calls.append(
+            (
+                bool(action_mode),
+                int(input_dict["noisy_latents"].shape[2]),
+                dict(layer_state.metadata),
+            )
+        )
+        return torch.empty(1, 0, 0)
+
+    monkeypatch.setattr(
+        reference_runtime_module,
+        "run_reference_single_stream_forward",
+        fake_single_stream_forward,
+    )
+
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=2,
+        patch_size_w=2,
+    )
+
+    _write_exact_cache_chunk(
+        transformer=_FakeSlotPoolTransformer(),
+        cache_spec=ExactCacheInterfaceSpec(write_mode=ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED),
+        cache_name="cache",
+        frame_start=0,
+        backbone_config=backbone_config,
+        video_latents=torch.zeros(1, backbone_config.latent_channels, 2, 4, 4),
+        action_latents=torch.zeros(1, 4, 4, 2, 1),
+        text_emb=torch.zeros(1, 4, 16),
+        negative_text_emb=None,
+        use_cfg=False,
+        action_channel_mask=None,
+        update_cache=2,
+        chunk_size=2,
+        window_size=8,
+        current_block_coupling=CurrentBlockCoupling.ACTION_THEN_VIDEO,
+        preserve_video_pretrain_history=True,
+    )
+
+    assert [(action_mode, frame_count) for action_mode, frame_count, _metadata in calls] == [
+        (True, 2),
+        (False, 2),
+        (True, 2),
+    ]
+    assert SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS not in calls[0][2]
+    assert calls[1][2][SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS] == 4
+    assert SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS not in calls[2][2]
+    assert SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS not in layer_state.metadata
+
+
+def test_staged_cache_write_uses_decoupled_clean_cache_path(monkeypatch) -> None:
+    single_stream_calls: list[tuple[bool, int]] = []
+    clean_cache_calls: list[tuple[int, int, CurrentBlockCoupling]] = []
+
+    def fake_single_stream_forward(*args, input_dict, action_mode, **kwargs):
+        del args, kwargs
+        single_stream_calls.append((bool(action_mode), int(input_dict["noisy_latents"].shape[2])))
+        return torch.empty(1, 0, 0)
+
+    def fake_joint_clean_cache(**kwargs):
+        clean_cache_calls.append(
+            (
+                int(kwargs["frame_start"]),
+                int(kwargs["latents"].shape[2]),
+                CurrentBlockCoupling(kwargs["current_block_coupling"]),
+            )
+        )
+
+    monkeypatch.setattr(
+        reference_runtime_module,
+        "run_reference_single_stream_forward",
+        fake_single_stream_forward,
+    )
+    monkeypatch.setattr(
+        reference_runtime_module,
+        "_write_joint_clean_tokens_to_exact_cache",
+        fake_joint_clean_cache,
+    )
+
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=2,
+        patch_size_w=2,
+    )
+    text_emb = torch.zeros(1, 4, 16)
+
+    _write_exact_cache_chunk(
+        transformer=object(),
+        cache_spec=ExactCacheInterfaceSpec(write_mode=ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED),
+        cache_name="cache",
+        frame_start=10,
+        backbone_config=backbone_config,
+        video_latents=torch.zeros(1, backbone_config.latent_channels, 2, 4, 4),
+        action_latents=torch.zeros(1, 4, 4, 2, 1),
+        text_emb=text_emb,
+        negative_text_emb=None,
+        use_cfg=False,
+        action_channel_mask=None,
+        update_cache=2,
+        chunk_size=2,
+        window_size=8,
+        current_block_coupling=CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+        preserve_video_pretrain_history=True,
+    )
+
+    assert single_stream_calls == [(True, 2)]
+    assert clean_cache_calls == [
+        (10, 2, CurrentBlockCoupling.DECOUPLED_SAME_STEP),
+    ]
+
+
+def test_decoupled_clean_cache_cfg_keeps_text_context_separate() -> None:
+    class _RecordingBlock(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.cross_attention_masks: list[torch.Tensor] = []
+
+        def forward(
+            self,
+            hidden_states,
+            *,
+            encoder_hidden_states,
+            temb,
+            rotary_emb,
+            attention_profile=None,
+            **kwargs,
+        ):
+            del encoder_hidden_states, temb, rotary_emb, kwargs
+            assert hidden_states.shape[0] == 2
+            assert attention_profile is not None
+            assert attention_profile.cross_attention_mask is not None
+            self.cross_attention_masks.append(attention_profile.cross_attention_mask.detach().cpu())
+            return hidden_states, None, None
+
+    class _FakeJointCacheTransformer(nn.Module):
+        def __init__(self, block: _RecordingBlock) -> None:
+            super().__init__()
+            self.patch_size = (1, 1, 1)
+            self.weight = nn.Parameter(torch.zeros(1, dtype=torch.bfloat16))
+            self.blocks = nn.ModuleList([block])
+
+        def _input_embed(self, tensor: torch.Tensor, input_type: str) -> torch.Tensor:
+            del input_type
+            token_count = int(tensor.shape[2]) * int(tensor.shape[3]) * int(tensor.shape[4])
+            return torch.zeros(
+                int(tensor.shape[0]),
+                token_count,
+                8,
+                device=tensor.device,
+                dtype=self.weight.dtype,
+            )
+
+        def _exact_text_hidden_states(self, text_emb: torch.Tensor, *, dtype: torch.dtype) -> torch.Tensor:
+            return text_emb.to(dtype=dtype)
+
+        def rope(self, grid_ids: torch.Tensor) -> torch.Tensor:
+            return torch.zeros(
+                int(grid_ids.shape[0]),
+                int(grid_ids.shape[2]),
+                1,
+                device=grid_ids.device,
+                dtype=self.weight.dtype,
+            )
+
+        def _time_embed(
+            self,
+            timesteps: torch.Tensor,
+            height: int,
+            width: int,
+            *,
+            dtype: torch.dtype,
+            action_mode: bool,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            del height, width, action_mode
+            token_count = int(timesteps.shape[1])
+            projected = torch.zeros(
+                int(timesteps.shape[0]),
+                token_count,
+                6,
+                8,
+                device=timesteps.device,
+                dtype=dtype,
+            )
+            return projected, projected
+
+        def _resolve_exact_cache_state(self, cache_name: str):
+            del cache_name
+            return None
+
+    block = _RecordingBlock()
+    transformer = _FakeJointCacheTransformer(block)
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=8,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=1,
+        patch_size_w=1,
+    )
+
+    reference_runtime_module._write_joint_clean_tokens_to_exact_cache(
+        transformer=transformer,
+        cache_name="cache",
+        frame_start=0,
+        latents=torch.zeros(1, backbone_config.latent_channels, 1, 1, 1),
+        actions=torch.zeros(1, 4, 1, 1, 1),
+        text_emb=torch.ones(1, 3, 8),
+        negative_text_emb=torch.zeros(1, 3, 8),
+        use_cfg=True,
+        action_channel_mask=None,
+        update_cache=2,
+        backbone_config=backbone_config,
+        chunk_size=1,
+        window_size=4,
+        current_block_coupling=CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+        preserve_video_pretrain_history=True,
+    )
+
+    assert len(block.cross_attention_masks) == 1
+    expected = torch.tensor(
+        [
+            [True, True, True],
+            [True, True, True],
+        ]
+    )
+    assert torch.equal(block.cross_attention_masks[0], expected)
+
+
+def test_decoupled_clean_cache_cfg_preserves_slot_pool_batch_rows() -> None:
+    torch.manual_seed(0)
+    backbone_config = SharedVideoTransformerConfig(
+        implementation="shared_transformer",
+        attn_mode="torch",
+        hidden_size=32,
+        num_layers=2,
+        num_heads=4,
+        attention_head_dim=8,
+        ffn_dim=64,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=1,
+        patch_size_w=1,
+    )
+    transformer = SharedVideoTransformerCore(backbone_config, action_dim=4).to(dtype=torch.bfloat16)
+    initialize_reference_cache(
+        transformer,
+        cache_name="cache",
+        attn_window=4,
+        batch_size=1,
+        frame_chunk_size=1,
+        latent_height=1,
+        latent_width=1,
+        device=torch.device("cpu"),
+        action_per_frame=1,
+        use_cfg=True,
+        cache_backend_name="slot_pool_exact",
+        prefix_visibility_mode="preserve_video_pretrain_history",
+    )
+
+    _write_exact_cache_chunk(
+        transformer=transformer,
+        cache_spec=ExactCacheInterfaceSpec(write_mode=ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED),
+        cache_name="cache",
+        frame_start=0,
+        backbone_config=backbone_config,
+        video_latents=torch.randn(1, backbone_config.latent_channels, 1, 1, 1, dtype=torch.bfloat16),
+        action_latents=torch.randn(1, 4, 1, 1, 1, dtype=torch.bfloat16),
+        text_emb=torch.randn(1, 3, 16, dtype=torch.bfloat16),
+        negative_text_emb=torch.zeros(1, 3, 16, dtype=torch.bfloat16),
+        use_cfg=True,
+        action_channel_mask=None,
+        update_cache=2,
+        chunk_size=1,
+        window_size=4,
+        current_block_coupling=CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+        preserve_video_pretrain_history=True,
+    )
+
+    cache_state = transformer._resolve_exact_cache_state("cache")
+    assert cache_state is not None
+    layer_state = cache_state.backend_payload.layer_states[1]
+    assert layer_state.key is not None
+    assert layer_state.slot_mask is not None
+    valid = layer_state.slot_mask.nonzero(as_tuple=False).squeeze(-1)
+    key = layer_state.key[:, valid]
+    assert key.shape[0] == 2
+    assert (key[0] - key[1]).abs().max().item() > 0.0
 
 
 def test_exact_cache_warmup_preserves_explicit_negative_frame_start_on_init() -> None:

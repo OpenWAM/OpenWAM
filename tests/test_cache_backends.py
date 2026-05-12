@@ -200,6 +200,38 @@ def test_joint_clean_cache_commit_mask_counts_action_width() -> None:
     assert mask.shape == (7, 7)
 
 
+def test_joint_clean_cache_commit_mask_is_batch_local() -> None:
+    backbone_config = SharedVideoTransformerConfig(
+        implementation="shared_transformer",
+        attn_mode="torch",
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        ffn_dim=64,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=1,
+        patch_size_w=1,
+    )
+    latents = torch.randn(2, backbone_config.latent_channels, 1, 1, 1)
+    actions = torch.randn(2, 4, 1, 1, 1)
+
+    mask = _build_joint_clean_cache_attention_mask(
+        latents=latents,
+        actions=actions,
+        text_token_count=1,
+        backbone_config=backbone_config,
+        chunk_size=1,
+        window_size=4,
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        preserve_video_pretrain_history=True,
+    )
+
+    assert mask.shape == (2, 2)
+
+
 def test_exact_replica_core_uses_slot_pool_cache_backend() -> None:
     backbone_config = SharedVideoTransformerConfig(
         implementation="shared_transformer",

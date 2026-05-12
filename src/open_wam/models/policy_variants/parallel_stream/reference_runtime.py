@@ -2083,9 +2083,40 @@ def _build_joint_clean_cache_attention_mask(
     current_block_coupling: CurrentBlockCoupling | str,
     preserve_video_pretrain_history: bool,
 ) -> torch.Tensor:
+    profile = _build_joint_clean_cache_attention_profile(
+        latents=latents,
+        actions=actions,
+        text_token_count=text_token_count,
+        backbone_config=backbone_config,
+        chunk_size=chunk_size,
+        window_size=window_size,
+        current_block_coupling=current_block_coupling,
+        preserve_video_pretrain_history=preserve_video_pretrain_history,
+    )
+    if profile.self_attention_mask is None:
+        raise ValueError("Joint clean cache attention profile did not materialize a clean self-attention mask.")
+    return profile.self_attention_mask
+
+
+def _build_joint_clean_cache_attention_profile(
+    *,
+    latents: torch.Tensor,
+    actions: torch.Tensor,
+    text_token_count: int,
+    backbone_config: SharedVideoTransformerConfig,
+    chunk_size: int,
+    window_size: int,
+    current_block_coupling: CurrentBlockCoupling | str,
+    preserve_video_pretrain_history: bool,
+) -> PreparedAttentionProfile:
+    # The clean-cache writer keeps batch as the real batch dimension. Build a
+    # batch-local mask that can broadcast across CFG/batch rows instead of a
+    # flattened `[B * tokens, B * tokens]` mask.
+    batch_local_latent_shape = (1, *tuple(int(dim) for dim in latents.shape[1:]))
+    batch_local_action_shape = (1, *tuple(int(dim) for dim in actions.shape[1:]))
     profile = build_chunked_temporal_exact_attention_profile(
-        latent_shape=tuple(int(dim) for dim in latents.shape),
-        action_shape=tuple(int(dim) for dim in actions.shape),
+        latent_shape=batch_local_latent_shape,
+        action_shape=batch_local_action_shape,
         padded_length=0,
         chunk_size=max(1, int(chunk_size)),
         window_size=max(1, int(window_size)),
@@ -2101,17 +2132,17 @@ def _build_joint_clean_cache_attention_mask(
         current_block_coupling=CurrentBlockCoupling(current_block_coupling).value,
         preserve_video_pretrain_history=bool(preserve_video_pretrain_history),
     )
-    if profile.self_attention_mask is None:
-        raise ValueError("Joint clean cache attention profile did not materialize a dense mask.")
-    video_token_count = int(latents.shape[0]) * (
+    if profile.self_attention_mask is None or profile.cross_attention_mask is None:
+        raise ValueError("Joint clean cache attention profile did not materialize dense masks.")
+
+    video_token_count = (
         int(latents.shape[2])
         // max(1, int(backbone_config.patch_size_t))
         * (int(latents.shape[3]) // max(1, int(backbone_config.patch_size_h)))
         * (int(latents.shape[4]) // max(1, int(backbone_config.patch_size_w)))
     )
     action_token_count = (
-        int(actions.shape[0])
-        * int(actions.shape[2])
+        int(actions.shape[2])
         * int(actions.shape[3])
         * int(actions.shape[4])
     )
@@ -2130,7 +2161,15 @@ def _build_joint_clean_cache_attention_mask(
         ],
         dim=0,
     )
-    return profile.self_attention_mask.index_select(0, clean_indices).index_select(1, clean_indices)
+    return PreparedAttentionProfile(
+        spec=profile.spec,
+        self_attention_mask=profile.self_attention_mask.index_select(0, clean_indices).index_select(1, clean_indices),
+        cross_attention_mask=profile.cross_attention_mask.index_select(0, clean_indices),
+        metadata={
+            **profile.metadata,
+            "clean_cache_commit": True,
+        },
+    )
 
 
 def _write_joint_clean_tokens_to_exact_cache(
@@ -2178,11 +2217,11 @@ def _write_joint_clean_tokens_to_exact_cache(
     latent_hidden_states = transformer._input_embed(
         video_cache_input["noisy_latents"].to(dtype=model_dtype),
         input_type="latent",
-    ).flatten(0, 1).contiguous()[None].clone()
+    ).contiguous().clone()
     action_hidden_states = transformer._input_embed(
         action_cache_input["noisy_latents"].to(dtype=model_dtype),
         input_type="action",
-    ).flatten(0, 1).contiguous()[None].clone()
+    ).contiguous().clone()
     hidden_states = torch.cat([latent_hidden_states, action_hidden_states], dim=1)
     cache_stream_ids = _stream_ids_for_clean_video_action_tokens(
         video_token_count=int(latent_hidden_states.shape[1]),
@@ -2193,13 +2232,13 @@ def _write_joint_clean_tokens_to_exact_cache(
     text_hidden_states = transformer._exact_text_hidden_states(
         video_cache_input["text_emb"],
         dtype=model_dtype,
-    ).flatten(0, 1).contiguous()[None].clone()
-    latent_grid_id = video_cache_input["grid_id"].permute(1, 0, 2).flatten(1).contiguous()[None].clone()
-    action_grid_id = action_cache_input["grid_id"].permute(1, 0, 2).flatten(1).contiguous()[None].clone()
+    ).contiguous().clone()
+    latent_grid_id = video_cache_input["grid_id"].contiguous().clone()
+    action_grid_id = action_cache_input["grid_id"].contiguous().clone()
     rotary_emb = transformer.rope(torch.cat([latent_grid_id, action_grid_id], dim=2))[:, :, None]
 
-    latent_time_steps = video_cache_input["timesteps"].flatten(0, 1).contiguous()[None].clone()
-    action_time_steps = action_cache_input["timesteps"].flatten(0, 1).contiguous()[None].clone()
+    latent_time_steps = video_cache_input["timesteps"].contiguous().clone()
+    action_time_steps = action_cache_input["timesteps"].contiguous().clone()
     _, latent_timestep_proj = transformer._time_embed(
         latent_time_steps,
         int(latents.shape[-2]),
@@ -2215,7 +2254,7 @@ def _write_joint_clean_tokens_to_exact_cache(
         action_mode=True,
     )
     timestep_proj = torch.cat([latent_timestep_proj, action_timestep_proj], dim=1)
-    attention_mask = _build_joint_clean_cache_attention_mask(
+    attention_profile = _build_joint_clean_cache_attention_profile(
         latents=video_cache_input["noisy_latents"],
         actions=action_cache_input["noisy_latents"],
         text_token_count=int(video_cache_input["text_emb"].shape[1]),
@@ -2235,7 +2274,7 @@ def _write_joint_clean_tokens_to_exact_cache(
             encoder_hidden_states=text_hidden_states,
             temb=timestep_proj,
             rotary_emb=rotary_emb,
-            attention_mask=attention_mask,
+            attention_profile=attention_profile,
             self_attention_cache_backend_name=cache_backend_name,
             self_attention_cache_backend_state=(
                 cache_backend_payload.layer_states[layer_index]
@@ -2304,45 +2343,122 @@ def _write_exact_cache_chunk(
         )
         return
     if cache_spec.write_mode == ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED:
-        video_cache_input = prepare_reference_single_stream_input(
-            latents=video_latents,
-            timestep=0.0,
-            text_emb=text_emb,
-            frame_st_id=frame_start,
-            backbone_config=backbone_config,
-            action_mode=False,
-        )
-        run_reference_single_stream_forward(
-            transformer,
-            input_dict=video_cache_input,
-            update_cache=update_cache,
-            cache_name=cache_name,
-            action_mode=False,
-            guidance_scale=1.0,
-            negative_text_emb=negative_text_emb,
-            combine_cfg=False,
-            force_cfg_batch=use_cfg,
-        )
-        action_cache_input = prepare_reference_single_stream_input(
-            latents=action_latents,
-            timestep=0.0,
-            text_emb=text_emb,
-            frame_st_id=frame_start,
-            backbone_config=backbone_config,
-            action_mode=True,
-            action_channel_mask=action_channel_mask,
-        )
-        run_reference_single_stream_forward(
-            transformer,
-            input_dict=action_cache_input,
-            update_cache=update_cache,
-            cache_name=cache_name,
-            action_mode=True,
-            guidance_scale=1.0,
-            negative_text_emb=negative_text_emb,
-            combine_cfg=False,
-            force_cfg_batch=use_cfg,
-        )
+        current_block_coupling = CurrentBlockCoupling(current_block_coupling)
+        chunk_size = max(1, int(chunk_size))
+        video_frames = int(video_latents.shape[2])
+        action_frames = int(action_latents.shape[2])
+        total_frames = max(video_frames, action_frames)
+
+        def _write_video_cache(video_chunk: torch.Tensor, *, chunk_frame_start: int) -> None:
+            video_cache_input = prepare_reference_single_stream_input(
+                latents=video_chunk,
+                timestep=0.0,
+                text_emb=text_emb,
+                frame_st_id=chunk_frame_start,
+                backbone_config=backbone_config,
+                action_mode=False,
+            )
+            run_reference_single_stream_forward(
+                transformer,
+                input_dict=video_cache_input,
+                update_cache=update_cache,
+                cache_name=cache_name,
+                action_mode=False,
+                guidance_scale=1.0,
+                negative_text_emb=negative_text_emb,
+                combine_cfg=False,
+                force_cfg_batch=use_cfg,
+            )
+
+        def _write_action_cache(action_chunk: torch.Tensor, *, chunk_frame_start: int) -> None:
+            action_cache_input = prepare_reference_single_stream_input(
+                latents=action_chunk,
+                timestep=0.0,
+                text_emb=text_emb,
+                frame_st_id=chunk_frame_start,
+                backbone_config=backbone_config,
+                action_mode=True,
+                action_channel_mask=action_channel_mask,
+            )
+            run_reference_single_stream_forward(
+                transformer,
+                input_dict=action_cache_input,
+                update_cache=update_cache,
+                cache_name=cache_name,
+                action_mode=True,
+                guidance_scale=1.0,
+                negative_text_emb=negative_text_emb,
+                combine_cfg=False,
+                force_cfg_batch=use_cfg,
+            )
+
+        for chunk_offset in range(0, total_frames, chunk_size):
+            chunk_frame_start = int(frame_start + chunk_offset)
+            chunk_end = chunk_offset + chunk_size
+            video_chunk = video_latents[:, :, chunk_offset:min(chunk_end, video_frames)]
+            action_chunk = action_latents[:, :, chunk_offset:min(chunk_end, action_frames)]
+            has_video = int(video_chunk.shape[2]) > 0
+            has_action = int(action_chunk.shape[2]) > 0
+
+            if current_block_coupling == CurrentBlockCoupling.VIDEO_THEN_ACTION:
+                if has_video:
+                    _write_video_cache(video_chunk, chunk_frame_start=chunk_frame_start)
+                if has_action:
+                    _write_action_cache(action_chunk, chunk_frame_start=chunk_frame_start)
+            elif current_block_coupling == CurrentBlockCoupling.ACTION_THEN_VIDEO:
+                if has_action:
+                    _write_action_cache(action_chunk, chunk_frame_start=chunk_frame_start)
+                if has_video and has_action:
+                    metadata_previous = _set_slot_pool_layer_metadata(
+                        transformer,
+                        cache_name=cache_name,
+                        updates={
+                            SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS: _single_stream_action_token_count(
+                                action_chunk
+                            ),
+                        },
+                    )
+                    try:
+                        _write_video_cache(video_chunk, chunk_frame_start=chunk_frame_start)
+                    finally:
+                        _restore_slot_pool_layer_metadata(metadata_previous)
+                elif has_video:
+                    _write_video_cache(video_chunk, chunk_frame_start=chunk_frame_start)
+            elif current_block_coupling == CurrentBlockCoupling.DECOUPLED_SAME_STEP:
+                overlap_frames = min(int(video_chunk.shape[2]), int(action_chunk.shape[2]))
+                if overlap_frames > 0:
+                    _write_joint_clean_tokens_to_exact_cache(
+                        transformer=transformer,
+                        cache_name=cache_name,
+                        frame_start=chunk_frame_start,
+                        latents=video_chunk[:, :, :overlap_frames],
+                        actions=action_chunk[:, :, :overlap_frames],
+                        text_emb=text_emb,
+                        negative_text_emb=negative_text_emb,
+                        use_cfg=use_cfg,
+                        action_channel_mask=action_channel_mask,
+                        update_cache=update_cache,
+                        backbone_config=backbone_config,
+                        chunk_size=chunk_size,
+                        window_size=window_size,
+                        current_block_coupling=current_block_coupling,
+                        preserve_video_pretrain_history=preserve_video_pretrain_history,
+                    )
+                if int(video_chunk.shape[2]) > overlap_frames:
+                    _write_video_cache(
+                        video_chunk[:, :, overlap_frames:],
+                        chunk_frame_start=chunk_frame_start + overlap_frames,
+                    )
+                if int(action_chunk.shape[2]) > overlap_frames:
+                    _write_action_cache(
+                        action_chunk[:, :, overlap_frames:],
+                        chunk_frame_start=chunk_frame_start + overlap_frames,
+                    )
+            else:
+                raise ValueError(
+                    "Single-stream staged cache writes only support ordered staged or decoupled couplings, "
+                    f"got {current_block_coupling.value!r}."
+                )
         return
     raise ValueError(f"Unsupported exact cache write_mode: {cache_spec.write_mode!r}")
 
