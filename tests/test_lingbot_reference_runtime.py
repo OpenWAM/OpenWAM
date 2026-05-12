@@ -16,6 +16,7 @@ from open_wam.configs import (
 from open_wam.models.action_decoders.lingbot_parallel_decoder import LingbotParallelActionDecoder
 from open_wam.models.policy_variants.contracts import PolicyTrainBatch, PolicyTrainOutput
 from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
+    FlowMatchScheduler,
     prepare_parallel_action_conditioned_train_artifacts,
     prepare_parallel_exact_train_artifacts,
     run_parallel_action_conditioned_inference_rollout,
@@ -963,6 +964,144 @@ def test_parallel_action_conditioned_train_artifacts_can_force_clean_video_condi
     assert torch.count_nonzero(forced_clean.input_dict["latent_dict"]["cond_timesteps"]) == 0
     assert torch.allclose(forced_clean.input_dict["latent_dict"]["latent"], video_latents)
     assert forced_clean.input_dict["force_clean_video_condition"] is True
+
+
+def test_standard_joint_training_couples_video_and_action_noise_clarity() -> None:
+    torch.manual_seed(11)
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=1,
+        patch_size_w=1,
+    )
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode=ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        frame_chunk_size=2,
+        action_per_frame=2,
+        attn_window=8,
+        video_condition_on_action=True,
+        video_action_condition_source="noisy_action",
+        couple_action_to_video_timesteps=True,
+    )
+    training_config = TrainingConfig(
+        chunk_size=2,
+        window_size=8,
+        video_num_train_timesteps=1000,
+        action_num_train_timesteps=1000,
+        video_sigma_shift=5.0,
+        action_sigma_shift=1.0,
+    )
+    video_latents = torch.randn(1, 3, 4, 2, 2)
+    actions = torch.randn(1, 8, 5)
+
+    artifacts = prepare_parallel_action_conditioned_train_artifacts(
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        video_latents=video_latents,
+        actions=actions,
+        action_mask=None,
+        text_emb=torch.randn(1, 512, 16),
+    )
+    input_dict = artifacts.input_dict
+    video_sigmas = artifacts.latent_scheduler.sigma_for_timesteps(
+        input_dict["latent_dict"]["timesteps"][0]
+    )
+    action_sigmas = artifacts.action_scheduler.sigma_for_timesteps(
+        input_dict["action_dict"]["timesteps"][0]
+    )
+
+    assert input_dict["coupled_action_video_timesteps"] is True
+    assert torch.allclose(video_sigmas, action_sigmas, atol=2e-3, rtol=0.0)
+
+
+def test_staged_video_then_action_keeps_independent_noise_schedule() -> None:
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=1,
+        patch_size_w=1,
+    )
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode=ParallelRuntimeMode.LINGBOT_EXACT,
+        current_block_coupling=CurrentBlockCoupling.VIDEO_THEN_ACTION,
+        frame_chunk_size=2,
+        action_per_frame=2,
+        attn_window=8,
+        couple_action_to_video_timesteps=True,
+    )
+    training_config = TrainingConfig(
+        chunk_size=2,
+        window_size=8,
+        video_num_train_timesteps=1000,
+        action_num_train_timesteps=1000,
+    )
+
+    artifacts = prepare_parallel_exact_train_artifacts(
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        video_latents=torch.randn(1, 3, 4, 2, 2),
+        actions=torch.randn(1, 8, 5),
+        action_mask=None,
+        text_emb=torch.randn(1, 512, 16),
+    )
+
+    assert artifacts.input_dict["coupled_action_video_timesteps"] is False
+
+
+def test_coupled_inference_steps_action_on_shared_video_sigma_schedule() -> None:
+    video_scheduler = FlowMatchScheduler(
+        shift=5.0,
+        sigma_min=0.0,
+        extra_one_step=True,
+        num_train_timesteps=1000,
+    )
+    action_scheduler = FlowMatchScheduler(
+        shift=1.0,
+        sigma_min=0.0,
+        extra_one_step=True,
+        num_train_timesteps=500,
+    )
+    video_scheduler.set_timesteps(20)
+    action_scheduler.set_timesteps(20)
+
+    step_index = 1
+    shared_sigma = video_scheduler.sigmas[step_index]
+    shared_sigma_next = video_scheduler.next_sigma(step_index)
+    model_output = torch.ones(1, 1, 1, 1, 1)
+    sample = torch.zeros_like(model_output)
+
+    coupled_action_timestep = action_scheduler.timestep_for_sigma(shared_sigma)
+    coupled_action_step = action_scheduler.step_with_sigmas(
+        model_output,
+        sigma=shared_sigma,
+        sigma_next=shared_sigma_next,
+        sample=sample,
+    )
+    independent_action_step = action_scheduler.step(
+        model_output,
+        action_scheduler.timesteps[step_index],
+        sample,
+    )
+
+    assert torch.allclose(coupled_action_timestep, shared_sigma * 500)
+    assert not torch.allclose(coupled_action_timestep, video_scheduler.timesteps[step_index])
+    assert torch.allclose(coupled_action_step, model_output * (shared_sigma_next - shared_sigma))
+    assert not torch.allclose(coupled_action_step, independent_action_step)
 
 
 def _generalist_policy_config(

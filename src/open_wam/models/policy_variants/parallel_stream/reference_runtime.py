@@ -140,6 +140,42 @@ class FlowMatchScheduler:
         timestep_id = torch.argmin((self.timesteps[:, None].to(timestep.device) - timestep[None]).abs(), dim=0)
         return self.linear_timesteps_weights.to(timestep.device)[timestep_id].to(timestep.device)
 
+    def sigma_for_timesteps(self, timestep: torch.Tensor) -> torch.Tensor:
+        flat_timestep = timestep.reshape(-1)
+        timestep_id = torch.argmin(
+            (self.timesteps[:, None].to(flat_timestep.device) - flat_timestep[None]).abs(),
+            dim=0,
+        ).reshape(timestep.shape)
+        return self.sigmas.to(timestep.device)[timestep_id]
+
+    def timestep_for_sigma(self, sigma: torch.Tensor | float) -> torch.Tensor:
+        if not isinstance(sigma, torch.Tensor):
+            sigma = torch.tensor(float(sigma), dtype=self.timesteps.dtype)
+        return sigma.to(dtype=self.timesteps.dtype) * float(self.num_train_timesteps)
+
+    def next_sigma(self, timestep_index: int) -> torch.Tensor:
+        if int(timestep_index) + 1 >= len(self.sigmas):
+            final_sigma = 1.0 if (self.inverse_timesteps or self.reverse_sigmas) else 0.0
+            return self.sigmas.new_tensor(final_sigma)
+        return self.sigmas[int(timestep_index) + 1]
+
+    def step_with_sigmas(
+        self,
+        model_output: torch.Tensor,
+        *,
+        sigma: torch.Tensor | float,
+        sigma_next: torch.Tensor | float,
+        sample: torch.Tensor,
+    ) -> torch.Tensor:
+        if not isinstance(sigma, torch.Tensor):
+            sigma = torch.tensor(float(sigma), device=sample.device, dtype=sample.dtype)
+        if not isinstance(sigma_next, torch.Tensor):
+            sigma_next = torch.tensor(float(sigma_next), device=sample.device, dtype=sample.dtype)
+        return sample + model_output * (
+            sigma_next.to(device=sample.device, dtype=sample.dtype)
+            - sigma.to(device=sample.device, dtype=sample.dtype)
+        )
+
     def step(
         self,
         model_output: torch.Tensor,
@@ -357,6 +393,20 @@ def resolve_parallel_current_block_coupling(
     if policy_config.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
         return CurrentBlockCoupling.JOINT
     return CurrentBlockCoupling.VIDEO_THEN_ACTION
+
+
+def should_couple_action_to_video_timesteps(
+    policy_config: ParallelStreamPolicyConfig,
+) -> bool:
+    """Return whether this exact-runtime program should share video/action sigmas."""
+
+    if not bool(policy_config.couple_action_to_video_timesteps):
+        return False
+    return resolve_parallel_current_block_coupling(policy_config) in {
+        CurrentBlockCoupling.JOINT,
+        CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
+        CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
+    }
 
 
 def _attention_profile_name_for_current_block_coupling(
@@ -684,6 +734,21 @@ def prepare_parallel_exact_train_artifacts(
     )
     action_scheduler.set_timesteps(training_config.action_num_train_timesteps, training=True)
 
+    coupled_action_video_timesteps = (
+        should_couple_action_to_video_timesteps(policy_config)
+        and policy_config.variant_profile != ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING
+    )
+    shared_sigma_values: torch.Tensor | None = None
+    latent_timestep_values: torch.Tensor | None = None
+    action_timestep_values: torch.Tensor | None = None
+    if coupled_action_video_timesteps:
+        latent_timestep_values, action_timestep_values, shared_sigma_values = _sample_coupled_timestep_values(
+            latent_scheduler=latent_scheduler,
+            action_scheduler=action_scheduler,
+            num_frames=num_frames,
+            device=video_latents.device,
+        )
+
     # FDM/IDM-style objectives need clean condition streams to be marked as
     # clean-from-start, not "almost denoised" targets. Keep the legacy joint
     # policy augmentation by default, but allow objective-specific callers to
@@ -696,6 +761,8 @@ def prepare_parallel_exact_train_artifacts(
         noisy_cond_prob=0.0 if force_clean_video_condition else policy_config.noisy_video_condition_prob,
         patch_size=(backbone_config.patch_size_t, backbone_config.patch_size_h, backbone_config.patch_size_w),
         frame_shift=frame_shift,
+        timestep_values=latent_timestep_values,
+        sigma_values=shared_sigma_values,
     )
     action_dict = _add_noise(
         action_latents,
@@ -705,6 +772,8 @@ def prepare_parallel_exact_train_artifacts(
         noisy_cond_prob=0.0,
         patch_size=(backbone_config.patch_size_t, backbone_config.patch_size_h, backbone_config.patch_size_w),
         frame_shift=frame_shift,
+        timestep_values=action_timestep_values,
+        sigma_values=shared_sigma_values,
     )
 
     model_dtype = preferred_reference_dtype(video_latents.device)
@@ -811,6 +880,7 @@ def prepare_parallel_exact_train_artifacts(
                 getattr(policy_config, "preserve_video_pretrain_history", False)
             ),
             "force_clean_video_condition": bool(force_clean_video_condition),
+            "coupled_action_video_timesteps": bool(coupled_action_video_timesteps),
         },
         latent_scheduler=latent_scheduler,
         action_scheduler=action_scheduler,
@@ -2501,6 +2571,7 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             "set `video_num_inference_steps == action_num_inference_steps` for this mode."
         )
 
+    couple_action_video_timesteps = should_couple_action_to_video_timesteps(policy_config)
     attention_profile_name = None
     if str(policy_config.video_action_attention_scope) == "block_local":
         if resolve_stage_attention_mode(backbone_config, stage="train", exact_runtime=True) == "flex":
@@ -2517,9 +2588,17 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             device=device,
             dtype=torch.float32,
         )
-        if policy_config.couple_action_to_video_timesteps:
-            action_timestep_values = video_timestep_values
+        if couple_action_video_timesteps:
+            shared_sigma = video_scheduler.sigmas[index].to(device=device, dtype=torch.float32)
+            shared_sigma_next = video_scheduler.next_sigma(index).to(device=device, dtype=torch.float32)
+            action_timestep = action_scheduler.timestep_for_sigma(shared_sigma).to(
+                device=device,
+                dtype=torch.float32,
+            )
+            action_timestep_values = action_timestep.expand(batch_size, inference_config.frame_chunk_size)
         else:
+            shared_sigma = None
+            shared_sigma_next = None
             action_timestep_values = torch.full(
                 (batch_size, inference_config.frame_chunk_size),
                 float(action_timestep),
@@ -2527,12 +2606,16 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
                 dtype=torch.float32,
             )
         if forced_action_latents is not None:
-            actions = action_scheduler.add_noise(
-                forced_action_latents,
-                forced_action_noise,
-                action_timestep,
-                t_dim=2,
-            )
+            if couple_action_video_timesteps:
+                sigma = shared_sigma.to(device=device, dtype=model_dtype).view(1, 1, 1, 1, 1)
+                actions = (1 - sigma) * forced_action_latents + sigma * forced_action_noise
+            else:
+                actions = action_scheduler.add_noise(
+                    forced_action_latents,
+                    forced_action_noise,
+                    action_timestep,
+                    t_dim=2,
+                )
         latent_grid_id = get_mesh_id(
             inference_config.frame_chunk_size // backbone_config.patch_size_t,
             latent_height // backbone_config.patch_size_h,
@@ -2595,14 +2678,30 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             latent_width,
             batch_size=batch_size,
         )
-        latents = video_scheduler.step(video_noise_pred, video_timestep, latents)
+        if couple_action_video_timesteps:
+            latents = video_scheduler.step_with_sigmas(
+                video_noise_pred,
+                sigma=shared_sigma,
+                sigma_next=shared_sigma_next,
+                sample=latents,
+            )
+        else:
+            latents = video_scheduler.step(video_noise_pred, video_timestep, latents)
         action_noise_pred = rearrange(
             action_noise_pred,
             "b (f n) c -> b c f n 1",
             f=inference_config.frame_chunk_size,
         )
         if forced_action_latents is None:
-            actions = action_scheduler.step(action_noise_pred, action_timestep, actions)
+            if couple_action_video_timesteps:
+                actions = action_scheduler.step_with_sigmas(
+                    action_noise_pred,
+                    sigma=shared_sigma,
+                    sigma_next=shared_sigma_next,
+                    sample=actions,
+                )
+            else:
+                actions = action_scheduler.step(action_noise_pred, action_timestep, actions)
 
     final_action_latents = (
         commit_action_latents
@@ -2656,7 +2755,7 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
         "video_action_condition_source": str(policy_config.video_action_condition_source),
         "video_action_attention_scope": str(policy_config.video_action_attention_scope),
         "current_block_coupling": current_block_coupling.value,
-        "couple_action_to_video_timesteps": bool(policy_config.couple_action_to_video_timesteps),
+        "couple_action_to_video_timesteps": bool(couple_action_video_timesteps),
         "joint_denoise": True,
         "uses_explicit_clean_condition": False,
         "use_cache": bool(inference_config.use_cache),
