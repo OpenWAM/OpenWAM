@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import torch
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from scripts import run_libero_mot_visualization as mot_viz
+from open_wam.models.policy_variants.mot.runtime_routing import (
+    should_use_mot_legacy_split_cache_inference,
+)
 
 
 def _obs(index: int) -> dict[str, np.ndarray]:
@@ -215,7 +224,7 @@ def test_append_predicted_latent_chunk_zero_cap_disables_collection() -> None:
         (None, False),
     ],
 )
-def test_should_restore_mot_legacy_blocks_only_for_legacy_couplings(
+def test_should_use_mot_legacy_split_cache_inference_only_for_legacy_couplings(
     current_block_coupling: str | None,
     expected: bool,
 ) -> None:
@@ -223,7 +232,7 @@ def test_should_restore_mot_legacy_blocks_only_for_legacy_couplings(
         policy_variant=SimpleNamespace(current_block_coupling=current_block_coupling)
     )
 
-    assert mot_viz._should_restore_mot_legacy_blocks(config) is expected
+    assert should_use_mot_legacy_split_cache_inference(config) is expected
 
 
 def test_comparison_video_frame_builder_resamples_imagined_frames_without_materializing_alignment() -> None:

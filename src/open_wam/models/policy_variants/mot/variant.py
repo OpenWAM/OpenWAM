@@ -76,6 +76,11 @@ from .runtime import (
     trim_mot_video_cache_tail,
     resolve_mot_condition_latents,
 )
+from .runtime_routing import (
+    MOT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS,
+    ensure_mot_policy_variant_inference_backend,
+    resolve_mot_rollout_cache_window_frames,
+)
 
 # LingBot-reference slot-pool window used by both `_initialize_reference_cache`
 # and the Method-1-aligned video-cache trim. Method 1's per-stream effective
@@ -142,13 +147,6 @@ def _expand_scalar_timestep(
             raise ValueError(f"Expected scalar timestep value, got shape {tuple(value.shape)}.")
         return value.to(device=device, dtype=torch.float32).reshape(()).expand(shape).clone()
     return torch.full(shape, float(value), device=device, dtype=torch.float32)
-
-
-def _mot_legacy_cache_inference_couplings() -> set[CurrentBlockCoupling]:
-    return {
-        CurrentBlockCoupling.VIDEO_THEN_ACTION,
-        CurrentBlockCoupling.DECOUPLED_SAME_STEP,
-    }
 
 
 def _mot_packed_cache_inference_couplings() -> set[CurrentBlockCoupling]:
@@ -1456,7 +1454,10 @@ class MoTPolicyVariant(PolicyVariant):
         if first_action_tokens > 0:
             current_action_sample[:, :first_action_tokens] = 0.0
 
-        history_window_frames = max(frame_chunk_size, int(self.training_config.window_size))
+        history_window_frames = resolve_mot_rollout_cache_window_frames(
+            window_size=int(self.training_config.window_size),
+            frame_chunk_size=frame_chunk_size,
+        )
         history_video_frames = 0 if past_clean_latents is None else int(past_clean_latents.shape[2])
         history_action_tokens = 0 if past_clean_actions is None else int(past_clean_actions.shape[1])
         history_action_frames = history_action_tokens // action_tokens_per_frame
@@ -1839,6 +1840,7 @@ class MoTPolicyVariant(PolicyVariant):
                     "packed_video_frames": int(shared_history_frames + frame_chunk_size),
                     "packed_action_frames": int(shared_history_frames + frame_chunk_size),
                     "history_window_frames": int(history_window_frames),
+                    "max_history_frames": int(max_history_frames),
                     "next_past_clean_latent_frames": int(runtime_state.past_clean_latents.shape[2]),
                     "next_past_clean_action_frames": int(runtime_state.past_clean_actions.shape[1] // action_tokens_per_frame),
                     "sequence_frame_start": int(sequence_frame_start),
@@ -1937,10 +1939,16 @@ class MoTPolicyVariant(PolicyVariant):
         )
         self._maybe_initialize_action_expert(visual_tower)
         current_block_coupling_for_infer = resolve_mot_current_block_coupling(self.config)
+        mot_inference_backend = ensure_mot_policy_variant_inference_backend(
+            policy_variant=self,
+            visual_tower=visual_tower,
+            policy_config=self.config,
+            allow_module_mutation=bool(context.extra.get("allow_mot_legacy_backend_restore", True)),
+        )
         use_legacy_cache_infer = (
             self.config.current_block_coupling is not None
-            and bool(self._legacy_inference_blocks_restored)
-            and current_block_coupling_for_infer in _mot_legacy_cache_inference_couplings()
+            and mot_inference_backend["backend"] == "legacy_split_cache"
+            and current_block_coupling_for_infer in MOT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS
         )
         if self.config.current_block_coupling is not None and not use_legacy_cache_infer:
             return self._forward_infer_packed_coupling(
@@ -2177,7 +2185,7 @@ class MoTPolicyVariant(PolicyVariant):
             )
         action_tokens_per_frame = self.action_horizon // chunk_frames
         current_block_coupling = resolve_mot_current_block_coupling(self.config)
-        if current_block_coupling not in _mot_legacy_cache_inference_couplings():
+        if current_block_coupling not in MOT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS:
             raise NotImplementedError(
                 "M5 legacy split-cache inference only supports staged video_then_action and decoupled_same_step; "
                 f"got current_block_coupling={current_block_coupling.value!r}."
@@ -2677,6 +2685,7 @@ class MoTPolicyVariant(PolicyVariant):
                 "variant": self.config.name,
                 "method_family": "mot",
                 "condition_mode": str(self.config.condition_mode),
+                "current_block_coupling": current_block_coupling.value,
                 "mot_cache_debug": {
                     "video_cache_seq_len": int(runtime_state.video_cache.video_seq_len) if runtime_state.video_cache is not None else 0,
                     "action_video_cache_seq_len": int(action_video_cache.video_seq_len),

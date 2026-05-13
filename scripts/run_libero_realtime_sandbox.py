@@ -35,6 +35,7 @@ from open_wam.configs.enums import DeadlineMissPolicy, FallbackHistoryPolicy  # 
 from open_wam.integrations import LiberoControlConfig, compute_osc_pose_action, ensure_local_libero_config  # noqa: E402
 from open_wam.integrations.realtime_control import build_live_rollout_summary  # noqa: E402
 from open_wam.models.policy_variants import PolicyInferContext  # noqa: E402
+from open_wam.models.policy_variants.mot.runtime_routing import ensure_mot_inference_backend  # noqa: E402
 from open_wam.pipelines import LingbotExactRunner, VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
 from open_wam.utils import (  # noqa: E402
     load_experiment_config,
@@ -2428,6 +2429,13 @@ def _run_sequence_policy_realtime_rollout(
     _print_stage(f"{rollout_label}_move_pipeline_start", runtime_device=str(runtime_device))
     pipeline = pipeline.to(runtime_device)
     _print_stage(f"{rollout_label}_move_pipeline_done")
+    mot_inference_backend = None
+    if str(config.policy_variant.name) == "mot":
+        mot_inference_backend = ensure_mot_inference_backend(pipeline, config)
+        _print_stage(
+            f"{rollout_label}_mot_inference_backend",
+            **mot_inference_backend,
+        )
     _print_stage(f"{rollout_label}_configure_runtime_devices_start")
     pipeline.eval()
     pipeline.visual_tower.configure_runtime_devices(
@@ -2467,6 +2475,8 @@ def _run_sequence_policy_realtime_rollout(
         "replan_low_watermark_actions": int(replan_low_watermark_actions),
         "decoder_runtime": _collect_decoder_runtime_metadata(pipeline, config),
     }
+    if mot_inference_backend is not None:
+        load_report["mot_inference_backend"] = mot_inference_backend
 
     _print_stage(f"{rollout_label}_resolve_task_start", benchmark=benchmark, task_id=task_id)
     task_spec, prompt = video_viz._resolve_task_spec(benchmark, task_id)

@@ -21,7 +21,7 @@ from open_wam.configs import (
     TrainingConfig,
 )
 from open_wam.models.common.attention_profiles import build_chunked_temporal_exact_attention_profile
-from open_wam.models.policy_variants import PolicyInferContext, PolicyInferState, PolicyTrainBatch
+from open_wam.models.policy_variants import PolicyInferContext, PolicyInferState, PolicyTrainBatch, RolloutCursor
 from open_wam.models.policy_variants.mot.contracts import (
     MoTActionCache,
     MoTActionLayerCache,
@@ -39,6 +39,10 @@ from open_wam.models.policy_variants.mot.runtime import (
     build_packed_action_attention_mask,
     resolve_mot_condition_latents,
     trim_mot_action_cache_prefix,
+)
+from open_wam.models.policy_variants.mot.runtime_routing import (
+    resolve_mot_rollout_cache_window_frames,
+    resolve_mot_rollout_history_frames,
 )
 from open_wam.models.policy_variants.mot.variant import (
     MoTPolicyVariant,
@@ -868,6 +872,13 @@ def test_mot_joint_denoise_infer_supports_same_step_couplings(
 
     assert output.decoder_output.action_pred.shape == (1, 4, 4)
     assert output.policy_output.aux["current_block_coupling"] == current_block_coupling.value
+    if current_block_coupling in {
+        CurrentBlockCoupling.VIDEO_THEN_ACTION,
+        CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+    }:
+        assert pipeline.policy_variant._legacy_inference_blocks_restored is True
+    else:
+        assert pipeline.policy_variant._legacy_inference_blocks_restored is False
 
 
 def test_mot_generalist_packed_infer_couples_action_to_video_sigma_schedule(
@@ -943,15 +954,13 @@ def test_mot_generalist_packed_infer_couples_action_to_video_sigma_schedule(
 @pytest.mark.parametrize(
     "current_block_coupling",
     [
-        CurrentBlockCoupling.VIDEO_THEN_ACTION,
         CurrentBlockCoupling.JOINT,
         CurrentBlockCoupling.ACTION_THEN_VIDEO,
-        CurrentBlockCoupling.DECOUPLED_SAME_STEP,
         CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
         CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
     ],
 )
-def test_mot_packed_infer_six_modes_keep_two_chunk_history(
+def test_mot_packed_infer_modes_keep_two_chunk_history(
     current_block_coupling: CurrentBlockCoupling,
 ) -> None:
     config = ExperimentConfig(
@@ -1017,7 +1026,7 @@ def test_mot_packed_infer_six_modes_keep_two_chunk_history(
     assert second_state.past_clean_actions.shape[1] % 2 == 0
 
 
-def test_mot_packed_infer_chunk0_matches_method1_first_step_bootstrap() -> None:
+def test_mot_packed_infer_chunk0_uses_one_frame_startup_bootstrap() -> None:
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
@@ -1039,7 +1048,7 @@ def test_mot_packed_infer_chunk0_matches_method1_first_step_bootstrap() -> None:
         policy_variant=MoTPolicyConfig(
             hidden_size=32,
             runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
-            current_block_coupling=CurrentBlockCoupling.VIDEO_THEN_ACTION,
+            current_block_coupling=CurrentBlockCoupling.ACTION_THEN_VIDEO,
             video_prefix_frames=1,
             num_action_layers=1,
         ),
@@ -1082,6 +1091,76 @@ def test_mot_packed_infer_chunk0_matches_method1_first_step_bootstrap() -> None:
     assert history_debug["shared_history_frames"] >= 1
     assert history_debug["current_observed_latent_frames"] == 2
     assert history_debug["current_clean_condition_frames"] == 2
+
+
+def test_mot_rollout_history_window_matches_fixed128_context_contract() -> None:
+    assert resolve_mot_rollout_history_frames(window_size=30, frame_chunk_size=4) == 60
+    assert resolve_mot_rollout_cache_window_frames(window_size=30, frame_chunk_size=4) == 64
+    assert resolve_mot_rollout_history_frames(window_size=31, frame_chunk_size=4) == 60
+    assert resolve_mot_rollout_cache_window_frames(window_size=31, frame_chunk_size=4) == 64
+    assert resolve_mot_rollout_history_frames(window_size=8, frame_chunk_size=2) == 8
+    assert resolve_mot_rollout_cache_window_frames(window_size=8, frame_chunk_size=2) == 10
+
+
+def test_mot_packed_infer_uses_rollout_history_contract_for_cached_context() -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=MoTPolicyConfig(
+            hidden_size=32,
+            runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.JOINT,
+            video_prefix_frames=1,
+            num_action_layers=1,
+        ),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
+        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    action_tokens_per_frame = config.data.action_schema.action_horizon // config.inference.frame_chunk_size
+    runtime_state = MoTRuntimeState(
+        past_clean_latents=torch.randn(1, 48, 12, 8, 8),
+        past_clean_actions=torch.randn(1, 12 * action_tokens_per_frame, 4),
+    )
+    infer_state = PolicyInferState(
+        step_index=6,
+        cursor=RolloutCursor(current_start_frame=12, chunk_size=2),
+        variant_state=runtime_state,
+    )
+
+    output = pipeline.forward_infer_step_from_latents(
+        torch.randn(1, 48, 2, 8, 8),
+        context=PolicyInferContext(),
+        infer_state=infer_state,
+        text_context=torch.randn(1, 5, 16),
+    )
+
+    history_debug = output.policy_output.aux["mot_packed_history_debug"]
+    assert history_debug["history_window_frames"] == 10
+    assert history_debug["max_history_frames"] == 8
+    assert history_debug["shared_history_frames"] == 8
+    next_state = output.policy_output.next_state.variant_state
+    assert isinstance(next_state, MoTRuntimeState)
+    assert next_state.past_clean_latents is not None
+    assert next_state.past_clean_actions is not None
+    assert next_state.past_clean_latents.shape[2] == 10
+    assert next_state.past_clean_actions.shape[1] == 10 * action_tokens_per_frame
 
 
 def test_mot_variant_builds_with_interpolated_action_expert_ffn() -> None:

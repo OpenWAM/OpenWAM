@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from typing import Any
 
 import torch
 from torch import nn
@@ -15,14 +16,27 @@ except ModuleNotFoundError:
 
 from open_wam.configs import (
     ExperimentConfig,
+    PolicyVariantName,
     SampleLossWeightMode,
 )
 from open_wam.configs.enums import serialize_enum_values
 from open_wam.data import WAMBatch, move_wam_batch_to_device
 from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
+from open_wam.models.policy_variants.mot.runtime_routing import (
+    mot_policy_requires_legacy_split_cache_inference,
+)
 from open_wam.pipelines import build_variant_pipeline_from_config
 from open_wam.training.controls import apply_training_component_controls
 from open_wam.training.optim import build_optimizer, build_scheduler
+
+
+def policy_variant_requires_module_mutating_infer_backend(policy_variant: Any) -> bool:
+    """Return whether validation inference would mutate module ownership."""
+
+    policy_name = getattr(policy_variant, "name", None)
+    if policy_name not in {PolicyVariantName.MOT, PolicyVariantName.MOT.value}:
+        return False
+    return mot_policy_requires_legacy_split_cache_inference(policy_variant)
 
 
 if pl is None:
@@ -83,6 +97,9 @@ else:
                     return candidate
             return None
 
+        def _skip_infer_validation_for_module_mutating_backend(self) -> bool:
+            return policy_variant_requires_module_mutating_infer_backend(self.config.policy_variant)
+
         def training_step(self, batch: WAMBatch, batch_idx: int) -> torch.Tensor:
             output = self.pipeline.forward_train(
                 views=batch.views,
@@ -102,6 +119,16 @@ else:
             for metric_name, metric_value in train_output.decoder_output.metrics.items():
                 self.log(f"val/{metric_name}", metric_value, on_step=False, on_epoch=True, prog_bar=(metric_name == "action_mse"))
 
+            if self._skip_infer_validation_for_module_mutating_backend():
+                self.log(
+                    "val/infer_skipped_module_mutating_backend",
+                    batch.actions.new_tensor(1.0),
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=False,
+                )
+                return
+
             infer_output = self.pipeline.forward_infer_step(
                 batch.views,
                 PolicyInferContext(
@@ -109,6 +136,7 @@ else:
                     extra={
                         "task_text": batch.task_text,
                         "metadata": batch.metadata,
+                        "allow_mot_legacy_backend_restore": False,
                     },
                 ),
             )

@@ -26,7 +26,7 @@ if str(Path(__file__).resolve().parent) not in sys.path:
 
 import run_libero_video_sequence_visualization as video_viz  # noqa: E402
 
-from open_wam.configs import CurrentBlockCoupling, ReferenceCoreInitMode  # noqa: E402
+from open_wam.configs import ReferenceCoreInitMode  # noqa: E402
 from open_wam.integrations import (  # noqa: E402
     LiberoTaskSpec,
     ensure_local_libero_config,
@@ -36,6 +36,10 @@ from open_wam.models.common.rollout_history import (  # noqa: E402
     build_executed_action_history_tensor as _build_shared_executed_action_history_tensor,
 )
 from open_wam.models.policy_variants import PolicyInferContext  # noqa: E402
+from open_wam.models.policy_variants.mot.runtime_routing import (  # noqa: E402
+    ensure_mot_inference_backend,
+    resolve_mot_rollout_cache_window_frames,
+)
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
 from open_wam.utils.local_paths import read_yaml_with_local_paths  # noqa: E402
 from open_wam.utils import (  # noqa: E402
@@ -177,11 +181,9 @@ def main() -> None:
     pipeline.to(device=runtime_device)
     if hasattr(pipeline.policy_variant, "_maybe_initialize_action_expert"):
         pipeline.policy_variant._maybe_initialize_action_expert(pipeline.visual_tower)
-    legacy_restore = getattr(pipeline.policy_variant, "restore_packed_blocks_for_legacy_inference", None)
-    if callable(legacy_restore) and _should_restore_mot_legacy_blocks(config):
-        restored = bool(legacy_restore(pipeline.visual_tower))
-        if restored:
-            _print_log("stage", {"name": "mot_legacy_cache_inference_blocks_restored"})
+    mot_inference_backend = ensure_mot_inference_backend(pipeline, config)
+    if mot_inference_backend["legacy_split_cache_restored_this_call"]:
+        _print_log("stage", {"name": "mot_legacy_cache_inference_blocks_restored"})
     if hasattr(pipeline.policy_variant, "action_expert"):
         pipeline.policy_variant.action_expert.to(device=action_device)
     runner = VariantRolloutRunner(pipeline)
@@ -194,6 +196,7 @@ def main() -> None:
         decode_device=decode_device,
         raw_window_frames=raw_window_frames,
     )
+    component_report["mot_inference_backend"] = mot_inference_backend
     component_report["checkpoint_file"] = str(checkpoint_path.resolve())
     _print_log("load_report", component_report)
 
@@ -493,18 +496,6 @@ def _validate_mot_config(config) -> None:
         )
 
 
-def _should_restore_mot_legacy_blocks(config) -> bool:
-    policy_variant = getattr(config, "policy_variant", None)
-    raw_coupling = getattr(policy_variant, "current_block_coupling", None)
-    if raw_coupling is None:
-        return False
-    coupling = CurrentBlockCoupling(raw_coupling)
-    return coupling in {
-        CurrentBlockCoupling.VIDEO_THEN_ACTION,
-        CurrentBlockCoupling.DECOUPLED_SAME_STEP,
-    }
-
-
 def _resolve_mot_checkpoint_path(
     *,
     config_path: Path,
@@ -795,11 +786,14 @@ def _warmup_mot_packed_history_from_observations(
     runtime_dtype = pipeline.visual_tower.core.patch_embedding_mlp.weight.dtype
     real_latents = warmup_outputs.frontend.video_latents.to(device=runtime_device, dtype=runtime_dtype)
     past_latents = runtime_state.past_clean_latents
+    frame_chunk_size = _frame_chunk_size(pipeline.config)
     history_window_frames = max(
         int(real_latents.shape[2]),
-        int(getattr(pipeline.policy_variant.training_config, "window_size", real_latents.shape[2])),
+        resolve_mot_rollout_cache_window_frames(
+            window_size=int(getattr(pipeline.policy_variant.training_config, "window_size", real_latents.shape[2])),
+            frame_chunk_size=frame_chunk_size,
+        ),
     )
-    frame_chunk_size = _frame_chunk_size(pipeline.config)
     dropped_pred_latent_frames = 0
     if past_latents is None:
         base_latents = None
