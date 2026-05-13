@@ -212,6 +212,23 @@ def test_align_eval_action_tensors_tail_aligns_exact_raw_chunk_predictions() -> 
     assert torch.equal(aligned_mask, action_mask[:, -16:])
 
 
+def test_rollout_previous_action_prefers_exact_model_space_chunk() -> None:
+    decoder_action_pred = torch.zeros(1, 16, 30)
+    raw_eval_prediction = torch.ones(1, 16, 7)
+    chunk_action_pred = torch.full((1, 16, 30), 2.0)
+
+    previous_action = evaluate_module._select_rollout_previous_action(
+        decoder_action_pred=decoder_action_pred,
+        policy_aux={
+            "raw_chunk_action_pred": raw_eval_prediction,
+            "chunk_action_pred": chunk_action_pred,
+        },
+    )
+
+    assert previous_action is chunk_action_pred
+    assert previous_action.shape == (1, 16, 30)
+
+
 def test_select_eval_video_prediction_aligns_generated_local_future_latents() -> None:
     target = torch.arange(1 * 2 * 6 * 1 * 1, dtype=torch.float32).view(1, 2, 6, 1, 1)
     predicted = target[:, :, 2:5] + 0.5

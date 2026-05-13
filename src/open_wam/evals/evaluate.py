@@ -391,6 +391,19 @@ def _align_eval_action_tensors(
     return source, prediction, target_actions, action_mask
 
 
+def _select_rollout_previous_action(
+    *,
+    decoder_action_pred: torch.Tensor,
+    policy_aux: dict[str, Any],
+) -> torch.Tensor:
+    """Return the model-facing action tensor to feed into the next rollout step."""
+
+    chunk_action_pred = policy_aux.get("chunk_action_pred")
+    if isinstance(chunk_action_pred, torch.Tensor) and chunk_action_pred.ndim == 3:
+        return chunk_action_pred
+    return decoder_action_pred
+
+
 def _select_eval_video_prediction(
     *,
     target_video_latents: torch.Tensor,
@@ -941,7 +954,10 @@ def run_evaluation(
                         step_video_mse = _video_latent_mse(video_prediction, aligned_target_video_latents)
                         video_mse_values.append(step_video_mse)
                         step_video_mse_values.append(step_video_mse)
-                    previous_action = action_prediction.detach()
+                    previous_action = _select_rollout_previous_action(
+                        decoder_action_pred=output.decoder_output.action_pred,
+                        policy_aux=output.policy_output.aux,
+                    ).detach()
                     if video_prediction is not None:
                         rollout_latents = video_prediction.detach()
                     if request.mode == EvalMode.TRAJECTORY_OPEN_LOOP:

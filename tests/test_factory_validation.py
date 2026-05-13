@@ -33,8 +33,12 @@ from open_wam.models.policy_variants import MoTPolicyVariant
 from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig, SharedVideoTransformerConfig
 from open_wam.models.visual_tower.reference_loader import load_wan_transformer_class
 from open_wam.pipelines import build_variant_pipeline_from_config
+from open_wam.utils.config_loader import load_experiment_config
 
 from reference_model_test_utils import reference_model_path_or_skip
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_exact_parallel_stream_uses_vendored_reference_model_by_default() -> None:
@@ -58,6 +62,16 @@ def test_exact_parallel_stream_uses_vendored_reference_model_by_default() -> Non
 
     pipeline = build_variant_pipeline_from_config(config)
     assert pipeline.policy_variant.config.runtime_mode == "lingbot_exact"
+
+
+def test_action_conditioned_libero_smoke_config_builds() -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_action_conditioned_smoke.yaml")
+
+    pipeline = build_variant_pipeline_from_config(config)
+
+    assert pipeline.policy_variant.config.runtime_mode == "lingbot_exact_action_conditioned"
+    assert pipeline.policy_variant.reference_profile is not None
+    assert pipeline.policy_variant.reference_profile.name == "libero_joint"
 
 
 def test_action_conditioned_parallel_stream_builds_with_shared_backbone() -> None:

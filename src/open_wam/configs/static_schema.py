@@ -178,6 +178,7 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
         if policy_variant.get("name") == PolicyVariantName.PARALLEL_STREAM.value:
             _validate_enum(policy_variant, "runtime_mode", ParallelRuntimeMode, issues, "policy_variant")
             _validate_enum(policy_variant, "variant_profile", ParallelStreamVariantProfile, issues, "policy_variant")
+            _validate_enum(policy_variant, "current_block_coupling", CurrentBlockCoupling, issues, "policy_variant")
             _validate_enum(
                 policy_variant,
                 "generalist_training_paradigm",

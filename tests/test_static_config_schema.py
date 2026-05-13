@@ -278,6 +278,43 @@ trainer:
 
 
 @pytest.mark.unit
+def test_static_validator_checks_parallel_stream_current_block_coupling(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_m1_coupling.yaml"
+    config_path.write_text(
+        """
+name: bad_m1_coupling
+data:
+  dataset_name: libero
+  dataset_type: lerobot_v2_latent_local
+  action_schema:
+    action_dim: 7
+    action_horizon: 16
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: parallel_stream
+  attach_site: within_visual_core
+  runtime_mode: lingbot_exact_action_conditioned
+  current_block_coupling: typo_joint
+action_decoder:
+  name: lingbot_parallel_decoder
+  action_dim: 30
+  action_horizon: 16
+trainer:
+  accelerator: gpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any(issue.path == "policy_variant.current_block_coupling" for issue in report.errors)
+
+
+@pytest.mark.unit
 def test_static_validator_checks_mot_generalist_mode_probabilities(tmp_path: Path) -> None:
     config_path = tmp_path / "bad_mot_probs.yaml"
     config_path.write_text(

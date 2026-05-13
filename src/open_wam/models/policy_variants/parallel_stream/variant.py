@@ -623,19 +623,18 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 "Exact LingBot reference profile action_guidance_scale does not match the inference config, "
                 f"profile={self.reference_profile.action_guidance_scale}, config={self.inference_config.action_guidance_scale}."
             )
-        if self.config.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT:
-            if self.reference_profile.video_num_inference_steps != self.inference_config.video_num_inference_steps:
-                raise ValueError(
-                    "Exact LingBot reference profile video_num_inference_steps does not match the inference config, "
-                    f"profile={self.reference_profile.video_num_inference_steps}, "
-                    f"config={self.inference_config.video_num_inference_steps}."
-                )
-            if self.reference_profile.action_num_inference_steps != self.inference_config.action_num_inference_steps:
-                raise ValueError(
-                    "Exact LingBot reference profile action_num_inference_steps does not match the inference config, "
-                    f"profile={self.reference_profile.action_num_inference_steps}, "
-                    f"config={self.inference_config.action_num_inference_steps}."
-                )
+        if self.reference_profile.video_num_inference_steps != self.inference_config.video_num_inference_steps:
+            raise ValueError(
+                "Exact LingBot reference profile video_num_inference_steps does not match the inference config, "
+                f"profile={self.reference_profile.video_num_inference_steps}, "
+                f"config={self.inference_config.video_num_inference_steps}."
+            )
+        if self.reference_profile.action_num_inference_steps != self.inference_config.action_num_inference_steps:
+            raise ValueError(
+                "Exact LingBot reference profile action_num_inference_steps does not match the inference config, "
+                f"profile={self.reference_profile.action_num_inference_steps}, "
+                f"config={self.inference_config.action_num_inference_steps}."
+            )
         if self.reference_profile.video_exec_step != self.inference_config.video_exec_step:
             raise ValueError(
                 "Exact LingBot reference profile video_exec_step does not match the inference config, "

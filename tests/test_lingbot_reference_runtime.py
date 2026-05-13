@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 from torch import nn
 
@@ -852,6 +853,43 @@ def test_parallel_stream_variant_selects_exact_cache_write_contract() -> None:
     assert action_conditioned.exact_cache_write_mode() == ParallelExactCacheWriteMode.JOINT_PACKED
     assert video_noisy_to_action.exact_cache_write_mode() == ParallelExactCacheWriteMode.JOINT_PACKED
     assert action_noisy_to_video.exact_cache_write_mode() == ParallelExactCacheWriteMode.JOINT_PACKED
+
+
+def test_action_conditioned_reference_profile_validates_inference_step_counts() -> None:
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+    )
+
+    with pytest.raises(ValueError, match="action_num_inference_steps"):
+        ParallelStreamPolicyVariant(
+            ParallelStreamPolicyConfig(
+                hidden_size=32,
+                runtime_mode=ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
+                current_block_coupling=CurrentBlockCoupling.JOINT,
+                reference_profile="libero_joint",
+                frame_chunk_size=4,
+                action_per_frame=4,
+                attn_window=30,
+                video_condition_on_action=True,
+            ),
+            backbone_config=backbone_config,
+            training_config=TrainingConfig(chunk_size=4, window_size=30),
+            inference_config=InferenceConfig(
+                frame_chunk_size=4,
+                video_num_inference_steps=20,
+                action_num_inference_steps=50,
+                guidance_scale=5.0,
+                action_guidance_scale=1.0,
+            ),
+            action_dim=30,
+            action_horizon=16,
+            num_frames=4,
+        )
 
 
 def test_exact_cache_warmup_allows_shorter_video_history_than_action_history() -> None:
