@@ -131,6 +131,39 @@ class FlowMatchScheduler:
         ).reshape(timestep.shape)
         return self.sigmas.to(timestep.device)[timestep_id]
 
+    def timestep_matching_sigma(self, sigma: torch.Tensor | float) -> torch.Tensor:
+        if not isinstance(sigma, torch.Tensor):
+            sigma = torch.tensor(float(sigma), dtype=self.timesteps.dtype)
+        flat_sigma = sigma.reshape(-1)
+        timestep_id = torch.argmin(
+            (self.sigmas[:, None].to(flat_sigma.device, dtype=flat_sigma.dtype) - flat_sigma[None]).abs(),
+            dim=0,
+        ).reshape(sigma.shape)
+        return self.timesteps.to(device=flat_sigma.device)[timestep_id]
+
+    def next_sigma(self, timestep_index: int) -> torch.Tensor:
+        if int(timestep_index) + 1 >= len(self.sigmas):
+            final_sigma = 1.0 if (self.inverse_timesteps or self.reverse_sigmas) else 0.0
+            return self.sigmas.new_tensor(final_sigma)
+        return self.sigmas[int(timestep_index) + 1]
+
+    def step_with_sigmas(
+        self,
+        model_output: torch.Tensor,
+        *,
+        sigma: torch.Tensor | float,
+        sigma_next: torch.Tensor | float,
+        sample: torch.Tensor,
+    ) -> torch.Tensor:
+        if not isinstance(sigma, torch.Tensor):
+            sigma = torch.tensor(float(sigma), device=sample.device, dtype=sample.dtype)
+        if not isinstance(sigma_next, torch.Tensor):
+            sigma_next = torch.tensor(float(sigma_next), device=sample.device, dtype=sample.dtype)
+        return sample + model_output * (
+            sigma_next.to(device=sample.device, dtype=sample.dtype)
+            - sigma.to(device=sample.device, dtype=sample.dtype)
+        )
+
     def step(
         self,
         model_output: torch.Tensor,
@@ -139,14 +172,34 @@ class FlowMatchScheduler:
         *,
         to_final: bool = False,
     ) -> torch.Tensor:
-        if isinstance(timestep, torch.Tensor):
-            timestep = timestep.cpu()
-        timestep_id = torch.argmin((self.timesteps - timestep).abs())
-        sigma = float(self.sigmas[timestep_id])
-        if to_final or timestep_id + 1 >= len(self.timesteps):
-            sigma_next = 1.0 if (self.inverse_timesteps or self.reverse_sigmas) else 0.0
+        if not isinstance(timestep, torch.Tensor):
+            timestep = torch.tensor(float(timestep), device=sample.device, dtype=self.timesteps.dtype)
+        timestep = timestep.to(device=sample.device)
+        if timestep.numel() != 1:
+            raise ValueError(f"`FlowMatchScheduler.step` expects a scalar timestep, got shape {tuple(timestep.shape)}.")
+        device_timesteps = self.timesteps.to(sample.device)
+        device_sigmas = self.sigmas.to(sample.device)
+        timestep_id = torch.argmin((device_timesteps - timestep.reshape(())).abs())
+        sigma = device_sigmas[timestep_id].to(sample.dtype)
+        if to_final:
+            sigma_next = torch.tensor(
+                1.0 if (self.inverse_timesteps or self.reverse_sigmas) else 0.0,
+                device=sample.device,
+                dtype=sample.dtype,
+            )
         else:
-            sigma_next = float(self.sigmas[timestep_id + 1])
+            final_sigma = torch.tensor(
+                1.0 if (self.inverse_timesteps or self.reverse_sigmas) else 0.0,
+                device=sample.device,
+                dtype=sample.dtype,
+            )
+            next_index = torch.clamp(timestep_id + 1, max=len(self.timesteps) - 1)
+            next_grid_sigma = device_sigmas[next_index].to(sample.dtype)
+            sigma_next = torch.where(
+                timestep_id + 1 >= len(self.timesteps),
+                final_sigma,
+                next_grid_sigma,
+            )
         return sample + model_output * (sigma_next - sigma)
 
 

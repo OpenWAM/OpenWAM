@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import sys
 from dataclasses import dataclass
 from typing import Any
 
@@ -29,6 +28,7 @@ from open_wam.models.common import (
     chunked_temporal_exact_profile_name_for_coupling,
     materialize_cache_backend_entries,
 )
+from open_wam.models.common.flow_matching import FlowMatchScheduler
 from open_wam.models.common.flow_noise_plan import (
     clean_timestep_values,
     sample_coupled_timestep_values as sample_shared_coupled_timestep_values,
@@ -57,147 +57,6 @@ def reference_runtime_dtype(transformer: torch.nn.Module) -> torch.dtype:
     except StopIteration:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return preferred_reference_dtype(device)
-
-
-class FlowMatchScheduler:
-    def __init__(
-        self,
-        num_inference_steps: int = 100,
-        num_train_timesteps: int = 1000,
-        shift: float = 3.0,
-        sigma_max: float = 1.0,
-        sigma_min: float = 0.003 / 1.002,
-        inverse_timesteps: bool = False,
-        extra_one_step: bool = False,
-        reverse_sigmas: bool = False,
-        exponential_shift: bool = False,
-        exponential_shift_mu: float | None = None,
-        shift_terminal: float | None = None,
-    ) -> None:
-        self.num_train_timesteps = num_train_timesteps
-        self.shift = shift
-        self.sigma_max = sigma_max
-        self.sigma_min = sigma_min
-        self.inverse_timesteps = inverse_timesteps
-        self.extra_one_step = extra_one_step
-        self.reverse_sigmas = reverse_sigmas
-        self.exponential_shift = exponential_shift
-        self.exponential_shift_mu = exponential_shift_mu
-        self.shift_terminal = shift_terminal
-        self.set_timesteps(num_inference_steps)
-
-    def set_timesteps(
-        self,
-        num_inference_steps: int = 100,
-        denoising_strength: float = 1.0,
-        training: bool = False,
-        shift: float | None = None,
-    ) -> None:
-        if shift is not None:
-            self.shift = shift
-        sigma_start = self.sigma_min + (self.sigma_max - self.sigma_min) * denoising_strength
-        if self.extra_one_step:
-            self.sigmas = torch.linspace(sigma_start, self.sigma_min, num_inference_steps + 1)[:-1]
-        else:
-            self.sigmas = torch.linspace(sigma_start, self.sigma_min, num_inference_steps)
-        if self.inverse_timesteps:
-            self.sigmas = torch.flip(self.sigmas, dims=[0])
-        if self.exponential_shift:
-            mu = self.exponential_shift_mu if self.exponential_shift_mu is not None else 0.0
-            self.sigmas = math.exp(mu) / (math.exp(mu) + (1 / self.sigmas - 1))
-        else:
-            self.sigmas = self.shift * self.sigmas / (1 + (self.shift - 1) * self.sigmas)
-        if self.shift_terminal is not None:
-            one_minus_z = 1 - self.sigmas
-            scale_factor = one_minus_z[-1] / (1 - self.shift_terminal)
-            self.sigmas = 1 - (one_minus_z / scale_factor)
-        if self.reverse_sigmas:
-            self.sigmas = 1 - self.sigmas
-        self.timesteps = self.sigmas * self.num_train_timesteps
-        if training:
-            x = self.timesteps
-            y = torch.exp(-2 * ((x - num_inference_steps / 2) / num_inference_steps) ** 2)
-            y_shifted = y - y.min()
-            self.linear_timesteps_weights = y_shifted * (num_inference_steps / y_shifted.sum())
-            self.training = True
-        else:
-            self.training = False
-
-    def add_noise(self, original_samples: torch.Tensor, noise: torch.Tensor, timestep: torch.Tensor, t_dim: int = 2) -> torch.Tensor:
-        timestep = timestep.cpu()
-        timestep = timestep[None]
-        timestep_id = torch.argmin((self.timesteps[:, None] - timestep).abs(), dim=0)
-        shape = [1] * noise.ndim
-        shape[t_dim] = timestep_id.shape[0]
-        sigma = self.sigmas[timestep_id].to(original_samples).view(shape)
-        return (1 - sigma) * original_samples + sigma * noise
-
-    def training_target(self, sample: torch.Tensor, noise: torch.Tensor, timestep: torch.Tensor) -> torch.Tensor:
-        del timestep
-        return noise - sample
-
-    def training_weight(self, timestep: torch.Tensor) -> torch.Tensor:
-        timestep_id = torch.argmin((self.timesteps[:, None].to(timestep.device) - timestep[None]).abs(), dim=0)
-        return self.linear_timesteps_weights.to(timestep.device)[timestep_id].to(timestep.device)
-
-    def sigma_for_timesteps(self, timestep: torch.Tensor) -> torch.Tensor:
-        flat_timestep = timestep.reshape(-1)
-        timestep_id = torch.argmin(
-            (self.timesteps[:, None].to(flat_timestep.device) - flat_timestep[None]).abs(),
-            dim=0,
-        ).reshape(timestep.shape)
-        return self.sigmas.to(timestep.device)[timestep_id]
-
-    def timestep_matching_sigma(self, sigma: torch.Tensor | float) -> torch.Tensor:
-        if not isinstance(sigma, torch.Tensor):
-            sigma = torch.tensor(float(sigma), dtype=self.timesteps.dtype)
-        flat_sigma = sigma.reshape(-1)
-        timestep_id = torch.argmin(
-            (self.sigmas[:, None].to(flat_sigma.device) - flat_sigma[None]).abs(),
-            dim=0,
-        ).reshape(sigma.shape)
-        return self.timesteps.to(flat_sigma.device)[timestep_id]
-
-    def next_sigma(self, timestep_index: int) -> torch.Tensor:
-        if int(timestep_index) + 1 >= len(self.sigmas):
-            final_sigma = 1.0 if (self.inverse_timesteps or self.reverse_sigmas) else 0.0
-            return self.sigmas.new_tensor(final_sigma)
-        return self.sigmas[int(timestep_index) + 1]
-
-    def step_with_sigmas(
-        self,
-        model_output: torch.Tensor,
-        *,
-        sigma: torch.Tensor | float,
-        sigma_next: torch.Tensor | float,
-        sample: torch.Tensor,
-    ) -> torch.Tensor:
-        if not isinstance(sigma, torch.Tensor):
-            sigma = torch.tensor(float(sigma), device=sample.device, dtype=sample.dtype)
-        if not isinstance(sigma_next, torch.Tensor):
-            sigma_next = torch.tensor(float(sigma_next), device=sample.device, dtype=sample.dtype)
-        return sample + model_output * (
-            sigma_next.to(device=sample.device, dtype=sample.dtype)
-            - sigma.to(device=sample.device, dtype=sample.dtype)
-        )
-
-    def step(
-        self,
-        model_output: torch.Tensor,
-        timestep: torch.Tensor | float,
-        sample: torch.Tensor,
-        *,
-        to_final: bool = False,
-    ) -> torch.Tensor:
-        if isinstance(timestep, torch.Tensor):
-            timestep = timestep.cpu()
-        timestep_id = torch.argmin((self.timesteps - timestep).abs())
-        sigma = self.sigmas[timestep_id]
-        if to_final or timestep_id + 1 >= len(self.timesteps):
-            sigma_next = 1 if (self.inverse_timesteps or self.reverse_sigmas) else 0
-        else:
-            sigma_next = self.sigmas[timestep_id + 1]
-        return sample + model_output * (sigma_next - sigma)
 
 
 def sample_timestep_id(
@@ -2513,6 +2372,8 @@ def _summarize_slot_pool_cache_state(
     transformer: torch.nn.Module,
     cache_name: str,
 ) -> dict[str, int] | None:
+    if not hasattr(transformer, "_resolve_exact_cache_state"):
+        return None
     cache_state = transformer._resolve_exact_cache_state(cache_name)
     if cache_state is None or not cache_backend_uses_slot_pool(cache_state.backend_name):
         return None
@@ -2668,6 +2529,9 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             )
         if action_denoise_mask is not None:
             commit_action_latents = commit_action_latents * action_denoise_mask
+    initial_observed_video_anchor = None
+    if infer_cache.get("step_index", 0) == 0 and condition_latents is not None and generation_frame_start == 0:
+        initial_observed_video_anchor = condition_latents[:, :, 0:1].to(device=device, dtype=model_dtype)
     # Keep the packed four-branch sequence contract for compatibility with the
     # trained backbone, but do not provide any explicit clean conditioning
     # signal at inference time. History should come only from the runtime
@@ -2726,6 +2590,10 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
         zip(video_timestep_values_list, action_timestep_values_list)
     ):
         video_timestep_values = video_timestep.expand(batch_size, inference_config.frame_chunk_size)
+        if initial_observed_video_anchor is not None:
+            latents[:, :, 0:1] = initial_observed_video_anchor
+            video_timestep_values = video_timestep_values.clone()
+            video_timestep_values[:, 0] = 0.0
         if couple_action_video_timesteps:
             if action_timestep_lookup_scheduler is None:  # pragma: no cover - defensive guard
                 raise RuntimeError("Coupled joint denoise requires an action timestep lookup scheduler.")
@@ -2829,6 +2697,8 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             )
         else:
             latents = video_scheduler.step(video_noise_pred, video_timestep, latents)
+        if initial_observed_video_anchor is not None:
+            latents[:, :, 0:1] = initial_observed_video_anchor
         action_noise_pred = rearrange(
             action_noise_pred,
             "b (f n) c -> b c f n 1",
@@ -2908,6 +2778,7 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
         "video_num_inference_steps": int(inference_config.video_num_inference_steps),
         "action_num_inference_steps": int(inference_config.action_num_inference_steps),
         "action_conditioning_mode": action_conditioning_mode,
+        "initial_observed_video_anchor": initial_observed_video_anchor is not None,
         "forced_action_denoise": forced_action_latents is not None,
         "commit_action_override": commit_action_latents is not None,
     }
