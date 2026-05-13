@@ -16,7 +16,7 @@ class GeneralistTrainingSampleMetadata:
     """Typed view over optional generalist-denoising metadata."""
 
     mode_override: Any | None = None
-    drop_text_conditioning: bool = False
+    drop_text_conditioning: bool | None = None
     source: str | None = None
 
 
@@ -41,6 +41,11 @@ class SampleConstructionMetadata:
         if metadata is None:
             return None
         raw_source = metadata.get(GENERALIST_TRAINING_SOURCE_METADATA_KEY)
+        drop_text_conditioning = (
+            bool(metadata[GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY])
+            if GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY in metadata
+            else None
+        )
         return cls(
             raw=metadata,
             sampled_chunk_size=_optional_positive_int(metadata.get("sampled_chunk_size")),
@@ -49,7 +54,7 @@ class SampleConstructionMetadata:
             frame_shift=_optional_int(metadata.get("frame_shift")),
             generalist=GeneralistTrainingSampleMetadata(
                 mode_override=metadata.get(GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY),
-                drop_text_conditioning=bool(metadata.get(GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY, False)),
+                drop_text_conditioning=drop_text_conditioning,
                 source=None if raw_source is None else str(raw_source),
             ),
         )

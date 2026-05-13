@@ -18,11 +18,13 @@ from open_wam.models.common.flow_matching import (
     timesteps_matching_sigmas,
 )
 from open_wam.models.common.flow_noise_plan import frame_sigmas_for_timesteps
-from open_wam.models.common.joint_conditioning import sample_conditioning_mode
+from open_wam.models.common.joint_conditioning import (
+    sample_conditioning_mode,
+    should_drop_text_for_conditioning_mode,
+)
 from open_wam.models.common.modality_slots import clean_noisy_slot_tensor, zero_loss_mask_like
 from open_wam.configs import (
     CurrentBlockCoupling,
-    GeneralistTrainingParadigm,
     InferenceConfig,
     MoTGeneralistTrainingMode,
     MoTPolicyConfig,
@@ -181,10 +183,10 @@ def _sample_mot_generalist_training_mode(
 
 def _resolve_mot_generalist_training_metadata(
     batch: PolicyTrainBatch,
-) -> tuple[MoTGeneralistTrainingMode | None, bool, str | None]:
+) -> tuple[MoTGeneralistTrainingMode | None, bool | None, str | None]:
     sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
     if sample_metadata is None:
-        return None, False, None
+        return None, None, None
     raw_mode = sample_metadata.generalist.mode_override
     mode = None if raw_mode is None else MoTGeneralistTrainingMode(raw_mode)
     return mode, sample_metadata.generalist.drop_text_conditioning, sample_metadata.generalist.source
@@ -1225,11 +1227,13 @@ class MoTPolicyVariant(PolicyVariant):
             [noisy_slot_timesteps, clean_slot_timesteps], dim=1
         )
 
-        text_dropped = bool(metadata_drop_text) or (
-            self.config.generalist_training_paradigm == GeneralistTrainingParadigm.MIXED_DYNAMICS
-            and sampled_generalist_mode is not None
-            and sampled_generalist_mode != MoTGeneralistTrainingMode.JOINT
-        )
+        text_dropped = False
+        if sampled_generalist_mode is not None:
+            text_dropped = should_drop_text_for_conditioning_mode(
+                sampled_generalist_mode,
+                joint_mode=MoTGeneralistTrainingMode.JOINT,
+                drop_text_conditioning=metadata_drop_text,
+            )
         resolved_text = text_context
         if resolved_text is None:
             resolved_text = video_latents.new_zeros(

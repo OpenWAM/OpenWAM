@@ -10,7 +10,6 @@ from einops import rearrange
 
 from open_wam.configs.enums import (
     CurrentBlockCoupling,
-    GeneralistTrainingParadigm,
     JointDenoiseTrainingMode,
     ParallelExactCacheWriteMode,
     ParallelRuntimeMode,
@@ -34,7 +33,10 @@ from open_wam.models.common.flow_noise_plan import (
     sample_coupled_timestep_values as sample_shared_coupled_timestep_values,
     sample_timestep_values as sample_shared_timestep_values,
 )
-from open_wam.models.common.joint_conditioning import sample_conditioning_mode
+from open_wam.models.common.joint_conditioning import (
+    sample_conditioning_mode,
+    should_drop_text_for_conditioning_mode,
+)
 from open_wam.models.common.modality_slots import force_clean_noisy_slot, zero_condition_slot
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig, resolve_stage_attention_mode
 from open_wam.models.video_backbone.contracts import CacheState
@@ -430,7 +432,7 @@ def _apply_generalist_joint_denoise_training_mode(
     action_mask_latents: torch.Tensor | None,
     frame_shift: int,
     training_mode_override: JointDenoiseTrainingMode | str | None = None,
-    drop_text_conditioning: bool = False,
+    drop_text_conditioning: bool | None = None,
     training_source: str | None = None,
 ) -> None:
     if int(video_latents.shape[0]) != 1:
@@ -511,9 +513,10 @@ def _apply_generalist_joint_denoise_training_mode(
         latent_dict["loss_mask"] = artifacts.input_dict["latent_dict"]["loss_mask"]
 
     text_emb = artifacts.input_dict["latent_dict"]["text_emb"]
-    text_dropped = bool(drop_text_conditioning) or (
-        policy_config.generalist_training_paradigm == GeneralistTrainingParadigm.MIXED_DYNAMICS
-        and mode != JointDenoiseTrainingMode.JOINT
+    text_dropped = should_drop_text_for_conditioning_mode(
+        mode,
+        joint_mode=JointDenoiseTrainingMode.JOINT,
+        drop_text_conditioning=drop_text_conditioning,
     )
     if text_dropped:
         text_emb = torch.zeros_like(text_emb)
@@ -771,7 +774,7 @@ def prepare_parallel_action_conditioned_train_artifacts(
     frame_shift: int = 0,
     force_clean_video_condition: bool = False,
     generalist_training_mode_override: JointDenoiseTrainingMode | str | None = None,
-    generalist_drop_text_conditioning: bool = False,
+    generalist_drop_text_conditioning: bool | None = None,
     generalist_training_source: str | None = None,
 ) -> LingbotParallelTrainArtifacts:
     coupling = resolve_parallel_current_block_coupling(policy_config)

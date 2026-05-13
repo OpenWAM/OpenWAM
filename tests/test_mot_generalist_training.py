@@ -29,6 +29,7 @@ from open_wam.configs.enums import (
     MoTRuntimeMode,
     PolicyVariantName,
 )
+from open_wam.configs.variant_semantics import GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY
 from open_wam.configs.policy_variant import (
     MoTPolicyConfig,
     _coerce_mot_generalist_training_mode_probs,
@@ -454,6 +455,7 @@ def test_forced_joint_keeps_both_losses_active() -> None:
     assert metrics["mot_generalist/video_conditioned_action/count"].item() == 0.0
     assert metrics["mot_generalist/action_loss_active"].item() == 1.0
     assert metrics["mot_generalist/latent_loss_active"].item() == 1.0
+    assert output.policy_output.aux["mot_generalist_text_dropped"] is False
     assert "mot_generalist/joint/action_denoised_mse_sum" in metrics
     assert "mot_generalist/joint/action_mse_sum" in metrics
     assert torch.equal(
@@ -477,8 +479,70 @@ def test_forced_action_conditioned_video_zeros_action_loss() -> None:
     # Action loss is fully masked off; video loss carries the gradient.
     assert metrics["mot_generalist/action_loss_active"].item() == 0.0
     assert metrics["mot_generalist/latent_loss_active"].item() == 1.0
+    assert output.policy_output.aux["mot_generalist_text_dropped"] is True
     assert metrics["weighted_action_diffusion_loss"].item() == pytest.approx(0.0, abs=1e-6)
     assert metrics["weighted_video_diffusion_loss"].item() > 0.0
+
+
+def test_forced_action_conditioned_video_respects_explicit_drop_text_false() -> None:
+    pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO
+    )
+    batch.extra["metadata"] = {GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY: False}
+    output = pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    assert output.policy_output.aux["mot_generalist_text_dropped"] is False
+
+
+@pytest.mark.parametrize(
+    ("metadata", "expected_text_dropped"),
+    [
+        (None, True),
+        ({GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY: False}, False),
+    ],
+)
+def test_forced_action_conditioned_video_threads_resolved_text_to_m5_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    metadata: dict[str, bool] | None,
+    expected_text_dropped: bool,
+) -> None:
+    import open_wam.models.policy_variants.mot.variant as mot_variant_module
+    from open_wam.models.policy_variants.mot.modules import MoTActionExpert
+
+    pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO
+    )
+    if metadata is not None:
+        batch.extra["metadata"] = metadata
+    assert torch.count_nonzero(text_context) > 0
+
+    action_pre_dit_contexts: list[torch.Tensor] = []
+    packed_runtime_contexts: list[torch.Tensor] = []
+    original_pre_dit = MoTActionExpert.pre_dit
+
+    def spy_pre_dit(self, *args, **kwargs):
+        action_pre_dit_contexts.append(kwargs["context"].detach().clone())
+        return original_pre_dit(self, *args, **kwargs)
+
+    def fake_forward_mot_packed_coupling_denoise(**kwargs):
+        packed_runtime_contexts.append(kwargs["text_context"].detach().clone())
+        return torch.zeros_like(kwargs["noisy_video_latents"]), torch.zeros_like(kwargs["packed_action_pre"].tokens)
+
+    monkeypatch.setattr(MoTActionExpert, "pre_dit", spy_pre_dit)
+    monkeypatch.setattr(
+        mot_variant_module,
+        "forward_mot_packed_coupling_denoise",
+        fake_forward_mot_packed_coupling_denoise,
+    )
+
+    output = pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    expected_text = torch.zeros_like(text_context) if expected_text_dropped else text_context
+    assert output.policy_output.aux["mot_generalist_text_dropped"] is expected_text_dropped
+    assert len(action_pre_dit_contexts) == 1
+    assert len(packed_runtime_contexts) == 1
+    assert torch.equal(action_pre_dit_contexts[0], expected_text)
+    assert torch.equal(packed_runtime_contexts[0], expected_text)
 
 
 def test_forced_video_conditioned_action_zeros_video_loss() -> None:
@@ -494,6 +558,7 @@ def test_forced_video_conditioned_action_zeros_video_loss() -> None:
     # Video loss is fully masked off; action loss carries the gradient.
     assert metrics["mot_generalist/latent_loss_active"].item() == 0.0
     assert metrics["mot_generalist/action_loss_active"].item() == 1.0
+    assert output.policy_output.aux["mot_generalist_text_dropped"] is True
     assert metrics["weighted_video_diffusion_loss"].item() == pytest.approx(0.0, abs=1e-6)
     assert metrics["weighted_action_diffusion_loss"].item() > 0.0
 

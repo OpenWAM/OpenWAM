@@ -24,3 +24,16 @@ def sample_conditioning_mode(
         raise ValueError(f"{error_label} probabilities must have positive total weight.")
     index = int(torch.multinomial(weights, num_samples=1).item())
     return modes[index]
+
+
+def should_drop_text_for_conditioning_mode(
+    mode: ModeEnumT,
+    *,
+    joint_mode: ModeEnumT,
+    drop_text_conditioning: bool | None,
+) -> bool:
+    """Resolve text-drop semantics for joint-vs-conditional denoising modes."""
+
+    if drop_text_conditioning is not None:
+        return bool(drop_text_conditioning)
+    return mode != joint_mode

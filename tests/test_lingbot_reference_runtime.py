@@ -1935,7 +1935,11 @@ def _generalist_policy_config(
     )
 
 
-def _small_generalist_artifacts(mode: JointDenoiseTrainingMode):
+def _small_generalist_artifacts(
+    mode: JointDenoiseTrainingMode,
+    *,
+    drop_text_conditioning: bool | None = None,
+):
     torch.manual_seed(7)
     backbone_config = LingbotCompatibleVideoBackboneConfig(
         hidden_size=32,
@@ -1965,6 +1969,7 @@ def _small_generalist_artifacts(mode: JointDenoiseTrainingMode):
         actions=actions,
         action_mask=None,
         text_emb=torch.randn(1, 512, 16),
+        generalist_drop_text_conditioning=drop_text_conditioning,
     )
     action_latents = actions.reshape(1, 4, 2, 5).permute(0, 3, 1, 2).unsqueeze(-1)
     return artifacts, video_latents, action_latents
@@ -2017,6 +2022,40 @@ def test_generalist_joint_denoising_joint_mode_couples_noise_clarity() -> None:
     assert shared_sigmas.shape == (4,)
     assert torch.all(shared_sigmas >= 0)
     assert torch.all(shared_sigmas <= 1)
+
+
+def test_generalist_joint_denoising_conditional_modes_drop_text_by_default() -> None:
+    joint_artifacts, _, _ = _small_generalist_artifacts(JointDenoiseTrainingMode.JOINT)
+    assert joint_artifacts.input_dict["joint_denoise_text_dropped"] is False
+    assert torch.count_nonzero(joint_artifacts.input_dict["latent_dict"]["text_emb"]) > 0
+
+    for mode in (
+        JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+        JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
+    ):
+        artifacts, _, _ = _small_generalist_artifacts(mode)
+        input_dict = artifacts.input_dict
+
+        assert input_dict["joint_denoise_text_dropped"] is True
+        assert torch.equal(
+            input_dict["latent_dict"]["text_emb"],
+            torch.zeros_like(input_dict["latent_dict"]["text_emb"]),
+        )
+        assert torch.equal(
+            input_dict["action_dict"]["text_emb"],
+            torch.zeros_like(input_dict["action_dict"]["text_emb"]),
+        )
+
+
+def test_generalist_joint_denoising_explicit_drop_text_false_keeps_text() -> None:
+    artifacts, _, _ = _small_generalist_artifacts(
+        JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+        drop_text_conditioning=False,
+    )
+
+    assert artifacts.input_dict["joint_denoise_text_dropped"] is False
+    assert torch.count_nonzero(artifacts.input_dict["latent_dict"]["text_emb"]) > 0
+    assert torch.count_nonzero(artifacts.input_dict["action_dict"]["text_emb"]) > 0
 
 
 def test_lingbot_parallel_decoder_logs_generalist_mode_sums_and_counts() -> None:

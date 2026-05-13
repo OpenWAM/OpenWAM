@@ -36,6 +36,17 @@ def test_sample_construction_metadata_parses_geometry_and_generalist_fields() ->
     assert parsed.generalist.source == "counterfactual_dynamics"
 
 
+def test_sample_construction_metadata_preserves_absent_drop_text_as_unspecified() -> None:
+    parsed = SampleConstructionMetadata.from_mapping(
+        {
+            GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY: "action_conditioned_video",
+        }
+    )
+
+    assert parsed is not None
+    assert parsed.generalist.drop_text_conditioning is None
+
+
 def test_sample_construction_metadata_falls_back_to_generic_loss_range() -> None:
     parsed = SampleConstructionMetadata.from_mapping(
         {

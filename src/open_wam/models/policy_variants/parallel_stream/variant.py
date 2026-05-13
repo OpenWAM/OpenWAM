@@ -144,7 +144,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 action_loss_frame_end=sampled_geometry["action_loss_frame_end"],
                 frame_shift=sampled_geometry["frame_shift"],
                 generalist_training_mode_override=generalist_metadata["mode_override"],
-                generalist_drop_text_conditioning=bool(generalist_metadata["drop_text"]),
+                generalist_drop_text_conditioning=generalist_metadata["drop_text"],
                 generalist_training_source=generalist_metadata["source"],
             )
         else:
@@ -174,7 +174,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
     ) -> dict[str, object | None]:
         sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
         if sample_metadata is None:
-            return {"mode_override": None, "drop_text": False, "source": None}
+            return {"mode_override": None, "drop_text": None, "source": None}
         return {
             "mode_override": sample_metadata.generalist.mode_override,
             "drop_text": sample_metadata.generalist.drop_text_conditioning,
