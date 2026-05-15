@@ -35,7 +35,10 @@ from open_wam.configs.enums import DeadlineMissPolicy, FallbackHistoryPolicy  # 
 from open_wam.integrations import LiberoControlConfig, compute_osc_pose_action, ensure_local_libero_config  # noqa: E402
 from open_wam.integrations.realtime_control import build_live_rollout_summary  # noqa: E402
 from open_wam.models.policy_variants import PolicyInferContext  # noqa: E402
-from open_wam.models.policy_variants.mot.runtime_routing import ensure_mot_inference_backend  # noqa: E402
+from open_wam.models.policy_variants.mot.runtime_routing import (  # noqa: E402
+    ensure_mot_inference_backend,
+    resolve_mot_runtime_route,
+)
 from open_wam.pipelines import LingbotExactRunner, VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
 from open_wam.utils import (  # noqa: E402
     load_experiment_config,
@@ -723,10 +726,9 @@ def _repeat_exact_startup_bootstrap_latents(
 
 
 def _is_mot_non_joint_two_stream(config) -> bool:
-    return (
-        str(getattr(config.policy_variant, "name", "")) == "mot"
-        and str(getattr(config.policy_variant, "runtime_mode", "")) == "non_joint_two_stream"
-    )
+    # Historical helper name retained for call-site locality: this means the
+    # Method-1-style split-cache MoT route, not every non-joint packed coupling.
+    return resolve_mot_runtime_route(config).uses_split_cache_rollout
 
 
 def _resolve_checkpoint_path_for_config(*, config, checkpoint_arg: str | None) -> Path | None:
@@ -851,7 +853,7 @@ def _runtime_cache_name_for_session(*, config, session) -> str | None:
     cache_name = _exact_runtime_cache_name(session)
     if cache_name is not None:
         return cache_name
-    if _is_mot_non_joint_two_stream(config):
+    if resolve_mot_runtime_route(config).uses_split_cache_rollout:
         return "mot_non_joint_two_stream_cache"
     return None
 
@@ -951,7 +953,7 @@ def _sequence_session_ref(session, *, share_session: bool):
 
 
 def _snapshot_sequence_runtime_cache(*, runner, config, session) -> dict[str, Any] | None:
-    if _is_mot_non_joint_two_stream(config):
+    if resolve_mot_runtime_route(config).uses_stateful_realtime_session:
         return None
     return _snapshot_exact_runtime_cache(runner=runner, config=config, session=session)
 
@@ -2420,6 +2422,10 @@ def _run_sequence_policy_realtime_rollout(
         raise ValueError(
             f"{rollout_label} realtime rollout requires a full checkpoint via `--checkpoint` or config-backed inference."
         )
+    mot_runtime_route = _validate_mot_startup_open_loop_support(
+        config=config,
+        startup_open_loop_chunks=startup_open_loop_chunks,
+    )
     _print_stage(f"{rollout_label}_build_pipeline_start")
     pipeline = build_variant_pipeline_from_config(config)
     _print_stage(f"{rollout_label}_build_pipeline_done")
@@ -3236,12 +3242,18 @@ def _run_sequence_replan_job(
             task_id=int(task_id),
             episode_idx=int(episode_idx),
         )
-        if str(config.policy_variant.name) == "mot":
+        mot_runtime_route = resolve_mot_runtime_route(config)
+        if mot_runtime_route.is_mot and mot_runtime_route.supports_realtime_history_controls:
             infer_extra["mot_skip_observation_update"] = not bool(use_observation_update)
             if mot_condition_frame_start is not None:
                 infer_extra["mot_condition_frame_start"] = int(mot_condition_frame_start)
             if mot_action_cache_rewind_frame_start is not None:
                 infer_extra["mot_action_cache_rewind_frame_start"] = int(mot_action_cache_rewind_frame_start)
+        elif mot_runtime_route.is_mot and not bool(use_observation_update):
+            raise ValueError(
+                "M5 runtime route does not support split-cache open-loop controls: "
+                f"{mot_runtime_route.to_report()}"
+            )
         step_output = runner.infer_step(
             session=inference_session,
             context=PolicyInferContext(
@@ -3305,6 +3317,7 @@ def _run_sequence_replan_job(
             "execution_action_offset": int(_sequence_execution_action_offset(config)),
             "mot_condition_frame_start": mot_condition_frame_start,
             "mot_action_cache_rewind_frame_start": mot_action_cache_rewind_frame_start,
+            "mot_runtime_route": mot_runtime_route.to_report() if mot_runtime_route.is_mot else None,
             "preserve_rng_state": bool(preserve_rng_state),
             "planned_action_ids": [int(plan.absolute_action_index) for plan in planned_steps],
             "prepare_s": float(prepare_s),
@@ -3346,13 +3359,17 @@ def _resolve_observation_conditioned_replan_session(
     session,
     config,
 ):
-    if str(config.policy_variant.name) != "mot":
+    mot_runtime_route = resolve_mot_runtime_route(config)
+    if not mot_runtime_route.is_mot:
         return session
-    if str(getattr(config.policy_variant, "runtime_mode", "")) == "non_joint_two_stream":
-        # The non-joint two-stream runtime owns a Method-1-style rollout
-        # cache. Observation-conditioned replans write the current real
-        # observation window into that cache, so preserving the session is the
-        # realtime equivalent of the successful chunk-by-chunk control path.
+    if mot_runtime_route.uses_split_cache_rollout:
+        # The split-cache route owns a Method-1-style rollout cache. Live
+        # replans write the real observation window into that cache, so the
+        # session is the continuity boundary.
+        return session
+    if mot_runtime_route.uses_native_packed_rollout:
+        # Native packed inference carries history in PolicyInferState rather
+        # than the shared transformer's slot-pool cache.
         return session
     # Older MoT video-prefill-style modes tie the cache directly to the
     # current observation window, so rebuild them for each live replan.
@@ -3369,13 +3386,28 @@ def _should_use_mot_open_loop_extension(
     planner_mode: str,
     remaining_buffer_actions: int,
 ) -> bool:
-    if str(config.policy_variant.name) != "mot":
-        return False
-    if str(getattr(config.policy_variant, "runtime_mode", "")) != "non_joint_two_stream":
+    if not resolve_mot_runtime_route(config).supports_realtime_history_controls:
         return False
     if planner_mode not in {"async_buffer", "async_mix", "async_history_first"}:
         return False
     return int(remaining_buffer_actions) > 0
+
+
+def _validate_mot_startup_open_loop_support(*, config, startup_open_loop_chunks: int):
+    mot_runtime_route = resolve_mot_runtime_route(config)
+    if (
+        mot_runtime_route.is_mot
+        and int(startup_open_loop_chunks) > 0
+        and not mot_runtime_route.supports_realtime_history_controls
+    ):
+        raise ValueError(
+            "M5 runtime route does not support startup open-loop extension because "
+            "it has no split-cache observation-skip/rewind controls. Use "
+            "`startup_open_loop_chunks=0`, or a split-cache M5 route such as "
+            "`video_then_action` / `decoupled_same_step`. Runtime route: "
+            f"{mot_runtime_route.to_report()}"
+        )
+    return mot_runtime_route
 
 
 def _mot_action_cache_rewind_for_sequence_submit(
@@ -3389,7 +3421,7 @@ def _mot_action_cache_rewind_for_sequence_submit(
         return None
     if not bool(use_observation_update):
         return None
-    if not _is_mot_non_joint_two_stream(config):
+    if not resolve_mot_runtime_route(config).supports_realtime_history_controls:
         return None
     if planner_mode not in {"async_mix", "async_history_first"}:
         return None

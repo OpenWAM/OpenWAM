@@ -1601,6 +1601,13 @@ def test_mot_non_joint_realtime_replan_preserves_observation_conditioned_session
         negative_text_context="negative",
     )
     mot_config = SimpleNamespace(policy_variant=SimpleNamespace(name="mot", runtime_mode="non_joint_two_stream"))
+    mot_native_packed_config = SimpleNamespace(
+        policy_variant=SimpleNamespace(
+            name="mot",
+            runtime_mode="non_joint_two_stream",
+            current_block_coupling="joint",
+        )
+    )
     mot_prefill_config = SimpleNamespace(
         policy_variant=SimpleNamespace(name="mot", runtime_mode="video_prefill_action_denoise")
     )
@@ -1613,6 +1620,31 @@ def test_mot_non_joint_realtime_replan_preserves_observation_conditioned_session
     )
 
     assert resolved is session
+    assert calls == []
+    assert sandbox._is_mot_non_joint_two_stream(mot_config)
+    assert not sandbox._is_mot_non_joint_two_stream(mot_native_packed_config)
+    assert not sandbox._should_use_mot_open_loop_extension(
+        config=mot_native_packed_config,
+        planner_mode="async_history_first",
+        remaining_buffer_actions=4,
+    )
+    assert (
+        sandbox._mot_action_cache_rewind_for_sequence_submit(
+            config=mot_native_packed_config,
+            planner_mode="async_history_first",
+            use_observation_update=True,
+            condition_frame_start=8,
+        )
+        is None
+    )
+
+    resolved_native = sandbox._resolve_observation_conditioned_replan_session(
+        runner=Runner(),
+        session=session,
+        config=mot_native_packed_config,
+    )
+
+    assert resolved_native is session
     assert calls == []
 
     resolved_prefill = sandbox._resolve_observation_conditioned_replan_session(
@@ -1637,6 +1669,95 @@ def test_mot_non_joint_realtime_replan_preserves_observation_conditioned_session
         )
         is session
     )
+
+
+def test_mot_startup_open_loop_requires_history_control_route() -> None:
+    sandbox = _load_sandbox_module()
+    mot_split_cache_config = SimpleNamespace(
+        policy_variant=SimpleNamespace(name="mot", runtime_mode="non_joint_two_stream")
+    )
+    mot_native_packed_config = SimpleNamespace(
+        policy_variant=SimpleNamespace(
+            name="mot",
+            runtime_mode="non_joint_two_stream",
+            current_block_coupling="joint",
+        )
+    )
+    mot_prefill_config = SimpleNamespace(
+        policy_variant=SimpleNamespace(name="mot", runtime_mode="video_prefill_action_denoise")
+    )
+
+    assert (
+        sandbox._validate_mot_startup_open_loop_support(
+            config=mot_split_cache_config,
+            startup_open_loop_chunks=1,
+        ).supports_realtime_history_controls
+        is True
+    )
+    sandbox._validate_mot_startup_open_loop_support(
+        config=mot_native_packed_config,
+        startup_open_loop_chunks=0,
+    )
+
+    for config in (mot_native_packed_config, mot_prefill_config):
+        with pytest.raises(ValueError, match="does not support startup open-loop extension"):
+            sandbox._validate_mot_startup_open_loop_support(
+                config=config,
+                startup_open_loop_chunks=1,
+            )
+
+
+def test_mot_startup_open_loop_validation_runs_before_pipeline_setup(monkeypatch) -> None:
+    sandbox = _load_sandbox_module()
+    config = SimpleNamespace(
+        policy_variant=SimpleNamespace(
+            name="mot",
+            runtime_mode="video_prefill_action_denoise",
+        )
+    )
+
+    def fail_pipeline_build(*args, **kwargs):
+        raise AssertionError("pipeline setup should not run for invalid startup open-loop route")
+
+    monkeypatch.setattr(sandbox, "build_variant_pipeline_from_config", fail_pipeline_build)
+
+    with pytest.raises(ValueError, match="does not support startup open-loop extension"):
+        sandbox._run_sequence_policy_realtime_rollout(
+            config=config,
+            checkpoint_path=Path("/tmp/checkpoint.pt"),
+            rollout_label="test",
+            benchmark="libero_10",
+            task_id=0,
+            episode_idx=0,
+            max_actions=1,
+            env_horizon=None,
+            target_action_hz=1.0,
+            video_fps=None,
+            planner_mode="async_history_first",
+            deadline_miss_policy="fallback",
+            deadline_tolerance_ms=0.0,
+            output_dir=Path("/tmp"),
+            suffix="",
+            seed=0,
+            runtime_device=sandbox.torch.device("cpu"),
+            runtime_devices=(sandbox.torch.device("cpu"),),
+            runtime_prep_device=sandbox.torch.device("cpu"),
+            runtime_output_device=sandbox.torch.device("cpu"),
+            frontend_device=sandbox.torch.device("cpu"),
+            decode_device=sandbox.torch.device("cpu"),
+            sequence_buffer_threshold=1,
+            sequence_empty_plan_policy="fallback",
+            fallback_history_policy=sandbox.FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY,
+            startup_open_loop_chunks=1,
+            replan_low_watermark_actions=0,
+            video_num_inference_steps=None,
+            action_num_inference_steps=None,
+            guidance_scale=None,
+            action_guidance_scale=None,
+            initial_generation_action_start=None,
+            write_fallback_timeline_video=False,
+            artifact_profile="debug",
+        )
 
 
 def test_method4_realtime_replan_uses_absolute_action_start_for_video_condition(monkeypatch) -> None:
