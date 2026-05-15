@@ -32,6 +32,7 @@ def test_cli_overrides_map_save_root_and_env_defaults(tmp_path: Path) -> None:
             "trainer.strategy=single_device",
             "trainer.save_interval=50",
             "trainer.validation_interval=25",
+            "training.learning_rate=2e-05",
         ),
     )
 
@@ -57,6 +58,7 @@ def test_cli_overrides_map_save_root_and_env_defaults(tmp_path: Path) -> None:
     assert config.trainer.loop_policy == LoopPolicyName.STEPS
     assert config.trainer.strategy == StrategyName.SINGLE_DEVICE
     assert config.training.num_steps == 4
+    assert config.training.learning_rate == 2.0e-5
     assert config.trainer.save_interval == 50
     assert config.trainer.validation_interval == 25
     assert config.trainer.enable_wandb is True

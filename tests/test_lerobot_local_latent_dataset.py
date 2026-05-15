@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader
 
 from open_wam.configs import ReplayStatusPolicy, SampleWeightMode, SegmentContextPolicy, WindowSamplingMode
 from open_wam.data import build_train_val_latent_datasets, collate_latent_wam_samples
+from open_wam.data.lerobot_v2_latent import scan_local_latent_windows
 from open_wam.training import TrainingRuntime
 from open_wam.utils.config_loader import load_experiment_config
 
@@ -257,6 +258,32 @@ def test_local_lerobot_latent_dataset_builds_canonical_latents(tmp_path: Path) -
     assert sample.metadata["observation_frame_indices"] == [0, 1, 2, 3]
     assert sample.metadata["valid_action_steps"] == 6
     assert sample.metadata["dataset_mean_valid_action_steps"] == pytest.approx(6.0)
+
+
+def test_scan_local_latent_windows_requires_complete_multicamera_latents(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent"
+    _build_local_robotwin_latent_repo(repo_root)
+    (
+        repo_root
+        / "latents"
+        / "chunk-000"
+        / "cam_right_wrist"
+        / "episode_000000_0_4.pth"
+    ).unlink()
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            camera_names=("cam_high", "cam_left_wrist", "cam_right_wrist"),
+            latent_camera_names=("cam_high", "cam_left_wrist", "cam_right_wrist"),
+        ),
+    )
+
+    assert scan_local_latent_windows(repo_root, config.data) == []
 
 
 def test_local_lerobot_latent_dataset_filters_failed_replay_status(tmp_path: Path) -> None:

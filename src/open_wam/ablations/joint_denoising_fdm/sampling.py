@@ -4,7 +4,6 @@ from collections import defaultdict
 from dataclasses import replace
 from pathlib import Path
 import random
-import re
 from typing import Any
 
 from torch.utils.data import Dataset
@@ -18,10 +17,9 @@ from open_wam.data.lerobot_v2_latent import (
     resolve_latent_root,
 )
 from open_wam.data.replay_status import filter_episode_indices_by_replay_status, load_replay_status_records
+from open_wam.utils.latent_filenames import match_latent_window_filename
 
 from .types import FdmStartPolicy, FdmWindowSelection
-
-_LATENT_FILE_PATTERN = re.compile(r"episode_(?P<episode>\d{6})_(?P<start>\d+)_(?P<end>\d+)\.pth$")
 
 
 def build_fdm_eval_dataset(
@@ -202,7 +200,7 @@ def _fast_scan_local_latent_windows(repo_root: Path, data_config: DataConfig) ->
         path for path in resolve_latent_root(repo_root, data_config).glob(f"chunk-*/{primary_camera}") if path.is_dir()
     ):
         for latent_file in sorted(camera_dir.glob("episode_*.pth")):
-            match = _LATENT_FILE_PATTERN.match(latent_file.name)
+            match = match_latent_window_filename(latent_file.name)
             if match is None:
                 continue
             start_frame = int(match.group("start"))

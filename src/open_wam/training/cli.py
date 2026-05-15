@@ -273,4 +273,9 @@ def _coerce_override_value(current_value: Any, value: Any) -> Any:
         return bool(value)
     if isinstance(current_value, float) and isinstance(value, int):
         return float(value)
+    if isinstance(current_value, float) and isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError as exc:
+            raise ValueError(f"Cannot coerce override value {value!r} to float.") from exc
     return value

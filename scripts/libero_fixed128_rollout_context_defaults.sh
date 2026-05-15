@@ -67,3 +67,20 @@ open_wam_append_fixed128_rollout_context_args() {
     target_args+=("${OPEN_WAM_FIXED128_ROLLOUT_CONTEXT_DEFAULT_ARGS[@]}")
   fi
 }
+
+open_wam_print_train_argv_json() {
+  local argv_python="${OPEN_WAM_TRAIN_ARGV_PYTHON:-python3}"
+  "${argv_python}" - "$@" <<'PY'
+import json
+import sys
+
+print(json.dumps(sys.argv[1:]))
+PY
+}
+
+open_wam_maybe_print_train_argv() {
+  if [[ "${OPEN_WAM_PRINT_TRAIN_ARGV:-0}" == "1" ]]; then
+    open_wam_print_train_argv_json "$@"
+    exit 0
+  fi
+}

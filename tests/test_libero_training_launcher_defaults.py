@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import json
 import subprocess
 
 
@@ -124,4 +125,71 @@ def test_libero_posttrain_launchers_inherit_shared_fixed128_defaults() -> None:
         assert "libero_fixed128_rollout_context_defaults.sh" in text
         assert "open_wam_reject_cli_config_override_args" in text
         assert "open_wam_append_fixed128_rollout_context_args" in text
+        assert "open_wam_maybe_print_train_argv" in text
         assert '"${OPEN_WAM_FIXED128_ROLLOUT_CONTEXT_ARGS[@]}"' in text
+
+
+def test_libero_posttrain_launcher_can_print_exact_train_argv_without_running() -> None:
+    env = os.environ.copy()
+    env.update(
+        {
+            "OPEN_WAM_PRINT_TRAIN_ARGV": "1",
+            "CONFIG_NAME": "parallel_stream_libero_lingbot_m1_joint_heng_compatible",
+            "NGPU": "4",
+        }
+    )
+    result = subprocess.run(
+        [
+            str(REPO_ROOT / "scripts/run_parallel_stream_posttrain_libero.sh"),
+            "--num-steps",
+            "4000",
+            "--set",
+            "training.learning_rate=2e-5",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    argv = json.loads(result.stdout)
+
+    assert argv[:4] == [
+        "--config-name",
+        "parallel_stream_libero_lingbot_m1_joint_heng_compatible",
+        "--devices",
+        "4",
+    ]
+    assert "data.sample_construction.segment_frames=128" in argv
+    assert argv[-4:] == ["--num-steps", "4000", "--set", "training.learning_rate=2e-5"]
+
+
+def test_libero_posttrain_launcher_dry_run_uses_python3_without_venv_path() -> None:
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "OPEN_WAM_PRINT_TRAIN_ARGV": "1",
+        "CONFIG_NAME": "parallel_stream_libero_lingbot_m1_joint_heng_compatible",
+        "NGPU": "4",
+    }
+    result = subprocess.run(
+        [
+            "bash",
+            str(REPO_ROOT / "scripts/run_parallel_stream_posttrain_libero.sh"),
+            "--num-steps",
+            "1",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    argv = json.loads(result.stdout)
+
+    assert argv[:4] == [
+        "--config-name",
+        "parallel_stream_libero_lingbot_m1_joint_heng_compatible",
+        "--devices",
+        "4",
+    ]
+    assert "data.sample_construction.segment_frames=128" in argv

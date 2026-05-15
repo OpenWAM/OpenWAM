@@ -6,7 +6,6 @@ from dataclasses import dataclass
 import math
 import json
 import random
-import re
 from pathlib import Path
 from typing import Any
 
@@ -37,9 +36,7 @@ from .action_mapping import (
 from .latent_contracts import LatentWAMSample
 from .lerobot_v2 import LeRobotEpisodeRecord, LeRobotV2Metadata, _resolve_row_key
 from .replay_status import filter_episode_indices_by_replay_status, load_replay_status_records
-
-
-_LATENT_FILE_PATTERN = re.compile(r"episode_(?P<episode>\d{6})_(?P<start>\d+)_(?P<end>\d+)\.pth$")
+from open_wam.utils.latent_filenames import match_latent_window_filename
 
 
 @dataclass(frozen=True)
@@ -3001,10 +2998,17 @@ def scan_local_latent_windows(repo_root: Path, data_config: DataConfig) -> list[
 
     primary_camera = data_config.latent_camera_names[0]
     windows: list[LocalEpisodeWindow] = []
-    for camera_dir in sorted((path for path in resolve_latent_root(repo_root, data_config).glob(f"chunk-*/{primary_camera}") if path.is_dir())):
+    latent_root = resolve_latent_root(repo_root, data_config)
+    for camera_dir in sorted((path for path in latent_root.glob(f"chunk-*/{primary_camera}") if path.is_dir())):
+        chunk_dir = camera_dir.parent
         for latent_file in sorted(camera_dir.glob("episode_*.pth")):
-            match = _LATENT_FILE_PATTERN.match(latent_file.name)
+            match = match_latent_window_filename(latent_file.name)
             if match is None:
+                continue
+            if any(
+                not (chunk_dir / camera_name / latent_file.name).is_file()
+                for camera_name in data_config.latent_camera_names[1:]
+            ):
                 continue
             payload = torch.load(latent_file, map_location="cpu", weights_only=False)
             observed_frame_ids: tuple[int, ...] = ()
