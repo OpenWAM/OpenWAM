@@ -33,6 +33,8 @@ from open_wam.configs.enums import (
     ParallelStreamVariantProfile,
     PaddedTargetPolicy,
     PolicyVariantName,
+    ProprioContextMode,
+    SampleStateAnchorMode,
     SegmentContextPolicy,
     StrEnum,
     TailPaddingPolicy,
@@ -186,12 +188,14 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
                 issues,
                 "policy_variant",
             )
+            _validate_enum(policy_variant, "proprio_context_mode", ProprioContextMode, issues, "policy_variant")
             _validate_joint_denoise_training_mode_probs(policy_variant, issues)
         if policy_variant.get("name") == PolicyVariantName.MOT.value:
             _validate_enum(policy_variant, "runtime_mode", MoTRuntimeMode, issues, "policy_variant")
             _validate_enum(policy_variant, "condition_mode", MoTConditionMode, issues, "policy_variant")
             _validate_enum(policy_variant, "action_expert_init_mode", MoTActionExpertInitMode, issues, "policy_variant")
             _validate_enum(policy_variant, "current_block_coupling", CurrentBlockCoupling, issues, "policy_variant")
+            _validate_enum(policy_variant, "proprio_context_mode", ProprioContextMode, issues, "policy_variant")
             _validate_enum(
                 policy_variant,
                 "generalist_training_paradigm",
@@ -374,6 +378,7 @@ def _validate_sample_construction(
     )
     _validate_enum(sample_construction, "tail_padding_policy", TailPaddingPolicy, issues, "data.sample_construction")
     _validate_enum(sample_construction, "padded_target_policy", PaddedTargetPolicy, issues, "data.sample_construction")
+    _validate_enum(sample_construction, "state_anchor_mode", SampleStateAnchorMode, issues, "data.sample_construction")
     _validate_positive_ints(
         sample_construction,
         issues,

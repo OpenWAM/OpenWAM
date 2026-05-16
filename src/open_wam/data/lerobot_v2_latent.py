@@ -22,6 +22,7 @@ from open_wam.configs import (
     LatentWindowProfile,
     PaddedTargetPolicy,
     SampleWeightMode,
+    SampleStateAnchorMode,
     SegmentContextPolicy,
     TailPaddingPolicy,
     WindowSamplingMode,
@@ -119,7 +120,13 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
         self._episode_cache: OrderedDict[tuple[str, int], list[dict[str, Any]]] = OrderedDict()
         self._latent_view_cache: OrderedDict[
             tuple[str, int, int, int],
-            tuple[torch.Tensor, dict[str, dict[str, int]], dict[str, Any]],
+            tuple[
+                torch.Tensor,
+                dict[str, dict[str, int]],
+                dict[str, Any],
+                torch.Tensor | None,
+                dict[str, dict[str, int]],
+            ],
         ] = OrderedDict()
 
         if not self.windows:
@@ -266,6 +273,7 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
         rows = self._load_episode_rows(window.repo_root, window.episode_index, repo_bundle.metadata)
         latent_payloads = self._load_window_latents(window, repo_bundle.metadata)
         video_latents, latent_layout_metadata = self._assemble_canonical_latents(latent_payloads)
+        assert video_latents is not None
 
         primary_payload = latent_payloads[self.data_config.latent_camera_names[0]]
         observed_frame_ids = [int(value) for value in list(primary_payload.get("frame_ids", []))]
@@ -281,15 +289,9 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             observed_frame_ids=observed_frame_ids,
             latent_num_frames=int(video_latents.shape[1]),
         )
-        state_start = max(0, anchor_frame_index - self.data_config.action_schema.state_horizon + 1)
-        state_rows = rows[state_start : anchor_frame_index + 1]
-        state_source_key = self.data_config.action_target.pose_source_key
-        state, state_mask = self._extract_sequence(
-            rows=state_rows,
-            key=state_source_key,
-            target_dim=self.data_config.action_schema.state_dim,
-            target_length=self.data_config.action_schema.state_horizon,
-            left_pad=True,
+        state, state_mask = self._extract_state_history_at_frame(
+            rows=rows,
+            anchor_frame_index=anchor_frame_index,
         )
 
         text_context = primary_payload.get("text_emb")
@@ -331,7 +333,7 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
                 "observed_frame_ids": observed_frame_ids,
                 "task_index": task_index,
                 "latent_layout": latent_layout_metadata,
-                "state_source_key": state_source_key,
+                "state_source_key": self.data_config.action_target.pose_source_key,
                 "action_representation": self.data_config.action_target.representation,
                 **action_target_metadata,
                 **self._action_loss_metadata(action_mask),
@@ -425,12 +427,19 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
     def _assemble_canonical_latents(
         self,
         latent_payloads: dict[str, dict[str, Any]],
-    ) -> tuple[torch.Tensor, dict[str, dict[str, int]]]:
+        *,
+        payload_key: str = "latent",
+        require_payload_key: bool = True,
+    ) -> tuple[torch.Tensor | None, dict[str, dict[str, int]]]:
         canonical_latents = None
         metadata: dict[str, dict[str, int]] = {}
         for view_layout, camera_name in zip(self.data_config.view_layout, self.data_config.latent_camera_names, strict=True):
             payload = latent_payloads[camera_name]
-            view_latents = reshape_latent_payload(payload)
+            if payload_key not in payload:
+                if require_payload_key:
+                    raise KeyError(f"Expected key {payload_key!r} in latent payload for camera {camera_name!r}.")
+                return None, {}
+            view_latents = reshape_latent_payload(payload, payload_key=payload_key)
             latent_height = int(view_latents.shape[1])
             latent_width = int(view_latents.shape[2])
             stride_h = max(1, view_layout.height // latent_height)
@@ -466,7 +475,13 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
         self,
         window: LocalEpisodeWindow,
         metadata: LeRobotV2Metadata,
-    ) -> tuple[torch.Tensor, dict[str, dict[str, int]], dict[str, Any]]:
+    ) -> tuple[
+        torch.Tensor,
+        dict[str, dict[str, int]],
+        dict[str, Any],
+        torch.Tensor | None,
+        dict[str, dict[str, int]],
+    ]:
         cache_key = (str(window.repo_root), window.episode_index, window.start_frame, window.end_frame)
         if cache_key in self._latent_view_cache:
             self._latent_view_cache.move_to_end(cache_key)
@@ -474,8 +489,14 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
 
         latent_payloads = self._load_window_latents(window, metadata)
         video_latents, latent_layout_metadata = self._assemble_canonical_latents(latent_payloads)
+        assert video_latents is not None
+        condition_latents, condition_layout_metadata = self._assemble_canonical_latents(
+            latent_payloads,
+            payload_key="condition_latent",
+            require_payload_key=False,
+        )
         primary_payload = dict(latent_payloads[self.data_config.latent_camera_names[0]])
-        payload = (video_latents, latent_layout_metadata, primary_payload)
+        payload = (video_latents, latent_layout_metadata, primary_payload, condition_latents, condition_layout_metadata)
         self._latent_view_cache[cache_key] = payload
         while len(self._latent_view_cache) > max(1, int(self.data_config.episode_cache_size)):
             self._latent_view_cache.popitem(last=False)
@@ -683,6 +704,26 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             target_length=target_length,
             left_pad=left_pad,
             sequence_name=key,
+        )
+
+    def _extract_state_history_at_frame(
+        self,
+        *,
+        rows: list[dict[str, Any]],
+        anchor_frame_index: int,
+        state_horizon: int | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        resolved_horizon = int(
+            self.data_config.action_schema.state_horizon if state_horizon is None else state_horizon
+        )
+        anchor = max(0, min(int(anchor_frame_index), len(rows) - 1)) if rows else 0
+        state_start = max(0, anchor - resolved_horizon + 1)
+        return self._extract_sequence(
+            rows=rows[state_start : anchor + 1],
+            key=self.data_config.action_target.pose_source_key,
+            target_dim=self.data_config.action_schema.state_dim,
+            target_length=resolved_horizon,
+            left_pad=True,
         )
 
     def _pack_sequence(
@@ -1122,7 +1163,13 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
         window = self.windows[window_index]
         repo_bundle = self._repo_bundles[str(window.repo_root)]
         rows = self._load_episode_rows(window.repo_root, window.episode_index, repo_bundle.metadata)
-        full_video_latents, latent_layout_metadata, primary_payload = self._load_canonical_window_latents(
+        (
+            full_video_latents,
+            latent_layout_metadata,
+            primary_payload,
+            full_condition_latents,
+            condition_layout_metadata,
+        ) = self._load_canonical_window_latents(
             window,
             repo_bundle.metadata,
         )
@@ -1132,8 +1179,12 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
             virtual_latent_start=virtual_latent_start,
             start_padding_frames=self._window_start_padding_frames(window),
         )
+        sampled_chunk_size, sampled_window_size = self._sample_uniform_segment_attention_geometry(
+            segment_length=segment_length
+        )
         subwindow = self._build_uniform_segment(
             video_latents=full_video_latents,
+            condition_latents=full_condition_latents,
             rows=rows,
             primary_payload=primary_payload,
             window=window,
@@ -1163,6 +1214,7 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
             task_text=task_text,
             text_context=text_context,
             negative_text_context=negative_text_context,
+            condition_latents=subwindow["condition_latents"],
             metadata={
                 "repo_root": str(window.repo_root),
                 "dataset_id": str(window.repo_root),
@@ -1177,9 +1229,14 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
                 "window_start_frame": subwindow["sample_start_frame"],
                 "window_end_frame": subwindow["sample_end_frame"],
                 "anchor_frame_index": subwindow["anchor_frame_index"],
+                "state_anchor_frame": subwindow["state_anchor_frame"],
+                "proprio_context_frame_index": subwindow["proprio_context_frame_index"],
+                "proprio_context_local_frame": subwindow["proprio_context_local_frame"],
                 "observed_frame_ids": subwindow["observed_frame_ids"],
                 "task_index": task_index,
                 "latent_layout": latent_layout_metadata,
+                "condition_latent_layout": condition_layout_metadata,
+                "has_condition_latents": subwindow["condition_latents"] is not None,
                 "state_source_key": self.data_config.action_target.pose_source_key,
                 "action_representation": self.data_config.action_target.representation,
                 "virtual_sample_index": index,
@@ -1202,6 +1259,8 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
                     sample_start_frame=subwindow["sample_start_frame"],
                     start_padding_frames=subwindow["start_padding_frames"],
                     pre_start_frames=subwindow["pre_start_frames"],
+                    sampled_chunk_size=sampled_chunk_size,
+                    sampled_window_size=sampled_window_size,
                 ),
                 **subwindow["action_target_metadata"],
                 **self._action_loss_metadata(subwindow["action_mask"]),
@@ -1257,6 +1316,22 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
                 history_frames = int(math.ceil(window_size / 2.0)) * chunk_size
                 metadata["history_frames"] = max(1, min(history_frames, max(1, int(segment_length) - chunk_size)))
         return metadata
+
+    def _sample_uniform_segment_attention_geometry(self, *, segment_length: int) -> tuple[int, int]:
+        sample_cfg = self.data_config.sample_construction
+        max_chunk_size = max(1, min(int(sample_cfg.chunk_size), int(segment_length)))
+        if bool(sample_cfg.randomize_geometry) and max_chunk_size > 1:
+            sampled_chunk_size = int(random.randint(1, max_chunk_size))
+        else:
+            sampled_chunk_size = max_chunk_size
+
+        max_window_size = max(1, int(sample_cfg.window_size))
+        if bool(sample_cfg.randomize_geometry) and max_window_size >= 4:
+            sampled_window_size = int(random.randint(4, max_window_size))
+        else:
+            sampled_window_size = max_window_size
+
+        return sampled_chunk_size, sampled_window_size
 
     def _sample_segment_geometry(
         self,
@@ -1331,6 +1406,7 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
         self,
         *,
         video_latents: torch.Tensor,
+        condition_latents: torch.Tensor | None = None,
         rows: list[dict[str, Any]],
         primary_payload: dict[str, Any],
         window: LocalEpisodeWindow,
@@ -1434,20 +1510,32 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
             leading_zero_action_frames=pre_start_frames if pre_start_frames > 0 else 1,
             leading_zero_action_mask=0.0 if pre_start_frames > 0 else 1.0,
         )
-        state_start = max(0, anchor_frame_index - self.data_config.action_schema.state_horizon + 1)
-        state_rows = rows[state_start : min(anchor_frame_index + 1, len(rows))]
-        state, state_mask = self._extract_sequence(
-            rows=state_rows,
-            key=self.data_config.action_target.pose_source_key,
-            target_dim=self.data_config.action_schema.state_dim,
-            target_length=self.data_config.action_schema.state_horizon,
-            left_pad=True,
+        proprio_context_local_frame = max(0, min(len(observed_frame_ids) - 1, int(loss_frame_start) - 1))
+        proprio_context_frame_index = observed_frame_ids[proprio_context_local_frame]
+        state_anchor_frame = self._resolve_sample_state_anchor_frame(
+            observed_frame_ids=observed_frame_ids,
+            sample_start_frame=sample_start_frame,
+            anchor_frame_index=anchor_frame_index,
+            proprio_context_frame_index=proprio_context_frame_index,
+        )
+        state, state_mask = self._extract_state_history_at_frame(
+            rows=rows,
+            anchor_frame_index=state_anchor_frame,
         )
         return {
             "video_latents": self._slice_video_latents_with_zero_hold(
                 video_latents=video_latents,
                 latent_start=tensor_latent_start,
                 segment_length=tensor_segment_length,
+            ),
+            "condition_latents": (
+                self._slice_video_latents_with_zero_hold(
+                    video_latents=condition_latents,
+                    latent_start=tensor_latent_start,
+                    segment_length=tensor_segment_length,
+                )
+                if condition_latents is not None
+                else None
             ),
             "actions": actions,
             "action_mask": action_mask,
@@ -1457,6 +1545,9 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
             "sample_start_frame": sample_start_frame,
             "sample_end_frame": sample_end_frame,
             "anchor_frame_index": anchor_frame_index,
+            "state_anchor_frame": state_anchor_frame,
+            "proprio_context_frame_index": proprio_context_frame_index,
+            "proprio_context_local_frame": proprio_context_local_frame,
             "observed_frame_ids": observed_frame_ids,
             "action_start_index": sample_start_frame,
             "action_end_index": sample_start_frame + int(actions.shape[0]),
@@ -1707,6 +1798,29 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
                 -1,
             )
         return output.contiguous()
+
+    def _resolve_sample_state_anchor_frame(
+        self,
+        *,
+        observed_frame_ids: list[int],
+        sample_start_frame: int,
+        anchor_frame_index: int,
+        proprio_context_frame_index: int | None = None,
+    ) -> int:
+        mode = self.data_config.sample_construction.state_anchor_mode
+        if mode == SampleStateAnchorMode.PROPRIO_CONTEXT_FRAME:
+            if proprio_context_frame_index is None:
+                return int(anchor_frame_index)
+            return int(proprio_context_frame_index)
+        if mode == SampleStateAnchorMode.SAMPLE_START_FRAME:
+            return int(sample_start_frame)
+        if mode == SampleStateAnchorMode.FIRST_OBSERVED_FRAME:
+            if not observed_frame_ids:
+                raise ValueError("state_anchor_mode=first_observed_frame requires non-empty observed_frame_ids.")
+            return int(observed_frame_ids[0])
+        if mode == SampleStateAnchorMode.ANCHOR_FRAME:
+            return int(anchor_frame_index)
+        raise ValueError(f"Unsupported sample state_anchor_mode {mode!r}.")
 
 
 class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRobotLatentDataset):
@@ -1966,12 +2080,19 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
         window = self.windows[window_index]
         repo_bundle = self._repo_bundles[str(window.repo_root)]
         rows = self._load_episode_rows(window.repo_root, window.episode_index, repo_bundle.metadata)
-        full_video_latents, latent_layout_metadata, primary_payload = self._load_canonical_window_latents(
+        (
+            full_video_latents,
+            latent_layout_metadata,
+            primary_payload,
+            full_condition_latents,
+            condition_layout_metadata,
+        ) = self._load_canonical_window_latents(
             window,
             repo_bundle.metadata,
         )
         subwindow = self._build_uniform_segment(
             video_latents=full_video_latents,
+            condition_latents=full_condition_latents,
             rows=rows,
             primary_payload=primary_payload,
             window=window,
@@ -2008,6 +2129,7 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
             task_text=task_text,
             text_context=text_context,
             negative_text_context=negative_text_context,
+            condition_latents=subwindow["condition_latents"],
             metadata={
                 "repo_root": str(window.repo_root),
                 "dataset_id": str(window.repo_root),
@@ -2022,9 +2144,14 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
                 "window_start_frame": subwindow["sample_start_frame"],
                 "window_end_frame": subwindow["sample_end_frame"],
                 "anchor_frame_index": subwindow["anchor_frame_index"],
+                "state_anchor_frame": subwindow["state_anchor_frame"],
+                "proprio_context_frame_index": subwindow["proprio_context_frame_index"],
+                "proprio_context_local_frame": subwindow["proprio_context_local_frame"],
                 "observed_frame_ids": subwindow["observed_frame_ids"],
                 "task_index": task_index,
                 "latent_layout": latent_layout_metadata,
+                "condition_latent_layout": condition_layout_metadata,
+                "has_condition_latents": subwindow["condition_latents"] is not None,
                 "state_source_key": self.data_config.action_target.pose_source_key,
                 "action_representation": self.data_config.action_target.representation,
                 "virtual_sample_index": int(index),
@@ -2243,14 +2370,10 @@ class RandomSubwindowLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
             observed_frame_ids=observed_frame_ids,
             latent_num_frames=sample_num_frames,
         )
-        state_start = max(0, anchor_frame_index - state_horizon + 1)
-        state_rows = rows[state_start : anchor_frame_index + 1]
-        state, state_mask = self._extract_sequence(
-            rows=state_rows,
-            key=self.data_config.action_target.pose_source_key,
-            target_dim=self.data_config.action_schema.state_dim,
-            target_length=state_horizon,
-            left_pad=True,
+        state, state_mask = self._extract_state_history_at_frame(
+            rows=rows,
+            anchor_frame_index=anchor_frame_index,
+            state_horizon=state_horizon,
         )
 
         return {
@@ -2484,14 +2607,9 @@ class ContextualSubwindowLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDatas
             observed_frame_ids=observed_frame_ids,
             latent_num_frames=sample_num_frames,
         )
-        state_start = max(0, anchor_frame_index - self.data_config.action_schema.state_horizon + 1)
-        state_rows = rows[state_start : anchor_frame_index + 1]
-        state, state_mask = self._extract_sequence(
-            rows=state_rows,
-            key=self.data_config.action_target.pose_source_key,
-            target_dim=self.data_config.action_schema.state_dim,
-            target_length=self.data_config.action_schema.state_horizon,
-            left_pad=True,
+        state, state_mask = self._extract_state_history_at_frame(
+            rows=rows,
+            anchor_frame_index=anchor_frame_index,
         )
 
         return {
@@ -3108,8 +3226,8 @@ def read_jsonl_local(path: Path) -> list[dict[str, Any]]:
         return [json.loads(line) for line in handle if line.strip()]
 
 
-def reshape_latent_payload(payload: dict[str, Any]) -> torch.Tensor:
-    latent = payload["latent"]
+def reshape_latent_payload(payload: dict[str, Any], *, payload_key: str = "latent") -> torch.Tensor:
+    latent = payload[payload_key]
     if not isinstance(latent, torch.Tensor):
         latent = torch.tensor(latent)
     latent_num_frames = int(payload["latent_num_frames"])

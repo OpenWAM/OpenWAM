@@ -109,10 +109,13 @@ class LingbotExactRunner:
         if self.pipeline.policy_variant.config.runtime_mode not in {
             ParallelRuntimeMode.LINGBOT_EXACT,
             ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
+            ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK,
+            ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
         }:
             raise ValueError(
                 "LingBot exact runner requires `parallel_stream.runtime_mode` to be "
-                "`lingbot_exact` or `lingbot_exact_action_conditioned`."
+                "`lingbot_exact`, `lingbot_exact_action_conditioned`, or "
+                "`current_frame_action_chunk`, or `fastwam_first_frame`."
             )
 
     @property
@@ -151,6 +154,7 @@ class LingbotExactRunner:
         negative_text_context: torch.Tensor | None = None,
         action_space: ActionSpace | str = ActionSpace.AUTO,
         frame_start_override: int | None = None,
+        proprio_state: torch.Tensor | None = None,
     ) -> LingbotExactWarmupOutput:
         # Warmup uses the same shared frontend/runtime owner as the normal
         # pipeline path, while preserving the exact slot-pool cache lifecycle
@@ -171,6 +175,7 @@ class LingbotExactRunner:
             infer_state=session.policy_state,
             action_space=action_space,
             frame_start_override=frame_start_override,
+            proprio_state=proprio_state,
         )
         return LingbotExactWarmupOutput(
             session=LingbotExactSession(
@@ -192,7 +197,9 @@ class LingbotExactRunner:
         task_text: tuple[str | None, ...] | None = None,
         text_context: torch.Tensor | None = None,
         negative_text_context: torch.Tensor | None = None,
+        proprio_state: torch.Tensor | None = None,
         advance_frame_start: bool = False,
+        skip_video_prediction: bool = False,
     ) -> LingbotExactChunkOutput:
         visual_outputs = None
         if views is not None or video_latents is not None:
@@ -221,7 +228,9 @@ class LingbotExactRunner:
             infer_state=session.policy_state,
             text_context=resolved_text_context,
             negative_text_context=resolved_negative_text_context,
+            proprio_state=proprio_state,
             advance_frame_start=advance_frame_start,
+            skip_video_prediction=skip_video_prediction,
         )
         decoder_output = self.pipeline.resolve_infer_decoder_output(
             policy_output,

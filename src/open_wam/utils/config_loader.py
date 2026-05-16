@@ -489,7 +489,13 @@ def _load_policy_variant_config(
             ),
             use_text_conditioning=resolved_raw.get("use_text_conditioning", True),
             use_state_conditioning=resolved_raw.get("use_state_conditioning", False),
+            proprio_context_mode=_coerce_enum(
+                config_enums.ProprioContextMode,
+                resolved_raw.get("proprio_context_mode", config_enums.ProprioContextMode.NONE),
+            ),
             use_activation_checkpointing=resolved_raw.get("use_activation_checkpointing", False),
+            use_condition_latents=bool(resolved_raw.get("use_condition_latents", True)),
+            require_condition_latents=bool(resolved_raw.get("require_condition_latents", False)),
             mot_generalist_training_mode_probs=resolved_raw.get("mot_generalist_training_mode_probs"),
             generalist_training_paradigm=_coerce_enum(
                 config_enums.GeneralistTrainingParadigm,
@@ -647,6 +653,12 @@ def _load_policy_variant_config(
             preserve_video_pretrain_history=resolved_raw.get(
                 "preserve_video_pretrain_history", False
             ),
+            use_condition_latents=bool(resolved_raw.get("use_condition_latents", True)),
+            proprio_context_mode=_coerce_enum(
+                config_enums.ProprioContextMode,
+                resolved_raw.get("proprio_context_mode", config_enums.ProprioContextMode.NONE),
+            ),
+            require_condition_latents=bool(resolved_raw.get("require_condition_latents", False)),
             temporal_position_mode=_coerce_enum(
                 config_enums.TemporalPositionMode,
                 resolved_raw.get(
@@ -693,7 +705,13 @@ def _load_action_decoder_config(
         elif (
             policy_variant_config.name == config_enums.PolicyVariantName.PARALLEL_STREAM
             and isinstance(policy_variant_config, ParallelStreamPolicyConfig)
-            and policy_variant_config.runtime_mode == config_enums.ParallelRuntimeMode.LINGBOT_EXACT
+            and policy_variant_config.runtime_mode
+            in {
+                config_enums.ParallelRuntimeMode.LINGBOT_EXACT,
+                config_enums.ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
+                config_enums.ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK,
+                config_enums.ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
+            }
         ):
             resolved_raw["name"] = config_enums.ActionDecoderName.LINGBOT_PARALLEL
         else:
@@ -1065,6 +1083,13 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
             state_horizon=sample_construction_raw.get(
                 "state_horizon",
                 data_defaults.sample_construction.state_horizon,
+            ),
+            state_anchor_mode=_coerce_enum(
+                config_enums.SampleStateAnchorMode,
+                sample_construction_raw.get(
+                    "state_anchor_mode",
+                    data_defaults.sample_construction.state_anchor_mode,
+                ),
             ),
             frame_stride=sample_construction_raw.get(
                 "frame_stride",

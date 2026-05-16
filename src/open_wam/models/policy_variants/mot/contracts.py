@@ -36,6 +36,7 @@ class MoTRuntimeState:
 
     action_device: str | None = None
     text_context: torch.Tensor | None = None
+    proprio_state: torch.Tensor | None = None
     video_cache: MoTVideoCache | None = None
     # Persistent per-action-expert-layer K/V cache for past action chunks.
     # Grows by `action_horizon` tokens per chunk when the

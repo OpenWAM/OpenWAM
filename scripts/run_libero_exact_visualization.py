@@ -26,6 +26,8 @@ from open_wam.integrations import (  # noqa: E402
     ensure_local_libero_config,
     load_libero_task_init_states,
 )
+from open_wam.data.action_transforms import quaternion_to_axis_angle  # noqa: E402
+from open_wam.configs import ParallelRuntimeMode, ProprioContextMode  # noqa: E402
 from open_wam.evals.evaluate import EvaluationRequest, resolve_evaluation_request  # noqa: E402
 from open_wam.models.visual_tower.reference_loader import resolve_pretrained_component_dir  # noqa: E402
 from open_wam.pipelines import build_exact_runtime_runner_from_config  # noqa: E402
@@ -94,6 +96,42 @@ def main() -> None:
             "to a full startup chunk, warm negative frames, and execute from generated frame 1."
         ),
     )
+    parser.add_argument(
+        "--action-only-exact-rollout",
+        action="store_true",
+        help=(
+            "Ablation for staged exact M1 rollout: generate actions only, skip imagined video generation, "
+            "and rely on env-observation warmup to update cache between chunks."
+        ),
+    )
+    parser.add_argument(
+        "--execute-action-steps",
+        type=int,
+        default=None,
+        help=(
+            "Optional exact-rollout ablation: execute only the first N low-level actions from each generated "
+            "chunk, then replan. N must be divisible by policy_variant.action_per_frame. Default executes the "
+            "same actions as the legacy path."
+        ),
+    )
+    parser.add_argument(
+        "--warmup-overlap-action-steps",
+        type=int,
+        default=0,
+        help=(
+            "Optional exact-rollout ablation for partial execution: prepend this many recent observed raw "
+            "action steps worth of RGB frames to the streaming-VAE warmup input, then commit only the newly "
+            "executed latent frames. Default 0 preserves the legacy streaming-VAE warmup path."
+        ),
+    )
+    parser.add_argument(
+        "--binarize-gripper",
+        action="store_true",
+        help=(
+            "Optional LIBERO ablation: apply sign() to the raw gripper action channel before env execution "
+            "and cache warmup. Default preserves continuous raw actions."
+        ),
+    )
     args = parser.parse_args()
 
     request = _resolve_visualization_request(args.config)
@@ -117,6 +155,10 @@ def main() -> None:
         cli_value=args.exact_startup_bootstrap_padding,
         checkpoint_path=startup_checkpoint_path,
     )
+    current_frame_action_chunk = _current_frame_action_chunk_enabled(config)
+    stateless_first_frame_action = _stateless_first_frame_action_enabled(config)
+    if stateless_first_frame_action:
+        exact_startup_bootstrap_padding = False
     runner = build_exact_runtime_runner_from_config(config)
     runtime_device = _resolve_device(args.runtime_device)
     frontend_device = _resolve_device(args.frontend_device, fallback=runtime_device)
@@ -138,7 +180,9 @@ def main() -> None:
         raise RuntimeError("Failed to construct LIBERO OffScreenRenderEnv after 5 retries.")
 
     try:
-        first_obs = _init_single_env(env, init_states[args.episode_idx % len(init_states)])
+        first_raw_obs = _init_single_env_raw(env, init_states[args.episode_idx % len(init_states)])
+        first_obs = _extract_obs(first_raw_obs)
+        latest_raw_obs = first_raw_obs
         session = runner.reset(task_text=(prompt,))
 
         predicted_latent_chunks: list[torch.Tensor] = []
@@ -154,7 +198,31 @@ def main() -> None:
             if args.seed is not None:
                 seed_everywhere(args.seed + chunk_count)
             timestep_before = int(env.env.timestep)
-            if first_chunk:
+            proprio_state = _extract_proprio_context_tensor(
+                latest_raw_obs,
+                config=config,
+                device=runtime_device,
+            )
+            if stateless_first_frame_action:
+                current_chunk_inputs = _prepare_exact_runtime_inputs(
+                    runner,
+                    views=_obs_list_to_views([_extract_obs(latest_raw_obs)], config=config, device=frontend_device),
+                    task_text=(prompt,),
+                    text_context=session.text_context,
+                    negative_text_context=session.negative_text_context,
+                    frontend_device=frontend_device,
+                    runtime_device=runtime_device,
+                    preserve_stream_cache=False,
+                )
+                chunk = runner.infer_chunk(
+                    session=session,
+                    video_latents=current_chunk_inputs["video_latents"],
+                    text_context=current_chunk_inputs["text_context"],
+                    negative_text_context=current_chunk_inputs["negative_text_context"],
+                    proprio_state=proprio_state,
+                    skip_video_prediction=args.action_only_exact_rollout,
+                )
+            elif first_chunk:
                 first_chunk_inputs = _prepare_exact_runtime_inputs(
                     runner,
                     views=_obs_list_to_views([first_obs], config=config, device=frontend_device),
@@ -183,17 +251,28 @@ def main() -> None:
                         frame_start_override=_exact_startup_bootstrap_frame_start(
                             int(config.inference.frame_chunk_size)
                         ),
+                        proprio_state=proprio_state,
                     )
-                    chunk = runner.infer_chunk(session=warmup.session)
+                    chunk = runner.infer_chunk(
+                        session=warmup.session,
+                        proprio_state=proprio_state,
+                        skip_video_prediction=args.action_only_exact_rollout,
+                    )
                 else:
                     chunk = runner.infer_chunk(
                         session=session,
                         video_latents=first_chunk_inputs["video_latents"],
                         text_context=first_chunk_inputs["text_context"],
                         negative_text_context=first_chunk_inputs["negative_text_context"],
+                        proprio_state=proprio_state,
+                        skip_video_prediction=args.action_only_exact_rollout,
                     )
             else:
-                chunk = runner.infer_chunk(session=session)
+                chunk = runner.infer_chunk(
+                    session=session,
+                    proprio_state=proprio_state,
+                    skip_video_prediction=args.action_only_exact_rollout,
+                )
 
             action_adapter = runner.policy_variant.exact_action_adapter
             adapter_spec = getattr(action_adapter, "spec", None)
@@ -206,8 +285,19 @@ def main() -> None:
                     )
                 raw_chunk_action_pred = chunk.chunk_action_pred
 
-            predicted_latent_chunks.append(chunk.predicted_latents.detach().cpu())
+            if int(chunk.predicted_latents.shape[2]) > 0:
+                predicted_latent_chunks.append(chunk.predicted_latents.detach().cpu())
             session = chunk.session
+            predicted_latents_mean = (
+                float(chunk.predicted_latents.float().mean().item())
+                if chunk.predicted_latents.numel() > 0
+                else None
+            )
+            predicted_latents_std = (
+                float(chunk.predicted_latents.float().std().item())
+                if chunk.predicted_latents.numel() > 0
+                else None
+            )
 
             raw_actions = rearrange(
                 raw_chunk_action_pred[0],
@@ -235,6 +325,39 @@ def main() -> None:
                     dtype=chunk.chunk_action_pred.dtype,
                 )
             obs_stride = max(1, raw_actions.shape[1] // max(1, config.inference.frame_chunk_size))
+            if stateless_first_frame_action:
+                start_frame_group = 0
+            else:
+                start_frame_group = 0 if (first_chunk and exact_startup_bootstrap_padding) else (1 if first_chunk else 0)
+            partial_execution_enabled = (
+                args.execute_action_steps is not None
+                or bool(args.binarize_gripper)
+                or int(args.warmup_overlap_action_steps) > 0
+            )
+            executed_raw_actions = _select_executed_raw_actions(
+                raw_actions,
+                start_frame_group=start_frame_group,
+                execute_action_steps=args.execute_action_steps,
+                action_per_frame=int(config.policy_variant.action_per_frame),
+            )
+            if args.binarize_gripper:
+                executed_raw_actions = _binarize_raw_gripper_actions(executed_raw_actions)
+            warmup_raw_actions = _build_warmup_raw_actions(
+                raw_actions=raw_actions,
+                executed_raw_actions=executed_raw_actions,
+                start_frame_group=start_frame_group,
+                first_chunk=first_chunk,
+                exact_startup_bootstrap_padding=exact_startup_bootstrap_padding,
+                partial_execution_enabled=partial_execution_enabled,
+                binarize_gripper=bool(args.binarize_gripper),
+            )
+            warmup_raw_actions_batched = warmup_raw_actions.unsqueeze(0)
+            executed_action_steps = int(executed_raw_actions.shape[0] * executed_raw_actions.shape[1])
+            warmup_overlap_obs_list = _select_warmup_overlap_observations(
+                real_obs_list,
+                overlap_action_steps=int(args.warmup_overlap_action_steps),
+                obs_stride=int(obs_stride),
+            )
             _print_log(
                 f"chunk_{chunk_count}",
                 {
@@ -258,9 +381,19 @@ def main() -> None:
                         else None
                     ),
                     "predicted_latents_shape": list(chunk.predicted_latents.shape),
-                    "predicted_latents_mean": float(chunk.predicted_latents.float().mean().item()),
-                    "predicted_latents_std": float(chunk.predicted_latents.float().std().item()),
+                    "predicted_latents_mean": predicted_latents_mean,
+                    "predicted_latents_std": predicted_latents_std,
                     "raw_actions_shape": list(raw_actions.shape),
+                    "executed_raw_actions_shape": list(executed_raw_actions.shape),
+                    "execute_action_steps": executed_action_steps,
+                    "execute_action_steps_requested": args.execute_action_steps,
+                    "warmup_action_history_shape": list(warmup_raw_actions_batched.shape),
+                    "warmup_overlap_action_steps": int(args.warmup_overlap_action_steps),
+                    "warmup_overlap_obs_count": len(warmup_overlap_obs_list),
+                    "binarize_gripper": bool(args.binarize_gripper),
+                    "proprio_context_shape": (
+                        list(proprio_state.shape) if isinstance(proprio_state, torch.Tensor) else None
+                    ),
                     "model_actions_shape": list(model_actions.shape),
                     "model_actions_from_raw_shape": list(model_actions_from_raw.shape),
                     "model_from_raw_max_abs_diff": float(
@@ -277,11 +410,17 @@ def main() -> None:
             )
 
             key_frame_list: list[dict[str, np.ndarray]] = []
-            start_frame_group = 0 if (first_chunk and exact_startup_bootstrap_padding) else (1 if first_chunk else 0)
-            for frame_group in range(start_frame_group, raw_actions.shape[0]):
-                for action_index in range(raw_actions.shape[1]):
-                    action_step = raw_actions[frame_group, action_index].detach().to(dtype=torch.float32).cpu().numpy()
+            for frame_group in range(executed_raw_actions.shape[0]):
+                for action_index in range(executed_raw_actions.shape[1]):
+                    action_step = (
+                        executed_raw_actions[frame_group, action_index]
+                        .detach()
+                        .to(dtype=torch.float32)
+                        .cpu()
+                        .numpy()
+                    )
                     obs, _, done, _ = env.step(action_step.astype(np.float32))
+                    latest_raw_obs = obs
                     if done:
                         break
                     if (action_index + 1) % obs_stride == 0:
@@ -300,6 +439,8 @@ def main() -> None:
                     "done": bool(done),
                     "key_frame_count": len(key_frame_list),
                     "start_frame_group": start_frame_group,
+                    "executed_action_steps": executed_action_steps,
+                    "warmup_overlap_obs_count": len(warmup_overlap_obs_list),
                 },
             )
             if done:
@@ -309,16 +450,21 @@ def main() -> None:
             if not key_frame_list:
                 break
 
+            if stateless_first_frame_action:
+                first_chunk = False
+                continue
             if first_chunk:
-                new_visual_outputs = _prepare_exact_runtime_inputs(
+                new_visual_outputs, warmup_prepare_debug = _prepare_exact_warmup_runtime_inputs(
                     runner,
-                    views=_obs_list_to_views(key_frame_list, config=config, device=frontend_device),
+                    key_frame_list=key_frame_list,
+                    overlap_obs_list=warmup_overlap_obs_list,
+                    expected_new_latent_frames=int(executed_raw_actions.shape[0]),
+                    config=config,
                     task_text=(prompt,),
                     text_context=session.text_context,
                     negative_text_context=session.negative_text_context,
                     frontend_device=frontend_device,
                     runtime_device=runtime_device,
-                    preserve_stream_cache=True,
                 )
                 if exact_startup_bootstrap_padding:
                     initial_latents = first_chunk_inputs["video_latents"][:, :, -1:]
@@ -333,7 +479,8 @@ def main() -> None:
                         "initial_latents_shape": list(initial_latents.shape),
                         "new_latents_shape": list(new_visual_outputs["video_latents"].shape),
                         "combined_latents_shape": list(combined_latents.shape),
-                        "raw_actions_shape": list(raw_actions_batched.shape),
+                        "warmup_action_history_shape": list(warmup_raw_actions_batched.shape),
+                        "warmup_prepare": warmup_prepare_debug,
                     },
                 )
                 warmup = runner.warmup_cache(
@@ -341,27 +488,48 @@ def main() -> None:
                     video_latents=combined_latents,
                     text_context=new_visual_outputs["text_context"],
                     negative_text_context=new_visual_outputs["negative_text_context"],
-                    action_history=raw_actions_batched,
+                    action_history=warmup_raw_actions_batched,
                     action_space="raw",
+                    proprio_state=_extract_proprio_context_tensor(
+                        latest_raw_obs,
+                        config=config,
+                        device=runtime_device,
+                    ),
                 )
             else:
-                warmup_inputs = _prepare_exact_runtime_inputs(
+                warmup_inputs, warmup_prepare_debug = _prepare_exact_warmup_runtime_inputs(
                     runner,
-                    views=_obs_list_to_views(key_frame_list, config=config, device=frontend_device),
+                    key_frame_list=key_frame_list,
+                    overlap_obs_list=warmup_overlap_obs_list,
+                    expected_new_latent_frames=int(executed_raw_actions.shape[0]),
+                    config=config,
                     task_text=(prompt,),
                     text_context=session.text_context,
                     negative_text_context=session.negative_text_context,
                     frontend_device=frontend_device,
                     runtime_device=runtime_device,
-                    preserve_stream_cache=True,
+                )
+                _print_log(
+                    f"chunk_{chunk_count - 1}",
+                    {
+                        "phase": "warmup_prepare",
+                        "new_latents_shape": list(warmup_inputs["video_latents"].shape),
+                        "warmup_action_history_shape": list(warmup_raw_actions_batched.shape),
+                        "warmup_prepare": warmup_prepare_debug,
+                    },
                 )
                 warmup = runner.warmup_cache(
                     session=session,
                     video_latents=warmup_inputs["video_latents"],
                     text_context=warmup_inputs["text_context"],
                     negative_text_context=warmup_inputs["negative_text_context"],
-                    action_history=raw_actions_batched,
+                    action_history=warmup_raw_actions_batched,
                     action_space="raw",
+                    proprio_state=_extract_proprio_context_tensor(
+                        latest_raw_obs,
+                        config=config,
+                        device=runtime_device,
+                    ),
                 )
             _print_log(
                 f"chunk_{chunk_count - 1}",
@@ -408,6 +576,12 @@ def main() -> None:
             "video_path": str(output_path.resolve()),
             "pipeline": "open_wam",
             "exact_startup_bootstrap_padding": bool(exact_startup_bootstrap_padding),
+            "action_only_exact_rollout": bool(args.action_only_exact_rollout),
+            "execute_action_steps": args.execute_action_steps,
+            "warmup_overlap_action_steps": int(args.warmup_overlap_action_steps),
+            "binarize_gripper": bool(args.binarize_gripper),
+            "current_frame_action_chunk": bool(current_frame_action_chunk),
+            "stateless_first_frame_action": bool(stateless_first_frame_action),
         }
         summary_path = output_path.with_suffix(".json")
         summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -527,6 +701,162 @@ def _exact_startup_bootstrap_action_history(
     )
 
 
+def _select_executed_raw_actions(
+    raw_actions: torch.Tensor,
+    *,
+    start_frame_group: int,
+    execute_action_steps: int | None,
+    action_per_frame: int,
+) -> torch.Tensor:
+    if raw_actions.ndim != 3:
+        raise ValueError(f"Expected raw actions with shape [F, A, C], got {tuple(raw_actions.shape)}.")
+    action_per_frame = int(action_per_frame)
+    if action_per_frame <= 0:
+        raise ValueError(f"Expected positive action_per_frame, got {action_per_frame}.")
+    if raw_actions.shape[1] != action_per_frame:
+        raise ValueError(
+            "Raw action chunk shape does not match policy_variant.action_per_frame, "
+            f"got raw_actions.shape[1]={raw_actions.shape[1]} and action_per_frame={action_per_frame}."
+        )
+    start_frame_group = int(start_frame_group)
+    if start_frame_group < 0 or start_frame_group > raw_actions.shape[0]:
+        raise ValueError(
+            f"Invalid start_frame_group={start_frame_group} for raw action frames={raw_actions.shape[0]}."
+        )
+    executable_actions = raw_actions[start_frame_group:]
+    max_action_steps = int(executable_actions.shape[0] * action_per_frame)
+    if execute_action_steps is None:
+        return executable_actions
+    execute_action_steps = int(execute_action_steps)
+    if execute_action_steps <= 0:
+        raise ValueError(f"--execute-action-steps must be positive, got {execute_action_steps}.")
+    if execute_action_steps % action_per_frame != 0:
+        raise ValueError(
+            "--execute-action-steps must be divisible by policy_variant.action_per_frame so cache warmup stays "
+            f"frame-aligned, got execute_action_steps={execute_action_steps}, action_per_frame={action_per_frame}."
+        )
+    if execute_action_steps > max_action_steps:
+        raise ValueError(
+            "--execute-action-steps exceeds the generated executable action count, "
+            f"got execute_action_steps={execute_action_steps}, max_action_steps={max_action_steps}, "
+            f"start_frame_group={start_frame_group}, raw_actions_shape={tuple(raw_actions.shape)}."
+        )
+    execute_frame_groups = execute_action_steps // action_per_frame
+    return executable_actions[:execute_frame_groups]
+
+
+def _build_warmup_raw_actions(
+    *,
+    raw_actions: torch.Tensor,
+    executed_raw_actions: torch.Tensor,
+    start_frame_group: int,
+    first_chunk: bool,
+    exact_startup_bootstrap_padding: bool,
+    partial_execution_enabled: bool,
+    binarize_gripper: bool,
+) -> torch.Tensor:
+    if first_chunk and not exact_startup_bootstrap_padding and int(start_frame_group) > 0:
+        prefix_actions = raw_actions[: int(start_frame_group)]
+        if binarize_gripper:
+            prefix_actions = _binarize_raw_gripper_actions(prefix_actions)
+        if partial_execution_enabled:
+            return torch.cat([prefix_actions, executed_raw_actions], dim=0)
+        return raw_actions
+    if partial_execution_enabled:
+        return executed_raw_actions
+    return executed_raw_actions
+
+
+def _binarize_raw_gripper_actions(raw_actions: torch.Tensor) -> torch.Tensor:
+    if raw_actions.shape[-1] <= 0:
+        raise ValueError(f"Expected raw actions with a feature dimension, got {tuple(raw_actions.shape)}.")
+    binarized = raw_actions.clone()
+    gripper = binarized[..., -1]
+    binarized[..., -1] = torch.where(gripper >= 0, torch.ones_like(gripper), -torch.ones_like(gripper))
+    return binarized
+
+
+def _select_warmup_overlap_observations(
+    real_obs_list: list[dict[str, np.ndarray]],
+    *,
+    overlap_action_steps: int,
+    obs_stride: int,
+) -> list[dict[str, np.ndarray]]:
+    overlap_action_steps = int(overlap_action_steps)
+    obs_stride = max(1, int(obs_stride))
+    if overlap_action_steps <= 0:
+        return []
+    overlap_obs_count = overlap_action_steps // obs_stride
+    if overlap_obs_count <= 0:
+        return []
+    if len(real_obs_list) < overlap_obs_count:
+        return []
+    return real_obs_list[-overlap_obs_count:]
+
+
+def _prepare_exact_warmup_runtime_inputs(
+    runner,
+    *,
+    key_frame_list: list[dict[str, np.ndarray]],
+    overlap_obs_list: list[dict[str, np.ndarray]],
+    expected_new_latent_frames: int,
+    config,
+    task_text: tuple[str | None, ...] | None,
+    text_context: torch.Tensor | None,
+    negative_text_context: torch.Tensor | None,
+    frontend_device: torch.device,
+    runtime_device: torch.device,
+) -> tuple[dict[str, torch.Tensor | None], dict[str, object]]:
+    encode_obs_list = [*overlap_obs_list, *key_frame_list]
+    overlap_obs_count = len(overlap_obs_list)
+    if not encode_obs_list:
+        raise ValueError("Exact warmup requires at least one observation to encode.")
+    prepared = _prepare_exact_runtime_inputs(
+        runner,
+        views=_obs_list_to_views(encode_obs_list, config=config, device=frontend_device),
+        task_text=task_text,
+        text_context=text_context,
+        negative_text_context=negative_text_context,
+        frontend_device=frontend_device,
+        runtime_device=runtime_device,
+        preserve_stream_cache=True,
+    )
+    expected_new_latent_frames = int(expected_new_latent_frames)
+    debug = {
+        "overlap_obs_count": overlap_obs_count,
+        "new_obs_count": len(key_frame_list),
+        "encoded_obs_count": len(encode_obs_list),
+        "expected_new_latent_frames": expected_new_latent_frames,
+        "encoded_latents_shape": (
+            list(prepared["video_latents"].shape)
+            if isinstance(prepared.get("video_latents"), torch.Tensor)
+            else None
+        ),
+        "committed_tail_latents": False,
+    }
+    if overlap_obs_count <= 0:
+        return prepared, debug
+
+    video_latents = prepared.get("video_latents")
+    if not isinstance(video_latents, torch.Tensor):
+        raise TypeError("Exact warmup overlap requires tensor `video_latents` in prepared inputs.")
+    if expected_new_latent_frames <= 0:
+        raise ValueError(
+            "Exact warmup overlap requires a positive executed-frame count, "
+            f"got expected_new_latent_frames={expected_new_latent_frames}."
+        )
+    if video_latents.shape[2] < expected_new_latent_frames:
+        raise ValueError(
+            "Encoded warmup overlap produced fewer latent frames than the executed action groups, "
+            f"encoded_latents={tuple(video_latents.shape)}, expected_new_latent_frames={expected_new_latent_frames}."
+        )
+    updated = dict(prepared)
+    updated["video_latents"] = video_latents[:, :, -expected_new_latent_frames:].contiguous()
+    debug["committed_tail_latents"] = True
+    debug["committed_latents_shape"] = list(updated["video_latents"].shape)
+    return updated, debug
+
+
 def _resolve_task_spec(benchmark_name: str, task_id: int) -> tuple[LiberoTaskSpec, str]:
     ensure_local_libero_config(REPO_ROOT)
     from libero.libero import benchmark  # type: ignore
@@ -572,7 +902,7 @@ def _construct_single_env(task_spec: LiberoTaskSpec, *, env_horizon: int | None)
     return env
 
 
-def _init_single_env(env, init_state) -> dict[str, np.ndarray]:
+def _init_single_env_raw(env, init_state):
     env.reset()
     env.set_init_state(init_state)
     obs = None
@@ -580,7 +910,11 @@ def _init_single_env(env, init_state) -> dict[str, np.ndarray]:
         obs, _, _, _ = env.step([0.0] * 7)
     if obs is None:
         raise RuntimeError("LIBERO env did not return an observation during initialization.")
-    return _extract_obs(obs)
+    return obs
+
+
+def _init_single_env(env, init_state) -> dict[str, np.ndarray]:
+    return _extract_obs(_init_single_env_raw(env, init_state))
 
 
 def _extract_obs(obs) -> dict[str, np.ndarray]:
@@ -588,6 +922,73 @@ def _extract_obs(obs) -> dict[str, np.ndarray]:
         LIBERO_OBS_KEYS[0]: np.ascontiguousarray(obs["agentview_image"][::-1]),
         LIBERO_OBS_KEYS[1]: np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1]),
     }
+
+
+def _proprio_context_enabled(config) -> bool:
+    policy_config = getattr(config, "policy_variant", None)
+    mode = getattr(policy_config, "proprio_context_mode", ProprioContextMode.NONE)
+    return ProprioContextMode(mode) == ProprioContextMode.TEXT_CONTEXT_TOKEN
+
+
+def _current_frame_action_chunk_enabled(config) -> bool:
+    policy_config = getattr(config, "policy_variant", None)
+    mode = getattr(policy_config, "runtime_mode", None)
+    return ParallelRuntimeMode(mode) == ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK
+
+
+def _stateless_first_frame_action_enabled(config) -> bool:
+    policy_config = getattr(config, "policy_variant", None)
+    mode = ParallelRuntimeMode(getattr(policy_config, "runtime_mode", None))
+    return mode in {
+        ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK,
+        ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
+    }
+
+
+def _extract_proprio_context_tensor(
+    obs,
+    *,
+    config,
+    device: torch.device,
+) -> torch.Tensor | None:
+    if not _proprio_context_enabled(config):
+        return None
+    state_encoding = getattr(getattr(config.data, "action_target", None), "state_encoding", None)
+    if state_encoding != "eef_pos_axisangle_gripper_2d":
+        raise ValueError(
+            "LIBERO exact proprio context currently supports only "
+            f"state_encoding='eef_pos_axisangle_gripper_2d', got {state_encoding!r}."
+        )
+    state = _extract_libero_eef_axisangle_gripper_state(obs)
+    expected_dim = int(getattr(getattr(config.data, "action_schema", None), "state_dim", 0) or 0)
+    if expected_dim > 0 and state.shape[0] != expected_dim:
+        raise ValueError(
+            "LIBERO proprio context state dim does not match data.action_schema.state_dim, "
+            f"got {state.shape[0]} and expected {expected_dim}."
+        )
+    return torch.from_numpy(state).to(device=device, dtype=torch.float32).unsqueeze(0)
+
+
+def _extract_libero_eef_axisangle_gripper_state(obs) -> np.ndarray:
+    eef_pos = np.asarray(obs["robot0_eef_pos"], dtype=np.float32).reshape(-1)
+    eef_quat = np.asarray(obs["robot0_eef_quat"], dtype=np.float32).reshape(-1)
+    gripper_qpos = np.asarray(obs["robot0_gripper_qpos"], dtype=np.float32).reshape(-1)
+    if eef_pos.shape[0] != 3:
+        raise ValueError(f"Expected LIBERO robot0_eef_pos to have dim 3, got {eef_pos.shape[0]}.")
+    if eef_quat.shape[0] != 4:
+        raise ValueError(f"Expected LIBERO robot0_eef_quat to have dim 4, got {eef_quat.shape[0]}.")
+    if gripper_qpos.shape[0] != 2:
+        raise ValueError(f"Expected LIBERO robot0_gripper_qpos to have dim 2, got {gripper_qpos.shape[0]}.")
+    axisangle = (
+        quaternion_to_axis_angle(torch.from_numpy(eef_quat).to(dtype=torch.float32).unsqueeze(0))[0]
+        .detach()
+        .cpu()
+        .numpy()
+        .astype(np.float32, copy=False)
+    )
+    if axisangle.shape[0] != 3:
+        raise ValueError(f"Expected axis-angle proprio dim 3, got {axisangle.shape[0]}.")
+    return np.concatenate([eef_pos, axisangle, gripper_qpos], axis=0).astype(np.float32, copy=False)
 
 
 def _obs_list_to_views(

@@ -19,6 +19,7 @@ class LatentWAMSample:
     text_context: torch.Tensor | None = None
     negative_text_context: torch.Tensor | None = None
     canonical_video: torch.Tensor | None = None
+    condition_latents: torch.Tensor | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -35,6 +36,7 @@ class LatentWAMBatch:
     text_context: torch.Tensor | None = None
     negative_text_context: torch.Tensor | None = None
     canonical_video: torch.Tensor | None = None
+    condition_latents: torch.Tensor | None = None
     metadata: tuple[dict[str, Any], ...] = field(default_factory=tuple)
 
 
@@ -52,6 +54,7 @@ def collate_latent_wam_samples(samples: list[LatentWAMSample]) -> LatentWAMBatch
     text_context = _stack_optional_tensor(samples, "text_context")
     negative_text_context = _stack_optional_tensor(samples, "negative_text_context")
     canonical_video = _stack_optional_tensor(samples, "canonical_video")
+    condition_latents = _stack_optional_tensor(samples, "condition_latents")
     task_text = tuple(sample.task_text for sample in samples)
     metadata = tuple(_metadata_with_action_stats(sample) for sample in samples)
     return LatentWAMBatch(
@@ -64,6 +67,7 @@ def collate_latent_wam_samples(samples: list[LatentWAMSample]) -> LatentWAMBatch
         text_context=text_context,
         negative_text_context=negative_text_context,
         canonical_video=canonical_video,
+        condition_latents=condition_latents,
         metadata=metadata,
     )
 
@@ -86,6 +90,7 @@ def move_latent_wam_batch_to_device(
             batch.negative_text_context.to(device) if batch.negative_text_context is not None else None
         ),
         canonical_video=batch.canonical_video.to(device) if batch.canonical_video is not None else None,
+        condition_latents=batch.condition_latents.to(device) if batch.condition_latents is not None else None,
         metadata=batch.metadata,
     )
 

@@ -38,6 +38,7 @@ from .runtime_programs import (
 )
 
 _MAX_CACHED_FRAMES_UNSET = object()
+_ALLOWED_RUNTIME_MISSING_PREFIXES = ("proprio_context_encoder.",)
 
 
 class VisualTower(nn.Module):
@@ -49,6 +50,7 @@ class VisualTower(nn.Module):
         *,
         action_dim: int | None = None,
         state_dim: int | None = None,
+        proprio_context_state_dim: int | None = None,
     ) -> None:
         super().__init__()
         self.config = config or SharedVideoTransformerConfig()
@@ -58,6 +60,11 @@ class VisualTower(nn.Module):
         self.frontend = SharedVideoFrontend(self.config)
         if implementation == BackboneImplementation.SHARED_TRANSFORMER:
             self.core = SharedVideoTransformerCore(self.config, action_dim=action_dim, state_dim=state_dim)
+            if proprio_context_state_dim is not None:
+                configure_proprio = getattr(self.core, "configure_proprio_context_encoder", None)
+                if not callable(configure_proprio):
+                    raise ValueError("Proprio context mode requires a shared transformer core.")
+                configure_proprio(enabled=True, state_dim=int(proprio_context_state_dim))
         elif implementation == BackboneImplementation.DUMMY:
             self.core = PackedSequenceVisualCore(self.config)
         else:
@@ -1113,6 +1120,7 @@ class VisualTower(nn.Module):
                 f"missing_keys={len(self.reference_core_load_report.missing_reference_keys)}",
                 flush=True,
             )
+            self._log_runtime_backbone_missing_keys(self.reference_core_load_report)
             return
         self.reference_core_load_report = load_reference_weights_into_replica_core(
             self.core,
@@ -1125,6 +1133,32 @@ class VisualTower(nn.Module):
             f"missing_keys={len(self.reference_core_load_report.missing_reference_keys)}",
             flush=True,
         )
+        self._log_runtime_backbone_missing_keys(self.reference_core_load_report)
+
+    @staticmethod
+    def _log_runtime_backbone_missing_keys(report: BackboneLoadReport | None) -> None:
+        if report is None or not report.missing_reference_keys:
+            return
+        allowed = tuple(
+            key for key in report.missing_reference_keys if key.startswith(_ALLOWED_RUNTIME_MISSING_PREFIXES)
+        )
+        unexpected = tuple(
+            key for key in report.missing_reference_keys if not key.startswith(_ALLOWED_RUNTIME_MISSING_PREFIXES)
+        )
+        if allowed:
+            print(
+                "[runtime_backbone_load] "
+                f"allowed_missing_keys={list(allowed)}",
+                flush=True,
+            )
+        if unexpected:
+            preview = list(unexpected[:20])
+            print(
+                "[runtime_backbone_load] "
+                f"unexpected_missing_keys_count={len(unexpected)} "
+                f"unexpected_missing_keys_preview={preview}",
+                flush=True,
+            )
 
     def get_runtime_backbone(self, *, action_dim: int) -> nn.Module:
         """Return the shared transformer backbone for runtime-driven variants.

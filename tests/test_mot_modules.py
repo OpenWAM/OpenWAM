@@ -17,6 +17,7 @@ from open_wam.configs import (
     MoTConditionMode,
     MoTPolicyConfig,
     MoTRuntimeMode,
+    ProprioContextMode,
     RobotWinDataConfig,
     TrainingConfig,
 )
@@ -648,6 +649,223 @@ def test_mot_variant_train_forward_from_latents_smoke(
 
     assert output.decoder_output.action_pred.shape == (2, 4, 4)
     assert torch.isfinite(output.decoder_output.loss)
+
+
+def test_mot_prefers_condition_latents_by_default() -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=2,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=MoTPolicyConfig(
+            hidden_size=32,
+            condition_mode=MoTConditionMode.FIRST_FRAME,
+            video_prefix_frames=1,
+            teacher_forcing_video_noise_prob=0.0,
+            num_action_layers=2,
+        ),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
+        inference=InferenceConfig(frame_chunk_size=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    video_latents = torch.zeros(1, 48, 4, 8, 8)
+    condition_latents = torch.full_like(video_latents, 3.0)
+    batch = PolicyTrainBatch(
+        actions=torch.randn(1, 4, 4),
+        extra={"condition_latents": condition_latents},
+    )
+
+    output = pipeline.forward_train_from_latents(
+        video_latents,
+        batch,
+        text_context=torch.randn(1, 5, 16),
+    )
+
+    assert output.policy_output.aux["video_condition_source"] == "condition_latents"
+    assert torch.isfinite(output.decoder_output.loss)
+
+
+def test_mot_condition_latents_can_be_disabled() -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=2,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=MoTPolicyConfig(
+            hidden_size=32,
+            condition_mode=MoTConditionMode.FIRST_FRAME,
+            video_prefix_frames=1,
+            teacher_forcing_video_noise_prob=0.0,
+            num_action_layers=2,
+            use_condition_latents=False,
+        ),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
+        inference=InferenceConfig(frame_chunk_size=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    video_latents = torch.zeros(1, 48, 4, 8, 8)
+    batch = PolicyTrainBatch(
+        actions=torch.randn(1, 4, 4),
+        extra={"condition_latents": torch.full_like(video_latents, 3.0)},
+    )
+
+    output = pipeline.forward_train_from_latents(
+        video_latents,
+        batch,
+        text_context=torch.randn(1, 5, 16),
+    )
+
+    assert output.policy_output.aux["video_condition_source"] == "video_latents"
+    assert torch.isfinite(output.decoder_output.loss)
+
+
+def test_mot_proprio_context_injects_last_state_into_text_slot_for_train() -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=MoTPolicyConfig(
+            hidden_size=32,
+            condition_mode=MoTConditionMode.FIRST_FRAME,
+            video_prefix_frames=1,
+            teacher_forcing_video_noise_prob=0.0,
+            num_action_layers=1,
+            proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,
+        ),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
+        inference=InferenceConfig(frame_chunk_size=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    encoder = pipeline.visual_tower.core.proprio_context_encoder
+    assert encoder is not None
+    with torch.no_grad():
+        encoder.proj.weight.fill_(0.25)
+        encoder.proj.bias.fill_(0.5)
+    state = torch.tensor([[[1.0, 2.0, 3.0, 4.0], [4.0, 5.0, 6.0, 7.0]]])
+    video_latents = torch.randn(1, 48, 4, 8, 8)
+    text_context = torch.zeros(1, 5, 16)
+    visual_outputs = pipeline.prepare_visual_outputs_from_latents(video_latents, text_context=text_context)
+    batch = PolicyTrainBatch(actions=torch.randn(1, 4, 4), state=state)
+
+    prepared = pipeline.policy_variant.prepare_train_inputs(visual_outputs, batch)
+    injected = pipeline.policy_variant._resolve_text_context_with_proprio(
+        pipeline.visual_tower,
+        prepared.variant_inputs["text_context"],
+        prepared.variant_inputs["proprio_state"],
+        batch_size=1,
+        device=video_latents.device,
+        dtype=video_latents.dtype,
+        materialize_if_missing=True,
+    )
+
+    expected = encoder(state[:, -1, :]).to(dtype=video_latents.dtype)
+    assert torch.allclose(prepared.variant_inputs["proprio_state"], state[:, -1, :])
+    assert injected is not None
+    assert torch.allclose(injected[:, -1, :], expected)
+    assert torch.allclose(injected[:, :-1, :], torch.zeros_like(injected[:, :-1, :]))
+
+
+def test_mot_prepare_infer_state_injects_proprio_context_into_text_slot() -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=MoTPolicyConfig(
+            hidden_size=32,
+            condition_mode=MoTConditionMode.FIRST_FRAME,
+            video_prefix_frames=1,
+            teacher_forcing_video_noise_prob=0.0,
+            num_action_layers=1,
+            proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,
+        ),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
+        inference=InferenceConfig(frame_chunk_size=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    encoder = pipeline.visual_tower.core.proprio_context_encoder
+    assert encoder is not None
+    with torch.no_grad():
+        encoder.proj.weight.fill_(0.1)
+        encoder.proj.bias.fill_(0.2)
+    state = torch.tensor([[[1.0, 1.0, 1.0, 1.0], [2.0, 3.0, 4.0, 5.0]]])
+    video_latents = torch.randn(1, 48, 4, 8, 8)
+    text_context = torch.zeros(1, 5, 16)
+    visual_outputs = pipeline.prepare_visual_outputs_from_latents(video_latents, text_context=text_context)
+
+    infer_state = pipeline.policy_variant.prepare_infer_state(
+        visual_tower=pipeline.visual_tower,
+        visual_outputs=visual_outputs,
+        context=PolicyInferContext(state=state),
+    )
+
+    runtime_state = infer_state.variant_state
+    assert isinstance(runtime_state, MoTRuntimeState)
+    assert runtime_state.text_context is not None
+    expected = encoder(state[:, -1, :]).to(dtype=runtime_state.text_context.dtype)
+    assert torch.allclose(runtime_state.proprio_state, state[:, -1, :])
+    assert torch.allclose(runtime_state.text_context[:, -1, :], expected)
+    assert torch.allclose(
+        runtime_state.text_context[:, :-1, :],
+        torch.zeros_like(runtime_state.text_context[:, :-1, :]),
+    )
 
 
 @pytest.mark.parametrize(

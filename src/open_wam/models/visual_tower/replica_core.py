@@ -1113,6 +1113,37 @@ def _feed_forward_with_materialized_params(
     return _linear_with_materialized_params(proj_out, hidden)
 
 
+class ProprioContextEncoder(nn.Module):
+    """Project proprio state into one text-context token."""
+
+    def __init__(self, state_dim: int, text_dim: int) -> None:
+        super().__init__()
+        state_dim = int(state_dim)
+        text_dim = int(text_dim)
+        if state_dim <= 0:
+            raise ValueError(f"Expected positive proprio state_dim, got {state_dim}.")
+        if text_dim <= 0:
+            raise ValueError(f"Expected positive text_dim, got {text_dim}.")
+        self.state_dim = state_dim
+        self.text_dim = text_dim
+        self.proj = nn.Linear(state_dim, text_dim)
+        nn.init.zeros_(self.proj.weight)
+        nn.init.zeros_(self.proj.bias)
+
+    def forward(self, proprio_state: torch.Tensor) -> torch.Tensor:
+        if proprio_state.ndim != 2:
+            raise ValueError(
+                "Proprio context encoder expects anchor state with shape [B, state_dim], "
+                f"got {tuple(proprio_state.shape)}."
+            )
+        if int(proprio_state.shape[-1]) != self.state_dim:
+            raise ValueError(
+                "Proprio state dim mismatch for context encoder, "
+                f"got {proprio_state.shape[-1]} and expected {self.state_dim}."
+            )
+        return self.proj(proprio_state)
+
+
 class SharedVideoTransformerCore(nn.Module):
     """Shared Wan-style transformer core for all policy variants."""
 
@@ -1143,6 +1174,7 @@ class SharedVideoTransformerCore(nn.Module):
         self.action_time_conditioner = SharedTransformerTimeEmbedding(self.config.hidden_size, self.config.freq_dim)
         self.text_proj = PixArtAlphaTextProjection(self.config.text_dim, self.config.hidden_size, act_fn="gelu_tanh")
         self.action_text_proj = PixArtAlphaTextProjection(self.config.text_dim, self.config.hidden_size, act_fn="gelu_tanh")
+        self.proprio_context_encoder: ProprioContextEncoder | None = None
         self.patch_embedding_mlp = nn.Linear(
             self.config.latent_channels * self.config.patch_size_t * self.config.patch_size_h * self.config.patch_size_w,
             self.config.hidden_size,
@@ -1197,9 +1229,12 @@ class SharedVideoTransformerCore(nn.Module):
             self.action_time_conditioner,
             self.text_proj,
             self.action_text_proj,
+            self.proprio_context_encoder,
             self.runtime_stream_adapters,
             self.rope,
         ):
+            if module is None:
+                continue
             module.to(device=input_device)
 
         for layer_index, block in enumerate(self.blocks):
@@ -1209,6 +1244,72 @@ class SharedVideoTransformerCore(nn.Module):
         self.proj_out.to(device=output_device)
         self.action_proj_out.to(device=output_device)
         self.scale_shift_table.data = self.scale_shift_table.data.to(device=output_device)
+
+    def configure_proprio_context_encoder(self, *, enabled: bool, state_dim: int | None = None) -> None:
+        if not enabled:
+            self.proprio_context_encoder = None
+            return
+        resolved_state_dim = int(self.state_dim if state_dim is None else state_dim)
+        if resolved_state_dim <= 0:
+            raise ValueError("Proprio context mode requires a positive visual-tower state_dim.")
+        if (
+            self.proprio_context_encoder is not None
+            and self.proprio_context_encoder.state_dim == resolved_state_dim
+            and self.proprio_context_encoder.text_dim == self.config.text_dim
+        ):
+            return
+        self.proprio_context_encoder = ProprioContextEncoder(
+            state_dim=resolved_state_dim,
+            text_dim=self.config.text_dim,
+        )
+
+    def inject_proprio_context(
+        self,
+        text_emb: torch.Tensor,
+        proprio_state: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if proprio_state is None or self.proprio_context_encoder is None:
+            return text_emb
+        if text_emb.ndim != 3:
+            raise ValueError(
+                "Proprio text-context injection expects text embeddings with shape [B, tokens, dim], "
+                f"got {tuple(text_emb.shape)}."
+            )
+        if int(text_emb.shape[1]) <= 0:
+            raise ValueError("Proprio text-context injection requires at least one text slot.")
+        if int(text_emb.shape[-1]) != int(self.config.text_dim):
+            raise ValueError(
+                "Text embedding dim mismatch for proprio injection, "
+                f"got {text_emb.shape[-1]} and expected {self.config.text_dim}."
+            )
+        if proprio_state.ndim == 3:
+            proprio_state = proprio_state[:, -1, :]
+        if proprio_state.ndim != 2:
+            raise ValueError(
+                "Proprio text-context injection expects state with shape [B, state_dim] or [B, H, state_dim], "
+                f"got {tuple(proprio_state.shape)}."
+            )
+        if int(proprio_state.shape[0]) != int(text_emb.shape[0]):
+            raise ValueError(
+                "Proprio/text batch mismatch, "
+                f"got proprio batch {proprio_state.shape[0]} and text batch {text_emb.shape[0]}."
+            )
+        injection_slot = text_emb[:, -1, :]
+        # Keep the defensive padding-slot check on CPU without forcing a CUDA
+        # synchronization in every exact rollout denoising step.
+        if injection_slot.device.type == "cpu" and bool(
+            (injection_slot.detach().float().abs() > 1e-3).any().item()
+        ):
+            raise ValueError(
+                "Proprio text-context injection slot is not zero-padded; "
+                "the prompt likely fills max_text_tokens and would overwrite a real text token."
+            )
+        encoder = self.proprio_context_encoder
+        proprio_state = proprio_state.to(device=encoder.proj.weight.device, dtype=encoder.proj.weight.dtype)
+        proprio_token = encoder(proprio_state).to(device=text_emb.device, dtype=text_emb.dtype)
+        injected = text_emb.clone()
+        injected[:, -1, :] = proprio_token
+        return injected
 
     @staticmethod
     def _move_optional_tensor(tensor: torch.Tensor | None, *, device: torch.device, dtype: torch.dtype | None = None):

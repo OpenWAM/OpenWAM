@@ -23,6 +23,7 @@ from .enums import (
     ParallelSequenceComponent,
     ParallelStreamVariantProfile,
     PolicyVariantName,
+    ProprioContextMode,
     PoolingMode,
     RegisterLayout,
     RegisterMaskMode,
@@ -291,11 +292,18 @@ class MoTPolicyConfig(PolicyVariantConfig):
     current_block_coupling: CurrentBlockCoupling | None = None
     use_text_conditioning: bool = True
     use_state_conditioning: bool = False
+    proprio_context_mode: ProprioContextMode = ProprioContextMode.NONE
     # Trade forward compute for activation memory by recomputing each
     # (video, action) block pair during backward instead of storing its
     # activations. Only affects two-stream train paths that run through
     # `forward_joint_video_action_denoise`.
     use_activation_checkpointing: bool = False
+    # Prefer reset-cache condition latents from latent datasets when available.
+    # This keeps train-time clean video conditioning aligned with live rollout
+    # observations while preserving fallback compatibility for datasets that
+    # have not been augmented yet.
+    use_condition_latents: bool = True
+    require_condition_latents: bool = False
     # Optional M5 generalist joint-denoise sampling distribution. ``None``
     # preserves the fixed six-mode path; a dict samples one of joint /
     # action_conditioned_video / video_conditioned_action per segment.
@@ -324,6 +332,8 @@ class MoTPolicyConfig(PolicyVariantConfig):
                 "MoT policy requires `0 <= noisy_video_condition_prob <= 1`, "
                 f"got noisy_video_condition_prob={self.noisy_video_condition_prob!r}."
             )
+        if bool(self.require_condition_latents) and not bool(self.use_condition_latents):
+            raise ValueError("MoT `require_condition_latents` cannot be true when `use_condition_latents` is false.")
         if int(self.num_action_layers) <= 0:
             raise ValueError(
                 "MoT policy requires `num_action_layers > 0`, "
@@ -346,6 +356,7 @@ class MoTPolicyConfig(PolicyVariantConfig):
                 "condition_mode": MoTConditionMode,
                 "action_expert_init_mode": MoTActionExpertInitMode,
                 "generalist_training_paradigm": GeneralistTrainingParadigm,
+                "proprio_context_mode": ProprioContextMode,
             },
             optional_enum_fields={
                 "preset": MoTPreset,
@@ -456,6 +467,9 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
     # at all transformer depths. Default false preserves backward compat
     # with existing checkpoints.
     preserve_video_pretrain_history: bool = False
+    use_condition_latents: bool = True
+    require_condition_latents: bool = False
+    proprio_context_mode: ProprioContextMode = ProprioContextMode.NONE
     temporal_position_mode: TemporalPositionMode = TemporalPositionMode.GLOBAL_SHIFTED
     used_action_channel_ids: tuple[int, ...] = field(default_factory=tuple)
     inverse_used_action_channel_ids: tuple[int, ...] = field(default_factory=tuple)
@@ -475,6 +489,7 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
                 "video_action_condition_source": ParallelActionConditionSource,
                 "video_action_attention_scope": ParallelActionAttentionScope,
                 "generalist_training_paradigm": GeneralistTrainingParadigm,
+                "proprio_context_mode": ProprioContextMode,
                 "temporal_position_mode": TemporalPositionMode,
                 "action_norm_method": ActionNormMethod,
             },
@@ -488,6 +503,10 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
             },
         )
         assert self.joint_denoise_training_mode_probs is not None
+        if bool(self.require_condition_latents) and not bool(self.use_condition_latents):
+            raise ValueError(
+                "Parallel-stream `require_condition_latents` cannot be true when `use_condition_latents` is false."
+            )
         if self.variant_profile == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING:
             if self.runtime_mode != ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
                 raise ValueError(

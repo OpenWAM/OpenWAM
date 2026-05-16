@@ -166,6 +166,15 @@ class AnchorPolicy(StrEnum):
     RANDOM_VALID = "random_valid"
 
 
+class SampleStateAnchorMode(StrEnum):
+    """Which observed raw frame anchors the state sequence in latent samples."""
+
+    PROPRIO_CONTEXT_FRAME = "proprio_context_frame"
+    ANCHOR_FRAME = "anchor_frame"
+    SAMPLE_START_FRAME = "sample_start_frame"
+    FIRST_OBSERVED_FRAME = "first_observed_frame"
+
+
 class TemporalPositionMode(StrEnum):
     """How local windows are mapped onto the transformer temporal position axis."""
 
@@ -598,6 +607,10 @@ class ParallelRuntimeMode(StrEnum):
 
     LINGBOT_EXACT = "lingbot_exact"
     LINGBOT_EXACT_ACTION_CONDITIONED = "lingbot_exact_action_conditioned"
+    # Current observation + text/proprio -> action chunk, without exact history cache.
+    CURRENT_FRAME_ACTION_CHUNK = "current_frame_action_chunk"
+    # FastWAM-style first-frame video/action training with action-only rollout.
+    FASTWAM_FIRST_FRAME = "fastwam_first_frame"
 
 
 class ParallelStreamVariantProfile(StrEnum):
@@ -643,6 +656,13 @@ class CurrentBlockCoupling(StrEnum):
 
 # Backward-compatible export for early Method-1 configs/code paths.
 ParallelCurrentBlockCoupling = CurrentBlockCoupling
+
+
+class ProprioContextMode(StrEnum):
+    """How policy variants inject proprio state into transformer conditioning."""
+
+    NONE = "none"
+    TEXT_CONTEXT_TOKEN = "text_context_token"
 
 
 class MoTGeneralistTrainingMode(StrEnum):

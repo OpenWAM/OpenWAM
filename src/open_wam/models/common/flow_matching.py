@@ -359,6 +359,7 @@ def build_video_flow_match_train_artifacts(
     *,
     training_config: TrainingConfig,
     noisy_condition_prob: float = 0.0,
+    condition_latents: torch.Tensor | None = None,
     timestep_ids: torch.Tensor | None = None,
 ) -> VideoFlowMatchTrainArtifacts:
     """Create LingBot-style noisy video latents with one timestep per frame.
@@ -399,7 +400,19 @@ def build_video_flow_match_train_artifacts(
     noise = torch.randn_like(video_latents)
     noisy_latents = scheduler.add_noise(video_latents, noise, timesteps, t_dim=2)
     targets = scheduler.training_target(video_latents, noise, timesteps)
-    condition_latents = video_latents
+    clean_condition_latents = video_latents
+    if condition_latents is not None:
+        if condition_latents.ndim != 5:
+            raise ValueError(
+                "Video condition_latents must have shape [B, C_latent, F, H, W], "
+                f"got {tuple(condition_latents.shape)}."
+            )
+        if tuple(condition_latents.shape) != tuple(video_latents.shape):
+            raise ValueError(
+                "Video condition_latents must match video_latents exactly, "
+                f"got condition={tuple(condition_latents.shape)}, video={tuple(video_latents.shape)}."
+            )
+        clean_condition_latents = condition_latents.to(device=video_latents.device, dtype=video_latents.dtype)
     condition_timesteps = torch.zeros_like(timesteps)
     if noisy_condition_prob > 0.0:
         # Augmentation decision must be identical across ranks under FSDP:
@@ -420,12 +433,17 @@ def build_video_flow_match_train_artifacts(
             )
             condition_timesteps = scheduler.timesteps.to(device=video_latents.device)[condition_timestep_ids]
             condition_noise = torch.randn_like(video_latents)
-            condition_latents = scheduler.add_noise(video_latents, condition_noise, condition_timesteps, t_dim=2)
+            clean_condition_latents = scheduler.add_noise(
+                clean_condition_latents,
+                condition_noise,
+                condition_timesteps,
+                t_dim=2,
+            )
     return VideoFlowMatchTrainArtifacts(
         timesteps=timesteps,
         noisy_latents=noisy_latents,
         targets=targets,
-        condition_latents=condition_latents,
+        condition_latents=clean_condition_latents,
         condition_timesteps=condition_timesteps,
         scheduler=scheduler,
     )

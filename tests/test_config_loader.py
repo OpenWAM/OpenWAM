@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import pytest
 import yaml
@@ -30,6 +31,8 @@ from open_wam.configs import (
     PostLatentPolicyConfig,
     AnchorPolicy,
     PaddedTargetPolicy,
+    ProprioContextMode,
+    SampleStateAnchorMode,
     SampleLossWeightMode,
     SampleWeightMode,
     SegmentContextPolicy,
@@ -47,11 +50,25 @@ from open_wam.configs import (
     VideoConditionTrainMode,
     WarmupAnchor,
 )
+from open_wam.models.policy_variants.parallel_stream.variant import ParallelStreamPolicyVariant
 from open_wam.utils.config_loader import load_experiment_config
 from open_wam.utils.local_paths import read_yaml_with_local_paths
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _instantiate_parallel_stream_variant(config) -> ParallelStreamPolicyVariant:
+    assert isinstance(config.policy_variant, ParallelStreamPolicyConfig)
+    return ParallelStreamPolicyVariant(
+        config.policy_variant,
+        config.backbone,
+        config.training,
+        config.inference,
+        action_dim=config.action_decoder.action_dim,
+        action_horizon=config.action_decoder.action_horizon,
+        num_frames=config.data.num_frames,
+    )
 
 
 def test_legacy_contract_only_maps_to_post_latent() -> None:
@@ -87,6 +104,7 @@ def test_new_variant_yaml_configs_load() -> None:
     assert mot.policy_variant.preset == MoTPreset.FASTWAM
     assert mot.policy_variant.runtime_mode == MoTRuntimeMode.VIDEO_PREFILL_ACTION_DENOISE
     assert mot.policy_variant.condition_mode == "first_frame"
+    assert mot.policy_variant.use_condition_latents is True
     assert mot.training.trainable_components == (TrainingComponentSelector.POLICY_VARIANT_ACTION_EXPERT,)
     assert register.backbone.implementation == "shared_transformer"
     assert parallel.backbone.implementation == "shared_transformer"
@@ -508,6 +526,7 @@ def test_mot_policy_yaml_config_loads(tmp_path: Path) -> None:
     raw["policy_variant"]["action_hidden_size"] = 768
     raw["policy_variant"]["action_ffn_dim"] = 1024
     raw["policy_variant"]["use_state_conditioning"] = True
+    raw["policy_variant"]["proprio_context_mode"] = "text_context_token"
     raw["action_decoder"]["name"] = "mlp_decoder"
 
     config_path = tmp_path / "mot_robotwin.yaml"
@@ -524,6 +543,7 @@ def test_mot_policy_yaml_config_loads(tmp_path: Path) -> None:
     assert config.policy_variant.action_hidden_size == 768
     assert config.policy_variant.action_ffn_dim == 1024
     assert config.policy_variant.use_state_conditioning is True
+    assert config.policy_variant.proprio_context_mode == ProprioContextMode.TEXT_CONTEXT_TOKEN
     assert config.action_decoder.name == ActionDecoderName.MOT
 
 
@@ -643,6 +663,83 @@ def test_heng_compatible_libero_yaml_config_loads() -> None:
     assert heng_libero.trainer.wandb_project == "openwam-method1-libero"
 
 
+def test_current_frame_action_chunk_libero_yaml_config_loads() -> None:
+    config = load_experiment_config(
+        REPO_ROOT
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_current_frame_action_chunk_heng_compatible.yaml"
+    )
+
+    assert isinstance(config.policy_variant, ParallelStreamPolicyConfig)
+    assert config.policy_variant.runtime_mode == ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK
+    assert config.policy_variant.proprio_context_mode == "text_context_token"
+    assert config.policy_variant.temporal_position_mode == TemporalPositionMode.LOCAL_ZERO_BASED
+    assert config.policy_variant.use_condition_latents is True
+    assert config.policy_variant.require_condition_latents is True
+    assert config.backbone.train_attn_mode == AttentionMode.FLEX
+    assert config.data.sample_construction.mode == "uniform_segment"
+    assert config.data.sample_construction.segment_min_frames == 4
+    assert config.data.sample_construction.segment_max_frames == 4
+    assert config.data.action_schema.state_horizon == 1
+    assert config.action_decoder.name == ActionDecoderName.LINGBOT_PARALLEL
+    assert config.action_decoder.action_dim == 30
+    assert config.training.enabled_objectives == (TrainingObjective.ACTION,)
+    assert config.training.latent_loss_weight == 0.0
+    assert config.training.action_loss_weight == 1.0
+    assert config.inference.use_cache is False
+    _instantiate_parallel_stream_variant(config)
+
+
+def test_fastwam_first_frame_libero_yaml_config_loads() -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_fastwam_first_frame_heng_compatible.yaml"
+    )
+
+    assert isinstance(config.policy_variant, ParallelStreamPolicyConfig)
+    assert config.policy_variant.runtime_mode == ParallelRuntimeMode.FASTWAM_FIRST_FRAME
+    assert config.policy_variant.proprio_context_mode == "text_context_token"
+    assert config.policy_variant.temporal_position_mode == TemporalPositionMode.LOCAL_ZERO_BASED
+    assert config.policy_variant.use_condition_latents is True
+    assert config.policy_variant.require_condition_latents is True
+    assert config.data.sample_construction.mode == "uniform_segment"
+    assert config.data.sample_construction.state_anchor_mode == SampleStateAnchorMode.SAMPLE_START_FRAME
+    assert config.data.sample_construction.segment_min_frames == 4
+    assert config.data.sample_construction.segment_max_frames == 4
+    assert config.data.action_schema.state_horizon == 1
+    assert config.action_decoder.name == ActionDecoderName.LINGBOT_PARALLEL
+    assert config.action_decoder.action_dim == 30
+    assert config.training.enabled_objectives == (TrainingObjective.LATENT, TrainingObjective.ACTION)
+    assert config.training.latent_loss_weight == 1.0
+    assert config.training.action_loss_weight == 1.0
+    assert config.inference.use_cache is False
+    assert config.inference.guidance_scale == 1.0
+    _instantiate_parallel_stream_variant(config)
+
+
+def test_m1_non_generalist_heng_compatible_configs_instantiate_reference_variant() -> None:
+    config_paths = sorted(
+        (REPO_ROOT / "configs/experiments").glob("parallel_stream_libero_lingbot_m1_*_heng_compatible.yaml")
+    )
+    config_paths = [path for path in config_paths if "generalist_joint_denoising" not in path.name]
+    assert len(config_paths) == 8
+
+    for config_path in config_paths:
+        config = load_experiment_config(config_path)
+        assert isinstance(config.policy_variant, ParallelStreamPolicyConfig)
+        assert config.policy_variant.variant_profile != ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING
+        _instantiate_parallel_stream_variant(config)
+
+
+def test_m1_generalist_joint_denoising_keeps_guidance_scale_strict() -> None:
+    config = load_experiment_config(
+        REPO_ROOT
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
+    )
+    config = replace(config, inference=replace(config.inference, guidance_scale=1.0))
+
+    with pytest.raises(ValueError, match="guidance_scale"):
+        _instantiate_parallel_stream_variant(config)
+
+
 def test_m1_generalist_joint_denoising_yaml_config_loads() -> None:
     config = load_experiment_config(
         REPO_ROOT
@@ -666,6 +763,11 @@ def test_m1_step3500_variant_yaml_configs_preserve_video_pretrain_history() -> N
             "parallel_stream_libero_lingbot_m1_*_heng_compatible.yaml"
         )
     )
+    config_paths = [
+        path
+        for path in config_paths
+        if "current_frame_action_chunk" not in path.name and "fastwam_first_frame" not in path.name
+    ]
     assert len(config_paths) == 7
     for config_path in config_paths:
         config = load_experiment_config(config_path)

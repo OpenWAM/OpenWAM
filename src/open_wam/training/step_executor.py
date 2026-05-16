@@ -48,6 +48,7 @@ def build_policy_train_batch(
     task_text: tuple[str | None, ...] | None,
     metadata: tuple[dict[str, object], ...],
     video_latents: torch.Tensor | None = None,
+    condition_latents: torch.Tensor | None = None,
 ) -> PolicyTrainBatch:
     extra = {
         "task_text": task_text,
@@ -56,6 +57,8 @@ def build_policy_train_batch(
     }
     if video_latents is not None:
         extra["video_latents"] = video_latents
+    if condition_latents is not None:
+        extra["condition_latents"] = condition_latents
     return PolicyTrainBatch(
         actions=actions,
         action_mask=action_mask,
@@ -84,6 +87,7 @@ class ViewBatchAdapter:
                 state_mask=batch.state_mask,
                 task_text=batch.task_text,
                 metadata=batch.metadata,
+                condition_latents=getattr(batch, "condition_latents", None),
                 video_latents=video_latents,
             ),
         )
@@ -108,6 +112,7 @@ class LatentBatchAdapter:
                 state_mask=batch.state_mask,
                 task_text=batch.task_text,
                 metadata=batch.metadata,
+                condition_latents=batch.condition_latents,
             ),
         )
 

@@ -1066,6 +1066,7 @@ def _maybe_append_exact_history_record(
     state: ExactFallbackHistoryState,
     absolute_frame_index: int,
     current_obs: dict[str, np.ndarray],
+    proprio_state: np.ndarray | torch.Tensor | None,
     frame_obs_sequence: list[dict[str, np.ndarray]],
     frame_actions: list[np.ndarray],
     frame_action_sources: list[str],
@@ -1084,6 +1085,8 @@ def _maybe_append_exact_history_record(
         "action_sources": [str(source) for source in frame_action_sources],
         "contains_fallback_action": bool(contains_fallback_action),
     }
+    if proprio_state is not None:
+        history_record["proprio_state"] = exact_sandbox._proprio_state_to_numpy(proprio_state)
     raw_observation_count = len(frame_obs_sequence)
     policy = state.policy
     if policy is FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY:
@@ -1301,7 +1304,13 @@ def _run_exact_like_realtime_rollout(
     max_frames = int(math.ceil(max_actions / action_per_frame))
 
     try:
-        first_obs = exact_viz._init_single_env(env, init_states[episode_idx % len(init_states)])
+        first_raw_obs = exact_viz._init_single_env_raw(env, init_states[episode_idx % len(init_states)])
+        first_obs = exact_viz._extract_obs(first_raw_obs)
+        latest_proprio_state = exact_viz._extract_proprio_context_tensor(
+            first_raw_obs,
+            config=config,
+            device=runtime_device,
+        )
         startup_debug_report: dict[str, Any] | None = None
         startup_warmup_s = 0.0
         startup_history_video_latents: torch.Tensor | None = None
@@ -1367,6 +1376,7 @@ def _run_exact_like_realtime_rollout(
                         frame_start_override=exact_sandbox._exact_startup_bootstrap_frame_start(
                             int(config.inference.frame_chunk_size)
                         ),
+                        proprio_state=latest_proprio_state,
                     )
                     exact_sandbox._synchronize_devices(runtime_device)
                     startup_warmup_s = time.perf_counter() - startup_warmup_t0
@@ -1390,6 +1400,7 @@ def _run_exact_like_realtime_rollout(
                     video_latents=None if exact_startup_bootstrap_padding else initial_inputs["video_latents"],
                     text_context=initial_inputs["text_context"],
                     negative_text_context=initial_inputs["negative_text_context"],
+                    proprio_state=latest_proprio_state,
                 )
                 exact_sandbox._synchronize_devices(runtime_device)
                 startup_infer_s = time.perf_counter() - startup_infer_t0
@@ -1447,6 +1458,7 @@ def _run_exact_like_realtime_rollout(
                 frame_chunk_size=int(config.inference.frame_chunk_size),
                 conditioning_frame_index=startup_history_frame_index,
                 raw_actions_override=startup_history_raw_actions,
+                proprio_state=latest_proprio_state,
             )
         ]
         fallback_history_state = ExactFallbackHistoryState(policy=fallback_history_policy)
@@ -1780,6 +1792,11 @@ def _run_exact_like_realtime_rollout(
                     action_end_monotonic = time.perf_counter()
                     env_step_s = action_end_monotonic - actual_start_monotonic
                     extracted_obs = exact_viz._extract_obs(obs)
+                    latest_proprio_state = exact_viz._extract_proprio_context_tensor(
+                        obs,
+                        config=config,
+                        device=runtime_device,
+                    )
                     last_action_end_monotonic = action_end_monotonic
                     frame_obs_sequence.append(
                         {key: np.array(value, copy=True) for key, value in extracted_obs.items()}
@@ -1858,6 +1875,7 @@ def _run_exact_like_realtime_rollout(
                     state=fallback_history_state,
                     absolute_frame_index=int(next_frame_to_execute),
                     current_obs=current_obs,
+                    proprio_state=latest_proprio_state,
                     frame_obs_sequence=frame_obs_sequence,
                     frame_actions=frame_actions,
                     frame_action_sources=frame_action_sources,
@@ -2320,6 +2338,7 @@ def _exact_startup_conditioning_history_record(
     frame_chunk_size: int,
     conditioning_frame_index: int | None = None,
     raw_actions_override: np.ndarray | None = None,
+    proprio_state: np.ndarray | torch.Tensor | None = None,
 ) -> dict[str, Any]:
     if chunk.raw_chunk_action_pred is None:
         raise RuntimeError("Exact runner did not produce raw 7D LIBERO actions.")
@@ -2339,7 +2358,7 @@ def _exact_startup_conditioning_history_record(
         if raw_actions_override is None
         else np.asarray(raw_actions_override, dtype=np.float32)
     )
-    return {
+    record = {
         "absolute_frame_index": int(resolved_conditioning_frame_index),
         "obs": {key: np.array(value, copy=True) for key, value in initial_obs.items()},
         "obs_sequence": [],
@@ -2347,6 +2366,9 @@ def _exact_startup_conditioning_history_record(
         "video_latents": initial_video_latents.detach(),
         "source": "startup_conditioning_frame",
     }
+    if proprio_state is not None:
+        record["proprio_state"] = exact_sandbox._proprio_state_to_numpy(proprio_state)
+    return record
 
 
 def _planned_frames_to_step_actions(planned_frames: list[Any]) -> list[PlannedControlStep]:

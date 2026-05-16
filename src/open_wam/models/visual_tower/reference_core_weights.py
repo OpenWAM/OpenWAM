@@ -17,6 +17,7 @@ class BackboneLoadReport:
 
 
 ReferenceCoreLoadReport = BackboneLoadReport
+_OPTIONAL_RUNTIME_TARGET_PREFIXES = ("proprio_context_encoder.",)
 
 
 def _copy_if_present(
@@ -139,6 +140,11 @@ def load_reference_weights_into_replica_core(
             loaded_keys=loaded_keys,
             missing_reference_keys=missing_reference_keys,
         )
+
+    loaded_key_set = set(loaded_keys)
+    for target_key in target_state:
+        if target_key.startswith(_OPTIONAL_RUNTIME_TARGET_PREFIXES) and target_key not in loaded_key_set:
+            missing_reference_keys.append(target_key)
 
     replica_core.load_state_dict(target_state, strict=False)
     return BackboneLoadReport(

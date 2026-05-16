@@ -56,6 +56,7 @@ class JointDenoisingFdmRollout:
         negative_text_context: torch.Tensor | None,
         context_start_frame: int = 0,
         action_space: ActionSpace | str = ActionSpace.RAW,
+        proprio_state: torch.Tensor | None = None,
     ) -> LingbotExactSession:
         session = self.runner.reset(
             task_text=task_text,
@@ -77,6 +78,7 @@ class JointDenoisingFdmRollout:
             text_context=text_context,
             negative_text_context=negative_text_context,
             action_space=action_space,
+            proprio_state=proprio_state,
         )
         return warmup.session
 
@@ -88,13 +90,18 @@ class JointDenoisingFdmRollout:
         raw_action_chunk: torch.Tensor | None,
         seed: int | None = None,
         drop_text_conditioning: bool = False,
+        proprio_state: torch.Tensor | None = None,
     ) -> FdmChunkOutput:
         if seed is not None:
             torch.manual_seed(int(seed))
             if torch.cuda.is_available():
                 torch.cuda.manual_seed_all(int(seed))
         if mode == FdmAblationMode.VANILLA_JOINT_ROLLOUT:
-            chunk = self.runner.infer_chunk(session=session, advance_frame_start=True)
+            chunk = self.runner.infer_chunk(
+                session=session,
+                advance_frame_start=True,
+                proprio_state=proprio_state,
+            )
             return FdmChunkOutput(
                 session=chunk.session,
                 predicted_latents=chunk.predicted_latents,
@@ -113,6 +120,7 @@ class JointDenoisingFdmRollout:
                 commit_action_latents=forced_action_latents,
                 action_conditioning_mode=mode.value,
                 drop_text_conditioning=drop_text_conditioning,
+                proprio_state=proprio_state,
             )
         if mode == FdmAblationMode.CLEAN_ACTION_FEEDBACK:
             return self._infer_action_override_chunk(
@@ -121,6 +129,7 @@ class JointDenoisingFdmRollout:
                 commit_action_latents=forced_action_latents,
                 action_conditioning_mode=mode.value,
                 drop_text_conditioning=drop_text_conditioning,
+                proprio_state=proprio_state,
             )
         raise ValueError(f"Unsupported FDM ablation mode: {mode!r}")
 
@@ -145,6 +154,7 @@ class JointDenoisingFdmRollout:
         commit_action_latents: torch.Tensor,
         action_conditioning_mode: str,
         drop_text_conditioning: bool = False,
+        proprio_state: torch.Tensor | None = None,
     ) -> FdmChunkOutput:
         visual_tower = self.runner.pipeline.visual_tower
         policy_variant = self.runner.policy_variant
@@ -171,6 +181,7 @@ class JointDenoisingFdmRollout:
             forced_action_latents=forced_action_latents,
             commit_action_latents=commit_action_latents,
             action_conditioning_mode=action_conditioning_mode,
+            proprio_state=proprio_state,
         )
         artifacts.debug["drop_text_conditioning"] = bool(drop_text_conditioning)
         next_cursor = RolloutCursor(

@@ -12,7 +12,13 @@ import pytest
 import torch
 from torch.utils.data import DataLoader
 
-from open_wam.configs import ReplayStatusPolicy, SampleWeightMode, SegmentContextPolicy, WindowSamplingMode
+from open_wam.configs import (
+    ReplayStatusPolicy,
+    SampleStateAnchorMode,
+    SampleWeightMode,
+    SegmentContextPolicy,
+    WindowSamplingMode,
+)
 from open_wam.data import build_train_val_latent_datasets, collate_latent_wam_samples
 from open_wam.data.lerobot_v2_latent import scan_local_latent_windows
 from open_wam.training import TrainingRuntime
@@ -45,6 +51,7 @@ def _build_local_robotwin_latent_repo(
     camera_names: tuple[str, ...] = ("cam_high", "cam_left_wrist", "cam_right_wrist"),
     total_rows: int = 20,
     latent_num_frames: int = 4,
+    include_condition_latent: bool = False,
 ) -> None:
     _write_json(
         repo_root / "meta" / "info.json",
@@ -93,7 +100,7 @@ def _build_local_robotwin_latent_repo(
         camera_name: default_latent_specs.get(camera_name, (8, 8))
         for camera_name in camera_names
     }
-    for camera_name, (latent_height, latent_width) in latent_specs.items():
+    for camera_index, (camera_name, (latent_height, latent_width)) in enumerate(latent_specs.items()):
         flat_latents = torch.randn(latent_num_frames * latent_height * latent_width, 48)
         payload = {
             "latent": flat_latents,
@@ -102,6 +109,8 @@ def _build_local_robotwin_latent_repo(
             "latent_width": latent_width,
             "frame_ids": list(range(latent_num_frames)),
         }
+        if include_condition_latent:
+            payload["condition_latent"] = torch.full_like(flat_latents, float(10 + camera_index))
         latent_path = (
             repo_root
             / "latents"
@@ -479,6 +488,7 @@ def test_uniform_segment_sampling_pads_tail_with_zero_order_hold(tmp_path: Path)
                 segment_length_stride=1,
                 chunk_size=2,
                 window_size=4,
+                randomize_geometry=False,
             ),
         ),
     )
@@ -505,6 +515,59 @@ def test_uniform_segment_sampling_pads_tail_with_zero_order_hold(tmp_path: Path)
     assert torch.equal(sample.video_latents[:, 0], sample.video_latents[:, 1])
     assert torch.equal(sample.video_latents[:, 1], sample.video_latents[:, 2])
     assert sample.metadata["valid_action_steps"] == 3
+
+
+def test_uniform_segment_randomizes_attention_geometry(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent_uniform_segment_random_geometry"
+    _build_local_robotwin_latent_repo(repo_root, total_rows=32, latent_num_frames=32)
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.UNIFORM_SEGMENT,
+                segment_min_frames=16,
+                segment_max_frames=16,
+                segment_length_stride=1,
+                chunk_size=4,
+                window_size=8,
+                randomize_geometry=True,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    random.seed(0)
+    samples = [train_dataset[index % len(train_dataset)] for index in range(64)]
+    chunk_sizes = {int(sample.metadata["sampled_chunk_size"]) for sample in samples}
+    window_sizes = {int(sample.metadata["sampled_window_size"]) for sample in samples}
+
+    assert chunk_sizes <= {1, 2, 3, 4}
+    assert len(chunk_sizes) > 1
+    assert all(4 <= window_size <= 8 for window_size in window_sizes)
+    assert len(window_sizes) > 1
+    for sample in samples:
+        segment_length = int(sample.metadata["segment_length_frames"])
+        sampled_chunk_size = int(sample.metadata["sampled_chunk_size"])
+        sampled_window_size = int(sample.metadata["sampled_window_size"])
+        expected_history_frames = max(
+            1,
+            min(
+                int(math.ceil(sampled_window_size / 2.0)) * sampled_chunk_size,
+                max(1, segment_length - sampled_chunk_size),
+            ),
+        )
+        assert segment_length == 16
+        assert sample.metadata["history_frames"] == expected_history_frames
 
 
 def test_uniform_segment_randomizes_start_and_requires_full_segment(tmp_path: Path) -> None:
@@ -549,6 +612,51 @@ def test_uniform_segment_randomizes_start_and_requires_full_segment(tmp_path: Pa
         assert sample.metadata["segment_valid_latent_frames"] == length
         assert sample.metadata["segment_padded_latent_frames"] == 0
         assert sample.metadata["tail_padding_mode"] == "none"
+
+
+def test_uniform_segment_preserves_optional_condition_latents(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent_uniform_segment_condition_latents"
+    _build_local_robotwin_latent_repo(
+        repo_root,
+        total_rows=6,
+        latent_num_frames=6,
+        include_condition_latent=True,
+    )
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.UNIFORM_SEGMENT,
+                segment_min_frames=4,
+                segment_max_frames=4,
+                segment_length_stride=1,
+                randomize_segment_start=False,
+                require_full_segment=True,
+                state_anchor_mode=SampleStateAnchorMode.SAMPLE_START_FRAME,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    sample = train_dataset[1]
+
+    assert sample.condition_latents is not None
+    assert sample.condition_latents.shape == sample.video_latents.shape
+    assert sample.metadata["has_condition_latents"] is True
+    assert sample.metadata["condition_latent_layout"]
+    assert sample.state[0, 0].item() == pytest.approx(float(sample.metadata["sample_start_frame"]))
+    assert sample.metadata["state_anchor_frame"] == sample.metadata["sample_start_frame"]
+    assert not torch.equal(sample.condition_latents, sample.video_latents)
 
 
 def test_uniform_segment_require_full_segment_drops_short_tail_starts(tmp_path: Path) -> None:

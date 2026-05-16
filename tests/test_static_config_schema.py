@@ -58,6 +58,78 @@ trainer:
 
 
 @pytest.mark.unit
+def test_static_validator_catches_parallel_stream_proprio_context_typo(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_parallel_proprio.yaml"
+    config_path.write_text(
+        """
+name: bad_parallel_proprio
+data:
+  dataset_name: libero
+  dataset_type: synthetic_multiview
+  action_schema:
+    action_dim: 7
+    action_horizon: 8
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: parallel_stream
+  runtime_mode: lingbot_exact
+  proprio_context_mode: text_context_typo
+action_decoder:
+  name: lingbot_parallel_decoder
+  action_dim: 7
+  action_horizon: 8
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any("Invalid ProprioContextMode" in issue.message for issue in report.errors)
+
+
+@pytest.mark.unit
+def test_static_validator_catches_mot_proprio_context_typo(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_mot_proprio.yaml"
+    config_path.write_text(
+        """
+name: bad_mot_proprio
+data:
+  dataset_name: libero
+  dataset_type: synthetic_multiview
+  action_schema:
+    action_dim: 7
+    action_horizon: 8
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: mot
+  runtime_mode: video_prefill_action_denoise
+  proprio_context_mode: text_context_typo
+action_decoder:
+  name: mot_decoder
+  action_dim: 7
+  action_horizon: 8
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any("Invalid ProprioContextMode" in issue.message for issue in report.errors)
+
+
+@pytest.mark.unit
 def test_static_validator_accepts_hierarchical_fixed_segment_sampler(tmp_path: Path) -> None:
     config_path = tmp_path / "hierarchical_fixed_segment.yaml"
     config_path.write_text(
@@ -139,6 +211,44 @@ trainer:
 
     assert not report.ok
     assert any(issue.path == "data.sample_construction.context_prefix_frames" for issue in report.errors)
+
+
+@pytest.mark.unit
+def test_static_validator_rejects_sample_state_anchor_typo(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_state_anchor.yaml"
+    config_path.write_text(
+        """
+name: bad_state_anchor
+data:
+  dataset_name: libero
+  dataset_type: lerobot_v2_latent_local
+  sample_construction:
+    mode: uniform_segment
+    state_anchor_mode: definitely_not_a_mode
+  action_schema:
+    action_dim: 7
+    action_horizon: 16
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: post_latent
+  attach_site: post_visual_core
+action_decoder:
+  name: mlp_decoder
+  action_dim: 7
+  action_horizon: 16
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any("Invalid SampleStateAnchorMode" in issue.message for issue in report.errors)
 
 
 @pytest.mark.unit

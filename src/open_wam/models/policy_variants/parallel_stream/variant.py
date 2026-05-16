@@ -9,6 +9,8 @@ from open_wam.configs import (
     ParallelExactCacheWriteMode,
     ParallelRuntimeMode,
     ParallelStreamPolicyConfig,
+    ParallelStreamVariantProfile,
+    ProprioContextMode,
     TemporalPositionMode,
     TrainingConfig,
 )
@@ -29,14 +31,19 @@ from ..contracts import (
     RolloutCursor,
 )
 from .reference_runtime import (
+    prepare_parallel_current_frame_action_chunk_train_artifacts,
     prepare_parallel_action_conditioned_train_artifacts,
     prepare_parallel_exact_train_artifacts,
+    prepare_parallel_fastwam_first_frame_train_artifacts,
     resolve_parallel_current_block_coupling,
     run_parallel_action_conditioned_inference_rollout,
     run_parallel_action_conditioned_train,
+    run_parallel_current_frame_action_chunk_inference_rollout,
     run_parallel_exact_cache_warmup,
     run_parallel_exact_inference_rollout,
     run_parallel_exact_train,
+    run_parallel_fastwam_first_frame_inference_rollout,
+    run_parallel_fastwam_first_frame_train,
 )
 from .action_adapter import LingbotActionAdapter, build_action_adapter_spec
 
@@ -64,6 +71,8 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         if config.runtime_mode not in {
             ParallelRuntimeMode.LINGBOT_EXACT,
             ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
+            ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK,
+            ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
         }:
             raise ValueError(
                 "Parallel-stream method 1 now only supports LingBot-exact semantics. "
@@ -81,6 +90,50 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         )
         self.reference_profile = self.exact_action_adapter.spec.reference_profile if self.exact_action_adapter.spec is not None else None
         self._validate_reference_profile()
+
+    def _uses_proprio_context(self) -> bool:
+        return ProprioContextMode(self.config.proprio_context_mode) == ProprioContextMode.TEXT_CONTEXT_TOKEN
+
+    def _require_proprio_state(self, state: torch.Tensor | None, *, label: str) -> torch.Tensor | None:
+        if not self._uses_proprio_context():
+            return None
+        selected = self._select_proprio_state(state)
+        if selected is None:
+            raise ValueError(f"Proprio context mode is enabled but no state was provided for {label}.")
+        return selected
+
+    def _resolve_proprio_state(
+        self,
+        state: torch.Tensor | None,
+        *,
+        label: str,
+        infer_cache: dict | None = None,
+    ) -> torch.Tensor | None:
+        if not self._uses_proprio_context():
+            return None
+        selected = self._select_anchor_state(state)
+        if selected is None and isinstance(infer_cache, dict):
+            cached_state = infer_cache.get("last_proprio_state")
+            if isinstance(cached_state, torch.Tensor):
+                selected = self._select_anchor_state(cached_state)
+        if selected is None:
+            raise ValueError(f"Proprio context mode is enabled but no state was provided for {label}.")
+        return selected
+
+    def _cache_proprio_state(self, cache: dict, state: torch.Tensor | None) -> None:
+        if self._uses_proprio_context() and state is not None:
+            cache["last_proprio_state"] = state.detach().clone()
+
+    def attach_visual_tower(self, visual_tower: VisualTower) -> None:
+        if not self._uses_proprio_context():
+            return
+        configure = getattr(visual_tower.core, "configure_proprio_context_encoder", None)
+        if not callable(configure):
+            raise ValueError("Proprio context mode requires a shared transformer core.")
+        state_dim = int(visual_tower.state_dim or 0)
+        if state_dim <= 0:
+            raise ValueError("Proprio context mode requires positive data.action_schema.state_dim.")
+        configure(enabled=True, state_dim=state_dim)
 
     def attach_site(self) -> str:
         return self.config.attach_site
@@ -125,7 +178,36 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         )
         sampled_geometry = self._resolve_train_sampling_metadata(batch, observed_num_frames=observed_num_frames)
         generalist_metadata = self._resolve_generalist_training_metadata(batch)
-        if self.config.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
+        proprio_state = self._require_proprio_state(batch.state, label="parallel-stream training")
+        condition_latents = self._resolve_train_condition_latents(
+            batch,
+            video_latents=visual_outputs.frontend.video_latents,
+        )
+        if self.config.runtime_mode == ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK:
+            train_artifacts = prepare_parallel_current_frame_action_chunk_train_artifacts(
+                backbone_config=self.backbone_config,
+                policy_config=self.config,
+                training_config=self.training_config,
+                video_latents=visual_outputs.frontend.video_latents,
+                actions=model_actions,
+                action_mask=model_action_mask,
+                text_emb=visual_outputs.frontend.conditioning.text_context,
+                condition_latents=condition_latents,
+                frame_shift=0,
+            )
+        elif self.config.runtime_mode == ParallelRuntimeMode.FASTWAM_FIRST_FRAME:
+            train_artifacts = prepare_parallel_fastwam_first_frame_train_artifacts(
+                backbone_config=self.backbone_config,
+                policy_config=self.config,
+                training_config=self.training_config,
+                video_latents=visual_outputs.frontend.video_latents,
+                actions=model_actions,
+                action_mask=model_action_mask,
+                text_emb=visual_outputs.frontend.conditioning.text_context,
+                condition_latents=condition_latents,
+                frame_shift=0,
+            )
+        elif self.config.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
             train_artifacts = prepare_parallel_action_conditioned_train_artifacts(
                 backbone_config=self.backbone_config,
                 policy_config=self.config,
@@ -134,6 +216,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 actions=model_actions,
                 action_mask=model_action_mask,
                 text_emb=visual_outputs.frontend.conditioning.text_context,
+                condition_latents=condition_latents,
                 chunk_size_override=sampled_geometry["chunk_size"],
                 window_size_override=sampled_geometry["window_size"],
                 loss_frame_start=sampled_geometry["loss_frame_start"],
@@ -156,6 +239,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 actions=model_actions,
                 action_mask=model_action_mask,
                 text_emb=visual_outputs.frontend.conditioning.text_context,
+                condition_latents=condition_latents,
                 chunk_size_override=sampled_geometry["chunk_size"],
                 window_size_override=sampled_geometry["window_size"],
                 loss_frame_start=sampled_geometry["loss_frame_start"],
@@ -166,7 +250,66 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 action_loss_frame_end=sampled_geometry["action_loss_frame_end"],
                 frame_shift=sampled_geometry["frame_shift"],
             )
+        if proprio_state is not None:
+            train_artifacts.input_dict["proprio_state"] = proprio_state
         return PolicyPreparedInputs(batch=batch, variant_inputs={"lingbot_train_artifacts": train_artifacts})
+
+    def _resolve_train_condition_latents(
+        self,
+        batch: PolicyTrainBatch,
+        *,
+        video_latents: torch.Tensor,
+    ) -> torch.Tensor | None:
+        if not bool(self.config.use_condition_latents):
+            return None
+        condition_latents = batch.extra.get("condition_latents")
+        if condition_latents is None:
+            if bool(self.config.require_condition_latents):
+                raise ValueError(
+                    "Parallel-stream training was configured with `require_condition_latents=true`, "
+                    "but the latent batch did not provide `condition_latents`."
+                )
+            return None
+        if not isinstance(condition_latents, torch.Tensor):
+            raise ValueError(
+                "Parallel-stream `condition_latents` must be a tensor when provided, "
+                f"got {type(condition_latents).__name__}."
+            )
+        if condition_latents.ndim != 5:
+            raise ValueError(
+                "Parallel-stream `condition_latents` must have shape `[B, C, T, H, W]`, "
+                f"got {tuple(condition_latents.shape)}."
+            )
+        if tuple(condition_latents.shape[:2]) != tuple(video_latents.shape[:2]) or tuple(
+            condition_latents.shape[-2:]
+        ) != tuple(video_latents.shape[-2:]):
+            raise ValueError(
+                "Parallel-stream `condition_latents` batch/channel/spatial dimensions must match video_latents, "
+                f"got condition={tuple(condition_latents.shape)}, video={tuple(video_latents.shape)}."
+            )
+        return condition_latents.to(device=video_latents.device, dtype=video_latents.dtype)
+
+    @staticmethod
+    def _select_anchor_state(state: torch.Tensor | None) -> torch.Tensor | None:
+        if state is None:
+            return None
+        if state.ndim == 2:
+            return state
+        if state.ndim == 3:
+            return state[:, -1, :]
+        raise ValueError(
+            "Proprio context expects batch state with shape [B, state_dim] or [B, H, state_dim], "
+            f"got {tuple(state.shape)}."
+        )
+
+    def _select_proprio_state(self, state: torch.Tensor | None) -> torch.Tensor | None:
+        if (
+            self.config.runtime_mode == ParallelRuntimeMode.FASTWAM_FIRST_FRAME
+            and state is not None
+            and state.ndim == 3
+        ):
+            return state[:, 0, :]
+        return self._select_anchor_state(state)
 
     def _resolve_generalist_training_metadata(
         self,
@@ -295,15 +438,33 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             device=prepared_inputs.batch.actions.device,
         )
         train_artifacts = prepared_inputs.variant_inputs["lingbot_train_artifacts"]
-        if self.config.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
+        proprio_state = train_artifacts.input_dict.get("proprio_state")
+        if proprio_state is not None:
+            latent_dict = train_artifacts.input_dict["latent_dict"]
+            action_dict = train_artifacts.input_dict["action_dict"]
+            text_emb = latent_dict["text_emb"]
+            inject = getattr(reference_transformer, "inject_proprio_context", None)
+            if not callable(inject):
+                raise ValueError("Proprio context mode requires the runtime transformer to support proprio injection.")
+            injected_text = inject(text_emb, proprio_state)
+            latent_dict["text_emb"] = injected_text
+            action_dict["text_emb"] = injected_text
+        runtime_input_dict = dict(train_artifacts.input_dict)
+        runtime_input_dict.pop("proprio_state", None)
+        if self.config.runtime_mode == ParallelRuntimeMode.FASTWAM_FIRST_FRAME:
+            latent_pred, action_pred = run_parallel_fastwam_first_frame_train(
+                reference_transformer,
+                runtime_input_dict,
+            )
+        elif self.config.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
             latent_pred, action_pred = run_parallel_action_conditioned_train(
                 reference_transformer,
-                train_artifacts.input_dict,
+                runtime_input_dict,
             )
         else:
             latent_pred, action_pred = run_parallel_exact_train(
                 reference_transformer,
-                train_artifacts.input_dict,
+                runtime_input_dict,
             )
         return PolicyTrainOutput(
             policy_features=action_pred,
@@ -391,7 +552,13 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         infer_state: PolicyInferState,
         action_space: ActionSpace | str = ActionSpace.AUTO,
         frame_start_override: int | None = None,
+        proprio_state: torch.Tensor | None = None,
     ) -> PolicyInferState:
+        if self.config.runtime_mode in {
+            ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK,
+            ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
+        }:
+            return infer_state
         # Warmup mirrors the original LingBot server lifecycle: observed video
         # and aligned action history are committed to the exact cache before any
         # new chunk is denoised.
@@ -406,6 +573,11 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             action_space=action_space,
             device=observed_video_latents.device,
             dtype=observed_video_latents.dtype,
+        )
+        resolved_proprio_state = self._resolve_proprio_state(
+            proprio_state,
+            label="parallel-stream cache warmup",
+            infer_cache=infer_state.cache,
         )
         next_cache = run_parallel_exact_cache_warmup(
             transformer=reference_transformer,
@@ -423,7 +595,9 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             infer_cache=infer_state.cache,
             cache_write_mode=self.exact_cache_write_mode(),
             frame_start_override=frame_start_override,
+            proprio_state=resolved_proprio_state,
         )
+        self._cache_proprio_state(next_cache, resolved_proprio_state)
         next_cache["backbone_cache"] = visual_tower.resolve_runtime_cache_state(
             next_cache.get("backbone_cache") if isinstance(next_cache.get("backbone_cache"), CacheState) else None,
             cursor=infer_state.cursor,
@@ -449,7 +623,9 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         infer_state: PolicyInferState,
         text_context: torch.Tensor | None = None,
         negative_text_context: torch.Tensor | None = None,
+        proprio_state: torch.Tensor | None = None,
         advance_frame_start: bool = False,
+        skip_video_prediction: bool = False,
     ) -> PolicyInferOutput:
         # Chunk generation stays exact-runtime-native as well. This keeps the
         # canonical method-1 policy variant small: the variant owns rollout
@@ -471,11 +647,60 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             text_emb = text_context
             negative_text_emb = negative_text_context
             output_dtype = torch.float32 if parameter.device.type == "cpu" else parameter.dtype
-        if resolve_parallel_current_block_coupling(self.config) in {
+        resolved_proprio_state = self._resolve_proprio_state(
+            proprio_state,
+            label="parallel-stream inference",
+            infer_cache=infer_state.cache,
+        )
+        if self.config.runtime_mode == ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK:
+            if visual_outputs is None:
+                raise ValueError("Current-frame action-chunk inference requires visual outputs for every chunk.")
+            infer_artifacts = run_parallel_current_frame_action_chunk_inference_rollout(
+                transformer=reference_transformer,
+                backbone_config=self.backbone_config,
+                policy_config=self.config,
+                training_config=self.training_config,
+                inference_config=self.inference_config,
+                action_dim=self.action_dim,
+                condition_latents=condition_latents,
+                text_emb=text_emb,
+                negative_text_emb=negative_text_emb,
+                action_channel_mask=self._reference_action_channel_mask(
+                    device=condition_latents.device,
+                    dtype=output_dtype,
+                ),
+                infer_cache=infer_state.cache,
+                advance_frame_start=True,
+                proprio_state=resolved_proprio_state,
+            )
+        elif self.config.runtime_mode == ParallelRuntimeMode.FASTWAM_FIRST_FRAME:
+            if visual_outputs is None:
+                raise ValueError("FastWAM first-frame inference requires visual outputs for every chunk.")
+            infer_artifacts = run_parallel_fastwam_first_frame_inference_rollout(
+                transformer=reference_transformer,
+                backbone_config=self.backbone_config,
+                policy_config=self.config,
+                training_config=self.training_config,
+                inference_config=self.inference_config,
+                action_dim=self.action_dim,
+                condition_latents=condition_latents,
+                text_emb=text_emb,
+                negative_text_emb=negative_text_emb,
+                action_channel_mask=self._reference_action_channel_mask(
+                    device=condition_latents.device,
+                    dtype=output_dtype,
+                ),
+                infer_cache=infer_state.cache,
+                advance_frame_start=True,
+                proprio_state=resolved_proprio_state,
+            )
+        elif resolve_parallel_current_block_coupling(self.config) in {
             CurrentBlockCoupling.JOINT,
             CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
             CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
         }:
+            if skip_video_prediction:
+                raise ValueError("`skip_video_prediction` is only supported by staged exact M1 rollout modes.")
             infer_artifacts = run_parallel_action_conditioned_inference_rollout(
                 transformer=reference_transformer,
                 backbone_config=self.backbone_config,
@@ -492,6 +717,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 ),
                 infer_cache=infer_state.cache,
                 advance_frame_start=advance_frame_start,
+                proprio_state=resolved_proprio_state,
             )
         else:
             infer_artifacts = run_parallel_exact_inference_rollout(
@@ -510,7 +736,10 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 ),
                 infer_cache=infer_state.cache,
                 advance_frame_start=advance_frame_start,
+                skip_video_prediction=skip_video_prediction,
+                proprio_state=resolved_proprio_state,
             )
+        self._cache_proprio_state(infer_artifacts.next_cache, resolved_proprio_state)
         next_cursor = RolloutCursor(
             current_start_frame=int(
                 infer_artifacts.next_cache.get("frame_start", infer_state.cursor.current_start_frame)
@@ -555,7 +784,14 @@ class ParallelStreamPolicyVariant(PolicyVariant):
     ) -> PolicyInferOutput:
         warmed_state = infer_state
         condition_outputs: VisualStageOutputs | None = visual_outputs
-        if context.previous_action is not None:
+        if (
+            context.previous_action is not None
+            and self.config.runtime_mode
+            not in {
+                ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK,
+                ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
+            }
+        ):
             batch_size = visual_outputs.frontend.video_latents.shape[0]
             device = visual_outputs.frontend.video_latents.device
             previous_actions = expand_previous_action(
@@ -572,12 +808,14 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 action_history=previous_actions,
                 infer_state=infer_state,
                 action_space=ActionSpace.MODEL,
+                proprio_state=self._select_proprio_state(context.state),
             )
             condition_outputs = None
         return self.generate_reference_chunk(
             visual_tower=visual_tower,
             visual_outputs=condition_outputs,
             infer_state=warmed_state,
+            proprio_state=self._select_proprio_state(context.state),
         )
 
     def _validate_reference_profile(self) -> None:
@@ -613,7 +851,13 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 "Exact LingBot reference profile attn_window does not match the policy config, "
                 f"profile={self.reference_profile.attn_window}, config={self.config.attn_window}."
             )
-        if self.reference_profile.guidance_scale != self.inference_config.guidance_scale:
+        requires_guidance_profile_match = (
+            self.config.variant_profile == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING
+        )
+        if (
+            self.reference_profile.guidance_scale != self.inference_config.guidance_scale
+            and requires_guidance_profile_match
+        ):
             raise ValueError(
                 "Exact LingBot reference profile guidance_scale does not match the inference config, "
                 f"profile={self.reference_profile.guidance_scale}, config={self.inference_config.guidance_scale}."

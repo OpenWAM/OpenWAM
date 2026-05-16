@@ -27,6 +27,7 @@ from .enums import (
     PaddedTargetPolicy,
     ReplayStatusPolicy,
     RotationRepresentation,
+    SampleStateAnchorMode,
     SampleWeightMode,
     SegmentContextPolicy,
     TailPaddingPolicy,
@@ -282,6 +283,7 @@ class SampleConstructionConfig:
     num_frames: int = 4
     action_horizon: int = 16
     state_horizon: int = 1
+    state_anchor_mode: SampleStateAnchorMode = SampleStateAnchorMode.PROPRIO_CONTEXT_FRAME
     frame_stride: int = 1
     chunk_size: int = 1
     window_size: int = 1
@@ -341,6 +343,7 @@ class SampleConstructionConfig:
             enum_fields={
                 "mode": WindowSamplingMode,
                 "anchor_policy": AnchorPolicy,
+                "state_anchor_mode": SampleStateAnchorMode,
                 "sample_weight_mode": SampleWeightMode,
                 "context_prefix_policy": SegmentContextPolicy,
                 "tail_padding_policy": TailPaddingPolicy,

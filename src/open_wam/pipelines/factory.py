@@ -12,6 +12,7 @@ from open_wam.configs import (
     ParallelStreamPolicyConfig,
     PostDecodedPolicyConfig,
     PostLatentPolicyConfig,
+    ProprioContextMode,
     RegisterAttachedPolicyConfig,
     VideoConditionInputSpace,
     VideoConditionSource,
@@ -49,17 +50,33 @@ from .variant_pipeline import VariantPipeline
 from .lingbot_exact import LingbotExactRunner
 
 
+_PARALLEL_STREAM_EXACT_MODEL_ACTION_MODES = {
+    ParallelRuntimeMode.LINGBOT_EXACT,
+    ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
+    ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK,
+    ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
+}
+
+
 def _resolve_parallel_stream_model_action_dim(config: ExperimentConfig) -> int:
     if (
         isinstance(config.policy_variant, ParallelStreamPolicyConfig)
-        and config.policy_variant.runtime_mode
-        in {
-            ParallelRuntimeMode.LINGBOT_EXACT,
-            ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
-        }
+        and config.policy_variant.runtime_mode in _PARALLEL_STREAM_EXACT_MODEL_ACTION_MODES
     ):
         return config.action_decoder.action_dim
     return config.data.action_schema.action_dim
+
+
+def _resolve_proprio_context_state_dim(config: ExperimentConfig) -> int | None:
+    if not isinstance(config.policy_variant, (MoTPolicyConfig, ParallelStreamPolicyConfig)):
+        return None
+    mode = ProprioContextMode(config.policy_variant.proprio_context_mode)
+    if mode != ProprioContextMode.TEXT_CONTEXT_TOKEN:
+        return None
+    state_dim = int(config.data.action_schema.state_dim)
+    if state_dim <= 0:
+        raise ValueError("proprio_context_mode=text_context_token requires positive data.action_schema.state_dim.")
+    return state_dim
 
 
 def validate_experiment_config(config: ExperimentConfig) -> None:
@@ -89,10 +106,7 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
                 f"backbone.implementation={config.backbone.implementation!r}."
             )
     if isinstance(config.policy_variant, ParallelStreamPolicyConfig):
-        if config.policy_variant.runtime_mode not in {
-            ParallelRuntimeMode.LINGBOT_EXACT,
-            ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
-        }:
+        if config.policy_variant.runtime_mode not in _PARALLEL_STREAM_EXACT_MODEL_ACTION_MODES:
             raise ValueError(
                 "Parallel-stream method 1 now only supports LingBot-exact semantics, "
                 f"got policy_variant.runtime_mode={config.policy_variant.runtime_mode!r}."
@@ -560,10 +574,12 @@ _register_builtin_pipeline_builders()
 def build_variant_pipeline_from_config(config: ExperimentConfig) -> VariantPipeline:
     validate_experiment_config(config)
     policy_action_dim = _resolve_parallel_stream_model_action_dim(config)
+    proprio_context_state_dim = _resolve_proprio_context_state_dim(config)
     visual_tower = VisualTower(
         config.backbone,
         action_dim=policy_action_dim,
         state_dim=config.data.action_schema.state_dim,
+        proprio_context_state_dim=proprio_context_state_dim,
     )
     policy_variant = build_policy_variant(config)
     # Pipeline-time hook for variants that need cross-module surgery (e.g. MoT

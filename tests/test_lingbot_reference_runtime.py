@@ -1,10 +1,17 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
+import sys
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
+import pytest
 from torch import nn
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from open_wam.configs import (
     InferenceConfig,
@@ -14,6 +21,7 @@ from open_wam.configs import (
     ParallelRuntimeMode,
     ParallelStreamPolicyConfig,
     ParallelStreamVariantProfile,
+    ProprioContextMode,
     TrainingConfig,
 )
 from open_wam.models.action_decoders.lingbot_parallel_decoder import LingbotParallelActionDecoder
@@ -26,16 +34,29 @@ from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
     _write_exact_cache_chunk,
     initialize_reference_cache,
     prepare_parallel_action_conditioned_train_artifacts,
+    prepare_parallel_current_frame_action_chunk_train_artifacts,
     prepare_parallel_exact_train_artifacts,
+    prepare_parallel_fastwam_first_frame_train_artifacts,
+    run_parallel_current_frame_action_chunk_inference_rollout,
     run_parallel_action_conditioned_inference_rollout,
     run_parallel_exact_cache_warmup,
     run_parallel_exact_inference_rollout,
+    run_parallel_fastwam_first_frame_train,
     run_reference_single_stream_forward,
 )
 from open_wam.models.policy_variants.parallel_stream import reference_runtime as reference_runtime_module
 from open_wam.models.policy_variants.parallel_stream.variant import ParallelStreamPolicyVariant
+from open_wam.models.video_backbone.contracts import ChunkMetadata, ConditioningState, TokenGridMetadata
 from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig, SharedVideoTransformerConfig
+from open_wam.models.visual_tower.contracts import VisualFrontendOutput, VisualStageOutputs
 from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore
+from open_wam.models.visual_tower.tower import VisualTower
+from scripts.run_libero_exact_visualization import (
+    _binarize_raw_gripper_actions,
+    _build_warmup_raw_actions,
+    _extract_libero_eef_axisangle_gripper_state,
+    _select_executed_raw_actions,
+)
 
 
 def test_m1_reference_runtime_uses_shared_flow_match_scheduler() -> None:
@@ -49,6 +70,7 @@ class _FakeReferenceTransformer(nn.Module):
         self.weight = nn.Parameter(torch.zeros(1, dtype=torch.bfloat16))
         self.cache_batch_sizes: dict[str, int] = {}
         self.cache_layouts: dict[str, tuple[int, int]] = {}
+        self.cleared_pred_cache_names: list[str] = []
         self.last_text_emb: torch.Tensor | None = None
         self.last_noisy_latents: torch.Tensor | None = None
 
@@ -56,7 +78,7 @@ class _FakeReferenceTransformer(nn.Module):
         self.cache_batch_sizes.pop(cache_name, None)
 
     def clear_pred_cache(self, cache_name: str) -> None:
-        del cache_name
+        self.cleared_pred_cache_names.append(cache_name)
 
     def create_empty_cache(
         self,
@@ -125,6 +147,406 @@ class _GradTrackingTransformer(nn.Module):
         del update_cache, cache_name, action_mode
         self.grad_enabled_during_forward = torch.is_grad_enabled()
         return input_dict["noisy_latents"] * self.weight
+
+
+def test_exact_visualization_partial_execution_selects_executed_tail() -> None:
+    raw_actions = torch.arange(4 * 4 * 7, dtype=torch.float32).reshape(4, 4, 7)
+
+    executed = _select_executed_raw_actions(
+        raw_actions,
+        start_frame_group=0,
+        execute_action_steps=8,
+        action_per_frame=4,
+    )
+
+    assert torch.equal(executed, raw_actions[:2])
+
+
+def test_exact_visualization_default_warmup_keeps_legacy_first_chunk_prefix() -> None:
+    raw_actions = torch.arange(4 * 4 * 7, dtype=torch.float32).reshape(4, 4, 7)
+    executed = _select_executed_raw_actions(
+        raw_actions,
+        start_frame_group=1,
+        execute_action_steps=None,
+        action_per_frame=4,
+    )
+
+    default_warmup = _build_warmup_raw_actions(
+        raw_actions=raw_actions,
+        executed_raw_actions=executed,
+        start_frame_group=1,
+        first_chunk=True,
+        exact_startup_bootstrap_padding=False,
+        partial_execution_enabled=False,
+        binarize_gripper=False,
+    )
+    partial_warmup = _build_warmup_raw_actions(
+        raw_actions=raw_actions,
+        executed_raw_actions=executed[:2],
+        start_frame_group=1,
+        first_chunk=True,
+        exact_startup_bootstrap_padding=False,
+        partial_execution_enabled=True,
+        binarize_gripper=False,
+    )
+
+    assert torch.equal(default_warmup, raw_actions)
+    assert torch.equal(partial_warmup, raw_actions[:3])
+
+
+def test_exact_visualization_gripper_binarization_applies_to_last_channel_only() -> None:
+    raw_actions = torch.tensor(
+        [
+            [[0.1, -0.2, 0.0], [0.3, 0.4, -0.1]],
+            [[0.5, 0.6, 2.0], [0.7, 0.8, -3.0]],
+        ],
+        dtype=torch.float32,
+    )
+
+    binarized = _binarize_raw_gripper_actions(raw_actions)
+
+    assert torch.equal(binarized[..., :2], raw_actions[..., :2])
+    assert torch.equal(binarized[..., -1], torch.tensor([[1.0, -1.0], [1.0, -1.0]]))
+
+
+def test_libero_proprio_state_matches_eef_axisangle_gripper_2d() -> None:
+    state = _extract_libero_eef_axisangle_gripper_state(
+        {
+            "robot0_eef_pos": [1.0, 2.0, 3.0],
+            "robot0_eef_quat": [0.0, 0.0, 0.0, 1.0],
+            "robot0_gripper_qpos": [0.4, 0.5],
+        }
+    )
+
+    assert state.dtype == torch.empty((), dtype=torch.float32).numpy().dtype
+    torch.testing.assert_close(
+        torch.from_numpy(state),
+        torch.tensor([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 0.4, 0.5], dtype=torch.float32),
+    )
+
+
+def test_proprio_context_encoder_is_default_off_and_zero_init() -> None:
+    core = SharedVideoTransformerCore(
+        LingbotCompatibleVideoBackboneConfig(
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            text_dim=16,
+            freq_dim=8,
+        ),
+        action_dim=4,
+        state_dim=8,
+    )
+    text_emb = torch.randn(2, 5, 16)
+    assert core.proprio_context_encoder is None
+    assert core.inject_proprio_context(text_emb, torch.randn(2, 8)) is text_emb
+
+    core.configure_proprio_context_encoder(enabled=True, state_dim=8)
+    assert core.proprio_context_encoder is not None
+    assert "proprio_context_encoder.proj.weight" in core.state_dict()
+    text_with_zero_padding = text_emb.clone()
+    text_with_zero_padding[:, -1, :] = 0
+    injected = core.inject_proprio_context(text_with_zero_padding, torch.randn(2, 8))
+
+    assert torch.equal(injected, text_with_zero_padding)
+
+
+def test_visual_tower_configures_proprio_encoder_before_runtime_load() -> None:
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+    )
+    tower = VisualTower(backbone_config, action_dim=4, state_dim=8, proprio_context_state_dim=8)
+
+    assert isinstance(tower.core, SharedVideoTransformerCore)
+    assert tower.core.proprio_context_encoder is not None
+    assert "proprio_context_encoder.proj.weight" in tower.core.state_dict()
+
+
+def test_proprio_context_injection_rejects_nonzero_padding_slot() -> None:
+    core = SharedVideoTransformerCore(
+        LingbotCompatibleVideoBackboneConfig(
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            text_dim=16,
+            freq_dim=8,
+        ),
+        action_dim=4,
+        state_dim=8,
+    )
+    core.configure_proprio_context_encoder(enabled=True, state_dim=8)
+
+    with pytest.raises(ValueError, match="injection slot is not zero-padded"):
+        core.inject_proprio_context(torch.ones(2, 5, 16), torch.randn(2, 8))
+
+
+def test_proprio_context_zero_init_preserves_exact_single_stream_forward() -> None:
+    torch.manual_seed(0)
+    core = SharedVideoTransformerCore(
+        LingbotCompatibleVideoBackboneConfig(
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            text_dim=16,
+            freq_dim=8,
+            patch_size_t=1,
+            patch_size_h=2,
+            patch_size_w=2,
+        ),
+        action_dim=4,
+        state_dim=8,
+    ).eval()
+    text_emb = torch.randn(1, 6, 16)
+    text_emb[:, -1, :] = 0
+    input_dict = {
+        "noisy_latents": torch.randn(1, 48, 1, 2, 2),
+        "text_emb": text_emb,
+        "grid_id": torch.zeros(1, 4, 1),
+        "timesteps": torch.zeros(1, 1),
+    }
+
+    baseline = run_reference_single_stream_forward(
+        core,
+        input_dict=input_dict,
+        update_cache=0,
+        cache_name="parity",
+        action_mode=False,
+        guidance_scale=1.0,
+        negative_text_emb=None,
+    )
+    core.configure_proprio_context_encoder(enabled=True, state_dim=8)
+    injected_input = dict(input_dict)
+    injected_input["text_emb"] = core.inject_proprio_context(text_emb, torch.randn(1, 8))
+    with_proprio = run_reference_single_stream_forward(
+        core,
+        input_dict=injected_input,
+        update_cache=0,
+        cache_name="parity",
+        action_mode=False,
+        guidance_scale=1.0,
+        negative_text_emb=None,
+    )
+
+    torch.testing.assert_close(with_proprio, baseline, rtol=0, atol=0)
+
+
+def test_proprio_context_changes_exact_rollout_after_cache_warmup() -> None:
+    torch.manual_seed(0)
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=8,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=2,
+        patch_size_w=2,
+        max_text_tokens=4,
+    )
+    core = SharedVideoTransformerCore(backbone_config, action_dim=4, state_dim=8).eval()
+    core.configure_proprio_context_encoder(enabled=True, state_dim=8)
+    assert core.proprio_context_encoder is not None
+    with torch.no_grad():
+        core.proprio_context_encoder.proj.weight.fill_(0.25)
+        core.proprio_context_encoder.proj.bias.zero_()
+
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode="lingbot_exact",
+        current_block_coupling=CurrentBlockCoupling.ACTION_THEN_VIDEO,
+        frame_chunk_size=1,
+        action_per_frame=1,
+        attn_window=2,
+        proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,
+    )
+    training_config = TrainingConfig(chunk_size=1, window_size=2)
+    inference_config = InferenceConfig(
+        frame_chunk_size=1,
+        use_cache=True,
+        guidance_scale=1.0,
+        action_guidance_scale=1.0,
+        video_num_inference_steps=1,
+        action_num_inference_steps=1,
+    )
+    observed_video_latents = torch.randn(1, 48, 1, 2, 2)
+    observed_action_latents = torch.randn(1, 4, 1, 1, 1)
+    text_emb = torch.zeros(1, 4, 8)
+    warmup_proprio = torch.full((1, 8), 3.0)
+
+    def run_with_current_proprio(current_proprio: torch.Tensor) -> torch.Tensor:
+        warm_cache = run_parallel_exact_cache_warmup(
+            transformer=core,
+            backbone_config=backbone_config,
+            policy_config=policy_config,
+            inference_config=inference_config,
+            observed_video_latents=observed_video_latents,
+            observed_action_latents=observed_action_latents,
+            text_emb=text_emb,
+            negative_text_emb=None,
+            action_channel_mask=None,
+            infer_cache={},
+            proprio_state=warmup_proprio,
+        )
+        torch.manual_seed(123)
+        rollout = run_parallel_exact_inference_rollout(
+            transformer=core,
+            backbone_config=backbone_config,
+            policy_config=policy_config,
+            training_config=training_config,
+            inference_config=inference_config,
+            action_dim=4,
+            condition_latents=None,
+            text_emb=text_emb,
+            negative_text_emb=None,
+            action_channel_mask=None,
+            infer_cache=warm_cache,
+            proprio_state=current_proprio,
+        )
+        return rollout.action_pred.detach().clone()
+
+    positive = run_with_current_proprio(torch.full((1, 8), 10.0))
+    negative = run_with_current_proprio(torch.full((1, 8), -10.0))
+
+    # Guards the exact M1 cache boundary: warmup populated self-attn cache with
+    # proprio=3, so this only differs if rollout cross-attn sees current proprio.
+    assert not torch.allclose(positive, negative)
+
+
+def test_parallel_stream_proprio_context_adds_state_to_train_artifacts() -> None:
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=1,
+        patch_size_w=1,
+    )
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode="lingbot_exact",
+        frame_chunk_size=2,
+        action_per_frame=2,
+        attn_window=8,
+        proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,
+    )
+    variant = ParallelStreamPolicyVariant(
+        policy_config,
+        backbone_config,
+        TrainingConfig(chunk_size=2, window_size=8),
+        InferenceConfig(frame_chunk_size=2),
+        action_dim=4,
+        action_horizon=4,
+        num_frames=2,
+    )
+    video_latents = torch.randn(1, 48, 2, 2, 2)
+    visual_outputs = VisualStageOutputs(
+        frontend=VisualFrontendOutput(
+            canonical_video=torch.empty(1, 3, 2, 8, 8),
+            video_latents=video_latents,
+            video_tokens=torch.empty(1, 0, 32),
+            input_source="latents",
+            token_grid=TokenGridMetadata(
+                num_frames=2,
+                latent_height=2,
+                latent_width=2,
+                patch_size=(1, 1, 1),
+                patches_per_frame_h=2,
+                patches_per_frame_w=2,
+                tokens_per_frame=4,
+                sequence_length=8,
+            ),
+            chunk=ChunkMetadata(chunk_start_frame=0, chunk_num_frames=2, frame_stride=1, chunk_type="test"),
+            conditioning=ConditioningState(
+                supported=True,
+                text_context=torch.zeros(1, 512, 16),
+            ),
+        )
+    )
+    batch = PolicyTrainBatch(
+        actions=torch.randn(1, 4, 4),
+        state=torch.arange(16, dtype=torch.float32).reshape(1, 2, 8),
+    )
+
+    prepared = variant.prepare_train_inputs(visual_outputs, batch)
+    artifacts = prepared.variant_inputs["lingbot_train_artifacts"]
+
+    assert torch.equal(artifacts.input_dict["proprio_state"], batch.state[:, -1, :])
+
+
+def test_fastwam_first_frame_proprio_context_uses_first_window_state() -> None:
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=1,
+        patch_size_w=1,
+    )
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode=ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
+        frame_chunk_size=2,
+        action_per_frame=2,
+        attn_window=8,
+        proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,
+    )
+    variant = ParallelStreamPolicyVariant(
+        policy_config,
+        backbone_config,
+        TrainingConfig(chunk_size=2, window_size=2, video_num_train_timesteps=10, action_num_train_timesteps=10),
+        InferenceConfig(frame_chunk_size=2),
+        action_dim=4,
+        action_horizon=4,
+        num_frames=2,
+    )
+    video_latents = torch.randn(1, 48, 2, 2, 2)
+    visual_outputs = VisualStageOutputs(
+        frontend=VisualFrontendOutput(
+            canonical_video=torch.empty(1, 3, 2, 8, 8),
+            video_latents=video_latents,
+            video_tokens=torch.empty(1, 0, 32),
+            input_source="latents",
+            token_grid=TokenGridMetadata(
+                num_frames=2,
+                latent_height=2,
+                latent_width=2,
+                patch_size=(1, 1, 1),
+                patches_per_frame_h=2,
+                patches_per_frame_w=2,
+                tokens_per_frame=4,
+                sequence_length=8,
+            ),
+            chunk=ChunkMetadata(chunk_start_frame=0, chunk_num_frames=2, frame_stride=1, chunk_type="test"),
+            conditioning=ConditioningState(
+                supported=True,
+                text_context=torch.zeros(1, 512, 16),
+            ),
+        )
+    )
+    batch = PolicyTrainBatch(
+        actions=torch.randn(1, 4, 4),
+        state=torch.arange(16, dtype=torch.float32).reshape(1, 2, 8),
+    )
+
+    prepared = variant.prepare_train_inputs(visual_outputs, batch)
+    artifacts = prepared.variant_inputs["lingbot_train_artifacts"]
+
+    assert torch.equal(artifacts.input_dict["proprio_state"], batch.state[:, 0, :])
 
 
 def test_exact_runtime_forces_cfg_batch_when_cache_is_shared() -> None:
@@ -502,6 +924,98 @@ def test_staged_cache_write_respects_action_then_video_order(monkeypatch) -> Non
     assert calls[1][2][SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS] == 4
     assert calls[3][2][SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS] == 4
     assert SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS not in layer_state.metadata
+
+
+def test_action_then_video_skip_video_prediction_runs_action_only(monkeypatch) -> None:
+    calls: list[tuple[bool, int]] = []
+
+    def fake_single_stream_forward(
+        transformer,
+        *,
+        input_dict,
+        update_cache,
+        cache_name,
+        action_mode,
+        guidance_scale,
+        negative_text_emb,
+        combine_cfg=True,
+        force_cfg_batch=False,
+    ):
+        del transformer, cache_name, guidance_scale, negative_text_emb, combine_cfg, force_cfg_batch
+        calls.append((bool(action_mode), int(update_cache)))
+        latents = input_dict["noisy_latents"]
+        batch_size = int(latents.shape[0])
+        if action_mode:
+            return latents.squeeze(-1).permute(0, 2, 3, 1).reshape(batch_size, -1, latents.shape[1])
+        patch_t, patch_h, patch_w = (1, 2, 2)
+        return (
+            latents.view(
+                batch_size,
+                latents.shape[1],
+                latents.shape[2] // patch_t,
+                patch_t,
+                latents.shape[3] // patch_h,
+                patch_h,
+                latents.shape[4] // patch_w,
+                patch_w,
+            )
+            .permute(0, 2, 4, 6, 1, 3, 5, 7)
+            .reshape(batch_size, -1, latents.shape[1] * patch_t * patch_h * patch_w)
+        )
+
+    monkeypatch.setattr(
+        reference_runtime_module,
+        "run_reference_single_stream_forward",
+        fake_single_stream_forward,
+    )
+
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=2,
+        patch_size_w=2,
+    )
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode="lingbot_exact",
+        current_block_coupling=CurrentBlockCoupling.ACTION_THEN_VIDEO,
+        frame_chunk_size=2,
+        action_per_frame=2,
+        attn_window=8,
+    )
+    artifacts = run_parallel_exact_inference_rollout(
+        transformer=_FakeReferenceTransformer(),
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=TrainingConfig(chunk_size=2, window_size=8),
+        inference_config=InferenceConfig(
+            frame_chunk_size=2,
+            use_cache=True,
+            guidance_scale=1.0,
+            action_guidance_scale=1.0,
+            video_num_inference_steps=1,
+            action_num_inference_steps=1,
+        ),
+        action_dim=4,
+        condition_latents=torch.zeros(1, 48, 2, 4, 4),
+        text_emb=torch.zeros(1, 8, 16),
+        negative_text_emb=None,
+        action_channel_mask=None,
+        infer_cache={"frame_start": 0, "step_index": 0},
+        skip_video_prediction=True,
+    )
+
+    assert calls
+    assert all(action_mode for action_mode, _ in calls)
+    assert all(update_cache == 0 for _, update_cache in calls)
+    assert artifacts.predicted_latents.shape[2] == 0
+    assert artifacts.debug["skip_video_prediction"] is True
+    assert artifacts.debug["cache_commit_strategy"] == "action_then_video_action_only_no_predicted_cache"
 
 
 def test_staged_cache_write_scopes_action_then_video_tail_for_unequal_history(monkeypatch) -> None:
@@ -1342,6 +1856,526 @@ def test_parallel_exact_train_artifacts_accept_contextual_overrides() -> None:
         artifacts.input_dict["action_dict"]["grid_id"][0, 0, 0],
         torch.tensor(7.2),
     )
+
+
+def test_current_frame_action_chunk_train_artifacts_use_anchor_frame_only() -> None:
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=2,
+        patch_size_w=2,
+    )
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode=ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK,
+        frame_chunk_size=4,
+        action_per_frame=4,
+        attn_window=8,
+    )
+    training_config = TrainingConfig(
+        chunk_size=4,
+        window_size=8,
+        video_num_train_timesteps=10,
+        action_num_train_timesteps=10,
+    )
+    video_latents = torch.randn(1, 48, 8, 8, 16)
+    actions = torch.randn(1, 32, 30)
+    action_mask = torch.ones_like(actions)
+    text_emb = torch.randn(1, 512, 16)
+
+    artifacts = prepare_parallel_current_frame_action_chunk_train_artifacts(
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        video_latents=video_latents,
+        actions=actions,
+        action_mask=action_mask,
+        text_emb=text_emb,
+        frame_shift=17,
+    )
+    input_dict = artifacts.input_dict
+    expected_condition = video_latents[:, :, :1].repeat(1, 1, 4, 1, 1)
+
+    assert input_dict["attention_profile_name"] == "none"
+    assert input_dict["current_frame_action_chunk"] is True
+    assert input_dict["current_frame_condition_source"] == "video_latents"
+    assert input_dict["chunk_size"] == 4
+    assert input_dict["window_size"] == 4
+    assert torch.equal(input_dict["latent_dict"]["noisy_latents"], expected_condition)
+    assert torch.equal(input_dict["latent_dict"]["latent"], expected_condition)
+    assert torch.all(input_dict["latent_dict"]["timesteps"] == 0)
+    assert torch.all(input_dict["latent_dict"]["targets"] == 0)
+    assert torch.all(input_dict["latent_dict"]["loss_mask"] == 0)
+    assert input_dict["action_dict"]["targets"].shape == (1, 30, 4, 4, 1)
+    assert torch.all(input_dict["action_dict"]["loss_mask"] == 1)
+    assert torch.all(input_dict["action_dict"]["latent"] == 0)
+
+
+def test_parallel_exact_train_artifacts_prefer_full_condition_latents() -> None:
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=2,
+        patch_size_w=2,
+    )
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode=ParallelRuntimeMode.LINGBOT_EXACT,
+        frame_chunk_size=2,
+        action_per_frame=2,
+        attn_window=8,
+        noisy_video_condition_prob=0.0,
+    )
+    training_config = TrainingConfig(
+        chunk_size=2,
+        window_size=4,
+        video_num_train_timesteps=10,
+        action_num_train_timesteps=10,
+    )
+    video_latents = torch.zeros(1, 48, 2, 8, 16)
+    condition_latents = torch.full_like(video_latents, 4.0)
+
+    artifacts = prepare_parallel_exact_train_artifacts(
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        video_latents=video_latents,
+        condition_latents=condition_latents,
+        actions=torch.randn(1, 4, 30),
+        action_mask=None,
+        text_emb=torch.randn(1, 512, 16),
+        chunk_size_override=2,
+        window_size_override=4,
+    )
+
+    assert artifacts.input_dict["video_condition_source"] == "condition_latents"
+    torch.testing.assert_close(artifacts.input_dict["latent_dict"]["latent"], condition_latents, rtol=0, atol=0)
+
+
+def test_current_frame_action_chunk_train_artifacts_prefer_explicit_condition_latents() -> None:
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=2,
+        patch_size_w=2,
+    )
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode=ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK,
+        frame_chunk_size=4,
+        action_per_frame=4,
+        attn_window=8,
+        require_condition_latents=True,
+    )
+    training_config = TrainingConfig(
+        chunk_size=4,
+        window_size=8,
+        video_num_train_timesteps=10,
+        action_num_train_timesteps=10,
+    )
+    video_latents = torch.zeros(1, 48, 8, 8, 16)
+    condition_latents = torch.full((1, 48, 1, 8, 16), 5.0)
+
+    artifacts = prepare_parallel_current_frame_action_chunk_train_artifacts(
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        video_latents=video_latents,
+        condition_latents=condition_latents,
+        actions=torch.randn(1, 32, 30),
+        action_mask=None,
+        text_emb=torch.randn(1, 512, 16),
+    )
+    input_dict = artifacts.input_dict
+    expected_condition = condition_latents.repeat(1, 1, 4, 1, 1)
+
+    assert input_dict["current_frame_condition_source"] == "condition_latents"
+    torch.testing.assert_close(input_dict["latent_dict"]["noisy_latents"], expected_condition, rtol=0, atol=0)
+    torch.testing.assert_close(input_dict["latent_dict"]["latent"], expected_condition, rtol=0, atol=0)
+
+
+def test_current_frame_action_chunk_inference_rollout_is_action_only_no_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_inputs: list[dict] = []
+
+    def fake_action_conditioned_forward(
+        transformer: torch.nn.Module,
+        *,
+        input_dict: dict,
+        video_guidance_scale: float,
+        action_guidance_scale: float,
+        negative_text_emb: torch.Tensor | None,
+        update_cache: int = 0,
+        cache_name: str = "open_wam_exact",
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        del transformer, action_guidance_scale, negative_text_emb, cache_name
+        captured_inputs.append(input_dict)
+        assert video_guidance_scale == 1.0
+        assert update_cache == 0
+        video_latents = input_dict["latent_dict"]["noisy_latents"]
+        action_latents = input_dict["action_dict"]["noisy_latents"]
+        video_tokens = int(video_latents.shape[2]) * int(video_latents.shape[3] // 2) * int(video_latents.shape[4] // 2)
+        action_tokens = int(action_latents.shape[2]) * int(action_latents.shape[3])
+        video_pred = torch.zeros(video_latents.shape[0], video_tokens, 192, device=video_latents.device, dtype=video_latents.dtype)
+        action_pred = torch.zeros(
+            action_latents.shape[0],
+            action_tokens,
+            action_latents.shape[1],
+            device=action_latents.device,
+            dtype=action_latents.dtype,
+        )
+        return video_pred, action_pred
+
+    monkeypatch.setattr(
+        reference_runtime_module,
+        "_run_parallel_action_conditioned_forward",
+        fake_action_conditioned_forward,
+    )
+
+    transformer = _FakeReferenceTransformer()
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=2,
+        patch_size_w=2,
+    )
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode=ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK,
+        frame_chunk_size=4,
+        action_per_frame=4,
+        attn_window=8,
+    )
+    training_config = TrainingConfig(
+        chunk_size=4,
+        window_size=8,
+        video_num_train_timesteps=10,
+        action_num_train_timesteps=10,
+    )
+    inference_config = InferenceConfig(
+        frame_chunk_size=4,
+        use_cache=False,
+        guidance_scale=1.0,
+        action_guidance_scale=1.0,
+        video_num_inference_steps=1,
+        action_num_inference_steps=1,
+    )
+    condition_latents = torch.randn(1, 48, 4, 8, 16)
+
+    rollout = run_parallel_current_frame_action_chunk_inference_rollout(
+        transformer=transformer,
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        inference_config=inference_config,
+        action_dim=30,
+        condition_latents=condition_latents,
+        text_emb=torch.randn(1, 512, 16),
+        negative_text_emb=None,
+        action_channel_mask=None,
+        infer_cache={"cache_name": "stale_cache", "cache_initialized": True, "frame_start": 12},
+    )
+
+    assert transformer.cleared_pred_cache_names == ["stale_cache"]
+    assert rollout.predicted_latents.shape == (1, 48, 0, 8, 16)
+    assert rollout.action_pred.shape == (1, 16, 30)
+    assert rollout.next_cache["cache_initialized"] is False
+    assert rollout.next_cache["frame_start"] == 16
+    assert captured_inputs
+    expected_condition = condition_latents[:, :, :1].to(dtype=torch.bfloat16).repeat(1, 1, 4, 1, 1)
+    torch.testing.assert_close(
+        captured_inputs[0]["latent_dict"]["noisy_latents"],
+        expected_condition,
+        rtol=0,
+        atol=0,
+    )
+    assert captured_inputs[0]["attention_profile_name"] == "none"
+    assert captured_inputs[0]["current_frame_action_chunk"] is True
+
+
+def test_current_frame_action_chunk_rejects_video_guidance_scale() -> None:
+    transformer = _FakeReferenceTransformer()
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+    )
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode=ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK,
+        frame_chunk_size=4,
+        action_per_frame=4,
+    )
+
+    with pytest.raises(ValueError, match="does not support video CFG"):
+        run_parallel_current_frame_action_chunk_inference_rollout(
+            transformer=transformer,
+            backbone_config=backbone_config,
+            policy_config=policy_config,
+            training_config=TrainingConfig(),
+            inference_config=InferenceConfig(frame_chunk_size=4, guidance_scale=5.0),
+            action_dim=30,
+            condition_latents=torch.randn(1, 48, 4, 8, 16),
+            text_emb=torch.randn(1, 512, 16),
+            negative_text_emb=None,
+            action_channel_mask=None,
+            infer_cache={},
+        )
+
+
+def test_fastwam_first_frame_train_artifacts_keep_anchor_clean_and_video_loss_future_only() -> None:
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=2,
+        patch_size_w=2,
+    )
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode=ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
+        frame_chunk_size=4,
+        action_per_frame=4,
+        attn_window=8,
+    )
+    training_config = TrainingConfig(
+        chunk_size=4,
+        window_size=8,
+        video_num_train_timesteps=10,
+        action_num_train_timesteps=10,
+    )
+    video_latents = torch.randn(1, 48, 4, 8, 16)
+    actions = torch.randn(1, 16, 30)
+
+    artifacts = prepare_parallel_fastwam_first_frame_train_artifacts(
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        video_latents=video_latents,
+        actions=actions,
+        action_mask=None,
+        text_emb=torch.randn(1, 512, 16),
+    )
+    input_dict = artifacts.input_dict
+
+    assert input_dict["attention_profile_name"] == "fastwam_first_frame"
+    assert input_dict["fastwam_first_frame"] is True
+    assert input_dict["fastwam_condition_source"] == "video_latents"
+    torch.testing.assert_close(
+        input_dict["latent_dict"]["noisy_latents"][:, :, :1],
+        video_latents[:, :, :1],
+        rtol=0,
+        atol=0,
+    )
+    assert torch.all(input_dict["latent_dict"]["targets"][:, :, :1] == 0)
+    assert torch.all(input_dict["latent_dict"]["loss_mask"][:, :, :1] == 0)
+    assert torch.all(input_dict["latent_dict"]["loss_mask"][:, :, 1:] == 1)
+    assert input_dict["action_dict"]["targets"].shape == (1, 30, 4, 4, 1)
+    assert torch.all(input_dict["action_dict"]["loss_mask"] == 1)
+    assert torch.all(input_dict["action_dict"]["latent"] == 0)
+
+
+def test_fastwam_first_frame_train_artifacts_prefer_explicit_condition_latents() -> None:
+    torch.manual_seed(7)
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=2,
+        patch_size_w=2,
+    )
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode=ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
+        frame_chunk_size=4,
+        action_per_frame=4,
+        attn_window=8,
+    )
+    training_config = TrainingConfig(
+        chunk_size=4,
+        window_size=8,
+        video_num_train_timesteps=10,
+        action_num_train_timesteps=10,
+    )
+    video_latents = torch.zeros(1, 48, 4, 8, 16)
+    condition_latents = torch.full((1, 48, 1, 8, 16), 3.0)
+
+    artifacts = prepare_parallel_fastwam_first_frame_train_artifacts(
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        video_latents=video_latents,
+        condition_latents=condition_latents,
+        actions=torch.randn(1, 16, 30),
+        action_mask=None,
+        text_emb=torch.randn(1, 512, 16),
+    )
+    input_dict = artifacts.input_dict
+
+    assert input_dict["fastwam_condition_source"] == "condition_latents"
+    torch.testing.assert_close(
+        input_dict["latent_dict"]["noisy_latents"][:, :, :1],
+        condition_latents,
+        rtol=0,
+        atol=0,
+    )
+    assert torch.all(input_dict["latent_dict"]["loss_mask"][:, :, :1] == 0)
+
+
+def test_fastwam_first_frame_train_artifacts_can_require_condition_latents() -> None:
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=2,
+        patch_size_w=2,
+    )
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode=ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
+        frame_chunk_size=4,
+        action_per_frame=4,
+        attn_window=8,
+        require_condition_latents=True,
+    )
+    training_config = TrainingConfig(
+        chunk_size=4,
+        window_size=8,
+        video_num_train_timesteps=10,
+        action_num_train_timesteps=10,
+    )
+
+    with pytest.raises(ValueError, match="require_condition_latents=true"):
+        prepare_parallel_fastwam_first_frame_train_artifacts(
+            backbone_config=backbone_config,
+            policy_config=policy_config,
+            training_config=training_config,
+            video_latents=torch.zeros(1, 48, 4, 8, 16),
+            actions=torch.randn(1, 16, 30),
+            action_mask=None,
+            text_emb=torch.randn(1, 512, 16),
+        )
+
+
+def test_fastwam_first_frame_attention_mask_prevents_action_video_round_trip_leak() -> None:
+    profile = reference_runtime_module._build_fastwam_first_frame_attention_profile(
+        batch_size=1,
+        video_seq_len=8,
+        action_seq_len=16,
+        video_tokens_per_frame=2,
+        padded_length=0,
+        text_token_count=4,
+        device=torch.device("cpu"),
+    )
+    mask = profile.self_attention_mask
+    assert mask is not None
+
+    first_video = slice(0, 2)
+    future_video = slice(2, 8)
+    action = slice(8, 24)
+
+    assert not mask[first_video, future_video].any()
+    assert not mask[:8, action].any()
+    assert not mask[action, future_video].any()
+    assert mask[action, first_video].all()
+    assert mask[action, action].all()
+    assert mask[future_video, :8].all()
+
+
+def test_fastwam_first_frame_forward_keeps_video_prediction_action_invariant() -> None:
+    torch.manual_seed(123)
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=2,
+        patch_size_w=2,
+        max_text_tokens=8,
+    )
+    transformer = SharedVideoTransformerCore(backbone_config, action_dim=4).eval()
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode=ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
+        frame_chunk_size=4,
+        action_per_frame=2,
+        attn_window=8,
+    )
+    training_config = TrainingConfig(
+        chunk_size=4,
+        window_size=4,
+        video_num_train_timesteps=10,
+        action_num_train_timesteps=10,
+    )
+    video_latents = torch.randn(1, 48, 4, 4, 4)
+    text_emb = torch.randn(1, 8, 16)
+    actions_a = torch.zeros(1, 8, 4)
+    actions_b = torch.full((1, 8, 4), 100.0)
+
+    torch.manual_seed(999)
+    artifacts_a = prepare_parallel_fastwam_first_frame_train_artifacts(
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        video_latents=video_latents,
+        actions=actions_a,
+        action_mask=None,
+        text_emb=text_emb,
+    )
+    torch.manual_seed(999)
+    artifacts_b = prepare_parallel_fastwam_first_frame_train_artifacts(
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        video_latents=video_latents,
+        actions=actions_b,
+        action_mask=None,
+        text_emb=text_emb,
+    )
+
+    with torch.no_grad():
+        latent_pred_a, action_pred_a = run_parallel_fastwam_first_frame_train(transformer, artifacts_a.input_dict)
+        latent_pred_b, action_pred_b = run_parallel_fastwam_first_frame_train(transformer, artifacts_b.input_dict)
+
+    torch.testing.assert_close(latent_pred_a, latent_pred_b, rtol=0, atol=0)
+    assert not torch.equal(action_pred_a, action_pred_b)
 
 
 def test_parallel_exact_train_artifacts_split_video_and_action_loss_masks() -> None:

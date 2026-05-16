@@ -176,7 +176,13 @@ def main() -> None:
     deadline_tolerance_s = float(args.deadline_tolerance_ms) / 1000.0
 
     try:
-        first_obs = exact_viz._init_single_env(env, init_states[args.episode_idx % len(init_states)])
+        first_raw_obs = exact_viz._init_single_env_raw(env, init_states[args.episode_idx % len(init_states)])
+        first_obs = exact_viz._extract_obs(first_raw_obs)
+        latest_proprio_state = exact_viz._extract_proprio_context_tensor(
+            first_raw_obs,
+            config=config,
+            device=runtime_device,
+        )
         with torch.inference_mode():
             session = runner.reset(task_text=(prompt,))
             startup_prepare_t0 = time.perf_counter()
@@ -196,6 +202,7 @@ def main() -> None:
                 video_latents=initial_inputs["video_latents"],
                 text_context=initial_inputs["text_context"],
                 negative_text_context=initial_inputs["negative_text_context"],
+                proprio_state=latest_proprio_state,
             )
             _synchronize_devices(runtime_device)
             startup_infer_s = time.perf_counter() - startup_infer_t0
@@ -238,6 +245,7 @@ def main() -> None:
                 initial_obs=first_obs,
                 action_per_frame=action_per_frame,
                 frame_chunk_size=frame_chunk_size,
+                proprio_state=latest_proprio_state,
             )
         ]
         startup_open_loop_s = 0.0
@@ -332,6 +340,11 @@ def main() -> None:
                     env_step_s = action_end_monotonic - actual_start_monotonic
                     last_action_end_monotonic = action_end_monotonic
                     extracted_obs = exact_viz._extract_obs(obs)
+                    latest_proprio_state = exact_viz._extract_proprio_context_tensor(
+                        obs,
+                        config=config,
+                        device=runtime_device,
+                    )
                     frame_obs_sequence.append(
                         {
                             key: np.array(value, copy=True)
@@ -388,6 +401,11 @@ def main() -> None:
                         },
                         "obs_sequence": frame_obs_sequence,
                         "raw_actions": np.array(frame_actions, copy=True),
+                        "proprio_state": (
+                            None
+                            if latest_proprio_state is None
+                            else _proprio_state_to_numpy(latest_proprio_state)
+                        ),
                     }
                 )
 
@@ -601,6 +619,7 @@ def _startup_conditioning_history_record(
     initial_obs: dict[str, np.ndarray],
     action_per_frame: int,
     frame_chunk_size: int,
+    proprio_state: np.ndarray | torch.Tensor | None = None,
 ) -> dict[str, Any]:
     if first_chunk.raw_chunk_action_pred is None:
         raise RuntimeError("Exact runner did not produce raw 7D LIBERO actions.")
@@ -611,7 +630,7 @@ def _startup_conditioning_history_record(
         a=action_per_frame,
     )
     conditioning_frame_index = int(first_chunk.debug.get("generation_frame_start", 0))
-    return {
+    record = {
         "absolute_frame_index": int(conditioning_frame_index),
         "obs": {key: np.array(value, copy=True) for key, value in initial_obs.items()},
         "obs_sequence": [],
@@ -619,6 +638,9 @@ def _startup_conditioning_history_record(
         "video_latents": initial_video_latents.detach(),
         "source": "startup_conditioning_frame",
     }
+    if proprio_state is not None:
+        record["proprio_state"] = _proprio_state_to_numpy(proprio_state)
+    return record
 
 
 def _future_buffer_depth(
@@ -781,6 +803,8 @@ def _copy_history_record_for_worker(record: dict[str, Any]) -> dict[str, Any]:
         ]
     if isinstance(record.get("video_latents"), torch.Tensor):
         copied["video_latents"] = record["video_latents"].detach().clone()
+    if record.get("proprio_state") is not None:
+        copied["proprio_state"] = np.array(record["proprio_state"], dtype=np.float32, copy=True)
     return copied
 
 
@@ -883,6 +907,11 @@ def _run_replan_job(
         for obs in _history_records_to_obs_sequence(history_records)
     ]
     precomputed_video_latents = _history_records_to_precomputed_video_latents(history_records)
+    proprio_state = _history_records_to_proprio_state(
+        history_records,
+        config=config,
+        device=runtime_device,
+    )
     action_history = np.concatenate(
         [np.asarray(record["raw_actions"], dtype=np.float32) for record in history_records],
         axis=0,
@@ -911,12 +940,13 @@ def _run_replan_job(
             negative_text_context=prepared["negative_text_context"],
             action_history=torch.as_tensor(action_history, device=runtime_device, dtype=torch.float32).unsqueeze(0),
             action_space="raw",
+            proprio_state=proprio_state,
         )
         _synchronize_devices(runtime_device)
         warmup_s = time.perf_counter() - warmup_t0
 
         infer_t0 = time.perf_counter()
-        chunk = runner.infer_chunk(session=warmup.session)
+        chunk = runner.infer_chunk(session=warmup.session, proprio_state=proprio_state)
         _synchronize_devices(runtime_device)
         infer_s = time.perf_counter() - infer_t0
 
@@ -1080,6 +1110,29 @@ def _history_records_to_precomputed_video_latents(history_records: list[dict[str
     if not latent_chunks:
         return None
     return torch.cat(latent_chunks, dim=2)
+
+
+def _proprio_state_to_numpy(proprio_state: np.ndarray | torch.Tensor) -> np.ndarray:
+    if isinstance(proprio_state, torch.Tensor):
+        array = proprio_state.detach().to(dtype=torch.float32).cpu().numpy()
+    else:
+        array = np.asarray(proprio_state, dtype=np.float32)
+    return np.asarray(array, dtype=np.float32).reshape(-1).copy()
+
+
+def _history_records_to_proprio_state(
+    history_records: list[dict[str, Any]],
+    *,
+    config,
+    device: torch.device,
+) -> torch.Tensor | None:
+    if not exact_viz._proprio_context_enabled(config):
+        return None
+    for record in reversed(history_records):
+        proprio_state = record.get("proprio_state")
+        if proprio_state is not None:
+            return torch.as_tensor(proprio_state, device=device, dtype=torch.float32).reshape(1, -1)
+    return None
 
 
 def _synchronize_devices(*devices: torch.device) -> None:

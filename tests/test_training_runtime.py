@@ -13,7 +13,7 @@ import yaml
 
 from open_wam.configs import AuxiliaryValidationTaskConfig, TrainingConfig
 from open_wam.configs.enums import CheckpointMode
-from open_wam.data import LatentWAMSample
+from open_wam.data import LatentWAMSample, collate_latent_wam_samples, move_latent_wam_batch_to_device
 from open_wam.models.policy_variants import PolicyTrainBatch
 from open_wam.training import TrainingRuntime
 from open_wam.training.checkpoints import CheckpointManager
@@ -24,7 +24,7 @@ from open_wam.training.runtime import (
     _resolve_auxiliary_validation_source,
 )
 from open_wam.training.state import TrainState
-from open_wam.training.step_executor import resolve_sample_loss_weight
+from open_wam.training.step_executor import LatentBatchAdapter, resolve_sample_loss_weight
 from open_wam.utils.config_loader import load_experiment_config
 
 
@@ -319,6 +319,29 @@ def test_sample_loss_weight_rejects_reduced_multi_sample_batches() -> None:
             training_config=TrainingConfig(sample_loss_weight_mode="valid_action_steps"),
             batch=batch,
         )
+
+
+def test_latent_batch_adapter_preserves_condition_latents() -> None:
+    samples = [
+        LatentWAMSample(
+            video_latents=torch.full((48, 4, 2, 2), float(index)),
+            condition_latents=torch.full((48, 1, 2, 2), float(index + 10)),
+            actions=torch.zeros(16, 7),
+            action_mask=torch.ones(16, 7),
+            metadata={"sample": index},
+        )
+        for index in range(2)
+    ]
+
+    batch = collate_latent_wam_samples(samples)
+    assert batch.condition_latents is not None
+    torch.testing.assert_close(batch.condition_latents[:, 0, 0, 0, 0], torch.tensor([10.0, 11.0]))
+
+    moved = move_latent_wam_batch_to_device(batch, torch.device("cpu"))
+    assert moved.condition_latents is not None
+    prepared = LatentBatchAdapter().prepare(moved)
+
+    assert prepared.policy_batch.extra["condition_latents"] is moved.condition_latents
 
 
 def test_auxiliary_validation_dataset_forces_generalist_metadata_and_drops_text() -> None:

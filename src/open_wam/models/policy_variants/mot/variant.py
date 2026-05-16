@@ -29,6 +29,7 @@ from open_wam.configs import (
     MoTGeneralistTrainingMode,
     MoTPolicyConfig,
     MoTRuntimeMode,
+    ProprioContextMode,
     TrainingConfig,
 )
 from open_wam.data.sample_metadata import SampleConstructionMetadata
@@ -375,6 +376,68 @@ class MoTPolicyVariant(PolicyVariant):
         self._packed_block_stack_attached = False
         self._legacy_inference_blocks_restored = False
 
+    def _uses_proprio_context(self) -> bool:
+        return ProprioContextMode(self.config.proprio_context_mode) == ProprioContextMode.TEXT_CONTEXT_TOKEN
+
+    @staticmethod
+    def _select_anchor_state(state: torch.Tensor | None) -> torch.Tensor | None:
+        if state is None:
+            return None
+        if state.ndim == 2:
+            return state
+        if state.ndim == 3:
+            return state[:, -1, :]
+        raise ValueError(
+            "M5 proprio context expects state with shape [B, state_dim] or [B, H, state_dim], "
+            f"got {tuple(state.shape)}."
+        )
+
+    def _resolve_proprio_state(
+        self,
+        state: torch.Tensor | None,
+        *,
+        label: str,
+        fallback_state: torch.Tensor | None = None,
+    ) -> torch.Tensor | None:
+        if not self._uses_proprio_context():
+            return None
+        selected = self._select_anchor_state(state)
+        if selected is None:
+            selected = self._select_anchor_state(fallback_state)
+        if selected is None:
+            raise ValueError(f"Proprio context mode is enabled but no state was provided for {label}.")
+        return selected
+
+    def _resolve_text_context_with_proprio(
+        self,
+        visual_tower: VisualTower,
+        text_context: torch.Tensor | None,
+        proprio_state: torch.Tensor | None,
+        *,
+        batch_size: int,
+        device: torch.device,
+        dtype: torch.dtype,
+        materialize_if_missing: bool,
+    ) -> torch.Tensor | None:
+        if text_context is None:
+            if not materialize_if_missing:
+                return None
+            text_context = torch.zeros(
+                batch_size,
+                visual_tower.config.max_text_tokens,
+                visual_tower.config.text_dim,
+                device=device,
+                dtype=dtype,
+            )
+        else:
+            text_context = text_context.to(device=device, dtype=dtype)
+        if proprio_state is None:
+            return text_context
+        inject = getattr(visual_tower.core, "inject_proprio_context", None)
+        if not callable(inject):
+            raise ValueError("Proprio context mode requires the visual tower core to support proprio injection.")
+        return inject(text_context, proprio_state)
+
     def attach_visual_tower(self, visual_tower: VisualTower) -> None:
         """Pipeline-time hook: build the packed-coupling block stack.
 
@@ -389,6 +452,11 @@ class MoTPolicyVariant(PolicyVariant):
         ``self.action_expert.blocks``; after transfer both ModuleLists are
         empty.
         """
+        if self._uses_proprio_context():
+            configure = getattr(visual_tower.core, "configure_proprio_context_encoder", None)
+            if not callable(configure):
+                raise ValueError("proprio_context_mode=text_context_token requires a core proprio encoder hook.")
+            configure(enabled=True, state_dim=int(self.state_dim))
         if self._packed_block_stack_attached:
             return
         self._packed_block_stack_attached = True
@@ -663,16 +731,19 @@ class MoTPolicyVariant(PolicyVariant):
         visual_outputs: VisualStageOutputs,
         batch: PolicyTrainBatch,
         history_frames: int,
+        condition_latents: torch.Tensor | None = None,
         attention_mask: torch.Tensor | None = None,
     ) -> MoTVideoTrainArtifacts:
         video_latents = visual_outputs.frontend.video_latents
         video_artifacts = build_video_flow_match_train_artifacts(
             video_latents,
             training_config=self.training_config,
+            condition_latents=condition_latents,
         )
         noisy_latents = video_artifacts.noisy_latents.clone()
         timesteps = video_artifacts.timesteps.clone()
-        noisy_latents[:, :, :history_frames] = video_latents[:, :, :history_frames]
+        history_condition_latents = condition_latents if condition_latents is not None else video_latents
+        noisy_latents[:, :, :history_frames] = history_condition_latents[:, :, :history_frames]
         timesteps[:, :history_frames] = 0.0
         future_loss_mask = self._build_effective_video_loss_mask(
             video_latents=video_latents,
@@ -726,14 +797,56 @@ class MoTPolicyVariant(PolicyVariant):
         visual_outputs: VisualStageOutputs,
         batch: PolicyTrainBatch,
     ) -> PolicyPreparedInputs:
+        condition_latents = self._resolve_train_condition_latents(
+            batch,
+            video_latents=visual_outputs.frontend.video_latents,
+        )
+        proprio_state = self._resolve_proprio_state(
+            batch.state,
+            label="M5 training",
+        )
         return PolicyPreparedInputs(
             batch=batch,
             variant_inputs={
                 "video_latents": visual_outputs.frontend.video_latents,
+                "condition_latents": condition_latents,
+                "proprio_state": proprio_state,
                 "text_context": visual_outputs.frontend.conditioning.text_context,
                 "video_tokens_per_frame": visual_outputs.frontend.token_grid.tokens_per_frame,
             },
         )
+
+    def _resolve_train_condition_latents(
+        self,
+        batch: PolicyTrainBatch,
+        *,
+        video_latents: torch.Tensor,
+    ) -> torch.Tensor | None:
+        if not bool(self.config.use_condition_latents):
+            return None
+        condition_latents = batch.extra.get("condition_latents")
+        if condition_latents is None:
+            if bool(self.config.require_condition_latents):
+                raise ValueError(
+                    "M5 training was configured with `require_condition_latents=true`, "
+                    "but the latent batch did not provide `condition_latents`."
+                )
+            return None
+        if not isinstance(condition_latents, torch.Tensor):
+            raise ValueError(
+                "M5 `condition_latents` must be a tensor when provided, "
+                f"got {type(condition_latents).__name__}."
+            )
+        if condition_latents.ndim != 5 or tuple(condition_latents.shape) != tuple(video_latents.shape):
+            raise ValueError(
+                "M5 `condition_latents` must match video_latents exactly for train-time video conditioning, "
+                f"got condition={tuple(condition_latents.shape)}, video={tuple(video_latents.shape)}."
+            )
+        return condition_latents.to(device=video_latents.device, dtype=video_latents.dtype)
+
+    @staticmethod
+    def _video_condition_source(condition_latents: torch.Tensor | None) -> str:
+        return "condition_latents" if condition_latents is not None else "video_latents"
 
     def forward_train(
         self,
@@ -774,7 +887,9 @@ class MoTPolicyVariant(PolicyVariant):
     ) -> PolicyTrainOutput:
         self._maybe_initialize_action_expert(visual_tower)
         video_latents = prepared_inputs.variant_inputs["video_latents"]
+        condition_latents = prepared_inputs.variant_inputs.get("condition_latents")
         text_context = prepared_inputs.variant_inputs["text_context"]
+        proprio_state = prepared_inputs.variant_inputs.get("proprio_state")
         history_frames = self._resolve_train_history_frames(
             batch=prepared_inputs.batch,
             observed_num_frames=int(video_latents.shape[2]),
@@ -782,6 +897,7 @@ class MoTPolicyVariant(PolicyVariant):
         video_train_artifacts = build_video_flow_match_train_artifacts(
             video_latents,
             training_config=self.training_config,
+            condition_latents=condition_latents,
         )
         effective_action_mask = self._build_effective_action_mask(
             batch=prepared_inputs.batch,
@@ -819,11 +935,20 @@ class MoTPolicyVariant(PolicyVariant):
         # semantics: the action expert conditions on the full clean video
         # sample, but the video K/V prefill itself stays chunk-causal so future
         # chunks do not leak through the shared video backbone.
-        action_condition_latents = video_latents
+        action_condition_latents = condition_latents if condition_latents is not None else video_latents
+        video_text_context = self._resolve_text_context_with_proprio(
+            visual_tower,
+            text_context,
+            proprio_state,
+            batch_size=int(action_condition_latents.shape[0]),
+            device=action_condition_latents.device,
+            dtype=action_condition_latents.dtype,
+            materialize_if_missing=self._uses_proprio_context(),
+        )
         video_cache = prefill_video_kv_cache(
             visual_tower=visual_tower,
             observed_prefix=action_condition_latents,
-            text_context=text_context,
+            text_context=video_text_context,
             frame_start=0,
             attention_mask=chunk_causal_video_mask,
             detach_cache=self._should_detach_train_video_cache(visual_tower),
@@ -839,13 +964,17 @@ class MoTPolicyVariant(PolicyVariant):
             observed_num_frames=int(video_latents.shape[2]),
             history_frames=history_frames,
         )
-        resolved_text = text_context
-        if resolved_text is None:
-            resolved_text = action_condition_latents.new_zeros(
-                action_condition_latents.shape[0],
-                visual_tower.config.max_text_tokens,
-                visual_tower.config.text_dim,
-            )
+        resolved_text = self._resolve_text_context_with_proprio(
+            visual_tower,
+            text_context,
+            proprio_state,
+            batch_size=int(action_condition_latents.shape[0]),
+            device=action_condition_latents.device,
+            dtype=action_condition_latents.dtype,
+            materialize_if_missing=True,
+        )
+        if resolved_text is None:  # pragma: no cover - materialized above
+            raise RuntimeError("M5 action text context unexpectedly resolved to None.")
         action_pre = self.action_expert.pre_dit(
             action_tokens=train_artifacts.noisy_actions,
             timestep=train_artifacts.timesteps,
@@ -889,6 +1018,7 @@ class MoTPolicyVariant(PolicyVariant):
                 visual_outputs=visual_outputs,
                 batch=prepared_inputs.batch,
                 history_frames=history_frames,
+                condition_latents=condition_latents,
                 attention_mask=chunk_causal_video_mask,
             )
         batch_size = action_condition_latents.shape[0]
@@ -906,6 +1036,7 @@ class MoTPolicyVariant(PolicyVariant):
                 "runtime_mode": str(self.config.runtime_mode),
                 "sampled_chunk_size": sampled_chunk_size,
                 "sampled_window_size": sampled_window_size,
+                "video_condition_source": self._video_condition_source(condition_latents),
                 "mot_train_artifacts": MoTTrainArtifacts(
                     action=MoTActionTrainArtifacts(
                         flow_pred=flow_pred,
@@ -931,7 +1062,9 @@ class MoTPolicyVariant(PolicyVariant):
         prepared_inputs: PolicyPreparedInputs,
     ) -> PolicyTrainOutput:
         video_latents = prepared_inputs.variant_inputs["video_latents"]
+        condition_latents = prepared_inputs.variant_inputs.get("condition_latents")
         text_context = prepared_inputs.variant_inputs["text_context"]
+        proprio_state = prepared_inputs.variant_inputs.get("proprio_state")
         current_block_coupling = resolve_mot_current_block_coupling(self.config)
         if not _is_mot_same_step_coupling(current_block_coupling):
             raise NotImplementedError(
@@ -947,10 +1080,12 @@ class MoTPolicyVariant(PolicyVariant):
         video_artifacts = build_video_flow_match_train_artifacts(
             video_latents,
             training_config=self.training_config,
+            condition_latents=condition_latents,
         )
         noisy_video_latents = video_artifacts.noisy_latents.clone()
         video_timesteps = video_artifacts.timesteps.clone()
-        noisy_video_latents[:, :, :history_frames] = video_latents[:, :, :history_frames]
+        history_condition_latents = condition_latents if condition_latents is not None else video_latents
+        noisy_video_latents[:, :, :history_frames] = history_condition_latents[:, :, :history_frames]
         video_timesteps[:, :history_frames] = 0.0
         future_loss_mask = self._build_effective_video_loss_mask(
             video_latents=video_latents,
@@ -983,13 +1118,17 @@ class MoTPolicyVariant(PolicyVariant):
             effective_action_mask,
             training_config=self.training_config,
         )
-        resolved_text = text_context
-        if resolved_text is None:
-            resolved_text = video_latents.new_zeros(
-                video_latents.shape[0],
-                visual_tower.config.max_text_tokens,
-                visual_tower.config.text_dim,
-            )
+        resolved_text = self._resolve_text_context_with_proprio(
+            visual_tower,
+            text_context,
+            proprio_state,
+            batch_size=int(video_latents.shape[0]),
+            device=video_latents.device,
+            dtype=video_latents.dtype,
+            materialize_if_missing=True,
+        )
+        if resolved_text is None:  # pragma: no cover - materialized above
+            raise RuntimeError("M5 joint action text context unexpectedly resolved to None.")
         action_pre = self.action_expert.pre_dit(
             action_tokens=train_artifacts.noisy_actions,
             timestep=train_artifacts.timesteps,
@@ -1052,6 +1191,7 @@ class MoTPolicyVariant(PolicyVariant):
                 "current_block_coupling": current_block_coupling.value,
                 "sampled_chunk_size": sampled_chunk_size,
                 "sampled_window_size": sampled_window_size,
+                "video_condition_source": self._video_condition_source(condition_latents),
                 "mot_train_artifacts": MoTTrainArtifacts(
                     action=MoTActionTrainArtifacts(
                         flow_pred=flow_pred,
@@ -1089,7 +1229,9 @@ class MoTPolicyVariant(PolicyVariant):
         # all six modes while both experts remain separate transformer stacks.
         self._maybe_initialize_action_expert(visual_tower)
         video_latents = prepared_inputs.variant_inputs["video_latents"]
+        condition_latents = prepared_inputs.variant_inputs.get("condition_latents")
         text_context = prepared_inputs.variant_inputs["text_context"]
+        proprio_state = prepared_inputs.variant_inputs.get("proprio_state")
         video_tokens_per_frame = int(prepared_inputs.variant_inputs["video_tokens_per_frame"])
         num_video_frames = int(video_latents.shape[2])
         # Geometry resolution: contextual_subwindow data path stamps
@@ -1158,6 +1300,7 @@ class MoTPolicyVariant(PolicyVariant):
         video_artifacts = build_video_flow_match_train_artifacts(
             video_latents,
             training_config=self.training_config,
+            condition_latents=condition_latents,
             noisy_condition_prob=0.0
             if sampled_generalist_mode is not None
             else float(self.config.noisy_video_condition_prob),
@@ -1243,6 +1386,17 @@ class MoTPolicyVariant(PolicyVariant):
             )
         elif text_dropped:
             resolved_text = torch.zeros_like(resolved_text)
+        resolved_text = self._resolve_text_context_with_proprio(
+            visual_tower,
+            resolved_text,
+            proprio_state,
+            batch_size=int(video_latents.shape[0]),
+            device=video_latents.device,
+            dtype=video_latents.dtype,
+            materialize_if_missing=True,
+        )
+        if resolved_text is None:  # pragma: no cover - materialized above
+            raise RuntimeError("M5 packed text context unexpectedly resolved to None.")
 
         single_action_grid = self._build_action_grid_ids_for_sequence(
             batch_size=noisy_actions.shape[0],
@@ -1329,6 +1483,7 @@ class MoTPolicyVariant(PolicyVariant):
                 "sampled_window_size": sampled_window_size,
                 "generalist_training_paradigm": self.config.generalist_training_paradigm.value,
                 "generalist_training_source": generalist_source,
+                "video_condition_source": self._video_condition_source(condition_latents),
                 "mot_generalist_training_mode_override": (
                     forced_generalist_mode.value if forced_generalist_mode is not None else None
                 ),
@@ -1878,6 +2033,22 @@ class MoTPolicyVariant(PolicyVariant):
             else torch.device(str(action_device_raw))
         )
         action_dtype = next(self.action_expert.parameters()).dtype
+        proprio_state = self._resolve_proprio_state(
+            context.state,
+            label="M5 inference",
+            fallback_state=runtime_state.proprio_state,
+        )
+        if proprio_state is not None:
+            runtime_state.proprio_state = proprio_state.detach().clone()
+        resolved_text_context = self._resolve_text_context_with_proprio(
+            visual_tower,
+            visual_outputs.frontend.conditioning.text_context,
+            proprio_state,
+            batch_size=int(visual_outputs.frontend.video_latents.shape[0]),
+            device=action_device,
+            dtype=action_dtype,
+            materialize_if_missing=self._uses_proprio_context(),
+        )
         # Only `joint_denoise` stays on the simultaneous video+action denoise
         # path. `non_joint_two_stream` falls through to the method-1-aligned
         # default path below (video fully denoised first, then action attends
@@ -1890,7 +2061,7 @@ class MoTPolicyVariant(PolicyVariant):
                     f"got runtime_device={runtime_device}, action_device={action_device}, "
                     f"runtime_mode={self.config.runtime_mode!r}."
                 )
-            runtime_state.text_context = visual_outputs.frontend.conditioning.text_context
+            runtime_state.text_context = resolved_text_context
             runtime_state.action_device = str(action_device)
             state.variant_state = runtime_state
             del context
@@ -1900,12 +2071,7 @@ class MoTPolicyVariant(PolicyVariant):
         # Note: `runtime_state.video_cache` is populated inside
         # `forward_infer_step` after the slot-pool warmup + video denoise
         # last-step write, so we don't prefill it here.
-        resolved_text_context = visual_outputs.frontend.conditioning.text_context
-        runtime_state.text_context = (
-            None
-            if resolved_text_context is None
-            else resolved_text_context.to(device=action_device, dtype=action_dtype)
-        )
+        runtime_state.text_context = resolved_text_context
         runtime_state.video_tokens_per_frame = int(visual_outputs.frontend.token_grid.tokens_per_frame)
         runtime_state.chunk_advance_frames = max(1, int(self.inference_config.frame_chunk_size))
         # Only initialize `next_condition_frame_start` on the first chunk of a
@@ -2196,7 +2362,9 @@ class MoTPolicyVariant(PolicyVariant):
             )
         video_commit_before_action = current_block_coupling == CurrentBlockCoupling.VIDEO_THEN_ACTION
 
-        text_context_for_video = visual_outputs.frontend.conditioning.text_context
+        text_context_for_video = runtime_state.text_context
+        if text_context_for_video is None:
+            text_context_for_video = visual_outputs.frontend.conditioning.text_context
         if text_context_for_video is None:
             text_context_for_video = torch.zeros(
                 batch_size,
@@ -2216,10 +2384,15 @@ class MoTPolicyVariant(PolicyVariant):
         # action expert runs at batch=B, so when we extract the
         # MoTVideoCache for action we slice the cond half `[:B]`.
         negative_text_context = visual_outputs.frontend.conditioning.negative_text_context
-        if negative_text_context is not None:
-            negative_text_context = negative_text_context.to(
-                device=video_device, dtype=video_dtype
-            )
+        negative_text_context = self._resolve_text_context_with_proprio(
+            visual_tower,
+            negative_text_context,
+            runtime_state.proprio_state,
+            batch_size=batch_size,
+            device=video_device,
+            dtype=video_dtype,
+            materialize_if_missing=False,
+        )
         use_cfg = (
             negative_text_context is not None
             and bool(self.inference_config.use_cache)
