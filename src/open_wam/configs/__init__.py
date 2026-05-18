@@ -83,6 +83,7 @@ from .enums import (
     JointTimestepCoupling,
     LatentTemporalLayout,
     LatentWindowProfile,
+    LiberoAbsoluteJointExecutionMode,
     LoopPolicyName,
     MoTConditionMode,
     MoTActionExpertInitMode,

@@ -4,6 +4,12 @@ paths:
     # configs/local_paths.yaml and replace every /path/to/... placeholder with
     # machine-local paths before running real data jobs.
     libero_heng_root: /path/to/datasets/libero_heng/libero_10
+    # LeRobot overlay produced from verified absolute joint-position sidecars.
+    libero_abs_joint_root: /path/to/datasets/libero_heng/libero_10_abs_joint_overlay
+    # LeRobot overlay with recoverable 10D integrated EEF6D pseudo-absolute targets.
+    libero_abs_eef6d_root: /path/to/datasets/libero_heng/libero_10_abs_eef6d_overlay
+    # Optional held-out LeRobot overlay used for validation-only latent-local jobs.
+    libero_abs_eef6d_val_root: /path/to/datasets/libero_heng/libero_10_abs_eef6d_overlay_val
     # Public/local LIBERO checkout used by local HDF5 configs.
     libero_public_root: /path/to/datasets/libero/libero_10
     # Shared negative-prompt embedding used by latent-local datasets.

@@ -3,11 +3,15 @@ from __future__ import annotations
 from open_wam.configs import LatentTemporalLayout
 
 
+WAN_CAUSAL_LATENT_STRIDE_FRAMES = 4
+
+
 def raw_window_frames_for_latents(
     latent_frames: int,
     *,
     layout: LatentTemporalLayout | str = LatentTemporalLayout.WAN_CAUSAL_STRIDE4,
-    action_per_frame: int = 4,
+    latent_stride_frames: int = WAN_CAUSAL_LATENT_STRIDE_FRAMES,
+    action_per_frame: int | None = None,
 ) -> int:
     """Return raw frames cleanly consumed by `latent_frames` video latents."""
 
@@ -15,7 +19,14 @@ def raw_window_frames_for_latents(
     if latent_frames <= 0:
         raise ValueError(f"Expected positive latent frame count, got {latent_frames}.")
     layout = _coerce_layout(layout)
-    return 1 + int(action_per_frame) * (latent_frames - 1)
+    if action_per_frame is not None:
+        # Backward-compatible alias for call sites that used the old name.
+        # This value is a VAE temporal stride, not a policy action grouping.
+        latent_stride_frames = int(action_per_frame)
+    latent_stride_frames = int(latent_stride_frames)
+    if latent_stride_frames <= 0:
+        raise ValueError(f"Expected positive latent_stride_frames, got {latent_stride_frames}.")
+    return 1 + latent_stride_frames * (latent_frames - 1)
 
 
 def latent_raw_boundaries(
@@ -38,7 +49,7 @@ def latent_raw_boundaries(
         return _explicit_latent_frame_boundaries(raw_frame_count=raw_frame_count, latent_num_frames=latent_num_frames)
 
     boundaries = [0]
-    stride = 4
+    stride = WAN_CAUSAL_LATENT_STRIDE_FRAMES
     for latent_index in range(1, latent_num_frames + 1):
         boundaries.append(min(raw_frame_count, 1 + stride * (latent_index - 1)))
     boundaries[-1] = min(raw_frame_count, max(boundaries[-1], boundaries[-2] if len(boundaries) > 1 else 0))
@@ -64,7 +75,8 @@ def latent_anchor_positions(
     if _should_use_explicit_latent_frame_ids(raw_frame_count, latent_num_frames):
         return [min(latent_index, raw_frame_count - 1) for latent_index in range(latent_num_frames)]
 
-    return [0 if latent_index == 0 else min(4 * latent_index, raw_frame_count - 1) for latent_index in range(latent_num_frames)]
+    stride = WAN_CAUSAL_LATENT_STRIDE_FRAMES
+    return [0 if latent_index == 0 else min(stride * latent_index, raw_frame_count - 1) for latent_index in range(latent_num_frames)]
 
 
 def observed_frame_ids_for_latent_segment(

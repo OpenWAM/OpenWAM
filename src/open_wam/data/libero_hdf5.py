@@ -14,7 +14,7 @@ from torch.utils.data import Dataset
 
 from open_wam.configs import ActionTargetReferenceSource, ActionTargetRepresentation, DataConfig
 
-from .action_transforms import build_relative_pose_targets, expected_pose_target_dim
+from .action_transforms import build_relative_pose_targets, expected_pose_target_dim, normalize_action_targets
 from .contracts import WAMSample
 
 
@@ -168,7 +168,11 @@ class LiberoOfflineWindowDataset(Dataset[WAMSample]):
                 target_length=target_length,
                 sequence_name=action_target.source_key,
             )
-            return actions, action_mask, {}
+            actions = normalize_action_targets(
+                actions,
+                normalization=action_target.normalization,
+            )
+            return actions, action_mask, {"action_target_normalization_mode": str(action_target.normalization.mode)}
 
         if action_target.representation == ActionTargetRepresentation.EEF_POSE_RELATIVE_TO_REFERENCE:
             if action_target.reference_source != ActionTargetReferenceSource.ANCHOR_STATE:

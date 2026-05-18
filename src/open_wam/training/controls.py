@@ -5,8 +5,8 @@ from typing import Callable
 
 from torch import nn
 
-from open_wam.configs import TrainingConfig
-from open_wam.configs.enums import TrainingComponentSelector, TrainingObjective
+from open_wam.configs import MoTPolicyConfig, ParallelStreamPolicyConfig, TrainingConfig
+from open_wam.configs.enums import ProprioContextMode, TrainingComponentSelector, TrainingObjective
 from open_wam.configs.training import normalize_enabled_objectives
 
 COMPONENT_ALIASES = {
@@ -20,6 +20,8 @@ COMPONENT_ALIASES = {
     "visual_tower.core": TrainingComponentSelector.VISUAL_TOWER_CORE,
     "runtime_backbone": TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE,
     "visual_tower.runtime_backbone": TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE,
+    "proprio_context_encoder": TrainingComponentSelector.VISUAL_TOWER_PROPRIO_CONTEXT_ENCODER,
+    "visual_tower.proprio_context_encoder": TrainingComponentSelector.VISUAL_TOWER_PROPRIO_CONTEXT_ENCODER,
     "decoder": TrainingComponentSelector.VISUAL_TOWER_DECODER,
     "visual_tower.decoder": TrainingComponentSelector.VISUAL_TOWER_DECODER,
     "policy": TrainingComponentSelector.POLICY_VARIANT,
@@ -84,12 +86,26 @@ def apply_training_component_controls(
         _set_component_requires_grad(pipeline, selectors=component_trainable, enabled=True)
     if component_frozen:
         _set_component_requires_grad(pipeline, selectors=component_frozen, enabled=False)
+    proprio_context_encoder_auto_enabled = _enable_proprio_context_encoder_when_used(
+        pipeline,
+        component_frozen=component_frozen,
+    )
+    reported_trainable_components = component_trainable
+    if (
+        proprio_context_encoder_auto_enabled
+        and TrainingComponentSelector.ALL not in reported_trainable_components
+        and TrainingComponentSelector.VISUAL_TOWER_PROPRIO_CONTEXT_ENCODER not in reported_trainable_components
+    ):
+        reported_trainable_components = (
+            *reported_trainable_components,
+            TrainingComponentSelector.VISUAL_TOWER_PROPRIO_CONTEXT_ENCODER,
+        )
 
     total_parameters = sum(parameter.numel() for parameter in pipeline.parameters())
     trainable_parameters = sum(parameter.numel() for parameter in pipeline.parameters() if parameter.requires_grad)
     return TrainabilityReport(
         enabled_objectives=normalize_enabled_objectives(training_config.enabled_objectives),
-        trainable_components=component_trainable,
+        trainable_components=reported_trainable_components,
         frozen_components=component_frozen,
         total_parameters=total_parameters,
         trainable_parameters=trainable_parameters,
@@ -134,6 +150,15 @@ def _set_component_requires_grad(
 
 
 def _resolve_component_modules(pipeline: nn.Module, selector: TrainingComponentSelector) -> list[nn.Module]:
+    def _resolve_proprio_context_encoder(module: nn.Module) -> list[nn.Module]:
+        encoder = getattr(module.visual_tower.core, "proprio_context_encoder", None)
+        if encoder is None:
+            raise ValueError(
+                "Training component selector `visual_tower.proprio_context_encoder` requires "
+                "`pipeline.visual_tower.core.proprio_context_encoder`."
+            )
+        return [encoder]
+
     def _resolve_policy_action_expert(module: nn.Module) -> list[nn.Module]:
         action_expert = getattr(module.policy_variant, "action_expert", None)
         if action_expert is None:
@@ -186,6 +211,7 @@ def _resolve_component_modules(pipeline: nn.Module, selector: TrainingComponentS
         TrainingComponentSelector.VISUAL_TOWER_FRONTEND: lambda module: [module.visual_tower.frontend],
         TrainingComponentSelector.VISUAL_TOWER_CORE: lambda module: [module.visual_tower.core],
         TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE: _resolve_visual_tower_runtime_backbone,
+        TrainingComponentSelector.VISUAL_TOWER_PROPRIO_CONTEXT_ENCODER: _resolve_proprio_context_encoder,
         TrainingComponentSelector.VISUAL_TOWER_DECODER: lambda module: [module.visual_tower.decoder],
         TrainingComponentSelector.POLICY_VARIANT: lambda module: [module.policy_variant],
         TrainingComponentSelector.POLICY_VARIANT_ACTION_EXPERT: _resolve_policy_action_expert,
@@ -203,3 +229,40 @@ def _resolve_component_modules(pipeline: nn.Module, selector: TrainingComponentS
     except KeyError as exc:
         raise ValueError(f"Unsupported component selector {selector!r}.") from exc
     return resolver(pipeline)
+
+
+def _enable_proprio_context_encoder_when_used(
+    pipeline: nn.Module,
+    *,
+    component_frozen: tuple[TrainingComponentSelector, ...],
+) -> bool:
+    """Keep zero-init proprio context trainable unless explicitly disabled.
+
+    The proprio encoder is owned by the shared visual core but semantically
+    belongs to the proprio-conditioning adapter. If a run trains only an action
+    expert while freezing the main backbone, leaving this zero-init adapter
+    frozen makes proprio conditioning a permanent zero token.
+    """
+
+    if any(
+        selector in component_frozen
+        for selector in (
+            TrainingComponentSelector.ALL,
+            TrainingComponentSelector.VISUAL_TOWER,
+            TrainingComponentSelector.VISUAL_TOWER_CORE,
+            TrainingComponentSelector.VISUAL_TOWER_PROPRIO_CONTEXT_ENCODER,
+        )
+    ):
+        return False
+    policy_variant = getattr(pipeline, "policy_variant", None)
+    policy_config = getattr(policy_variant, "config", policy_variant)
+    if not isinstance(policy_config, (MoTPolicyConfig, ParallelStreamPolicyConfig)):
+        return False
+    if ProprioContextMode(policy_config.proprio_context_mode) != ProprioContextMode.TEXT_CONTEXT_TOKEN:
+        return False
+    encoder = getattr(getattr(pipeline.visual_tower, "core", None), "proprio_context_encoder", None)
+    if encoder is None:
+        return False
+    for parameter in encoder.parameters():
+        parameter.requires_grad = True
+    return True

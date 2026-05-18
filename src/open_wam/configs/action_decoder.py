@@ -127,6 +127,9 @@ class LingbotParallelActionDecoderConfig(ActionDecoderConfig):
     hidden_size: int = 256
     action_dim: int = 0
     action_horizon: int = 0
+    recovered_osc_loss_weight: float = 0.0
+    recovered_osc_position_scale: float = 0.010576533139391671
+    recovered_osc_rotation_scale: float = 0.1136411594890211
 
 
 @dataclass(frozen=True)

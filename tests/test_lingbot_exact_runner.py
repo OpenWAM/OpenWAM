@@ -110,6 +110,8 @@ def test_lingbot_exact_runner_supports_warmup_and_chunk_generation(tmp_path: Pat
     assert infer_chunk.raw_chunk_action_pred is not None
     assert infer_chunk.raw_chunk_action_pred.shape == (2, 4, 2)
     assert infer_chunk.decoder_output.action_pred.shape == (2, 4, 4)
+    assert infer_chunk.decoder_output.aux["action_space"] == "model"
+    assert infer_chunk.decoder_output.aux["raw_action_pred"].shape == (2, 4, 2)
     assert infer_chunk.predicted_latents.shape[:3] == (2, 48, 2)
     assert second_chunk.chunk_action_pred.shape == (2, 4, 4)
     assert second_chunk.session.policy_state.step_index == 2

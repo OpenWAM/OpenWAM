@@ -41,6 +41,90 @@ def test_build_chunked_temporal_exact_attention_profile_dense_masks() -> None:
     assert bool(profile.cross_attention_mask[-1].any().item()) is False
 
 
+def test_chunked_temporal_exact_cross_mask_limits_per_chunk_proprio_tokens() -> None:
+    profile = build_chunked_temporal_exact_attention_profile(
+        latent_shape=(2, 1, 6, 1, 1),
+        action_shape=(2, 1, 6, 1, 1),
+        padded_length=2,
+        chunk_size=2,
+        window_size=8,
+        patch_size=(1, 1, 1),
+        text_token_count=6,
+        base_text_token_count=3,
+        proprio_context_token_count=3,
+        device=torch.device("cpu"),
+        build_dense_masks=True,
+        build_flex_masks=False,
+    )
+
+    assert profile.cross_attention_mask is not None
+    mask = profile.cross_attention_mask
+    # Query layout starts with sample-0 latent noisy frames 0..5, then sample-1
+    # latent noisy frames 0..5. Context layout is sample-major text rows.
+    sample0_chunk0_query = 0
+    sample0_chunk1_query = 2
+    sample1_chunk0_query = 6
+    sample0_text = torch.arange(0, 6)
+    sample1_text = torch.arange(6, 12)
+
+    assert mask.shape == (50, 12)
+    assert mask[sample0_chunk0_query, sample0_text].tolist() == [
+        True,
+        True,
+        True,
+        True,
+        False,
+        False,
+    ]
+    assert mask[sample0_chunk1_query, sample0_text].tolist() == [
+        True,
+        True,
+        True,
+        False,
+        True,
+        False,
+    ]
+    assert bool(mask[sample0_chunk0_query, sample1_text].any().item()) is False
+    assert mask[sample1_chunk0_query, sample1_text].tolist() == [
+        True,
+        True,
+        True,
+        True,
+        False,
+        False,
+    ]
+    assert bool(mask[-1].any().item()) is False
+
+
+def test_chunked_temporal_exact_cross_mask_keeps_cfg_rows_isolated() -> None:
+    profile = build_chunked_temporal_exact_attention_profile(
+        latent_shape=(2, 1, 2, 1, 1),
+        action_shape=(2, 1, 2, 1, 1),
+        padded_length=0,
+        chunk_size=2,
+        window_size=8,
+        patch_size=(1, 1, 1),
+        text_token_count=3,
+        base_text_token_count=2,
+        proprio_context_token_count=1,
+        device=torch.device("cpu"),
+        build_dense_masks=True,
+        build_flex_masks=False,
+    )
+
+    assert profile.cross_attention_mask is not None
+    mask = profile.cross_attention_mask
+    conditional_query = 0
+    unconditional_query = 2
+    conditional_context = torch.arange(0, 3)
+    unconditional_context = torch.arange(3, 6)
+
+    assert mask[conditional_query, conditional_context].tolist() == [True, True, True]
+    assert bool(mask[conditional_query, unconditional_context].any().item()) is False
+    assert mask[unconditional_query, unconditional_context].tolist() == [True, True, True]
+    assert bool(mask[unconditional_query, conditional_context].any().item()) is False
+
+
 def test_chunked_temporal_exact_attention_profile_uses_patchified_frame_ids() -> None:
     profile = build_chunked_temporal_exact_attention_profile(
         latent_shape=(1, 2, 4, 2, 2),
@@ -253,3 +337,27 @@ def test_replica_core_exact_forward_train_supports_flex_profile_cpu_fallback() -
 
     assert latent_pred.shape == (1, 8, 4)
     assert action_pred.shape == (1, 2, 3)
+
+
+def test_replica_core_appends_per_chunk_proprio_context_tokens() -> None:
+    config = SharedVideoTransformerConfig(
+        implementation="shared_transformer",
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        text_dim=8,
+        freq_dim=8,
+        ffn_dim=64,
+    )
+    core = SharedVideoTransformerCore(config, action_dim=3, state_dim=5)
+    core.configure_proprio_context_encoder(enabled=True, state_dim=5)
+    text_emb = torch.randn(2, 4, 8)
+    proprio = torch.randn(2, 3, 5)
+
+    appended = core.append_proprio_context_tokens(text_emb, proprio)
+
+    assert appended.shape == (2, 7, 8)
+    assert torch.allclose(appended[:, :4], text_emb)
+    # The encoder is zero-initialized so adding the new conditioning path does
+    # not perturb old checkpoints until it is trained.
+    assert torch.allclose(appended[:, 4:], torch.zeros_like(appended[:, 4:]))

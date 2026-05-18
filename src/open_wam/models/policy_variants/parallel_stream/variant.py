@@ -102,6 +102,31 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             raise ValueError(f"Proprio context mode is enabled but no state was provided for {label}.")
         return selected
 
+    def _require_train_proprio_context(self, batch: PolicyTrainBatch) -> torch.Tensor | None:
+        if not self._uses_proprio_context():
+            return None
+        proprio_context_state = batch.extra.get("proprio_context_state")
+        if isinstance(proprio_context_state, torch.Tensor):
+            if proprio_context_state.ndim != 3:
+                raise ValueError(
+                    "Per-chunk proprio context expects shape [B, chunks, state_dim], "
+                    f"got {tuple(proprio_context_state.shape)}."
+                )
+            proprio_context_state_mask = batch.extra.get("proprio_context_state_mask")
+            if isinstance(proprio_context_state_mask, torch.Tensor):
+                if tuple(proprio_context_state_mask.shape) != tuple(proprio_context_state.shape):
+                    raise ValueError(
+                        "Per-chunk proprio context mask must match proprio_context_state shape, "
+                        f"got mask={tuple(proprio_context_state_mask.shape)}, "
+                        f"state={tuple(proprio_context_state.shape)}."
+                    )
+                proprio_context_state = proprio_context_state * proprio_context_state_mask.to(
+                    device=proprio_context_state.device,
+                    dtype=proprio_context_state.dtype,
+                )
+            return proprio_context_state
+        return self._require_proprio_state(batch.state, label="parallel-stream training")
+
     def _resolve_proprio_state(
         self,
         state: torch.Tensor | None,
@@ -178,7 +203,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         )
         sampled_geometry = self._resolve_train_sampling_metadata(batch, observed_num_frames=observed_num_frames)
         generalist_metadata = self._resolve_generalist_training_metadata(batch)
-        proprio_state = self._require_proprio_state(batch.state, label="parallel-stream training")
+        proprio_state = self._require_train_proprio_context(batch)
         condition_latents = self._resolve_train_condition_latents(
             batch,
             video_latents=visual_outputs.frontend.video_latents,
@@ -443,12 +468,17 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             latent_dict = train_artifacts.input_dict["latent_dict"]
             action_dict = train_artifacts.input_dict["action_dict"]
             text_emb = latent_dict["text_emb"]
-            inject = getattr(reference_transformer, "inject_proprio_context", None)
-            if not callable(inject):
-                raise ValueError("Proprio context mode requires the runtime transformer to support proprio injection.")
-            injected_text = inject(text_emb, proprio_state)
-            latent_dict["text_emb"] = injected_text
-            action_dict["text_emb"] = injected_text
+            append = getattr(reference_transformer, "append_proprio_context_tokens", None)
+            if not callable(append):
+                raise ValueError("Proprio context mode requires the runtime transformer to support proprio appending.")
+            base_text_token_count = int(text_emb.shape[1])
+            appended_text = append(text_emb, proprio_state)
+            latent_dict["text_emb"] = appended_text
+            action_dict["text_emb"] = appended_text
+            train_artifacts.input_dict["base_text_token_count"] = base_text_token_count
+            train_artifacts.input_dict["proprio_context_token_count"] = int(
+                appended_text.shape[1] - base_text_token_count
+            )
         runtime_input_dict = dict(train_artifacts.input_dict)
         runtime_input_dict.pop("proprio_state", None)
         if self.config.runtime_mode == ParallelRuntimeMode.FASTWAM_FIRST_FRAME:

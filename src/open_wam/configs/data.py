@@ -76,15 +76,68 @@ class ActionNormalizationConfig:
     """Optional numeric normalization for action targets before or after mapping."""
 
     mode: ActionNormalizationMode = ActionNormalizationMode.NONE
+    mean: tuple[float, ...] = ()
+    std: tuple[float, ...] = ()
     q01: tuple[float, ...] = ()
     q99: tuple[float, ...] = ()
+    lower: tuple[float, ...] = ()
+    upper: tuple[float, ...] = ()
     clip_min: float | None = None
     clip_max: float | None = None
 
     def __post_init__(self) -> None:
-        coerce_fields(self, enum_fields={"mode": ActionNormalizationMode})
+        coerce_fields(
+            self,
+            enum_fields={"mode": ActionNormalizationMode},
+            transforms={
+                "mean": _float_tuple,
+                "std": _float_tuple,
+                "q01": _float_tuple,
+                "q99": _float_tuple,
+                "lower": _float_tuple,
+                "upper": _float_tuple,
+            },
+        )
         if self.mode == ActionNormalizationMode.QUANTILES and len(self.q01) != len(self.q99):
             raise ValueError("Quantile action normalization requires `q01` and `q99` to have the same length.")
+        if self.mode == ActionNormalizationMode.GAUSSIAN:
+            if not self.mean or not self.std:
+                raise ValueError("Gaussian action normalization requires non-empty `mean` and `std` values.")
+            if len(self.mean) != len(self.std):
+                raise ValueError("Gaussian action normalization requires `mean` and `std` to match.")
+            for index, value in enumerate(self.std):
+                if float(value) <= 0.0:
+                    raise ValueError(f"Gaussian action normalization std must be positive at index {index}.")
+        if self.mode == ActionNormalizationMode.JOINT_LIMITS:
+            if not self.lower or not self.upper:
+                raise ValueError("Joint-limit action normalization requires non-empty `lower` and `upper` values.")
+            if len(self.lower) != len(self.upper):
+                raise ValueError("Joint-limit action normalization requires `lower` and `upper` to match.")
+            for index, (lower, upper) in enumerate(zip(self.lower, self.upper, strict=True)):
+                if float(upper) <= float(lower):
+                    raise ValueError(f"Joint limit upper bound must exceed lower bound at index {index}.")
+
+
+def _float_tuple(values: tuple[float, ...] | list[float]) -> tuple[float, ...]:
+    return tuple(float(value) for value in values)
+
+
+def _coerce_action_normalization_config(value: ActionNormalizationConfig | dict[str, object]) -> ActionNormalizationConfig:
+    if isinstance(value, ActionNormalizationConfig):
+        return value
+    if not isinstance(value, dict):
+        raise ValueError("Expected action normalization config to be a mapping.")
+    return ActionNormalizationConfig(
+        mode=value.get("mode", ActionNormalizationMode.NONE),
+        mean=tuple(float(item) for item in value.get("mean", ())),
+        std=tuple(float(item) for item in value.get("std", ())),
+        q01=tuple(float(item) for item in value.get("q01", ())),
+        q99=tuple(float(item) for item in value.get("q99", ())),
+        lower=tuple(float(item) for item in value.get("lower", ())),
+        upper=tuple(float(item) for item in value.get("upper", ())),
+        clip_min=value.get("clip_min"),
+        clip_max=value.get("clip_max"),
+    )
 
 
 @dataclass(frozen=True)
@@ -166,6 +219,7 @@ class ActionTargetConfig:
             Rotation parameterization exposed in the action target. The current
             WM default is `axis_angle`, yielding a target such as
             `[xyz, axis_angle, gripper]` when `include_gripper` is enabled.
+            `continuous_6d` exposes the first two rotation-matrix columns.
         include_gripper:
             Whether to append gripper state to pose-derived targets.
         gripper_representation:
@@ -176,6 +230,21 @@ class ActionTargetConfig:
         gripper_action_index:
             Channel index used when `gripper_representation == action_command`.
             The default `-1` means "take the last action dimension".
+        gripper_position_source_key:
+            Row key used when absolute joint-position targets expose measured
+            gripper qpos with `gripper_representation=first_channel` or
+            `all_channels`.
+        joint_position_source_key:
+            Row key used when `representation == absolute_joint_position`.
+            This should expose measured joint positions, e.g. LIBERO
+            `robot0_joint_pos`, not relative action deltas.
+        joint_position_normalization:
+            Optional normalization applied to joint-position channels before
+            the configured gripper target is appended.
+        normalization:
+            Optional normalization applied to the final model-facing target
+            vector for representations that forward raw target columns. This is
+            inverted by rollout adapters before simulator execution.
     """
 
     representation: ActionTargetRepresentation = ActionTargetRepresentation.RAW
@@ -187,6 +256,10 @@ class ActionTargetConfig:
     include_gripper: bool = True
     gripper_representation: GripperRepresentation = GripperRepresentation.FIRST_CHANNEL
     gripper_action_index: int = -1
+    gripper_position_source_key: str = "robot0_gripper_qpos"
+    joint_position_source_key: str = "robot0_joint_pos"
+    joint_position_normalization: ActionNormalizationConfig = field(default_factory=ActionNormalizationConfig)
+    normalization: ActionNormalizationConfig = field(default_factory=ActionNormalizationConfig)
 
     def __post_init__(self) -> None:
         coerce_fields(
@@ -197,6 +270,10 @@ class ActionTargetConfig:
                 "reference_source": ActionTargetReferenceSource,
                 "rotation_representation": RotationRepresentation,
                 "gripper_representation": GripperRepresentation,
+            },
+            transforms={
+                "joint_position_normalization": _coerce_action_normalization_config,
+                "normalization": _coerce_action_normalization_config,
             },
         )
 
@@ -483,6 +560,7 @@ class DataConfig:
     dataset_type: str
     repo_id: str | None
     local_root: str | None
+    val_local_root: str | None
     empty_text_embedding_path: str | None
     latent_root: str | None
     latent_subdir: str
@@ -549,6 +627,7 @@ class GenericDataConfig(DataConfig):
     dataset_type: str = "synthetic_multiview"
     repo_id: str | None = None
     local_root: str | None = None
+    val_local_root: str | None = None
     empty_text_embedding_path: str | None = None
     latent_root: str | None = None
     latent_subdir: str = "latents"
@@ -606,6 +685,7 @@ class RobotWinDataConfig(DataConfig):
     dataset_type: str = "synthetic_robotwin"
     repo_id: str | None = None
     local_root: str | None = None
+    val_local_root: str | None = None
     empty_text_embedding_path: str | None = None
     latent_root: str | None = None
     latent_subdir: str = "latents"
@@ -701,6 +781,7 @@ class LiberoDataConfig(DataConfig):
     dataset_type: str = "lerobot_v2"
     repo_id: str | None = "physical-intelligence/libero"
     local_root: str | None = None
+    val_local_root: str | None = None
     empty_text_embedding_path: str | None = None
     latent_root: str | None = None
     latent_subdir: str = "latents"
@@ -784,6 +865,7 @@ class CalvinDataConfig(DataConfig):
     dataset_type: str = "calvin_npz"
     repo_id: str | None = None
     local_root: str | None = None
+    val_local_root: str | None = None
     empty_text_embedding_path: str | None = None
     latent_root: str | None = None
     latent_subdir: str = "latents"
@@ -867,6 +949,7 @@ class LeRobotConsortiumDataConfig(DataConfig):
     dataset_type: str = "lerobot_consortium"
     repo_id: str | None = None
     local_root: str | None = None
+    val_local_root: str | None = None
     empty_text_embedding_path: str | None = None
     latent_root: str | None = None
     latent_subdir: str = "latents"

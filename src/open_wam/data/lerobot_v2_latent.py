@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, OrderedDict
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 import json
 import random
@@ -19,6 +19,7 @@ from open_wam.configs import (
     ActionTargetRepresentation,
     DataConfig,
     DataSplit,
+    GripperRepresentation,
     LatentTemporalLayout,
     LatentWindowProfile,
     PaddedTargetPolicy,
@@ -29,7 +30,13 @@ from open_wam.configs import (
     WindowSamplingMode,
 )
 
-from .action_transforms import build_relative_pose_targets, expected_pose_target_dim
+from .action_transforms import (
+    build_absolute_joint_position_targets,
+    build_relative_pose_targets,
+    expected_joint_position_target_dim,
+    expected_pose_target_dim,
+    normalize_action_targets,
+)
 from .action_mapping import (
     action_mapping_is_active,
     apply_action_mapping,
@@ -120,9 +127,13 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
         self.data_config = data_config
         self.windows = list(windows)
         self.empty_text_embedding = self._load_empty_text_embedding()
+        repo_roots = [data_config.local_root]
+        if data_config.val_local_root and data_config.val_local_root not in repo_roots:
+            repo_roots.append(data_config.val_local_root)
         self._repo_bundles = {
             str(bundle.root): bundle
-            for bundle in discover_local_lerobot_repo_bundles(data_config.local_root)
+            for repo_root in repo_roots
+            for bundle in discover_local_lerobot_repo_bundles(repo_root)
         }
         self._episode_cache: OrderedDict[tuple[str, int], list[dict[str, Any]]] = OrderedDict()
         self._latent_view_cache: OrderedDict[
@@ -539,10 +550,14 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
         leading_zero_action_mask: float = 1.0,
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
         action_target = self.data_config.action_target
-        if action_target.representation != ActionTargetRepresentation.RAW:
+        if action_target.representation not in {
+            ActionTargetRepresentation.RAW,
+            ActionTargetRepresentation.ABSOLUTE_JOINT_POSITION,
+        }:
             raise ValueError(
-                "Long-window local latent datasets currently support only `action_target.representation=raw` "
-                "for LingBot-compatible exact training."
+                "Long-window local latent datasets currently support only "
+                "`action_target.representation=raw` or `absolute_joint_position` for LingBot-compatible exact "
+                "training."
             )
         if latent_num_frames <= 0:
             raise ValueError("Expected at least one latent frame in the local latent window.")
@@ -559,28 +574,94 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
 
         action_start_offset = max(0, int(observed_frame_ids[0] - window.start_frame))
         raw_window_rows = rows[window.start_frame : window.end_frame]
-        raw_actions = torch.stack(
-            [
-                torch.tensor(row[_resolve_row_key(row, action_target.source_key)], dtype=torch.float32)
-                for row in raw_window_rows
-            ],
-            dim=0,
-        )
-        raw_actions = raw_actions[action_start_offset:]
-        action_dim = raw_actions.shape[-1] if raw_actions.numel() > 0 else self.data_config.action_schema.action_dim
-        if raw_actions.shape[-1] != self.data_config.action_schema.action_dim:
-            raise ValueError(
-                "Configured action_dim does not match raw local latent supervision: "
-                f"configured={self.data_config.action_schema.action_dim}, raw={raw_actions.shape[-1]}."
+        aligned_rows = raw_window_rows[action_start_offset:]
+        if action_target.representation == ActionTargetRepresentation.RAW:
+            source_actions = torch.stack(
+                [
+                    torch.tensor(row[_resolve_row_key(row, action_target.source_key)], dtype=torch.float32)
+                    for row in aligned_rows
+                ],
+                dim=0,
             )
+            source_actions = normalize_action_targets(
+                source_actions,
+                normalization=action_target.normalization,
+            )
+            source_mask = torch.ones_like(source_actions, dtype=torch.float32)
+            action_dim = source_actions.shape[-1]
+            target_family_metadata: dict[str, Any] = {
+                "action_target_normalization_mode": str(action_target.normalization.mode),
+            }
+        else:
+            joint_position_source = torch.stack(
+                [
+                    torch.tensor(row[_resolve_row_key(row, action_target.joint_position_source_key)], dtype=torch.float32)
+                    for row in aligned_rows
+                ],
+                dim=0,
+            )
+            raw_action_sequence = torch.stack(
+                [
+                    torch.tensor(row[_resolve_row_key(row, action_target.source_key)], dtype=torch.float32)
+                    for row in aligned_rows
+                ],
+                dim=0,
+            )
+            gripper_position_sequence = None
+            if (
+                action_target.include_gripper
+                and action_target.gripper_representation != GripperRepresentation.ACTION_COMMAND
+            ):
+                gripper_position_sequence = torch.stack(
+                    [
+                        torch.tensor(
+                            row[_resolve_row_key(row, action_target.gripper_position_source_key)],
+                            dtype=torch.float32,
+                        )
+                        for row in aligned_rows
+                    ],
+                    dim=0,
+                )
+            source_actions, source_mask, target_family_metadata = build_absolute_joint_position_targets(
+                joint_position_source,
+                include_gripper=action_target.include_gripper,
+                gripper_representation=action_target.gripper_representation,
+                gripper_position_sequence=gripper_position_sequence,
+                raw_action_sequence=raw_action_sequence,
+                gripper_action_index=action_target.gripper_action_index,
+                normalization=action_target.joint_position_normalization,
+            )
+            action_dim = source_actions.shape[-1]
+            expected_dim = expected_joint_position_target_dim(
+                joint_dim=joint_position_source.shape[-1],
+                include_gripper=action_target.include_gripper,
+                gripper_representation=action_target.gripper_representation,
+            )
+            if action_dim != expected_dim:
+                raise ValueError(
+                    "Derived absolute-joint target dim mismatch: "
+                    f"derived={action_dim}, expected={expected_dim}."
+                )
+        if action_dim != self.data_config.action_schema.action_dim:
+            raise ValueError(
+                "Configured action_dim does not match local latent supervision: "
+                f"configured={self.data_config.action_schema.action_dim}, source={action_dim}."
+            )
+
+        leading_fill = torch.zeros(leading_action_steps, action_dim, dtype=torch.float32)
+        leading_mask = torch.ones_like(leading_fill, dtype=torch.float32)
+        if action_target.representation == ActionTargetRepresentation.ABSOLUTE_JOINT_POSITION and leading_action_steps > 0:
+            leading_fill = source_actions[0:1].expand(leading_action_steps, -1).contiguous()
+            leading_mask = source_mask[0:1].expand(leading_action_steps, -1).contiguous()
 
         padded_actions = torch.cat(
             [
-                torch.zeros(leading_action_steps, action_dim, dtype=torch.float32),
-                raw_actions,
+                leading_fill,
+                source_actions,
             ],
             dim=0,
         )
+        padded_mask = torch.cat([leading_mask, source_mask], dim=0)
         if padded_actions.shape[0] < required_action_num:
             padded_actions = torch.cat(
                 [
@@ -589,13 +670,20 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
                 ],
                 dim=0,
             )
+            padded_mask = torch.cat(
+                [
+                    padded_mask,
+                    torch.zeros(required_action_num - padded_mask.shape[0], action_dim, dtype=torch.float32),
+                ],
+                dim=0,
+            )
         actions = padded_actions[:required_action_num].contiguous()
 
-        action_mask = torch.ones_like(actions, dtype=torch.float32)
+        action_mask = padded_mask[:required_action_num].contiguous()
         if leading_action_steps > 0 and float(leading_zero_action_mask) <= 0.0:
             action_mask[:leading_action_steps] = 0.0
-        if raw_actions.shape[0] + leading_action_steps < required_action_num:
-            action_mask[raw_actions.shape[0] + leading_action_steps :] = 0.0
+        if source_actions.shape[0] + leading_action_steps < required_action_num:
+            action_mask[source_actions.shape[0] + leading_action_steps :] = 0.0
         return actions, action_mask, {
             "lingbot_window_action_alignment": {
                 "latent_num_frames": latent_num_frames,
@@ -607,7 +695,8 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
                 "leading_zero_action_frames": leading_zero_action_frames,
                 "leading_zero_action_steps": leading_action_steps,
                 "leading_zero_action_mask": float(leading_zero_action_mask),
-            }
+            },
+            **target_family_metadata,
         }
 
     def _build_action_targets(
@@ -629,13 +718,19 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
                 target_dim=source_dim,
                 target_length=target_length,
             )
+            actions = normalize_action_targets(
+                actions,
+                normalization=action_target.normalization,
+            )
             mapped = apply_action_mapping(
                 actions,
                 action_mask,
                 action_mapping,
                 target_dim=target_dim,
             )
-            return mapped.actions, mapped.action_mask, mapped.metadata
+            metadata = dict(mapped.metadata)
+            metadata["action_target_normalization_mode"] = str(action_target.normalization.mode)
+            return mapped.actions, mapped.action_mask, metadata
 
         if action_target.representation == ActionTargetRepresentation.EEF_POSE_RELATIVE_TO_REFERENCE:
             if action_target.reference_source != ActionTargetReferenceSource.ANCHOR_STATE:
@@ -704,6 +799,81 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             metadata["action_mapping_applied"] = action_mapping_is_active(action_mapping)
             return mapped.actions, mapped.action_mask, metadata
 
+        if action_target.representation == ActionTargetRepresentation.ABSOLUTE_JOINT_POSITION:
+            joint_position_source = torch.stack(
+                [
+                    torch.tensor(row[_resolve_row_key(row, action_target.joint_position_source_key)], dtype=torch.float32)
+                    for row in target_state_rows
+                ],
+                dim=0,
+            )
+            raw_action_sequence = torch.stack(
+                [
+                    torch.tensor(row[_resolve_row_key(row, action_target.source_key)], dtype=torch.float32)
+                    for row in action_rows
+                ],
+                dim=0,
+            )
+            gripper_position_sequence = None
+            if (
+                action_target.include_gripper
+                and action_target.gripper_representation != GripperRepresentation.ACTION_COMMAND
+            ):
+                gripper_position_sequence = torch.stack(
+                    [
+                        torch.tensor(
+                            row[_resolve_row_key(row, action_target.gripper_position_source_key)],
+                            dtype=torch.float32,
+                        )
+                        for row in target_state_rows
+                    ],
+                    dim=0,
+                )
+            joint_targets, joint_mask, metadata = build_absolute_joint_position_targets(
+                joint_position_source,
+                include_gripper=action_target.include_gripper,
+                gripper_representation=action_target.gripper_representation,
+                gripper_position_sequence=gripper_position_sequence,
+                raw_action_sequence=raw_action_sequence,
+                gripper_action_index=action_target.gripper_action_index,
+                normalization=action_target.joint_position_normalization,
+            )
+            expected_dim = expected_joint_position_target_dim(
+                joint_dim=joint_position_source.shape[-1],
+                include_gripper=action_target.include_gripper,
+                gripper_representation=action_target.gripper_representation,
+            )
+            target_or_source_dim = resolve_action_source_dim(action_mapping, fallback_dim=target_dim)
+            if target_or_source_dim != expected_dim:
+                raise ValueError(
+                    "Configured action_dim does not match the derived absolute-joint target dimension: "
+                    f"configured_dim={target_or_source_dim}, expected={expected_dim}."
+                )
+            metadata.update(
+                {
+                    "joint_position_source_key": action_target.joint_position_source_key,
+                    "gripper_source_key": action_target.source_key,
+                }
+            )
+            actions, action_mask = self._pack_sequence(
+                sequence=joint_targets,
+                target_dim=target_or_source_dim,
+                target_length=target_length,
+                sequence_name="absolute_joint_position_targets",
+            )
+            if joint_mask.shape[-1] != joint_targets.shape[-1]:
+                raise ValueError("Absolute-joint target mask shape must match the target tensor shape.")
+            action_mask[:, : joint_mask.shape[-1]] = joint_mask
+            mapped = apply_action_mapping(
+                actions,
+                action_mask,
+                action_mapping,
+                target_dim=target_dim,
+            )
+            metadata.update(mapped.metadata)
+            metadata["action_mapping_applied"] = action_mapping_is_active(action_mapping)
+            return mapped.actions, mapped.action_mask, metadata
+
         raise ValueError(f"Unsupported action target representation: {action_target.representation}")
 
     def _extract_sequence(
@@ -751,6 +921,43 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             target_length=resolved_horizon,
             left_pad=True,
         )
+
+    def _extract_state_at_frame(
+        self,
+        *,
+        rows: list[dict[str, Any]],
+        frame_index: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        state, state_mask = self._extract_state_history_at_frame(
+            rows=rows,
+            anchor_frame_index=frame_index,
+            state_horizon=1,
+        )
+        return state[0], state_mask[0]
+
+    def _extract_proprio_context_state_sequence(
+        self,
+        *,
+        rows: list[dict[str, Any]],
+        observed_frame_ids: list[int],
+        chunk_size: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if not observed_frame_ids:
+            raise ValueError("Per-chunk proprio context requires non-empty observed_frame_ids.")
+        resolved_chunk_size = max(1, int(chunk_size))
+        chunk_count = int(math.ceil(len(observed_frame_ids) / float(resolved_chunk_size)))
+        states: list[torch.Tensor] = []
+        masks: list[torch.Tensor] = []
+        for chunk_index in range(chunk_count):
+            local_context_index = max(
+                0,
+                min(len(observed_frame_ids) - 1, chunk_index * resolved_chunk_size - 1),
+            )
+            frame_index = int(observed_frame_ids[local_context_index])
+            state, state_mask = self._extract_state_at_frame(rows=rows, frame_index=frame_index)
+            states.append(state)
+            masks.append(state_mask)
+        return torch.stack(states, dim=0), torch.stack(masks, dim=0)
 
     def _pack_sequence(
         self,
@@ -1239,6 +1446,8 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
             text_context=text_context,
             negative_text_context=negative_text_context,
             condition_latents=subwindow["condition_latents"],
+            proprio_context_state=subwindow["proprio_context_state"],
+            proprio_context_state_mask=subwindow["proprio_context_state_mask"],
             metadata={
                 "repo_root": str(window.repo_root),
                 "dataset_id": str(window.repo_root),
@@ -1256,6 +1465,7 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
                 "state_anchor_frame": subwindow["state_anchor_frame"],
                 "proprio_context_frame_index": subwindow["proprio_context_frame_index"],
                 "proprio_context_local_frame": subwindow["proprio_context_local_frame"],
+                "proprio_context_chunk_count": int(subwindow["proprio_context_state"].shape[0]),
                 "observed_frame_ids": subwindow["observed_frame_ids"],
                 "latent_temporal_layout": subwindow["latent_temporal_layout"],
                 "task_index": task_index,
@@ -1545,6 +1755,15 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
             rows=rows,
             anchor_frame_index=state_anchor_frame,
         )
+        proprio_context_state, proprio_context_state_mask = self._extract_proprio_context_state_sequence(
+            rows=rows,
+            observed_frame_ids=observed_frame_ids,
+            chunk_size=(
+                chunk_size_for_boundary
+                if compact_boundary_padding
+                else max(1, int(self.data_config.sample_construction.chunk_size))
+            ),
+        )
         return {
             "video_latents": self._slice_video_latents_with_zero_hold(
                 video_latents=video_latents,
@@ -1565,6 +1784,8 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
             "action_target_metadata": action_target_metadata,
             "state": state,
             "state_mask": state_mask,
+            "proprio_context_state": proprio_context_state,
+            "proprio_context_state_mask": proprio_context_state_mask,
             "sample_start_frame": sample_start_frame,
             "sample_end_frame": sample_end_frame,
             "anchor_frame_index": anchor_frame_index,
@@ -2142,6 +2363,8 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
             text_context=text_context,
             negative_text_context=negative_text_context,
             condition_latents=subwindow["condition_latents"],
+            proprio_context_state=subwindow["proprio_context_state"],
+            proprio_context_state_mask=subwindow["proprio_context_state_mask"],
             metadata={
                 "repo_root": str(window.repo_root),
                 "dataset_id": str(window.repo_root),
@@ -2159,6 +2382,7 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
                 "state_anchor_frame": subwindow["state_anchor_frame"],
                 "proprio_context_frame_index": subwindow["proprio_context_frame_index"],
                 "proprio_context_local_frame": subwindow["proprio_context_local_frame"],
+                "proprio_context_chunk_count": int(subwindow["proprio_context_state"].shape[0]),
                 "observed_frame_ids": subwindow["observed_frame_ids"],
                 "latent_temporal_layout": subwindow["latent_temporal_layout"],
                 "task_index": task_index,
@@ -3056,39 +3280,77 @@ class CausalPrefixSuffixLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDatase
 def build_local_lerobot_latent_train_val_datasets(
     data_config: DataConfig,
 ) -> tuple[Dataset[LatentWAMSample], Dataset[LatentWAMSample]]:
-    bundles = discover_local_lerobot_repo_bundles(data_config.local_root or "")
     train_windows: list[LocalEpisodeWindow] = []
     val_windows: list[LocalEpisodeWindow] = []
-    for bundle in bundles:
-        repo_windows = scan_local_latent_windows(bundle.root, data_config)
-        repo_episodes = [episode.episode_index for episode in bundle.metadata.episodes]
-        replay_status_records, replay_status_path = load_replay_status_records(
-            bundle.root,
-            replay_status_path=data_config.replay_status_path,
-            require=data_config.require_replay_status,
+
+    def _filtered_windows_for_bundles(
+        local_root: str,
+        *,
+        max_episodes: int | None = None,
+    ) -> list[LocalEpisodeWindow]:
+        windows: list[LocalEpisodeWindow] = []
+        for bundle in discover_local_lerobot_repo_bundles(local_root):
+            repo_windows = scan_local_latent_windows(bundle.root, data_config)
+            repo_episodes = [episode.episode_index for episode in bundle.metadata.episodes]
+            replay_status_records, replay_status_path = load_replay_status_records(
+                bundle.root,
+                replay_status_path=data_config.replay_status_path,
+                require=data_config.require_replay_status,
+            )
+            repo_episodes, _ = filter_episode_indices_by_replay_status(
+                repo_episodes,
+                replay_status_records=replay_status_records,
+                policy=data_config.replay_status_policy,
+                require_labeled=bool(replay_status_records) or bool(data_config.require_replay_status),
+                source_path=replay_status_path,
+            )
+            if max_episodes is not None:
+                repo_episodes = repo_episodes[:max_episodes]
+            episode_set = set(repo_episodes)
+            windows.extend(window for window in repo_windows if window.episode_index in episode_set)
+        return windows
+
+    if data_config.val_local_root:
+        train_windows = _filtered_windows_for_bundles(
+            data_config.local_root or "",
+            max_episodes=data_config.max_train_episodes,
         )
-        repo_episodes, _ = filter_episode_indices_by_replay_status(
-            repo_episodes,
-            replay_status_records=replay_status_records,
-            policy=data_config.replay_status_policy,
-            require_labeled=bool(replay_status_records) or bool(data_config.require_replay_status),
-            source_path=replay_status_path,
+        val_windows = _filtered_windows_for_bundles(
+            data_config.val_local_root,
+            max_episodes=data_config.max_val_episodes,
         )
-        train_episodes, repo_val_episodes = split_local_episode_indices(
-            episode_indices=repo_episodes,
-            train_fraction=data_config.train_fraction,
-            split_seed=data_config.split_seed,
-            max_train_episodes=data_config.max_train_episodes,
-            max_val_episodes=data_config.max_val_episodes,
-        )
-        train_episode_set = set(train_episodes)
-        val_episode_set = set(repo_val_episodes)
-        repo_train_windows = [window for window in repo_windows if window.episode_index in train_episode_set]
-        repo_val_windows = [window for window in repo_windows if window.episode_index in val_episode_set]
-        if not repo_val_windows and repo_train_windows:
-            repo_val_windows = repo_train_windows[:1]
-        train_windows.extend(repo_train_windows)
-        val_windows.extend(repo_val_windows)
+    else:
+        bundles = discover_local_lerobot_repo_bundles(data_config.local_root or "")
+        for bundle in bundles:
+            repo_windows = scan_local_latent_windows(bundle.root, data_config)
+            repo_episodes = [episode.episode_index for episode in bundle.metadata.episodes]
+            replay_status_records, replay_status_path = load_replay_status_records(
+                bundle.root,
+                replay_status_path=data_config.replay_status_path,
+                require=data_config.require_replay_status,
+            )
+            repo_episodes, _ = filter_episode_indices_by_replay_status(
+                repo_episodes,
+                replay_status_records=replay_status_records,
+                policy=data_config.replay_status_policy,
+                require_labeled=bool(replay_status_records) or bool(data_config.require_replay_status),
+                source_path=replay_status_path,
+            )
+            train_episodes, repo_val_episodes = split_local_episode_indices(
+                episode_indices=repo_episodes,
+                train_fraction=data_config.train_fraction,
+                split_seed=data_config.split_seed,
+                max_train_episodes=data_config.max_train_episodes,
+                max_val_episodes=data_config.max_val_episodes,
+            )
+            train_episode_set = set(train_episodes)
+            val_episode_set = set(repo_val_episodes)
+            repo_train_windows = [window for window in repo_windows if window.episode_index in train_episode_set]
+            repo_val_windows = [window for window in repo_windows if window.episode_index in val_episode_set]
+            if not repo_val_windows and repo_train_windows:
+                repo_val_windows = repo_train_windows[:1]
+            train_windows.extend(repo_train_windows)
+            val_windows.extend(repo_val_windows)
 
     dataset_cls: type[Dataset[LatentWAMSample]]
     if data_config.sample_construction.mode == WindowSamplingMode.FULL_SEGMENT:
@@ -3126,9 +3388,10 @@ def build_local_lerobot_latent_train_val_datasets(
             f"{data_config.sample_construction.mode!r}"
         )
 
+    val_data_config = replace(data_config, split=DataSplit.VAL)
     return (
         dataset_cls(data_config=data_config, windows=train_windows),
-        dataset_cls(data_config=data_config, windows=val_windows),
+        dataset_cls(data_config=val_data_config, windows=val_windows),
     )
 
 

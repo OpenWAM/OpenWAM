@@ -207,6 +207,56 @@ def apply_attention_backend(
     return torch.nn.functional.scaled_dot_product_attention(query, key, value)
 
 
+def build_chunked_text_context_cross_attention_mask(
+    *,
+    query_chunk_ids: torch.Tensor,
+    batch_size: int,
+    text_token_count: int,
+    base_text_token_count: int,
+    proprio_context_token_count: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """Build a query-dependent text/proprio context mask.
+
+    Text tokens are visible to every query. Appended proprio context tokens are
+    visible only to queries from the matching local chunk.
+    """
+
+    if query_chunk_ids.ndim != 1:
+        raise ValueError(
+            "Chunked text context masks expect query_chunk_ids with shape [query_tokens], "
+            f"got {tuple(query_chunk_ids.shape)}."
+        )
+    resolved_batch_size = int(batch_size)
+    resolved_text_token_count = int(text_token_count)
+    resolved_base_text_token_count = int(base_text_token_count)
+    resolved_proprio_context_token_count = int(proprio_context_token_count)
+    if resolved_batch_size <= 0:
+        raise ValueError(f"Expected positive batch_size, got {batch_size}.")
+    if resolved_base_text_token_count < 0 or resolved_proprio_context_token_count < 0:
+        raise ValueError(
+            "Context token counts must be non-negative, "
+            f"got base={base_text_token_count}, proprio={proprio_context_token_count}."
+        )
+    if resolved_base_text_token_count + resolved_proprio_context_token_count != resolved_text_token_count:
+        raise ValueError(
+            "Context token counts must sum to text_token_count, "
+            f"got base={base_text_token_count}, proprio={proprio_context_token_count}, "
+            f"text={text_token_count}."
+        )
+    query_chunk_ids = query_chunk_ids.to(device=device, dtype=torch.long)
+    text_position = torch.arange(resolved_text_token_count, device=device, dtype=torch.long)
+    base_text_visible = text_position < resolved_base_text_token_count
+    proprio_index = text_position - resolved_base_text_token_count
+    proprio_visible = (
+        (proprio_index[None, :] >= 0)
+        & (proprio_index[None, :] < resolved_proprio_context_token_count)
+        & (proprio_index[None, :] == query_chunk_ids[:, None])
+    )
+    mask = base_text_visible[None, :] | proprio_visible
+    return mask[None, :, :].expand(resolved_batch_size, -1, -1).contiguous()
+
+
 def build_chunked_temporal_exact_attention_profile(
     *,
     latent_shape: tuple[int, int, int, int, int],
@@ -216,6 +266,8 @@ def build_chunked_temporal_exact_attention_profile(
     window_size: int,
     patch_size: tuple[int, int, int],
     text_token_count: int,
+    base_text_token_count: int | None = None,
+    proprio_context_token_count: int = 0,
     device: torch.device,
     build_dense_masks: bool = False,
     build_flex_masks: bool = False,
@@ -244,6 +296,27 @@ def build_chunked_temporal_exact_attention_profile(
     batch_size, _, latent_frames, latent_height, latent_width = latent_shape
     _, _, action_frames, action_height, action_width = action_shape
     patch_t, patch_h, patch_w = patch_size
+    text_token_count = int(text_token_count)
+    resolved_base_text_token_count = (
+        text_token_count if base_text_token_count is None else int(base_text_token_count)
+    )
+    resolved_proprio_context_token_count = int(proprio_context_token_count)
+    if resolved_proprio_context_token_count < 0:
+        raise ValueError(
+            "proprio_context_token_count must be non-negative, "
+            f"got {resolved_proprio_context_token_count}."
+        )
+    if resolved_base_text_token_count < 0 or resolved_base_text_token_count > text_token_count:
+        raise ValueError(
+            "base_text_token_count must be within the per-sample text token count, "
+            f"got base_text_token_count={resolved_base_text_token_count}, text_token_count={text_token_count}."
+        )
+    if resolved_base_text_token_count + resolved_proprio_context_token_count > text_token_count:
+        raise ValueError(
+            "base_text_token_count + proprio_context_token_count cannot exceed text_token_count, "
+            f"got base={resolved_base_text_token_count}, "
+            f"proprio={resolved_proprio_context_token_count}, text={text_token_count}."
+        )
 
     latent_seq_id = (
         torch.arange(batch_size, device=device)[:, None, None, None]
@@ -276,6 +349,7 @@ def build_chunked_temporal_exact_attention_profile(
         latent_block_id = latent_chunk_id * 2
         action_block_id = action_chunk_id * 2 + 1
     frame_ids = torch.cat([latent_block_id] * 2 + [action_block_id] * 2)
+    chunk_ids = torch.cat([latent_chunk_id] * 2 + [action_chunk_id] * 2)
     noise_ids = torch.cat(
         [
             torch.zeros_like(latent_frame_id),
@@ -296,10 +370,12 @@ def build_chunked_temporal_exact_attention_profile(
     if padded_length > 0:
         seq_ids = torch.nn.functional.pad(seq_ids, (0, padded_length), value=-1)
         frame_ids = torch.nn.functional.pad(frame_ids, (0, padded_length), value=-1)
+        chunk_ids = torch.nn.functional.pad(chunk_ids, (0, padded_length), value=-1)
         noise_ids = torch.nn.functional.pad(noise_ids, (0, padded_length), value=-1)
         stream_ids = torch.nn.functional.pad(stream_ids, (0, padded_length), value=-1)
 
     text_seq_ids = torch.arange(batch_size, device=device)[:, None].expand(-1, text_token_count).flatten()
+    text_context_positions = torch.arange(text_token_count, device=device)[None, :].expand(batch_size, -1).flatten()
 
     self_attention_mask = None
     cross_attention_mask = None
@@ -312,6 +388,7 @@ def build_chunked_temporal_exact_attention_profile(
         kv_noise = noise_ids[None, :]
         q_stream = stream_ids[:, None]
         kv_stream = stream_ids[None, :]
+        q_chunk = chunk_ids[:, None]
         q_block = torch.div(q_frame, 2, rounding_mode="floor")
         kv_block = torch.div(kv_frame, 2, rounding_mode="floor")
 
@@ -385,20 +462,34 @@ def build_chunked_temporal_exact_attention_profile(
             noise_to_noise = (q_noise == 0) & (kv_noise == 0) & (kv_frame == q_frame)
         within_window = (q_frame - kv_frame).abs() <= int(window_size)
         self_attention_mask = same_seq & within_window & (clean_to_clean | noise_to_clean | noise_to_noise)
-        cross_attention_mask = (
+        same_text_sample = (
             (seq_ids[:, None] == text_seq_ids[None, :])
             & (seq_ids[:, None] >= 0)
             & (text_seq_ids[None, :] >= 0)
         )
+        if resolved_proprio_context_token_count > 0:
+            text_position = text_context_positions[None, :]
+            base_text_visible = text_position < resolved_base_text_token_count
+            proprio_index = text_position - resolved_base_text_token_count
+            proprio_visible = (
+                (proprio_index >= 0)
+                & (proprio_index < resolved_proprio_context_token_count)
+                & (proprio_index == q_chunk)
+            )
+            cross_attention_mask = same_text_sample & (base_text_visible | proprio_visible)
+        else:
+            cross_attention_mask = same_text_sample
 
     self_attention_block_mask = None
     cross_attention_block_mask = None
     if build_flex_masks and create_block_mask is not None:
         seq_ids_flex = seq_ids.to(device=device, dtype=torch.long)
         frame_ids_flex = frame_ids.to(device=device, dtype=torch.long)
+        chunk_ids_flex = chunk_ids.to(device=device, dtype=torch.long)
         noise_ids_flex = noise_ids.to(device=device, dtype=torch.long)
         stream_ids_flex = stream_ids.to(device=device, dtype=torch.long)
         text_seq_ids_flex = text_seq_ids.to(device=device, dtype=torch.long)
+        text_context_positions_flex = text_context_positions.to(device=device, dtype=torch.long)
 
         def self_mask_mod(
             b: torch.Tensor,
@@ -499,11 +590,22 @@ def build_chunked_temporal_exact_attention_profile(
             kv_idx: torch.Tensor,
         ) -> torch.Tensor:
             del b, h
-            return (
+            same_text_sample = (
                 (seq_ids_flex[q_idx] == text_seq_ids_flex[kv_idx])
                 & (seq_ids_flex[q_idx] >= 0)
                 & (text_seq_ids_flex[kv_idx] >= 0)
             )
+            if resolved_proprio_context_token_count <= 0:
+                return same_text_sample
+            text_position = text_context_positions_flex[kv_idx]
+            base_text_visible = text_position < resolved_base_text_token_count
+            proprio_index = text_position - resolved_base_text_token_count
+            proprio_visible = (
+                (proprio_index >= 0)
+                & (proprio_index < resolved_proprio_context_token_count)
+                & (proprio_index == chunk_ids_flex[q_idx])
+            )
+            return same_text_sample & (base_text_visible | proprio_visible)
 
         total_seq_len = int(seq_ids.numel())
         total_text_len = int(text_seq_ids.numel())
@@ -546,6 +648,8 @@ def build_chunked_temporal_exact_attention_profile(
             "action_shape": tuple(int(v) for v in action_shape),
             "padded_length": int(padded_length),
             "text_token_count": int(text_token_count),
+            "base_text_token_count": int(resolved_base_text_token_count),
+            "proprio_context_token_count": int(resolved_proprio_context_token_count),
             "allow_joint_noisy_block_attention": current_block_coupling == JOINT_COUPLING,
             "current_block_coupling": current_block_coupling,
             "preserve_video_pretrain_history": bool(preserve_video_pretrain_history),

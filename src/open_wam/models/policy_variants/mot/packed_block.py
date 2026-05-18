@@ -49,6 +49,14 @@ def _native_attention(
     if rotary_emb is not None:
         query = apply_rotary_emb(query, rotary_emb)
         key = apply_rotary_emb(key, rotary_emb)
+    if attention_mask is not None:
+        if attention_mask.ndim == 3:
+            attention_mask = attention_mask[:, None, :, :]
+        elif attention_mask.ndim != 4:
+            raise ValueError(
+                "MoT packed block cross-attention mask must have shape [B, Q, K] or [B, H, Q, K], "
+                f"got {tuple(attention_mask.shape)}."
+            )
     hidden_states = F.scaled_dot_product_attention(
         query.transpose(1, 2).contiguous(),
         key.transpose(1, 2).contiguous(),
@@ -102,6 +110,7 @@ def _apply_post_attention_native(
     c_shift_msa: torch.Tensor,
     c_scale_msa: torch.Tensor,
     c_gate_msa: torch.Tensor,
+    cross_attention_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     hidden_states = (hidden_states.float() + mixed_attn_output.float() * gate_msa).type_as(hidden_states)
     norm_hidden_states = block.norm2(hidden_states.float()).type_as(hidden_states)
@@ -110,6 +119,7 @@ def _apply_post_attention_native(
         norm_hidden_states,
         encoder_hidden_states,
         encoder_hidden_states,
+        attention_mask=cross_attention_mask,
     )
     norm_hidden_states = (block.norm3(hidden_states.float()) * (1.0 + c_scale_msa) + c_shift_msa).type_as(hidden_states)
     ff_output = block.ffn(norm_hidden_states)
@@ -143,6 +153,8 @@ class MoTPackedBlock(nn.Module):
         action_attention_mask: torch.Tensor | None,
         video_text_hidden_states: torch.Tensor,
         action_text_hidden_states: torch.Tensor,
+        video_cross_attention_mask: torch.Tensor | None = None,
+        action_cross_attention_mask: torch.Tensor | None = None,
         block_mask: Any | None = None,
         flex_kernel_options: dict[str, Any] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -225,6 +237,7 @@ class MoTPackedBlock(nn.Module):
             c_shift_msa=video_attn_inputs["c_shift_msa"],
             c_scale_msa=video_attn_inputs["c_scale_msa"],
             c_gate_msa=video_attn_inputs["c_gate_msa"],
+            cross_attention_mask=video_cross_attention_mask,
         )
         new_action = _apply_post_attention_native(
             self.action_block,
@@ -235,6 +248,7 @@ class MoTPackedBlock(nn.Module):
             c_shift_msa=action_attn_inputs["c_shift_msa"],
             c_scale_msa=action_attn_inputs["c_scale_msa"],
             c_gate_msa=action_attn_inputs["c_gate_msa"],
+            cross_attention_mask=action_cross_attention_mask,
         )
         return new_video, new_action
 

@@ -8,6 +8,8 @@ import yaml
 from open_wam.configs import (
     ActionChunkAnchorMode,
     ActionDecoderName,
+    ActionNormalizationMode,
+    ActionTargetRepresentation,
     AuxiliaryValidationSource,
     AttentionMode,
     BatchAdapterName,
@@ -70,6 +72,41 @@ def _instantiate_parallel_stream_variant(config) -> ParallelStreamPolicyVariant:
         action_horizon=config.action_decoder.action_horizon,
         num_frames=config.data.num_frames,
     )
+
+
+@pytest.mark.parametrize(
+    "config_name",
+    [
+        "parallel_stream_libero_lingbot_exact_heng_compatible.yaml",
+        "parallel_stream_libero_lingbot_m1_video_then_action_heng_compatible.yaml",
+        "parallel_stream_libero_lingbot_m1_action_then_video_heng_compatible.yaml",
+        "parallel_stream_libero_lingbot_joint_denoise_heng_compatible.yaml",
+        "mot_libero_latent_local_video_then_action_heng_compatible.yaml",
+    ],
+)
+def test_absolute_action_features_are_opt_in_for_legacy_libero_training_configs(config_name: str) -> None:
+    config = load_experiment_config(REPO_ROOT / "configs" / "experiments" / config_name)
+
+    assert config.data.action_schema.action_dim == 7
+    assert config.data.action_target.representation == ActionTargetRepresentation.RAW
+    assert config.data.action_target.source_key == "action"
+    assert config.data.action_target.normalization.mode == ActionNormalizationMode.NONE
+    assert config.data.action_target.joint_position_normalization.mode == ActionNormalizationMode.NONE
+    assert getattr(config.policy_variant, "proprio_context_mode", ProprioContextMode.NONE) == ProprioContextMode.NONE
+    assert getattr(config.action_decoder, "recovered_osc_loss_weight", 0.0) == 0.0
+
+
+def test_abs_eef6d_training_config_is_the_explicit_absolute_action_opt_in() -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs" / "experiments" / "parallel_stream_libero_lingbot_m1_video_then_action_abs_eef6d.yaml"
+    )
+
+    assert config.data.action_schema.action_dim == 10
+    assert config.data.action_target.representation == ActionTargetRepresentation.RAW
+    assert config.data.action_target.source_key == "integrated_eef6d_action"
+    assert config.data.action_target.normalization.mode == ActionNormalizationMode.GAUSSIAN
+    assert config.policy_variant.proprio_context_mode == ProprioContextMode.TEXT_CONTEXT_TOKEN
+    assert config.action_decoder.recovered_osc_loss_weight > 0.0
 
 
 def test_legacy_contract_only_maps_to_post_latent() -> None:
@@ -234,6 +271,63 @@ trainer:
     assert idm.mode_override == JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION
     assert idm.max_batches == 8
     assert idm.should_drop_text is False
+
+
+def test_absolute_joint_position_action_target_loads_from_yaml(tmp_path: Path) -> None:
+    config_path = tmp_path / "absolute_joint_libero.yaml"
+    config_path.write_text(
+        """
+name: absolute_joint_libero
+data:
+  dataset_name: libero
+  action_schema:
+    action_dim: 8
+    action_horizon: 4
+    state_dim: 7
+  action_target:
+    representation: absolute_joint_position
+    source_key: action
+    joint_position_source_key: robot0_joint_pos
+    gripper_position_source_key: custom_gripper_qpos
+    include_gripper: true
+    gripper_representation: action_command
+    gripper_action_index: -1
+    joint_position_normalization:
+      mode: joint_limits
+      lower: [-2.0, -1.0, -3.0, -2.5, -2.0, -1.5, -1.0]
+      upper: [2.0, 1.0, 3.0, 2.5, 2.0, 1.5, 1.0]
+      clip_min: -1.0
+      clip_max: 1.0
+    normalization:
+      mode: gaussian
+      mean: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
+      std: [1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7]
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: parallel_stream
+  attach_site: within_visual_core
+  runtime_mode: lingbot_exact_action_conditioned
+action_decoder:
+  name: lingbot_parallel_decoder
+  action_dim: 8
+  action_horizon: 4
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    config = load_experiment_config(config_path)
+
+    assert config.data.action_target.representation == ActionTargetRepresentation.ABSOLUTE_JOINT_POSITION
+    assert config.data.action_target.source_key == "action"
+    assert config.data.action_target.joint_position_source_key == "robot0_joint_pos"
+    assert config.data.action_target.gripper_position_source_key == "custom_gripper_qpos"
+    assert config.data.action_target.joint_position_normalization.mode == ActionNormalizationMode.JOINT_LIMITS
+    assert config.data.action_target.joint_position_normalization.lower[0] == -2.0
+    assert config.data.action_target.normalization.mode == ActionNormalizationMode.GAUSSIAN
+    assert config.data.action_target.normalization.mean[-1] == 0.7
 
 
 def test_raw_libero_smoke_variant_yaml_configs_load() -> None:

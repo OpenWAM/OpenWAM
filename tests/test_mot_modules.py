@@ -33,6 +33,7 @@ from open_wam.models.policy_variants.mot.modules import (
     MoTActionExpert,
     init_action_expert_from_video_core,
 )
+from open_wam.models.policy_variants.mot.packed_block import MoTPackedBlock
 from open_wam.models.policy_variants.mot.runtime import (
     build_mot_inference_action_attention_mask,
     build_mot_attention_mask,
@@ -84,6 +85,8 @@ def test_mot_action_expert_pre_and_post_shapes() -> None:
     assert pre.freqs.shape[0] == 2
     assert pre.t_mod.shape == (2, 6, 6, 32)
     assert pre.context.shape == (2, 5, 32)
+    assert pre.cross_attention_mask is not None
+    assert pre.cross_attention_mask.shape == (2, 6, 5)
     assert pred.shape == (2, 6, 4)
 
 
@@ -749,7 +752,7 @@ def test_mot_condition_latents_can_be_disabled() -> None:
     assert torch.isfinite(output.decoder_output.loss)
 
 
-def test_mot_proprio_context_injects_last_state_into_text_slot_for_train() -> None:
+def test_mot_proprio_context_uses_shared_batch_context_for_train() -> None:
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
@@ -787,13 +790,25 @@ def test_mot_proprio_context_injects_last_state_into_text_slot_for_train() -> No
         encoder.proj.weight.fill_(0.25)
         encoder.proj.bias.fill_(0.5)
     state = torch.tensor([[[1.0, 2.0, 3.0, 4.0], [4.0, 5.0, 6.0, 7.0]]])
+    proprio_context_state = torch.tensor(
+        [[[10.0, 11.0, 12.0, 13.0], [20.0, 21.0, 22.0, 23.0], [30.0, 31.0, 32.0, 33.0]]]
+    )
+    proprio_context_state_mask = torch.ones_like(proprio_context_state)
+    proprio_context_state_mask[:, 2, 2:] = 0
     video_latents = torch.randn(1, 48, 4, 8, 8)
     text_context = torch.zeros(1, 5, 16)
     visual_outputs = pipeline.prepare_visual_outputs_from_latents(video_latents, text_context=text_context)
-    batch = PolicyTrainBatch(actions=torch.randn(1, 4, 4), state=state)
+    batch = PolicyTrainBatch(
+        actions=torch.randn(1, 4, 4),
+        state=state,
+        extra={
+            "proprio_context_state": proprio_context_state,
+            "proprio_context_state_mask": proprio_context_state_mask,
+        },
+    )
 
     prepared = pipeline.policy_variant.prepare_train_inputs(visual_outputs, batch)
-    injected = pipeline.policy_variant._resolve_text_context_with_proprio(
+    resolved = pipeline.policy_variant._resolve_text_context_with_proprio(
         pipeline.visual_tower,
         prepared.variant_inputs["text_context"],
         prepared.variant_inputs["proprio_state"],
@@ -803,14 +818,132 @@ def test_mot_proprio_context_injects_last_state_into_text_slot_for_train() -> No
         materialize_if_missing=True,
     )
 
-    expected = encoder(state[:, -1, :]).to(dtype=video_latents.dtype)
-    assert torch.allclose(prepared.variant_inputs["proprio_state"], state[:, -1, :])
-    assert injected is not None
-    assert torch.allclose(injected[:, -1, :], expected)
-    assert torch.allclose(injected[:, :-1, :], torch.zeros_like(injected[:, :-1, :]))
+    masked_proprio = proprio_context_state * proprio_context_state_mask
+    expected = encoder(masked_proprio.reshape(3, 4)).reshape(1, 3, 16).to(dtype=video_latents.dtype)
+    assert torch.allclose(prepared.variant_inputs["proprio_state"], masked_proprio)
+    assert resolved is not None
+    assert resolved.shape == (1, 8, 16)
+    assert torch.allclose(resolved[:, :5, :], text_context)
+    assert torch.allclose(resolved[:, 5:, :], expected)
 
 
-def test_mot_prepare_infer_state_injects_proprio_context_into_text_slot() -> None:
+def test_mot_proprio_context_mask_exposes_matching_chunk_token_only() -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=6,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=6, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=MoTPolicyConfig(
+            hidden_size=32,
+            condition_mode=MoTConditionMode.FIRST_FRAME,
+            video_prefix_frames=1,
+            teacher_forcing_video_noise_prob=0.0,
+            num_action_layers=1,
+            proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,
+        ),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=6),
+        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
+        inference=InferenceConfig(frame_chunk_size=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    resolved_text = torch.zeros(1, 8, 16)
+    proprio_context_state = torch.zeros(1, 3, 4)
+
+    mask = pipeline.policy_variant._build_proprio_cross_attention_mask(
+        resolved_text_context=resolved_text,
+        proprio_state=proprio_context_state,
+        query_frames_per_copy=6,
+        tokens_per_frame=1,
+        chunk_size_frames=2,
+    )
+
+    assert mask is not None
+    assert mask.shape == (1, 6, 8)
+    assert torch.equal(mask[0, :, :5], torch.ones(6, 5, dtype=torch.bool))
+    assert torch.equal(
+        mask[0, :, 5:],
+        torch.tensor(
+            [
+                [True, False, False],
+                [True, False, False],
+                [False, True, False],
+                [False, True, False],
+                [False, False, True],
+                [False, False, True],
+            ],
+            dtype=torch.bool,
+        ),
+    )
+
+
+def test_mot_packed_block_accepts_query_dependent_cross_attention_masks() -> None:
+    video_core = SharedVideoTransformerCore(
+        SharedVideoTransformerConfig(
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        action_dim=4,
+        state_dim=4,
+    )
+    action_expert = MoTActionExpert(
+        hidden_size=32,
+        action_dim=4,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        ffn_dim=64,
+        text_dim=16,
+        freq_dim=8,
+    )
+    packed_block = MoTPackedBlock(video_core.blocks[0], action_expert.blocks[0])
+    batch_size = 2
+    video_tokens = 3
+    action_tokens = 2
+    context_tokens = 5
+
+    video_out, action_out = packed_block(
+        torch.randn(batch_size, video_tokens, 32),
+        torch.randn(batch_size, action_tokens, 32),
+        video_timestep_proj=torch.randn(batch_size, video_tokens, 6, 32),
+        video_rotary_emb=None,
+        action_temb=torch.randn(batch_size, action_tokens, 6, 32),
+        action_rotary_emb=None,
+        video_attention_mask=None,
+        action_attention_mask=None,
+        video_text_hidden_states=torch.randn(batch_size, context_tokens, 32),
+        action_text_hidden_states=torch.randn(batch_size, context_tokens, 32),
+        video_cross_attention_mask=torch.ones(batch_size, video_tokens, context_tokens, dtype=torch.bool),
+        action_cross_attention_mask=torch.ones(batch_size, action_tokens, context_tokens, dtype=torch.bool),
+    )
+
+    assert video_out.shape == (batch_size, video_tokens, 32)
+    assert action_out.shape == (batch_size, action_tokens, 32)
+    assert torch.isfinite(video_out).all()
+    assert torch.isfinite(action_out).all()
+
+
+def test_mot_prepare_infer_state_appends_proprio_context_token() -> None:
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
@@ -863,10 +996,11 @@ def test_mot_prepare_infer_state_injects_proprio_context_into_text_slot() -> Non
     assert runtime_state.text_context is not None
     expected = encoder(state[:, -1, :]).to(dtype=runtime_state.text_context.dtype)
     assert torch.allclose(runtime_state.proprio_state, state[:, -1, :])
+    assert runtime_state.text_context.shape == (1, 6, 16)
     assert torch.allclose(runtime_state.text_context[:, -1, :], expected)
     assert torch.allclose(
-        runtime_state.text_context[:, :-1, :],
-        torch.zeros_like(runtime_state.text_context[:, :-1, :]),
+        runtime_state.text_context[:, :5, :],
+        torch.zeros_like(runtime_state.text_context[:, :5, :]),
     )
 
 

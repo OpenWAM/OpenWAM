@@ -889,6 +889,7 @@ class SharedTransformerBlock(nn.Module):
         c_scale_msa: torch.Tensor,
         c_gate_msa: torch.Tensor,
         attention_profile: PreparedAttentionProfile | None = None,
+        cross_attention_mask: torch.Tensor | None = None,
         cross_attention_cache_entry: AttentionCacheEntry | None = None,
     ) -> tuple[torch.Tensor, AttentionCacheEntry | None]:
         """Apply residual, cross-attention, and FFN after external self-attn."""
@@ -904,7 +905,7 @@ class SharedTransformerBlock(nn.Module):
             encoder_hidden_states,
             encoder_hidden_states,
             rotary_emb=None,
-            attention_mask=None,
+            attention_mask=cross_attention_mask,
             attention_profile=attention_profile,
             is_cross_attention=True,
             kv_cache_override=cross_attention_cache_entry,
@@ -931,6 +932,7 @@ class SharedTransformerBlock(nn.Module):
         structured_frequency_bundle: StructuredFrequencyBundle | None = None,
         attention_mask: torch.Tensor | None = None,
         attention_profile: PreparedAttentionProfile | None = None,
+        cross_attention_mask: torch.Tensor | None = None,
         self_attention_cache_entry: AttentionCacheEntry | None = None,
         cross_attention_cache_entry: AttentionCacheEntry | None = None,
         cached_prefix_visibility: torch.Tensor | None = None,
@@ -1003,7 +1005,7 @@ class SharedTransformerBlock(nn.Module):
             encoder_hidden_states,
             encoder_hidden_states,
             rotary_emb=None,
-            attention_mask=None,
+            attention_mask=cross_attention_mask,
             attention_profile=attention_profile,
             is_cross_attention=True,
             kv_cache_override=cross_attention_cache_entry,
@@ -1263,7 +1265,7 @@ class SharedVideoTransformerCore(nn.Module):
             text_dim=self.config.text_dim,
         )
 
-    def inject_proprio_context(
+    def append_proprio_context_tokens(
         self,
         text_emb: torch.Tensor,
         proprio_state: torch.Tensor | None,
@@ -1272,21 +1274,19 @@ class SharedVideoTransformerCore(nn.Module):
             return text_emb
         if text_emb.ndim != 3:
             raise ValueError(
-                "Proprio text-context injection expects text embeddings with shape [B, tokens, dim], "
+                "Proprio context appending expects text embeddings with shape [B, tokens, dim], "
                 f"got {tuple(text_emb.shape)}."
             )
-        if int(text_emb.shape[1]) <= 0:
-            raise ValueError("Proprio text-context injection requires at least one text slot.")
         if int(text_emb.shape[-1]) != int(self.config.text_dim):
             raise ValueError(
-                "Text embedding dim mismatch for proprio injection, "
+                "Text embedding dim mismatch for proprio appending, "
                 f"got {text_emb.shape[-1]} and expected {self.config.text_dim}."
             )
-        if proprio_state.ndim == 3:
-            proprio_state = proprio_state[:, -1, :]
-        if proprio_state.ndim != 2:
+        if proprio_state.ndim == 2:
+            proprio_state = proprio_state[:, None, :]
+        if proprio_state.ndim != 3:
             raise ValueError(
-                "Proprio text-context injection expects state with shape [B, state_dim] or [B, H, state_dim], "
+                "Proprio context appending expects state with shape [B, state_dim] or [B, chunks, state_dim], "
                 f"got {tuple(proprio_state.shape)}."
             )
         if int(proprio_state.shape[0]) != int(text_emb.shape[0]):
@@ -1294,22 +1294,15 @@ class SharedVideoTransformerCore(nn.Module):
                 "Proprio/text batch mismatch, "
                 f"got proprio batch {proprio_state.shape[0]} and text batch {text_emb.shape[0]}."
             )
-        injection_slot = text_emb[:, -1, :]
-        # Keep the defensive padding-slot check on CPU without forcing a CUDA
-        # synchronization in every exact rollout denoising step.
-        if injection_slot.device.type == "cpu" and bool(
-            (injection_slot.detach().float().abs() > 1e-3).any().item()
-        ):
-            raise ValueError(
-                "Proprio text-context injection slot is not zero-padded; "
-                "the prompt likely fills max_text_tokens and would overwrite a real text token."
-            )
         encoder = self.proprio_context_encoder
+        batch_size, chunk_count, state_dim = proprio_state.shape
         proprio_state = proprio_state.to(device=encoder.proj.weight.device, dtype=encoder.proj.weight.dtype)
-        proprio_token = encoder(proprio_state).to(device=text_emb.device, dtype=text_emb.dtype)
-        injected = text_emb.clone()
-        injected[:, -1, :] = proprio_token
-        return injected
+        proprio_tokens = encoder(proprio_state.reshape(batch_size * chunk_count, state_dim))
+        proprio_tokens = proprio_tokens.reshape(batch_size, chunk_count, -1).to(
+            device=text_emb.device,
+            dtype=text_emb.dtype,
+        )
+        return torch.cat([text_emb, proprio_tokens], dim=1)
 
     @staticmethod
     def _move_optional_tensor(tensor: torch.Tensor | None, *, device: torch.device, dtype: torch.dtype | None = None):
@@ -1382,6 +1375,12 @@ class SharedVideoTransformerCore(nn.Module):
                     window_size=int(metadata["window_size"]),
                     patch_size=self.patch_size,
                     text_token_count=int(metadata["text_token_count"]),
+                    base_text_token_count=(
+                        None
+                        if "base_text_token_count" not in metadata
+                        else int(metadata["base_text_token_count"])
+                    ),
+                    proprio_context_token_count=int(metadata.get("proprio_context_token_count", 0)),
                     device=device,
                     build_dense_masks=(
                         profile.self_attention_mask is not None
@@ -1993,6 +1992,7 @@ class SharedVideoTransformerCore(nn.Module):
             cache_current_token_count = max(0, min(cache_current_token_count, int(hidden_states.shape[1])))
         next_self_attention_kv: list[AttentionCacheEntry] = []
         attention_mask = input_dict.get("attention_mask")
+        cross_attention_mask = input_dict.get("cross_attention_mask")
         stream_id_value = 1 if action_mode else 0
         cache_backend_stream_ids = torch.full(
             (int(hidden_states.shape[1]),),
@@ -2036,6 +2036,12 @@ class SharedVideoTransformerCore(nn.Module):
                 name="attention_mask",
                 device=block_device,
             )
+            block_cross_attention_mask = self._cached_optional_tensor(
+                cross_attention_mask,
+                cache=moved_tensor_cache,
+                name="cross_attention_mask",
+                device=block_device,
+            )
             block_cache_backend_stream_ids = self._cached_optional_tensor(
                 cache_backend_stream_ids,
                 cache=moved_tensor_cache,
@@ -2056,6 +2062,7 @@ class SharedVideoTransformerCore(nn.Module):
                 temb=block_timestep_proj,
                 rotary_emb=block_rotary_emb,
                 attention_mask=block_attention_mask,
+                cross_attention_mask=block_cross_attention_mask,
                 self_attention_cache_backend_name=cache_backend_name,
                 self_attention_cache_backend_state=block_cache_backend_state,
                 cache_current_token_count=cache_current_token_count,

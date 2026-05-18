@@ -931,6 +931,7 @@ def prefill_video_kv_cache(
     text_context: torch.Tensor | None,
     frame_start: int = 0,
     attention_mask: torch.Tensor | None = None,
+    cross_attention_mask: torch.Tensor | None = None,
     detach_cache: bool = True,
 ) -> MoTVideoCache:
     """Run the observed video prefix once and cache per-layer self-attention K/V.
@@ -958,6 +959,7 @@ def prefill_video_kv_cache(
         frame_start=frame_start,
         cache_name="mot_video_prefill",
         attention_mask=attention_mask,
+        cross_attention_mask=cross_attention_mask,
         detach_cache=detach_cache,
     )
     cache_layers: list[MoTVideoLayerCache] = []
@@ -1207,6 +1209,7 @@ def forward_action_with_video_and_action_cache(
                 c_shift_msa=attn_inputs["c_shift_msa"],
                 c_scale_msa=attn_inputs["c_scale_msa"],
                 c_gate_msa=attn_inputs["c_gate_msa"],
+                cross_attention_mask=action_pre.cross_attention_mask,
             )
             fresh_kv_layers.append(
                 MoTActionLayerCache(
@@ -1236,6 +1239,7 @@ def forward_mot_packed_coupling_denoise(
     use_activation_checkpointing: bool = False,
     packed_block_stack=None,
     prefer_flex_attention: bool = True,
+    video_cross_attention_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Run M5's native four-stream packed coupling forward.
 
@@ -1391,6 +1395,7 @@ def forward_mot_packed_coupling_denoise(
             c_shift_msa=video_attn_inputs["c_shift_msa"],
             c_scale_msa=video_attn_inputs["c_scale_msa"],
             c_gate_msa=video_attn_inputs["c_gate_msa"],
+            cross_attention_mask=video_cross_attention_mask,
         )
         new_action, _ = action_block.apply_post_attention(
             action_attn_inputs["hidden_states"],
@@ -1402,6 +1407,7 @@ def forward_mot_packed_coupling_denoise(
             c_shift_msa=action_attn_inputs["c_shift_msa"],
             c_scale_msa=action_attn_inputs["c_scale_msa"],
             c_gate_msa=action_attn_inputs["c_gate_msa"],
+            cross_attention_mask=packed_action_pre.cross_attention_mask,
         )
         return new_video, new_action
 
@@ -1436,6 +1442,8 @@ def forward_mot_packed_coupling_denoise(
             action_attention_mask=action_attention_mask,
             video_text_hidden_states=video_text_hidden_states,
             action_text_hidden_states=packed_action_pre.context,
+            video_cross_attention_mask=video_cross_attention_mask,
+            action_cross_attention_mask=packed_action_pre.cross_attention_mask,
             block_mask=profile_block_mask,
             flex_kernel_options=flex_kernel_options,
         )
@@ -1559,6 +1567,7 @@ def forward_action_with_video_cache(
                 c_shift_msa=attn_inputs["c_shift_msa"],
                 c_scale_msa=attn_inputs["c_scale_msa"],
                 c_gate_msa=attn_inputs["c_gate_msa"],
+                cross_attention_mask=action_pre.cross_attention_mask,
             )
     return hidden_states
 
@@ -1622,6 +1631,7 @@ def forward_packed_action_with_video_cache(
                 c_shift_msa=attn_inputs["c_shift_msa"],
                 c_scale_msa=attn_inputs["c_scale_msa"],
                 c_gate_msa=attn_inputs["c_gate_msa"],
+                cross_attention_mask=packed_action_pre.cross_attention_mask,
             )
     return hidden_states
 
@@ -1637,6 +1647,7 @@ def forward_joint_video_action_denoise(
     attention_mask: torch.Tensor,
     frame_start: int = 0,
     use_activation_checkpointing: bool = False,
+    video_cross_attention_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Run true joint video+action denoising with cross-stream attention on every layer.
 
@@ -1738,6 +1749,7 @@ def forward_joint_video_action_denoise(
             c_shift_msa=video_attn_inputs["c_shift_msa"],
             c_scale_msa=video_attn_inputs["c_scale_msa"],
             c_gate_msa=video_attn_inputs["c_gate_msa"],
+            cross_attention_mask=video_cross_attention_mask,
         )
         new_action, _ = action_block.apply_post_attention(
             action_attn_inputs["hidden_states"],
@@ -1749,6 +1761,7 @@ def forward_joint_video_action_denoise(
             c_shift_msa=action_attn_inputs["c_shift_msa"],
             c_scale_msa=action_attn_inputs["c_scale_msa"],
             c_gate_msa=action_attn_inputs["c_gate_msa"],
+            cross_attention_mask=action_pre.cross_attention_mask,
         )
         return new_video, new_action
 

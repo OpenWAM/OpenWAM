@@ -406,6 +406,8 @@ def prepare_exact_dual_stream_train_sequence(
         exact_runtime=True,
     ) == "flex":
         attention_profile_name = "chunked_temporal_exact"
+    base_text_token_count = input_dict.get("base_text_token_count")
+    proprio_context_token_count = int(input_dict.get("proprio_context_token_count", 0) or 0)
 
     exact_attention_profile = None
     if attention_profile_name in {
@@ -424,6 +426,10 @@ def prepare_exact_dual_stream_train_sequence(
             window_size=int(input_dict["window_size"]),
             patch_size=patch_size,
             text_token_count=int(latent_dict["text_emb"].shape[1]),
+            base_text_token_count=(
+                None if base_text_token_count is None else int(base_text_token_count)
+            ),
+            proprio_context_token_count=proprio_context_token_count,
             device=hidden_states.device,
             build_dense_masks=hidden_states.device.type != "cuda",
             build_flex_masks=hidden_states.device.type == "cuda",

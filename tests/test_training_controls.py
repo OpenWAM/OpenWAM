@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from open_wam.configs.enums import TrainingComponentSelector
 from open_wam.data import build_synthetic_latent_batch
 from open_wam.models.policy_variants.mot.packed_block import MoTPackedBlockStack
 from open_wam.models.policy_variants import PolicyTrainBatch
@@ -40,6 +41,7 @@ def test_parallel_stream_enabled_objectives_can_disable_action_loss() -> None:
     config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
     config = replace(
         config,
+        policy_variant=replace(config.policy_variant, action_norm_method="none"),
         training=replace(
             config.training,
             enabled_objectives=("latent",),
@@ -100,6 +102,7 @@ def _build_mot_packed_smoke_pipeline():
     from open_wam.configs.enums import (
         CurrentBlockCoupling,
         MoTRuntimeMode,
+        ProprioContextMode,
     )
 
     config = load_experiment_config(REPO_ROOT / "configs/experiments/mot_robotwin_smoke.yaml")
@@ -107,10 +110,19 @@ def _build_mot_packed_smoke_pipeline():
         config.policy_variant,
         current_block_coupling=CurrentBlockCoupling.VIDEO_THEN_ACTION,
         runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+        proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,
     )
     config = _replace(config, policy_variant=policy_variant_config)
     pipeline = build_variant_pipeline_from_config(config)
     return config, pipeline
+
+
+def _non_proprio_core_parameters(pipeline):
+    return [
+        parameter
+        for name, parameter in pipeline.visual_tower.core.named_parameters()
+        if not name.startswith("proprio_context_encoder.")
+    ]
 
 
 def test_packed_coupling_action_expert_selector_only_trains_action_side() -> None:
@@ -136,8 +148,10 @@ def test_packed_coupling_action_expert_selector_only_trains_action_side() -> Non
         assert all(parameter.requires_grad for parameter in packed_block.action_block.parameters())
         # And video_block is NOT trainable.
         assert all(not parameter.requires_grad for parameter in packed_block.video_block.parameters())
-    # Visual tower core (non-block parts) is NOT trainable.
-    assert all(not parameter.requires_grad for parameter in pipeline.visual_tower.core.parameters())
+    # Visual tower core (non-block parts) is NOT trainable except the zero-init
+    # proprio adapter, which must learn even in action-only runs.
+    assert all(not parameter.requires_grad for parameter in _non_proprio_core_parameters(pipeline))
+    assert all(parameter.requires_grad for parameter in pipeline.visual_tower.core.proprio_context_encoder.parameters())
 
 
 def test_packed_coupling_runtime_backbone_selector_only_trains_video_side() -> None:
@@ -216,7 +230,8 @@ def test_packed_coupling_freeze_video_train_action() -> None:
     for packed_block in pipeline.policy_variant.packed_block_stack.packed_blocks:
         assert all(not parameter.requires_grad for parameter in packed_block.video_block.parameters())
         assert all(parameter.requires_grad for parameter in packed_block.action_block.parameters())
-    assert all(not parameter.requires_grad for parameter in pipeline.visual_tower.core.parameters())
+    assert all(not parameter.requires_grad for parameter in _non_proprio_core_parameters(pipeline))
+    assert all(parameter.requires_grad for parameter in pipeline.visual_tower.core.proprio_context_encoder.parameters())
     assert all(
         parameter.requires_grad
         for parameter in pipeline.policy_variant.action_expert.action_embedder.parameters()
@@ -264,3 +279,58 @@ def test_apply_training_component_controls_supports_action_decoder_adapter_selec
     assert all(parameter.requires_grad for parameter in pipeline.action_decoder.action_expert.action_embedder.parameters())
     assert all(parameter.requires_grad for parameter in pipeline.action_decoder.action_expert.context_proj.parameters())
     assert all(parameter.requires_grad for parameter in pipeline.action_decoder.action_expert.action_proj_out.parameters())
+
+
+def test_proprio_context_encoder_trains_with_action_only_selector() -> None:
+    config, pipeline = _build_mot_packed_smoke_pipeline()
+    encoder = pipeline.visual_tower.core.proprio_context_encoder
+    assert encoder is not None
+    config = replace(
+        config,
+        training=replace(
+            config.training,
+            trainable_components=("policy_variant.action_expert",),
+        ),
+    )
+
+    apply_training_component_controls(pipeline, config.training)
+
+    assert all(parameter.requires_grad for parameter in encoder.parameters())
+    assert all(not parameter.requires_grad for parameter in pipeline.visual_tower.core.patch_embedding_mlp.parameters())
+
+
+def test_proprio_context_encoder_can_be_explicitly_frozen() -> None:
+    config, pipeline = _build_mot_packed_smoke_pipeline()
+    encoder = pipeline.visual_tower.core.proprio_context_encoder
+    assert encoder is not None
+    config = replace(
+        config,
+        training=replace(
+            config.training,
+            trainable_components=("policy_variant.action_expert",),
+            frozen_components=("visual_tower.proprio_context_encoder",),
+        ),
+    )
+
+    apply_training_component_controls(pipeline, config.training)
+
+    assert all(not parameter.requires_grad for parameter in encoder.parameters())
+
+
+def test_proprio_context_encoder_respects_broad_visual_core_freeze() -> None:
+    config, pipeline = _build_mot_packed_smoke_pipeline()
+    encoder = pipeline.visual_tower.core.proprio_context_encoder
+    assert encoder is not None
+    config = replace(
+        config,
+        training=replace(
+            config.training,
+            trainable_components=("policy_variant.action_expert",),
+            frozen_components=("visual_tower.core",),
+        ),
+    )
+
+    report = apply_training_component_controls(pipeline, config.training)
+
+    assert TrainingComponentSelector.VISUAL_TOWER_PROPRIO_CONTEXT_ENCODER not in report.trainable_components
+    assert all(not parameter.requires_grad for parameter in encoder.parameters())

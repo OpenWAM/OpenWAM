@@ -14,9 +14,15 @@ from huggingface_hub import hf_hub_download
 from PIL import Image
 from torch.utils.data import Dataset
 
-from open_wam.configs import ActionTargetReferenceSource, ActionTargetRepresentation, DataConfig
+from open_wam.configs import ActionTargetReferenceSource, ActionTargetRepresentation, DataConfig, GripperRepresentation
 
-from .action_transforms import build_relative_pose_targets, expected_pose_target_dim
+from .action_transforms import (
+    build_absolute_joint_position_targets,
+    build_relative_pose_targets,
+    expected_joint_position_target_dim,
+    expected_pose_target_dim,
+    normalize_action_targets,
+)
 from .action_mapping import (
     action_mapping_is_active,
     apply_action_mapping,
@@ -214,13 +220,19 @@ class LeRobotV2WindowDataset(Dataset[WAMSample]):
                 target_dim=source_dim,
                 target_length=target_length,
             )
+            actions = normalize_action_targets(
+                actions,
+                normalization=action_target.normalization,
+            )
             mapped = apply_action_mapping(
                 actions,
                 action_mask,
                 action_mapping,
                 target_dim=target_dim,
             )
-            return mapped.actions, mapped.action_mask, mapped.metadata
+            metadata = dict(mapped.metadata)
+            metadata["action_target_normalization_mode"] = str(action_target.normalization.mode)
+            return mapped.actions, mapped.action_mask, metadata
 
         if action_target.representation == ActionTargetRepresentation.EEF_POSE_RELATIVE_TO_REFERENCE:
             if action_target.reference_source != ActionTargetReferenceSource.ANCHOR_STATE:
@@ -279,6 +291,81 @@ class LeRobotV2WindowDataset(Dataset[WAMSample]):
             if relative_mask.shape[-1] != relative_targets.shape[-1]:
                 raise ValueError("Relative target mask shape must match the relative target tensor shape.")
             action_mask[:, : relative_mask.shape[-1]] = relative_mask
+            mapped = apply_action_mapping(
+                actions,
+                action_mask,
+                action_mapping,
+                target_dim=target_dim,
+            )
+            metadata.update(mapped.metadata)
+            metadata["action_mapping_applied"] = action_mapping_is_active(action_mapping)
+            return mapped.actions, mapped.action_mask, metadata
+
+        if action_target.representation == ActionTargetRepresentation.ABSOLUTE_JOINT_POSITION:
+            joint_position_source = torch.stack(
+                [
+                    torch.tensor(row[_resolve_row_key(row, action_target.joint_position_source_key)], dtype=torch.float32)
+                    for row in target_state_rows
+                ],
+                dim=0,
+            )
+            raw_action_sequence = torch.stack(
+                [
+                    torch.tensor(row[_resolve_row_key(row, action_target.source_key)], dtype=torch.float32)
+                    for row in action_rows
+                ],
+                dim=0,
+            )
+            gripper_position_sequence = None
+            if (
+                action_target.include_gripper
+                and action_target.gripper_representation != GripperRepresentation.ACTION_COMMAND
+            ):
+                gripper_position_sequence = torch.stack(
+                    [
+                        torch.tensor(
+                            row[_resolve_row_key(row, action_target.gripper_position_source_key)],
+                            dtype=torch.float32,
+                        )
+                        for row in target_state_rows
+                    ],
+                    dim=0,
+                )
+            joint_targets, joint_mask, metadata = build_absolute_joint_position_targets(
+                joint_position_source,
+                include_gripper=action_target.include_gripper,
+                gripper_representation=action_target.gripper_representation,
+                gripper_position_sequence=gripper_position_sequence,
+                raw_action_sequence=raw_action_sequence,
+                gripper_action_index=action_target.gripper_action_index,
+                normalization=action_target.joint_position_normalization,
+            )
+            expected_dim = expected_joint_position_target_dim(
+                joint_dim=joint_position_source.shape[-1],
+                include_gripper=action_target.include_gripper,
+                gripper_representation=action_target.gripper_representation,
+            )
+            target_or_source_dim = resolve_action_source_dim(action_mapping, fallback_dim=target_dim)
+            if target_or_source_dim != expected_dim:
+                raise ValueError(
+                    "Configured action_dim does not match the derived absolute-joint target dimension: "
+                    f"configured_dim={target_or_source_dim}, expected={expected_dim}."
+                )
+            metadata.update(
+                {
+                    "joint_position_source_key": action_target.joint_position_source_key,
+                    "gripper_source_key": action_target.source_key,
+                }
+            )
+            actions, action_mask = self._pack_sequence(
+                sequence=joint_targets,
+                target_dim=target_or_source_dim,
+                target_length=target_length,
+                sequence_name="absolute_joint_position_targets",
+            )
+            if joint_mask.shape[-1] != joint_targets.shape[-1]:
+                raise ValueError("Absolute-joint target mask shape must match the target tensor shape.")
+            action_mask[:, : joint_mask.shape[-1]] = joint_mask
             mapped = apply_action_mapping(
                 actions,
                 action_mask,

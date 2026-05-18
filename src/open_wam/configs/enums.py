@@ -126,6 +126,8 @@ class ActionNormalizationMode(StrEnum):
 
     NONE = "none"
     QUANTILES = "quantiles"
+    JOINT_LIMITS = "joint_limits"
+    GAUSSIAN = "gaussian"
 
 
 class WindowSamplingMode(StrEnum):
@@ -280,6 +282,19 @@ class ActionTargetRepresentation(StrEnum):
 
     RAW = "raw"
     EEF_POSE_RELATIVE_TO_REFERENCE = "eef_pose_relative_to_reference"
+    ABSOLUTE_JOINT_POSITION = "absolute_joint_position"
+
+
+class LiberoAbsoluteJointExecutionMode(StrEnum):
+    """How the LIBERO adapter executes absolute joint-position targets."""
+
+    # Public robosuite JOINT_POSITION API: normalized relative joint delta.
+    NORMALIZED_DELTA = "normalized_delta"
+    # Model target is an integrated pseudo-qpos; finite differences recover the
+    # normalized JOINT_POSITION command.
+    INTEGRATED_DELTA = "integrated_delta"
+    # Adapter-owned absolute qpos goal hook: controller.set_goal(..., set_qpos=target).
+    DIRECT_GOAL = "direct_goal"
 
 
 class ActionTargetStateEncoding(StrEnum):
@@ -301,6 +316,7 @@ class RotationRepresentation(StrEnum):
 
     QUAT = "quat"
     AXIS_ANGLE = "axis_angle"
+    CONTINUOUS_6D = "continuous_6d"
 
 
 class GripperRepresentation(StrEnum):
@@ -753,6 +769,7 @@ class DeadlineMissPolicy(StrEnum):
 class ActionNormMethod(StrEnum):
     """Raw-to-model action normalization strategy for exact method-1 paths."""
 
+    PROFILE = "profile"
     NONE = "none"
     QUANTILES = "quantiles"
 
@@ -863,6 +880,7 @@ class TrainingComponentSelector(StrEnum):
     VISUAL_TOWER_FRONTEND = "visual_tower.frontend"
     VISUAL_TOWER_CORE = "visual_tower.core"
     VISUAL_TOWER_RUNTIME_BACKBONE = "visual_tower.runtime_backbone"
+    VISUAL_TOWER_PROPRIO_CONTEXT_ENCODER = "visual_tower.proprio_context_encoder"
     VISUAL_TOWER_SHARED_VIDEO_BACKBONE = "visual_tower.shared_video_backbone"
     VISUAL_TOWER_SHARED_ACTION_RUNTIME = "visual_tower.shared_action_runtime"
     VISUAL_TOWER_SHARED_RUNTIME_ADAPTERS = "visual_tower.shared_runtime_adapters"

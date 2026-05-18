@@ -90,6 +90,7 @@ def apply_action_mapping(
         raise ValueError(
             f"Action mapping target_dim={configured_target_dim} must match action_schema.action_dim={target_dim}."
         )
+    _validate_normalization_stats_for_mapping(config, source_dim=source_dim, target_dim=target_dim)
 
     normalized_source = _normalize_source_actions(source_actions.to(dtype=torch.float32), config)
     actions = torch.full(
@@ -183,6 +184,7 @@ def inverse_action_mapping(
         raise ValueError(
             f"Mapped action tensor last dim must be {target_dim}, got {mapped_actions.shape[-1]}."
         )
+    _validate_normalization_stats_for_mapping(config, source_dim=source_dim, target_dim=target_dim)
     source = mapped_actions.new_empty(*mapped_actions.shape[:-1], source_dim)
     denormalized = _denormalize_target_actions(mapped_actions.to(dtype=torch.float32), config)
     for source_index, target_index in enumerate(config.source_to_target_indices):
@@ -205,6 +207,7 @@ def validate_action_mapping_preflight(
         raise ValueError(
             f"Action mapping target_dim={target_dim} must equal action_schema.action_dim={action_schema_dim}."
         )
+    _validate_normalization_stats_for_mapping(config, source_dim=source_dim, target_dim=target_dim)
     probe = torch.arange(source_dim, dtype=torch.float32).reshape(1, source_dim)
     probe_mask = torch.ones_like(probe)
     mapped = apply_action_mapping(probe, probe_mask, config, target_dim=action_schema_dim)
@@ -229,6 +232,42 @@ def validate_action_mapping_preflight(
     }
 
 
+def _validate_normalization_stats_for_mapping(
+    config: ActionMappingConfig,
+    *,
+    source_dim: int,
+    target_dim: int,
+) -> None:
+    stat_dim = _normalization_stats_dim(config)
+    if stat_dim is None:
+        return
+    if int(source_dim) == int(target_dim):
+        raise ValueError(
+            "Normalized action mappings with source_dim == target_dim are ambiguous because the same "
+            "stats length could mean source-space or target-space normalization. Use an unmapped action "
+            "target normalization or disable action_mapping normalization until the normalization space is explicit."
+        )
+    valid_dims = {int(source_dim), int(target_dim)}
+    if int(stat_dim) not in valid_dims:
+        raise ValueError(
+            "Action mapping normalization stats length must match either source_dim or target_dim, "
+            f"got stats_dim={stat_dim}, source_dim={source_dim}, target_dim={target_dim}."
+        )
+
+
+def _normalization_stats_dim(config: ActionMappingConfig) -> int | None:
+    normalization = config.normalization
+    if normalization.mode == ActionNormalizationMode.NONE:
+        return None
+    if normalization.mode == ActionNormalizationMode.QUANTILES:
+        return len(normalization.q01)
+    if normalization.mode == ActionNormalizationMode.JOINT_LIMITS:
+        return len(normalization.lower)
+    if normalization.mode == ActionNormalizationMode.GAUSSIAN:
+        return len(normalization.mean)
+    raise ValueError(f"Unsupported action normalization mode {normalization.mode!r}.")
+
+
 def _active_target_indices(config: ActionMappingConfig) -> tuple[int, ...]:
     if config.active_target_indices:
         return tuple(int(value) for value in config.active_target_indices)
@@ -248,48 +287,108 @@ def _apply_inactive_fill(
 
 def _normalize_source_actions(actions: torch.Tensor, config: ActionMappingConfig) -> torch.Tensor:
     normalization = config.normalization
-    if normalization.mode != ActionNormalizationMode.QUANTILES:
+    if normalization.mode == ActionNormalizationMode.NONE:
         return actions
-    q01 = _quantile_tensor(normalization.q01, device=actions.device, dtype=actions.dtype)
-    q99 = _quantile_tensor(normalization.q99, device=actions.device, dtype=actions.dtype)
-    if q01.numel() != actions.shape[-1]:
-        return actions
-    normalized = _normalize_by_quantiles(actions, q01=q01, q99=q99)
+    normalized = _normalize_actions(actions, config)
     return _clip_if_requested(normalized, config)
 
 
 def _denormalize_source_actions(actions: torch.Tensor, config: ActionMappingConfig) -> torch.Tensor:
     normalization = config.normalization
-    if normalization.mode != ActionNormalizationMode.QUANTILES:
+    if normalization.mode == ActionNormalizationMode.NONE:
         return actions
-    q01 = _quantile_tensor(normalization.q01, device=actions.device, dtype=actions.dtype)
-    q99 = _quantile_tensor(normalization.q99, device=actions.device, dtype=actions.dtype)
-    if q01.numel() != actions.shape[-1]:
-        return actions
-    return _denormalize_by_quantiles(actions, q01=q01, q99=q99)
+    return _denormalize_actions(actions, config)
 
 
 def _normalize_target_actions(actions: torch.Tensor, config: ActionMappingConfig) -> torch.Tensor:
     normalization = config.normalization
-    if normalization.mode != ActionNormalizationMode.QUANTILES:
+    if normalization.mode == ActionNormalizationMode.NONE:
         return actions
-    q01 = _quantile_tensor(normalization.q01, device=actions.device, dtype=actions.dtype)
-    q99 = _quantile_tensor(normalization.q99, device=actions.device, dtype=actions.dtype)
-    if q01.numel() != actions.shape[-1]:
-        return actions
-    normalized = _normalize_by_quantiles(actions, q01=q01, q99=q99)
+    normalized = _normalize_actions(actions, config)
     return _clip_if_requested(normalized, config)
 
 
 def _denormalize_target_actions(actions: torch.Tensor, config: ActionMappingConfig) -> torch.Tensor:
     normalization = config.normalization
-    if normalization.mode != ActionNormalizationMode.QUANTILES:
+    if normalization.mode == ActionNormalizationMode.NONE:
         return actions
-    q01 = _quantile_tensor(normalization.q01, device=actions.device, dtype=actions.dtype)
-    q99 = _quantile_tensor(normalization.q99, device=actions.device, dtype=actions.dtype)
-    if q01.numel() != actions.shape[-1]:
-        return actions
-    return _denormalize_by_quantiles(actions, q01=q01, q99=q99)
+    return _denormalize_actions(actions, config)
+
+
+def _normalize_actions(actions: torch.Tensor, config: ActionMappingConfig) -> torch.Tensor:
+    normalization = config.normalization
+    if normalization.mode == ActionNormalizationMode.QUANTILES:
+        q01 = _quantile_tensor(normalization.q01, device=actions.device, dtype=actions.dtype)
+        q99 = _quantile_tensor(normalization.q99, device=actions.device, dtype=actions.dtype)
+        if q01.numel() != actions.shape[-1]:
+            return actions
+        return _normalize_by_quantiles(actions, q01=q01, q99=q99)
+    if normalization.mode == ActionNormalizationMode.JOINT_LIMITS:
+        lower, upper = _limit_tensors(config, device=actions.device, dtype=actions.dtype)
+        if lower.numel() != actions.shape[-1]:
+            return actions
+        return _normalize_by_limits(actions, lower=lower, upper=upper)
+    if normalization.mode == ActionNormalizationMode.GAUSSIAN:
+        mean, std = _gaussian_tensors(config, device=actions.device, dtype=actions.dtype)
+        if mean.numel() != actions.shape[-1]:
+            return actions
+        return (actions - mean) / std.clamp_min(1e-6)
+    raise ValueError(f"Unsupported action normalization mode {normalization.mode!r}.")
+
+
+def _denormalize_actions(actions: torch.Tensor, config: ActionMappingConfig) -> torch.Tensor:
+    normalization = config.normalization
+    if normalization.mode == ActionNormalizationMode.QUANTILES:
+        q01 = _quantile_tensor(normalization.q01, device=actions.device, dtype=actions.dtype)
+        q99 = _quantile_tensor(normalization.q99, device=actions.device, dtype=actions.dtype)
+        if q01.numel() != actions.shape[-1]:
+            return actions
+        return _denormalize_by_quantiles(actions, q01=q01, q99=q99)
+    if normalization.mode == ActionNormalizationMode.JOINT_LIMITS:
+        lower, upper = _limit_tensors(config, device=actions.device, dtype=actions.dtype)
+        if lower.numel() != actions.shape[-1]:
+            return actions
+        return _denormalize_by_limits(actions, lower=lower, upper=upper)
+    if normalization.mode == ActionNormalizationMode.GAUSSIAN:
+        mean, std = _gaussian_tensors(config, device=actions.device, dtype=actions.dtype)
+        if mean.numel() != actions.shape[-1]:
+            return actions
+        return actions * std.clamp_min(1e-6) + mean
+    raise ValueError(f"Unsupported action normalization mode {normalization.mode!r}.")
+
+
+def _limit_tensors(
+    config: ActionMappingConfig,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    lower = torch.tensor(config.normalization.lower, dtype=dtype, device=device)
+    upper = torch.tensor(config.normalization.upper, dtype=dtype, device=device)
+    return lower, upper
+
+
+def _gaussian_tensors(
+    config: ActionMappingConfig,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    mean = torch.tensor(config.normalization.mean, dtype=dtype, device=device)
+    std = torch.tensor(config.normalization.std, dtype=dtype, device=device)
+    return mean, std
+
+
+def _normalize_by_limits(actions: torch.Tensor, *, lower: torch.Tensor, upper: torch.Tensor) -> torch.Tensor:
+    center = (upper + lower) * 0.5
+    scale = (upper - lower).clamp_min(1e-6) * 0.5
+    return (actions - center) / scale
+
+
+def _denormalize_by_limits(actions: torch.Tensor, *, lower: torch.Tensor, upper: torch.Tensor) -> torch.Tensor:
+    center = (upper + lower) * 0.5
+    scale = (upper - lower).clamp_min(1e-6) * 0.5
+    return actions * scale + center
 
 
 def _quantile_tensor(values: tuple[float, ...], *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:

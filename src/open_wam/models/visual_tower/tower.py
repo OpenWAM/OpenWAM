@@ -308,6 +308,7 @@ class VisualTower(nn.Module):
         frame_start: int = 0,
         cache_name: str = "mot_video_prefill",
         attention_mask: torch.Tensor | None = None,
+        cross_attention_mask: torch.Tensor | None = None,
         detach_cache: bool = True,
     ) -> CacheState:
         """Materialize a single-stream video self-attention cache via shared runtime execution."""
@@ -376,6 +377,7 @@ class VisualTower(nn.Module):
                     "grid_id": grid_id,
                     "text_emb": text_context,
                     "attention_mask": attention_mask,
+                    "cross_attention_mask": cross_attention_mask,
                 },
                 update_cache=0,
                 cache_name=cache_name,

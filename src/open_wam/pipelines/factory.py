@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from open_wam.configs import (
     ActionDecoderName,
+    ActionNormalizationMode,
     BatchAdapterName,
     BackboneImplementation,
     CausalVideoPredictionPolicyConfig,
@@ -451,11 +452,31 @@ def _build_video_conditioned_action_decoder(config: ExperimentConfig):
 
 def _build_lingbot_parallel_action_decoder(config: ExperimentConfig):
     decoder_config = config.action_decoder
+    source_action_channel_ids: tuple[int, ...] = ()
+    if isinstance(config.policy_variant, ParallelStreamPolicyConfig):
+        adapter_spec = build_action_adapter_spec(
+            config.policy_variant,
+            model_action_dim=decoder_config.action_dim,
+        )
+        if adapter_spec is not None:
+            source_action_channel_ids = adapter_spec.used_action_channel_ids
+    action_normalization = config.data.action_target.normalization
+    source_action_mean: tuple[float, ...] = ()
+    source_action_std: tuple[float, ...] = ()
+    if action_normalization.mode == ActionNormalizationMode.GAUSSIAN:
+        source_action_mean = action_normalization.mean
+        source_action_std = action_normalization.std
     return LingbotParallelActionDecoder(
         hidden_size=decoder_config.hidden_size,
         action_dim=decoder_config.action_dim,
         action_horizon=decoder_config.action_horizon,
         dropout=decoder_config.dropout,
+        recovered_osc_loss_weight=decoder_config.recovered_osc_loss_weight,
+        recovered_osc_position_scale=decoder_config.recovered_osc_position_scale,
+        recovered_osc_rotation_scale=decoder_config.recovered_osc_rotation_scale,
+        source_action_channel_ids=source_action_channel_ids,
+        source_action_mean=source_action_mean,
+        source_action_std=source_action_std,
     )
 
 

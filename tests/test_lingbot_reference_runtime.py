@@ -241,16 +241,16 @@ def test_proprio_context_encoder_is_default_off_and_zero_init() -> None:
     )
     text_emb = torch.randn(2, 5, 16)
     assert core.proprio_context_encoder is None
-    assert core.inject_proprio_context(text_emb, torch.randn(2, 8)) is text_emb
+    assert core.append_proprio_context_tokens(text_emb, torch.randn(2, 8)) is text_emb
 
     core.configure_proprio_context_encoder(enabled=True, state_dim=8)
     assert core.proprio_context_encoder is not None
     assert "proprio_context_encoder.proj.weight" in core.state_dict()
-    text_with_zero_padding = text_emb.clone()
-    text_with_zero_padding[:, -1, :] = 0
-    injected = core.inject_proprio_context(text_with_zero_padding, torch.randn(2, 8))
+    appended = core.append_proprio_context_tokens(text_emb, torch.randn(2, 8))
 
-    assert torch.equal(injected, text_with_zero_padding)
+    assert appended.shape == (2, 6, 16)
+    assert torch.equal(appended[:, :5], text_emb)
+    assert torch.equal(appended[:, 5:], torch.zeros_like(appended[:, 5:]))
 
 
 def test_visual_tower_configures_proprio_encoder_before_runtime_load() -> None:
@@ -269,7 +269,7 @@ def test_visual_tower_configures_proprio_encoder_before_runtime_load() -> None:
     assert "proprio_context_encoder.proj.weight" in tower.core.state_dict()
 
 
-def test_proprio_context_injection_rejects_nonzero_padding_slot() -> None:
+def test_proprio_context_appending_preserves_existing_text_tokens() -> None:
     core = SharedVideoTransformerCore(
         LingbotCompatibleVideoBackboneConfig(
             hidden_size=32,
@@ -284,11 +284,14 @@ def test_proprio_context_injection_rejects_nonzero_padding_slot() -> None:
     )
     core.configure_proprio_context_encoder(enabled=True, state_dim=8)
 
-    with pytest.raises(ValueError, match="injection slot is not zero-padded"):
-        core.inject_proprio_context(torch.ones(2, 5, 16), torch.randn(2, 8))
+    text_emb = torch.ones(2, 5, 16)
+    appended = core.append_proprio_context_tokens(text_emb, torch.randn(2, 8))
+
+    assert appended.shape == (2, 6, 16)
+    assert torch.equal(appended[:, :5], text_emb)
 
 
-def test_proprio_context_zero_init_preserves_exact_single_stream_forward() -> None:
+def test_proprio_context_appending_runs_exact_single_stream_forward() -> None:
     torch.manual_seed(0)
     core = SharedVideoTransformerCore(
         LingbotCompatibleVideoBackboneConfig(
@@ -306,7 +309,6 @@ def test_proprio_context_zero_init_preserves_exact_single_stream_forward() -> No
         state_dim=8,
     ).eval()
     text_emb = torch.randn(1, 6, 16)
-    text_emb[:, -1, :] = 0
     input_dict = {
         "noisy_latents": torch.randn(1, 48, 1, 2, 2),
         "text_emb": text_emb,
@@ -314,21 +316,12 @@ def test_proprio_context_zero_init_preserves_exact_single_stream_forward() -> No
         "timesteps": torch.zeros(1, 1),
     }
 
-    baseline = run_reference_single_stream_forward(
-        core,
-        input_dict=input_dict,
-        update_cache=0,
-        cache_name="parity",
-        action_mode=False,
-        guidance_scale=1.0,
-        negative_text_emb=None,
-    )
     core.configure_proprio_context_encoder(enabled=True, state_dim=8)
-    injected_input = dict(input_dict)
-    injected_input["text_emb"] = core.inject_proprio_context(text_emb, torch.randn(1, 8))
+    appended_input = dict(input_dict)
+    appended_input["text_emb"] = core.append_proprio_context_tokens(text_emb, torch.randn(1, 8))
     with_proprio = run_reference_single_stream_forward(
         core,
-        input_dict=injected_input,
+        input_dict=appended_input,
         update_cache=0,
         cache_name="parity",
         action_mode=False,
@@ -336,7 +329,8 @@ def test_proprio_context_zero_init_preserves_exact_single_stream_forward() -> No
         negative_text_emb=None,
     )
 
-    torch.testing.assert_close(with_proprio, baseline, rtol=0, atol=0)
+    assert with_proprio.shape == (1, 4, 48)
+    assert torch.isfinite(with_proprio).all()
 
 
 def test_proprio_context_changes_exact_rollout_after_cache_warmup() -> None:
@@ -475,15 +469,25 @@ def test_parallel_stream_proprio_context_adds_state_to_train_artifacts() -> None
             ),
         )
     )
+    proprio_context_state = torch.arange(16, dtype=torch.float32).reshape(1, 2, 8)
+    proprio_context_state_mask = torch.ones_like(proprio_context_state)
+    proprio_context_state_mask[:, 1, 3:] = 0
     batch = PolicyTrainBatch(
         actions=torch.randn(1, 4, 4),
-        state=torch.arange(16, dtype=torch.float32).reshape(1, 2, 8),
+        state=torch.full((1, 2, 8), -1.0),
+        extra={
+            "proprio_context_state": proprio_context_state,
+            "proprio_context_state_mask": proprio_context_state_mask,
+        },
     )
 
     prepared = variant.prepare_train_inputs(visual_outputs, batch)
     artifacts = prepared.variant_inputs["lingbot_train_artifacts"]
 
-    assert torch.equal(artifacts.input_dict["proprio_state"], batch.state[:, -1, :])
+    torch.testing.assert_close(
+        artifacts.input_dict["proprio_state"],
+        proprio_context_state * proprio_context_state_mask,
+    )
 
 
 def test_fastwam_first_frame_proprio_context_uses_first_window_state() -> None:

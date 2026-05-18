@@ -38,15 +38,17 @@ def build_action_adapter_spec(
     inverse_used_action_channel_ids = config.inverse_used_action_channel_ids or (
         tuple(profile.inverse_used_action_channel_ids) if profile is not None else tuple()
     )
-    action_norm_method = config.action_norm_method
-    if action_norm_method == ActionNormMethod.NONE and profile is not None:
+    if not used_action_channel_ids:
+        return None
+    action_norm_method = coerce_enum_value(ActionNormMethod, config.action_norm_method)
+    if action_norm_method == ActionNormMethod.PROFILE:
+        if profile is None:
+            raise ValueError("Exact parallel-stream action_norm_method='profile' requires a reference_profile.")
         action_norm_method = profile.action_norm_method
     action_norm_method = coerce_enum_value(ActionNormMethod, action_norm_method)
     norm_q01 = config.norm_q01 or (tuple(profile.norm_q01) if profile is not None else tuple())
     norm_q99 = config.norm_q99 or (tuple(profile.norm_q99) if profile is not None else tuple())
 
-    if not used_action_channel_ids:
-        return None
     if len(inverse_used_action_channel_ids) != model_action_dim:
         raise ValueError(
             "Exact parallel-stream inverse channel ids must have length equal to the model action dim, "

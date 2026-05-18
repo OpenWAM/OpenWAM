@@ -156,23 +156,11 @@ def _load_action_mapping_config(raw_value: Any, defaults: ActionMappingConfig) -
     raw = raw_value or {}
     if not isinstance(raw, dict):
         raise ValueError("Expected `data.action_mapping` to be a mapping.")
-    normalization_raw = raw.get("normalization", None)
-    default_norm = defaults.normalization
-    if normalization_raw is None:
-        normalization = default_norm
-    else:
-        if not isinstance(normalization_raw, dict):
-            raise ValueError("Expected `data.action_mapping.normalization` to be a mapping.")
-        normalization = ActionNormalizationConfig(
-            mode=_coerce_enum(
-                config_enums.ActionNormalizationMode,
-                normalization_raw.get("mode", default_norm.mode),
-            ),
-            q01=tuple(float(value) for value in normalization_raw.get("q01", default_norm.q01)),
-            q99=tuple(float(value) for value in normalization_raw.get("q99", default_norm.q99)),
-            clip_min=normalization_raw.get("clip_min", default_norm.clip_min),
-            clip_max=normalization_raw.get("clip_max", default_norm.clip_max),
-        )
+    normalization = _load_action_normalization_config(
+        raw.get("normalization", None),
+        defaults.normalization,
+        field_path="data.action_mapping.normalization",
+    )
     return ActionMappingConfig(
         mode=_coerce_enum(
             config_enums.ActionMappingMode,
@@ -196,6 +184,32 @@ def _load_action_mapping_config(raw_value: Any, defaults: ActionMappingConfig) -
             raw.get("sampler_mask_mode", defaults.sampler_mask_mode),
         ),
         normalization=normalization,
+    )
+
+
+def _load_action_normalization_config(
+    raw_value: Any,
+    defaults: ActionNormalizationConfig,
+    *,
+    field_path: str,
+) -> ActionNormalizationConfig:
+    if raw_value is None:
+        return defaults
+    if not isinstance(raw_value, dict):
+        raise ValueError(f"Expected `{field_path}` to be a mapping.")
+    return ActionNormalizationConfig(
+        mode=_coerce_enum(
+            config_enums.ActionNormalizationMode,
+            raw_value.get("mode", defaults.mode),
+        ),
+        mean=tuple(float(value) for value in raw_value.get("mean", defaults.mean)),
+        std=tuple(float(value) for value in raw_value.get("std", defaults.std)),
+        q01=tuple(float(value) for value in raw_value.get("q01", defaults.q01)),
+        q99=tuple(float(value) for value in raw_value.get("q99", defaults.q99)),
+        lower=tuple(float(value) for value in raw_value.get("lower", defaults.lower)),
+        upper=tuple(float(value) for value in raw_value.get("upper", defaults.upper)),
+        clip_min=raw_value.get("clip_min", defaults.clip_min),
+        clip_max=raw_value.get("clip_max", defaults.clip_max),
     )
 
 
@@ -685,7 +699,7 @@ def _load_policy_variant_config(
             inverse_used_action_channel_ids=tuple(resolved_raw.get("inverse_used_action_channel_ids", ())),
             action_norm_method=_coerce_enum(
                 config_enums.ActionNormMethod,
-                resolved_raw.get("action_norm_method", config_enums.ActionNormMethod.NONE),
+                resolved_raw.get("action_norm_method", config_enums.ActionNormMethod.PROFILE),
             ),
             norm_q01=tuple(resolved_raw.get("norm_q01", ())),
             norm_q99=tuple(resolved_raw.get("norm_q99", ())),
@@ -895,6 +909,15 @@ def _load_action_decoder_config(
             action_dim=action_dim,
             action_horizon=action_horizon,
             dropout=dropout,
+            recovered_osc_loss_weight=resolved_raw.get("recovered_osc_loss_weight", 0.0),
+            recovered_osc_position_scale=resolved_raw.get(
+                "recovered_osc_position_scale",
+                LingbotParallelActionDecoderConfig.recovered_osc_position_scale,
+            ),
+            recovered_osc_rotation_scale=resolved_raw.get(
+                "recovered_osc_rotation_scale",
+                LingbotParallelActionDecoderConfig.recovered_osc_rotation_scale,
+            ),
         )
     if name == config_enums.ActionDecoderName.MOT:
         return MoTActionDecoderConfig(
@@ -1005,6 +1028,7 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         dataset_type=data_raw.get("dataset_type", data_defaults.dataset_type),
         repo_id=data_raw.get("repo_id", data_defaults.repo_id),
         local_root=data_raw.get("local_root", data_defaults.local_root),
+        val_local_root=data_raw.get("val_local_root", data_defaults.val_local_root),
         empty_text_embedding_path=data_raw.get(
             "empty_text_embedding_path",
             data_defaults.empty_text_embedding_path,
@@ -1076,6 +1100,24 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
             gripper_action_index=action_target_raw.get(
                 "gripper_action_index",
                 data_defaults.action_target.gripper_action_index,
+            ),
+            gripper_position_source_key=action_target_raw.get(
+                "gripper_position_source_key",
+                data_defaults.action_target.gripper_position_source_key,
+            ),
+            joint_position_source_key=action_target_raw.get(
+                "joint_position_source_key",
+                data_defaults.action_target.joint_position_source_key,
+            ),
+            joint_position_normalization=_load_action_normalization_config(
+                action_target_raw.get("joint_position_normalization"),
+                data_defaults.action_target.joint_position_normalization,
+                field_path="data.action_target.joint_position_normalization",
+            ),
+            normalization=_load_action_normalization_config(
+                action_target_raw.get("normalization"),
+                data_defaults.action_target.normalization,
+                field_path="data.action_target.normalization",
             ),
         ),
         action_mapping=_load_action_mapping_config(

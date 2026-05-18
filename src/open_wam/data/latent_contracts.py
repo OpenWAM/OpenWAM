@@ -20,6 +20,8 @@ class LatentWAMSample:
     negative_text_context: torch.Tensor | None = None
     canonical_video: torch.Tensor | None = None
     condition_latents: torch.Tensor | None = None
+    proprio_context_state: torch.Tensor | None = None
+    proprio_context_state_mask: torch.Tensor | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -37,6 +39,8 @@ class LatentWAMBatch:
     negative_text_context: torch.Tensor | None = None
     canonical_video: torch.Tensor | None = None
     condition_latents: torch.Tensor | None = None
+    proprio_context_state: torch.Tensor | None = None
+    proprio_context_state_mask: torch.Tensor | None = None
     metadata: tuple[dict[str, Any], ...] = field(default_factory=tuple)
 
 
@@ -55,6 +59,8 @@ def collate_latent_wam_samples(samples: list[LatentWAMSample]) -> LatentWAMBatch
     negative_text_context = _stack_optional_tensor(samples, "negative_text_context")
     canonical_video = _stack_optional_tensor(samples, "canonical_video")
     condition_latents = _stack_optional_tensor(samples, "condition_latents")
+    proprio_context_state = _stack_optional_tensor(samples, "proprio_context_state")
+    proprio_context_state_mask = _stack_optional_tensor(samples, "proprio_context_state_mask")
     task_text = tuple(sample.task_text for sample in samples)
     metadata = tuple(_metadata_with_action_stats(sample) for sample in samples)
     return LatentWAMBatch(
@@ -68,6 +74,8 @@ def collate_latent_wam_samples(samples: list[LatentWAMSample]) -> LatentWAMBatch
         negative_text_context=negative_text_context,
         canonical_video=canonical_video,
         condition_latents=condition_latents,
+        proprio_context_state=proprio_context_state,
+        proprio_context_state_mask=proprio_context_state_mask,
         metadata=metadata,
     )
 
@@ -91,6 +99,12 @@ def move_latent_wam_batch_to_device(
         ),
         canonical_video=batch.canonical_video.to(device) if batch.canonical_video is not None else None,
         condition_latents=batch.condition_latents.to(device) if batch.condition_latents is not None else None,
+        proprio_context_state=(
+            batch.proprio_context_state.to(device) if batch.proprio_context_state is not None else None
+        ),
+        proprio_context_state_mask=(
+            batch.proprio_context_state_mask.to(device) if batch.proprio_context_state_mask is not None else None
+        ),
         metadata=batch.metadata,
     )
 

@@ -13,6 +13,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from open_wam.configs import (
+    DataSplit,
     ReplayStatusPolicy,
     SampleStateAnchorMode,
     SampleWeightMode,
@@ -327,6 +328,35 @@ def test_local_lerobot_latent_dataset_filters_failed_replay_status(tmp_path: Pat
 
     assert {window.episode_index for window in train_dataset.windows} == {0}
     assert {window.episode_index for window in val_dataset.windows} == {0}
+
+
+def test_val_local_root_dataset_uses_val_split_semantics(tmp_path: Path) -> None:
+    train_root = tmp_path / "train_robotwin_local_latent"
+    val_root = tmp_path / "val_robotwin_local_latent"
+    _build_local_robotwin_latent_repo(train_root)
+    _build_local_robotwin_latent_repo(val_root)
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(train_root),
+            val_local_root=str(val_root),
+            train_fraction=1.0,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+        ),
+    )
+
+    train_dataset, val_dataset = build_train_val_latent_datasets(config.data)
+
+    assert train_dataset.data_config.split == DataSplit.TRAIN
+    assert val_dataset.data_config.split == DataSplit.VAL
+    assert {window.repo_root for window in train_dataset.windows} == {train_root}
+    assert {window.repo_root for window in val_dataset.windows} == {val_root}
 
 
 def test_local_lerobot_latent_dataset_weights_long_depleted_tasks(tmp_path: Path) -> None:

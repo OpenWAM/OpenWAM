@@ -1295,12 +1295,12 @@ def _inject_proprio_text_context(
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     if proprio_state is None:
         return text_emb, negative_text_emb
-    inject = getattr(transformer, "inject_proprio_context", None)
-    if not callable(inject):
-        raise ValueError("Proprio context mode requires the runtime transformer to support proprio injection.")
-    text_emb = inject(text_emb, proprio_state)
+    append = getattr(transformer, "append_proprio_context_tokens", None)
+    if not callable(append):
+        raise ValueError("Proprio context mode requires the runtime transformer to support proprio context appending.")
+    text_emb = append(text_emb, proprio_state)
     if negative_text_emb is not None:
-        negative_text_emb = inject(negative_text_emb, proprio_state)
+        negative_text_emb = append(negative_text_emb, proprio_state)
     return text_emb, negative_text_emb
 
 
@@ -1596,6 +1596,9 @@ def prepare_reference_forward_input(
     attention_mask = input_dict.get("attention_mask")
     if attention_mask is not None:
         prepared["attention_mask"] = attention_mask
+    cross_attention_mask = input_dict.get("cross_attention_mask")
+    if cross_attention_mask is not None:
+        prepared["cross_attention_mask"] = cross_attention_mask
     return prepared
 
 
@@ -2187,6 +2190,12 @@ def _run_parallel_exact_joint_forward_manual(
             window_size=int(input_dict["window_size"]),
             patch_size=transformer.patch_size,
             text_token_count=int(latent_dict["text_emb"].shape[1]),
+            base_text_token_count=(
+                None
+                if input_dict.get("base_text_token_count") is None
+                else int(input_dict["base_text_token_count"])
+            ),
+            proprio_context_token_count=int(input_dict.get("proprio_context_token_count", 0) or 0),
             device=hidden_states.device,
             build_dense_masks=True,
             build_flex_masks=False,

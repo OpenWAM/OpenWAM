@@ -392,6 +392,34 @@ def test_latent_batch_adapter_preserves_condition_latents() -> None:
     assert prepared.policy_batch.extra["condition_latents"] is moved.condition_latents
 
 
+def test_latent_batch_adapter_preserves_proprio_context_state() -> None:
+    samples = [
+        LatentWAMSample(
+            video_latents=torch.full((48, 4, 2, 2), float(index)),
+            actions=torch.zeros(16, 7),
+            action_mask=torch.ones(16, 7),
+            proprio_context_state=torch.full((3, 8), float(index + 20)),
+            proprio_context_state_mask=torch.ones(3, 8),
+            metadata={"sample": index},
+        )
+        for index in range(2)
+    ]
+
+    batch = collate_latent_wam_samples(samples)
+    assert batch.proprio_context_state is not None
+    assert batch.proprio_context_state_mask is not None
+    torch.testing.assert_close(batch.proprio_context_state[:, 0, 0], torch.tensor([20.0, 21.0]))
+    torch.testing.assert_close(batch.proprio_context_state_mask[:, 0, 0], torch.ones(2))
+
+    moved = move_latent_wam_batch_to_device(batch, torch.device("cpu"))
+    assert moved.proprio_context_state is not None
+    assert moved.proprio_context_state_mask is not None
+    prepared = LatentBatchAdapter().prepare(moved)
+
+    assert prepared.policy_batch.extra["proprio_context_state"] is moved.proprio_context_state
+    assert prepared.policy_batch.extra["proprio_context_state_mask"] is moved.proprio_context_state_mask
+
+
 def test_auxiliary_validation_dataset_forces_generalist_metadata_and_drops_text() -> None:
     sample = LatentWAMSample(
         video_latents=torch.zeros(2, 3),

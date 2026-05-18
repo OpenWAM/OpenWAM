@@ -32,6 +32,7 @@ class ActionExpertPreprocessOutput:
     t_mod: torch.Tensor
     context: torch.Tensor
     context_mask: torch.Tensor | None
+    cross_attention_mask: torch.Tensor | None
     timesteps: torch.Tensor
 
 
@@ -122,6 +123,7 @@ class ConditionedActionTransformerBlock(nn.Module):
         c_shift_msa: torch.Tensor,
         c_scale_msa: torch.Tensor,
         c_gate_msa: torch.Tensor,
+        cross_attention_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, None]:
         hidden_states = (hidden_states.float() + mixed_attn_output.float() * gate_msa).type_as(hidden_states)
         norm_hidden_states = (
@@ -134,7 +136,7 @@ class ConditionedActionTransformerBlock(nn.Module):
             encoder_hidden_states,
             encoder_hidden_states,
             rotary_emb=None,
-            attention_mask=None,
+            attention_mask=cross_attention_mask,
             is_cross_attention=True,
             cache_current_token_count=encoder_hidden_states.shape[1],
         )
@@ -209,6 +211,7 @@ class VideoConditionedActionExpert(nn.Module):
         timestep: torch.Tensor,
         context: torch.Tensor,
         context_mask: torch.Tensor | None = None,
+        cross_attention_mask: torch.Tensor | None = None,
         action_grid_ids: torch.Tensor | None = None,
     ) -> ActionExpertPreprocessOutput:
         if action_tokens.ndim != 3:
@@ -255,6 +258,12 @@ class VideoConditionedActionExpert(nn.Module):
                 "VideoConditionedActionExpert expects context_mask with shape [B, L], "
                 f"got {tuple(context_mask.shape)} for context {tuple(context.shape)}."
             )
+        if cross_attention_mask is not None and cross_attention_mask.shape != (batch_size, seq_len, context.shape[1]):
+            raise ValueError(
+                "VideoConditionedActionExpert expects cross_attention_mask with shape [B, T, L], "
+                f"got {tuple(cross_attention_mask.shape)} for action/context shapes "
+                f"{tuple(action_tokens.shape)} / {tuple(context.shape)}."
+            )
 
         tokens = self.action_embedder(action_tokens)
         _, t_mod = self.time_conditioner(timestep.to(device=tokens.device, dtype=torch.float32), dtype=tokens.dtype)
@@ -270,12 +279,20 @@ class VideoConditionedActionExpert(nn.Module):
             grid_ids = build_sequence_grid_ids(seq_len, device=tokens.device)[None].expand(batch_size, -1, -1)
         freqs = self.rope(grid_ids)
         resolved_context_mask = None if context_mask is None else context_mask.to(device=tokens.device, dtype=torch.bool)
+        resolved_cross_attention_mask = (
+            None
+            if cross_attention_mask is None
+            else cross_attention_mask.to(device=tokens.device, dtype=torch.bool)
+        )
+        if resolved_cross_attention_mask is None and resolved_context_mask is not None:
+            resolved_cross_attention_mask = resolved_context_mask[:, None, :].expand(-1, seq_len, -1)
         return ActionExpertPreprocessOutput(
             tokens=tokens,
             freqs=freqs,
             t_mod=t_mod,
             context=projected_context,
             context_mask=resolved_context_mask,
+            cross_attention_mask=resolved_cross_attention_mask,
             timesteps=timestep.to(device=tokens.device, dtype=torch.float32),
         )
 
@@ -304,6 +321,7 @@ class VideoConditionedActionExpert(nn.Module):
                 c_shift_msa=attn_inputs["c_shift_msa"],
                 c_scale_msa=attn_inputs["c_scale_msa"],
                 c_gate_msa=attn_inputs["c_gate_msa"],
+                cross_attention_mask=preprocessed.cross_attention_mask,
             )
         return hidden_states
 
@@ -314,6 +332,7 @@ class VideoConditionedActionExpert(nn.Module):
         timestep: torch.Tensor,
         context: torch.Tensor,
         context_mask: torch.Tensor | None = None,
+        cross_attention_mask: torch.Tensor | None = None,
         action_grid_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         preprocessed = self.pre_dit(
@@ -321,6 +340,7 @@ class VideoConditionedActionExpert(nn.Module):
             timestep=timestep,
             context=context,
             context_mask=context_mask,
+            cross_attention_mask=cross_attention_mask,
             action_grid_ids=action_grid_ids,
         )
         hidden_states = self.forward_layers(preprocessed)

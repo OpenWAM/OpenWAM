@@ -13,10 +13,44 @@ def _build_libero_adapter() -> LingbotActionAdapter:
     config = ParallelStreamPolicyConfig(
         runtime_mode="lingbot_exact",
         reference_profile="libero",
+        action_norm_method="profile",
     )
     spec = build_action_adapter_spec(config, model_action_dim=30)
     assert spec is not None
     return LingbotActionAdapter(spec)
+
+
+def test_explicit_none_action_norm_overrides_reference_profile_quantiles() -> None:
+    config = ParallelStreamPolicyConfig(
+        runtime_mode="lingbot_exact",
+        reference_profile="libero",
+        used_action_channel_ids=(0, 1, 2, 3, 4, 5, 6, 28),
+        inverse_used_action_channel_ids=(0, 1, 2, 3, 4, 5, 6) + (8,) * 21 + (7, 8),
+        action_norm_method="none",
+    )
+    spec = build_action_adapter_spec(config, model_action_dim=30)
+    assert spec is not None
+    adapter = LingbotActionAdapter(spec)
+    raw_action = torch.tensor([[[0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7, -0.8]]], dtype=torch.float32)
+
+    model_action = adapter.to_model_action_sequence(raw_action, action_space="raw")
+    round_trip = adapter.to_raw_action_sequence(model_action)
+
+    assert torch.allclose(model_action[..., :7], raw_action[..., :7])
+    assert torch.allclose(model_action[..., 28:29], raw_action[..., 7:8])
+    assert torch.allclose(round_trip, raw_action)
+
+
+def test_profile_action_norm_without_channels_does_not_create_adapter() -> None:
+    config = ParallelStreamPolicyConfig(
+        runtime_mode="lingbot_exact",
+        reference_profile=None,
+        used_action_channel_ids=(),
+        inverse_used_action_channel_ids=(),
+        action_norm_method="profile",
+    )
+
+    assert build_action_adapter_spec(config, model_action_dim=4) is None
 
 
 def test_to_raw_action_sequence_matches_float32_quantile_math() -> None:

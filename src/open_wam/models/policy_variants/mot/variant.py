@@ -19,6 +19,7 @@ from open_wam.models.common.flow_matching import (
     timesteps_matching_sigmas,
 )
 from open_wam.models.common.flow_noise_plan import frame_sigmas_for_timesteps
+from open_wam.models.common.attention_profiles import build_chunked_text_context_cross_attention_mask
 from open_wam.models.common.joint_conditioning import (
     sample_conditioning_mode,
     should_drop_text_for_conditioning_mode,
@@ -448,6 +449,34 @@ class MoTPolicyVariant(PolicyVariant):
             raise ValueError(f"Proprio context mode is enabled but no state was provided for {label}.")
         return selected
 
+    def _resolve_train_proprio_context(self, batch: PolicyTrainBatch) -> torch.Tensor | None:
+        if not self._uses_proprio_context():
+            return None
+        proprio_context_state = batch.extra.get("proprio_context_state")
+        if isinstance(proprio_context_state, torch.Tensor):
+            if proprio_context_state.ndim != 3:
+                raise ValueError(
+                    "Per-chunk proprio context expects shape [B, chunks, state_dim], "
+                    f"got {tuple(proprio_context_state.shape)}."
+                )
+            proprio_context_state_mask = batch.extra.get("proprio_context_state_mask")
+            if isinstance(proprio_context_state_mask, torch.Tensor):
+                if tuple(proprio_context_state_mask.shape) != tuple(proprio_context_state.shape):
+                    raise ValueError(
+                        "Per-chunk proprio context mask must match proprio_context_state shape, "
+                        f"got mask={tuple(proprio_context_state_mask.shape)}, "
+                        f"state={tuple(proprio_context_state.shape)}."
+                    )
+                proprio_context_state = proprio_context_state * proprio_context_state_mask.to(
+                    device=proprio_context_state.device,
+                    dtype=proprio_context_state.dtype,
+                )
+            return proprio_context_state
+        return self._resolve_proprio_state(
+            batch.state,
+            label="M5 training",
+        )
+
     def _resolve_text_context_with_proprio(
         self,
         visual_tower: VisualTower,
@@ -473,10 +502,58 @@ class MoTPolicyVariant(PolicyVariant):
             text_context = text_context.to(device=device, dtype=dtype)
         if proprio_state is None:
             return text_context
-        inject = getattr(visual_tower.core, "inject_proprio_context", None)
-        if not callable(inject):
-            raise ValueError("Proprio context mode requires the visual tower core to support proprio injection.")
-        return inject(text_context, proprio_state)
+        append = getattr(visual_tower.core, "append_proprio_context_tokens", None)
+        if not callable(append):
+            raise ValueError("Proprio context mode requires the visual tower core to support proprio appending.")
+        return append(text_context, proprio_state)
+
+    @staticmethod
+    def _proprio_context_token_count(proprio_state: torch.Tensor | None) -> int:
+        if proprio_state is None:
+            return 0
+        if proprio_state.ndim == 2:
+            return 1
+        if proprio_state.ndim == 3:
+            return int(proprio_state.shape[1])
+        raise ValueError(
+            "Proprio context expects state with shape [B, state_dim] or [B, chunks, state_dim], "
+            f"got {tuple(proprio_state.shape)}."
+        )
+
+    def _build_proprio_cross_attention_mask(
+        self,
+        *,
+        resolved_text_context: torch.Tensor,
+        proprio_state: torch.Tensor | None,
+        query_frames_per_copy: int,
+        tokens_per_frame: int,
+        chunk_size_frames: int,
+        repeat_copies: int = 1,
+    ) -> torch.Tensor | None:
+        proprio_token_count = self._proprio_context_token_count(proprio_state)
+        if proprio_token_count <= 1:
+            return None
+        if query_frames_per_copy <= 0 or tokens_per_frame <= 0:
+            raise ValueError(
+                "Proprio cross-attention masking requires positive query geometry, "
+                f"got frames={query_frames_per_copy}, tokens_per_frame={tokens_per_frame}."
+            )
+        chunk_size = max(1, int(chunk_size_frames))
+        frame_ids = torch.arange(
+            int(query_frames_per_copy),
+            device=resolved_text_context.device,
+            dtype=torch.long,
+        ).repeat_interleave(int(tokens_per_frame))
+        query_chunk_ids = torch.div(frame_ids, chunk_size, rounding_mode="floor").repeat(int(repeat_copies))
+        base_text_token_count = int(resolved_text_context.shape[1]) - int(proprio_token_count)
+        return build_chunked_text_context_cross_attention_mask(
+            query_chunk_ids=query_chunk_ids,
+            batch_size=int(resolved_text_context.shape[0]),
+            text_token_count=int(resolved_text_context.shape[1]),
+            base_text_token_count=base_text_token_count,
+            proprio_context_token_count=proprio_token_count,
+            device=resolved_text_context.device,
+        )
 
     def attach_visual_tower(self, visual_tower: VisualTower) -> None:
         """Pipeline-time hook: build the packed-coupling block stack.
@@ -841,10 +918,7 @@ class MoTPolicyVariant(PolicyVariant):
             batch,
             video_latents=visual_outputs.frontend.video_latents,
         )
-        proprio_state = self._resolve_proprio_state(
-            batch.state,
-            label="M5 training",
-        )
+        proprio_state = self._resolve_train_proprio_context(batch)
         return PolicyPreparedInputs(
             batch=batch,
             variant_inputs={
@@ -985,12 +1059,20 @@ class MoTPolicyVariant(PolicyVariant):
             dtype=action_condition_latents.dtype,
             materialize_if_missing=self._uses_proprio_context(),
         )
+        video_cross_attention_mask = self._build_proprio_cross_attention_mask(
+            resolved_text_context=video_text_context,
+            proprio_state=proprio_state,
+            query_frames_per_copy=int(action_condition_latents.shape[2]),
+            tokens_per_frame=video_tokens_per_frame,
+            chunk_size_frames=sampled_chunk_size,
+        ) if video_text_context is not None else None
         video_cache = prefill_video_kv_cache(
             visual_tower=visual_tower,
             observed_prefix=action_condition_latents,
             text_context=video_text_context,
             frame_start=0,
             attention_mask=chunk_causal_video_mask,
+            cross_attention_mask=video_cross_attention_mask,
             detach_cache=self._should_detach_train_video_cache(visual_tower),
         )
         train_artifacts = build_action_flow_match_train_artifacts(
@@ -1015,10 +1097,22 @@ class MoTPolicyVariant(PolicyVariant):
         )
         if resolved_text is None:  # pragma: no cover - materialized above
             raise RuntimeError("M5 action text context unexpectedly resolved to None.")
+        action_cross_attention_mask = (
+            None
+            if action_tokens_per_frame is None
+            else self._build_proprio_cross_attention_mask(
+                resolved_text_context=resolved_text,
+                proprio_state=proprio_state,
+                query_frames_per_copy=int(video_latents.shape[2]),
+                tokens_per_frame=int(action_tokens_per_frame),
+                chunk_size_frames=sampled_chunk_size,
+            )
+        )
         action_pre = self.action_expert.pre_dit(
             action_tokens=train_artifacts.noisy_actions,
             timestep=train_artifacts.timesteps,
             context=resolved_text,
+            cross_attention_mask=action_cross_attention_mask,
             action_grid_ids=self._build_action_grid_ids_for_sequence(
                 batch_size=train_artifacts.noisy_actions.shape[0],
                 seq_len=train_artifacts.noisy_actions.shape[1],
@@ -1169,10 +1263,29 @@ class MoTPolicyVariant(PolicyVariant):
         )
         if resolved_text is None:  # pragma: no cover - materialized above
             raise RuntimeError("M5 joint action text context unexpectedly resolved to None.")
+        action_cross_attention_mask = (
+            None
+            if action_tokens_per_frame is None
+            else self._build_proprio_cross_attention_mask(
+                resolved_text_context=resolved_text,
+                proprio_state=proprio_state,
+                query_frames_per_copy=int(video_latents.shape[2]),
+                tokens_per_frame=int(action_tokens_per_frame),
+                chunk_size_frames=sampled_chunk_size,
+            )
+        )
+        video_cross_attention_mask = self._build_proprio_cross_attention_mask(
+            resolved_text_context=resolved_text,
+            proprio_state=proprio_state,
+            query_frames_per_copy=int(video_latents.shape[2]),
+            tokens_per_frame=int(prepared_inputs.variant_inputs["video_tokens_per_frame"]),
+            chunk_size_frames=sampled_chunk_size,
+        )
         action_pre = self.action_expert.pre_dit(
             action_tokens=train_artifacts.noisy_actions,
             timestep=train_artifacts.timesteps,
             context=resolved_text,
+            cross_attention_mask=action_cross_attention_mask,
             action_grid_ids=self._build_action_grid_ids_for_sequence(
                 batch_size=train_artifacts.noisy_actions.shape[0],
                 seq_len=train_artifacts.noisy_actions.shape[1],
@@ -1202,6 +1315,7 @@ class MoTPolicyVariant(PolicyVariant):
                 current_block_coupling=current_block_coupling,
             ),
             use_activation_checkpointing=self.config.use_activation_checkpointing,
+            video_cross_attention_mask=video_cross_attention_mask,
         )
         flow_pred = self.action_expert.post_dit(action_hidden_states, action_pre)
         denoised_actions = denoised_actions_from_flow(
@@ -1460,6 +1574,14 @@ class MoTPolicyVariant(PolicyVariant):
         )
         if resolved_text is None:  # pragma: no cover - materialized above
             raise RuntimeError("M5 packed text context unexpectedly resolved to None.")
+        packed_video_cross_attention_mask = self._build_proprio_cross_attention_mask(
+            resolved_text_context=resolved_text,
+            proprio_state=proprio_state,
+            query_frames_per_copy=num_video_frames,
+            tokens_per_frame=video_tokens_per_frame,
+            chunk_size_frames=sampled_chunk_size,
+            repeat_copies=2,
+        )
 
         single_action_grid = self._build_action_grid_ids_for_sequence(
             batch_size=noisy_actions.shape[0],
@@ -1469,11 +1591,20 @@ class MoTPolicyVariant(PolicyVariant):
             frame_shift=frame_shift,
         )  # [B, 4, T_a*ppF_a]
         packed_action_grid = torch.cat([single_action_grid, single_action_grid], dim=-1)
+        packed_action_cross_attention_mask = self._build_proprio_cross_attention_mask(
+            resolved_text_context=resolved_text,
+            proprio_state=proprio_state,
+            query_frames_per_copy=num_action_frames,
+            tokens_per_frame=int(action_tokens_per_frame),
+            chunk_size_frames=sampled_chunk_size,
+            repeat_copies=2,
+        )
 
         packed_action_pre = self.action_expert.pre_dit(
             action_tokens=packed_action_tokens,
             timestep=packed_action_timesteps,
             context=resolved_text,
+            cross_attention_mask=packed_action_cross_attention_mask,
             action_grid_ids=packed_action_grid,
         )
         packed_attention_profile = build_mot_packed_coupling_attention_profile(
@@ -1499,6 +1630,7 @@ class MoTPolicyVariant(PolicyVariant):
             frame_start=frame_shift,
             use_activation_checkpointing=bool(self.config.use_activation_checkpointing),
             packed_block_stack=self.packed_block_stack,
+            video_cross_attention_mask=packed_video_cross_attention_mask,
         )
         predicted_latents = denoised_video_latents_from_flow(
             noisy_latents=video_artifacts.noisy_latents,
