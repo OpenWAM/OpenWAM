@@ -19,6 +19,7 @@ from open_wam.configs import (
     GeneralistTrainingParadigm,
     JointDenoiseTrainingMode,
     JointSampler,
+    JointTimestepCoupling,
     LatentWindowProfile,
     LoopPolicyName,
     MoTPolicyConfig,
@@ -181,6 +182,7 @@ trainer:
     config = load_experiment_config(config_path)
 
     assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.MIXED_DYNAMICS
+    assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA
     assert config.data.generalist_dynamics_mixture.train_latent_root == "/tmp/counterfactual_train/encoded_latents"
     assert config.data.generalist_dynamics_mixture.allow_train_latent_root_for_val is False
     assert config.data.generalist_dynamics_mixture.real_joint_weight == 0.6
@@ -602,7 +604,8 @@ def test_local_libero_yaml_config_loads() -> None:
     assert local_libero.data.dataset_name == "libero"
     assert local_libero.data.dataset_type == "libero_hdf5"
     assert local_libero.data.repo_id is None
-    assert local_libero.data.local_root.endswith("libero/libero_10")
+    assert "${" not in local_libero.data.local_root
+    assert Path(local_libero.data.local_root).name == "libero_10"
 
 
 def test_exact_local_libero_yaml_config_loads() -> None:
@@ -939,6 +942,22 @@ def test_loaded_enum_like_fields_are_real_enum_members() -> None:
     config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml")
 
     assert isinstance(config.backbone.train_attn_mode, AttentionMode)
+
+
+def test_deprecated_equal_bucket_latent_temporal_layout_is_rejected(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw.setdefault("data", {})
+    raw["data"]["latent_temporal_layout"] = "equal_bucket_legacy"
+
+    config_path = tmp_path / "deprecated_equal_bucket.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    with pytest.raises(ValueError, match="equal_bucket_legacy.*deprecated and unsupported"):
+        load_experiment_config(config_path)
 
 
 def test_backbone_exported_runtime_action_init_mode_loads_as_enum(tmp_path: Path) -> None:

@@ -17,18 +17,18 @@ def _load_script_module():
     return module
 
 
-def test_condition_source_frame_indices_pick_bucket_ends() -> None:
+def test_condition_source_frame_indices_follow_wan_causal_anchors() -> None:
     module = _load_script_module()
 
     indices = module._condition_source_frame_indices(
-        frame_ids=list(range(10, 18)),
+        frame_ids=list(range(10, 25)),
         latent_num_frames=4,
     )
 
-    assert indices == [11, 13, 15, 17]
+    assert indices == [10, 14, 18, 22]
 
 
-def test_condition_source_frame_indices_clamp_when_more_latents_than_raw_frames() -> None:
+def test_condition_source_frame_indices_clamp_explicit_frame_ids() -> None:
     module = _load_script_module()
 
     indices = module._condition_source_frame_indices(
@@ -36,7 +36,7 @@ def test_condition_source_frame_indices_clamp_when_more_latents_than_raw_frames(
         latent_num_frames=5,
     )
 
-    assert indices == [3, 3, 7, 7, 11]
+    assert indices == [3, 7, 11, 11, 11]
 
 
 def test_libero_canonical_video_from_single_view_duplicates_width_slots() -> None:

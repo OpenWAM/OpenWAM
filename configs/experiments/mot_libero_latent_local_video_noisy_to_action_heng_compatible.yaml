@@ -24,7 +24,7 @@ data:
     window_size: 30
     randomize_geometry: true
     start_padding_frames: 3
-    context_prefix_policy: rollout_history
+    context_prefix_policy: none
     tail_padding_policy: zero_order_hold
     padded_target_policy: mask_loss
     task_start_power: 0.5
@@ -91,6 +91,7 @@ policy_variant:
   preset: fastwam_joint
   runtime_mode: non_joint_two_stream
   current_block_coupling: video_noisy_to_action
+  joint_timestep_coupling: match_sigma
   condition_mode: teacher_forcing_cond_video
   video_prefix_frames: 1
   action_expert_init_mode: video_weight_interpolate

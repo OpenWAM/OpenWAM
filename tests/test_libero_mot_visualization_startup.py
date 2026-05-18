@@ -113,6 +113,46 @@ def test_init_single_env_rejects_invalid_init_steps(init_steps: int) -> None:
         mot_viz._init_single_env(_FakeEnv(), init_state=None, num_frames=1, init_steps=init_steps)
 
 
+def test_maybe_merge_checkpoint_runtime_config_skips_by_default(monkeypatch, tmp_path: Path) -> None:
+    config = object()
+
+    def _raise_if_called(*args, **kwargs):
+        raise AssertionError("checkpoint runtime config merge should be opt-in")
+
+    monkeypatch.setattr(mot_viz, "merge_runtime_config_from_checkpoint", _raise_if_called)
+
+    merged, resolved_config = mot_viz._maybe_merge_checkpoint_runtime_config(
+        config,
+        tmp_path / "checkpoint_step_1",
+        merge_enabled=False,
+    )
+
+    assert merged is config
+    assert resolved_config is None
+
+
+def test_maybe_merge_checkpoint_runtime_config_merges_when_requested(monkeypatch, tmp_path: Path) -> None:
+    config = object()
+    merged_config = object()
+    resolved_path = tmp_path / "checkpoint_step_1" / "resolved_config.yaml"
+
+    def _fake_merge(base_config, checkpoint_path):
+        assert base_config is config
+        assert checkpoint_path == tmp_path / "checkpoint_step_1"
+        return merged_config, resolved_path
+
+    monkeypatch.setattr(mot_viz, "merge_runtime_config_from_checkpoint", _fake_merge)
+
+    merged, resolved_config = mot_viz._maybe_merge_checkpoint_runtime_config(
+        config,
+        tmp_path / "checkpoint_step_1",
+        merge_enabled=True,
+    )
+
+    assert merged is merged_config
+    assert resolved_config == resolved_path
+
+
 class _FakePipeline:
     def __init__(self) -> None:
         self.calls: list[str] = []

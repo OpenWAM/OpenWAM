@@ -25,6 +25,7 @@ import run_libero_exact_visualization as exact_viz  # noqa: E402
 
 from open_wam.configs import ParallelRuntimeMode  # noqa: E402
 from open_wam.configs.enums import DeadlineMissPolicy  # noqa: E402
+from open_wam.data.latent_temporal import raw_window_frames_for_latents  # noqa: E402
 from open_wam.integrations.realtime_control import (  # noqa: E402
     PlannedFrameAction,
     make_planned_frame_actions,
@@ -373,9 +374,7 @@ def _exact_startup_bootstrap_raw_frame_count(frame_chunk_size: int) -> int:
     frame_chunk_size = int(frame_chunk_size)
     if frame_chunk_size <= 0:
         raise ValueError(f"Expected positive frame_chunk_size, got {frame_chunk_size}.")
-    # Wan/LingBot temporal compression maps 15 raw frames to 4 latents:
-    # raw_window_frames = 4 * latent_num_frames - 1.
-    return 4 * frame_chunk_size - 1
+    return raw_window_frames_for_latents(frame_chunk_size)
 
 
 def _exact_startup_bootstrap_obs_sequence(

@@ -457,6 +457,7 @@ def build_frame_aligned_action_flow_match_train_artifacts(
     num_frames: int,
     action_per_frame: int,
     frame_sigma_values: torch.Tensor | None = None,
+    frame_timestep_ids: torch.Tensor | None = None,
 ) -> FrameAlignedActionFlowMatchTrainArtifacts:
     """Create frame-granular noisy actions for LingBot-style parallel-stream.
 
@@ -488,7 +489,9 @@ def build_frame_aligned_action_flow_match_train_artifacts(
     action_mask_volume = None
     if action_mask is not None:
         action_mask_volume = action_mask.view(batch_size, num_frames, action_per_frame, action_dim).permute(0, 3, 1, 2).unsqueeze(-1)
-    if frame_sigma_values is None:
+    if frame_sigma_values is not None and frame_timestep_ids is not None:
+        raise ValueError("Specify only one of `frame_sigma_values` or `frame_timestep_ids`.")
+    if frame_sigma_values is None and frame_timestep_ids is None:
         timestep_ids = sample_timestep_id(
             batch_size=batch_size,
             sample_shape=(num_frames,),
@@ -496,7 +499,16 @@ def build_frame_aligned_action_flow_match_train_artifacts(
             device=actions.device,
         )
         frame_timesteps = scheduler.timesteps.to(device=actions.device)[timestep_ids]
+    elif frame_timestep_ids is not None:
+        if tuple(frame_timestep_ids.shape) != (batch_size, num_frames):
+            raise ValueError(
+                "Frame-aligned action timestep IDs must have shape [B, F], "
+                f"got {tuple(frame_timestep_ids.shape)}, expected={(batch_size, num_frames)}."
+            )
+        frame_timestep_ids = frame_timestep_ids.to(device=actions.device, dtype=torch.int64)
+        frame_timesteps = scheduler.timesteps.to(device=actions.device)[frame_timestep_ids]
     else:
+        assert frame_sigma_values is not None
         if tuple(frame_sigma_values.shape) != (batch_size, num_frames):
             raise ValueError(
                 "Frame-aligned action sigma values must have shape [B, F], "

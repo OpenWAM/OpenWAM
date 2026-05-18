@@ -23,6 +23,7 @@ from open_wam.ablations.joint_denoising_fdm.branches import (
     branch_seed_offset,
     expand_branch_names,
 )
+from open_wam.data.latent_temporal import raw_window_frames_for_latents
 
 
 DEFAULT_REPLAY_STATUS = (
@@ -656,9 +657,7 @@ def _as_uint8(value: np.ndarray) -> np.ndarray:
 
 
 def _raw_window_frames_for_latents(latent_frames: int, *, action_per_frame: int) -> int:
-    if latent_frames <= 0:
-        raise ValueError(f"Expected positive latent frame count, got {latent_frames}.")
-    return int(action_per_frame) * int(latent_frames) - 1
+    return raw_window_frames_for_latents(latent_frames, action_per_frame=action_per_frame)
 
 
 def _decoded_raw_frames_for_latents(latent_frames: int, *, action_per_frame: int) -> int:

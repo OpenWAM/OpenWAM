@@ -23,6 +23,7 @@ from .enums import (
     ConsortiumWeightMode,
     DataSplit,
     GripperRepresentation,
+    LatentTemporalLayout,
     LatentWindowProfile,
     PaddedTargetPolicy,
     ReplayStatusPolicy,
@@ -514,6 +515,7 @@ class DataConfig:
     generalist_dynamics_mixture: GeneralistDynamicsMixtureConfig = field(
         default_factory=GeneralistDynamicsMixtureConfig
     )
+    latent_temporal_layout: LatentTemporalLayout = LatentTemporalLayout.WAN_CAUSAL_STRIDE4
 
     def __post_init__(self) -> None:
         coerce_fields(
@@ -521,9 +523,17 @@ class DataConfig:
             enum_fields={
                 "split": DataSplit,
                 "latent_window_profile": LatentWindowProfile,
+                "latent_temporal_layout": LatentTemporalLayout,
                 "replay_status_policy": ReplayStatusPolicy,
             },
         )
+        if self.latent_temporal_layout is LatentTemporalLayout.EQUAL_BUCKET_LEGACY:
+            raise ValueError(
+                "`data.latent_temporal_layout=equal_bucket_legacy` is deprecated and unsupported. "
+                "Equal-bucket latent/action alignment silently drops early actions for Wan/LingBot latents. "
+                "Use `wan_causal_stride4`, re-encode/rebuild affected metadata if needed, and do not train "
+                "or evaluate new runs with the legacy equal-bucket layout."
+            )
 
 
 @dataclass(frozen=True)

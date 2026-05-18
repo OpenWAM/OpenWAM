@@ -497,6 +497,14 @@ def _load_policy_variant_config(
             use_condition_latents=bool(resolved_raw.get("use_condition_latents", True)),
             require_condition_latents=bool(resolved_raw.get("require_condition_latents", False)),
             mot_generalist_training_mode_probs=resolved_raw.get("mot_generalist_training_mode_probs"),
+            joint_timestep_coupling=_coerce_enum(
+                config_enums.JointTimestepCoupling,
+                resolved_raw.get(
+                    "joint_timestep_coupling",
+                    config_enums.JointTimestepCoupling.MATCH_SIGMA,
+                ),
+            ),
+            couple_action_to_video_timesteps=resolved_raw.get("couple_action_to_video_timesteps"),
             generalist_training_paradigm=_coerce_enum(
                 config_enums.GeneralistTrainingParadigm,
                 resolved_raw.get(
@@ -633,7 +641,14 @@ def _load_policy_variant_config(
                     config_enums.ParallelActionAttentionScope.BLOCK_LOCAL,
                 ),
             ),
-            couple_action_to_video_timesteps=resolved_raw.get("couple_action_to_video_timesteps", True),
+            joint_timestep_coupling=_coerce_enum(
+                config_enums.JointTimestepCoupling,
+                resolved_raw.get(
+                    "joint_timestep_coupling",
+                    config_enums.JointTimestepCoupling.MATCH_SIGMA,
+                ),
+            ),
+            couple_action_to_video_timesteps=resolved_raw.get("couple_action_to_video_timesteps"),
             joint_denoise_training_mode_probs=resolved_raw.get("joint_denoise_training_mode_probs"),
             generalist_training_paradigm=_coerce_enum(
                 config_enums.GeneralistTrainingParadigm,
@@ -999,6 +1014,10 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         latent_window_profile=_coerce_enum(
             config_enums.LatentWindowProfile,
             data_raw.get("latent_window_profile", data_defaults.latent_window_profile),
+        ),
+        latent_temporal_layout=_coerce_enum(
+            config_enums.LatentTemporalLayout,
+            data_raw.get("latent_temporal_layout", data_defaults.latent_temporal_layout),
         ),
         split=_coerce_enum(config_enums.DataSplit, data_raw.get("split", data_defaults.split)),
         cache_dir=data_raw.get("cache_dir", data_defaults.cache_dir),

@@ -27,6 +27,7 @@ if str(Path(__file__).resolve().parent) not in sys.path:
 import run_libero_video_sequence_visualization as video_viz  # noqa: E402
 
 from open_wam.configs import ReferenceCoreInitMode  # noqa: E402
+from open_wam.data.latent_temporal import raw_window_frames_for_latents  # noqa: E402
 from open_wam.integrations import (  # noqa: E402
     LiberoTaskSpec,
     ensure_local_libero_config,
@@ -73,6 +74,16 @@ def main() -> None:
         help=(
             "Checkpoint file, checkpoint_step_* directory, or run directory. "
             "If omitted, use top-level checkpoint_path in the config, then infer from backbone.transformer_subdir."
+        ),
+    )
+    parser.add_argument(
+        "--merge-checkpoint-runtime-config",
+        action="store_true",
+        help=(
+            "Opt into merging the checkpoint's resolved_config.yaml before rollout. "
+            "By default this script treats --cfg as the rollout contract and only uses "
+            "the checkpoint directory for weights/exported transformer assets, keeping "
+            "old checkpoints with stale resolved_config.yaml files usable."
         ),
     )
     parser.add_argument("--task-id", type=int, default=1)
@@ -144,7 +155,11 @@ def main() -> None:
             "MoT visualization requires a trained checkpoint. Pass `--checkpoint`, set top-level "
             "`checkpoint_path` in the config, or point `backbone.transformer_subdir` at an exported checkpoint."
         )
-    config, _ = merge_runtime_config_from_checkpoint(config, checkpoint_path)
+    config, checkpoint_runtime_config_path = _maybe_merge_checkpoint_runtime_config(
+        config,
+        checkpoint_path,
+        merge_enabled=bool(args.merge_checkpoint_runtime_config),
+    )
     _validate_mot_config(config)
     transformer_dir = checkpoint_path.parent / "transformer"
     if transformer_dir.is_dir():
@@ -186,6 +201,7 @@ def main() -> None:
         _print_log("stage", {"name": "mot_legacy_cache_inference_blocks_restored"})
     if hasattr(pipeline.policy_variant, "action_expert"):
         pipeline.policy_variant.action_expert.to(device=action_device)
+    pipeline.eval()
     runner = VariantRolloutRunner(pipeline)
     component_report = _build_component_report(
         config,
@@ -198,6 +214,11 @@ def main() -> None:
     )
     component_report["mot_inference_backend"] = mot_inference_backend
     component_report["checkpoint_file"] = str(checkpoint_path.resolve())
+    component_report["checkpoint_runtime_config_path"] = (
+        None if checkpoint_runtime_config_path is None else str(checkpoint_runtime_config_path)
+    )
+    component_report["checkpoint_runtime_config_merged"] = checkpoint_runtime_config_path is not None
+    component_report["pipeline_training_mode"] = bool(pipeline.training)
     _print_log("load_report", component_report)
 
     task_spec, prompt = _resolve_task_spec(args.benchmark, args.task_id)
@@ -338,11 +359,6 @@ def main() -> None:
             chunk_logs.append(chunk_log)
 
             real_future_frames: list[dict[str, np.ndarray]] = []
-            future_frame_count = _future_frame_count(config)
-            sample_indices = _future_sample_indices(
-                action_count=actions.shape[0],
-                future_frame_count=future_frame_count,
-            )
             executed_actions = 0
             executed_control_actions: list[np.ndarray] = []
             start_frame_group = 1 if chunk_count == 0 else 0
@@ -357,8 +373,10 @@ def main() -> None:
                     extracted = _extract_obs(obs)
                     rollout_frames.append({key: np.array(value, copy=True) for key, value in extracted.items()})
                     frame_window.append({key: np.array(value, copy=True) for key, value in extracted.items()})
-                    if absolute_action_index in sample_indices:
-                        real_future_frames.append({key: np.array(value, copy=True) for key, value in extracted.items()})
+                    # Packed M5 history warmup must encode the dense executed
+                    # segment. Sparse keyframes collapse a 4-latent chunk to a
+                    # single VAE latent and shift all subsequent history ids.
+                    real_future_frames.append({key: np.array(value, copy=True) for key, value in extracted.items()})
                     if done or env.env.timestep >= args.max_timestep:
                         break
                 if done or env.env.timestep >= args.max_timestep:
@@ -391,6 +409,7 @@ def main() -> None:
             ):
                 warmup_debug = _warmup_mot_packed_history_from_observations(
                     pipeline,
+                    config=config,
                     session=session,
                     obs_list=real_future_frames,
                     action_history=warmup_action_history,
@@ -494,6 +513,17 @@ def _validate_mot_config(config) -> None:
             "run_libero_mot_visualization.py requires a `mot` policy variant, "
             f"got policy_variant.name={config.policy_variant.name!r}."
         )
+
+
+def _maybe_merge_checkpoint_runtime_config(
+    config,
+    checkpoint_path: Path,
+    *,
+    merge_enabled: bool,
+):
+    if not merge_enabled:
+        return config, None
+    return merge_runtime_config_from_checkpoint(config, checkpoint_path)
 
 
 def _resolve_mot_checkpoint_path(
@@ -758,6 +788,7 @@ def _build_output_path(
 def _warmup_mot_packed_history_from_observations(
     pipeline,
     *,
+    config,
     session,
     obs_list: list[dict[str, np.ndarray]],
     action_history: torch.Tensor | None,
@@ -786,7 +817,7 @@ def _warmup_mot_packed_history_from_observations(
     runtime_dtype = pipeline.visual_tower.core.patch_embedding_mlp.weight.dtype
     real_latents = warmup_outputs.frontend.video_latents.to(device=runtime_device, dtype=runtime_dtype)
     past_latents = runtime_state.past_clean_latents
-    frame_chunk_size = _frame_chunk_size(pipeline.config)
+    frame_chunk_size = _frame_chunk_size(config)
     history_window_frames = max(
         int(real_latents.shape[2]),
         resolve_mot_rollout_cache_window_frames(
@@ -825,8 +856,8 @@ def _warmup_mot_packed_history_from_observations(
                 "MoT packed warmup action history must be [B, T_action, D_action], "
                 f"got {tuple(action_history.shape)}, action_dim={action_dim}."
             )
-        action_tokens_per_frame = _action_per_frame(pipeline.config)
-        action_horizon = int(pipeline.config.data.action_schema.action_horizon)
+        action_tokens_per_frame = _action_per_frame(config)
+        action_horizon = int(config.data.action_schema.action_horizon)
         warm_actions = action_history[:, :action_horizon].to(device=runtime_device, dtype=runtime_dtype)
         if warm_actions.shape[1] > 0:
             past_actions = runtime_state.past_clean_actions
@@ -855,7 +886,7 @@ def _warmup_mot_packed_history_from_observations(
         "past_clean_action_frames_after": (
             0
             if getattr(runtime_state, "past_clean_actions", None) is None
-            else int(runtime_state.past_clean_actions.shape[1] // _action_per_frame(pipeline.config))
+            else int(runtime_state.past_clean_actions.shape[1] // _action_per_frame(config))
         ),
         "appended_action_tokens": int(appended_action_tokens),
         "dropped_pred_latent_frames": int(dropped_pred_latent_frames),
@@ -967,25 +998,6 @@ def _build_executed_action_history_tensor(
         action_per_frame=action_per_frame,
         action_dim=action_dim,
     )
-
-
-def _future_frame_count(config) -> int:
-    return max(1, int(config.data.num_frames) - int(config.policy_variant.video_prefix_frames))
-
-
-def _future_sample_indices(*, action_count: int, future_frame_count: int) -> list[int]:
-    if action_count <= 0:
-        return []
-    if future_frame_count <= 1:
-        return [action_count - 1]
-    raw = np.linspace(0, action_count - 1, num=future_frame_count)
-    indices = [int(round(value)) for value in raw.tolist()]
-    deduped: list[int] = []
-    for index in indices:
-        clamped = max(0, min(action_count - 1, index))
-        if clamped not in deduped:
-            deduped.append(clamped)
-    return deduped
 
 
 def _frame_chunk_size(config) -> int:
@@ -1343,9 +1355,7 @@ def _resolve_device(device_arg: str | None, *, fallback: torch.device | None = N
 
 
 def _default_raw_window_frames(latent_num_frames: int) -> int:
-    if latent_num_frames <= 0:
-        raise ValueError(f"Expected positive latent_num_frames, got {latent_num_frames}.")
-    return 4 * latent_num_frames - 1
+    return raw_window_frames_for_latents(latent_num_frames)
 
 
 if __name__ == "__main__":

@@ -25,6 +25,7 @@ from open_wam.configs import TrainingConfig
 from open_wam.configs.enums import (
     AttachSite,
     CurrentBlockCoupling,
+    JointTimestepCoupling,
     MoTGeneralistTrainingMode,
     MoTRuntimeMode,
     PolicyVariantName,
@@ -42,6 +43,7 @@ from open_wam.models.common.flow_matching import (
 from open_wam.models.policy_variants.mot.variant import (
     _apply_mot_generalist_training_mode,
     _sample_mot_generalist_training_mode,
+    _should_couple_mot_action_to_video_sigmas,
 )
 
 
@@ -80,6 +82,32 @@ def test_opt_in_dict_normalizes_and_keeps_joint_coupling() -> None:
     assert math.isclose(probs[MoTGeneralistTrainingMode.JOINT], 0.6)
     assert math.isclose(probs[MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO], 0.2)
     assert math.isclose(probs[MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION], 0.2)
+    assert cfg.joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA
+
+
+def test_generalist_sigma_coupling_is_explicitly_configurable() -> None:
+    cfg = _make_mot_policy_config(
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        mot_generalist_training_mode_probs={"joint": 1.0},
+    )
+    assert _should_couple_mot_action_to_video_sigmas(cfg, CurrentBlockCoupling.JOINT) is True
+
+    cfg = _make_mot_policy_config(
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        mot_generalist_training_mode_probs={"joint": 1.0},
+        joint_timestep_coupling=JointTimestepCoupling.INDEPENDENT,
+    )
+    assert _should_couple_mot_action_to_video_sigmas(cfg, CurrentBlockCoupling.JOINT) is False
+
+    cfg = _make_mot_policy_config(
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        mot_generalist_training_mode_probs={"joint": 1.0},
+        joint_timestep_coupling=JointTimestepCoupling.MATCH_INDEX,
+    )
+    assert _should_couple_mot_action_to_video_sigmas(cfg, CurrentBlockCoupling.JOINT) is False
+
+    cfg = _make_mot_policy_config(current_block_coupling=CurrentBlockCoupling.DECOUPLED_SAME_STEP)
+    assert _should_couple_mot_action_to_video_sigmas(cfg, CurrentBlockCoupling.DECOUPLED_SAME_STEP) is False
 
 
 def test_opt_in_without_explicit_joint_coupling_is_rejected() -> None:
@@ -214,7 +242,7 @@ def _make_video_artifacts(*, B: int = 1, F: int = 4, H: int = 4, W: int = 4) -> 
     )
 
 
-def test_joint_mode_zeros_condition_slots() -> None:
+def test_joint_mode_preserves_plain_joint_condition_slots() -> None:
     video_artifacts = _make_video_artifacts()
     noisy_actions = torch.randn(1, 64, 7)
     clean_actions = torch.randn(1, 64, 7)
@@ -234,12 +262,9 @@ def test_joint_mode_zeros_condition_slots() -> None:
 
     (out_video, out_noisy_actions, out_clean_actions,
      out_noisy_ts, out_future_mask, out_action_mask) = out
-    assert torch.equal(out_video.noisy_latents, video_artifacts.noisy_latents)
-    assert torch.equal(out_video.timesteps, video_artifacts.timesteps)
-    assert torch.all(out_video.condition_latents == 0)
-    assert torch.all(out_video.condition_timesteps == 0)
+    assert out_video is video_artifacts
     assert out_noisy_actions is noisy_actions
-    assert torch.all(out_clean_actions == 0)
+    assert out_clean_actions is clean_actions
     assert out_noisy_ts is noisy_slot_timesteps
     assert out_future_mask is future_loss_mask
     assert out_action_mask is effective_action_mask
@@ -266,11 +291,8 @@ def test_action_conditioned_video_replaces_action_slots() -> None:
     (out_video, out_noisy_actions, out_clean_actions,
      out_noisy_ts, out_future_mask, out_action_mask) = out
 
-    # Video noisy slot remains active; unused clean condition slot is zeroed.
-    assert torch.equal(out_video.noisy_latents, video_artifacts.noisy_latents)
-    assert torch.equal(out_video.timesteps, video_artifacts.timesteps)
-    assert torch.all(out_video.condition_latents == 0)
-    assert torch.all(out_video.condition_timesteps == 0)
+    # Video branch keeps clean condition slots as history context.
+    assert out_video is video_artifacts
     assert out_future_mask is future_loss_mask
     # A_noisy slot now holds the clean values.
     assert torch.equal(out_noisy_actions, clean_actions)
@@ -283,13 +305,16 @@ def test_action_conditioned_video_replaces_action_slots() -> None:
     assert torch.all(out_action_mask == 0)
 
 
-def test_action_conditioned_video_masks_clean_action_conditioning() -> None:
+def test_action_conditioned_video_uses_valid_mask_not_loss_mask_for_clean_action_conditioning() -> None:
     video_artifacts = _make_video_artifacts()
     noisy_actions = torch.randn(1, 4, 3)
     clean_actions = torch.arange(12, dtype=torch.float32).view(1, 4, 3)
     noisy_slot_timesteps = torch.full((1, 4), 0.5)
     future_loss_mask = torch.ones(1, 1, 4, 1, 1)
-    effective_action_mask = torch.tensor(
+    action_loss_mask = torch.tensor(
+        [[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 1.0]]]
+    )
+    clean_action_condition_mask = torch.tensor(
         [[[1.0, 0.0, 1.0], [0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 1.0]]]
     )
 
@@ -300,12 +325,13 @@ def test_action_conditioned_video_masks_clean_action_conditioning() -> None:
         clean_actions=clean_actions,
         noisy_slot_timesteps=noisy_slot_timesteps,
         future_loss_mask=future_loss_mask,
-        effective_action_mask=effective_action_mask,
+        effective_action_mask=action_loss_mask,
+        clean_action_condition_mask=clean_action_condition_mask,
     )
 
     out_noisy_actions = out[1]
     out_action_mask = out[5]
-    assert torch.equal(out_noisy_actions, clean_actions * effective_action_mask)
+    assert torch.equal(out_noisy_actions, clean_actions * clean_action_condition_mask)
     assert out_action_mask is not None
     assert torch.all(out_action_mask == 0)
 
@@ -334,21 +360,21 @@ def test_video_conditioned_action_replaces_video_slots() -> None:
 
     # V_noisy slot now holds clean condition values.
     assert torch.equal(out_video.noisy_latents, original_condition)
-    # V_clean condition slot zeroed.
-    assert torch.all(out_video.condition_latents == 0)
-    # Both video timestep tracks forced to 0 (cancels noisy_video_condition_prob).
+    # V_clean remains available as clean history context.
+    assert torch.equal(out_video.condition_latents, original_condition)
+    # V_noisy timestep track is forced to 0; condition timesteps stay as supplied.
     assert torch.all(out_video.timesteps == 0)
-    assert torch.all(out_video.condition_timesteps == 0)
+    assert torch.equal(out_video.condition_timesteps, video_artifacts.condition_timesteps)
     # Future video loss mask zeroed.
     assert torch.all(out_future_mask == 0)
-    # Action noisy slot remains active; unused clean condition slot is zeroed.
+    # Action noisy slot remains active; clean actions remain available as past context.
     assert out_noisy_actions is noisy_actions
-    assert torch.all(out_clean_actions == 0)
+    assert out_clean_actions is clean_actions
     assert out_noisy_ts is noisy_slot_timesteps
     assert out_action_mask is effective_action_mask
 
 
-def test_action_conditioned_video_with_no_action_mask_starts_from_zeros() -> None:
+def test_action_conditioned_video_with_no_clean_action_mask_uses_full_clean_actions() -> None:
     video_artifacts = _make_video_artifacts()
     noisy_actions = torch.randn(1, 64, 7)
     clean_actions = torch.randn(1, 64, 7)
@@ -365,7 +391,9 @@ def test_action_conditioned_video_with_no_action_mask_starts_from_zeros() -> Non
         effective_action_mask=None,
     )
 
+    out_noisy_actions = out[1]
     out_action_mask = out[5]
+    assert torch.equal(out_noisy_actions, clean_actions)
     assert out_action_mask is not None
     assert out_action_mask.shape == noisy_actions.shape
     assert torch.all(out_action_mask == 0)
@@ -380,6 +408,8 @@ def test_action_conditioned_video_with_no_action_mask_starts_from_zeros() -> Non
 
 def _build_tiny_generalist_pipeline(
     forced_mode: MoTGeneralistTrainingMode,
+    *,
+    joint_timestep_coupling: JointTimestepCoupling = JointTimestepCoupling.MATCH_SIGMA,
 ):
     """Construct a tiny CPU pipeline pinned to one generalist mode."""
 
@@ -425,6 +455,7 @@ def _build_tiny_generalist_pipeline(
             video_prefix_frames=1,
             num_action_layers=1,
             mot_generalist_training_mode_probs=forced_probs,
+            joint_timestep_coupling=joint_timestep_coupling,
         ),
         action_decoder=MoTActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(
@@ -441,6 +472,87 @@ def _build_tiny_generalist_pipeline(
     video_latents = torch.randn(1, 48, 4, 8, 8)
     text_context = torch.randn(1, 5, 16)
     return pipeline, batch, video_latents, text_context
+
+
+def test_forced_joint_training_respects_timestep_coupling_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import open_wam.models.policy_variants.mot.variant as mot_variant_module
+
+    original_build_action_artifacts = mot_variant_module.build_frame_aligned_action_flow_match_train_artifacts
+    saw_action_coupling_inputs: list[tuple[bool, bool]] = []
+
+    def spy_build_action_artifacts(*args, **kwargs):
+        saw_action_coupling_inputs.append(
+            (
+                kwargs.get("frame_sigma_values") is not None,
+                kwargs.get("frame_timestep_ids") is not None,
+            )
+        )
+        return original_build_action_artifacts(*args, **kwargs)
+
+    monkeypatch.setattr(
+        mot_variant_module,
+        "build_frame_aligned_action_flow_match_train_artifacts",
+        spy_build_action_artifacts,
+    )
+
+    pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        MoTGeneralistTrainingMode.JOINT,
+        joint_timestep_coupling=JointTimestepCoupling.MATCH_SIGMA,
+    )
+    pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        MoTGeneralistTrainingMode.JOINT,
+        joint_timestep_coupling=JointTimestepCoupling.MATCH_INDEX,
+    )
+    pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        MoTGeneralistTrainingMode.JOINT,
+        joint_timestep_coupling=JointTimestepCoupling.INDEPENDENT,
+    )
+    pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    assert saw_action_coupling_inputs == [(True, False), (False, True), (False, False)]
+
+
+def test_generalist_match_sigma_uses_video_clock_for_all_modes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import open_wam.models.policy_variants.mot.variant as mot_variant_module
+
+    original_build_action_artifacts = mot_variant_module.build_frame_aligned_action_flow_match_train_artifacts
+    saw_action_coupling_inputs: list[tuple[bool, bool]] = []
+
+    def spy_build_action_artifacts(*args, **kwargs):
+        saw_action_coupling_inputs.append(
+            (
+                kwargs.get("frame_sigma_values") is not None,
+                kwargs.get("frame_timestep_ids") is not None,
+            )
+        )
+        return original_build_action_artifacts(*args, **kwargs)
+
+    monkeypatch.setattr(
+        mot_variant_module,
+        "build_frame_aligned_action_flow_match_train_artifacts",
+        spy_build_action_artifacts,
+    )
+
+    for mode in (
+        MoTGeneralistTrainingMode.JOINT,
+        MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
+        MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
+    ):
+        pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+            mode,
+            joint_timestep_coupling=JointTimestepCoupling.MATCH_SIGMA,
+        )
+        pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    assert saw_action_coupling_inputs == [(True, False), (True, False), (True, False)]
 
 
 def test_forced_joint_keeps_both_losses_active() -> None:

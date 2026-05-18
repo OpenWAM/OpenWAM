@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
+import sys
 
 from open_wam.configs import BatchAdapterName, LoopPolicyName, StrategyName, TrainerRuntimeName, WandBMode
 from open_wam.training import TrainCliOverrides, load_training_cli_config, resolve_experiment_config_path
@@ -13,6 +15,19 @@ def test_resolve_experiment_config_path_from_config_name() -> None:
     overrides = TrainCliOverrides(config_name="parallel_stream_robotwin_smoke")
     resolved = resolve_experiment_config_path(overrides)
     assert resolved == REPO_ROOT / "configs" / "experiments" / "parallel_stream_robotwin_smoke.yaml"
+
+
+def test_train_entrypoint_help_does_not_require_lightning() -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "open_wam.training.train", "--help"],
+        cwd=REPO_ROOT,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    assert "--config-name" in result.stdout
 
 
 def test_cli_overrides_map_save_root_and_env_defaults(tmp_path: Path) -> None:

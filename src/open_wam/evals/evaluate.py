@@ -19,6 +19,7 @@ from open_wam.configs import (
     EvalMode,
     EvalPredictionSource,
     ExperimentConfig,
+    LatentTemporalLayout,
     ReferenceCoreInitMode,
     TrainerAccelerator,
 )
@@ -34,6 +35,7 @@ from open_wam.data import (
     move_latent_wam_batch_to_device,
     move_wam_batch_to_device,
 )
+from open_wam.data.latent_temporal import observed_frame_ids_for_latent_segment
 from open_wam.models.policy_variants import PolicyInferContext
 from open_wam.models.policy_variants.contracts import DecoderSequenceContext
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config
@@ -573,21 +575,16 @@ def _resolve_observation_frame_indices(
         if len(resolved_ids) == num_frames:
             return tuple(resolved_ids)
         if len(resolved_ids) > num_frames:
-            bucket_boundaries = [
-                (latent_index * len(resolved_ids)) // num_frames
-                for latent_index in range(num_frames + 1)
-            ]
-            bucket_boundaries[-1] = len(resolved_ids)
-            aligned_ids: list[int] = []
-            for latent_index in range(num_frames):
-                start = bucket_boundaries[latent_index]
-                end = bucket_boundaries[latent_index + 1]
-                if start >= len(resolved_ids):
-                    aligned_ids.append(resolved_ids[-1])
-                    continue
-                bucket = resolved_ids[start:end]
-                aligned_ids.append(bucket[-1] if bucket else resolved_ids[start])
-            return tuple(aligned_ids)
+            layout = metadata.get("latent_temporal_layout", LatentTemporalLayout.WAN_CAUSAL_STRIDE4)
+            return tuple(
+                observed_frame_ids_for_latent_segment(
+                    raw_frame_ids=resolved_ids,
+                    source_latent_frames=num_frames,
+                    latent_start=0,
+                    segment_length=num_frames,
+                    layout=layout,
+                )
+            )
         raise ValueError(
             "Expected `observed_frame_ids` to contain at least as many entries as the "
             f"current video window length {num_frames}, got {len(resolved_ids)}."

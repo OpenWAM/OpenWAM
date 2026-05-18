@@ -173,8 +173,8 @@ def test_branch_presets_expand_and_record_metadata() -> None:
 
 
 def test_counterfactual_wan_temporal_window_formulas() -> None:
-    assert _raw_window_frames_for_latents(4, action_per_frame=4) == 15
-    assert _raw_window_frames_for_latents(16, action_per_frame=4) == 63
+    assert _raw_window_frames_for_latents(4, action_per_frame=4) == 13
+    assert _raw_window_frames_for_latents(16, action_per_frame=4) == 61
     assert _decoded_raw_frames_for_latents(4, action_per_frame=4) == 13
     assert _decoded_raw_frames_for_latents(16, action_per_frame=4) == 61
 

@@ -17,6 +17,7 @@ from open_wam.configs import (
     InferenceConfig,
     CurrentBlockCoupling,
     JointDenoiseTrainingMode,
+    JointTimestepCoupling,
     ParallelExactCacheWriteMode,
     ParallelRuntimeMode,
     ParallelStreamPolicyConfig,
@@ -794,7 +795,7 @@ def test_joint_like_first_chunk_anchors_observed_video_frame(monkeypatch) -> Non
         attn_window=8,
         video_condition_on_action=True,
         video_action_attention_scope="block_local",
-        couple_action_to_video_timesteps=True,
+        joint_timestep_coupling=JointTimestepCoupling.MATCH_SIGMA,
     )
     training_config = TrainingConfig(chunk_size=2, window_size=8)
     inference_config = InferenceConfig(
@@ -2761,7 +2762,7 @@ def test_joint_inference_masks_inactive_action_channels(monkeypatch) -> None:
         attn_window=8,
         video_condition_on_action=True,
         video_action_condition_source="noisy_action",
-        couple_action_to_video_timesteps=True,
+        joint_timestep_coupling=JointTimestepCoupling.MATCH_SIGMA,
     )
     training_config = TrainingConfig(
         chunk_size=2,
@@ -2820,7 +2821,7 @@ def test_standard_joint_training_couples_video_and_action_noise_clarity() -> Non
         attn_window=8,
         video_condition_on_action=True,
         video_action_condition_source="noisy_action",
-        couple_action_to_video_timesteps=True,
+        joint_timestep_coupling=JointTimestepCoupling.MATCH_SIGMA,
     )
     training_config = TrainingConfig(
         chunk_size=2,
@@ -2854,6 +2855,68 @@ def test_standard_joint_training_couples_video_and_action_noise_clarity() -> Non
     assert torch.allclose(video_sigmas, action_sigmas, atol=2e-3, rtol=0.0)
 
 
+def test_standard_joint_training_can_match_scheduler_index_without_matching_sigma() -> None:
+    torch.manual_seed(12)
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=1,
+        patch_size_w=1,
+    )
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode=ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        frame_chunk_size=2,
+        action_per_frame=2,
+        attn_window=8,
+        video_condition_on_action=True,
+        video_action_condition_source="noisy_action",
+        joint_timestep_coupling=JointTimestepCoupling.MATCH_INDEX,
+    )
+    training_config = TrainingConfig(
+        chunk_size=2,
+        window_size=8,
+        video_num_train_timesteps=1000,
+        action_num_train_timesteps=1000,
+        video_sigma_shift=5.0,
+        action_sigma_shift=1.0,
+    )
+
+    artifacts = prepare_parallel_action_conditioned_train_artifacts(
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        video_latents=torch.randn(1, 3, 4, 2, 2),
+        actions=torch.randn(1, 8, 5),
+        action_mask=None,
+        text_emb=torch.randn(1, 512, 16),
+    )
+    input_dict = artifacts.input_dict
+    video_timesteps = input_dict["latent_dict"]["timesteps"][0]
+    action_timesteps = input_dict["action_dict"]["timesteps"][0]
+    video_ids = torch.argmin(
+        (artifacts.latent_scheduler.timesteps[:, None] - video_timesteps[None]).abs(),
+        dim=0,
+    )
+    action_ids = torch.argmin(
+        (artifacts.action_scheduler.timesteps[:, None] - action_timesteps[None]).abs(),
+        dim=0,
+    )
+    video_sigmas = artifacts.latent_scheduler.sigma_for_timesteps(video_timesteps)
+    action_sigmas = artifacts.action_scheduler.sigma_for_timesteps(action_timesteps)
+
+    assert input_dict["joint_timestep_coupling"] == JointTimestepCoupling.MATCH_INDEX.value
+    assert input_dict["coupled_action_video_timesteps"] is False
+    assert torch.equal(video_ids, action_ids)
+    assert not torch.allclose(video_sigmas, action_sigmas, atol=2e-3, rtol=0.0)
+
+
 def test_staged_video_then_action_keeps_independent_noise_schedule() -> None:
     backbone_config = LingbotCompatibleVideoBackboneConfig(
         hidden_size=32,
@@ -2873,7 +2936,7 @@ def test_staged_video_then_action_keeps_independent_noise_schedule() -> None:
         frame_chunk_size=2,
         action_per_frame=2,
         attn_window=8,
-        couple_action_to_video_timesteps=True,
+        joint_timestep_coupling=JointTimestepCoupling.MATCH_SIGMA,
     )
     training_config = TrainingConfig(
         chunk_size=2,
@@ -2893,6 +2956,7 @@ def test_staged_video_then_action_keeps_independent_noise_schedule() -> None:
     )
 
     assert artifacts.input_dict["coupled_action_video_timesteps"] is False
+    assert artifacts.input_dict["joint_timestep_coupling"] == JointTimestepCoupling.INDEPENDENT.value
 
 
 def test_coupled_inference_steps_action_on_shared_video_sigma_schedule() -> None:
@@ -2952,7 +3016,7 @@ def test_coupled_inference_steps_action_on_shared_video_sigma_schedule() -> None
 def _generalist_policy_config(
     mode: JointDenoiseTrainingMode,
     *,
-    couple_action_to_video_timesteps: bool = True,
+    joint_timestep_coupling: JointTimestepCoupling = JointTimestepCoupling.MATCH_SIGMA,
 ) -> ParallelStreamPolicyConfig:
     return ParallelStreamPolicyConfig(
         hidden_size=32,
@@ -2964,7 +3028,7 @@ def _generalist_policy_config(
         attn_window=8,
         video_condition_on_action=True,
         video_action_condition_source="noisy_action",
-        couple_action_to_video_timesteps=couple_action_to_video_timesteps,
+        joint_timestep_coupling=joint_timestep_coupling,
         joint_denoise_training_mode_probs={mode: 1.0},
     )
 
@@ -2972,6 +3036,7 @@ def _generalist_policy_config(
 def _small_generalist_artifacts(
     mode: JointDenoiseTrainingMode,
     *,
+    joint_timestep_coupling: JointTimestepCoupling = JointTimestepCoupling.MATCH_SIGMA,
     drop_text_conditioning: bool | None = None,
 ):
     torch.manual_seed(7)
@@ -2986,7 +3051,7 @@ def _small_generalist_artifacts(
         patch_size_h=1,
         patch_size_w=1,
     )
-    policy_config = _generalist_policy_config(mode)
+    policy_config = _generalist_policy_config(mode, joint_timestep_coupling=joint_timestep_coupling)
     training_config = TrainingConfig(
         chunk_size=2,
         window_size=8,
@@ -3024,6 +3089,9 @@ def test_generalist_joint_denoising_action_conditioned_video_uses_clean_action_s
     assert torch.all(input_dict["latent_dict"]["loss_mask"] == 1)
     assert torch.all(input_dict["latent_dict"]["latent"] == 0)
     assert torch.all(input_dict["action_dict"]["latent"] == 0)
+    shared_sigmas = input_dict["joint_denoise_shared_sigmas"]
+    latent_sigmas = artifacts.latent_scheduler.sigma_for_timesteps(input_dict["latent_dict"]["timesteps"][0])
+    assert torch.allclose(latent_sigmas, shared_sigmas, atol=2e-3, rtol=0.0)
 
 
 def test_generalist_joint_denoising_video_conditioned_action_uses_clean_video_slot() -> None:
@@ -3040,6 +3108,9 @@ def test_generalist_joint_denoising_video_conditioned_action_uses_clean_video_sl
     assert torch.all(input_dict["action_dict"]["loss_mask"] == 1)
     assert torch.all(input_dict["latent_dict"]["latent"] == 0)
     assert torch.all(input_dict["action_dict"]["latent"] == 0)
+    shared_sigmas = input_dict["joint_denoise_shared_sigmas"]
+    expected_action_timesteps = artifacts.action_scheduler.timestep_matching_sigma(shared_sigmas)
+    assert torch.equal(input_dict["action_dict"]["timesteps"][0], expected_action_timesteps)
 
 
 def test_generalist_joint_denoising_joint_mode_couples_noise_clarity() -> None:
@@ -3056,6 +3127,10 @@ def test_generalist_joint_denoising_joint_mode_couples_noise_clarity() -> None:
     assert shared_sigmas.shape == (4,)
     assert torch.all(shared_sigmas >= 0)
     assert torch.all(shared_sigmas <= 1)
+    latent_sigmas = artifacts.latent_scheduler.sigma_for_timesteps(input_dict["latent_dict"]["timesteps"][0])
+    expected_action_timesteps = artifacts.action_scheduler.timestep_matching_sigma(shared_sigmas)
+    assert torch.allclose(latent_sigmas, shared_sigmas, atol=2e-3, rtol=0.0)
+    assert torch.equal(input_dict["action_dict"]["timesteps"][0], expected_action_timesteps)
 
 
 def test_generalist_joint_denoising_conditional_modes_drop_text_by_default() -> None:

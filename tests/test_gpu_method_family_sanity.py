@@ -29,6 +29,7 @@ from open_wam.configs import (
     BatchAdapterName,
     MoTConditionMode,
     MoTRuntimeMode,
+    JointTimestepCoupling,
     ParallelActionAttentionScope,
     ParallelActionConditionSource,
     ParallelRuntimeMode,
@@ -178,7 +179,7 @@ def _mutate_parallel_action_conditioned(raw: dict[str, Any]) -> None:
     policy_variant["video_condition_on_action"] = True
     policy_variant["video_action_condition_source"] = ParallelActionConditionSource.NOISY_ACTION.value
     policy_variant["video_action_attention_scope"] = ParallelActionAttentionScope.BLOCK_LOCAL.value
-    policy_variant["couple_action_to_video_timesteps"] = True
+    policy_variant["joint_timestep_coupling"] = JointTimestepCoupling.MATCH_SIGMA.value
     _cap_inference_steps(raw, steps=2)
     raw.setdefault("inference", {})["use_cache"] = False
 

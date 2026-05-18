@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
+import gc
 import json
 from pathlib import Path
 import time
@@ -67,6 +69,20 @@ def _load_state_dict_options() -> StateDictOptions:
     )
 
 
+def _release_unused_device_memory() -> None:
+    """Drop Python and CUDA allocator caches before memory-heavy checkpoint ops."""
+
+    gc.collect()
+    if not torch.cuda.is_available():
+        return
+    torch.cuda.empty_cache()
+    try:
+        torch.cuda.ipc_collect()
+    except RuntimeError:
+        # ipc_collect can fail if CUDA is not initialized for this rank yet.
+        pass
+
+
 def _densify_optimizer_state_dict(
     *,
     model: nn.Module,
@@ -108,6 +124,76 @@ def _densify_optimizer_state_dict(
     }
 
 
+def _is_dtensor(value: object) -> bool:
+    try:
+        from torch.distributed.tensor import DTensor
+    except ImportError:
+        return False
+    return isinstance(value, DTensor)
+
+
+def _iter_model_state_tensors(model: nn.Module):
+    yield from model.parameters(recurse=True)
+    yield from model.buffers(recurse=True)
+
+
+def _non_scalar_model_state_devices(model: nn.Module) -> set[torch.device]:
+    return {
+        value.device
+        for value in _iter_model_state_tensors(model)
+        if torch.is_tensor(value) and value.dim() > 0
+    }
+
+
+@contextmanager
+def _cpu_align_non_dtensor_state_for_full_load(model: nn.Module):
+    """Temporarily align mixed CPU-offload FSDP state so DCP full-state load works."""
+
+    moved: list[tuple[torch.Tensor, torch.device]] = []
+    for value in _iter_model_state_tensors(model):
+        if not torch.is_tensor(value) or value.dim() == 0 or _is_dtensor(value):
+            continue
+        original_device = value.device
+        if original_device.type == "cpu":
+            continue
+        moved.append((value, original_device))
+        value.data = value.data.to("cpu")
+    try:
+        yield
+    finally:
+        for value, original_device in moved:
+            value.data = value.data.to(original_device)
+
+
+def _set_model_state_dict(model: nn.Module, model_state_dict: dict[str, Any], options: StateDictOptions) -> None:
+    devices = _non_scalar_model_state_devices(model)
+    if dist.is_initialized() and torch.device("cpu") in devices and len(devices) > 1:
+        with _cpu_align_non_dtensor_state_for_full_load(model):
+            set_model_state_dict(model, model_state_dict, options=options)
+        return
+    set_model_state_dict(model, model_state_dict, options=options)
+
+
+def _load_sibling_train_state(checkpoint_path: Path) -> dict[str, Any] | None:
+    """Recover step metadata for lightweight model-only warm starts when available."""
+
+    if checkpoint_path.name != "model_state.pt":
+        return None
+    train_state_path = checkpoint_path.parent / "train_state.json"
+    if not train_state_path.is_file():
+        return None
+    with train_state_path.open("r", encoding="utf-8") as handle:
+        raw = json.load(handle)
+    if not isinstance(raw, dict):
+        raise ValueError(f"Expected object in {train_state_path}, got {type(raw).__name__}.")
+    # A model-only checkpoint has no optimizer/scheduler/sampler state. Preserve
+    # the step counters for logging and max-step continuation, but do not skip
+    # batches as if this were an exact full-training-state resume.
+    raw["epoch_index"] = 0
+    raw["seen_batches"] = 0
+    return raw
+
+
 class CheckpointManager:
     """Own save/load/export behavior for the composable training runtime."""
 
@@ -146,6 +232,10 @@ class CheckpointManager:
             for marker in (payload_marker, completion_marker):
                 if marker.exists():
                     marker.unlink()
+        if dist.is_initialized():
+            dist.barrier()
+
+        _release_unused_device_memory()
         if dist.is_initialized():
             dist.barrier()
 
@@ -191,6 +281,12 @@ class CheckpointManager:
         if self.export_runtime_backbone:
             self._export_runtime_backbone(checkpoint_dir, model)
 
+        del payload
+        del model_state_dict
+        _release_unused_device_memory()
+        if dist.is_initialized():
+            dist.barrier()
+
         if _is_rank_zero():
             completion_marker.write_text("ok\n", encoding="utf-8")
         elif dist.is_initialized():
@@ -207,9 +303,9 @@ class CheckpointManager:
         map_location: str | torch.device = "cpu",
     ) -> tuple[TrainState, dict[str, object]]:
         checkpoint_path = self.resolve_checkpoint_path(path)
-        payload = torch.load(checkpoint_path, map_location=map_location, weights_only=False)
         load_options = _load_state_dict_options()
-        set_model_state_dict(model, payload["model_state_dict"], options=load_options)
+        payload = torch.load(checkpoint_path, map_location=map_location, weights_only=False)
+        _set_model_state_dict(model, payload["model_state_dict"], options=load_options)
         optimizer_state = payload.get("optimizer_state_dict")
         if optimizer is not None and isinstance(optimizer_state, dict):
             try:
@@ -225,7 +321,10 @@ class CheckpointManager:
         scheduler_state = payload.get("scheduler_state_dict")
         if scheduler is not None and isinstance(scheduler_state, dict):
             scheduler.load_state_dict(scheduler_state)
-        train_state = TrainState.from_state_dict(payload.get("train_state"))
+        raw_train_state = payload.get("train_state")
+        if raw_train_state is None:
+            raw_train_state = _load_sibling_train_state(checkpoint_path)
+        train_state = TrainState.from_state_dict(raw_train_state)
         train_state.last_checkpoint_path = str(checkpoint_path.parent)
         train_state.resume_source = str(checkpoint_path)
         return train_state, payload

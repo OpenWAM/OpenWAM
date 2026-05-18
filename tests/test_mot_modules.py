@@ -11,6 +11,7 @@ from open_wam.configs import (
     CurrentBlockCoupling,
     ExperimentConfig,
     InferenceConfig,
+    JointTimestepCoupling,
     MLPActionDecoderConfig,
     MoTGeneralistTrainingMode,
     MoTActionExpertInitMode,
@@ -48,6 +49,7 @@ from open_wam.models.policy_variants.mot.runtime_routing import (
 from open_wam.models.policy_variants.mot.variant import (
     MoTPolicyVariant,
     _rewind_runtime_action_cache_to_frame,
+    _slice_current_noisy_action_flow,
 )
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore
@@ -1161,12 +1163,30 @@ def test_mot_generalist_packed_infer_couples_action_to_video_sigma_schedule(
     )
 
     assert output.policy_output.aux["mot_packed_history_debug"]["coupled_action_video_sigmas"] is True
+    assert (
+        output.policy_output.aux["mot_packed_history_debug"]["joint_timestep_coupling"]
+        == JointTimestepCoupling.MATCH_SIGMA.value
+    )
     assert len(captured_action_timesteps) == 2
     first_step_noisy_action_t = captured_action_timesteps[0][0, :4]
     second_step_noisy_action_t = captured_action_timesteps[1][0, :4]
     assert torch.allclose(first_step_noisy_action_t, torch.full_like(first_step_noisy_action_t, 1000.0))
     assert torch.allclose(second_step_noisy_action_t, torch.full_like(second_step_noisy_action_t, 833.0))
     assert not torch.allclose(second_step_noisy_action_t, torch.full_like(second_step_noisy_action_t, 500.0))
+
+
+def test_slice_current_noisy_action_flow_skips_packed_history_tokens() -> None:
+    packed_action_flow = torch.arange(2 * 20 * 3, dtype=torch.float32).reshape(2, 20, 3)
+
+    current = _slice_current_noisy_action_flow(
+        packed_action_flow,
+        history_action_tokens=6,
+        action_horizon=8,
+    )
+
+    assert current.shape == (2, 8, 3)
+    assert torch.equal(current, packed_action_flow[:, 6:14])
+    assert current.is_contiguous()
 
 
 @pytest.mark.parametrize(

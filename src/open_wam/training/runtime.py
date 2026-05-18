@@ -290,6 +290,8 @@ class TrainingRuntime:
                 self._train_micro_step(batch)
                 if self._should_run_validation_interval(previous_optimizer_step=previous_optimizer_step):
                     self._run_all_validation(limit_batches=policy.limit_val_batches)
+                if self.train_state.optimizer_step != previous_optimizer_step and self._should_save_checkpoint():
+                    self._save_checkpoint(final=False)
             self._run_all_validation(limit_batches=policy.limit_val_batches)
             self.train_state.epoch_index += 1
         self._save_checkpoint(final=True)
@@ -318,6 +320,8 @@ class TrainingRuntime:
                 self._train_micro_step(batch)
                 if self._should_run_validation_interval(previous_optimizer_step=previous_optimizer_step):
                     self._run_all_validation(limit_batches=policy.limit_val_batches)
+                if self.train_state.optimizer_step != previous_optimizer_step and self._should_save_checkpoint():
+                    self._save_checkpoint(final=False)
                 if not policy.should_continue(self.train_state):
                     break
             if not saw_batch:
@@ -383,9 +387,6 @@ class TrainingRuntime:
             or self.train_state.optimizer_step % self.config.trainer.log_every_n_steps == 0
         ):
             self.log_sink.log_metrics(step=self.train_state.optimizer_step, phase="train", metrics=metric_payload)
-        if self._should_save_checkpoint():
-            self._save_checkpoint(final=False)
-
     def _run_all_validation(self, *, limit_batches: int | None) -> None:
         current_step = int(self.train_state.optimizer_step)
         if getattr(self, "_last_validation_optimizer_step", None) == current_step:
@@ -461,7 +462,8 @@ class TrainingRuntime:
         return getattr(self, "_last_validation_optimizer_step", None) != current_step
 
     def _should_save_checkpoint(self) -> bool:
-        save_interval = self.config.trainer.save_interval
+        trainer_config = getattr(getattr(self, "config", None), "trainer", None)
+        save_interval = getattr(trainer_config, "save_interval", None)
         if save_interval is None or save_interval <= 0:
             return False
         return self.train_state.optimizer_step > 0 and self.train_state.optimizer_step % save_interval == 0

@@ -25,6 +25,8 @@ from open_wam.configs.enums import (
     EvalMode,
     GeneralistTrainingParadigm,
     JointDenoiseTrainingMode,
+    JointTimestepCoupling,
+    LatentTemporalLayout,
     MoTActionExpertInitMode,
     MoTConditionMode,
     MoTGeneralistTrainingMode,
@@ -125,6 +127,13 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
         return
     if not data.get("dataset_type") and not data.get("dataset_name"):
         issues.error("data", "Expected `dataset_type` or `dataset_name`.")
+    _validate_enum(data, "latent_temporal_layout", LatentTemporalLayout, issues, "data")
+    if data.get("latent_temporal_layout") == LatentTemporalLayout.EQUAL_BUCKET_LEGACY.value:
+        issues.error(
+            "data.latent_temporal_layout",
+            "`equal_bucket_legacy` is deprecated and unsupported. Equal-bucket latent/action alignment "
+            "silently drops early actions for Wan/LingBot latents; use `wan_causal_stride4`.",
+        )
     _validate_positive_ints(
         data,
         issues,
@@ -181,6 +190,7 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
             _validate_enum(policy_variant, "runtime_mode", ParallelRuntimeMode, issues, "policy_variant")
             _validate_enum(policy_variant, "variant_profile", ParallelStreamVariantProfile, issues, "policy_variant")
             _validate_enum(policy_variant, "current_block_coupling", CurrentBlockCoupling, issues, "policy_variant")
+            _validate_enum(policy_variant, "joint_timestep_coupling", JointTimestepCoupling, issues, "policy_variant")
             _validate_enum(
                 policy_variant,
                 "generalist_training_paradigm",
@@ -195,6 +205,7 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
             _validate_enum(policy_variant, "condition_mode", MoTConditionMode, issues, "policy_variant")
             _validate_enum(policy_variant, "action_expert_init_mode", MoTActionExpertInitMode, issues, "policy_variant")
             _validate_enum(policy_variant, "current_block_coupling", CurrentBlockCoupling, issues, "policy_variant")
+            _validate_enum(policy_variant, "joint_timestep_coupling", JointTimestepCoupling, issues, "policy_variant")
             _validate_enum(policy_variant, "proprio_context_mode", ProprioContextMode, issues, "policy_variant")
             _validate_enum(
                 policy_variant,

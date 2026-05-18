@@ -31,7 +31,7 @@ data:
     window_size: 30
     randomize_geometry: true
     start_padding_frames: 3
-    context_prefix_policy: rollout_history
+    context_prefix_policy: none
     tail_padding_policy: zero_order_hold
     padded_target_policy: mask_loss
     task_start_power: 0.5
@@ -101,6 +101,7 @@ policy_variant:
   name: parallel_stream
   runtime_mode: lingbot_exact
   current_block_coupling: video_then_action
+  joint_timestep_coupling: independent
   reference_profile: libero
   hidden_size: 3072
   frame_chunk_size: 4

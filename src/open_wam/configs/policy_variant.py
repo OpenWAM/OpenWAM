@@ -7,6 +7,7 @@ from .enums import (
     ActionNormMethod,
     CurrentBlockCoupling,
     JointDenoiseTrainingMode,
+    JointTimestepCoupling,
     ParallelActionAttentionScope,
     ParallelActionConditionSource,
     AttachSite,
@@ -308,6 +309,12 @@ class MoTPolicyConfig(PolicyVariantConfig):
     # preserves the fixed six-mode path; a dict samples one of joint /
     # action_conditioned_video / video_conditioned_action per segment.
     mot_generalist_training_mode_probs: dict[MoTGeneralistTrainingMode, float] | None = None
+    # Canonical joint denoising synchronizes action/video noise levels by
+    # sigma; index matching and independent clocks are explicit ablations.
+    joint_timestep_coupling: JointTimestepCoupling = JointTimestepCoupling.MATCH_SIGMA
+    # Deprecated compatibility shim for old configs/checkpoints. New configs
+    # should set `joint_timestep_coupling` explicitly instead.
+    couple_action_to_video_timesteps: bool | None = None
     generalist_training_paradigm: GeneralistTrainingParadigm = GeneralistTrainingParadigm.DEMO_ONLY
 
     def __post_init__(self) -> None:
@@ -357,6 +364,7 @@ class MoTPolicyConfig(PolicyVariantConfig):
                 "action_expert_init_mode": MoTActionExpertInitMode,
                 "generalist_training_paradigm": GeneralistTrainingParadigm,
                 "proprio_context_mode": ProprioContextMode,
+                "joint_timestep_coupling": JointTimestepCoupling,
             },
             optional_enum_fields={
                 "preset": MoTPreset,
@@ -366,6 +374,14 @@ class MoTPolicyConfig(PolicyVariantConfig):
                 "mot_generalist_training_mode_probs": _coerce_mot_generalist_training_mode_probs,
             },
         )
+        if self.couple_action_to_video_timesteps is not None:
+            object.__setattr__(
+                self,
+                "joint_timestep_coupling",
+                JointTimestepCoupling.MATCH_SIGMA
+                if bool(self.couple_action_to_video_timesteps)
+                else JointTimestepCoupling.INDEPENDENT,
+            )
         if self.mot_generalist_training_mode_probs is not None:
             if self.current_block_coupling != CurrentBlockCoupling.JOINT:
                 raise ValueError(
@@ -453,7 +469,12 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
     video_action_condition_source: ParallelActionConditionSource = ParallelActionConditionSource.NOISY_ACTION
     video_action_attention_scope: ParallelActionAttentionScope = ParallelActionAttentionScope.BLOCK_LOCAL
     current_block_coupling: CurrentBlockCoupling | None = None
-    couple_action_to_video_timesteps: bool = True
+    # Canonical joint denoising synchronizes action/video noise levels by
+    # sigma; index matching and independent clocks are explicit ablations.
+    joint_timestep_coupling: JointTimestepCoupling = JointTimestepCoupling.MATCH_SIGMA
+    # Deprecated compatibility shim for old configs/checkpoints. New configs
+    # should set `joint_timestep_coupling` explicitly instead.
+    couple_action_to_video_timesteps: bool | None = None
     joint_denoise_training_mode_probs: dict[JointDenoiseTrainingMode, float] | None = None
     generalist_training_paradigm: GeneralistTrainingParadigm = GeneralistTrainingParadigm.DEMO_ONLY
     # When true, restrict PAST-chunk attention (both clean_to_clean and
@@ -492,6 +513,7 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
                 "proprio_context_mode": ProprioContextMode,
                 "temporal_position_mode": TemporalPositionMode,
                 "action_norm_method": ActionNormMethod,
+                "joint_timestep_coupling": JointTimestepCoupling,
             },
             optional_enum_fields={"current_block_coupling": CurrentBlockCoupling},
             enum_tuple_fields={"sequence_order": ParallelSequenceComponent},
@@ -502,6 +524,14 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
                 )
             },
         )
+        if self.couple_action_to_video_timesteps is not None:
+            object.__setattr__(
+                self,
+                "joint_timestep_coupling",
+                JointTimestepCoupling.MATCH_SIGMA
+                if bool(self.couple_action_to_video_timesteps)
+                else JointTimestepCoupling.INDEPENDENT,
+            )
         assert self.joint_denoise_training_mode_probs is not None
         if bool(self.require_condition_latents) and not bool(self.use_condition_latents):
             raise ValueError(

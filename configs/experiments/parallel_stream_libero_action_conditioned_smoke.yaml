@@ -77,7 +77,7 @@ policy_variant:
   video_condition_on_action: true
   video_action_condition_source: noisy_action
   video_action_attention_scope: block_local
-  couple_action_to_video_timesteps: true
+  joint_timestep_coupling: match_sigma
 
 action_decoder:
   name: lingbot_parallel_decoder

@@ -12,6 +12,7 @@ from open_wam.configs import (
     CausalVideoPredictionPolicyConfig,
     ExperimentConfig,
     InferenceConfig,
+    JointTimestepCoupling,
     LingbotParallelActionDecoderConfig,
     LiberoDataConfig,
     MLPActionDecoderConfig,
@@ -90,7 +91,7 @@ def test_action_conditioned_parallel_stream_builds_with_shared_backbone() -> Non
             video_condition_on_action=True,
             video_action_condition_source="noisy_action",
             video_action_attention_scope="block_local",
-            couple_action_to_video_timesteps=True,
+            joint_timestep_coupling=JointTimestepCoupling.MATCH_SIGMA,
         ),
         action_decoder=LingbotParallelActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8),
@@ -139,16 +140,17 @@ def test_reference_core_weight_loading_uses_vendored_reference_model_by_default(
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=2,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=1, state_dim=4, state_horizon=1),
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
         ),
         backbone=backbone_config,
-        policy_variant=RegisterAttachedPolicyConfig(
+        policy_variant=ParallelStreamPolicyConfig(
             hidden_size=32,
-            num_frame_per_block=1,
-            num_action_per_block=1,
-            num_state_per_block=1,
+            runtime_mode="lingbot_exact",
+            frame_chunk_size=2,
+            action_per_frame=2,
+            attn_window=8,
         ),
-        action_decoder=RegisterActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=1),
+        action_decoder=LingbotParallelActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8),
         inference=InferenceConfig(frame_chunk_size=2),
     )

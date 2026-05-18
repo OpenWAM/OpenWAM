@@ -29,7 +29,7 @@ data:
     window_size: 30
     randomize_geometry: true
     start_padding_frames: 3
-    context_prefix_policy: rollout_history
+    context_prefix_policy: none
     tail_padding_policy: zero_order_hold
     padded_target_policy: mask_loss
     task_start_power: 0.5
@@ -118,7 +118,9 @@ policy_variant:
   video_condition_on_action: true
   video_action_condition_source: noisy_action
   video_action_attention_scope: block_local
-  couple_action_to_video_timesteps: true
+  # Canonical GJD uses the video scheduler as the single sigma clock for joint,
+  # FDM, and IDM modes. Use `match_index`/`independent` only for ablations.
+  joint_timestep_coupling: match_sigma
   preserve_video_pretrain_history: true
   joint_denoise_training_mode_probs:
     joint: 0.6

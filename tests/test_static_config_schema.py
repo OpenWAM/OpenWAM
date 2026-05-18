@@ -58,6 +58,42 @@ trainer:
 
 
 @pytest.mark.unit
+def test_static_validator_rejects_deprecated_equal_bucket_latent_layout(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_latent_layout.yaml"
+    config_path.write_text(
+        """
+name: bad_latent_layout
+data:
+  dataset_name: libero
+  dataset_type: lerobot_v2_latent_local
+  latent_temporal_layout: equal_bucket_legacy
+  action_schema:
+    action_dim: 7
+    action_horizon: 16
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: parallel_stream
+  runtime_mode: lingbot_exact
+action_decoder:
+  name: lingbot_parallel
+  action_dim: 7
+  action_horizon: 16
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any("equal_bucket_legacy" in issue.message and "deprecated" in issue.message for issue in report.errors)
+
+
+@pytest.mark.unit
 def test_static_validator_catches_parallel_stream_proprio_context_typo(tmp_path: Path) -> None:
     config_path = tmp_path / "bad_parallel_proprio.yaml"
     config_path.write_text(

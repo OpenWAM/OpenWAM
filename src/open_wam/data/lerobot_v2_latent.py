@@ -19,6 +19,7 @@ from open_wam.configs import (
     ActionTargetRepresentation,
     DataConfig,
     DataSplit,
+    LatentTemporalLayout,
     LatentWindowProfile,
     PaddedTargetPolicy,
     SampleWeightMode,
@@ -35,6 +36,12 @@ from .action_mapping import (
     resolve_action_source_dim,
 )
 from .latent_contracts import LatentWAMSample
+from .latent_temporal import (
+    latent_anchor_positions,
+    latent_raw_boundaries,
+    observed_frame_ids_for_latent_segment,
+    raw_span_for_latent_range,
+)
 from .lerobot_v2 import LeRobotEpisodeRecord, LeRobotV2Metadata, _resolve_row_key
 from .replay_status import filter_episode_indices_by_replay_status, load_replay_status_records
 from open_wam.utils.latent_filenames import match_latent_window_filename
@@ -276,16 +283,34 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
         assert video_latents is not None
 
         primary_payload = latent_payloads[self.data_config.latent_camera_names[0]]
-        observed_frame_ids = [int(value) for value in list(primary_payload.get("frame_ids", []))]
-        if not observed_frame_ids:
-            observed_frame_ids = list(window.observation_frame_indices)
-        observation_start = int(observed_frame_ids[0])
-        observation_end = int(observed_frame_ids[-1]) + 1
+        raw_frame_ids = [int(value) for value in list(primary_payload.get("frame_ids", []))]
+        if not raw_frame_ids:
+            raw_frame_ids = list(window.observation_frame_indices)
+        observed_frame_ids = observed_frame_ids_for_latent_segment(
+            raw_frame_ids=raw_frame_ids,
+            source_latent_frames=int(video_latents.shape[1]),
+            latent_start=0,
+            segment_length=int(video_latents.shape[1]),
+            layout=self.data_config.latent_temporal_layout,
+        )
+        _, _, observation_start, observation_end = raw_span_for_latent_range(
+            raw_frame_ids=raw_frame_ids,
+            source_latent_frames=int(video_latents.shape[1]),
+            latent_start=0,
+            latent_end=int(video_latents.shape[1]),
+            layout=self.data_config.latent_temporal_layout,
+        )
         anchor_frame_index = observed_frame_ids[-1]
+        sampled_window = LocalEpisodeWindow(
+            repo_root=window.repo_root,
+            episode_index=window.episode_index,
+            start_frame=observation_start,
+            end_frame=min(observation_end, len(rows)),
+        )
 
         actions, action_mask, action_target_metadata = self._build_full_segment_action_targets(
             rows=rows,
-            window=window,
+            window=sampled_window,
             observed_frame_ids=observed_frame_ids,
             latent_num_frames=int(video_latents.shape[1]),
         )
@@ -331,6 +356,7 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
                 "window_end_frame": observation_end,
                 "anchor_frame_index": anchor_frame_index,
                 "observed_frame_ids": observed_frame_ids,
+                "latent_temporal_layout": self.data_config.latent_temporal_layout,
                 "task_index": task_index,
                 "latent_layout": latent_layout_metadata,
                 "state_source_key": self.data_config.action_target.pose_source_key,
@@ -774,17 +800,17 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
         return rows
 
     @staticmethod
-    def _build_raw_bucket_boundaries(*, raw_frame_count: int, latent_num_frames: int) -> list[int]:
-        if raw_frame_count <= 0 or latent_num_frames <= 0:
-            raise ValueError(
-                "Expected positive raw frame and latent frame counts for aligned subwindow sampling, "
-                f"got raw_frame_count={raw_frame_count}, latent_num_frames={latent_num_frames}."
-            )
-        boundaries = []
-        for latent_index in range(latent_num_frames + 1):
-            boundaries.append((latent_index * raw_frame_count) // latent_num_frames)
-        boundaries[-1] = raw_frame_count
-        return boundaries
+    def _build_raw_bucket_boundaries(
+        *,
+        raw_frame_count: int,
+        latent_num_frames: int,
+        latent_temporal_layout: LatentTemporalLayout | str = LatentTemporalLayout.WAN_CAUSAL_STRIDE4,
+    ) -> list[int]:
+        return latent_raw_boundaries(
+            raw_frame_count=raw_frame_count,
+            latent_num_frames=latent_num_frames,
+            layout=latent_temporal_layout,
+        )
 
 
 class LocalLatentWeightedTrainSampler(Sampler[int]):
@@ -1085,6 +1111,7 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
             source_latent_frames=source_latent_frames,
             latent_start=latent_start,
             segment_length=segment_length,
+            latent_temporal_layout=self.data_config.latent_temporal_layout,
         )
         frame_stride = 1
         if len(observed_frame_ids) > 1:
@@ -1092,16 +1119,13 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
         prefix_actions = int(self.data_config.action_schema.action_horizon // max(1, self.data_config.num_frames))
         source_latent_start = max(0, latent_start)
         valid_latent_end = min(source_latent_frames, max(0, latent_start + segment_length))
-        boundaries = self._build_raw_bucket_boundaries(
-            raw_frame_count=len(raw_frame_ids),
-            latent_num_frames=source_latent_frames,
+        _, _, sample_start_frame, sample_end_frame = raw_span_for_latent_range(
+            raw_frame_ids=raw_frame_ids,
+            source_latent_frames=source_latent_frames,
+            latent_start=source_latent_start,
+            latent_end=valid_latent_end,
+            layout=self.data_config.latent_temporal_layout,
         )
-        raw_start_position = min(boundaries[source_latent_start], len(raw_frame_ids) - 1)
-        raw_end_position = boundaries[valid_latent_end]
-        if raw_end_position <= raw_start_position:
-            raw_end_position = raw_start_position + 1
-        sample_start_frame = raw_frame_ids[raw_start_position]
-        sample_end_frame = raw_frame_ids[min(len(raw_frame_ids) - 1, raw_end_position - 1)] + 1
         raw_action_steps = max(0, sample_end_frame - sample_start_frame)
         required_action_steps = max(1, segment_length * prefix_actions)
         leading_valid_action_steps = prefix_actions
@@ -1233,6 +1257,7 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
                 "proprio_context_frame_index": subwindow["proprio_context_frame_index"],
                 "proprio_context_local_frame": subwindow["proprio_context_local_frame"],
                 "observed_frame_ids": subwindow["observed_frame_ids"],
+                "latent_temporal_layout": subwindow["latent_temporal_layout"],
                 "task_index": task_index,
                 "latent_layout": latent_layout_metadata,
                 "condition_latent_layout": condition_layout_metadata,
@@ -1481,19 +1506,17 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
             source_latent_frames=source_latent_frames,
             latent_start=tensor_latent_start,
             segment_length=tensor_segment_length,
-        )
-        boundaries = self._build_raw_bucket_boundaries(
-            raw_frame_count=len(raw_frame_ids),
-            latent_num_frames=source_latent_frames,
+            latent_temporal_layout=self.data_config.latent_temporal_layout,
         )
         source_latent_start = max(0, tensor_latent_start)
-        raw_start_position = min(boundaries[source_latent_start], len(raw_frame_ids) - 1)
         valid_latent_end = min(source_latent_frames, max(0, tensor_latent_start + tensor_segment_length))
-        raw_end_position = boundaries[valid_latent_end]
-        if raw_end_position <= raw_start_position:
-            raw_end_position = raw_start_position + 1
-        sample_start_frame = raw_frame_ids[raw_start_position]
-        sample_end_frame = raw_frame_ids[min(len(raw_frame_ids) - 1, raw_end_position - 1)] + 1
+        _, _, sample_start_frame, sample_end_frame = raw_span_for_latent_range(
+            raw_frame_ids=raw_frame_ids,
+            source_latent_frames=source_latent_frames,
+            latent_start=source_latent_start,
+            latent_end=valid_latent_end,
+            layout=self.data_config.latent_temporal_layout,
+        )
         anchor_frame_index = observed_frame_ids[-1]
 
         sampled_window = LocalEpisodeWindow(
@@ -1549,6 +1572,7 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
             "proprio_context_frame_index": proprio_context_frame_index,
             "proprio_context_local_frame": proprio_context_local_frame,
             "observed_frame_ids": observed_frame_ids,
+            "latent_temporal_layout": self.data_config.latent_temporal_layout,
             "action_start_index": sample_start_frame,
             "action_end_index": sample_start_frame + int(actions.shape[0]),
             "valid_latent_frames": valid_latent_frames,
@@ -1740,27 +1764,15 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
         source_latent_frames: int,
         latent_start: int,
         segment_length: int,
+        latent_temporal_layout: LatentTemporalLayout | str = LatentTemporalLayout.WAN_CAUSAL_STRIDE4,
     ) -> list[int]:
-        boundaries = LocalLeRobotLatentWindowDataset._build_raw_bucket_boundaries(
-            raw_frame_count=len(raw_frame_ids),
-            latent_num_frames=source_latent_frames,
+        return observed_frame_ids_for_latent_segment(
+            raw_frame_ids=raw_frame_ids,
+            source_latent_frames=source_latent_frames,
+            latent_start=latent_start,
+            segment_length=segment_length,
+            layout=latent_temporal_layout,
         )
-        observed_frame_ids: list[int] = []
-        for latent_index in range(latent_start, latent_start + segment_length):
-            if latent_index < 0:
-                observed_frame_ids.append(raw_frame_ids[0])
-                continue
-            if latent_index >= source_latent_frames:
-                observed_frame_ids.append(raw_frame_ids[-1])
-                continue
-            bucket_start = boundaries[latent_index]
-            bucket_end = boundaries[latent_index + 1]
-            if bucket_start >= len(raw_frame_ids):
-                observed_frame_ids.append(raw_frame_ids[-1])
-                continue
-            bucket = raw_frame_ids[bucket_start:bucket_end]
-            observed_frame_ids.append(bucket[-1] if bucket else raw_frame_ids[bucket_start])
-        return observed_frame_ids
 
     @staticmethod
     def _slice_video_latents_with_zero_hold(
@@ -2148,6 +2160,7 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
                 "proprio_context_frame_index": subwindow["proprio_context_frame_index"],
                 "proprio_context_local_frame": subwindow["proprio_context_local_frame"],
                 "observed_frame_ids": subwindow["observed_frame_ids"],
+                "latent_temporal_layout": subwindow["latent_temporal_layout"],
                 "task_index": task_index,
                 "latent_layout": latent_layout_metadata,
                 "condition_latent_layout": condition_layout_metadata,
@@ -2259,6 +2272,7 @@ class RandomSubwindowLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
                 "window_end_frame": subwindow["sample_end_frame"],
                 "anchor_frame_index": subwindow["anchor_frame_index"],
                 "observed_frame_ids": subwindow["observed_frame_ids"],
+                "latent_temporal_layout": subwindow["latent_temporal_layout"],
                 "task_index": task_index,
                 "latent_layout": latent_layout_metadata,
                 "state_source_key": self.data_config.action_target.pose_source_key,
@@ -2318,6 +2332,7 @@ class RandomSubwindowLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
         raw_bucket_boundaries = self._build_raw_bucket_boundaries(
             raw_frame_count=len(raw_frame_ids),
             latent_num_frames=int(video_latents.shape[1]),
+            latent_temporal_layout=self.data_config.latent_temporal_layout,
         )
         max_latent_start = int(video_latents.shape[1]) - sample_num_frames
         valid_latent_starts: list[int] = []
@@ -2349,13 +2364,20 @@ class RandomSubwindowLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
             latent_start = valid_latent_starts[rng.randrange(len(valid_latent_starts))]
 
         latent_end = latent_start + sample_num_frames
-        raw_start_position = raw_bucket_boundaries[latent_start]
-        raw_end_position = raw_bucket_boundaries[latent_end]
-        sample_start_frame = raw_frame_ids[raw_start_position]
-        sample_end_frame = raw_frame_ids[max(raw_start_position, raw_end_position - 1)] + 1
-        observed_frame_ids = raw_frame_ids[raw_start_position:raw_end_position]
-        if not observed_frame_ids:
-            observed_frame_ids = [sample_start_frame]
+        raw_start_position, raw_end_position, sample_start_frame, sample_end_frame = raw_span_for_latent_range(
+            raw_frame_ids=raw_frame_ids,
+            source_latent_frames=int(video_latents.shape[1]),
+            latent_start=latent_start,
+            latent_end=latent_end,
+            layout=self.data_config.latent_temporal_layout,
+        )
+        observed_frame_ids = observed_frame_ids_for_latent_segment(
+            raw_frame_ids=raw_frame_ids,
+            source_latent_frames=int(video_latents.shape[1]),
+            latent_start=latent_start,
+            segment_length=sample_num_frames,
+            layout=self.data_config.latent_temporal_layout,
+        )
         anchor_frame_index = observed_frame_ids[-1]
 
         sampled_window = LocalEpisodeWindow(
@@ -2387,6 +2409,7 @@ class RandomSubwindowLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
             "sample_end_frame": sample_end_frame,
             "anchor_frame_index": anchor_frame_index,
             "observed_frame_ids": observed_frame_ids,
+            "latent_temporal_layout": self.data_config.latent_temporal_layout,
             "latent_start_index": latent_start,
             "latent_end_index": latent_end,
             "action_start_index": sample_start_frame,
@@ -2449,6 +2472,7 @@ class ContextualSubwindowLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDatas
                 "window_end_frame": subwindow["sample_end_frame"],
                 "anchor_frame_index": subwindow["anchor_frame_index"],
                 "observed_frame_ids": subwindow["observed_frame_ids"],
+                "latent_temporal_layout": subwindow["latent_temporal_layout"],
                 "task_index": task_index,
                 "latent_layout": latent_layout_metadata,
                 "state_source_key": self.data_config.action_target.pose_source_key,
@@ -2501,6 +2525,7 @@ class ContextualSubwindowLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDatas
         raw_bucket_boundaries = self._build_raw_bucket_boundaries(
             raw_frame_count=len(raw_frame_ids),
             latent_num_frames=int(video_latents.shape[1]),
+            latent_temporal_layout=self.data_config.latent_temporal_layout,
         )
 
         if self.data_config.split == DataSplit.TRAIN:
@@ -2586,13 +2611,20 @@ class ContextualSubwindowLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDatas
         latent_start = valid_latent_starts[start_rng.randrange(len(valid_latent_starts))]
         latent_end = latent_start + sample_num_frames
 
-        raw_start_position = raw_bucket_boundaries[latent_start]
-        raw_end_position = raw_bucket_boundaries[latent_end]
-        sample_start_frame = raw_frame_ids[raw_start_position]
-        sample_end_frame = raw_frame_ids[max(raw_start_position, raw_end_position - 1)] + 1
-        observed_frame_ids = raw_frame_ids[raw_start_position:raw_end_position]
-        if not observed_frame_ids:
-            observed_frame_ids = [sample_start_frame]
+        raw_start_position, raw_end_position, sample_start_frame, sample_end_frame = raw_span_for_latent_range(
+            raw_frame_ids=raw_frame_ids,
+            source_latent_frames=int(video_latents.shape[1]),
+            latent_start=latent_start,
+            latent_end=latent_end,
+            layout=self.data_config.latent_temporal_layout,
+        )
+        observed_frame_ids = observed_frame_ids_for_latent_segment(
+            raw_frame_ids=raw_frame_ids,
+            source_latent_frames=int(video_latents.shape[1]),
+            latent_start=latent_start,
+            segment_length=sample_num_frames,
+            layout=self.data_config.latent_temporal_layout,
+        )
         anchor_frame_index = observed_frame_ids[-1]
 
         sampled_window = LocalEpisodeWindow(
@@ -2623,6 +2655,7 @@ class ContextualSubwindowLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDatas
             "sample_end_frame": sample_end_frame,
             "anchor_frame_index": anchor_frame_index,
             "observed_frame_ids": observed_frame_ids,
+            "latent_temporal_layout": self.data_config.latent_temporal_layout,
             "latent_start_index": latent_start,
             "latent_end_index": latent_end,
             "action_start_index": sample_start_frame,
@@ -2691,6 +2724,7 @@ class AlignedSubwindowLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset)
                 "window_end_frame": subwindow["sample_end_frame"],
                 "anchor_frame_index": subwindow["anchor_frame_index"],
                 "observed_frame_ids": subwindow["observed_frame_ids"],
+                "latent_temporal_layout": subwindow["latent_temporal_layout"],
                 "task_index": task_index,
                 "latent_layout": latent_layout_metadata,
                 "state_source_key": self.data_config.action_target.pose_source_key,
@@ -2747,6 +2781,7 @@ class AlignedSubwindowLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset)
         raw_bucket_boundaries = self._build_raw_bucket_boundaries(
             raw_frame_count=len(raw_frame_ids),
             latent_num_frames=int(video_latents.shape[1]),
+            latent_temporal_layout=self.data_config.latent_temporal_layout,
         )
         required_latent_span = 1 + (sample_num_frames - 1) * frame_stride
         max_latent_start = int(video_latents.shape[1]) - required_latent_span
@@ -2784,21 +2819,19 @@ class AlignedSubwindowLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset)
         rng = random.Random(self.data_config.split_seed + index)
         latent_start = valid_latent_starts[rng.randrange(len(valid_latent_starts))]
         latent_indices = [latent_start + offset * frame_stride for offset in range(sample_num_frames)]
-        raw_start_position = raw_bucket_boundaries[latent_indices[0]]
-        raw_end_position = raw_bucket_boundaries[latent_indices[-1] + 1]
-        sample_start_frame = raw_frame_ids[raw_start_position]
-        sample_end_frame = raw_frame_ids[max(raw_start_position, raw_end_position - 1)] + 1
-        observed_frame_ids: list[int] = []
-        for latent_index in latent_indices:
-            bucket_start = raw_bucket_boundaries[latent_index]
-            bucket_end = raw_bucket_boundaries[latent_index + 1]
-            if bucket_start >= len(raw_frame_ids):
-                observed_frame_ids.append(raw_frame_ids[-1])
-                continue
-            bucket = raw_frame_ids[bucket_start:bucket_end]
-            observed_frame_ids.append(bucket[-1] if bucket else raw_frame_ids[bucket_start])
-        if not observed_frame_ids:
-            observed_frame_ids = [sample_start_frame]
+        raw_start_position, raw_end_position, sample_start_frame, sample_end_frame = raw_span_for_latent_range(
+            raw_frame_ids=raw_frame_ids,
+            source_latent_frames=int(video_latents.shape[1]),
+            latent_start=latent_indices[0],
+            latent_end=latent_indices[-1] + 1,
+            layout=self.data_config.latent_temporal_layout,
+        )
+        anchor_positions = latent_anchor_positions(
+            raw_frame_count=len(raw_frame_ids),
+            latent_num_frames=int(video_latents.shape[1]),
+            layout=self.data_config.latent_temporal_layout,
+        )
+        observed_frame_ids = [int(raw_frame_ids[anchor_positions[latent_index]]) for latent_index in latent_indices]
 
         action_rows = rows[sample_start_frame : sample_start_frame + action_horizon]
         actions, action_mask = self._extract_sequence(
@@ -2834,6 +2867,7 @@ class AlignedSubwindowLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset)
             "sample_end_frame": sample_end_frame,
             "anchor_frame_index": sample_start_frame,
             "observed_frame_ids": observed_frame_ids,
+            "latent_temporal_layout": self.data_config.latent_temporal_layout,
             "latent_start_index": latent_start,
             "latent_end_index": latent_indices[-1] + 1,
             "action_start_index": sample_start_frame,
@@ -2897,6 +2931,7 @@ class CausalPrefixSuffixLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDatase
                 "window_end_frame": subwindow["sample_end_frame"],
                 "anchor_frame_index": subwindow["sample_start_frame"],
                 "observed_frame_ids": subwindow["observed_frame_ids"],
+                "latent_temporal_layout": subwindow["latent_temporal_layout"],
                 "task_index": task_index,
                 "latent_layout": latent_layout_metadata,
                 "action_representation": self.data_config.action_target.representation,
@@ -2933,6 +2968,7 @@ class CausalPrefixSuffixLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDatase
         raw_bucket_boundaries = self._build_raw_bucket_boundaries(
             raw_frame_count=len(raw_frame_ids),
             latent_num_frames=int(video_latents.shape[1]),
+            latent_temporal_layout=self.data_config.latent_temporal_layout,
         )
         valid_candidates: list[tuple[int, int]] = []
         for bucket_index, bucket in enumerate(buckets):
@@ -2965,11 +3001,20 @@ class CausalPrefixSuffixLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDatase
         bucket = buckets[bucket_index]
         total_frames = int(bucket.total_frames)
         latent_end = latent_start + total_frames
-        raw_start_position = raw_bucket_boundaries[latent_start]
-        raw_end_position = raw_bucket_boundaries[latent_end]
-        sample_start_frame = raw_frame_ids[raw_start_position]
-        sample_end_frame = raw_frame_ids[max(raw_start_position, raw_end_position - 1)] + 1
-        observed_frame_ids = raw_frame_ids[raw_start_position:raw_end_position]
+        raw_start_position, raw_end_position, sample_start_frame, sample_end_frame = raw_span_for_latent_range(
+            raw_frame_ids=raw_frame_ids,
+            source_latent_frames=int(video_latents.shape[1]),
+            latent_start=latent_start,
+            latent_end=latent_end,
+            layout=self.data_config.latent_temporal_layout,
+        )
+        observed_frame_ids = observed_frame_ids_for_latent_segment(
+            raw_frame_ids=raw_frame_ids,
+            source_latent_frames=int(video_latents.shape[1]),
+            latent_start=latent_start,
+            segment_length=total_frames,
+            layout=self.data_config.latent_temporal_layout,
+        )
         padded_latents = torch.zeros(
             video_latents.shape[0],
             padded_num_frames,
@@ -2999,6 +3044,7 @@ class CausalPrefixSuffixLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDatase
             "sample_start_frame": sample_start_frame,
             "sample_end_frame": sample_end_frame,
             "observed_frame_ids": observed_frame_ids,
+            "latent_temporal_layout": self.data_config.latent_temporal_layout,
             "latent_start_index": latent_start,
             "latent_end_index": latent_end,
             "observed_prefix_frames": int(bucket.observed_frames),

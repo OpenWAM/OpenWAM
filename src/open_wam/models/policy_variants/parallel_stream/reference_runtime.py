@@ -11,6 +11,7 @@ from einops import rearrange
 from open_wam.configs.enums import (
     CurrentBlockCoupling,
     JointDenoiseTrainingMode,
+    JointTimestepCoupling,
     ParallelExactCacheWriteMode,
     ParallelRuntimeMode,
     ParallelStreamVariantProfile,
@@ -31,6 +32,7 @@ from open_wam.models.common import (
 from open_wam.models.common.flow_matching import FlowMatchScheduler
 from open_wam.models.common.flow_noise_plan import (
     clean_timestep_values,
+    sample_joint_denoise_timestep_values,
     sample_coupled_timestep_values as sample_shared_coupled_timestep_values,
     sample_timestep_values as sample_shared_timestep_values,
 )
@@ -265,15 +267,23 @@ def resolve_parallel_current_block_coupling(
 def should_couple_action_to_video_timesteps(
     policy_config: ParallelStreamPolicyConfig,
 ) -> bool:
-    """Return whether this exact-runtime program should share video/action sigmas."""
+    """Backward-compatible predicate for sigma-matched joint denoising."""
 
-    if not bool(policy_config.couple_action_to_video_timesteps):
-        return False
-    return resolve_parallel_current_block_coupling(policy_config) in {
+    return resolve_parallel_joint_timestep_coupling(policy_config) == JointTimestepCoupling.MATCH_SIGMA
+
+
+def resolve_parallel_joint_timestep_coupling(
+    policy_config: ParallelStreamPolicyConfig,
+) -> JointTimestepCoupling:
+    """Resolve how M1 joint-like programs synchronize video/action noise clocks."""
+
+    if resolve_parallel_current_block_coupling(policy_config) not in {
         CurrentBlockCoupling.JOINT,
         CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
         CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
-    }
+    }:
+        return JointTimestepCoupling.INDEPENDENT
+    return JointTimestepCoupling(policy_config.joint_timestep_coupling)
 
 
 def _attention_profile_name_for_current_block_coupling(
@@ -496,6 +506,32 @@ def _sample_coupled_timestep_values(
     return values.video_timesteps, values.action_timesteps, values.sigma_values
 
 
+def _sample_index_matched_timestep_values(
+    *,
+    latent_scheduler: FlowMatchScheduler,
+    action_scheduler: FlowMatchScheduler,
+    num_frames: int,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sample one shared scheduler index per frame for action/video."""
+
+    if int(latent_scheduler.timesteps.numel()) != int(action_scheduler.timesteps.numel()):
+        raise ValueError(
+            "Index-matched joint denoising requires equal video/action train timestep grid lengths, "
+            f"got video={int(latent_scheduler.timesteps.numel())}, "
+            f"action={int(action_scheduler.timesteps.numel())}."
+        )
+    timestep_ids = sample_timestep_id(
+        batch_size=num_frames,
+        num_train_timesteps=int(latent_scheduler.timesteps.numel()),
+        device=device,
+    )
+    return (
+        latent_scheduler.timesteps.to(device=device)[timestep_ids],
+        action_scheduler.timesteps.to(device=device)[timestep_ids],
+    )
+
+
 def _apply_generalist_joint_denoise_training_mode(
     *,
     artifacts: LingbotParallelTrainArtifacts,
@@ -526,34 +562,16 @@ def _apply_generalist_joint_denoise_training_mode(
         condition_latents,
         label="Generalist joint-denoise",
     )
-    clean_zero_timesteps = clean_timestep_values(num_frames=num_frames, device=video_latents.device)
-    shared_sigma_values: torch.Tensor | None = None
-    if mode == JointDenoiseTrainingMode.JOINT and policy_config.couple_action_to_video_timesteps:
-        latent_timestep_values, action_timestep_values, shared_sigma_values = _sample_coupled_timestep_values(
-            latent_scheduler=artifacts.latent_scheduler,
-            action_scheduler=artifacts.action_scheduler,
-            num_frames=num_frames,
-            device=video_latents.device,
-        )
-    else:
-        latent_timestep_values = (
-            clean_zero_timesteps
-            if mode == JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION
-            else _sample_timestep_values(
-                artifacts.latent_scheduler,
-                num_frames=num_frames,
-                device=video_latents.device,
-            )
-        )
-        action_timestep_values = (
-            clean_zero_timesteps
-            if mode == JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO
-            else _sample_timestep_values(
-                artifacts.action_scheduler,
-                num_frames=num_frames,
-                device=video_latents.device,
-            )
-        )
+    joint_timestep_coupling = resolve_parallel_joint_timestep_coupling(policy_config)
+    timestep_plan = sample_joint_denoise_timestep_values(
+        video_scheduler=artifacts.latent_scheduler,
+        action_scheduler=artifacts.action_scheduler,
+        num_frames=num_frames,
+        device=video_latents.device,
+        coupling=joint_timestep_coupling,
+        clean_video=mode == JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
+        clean_action=mode == JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+    )
 
     latent_dict = _add_noise(
         video_latents,
@@ -564,8 +582,8 @@ def _apply_generalist_joint_denoise_training_mode(
         patch_size=(backbone_config.patch_size_t, backbone_config.patch_size_h, backbone_config.patch_size_w),
         condition_latent=resolved_condition_latents,
         frame_shift=frame_shift,
-        timestep_values=latent_timestep_values,
-        sigma_values=shared_sigma_values,
+        timestep_values=timestep_plan.video_timesteps,
+        sigma_values=timestep_plan.video_sigma_values,
     )
     action_dict = _add_noise(
         action_latents,
@@ -575,8 +593,8 @@ def _apply_generalist_joint_denoise_training_mode(
         noisy_cond_prob=0.0,
         patch_size=(backbone_config.patch_size_t, backbone_config.patch_size_h, backbone_config.patch_size_w),
         frame_shift=frame_shift,
-        timestep_values=action_timestep_values,
-        sigma_values=shared_sigma_values,
+        timestep_values=timestep_plan.action_timesteps,
+        sigma_values=timestep_plan.action_sigma_values,
     )
     zero_condition_slot(latent_dict)
     zero_condition_slot(action_dict)
@@ -617,6 +635,7 @@ def _apply_generalist_joint_denoise_training_mode(
     artifacts.input_dict["generalist_training_paradigm"] = policy_config.generalist_training_paradigm.value
     artifacts.input_dict[GENERALIST_TRAINING_SOURCE_METADATA_KEY] = training_source
     artifacts.input_dict["joint_denoise_training_mode"] = mode.value
+    artifacts.input_dict["joint_timestep_coupling"] = joint_timestep_coupling.value
     artifacts.input_dict["joint_denoise_training_mode_override"] = (
         None if training_mode_override is None else mode.value
     )
@@ -626,8 +645,8 @@ def _apply_generalist_joint_denoise_training_mode(
         for mode_key, prob in (policy_config.joint_denoise_training_mode_probs or {}).items()
     }
     artifacts.input_dict["video_condition_source"] = condition_source
-    if shared_sigma_values is not None:
-        artifacts.input_dict["joint_denoise_shared_sigmas"] = shared_sigma_values.detach().clone()
+    if timestep_plan.shared_sigma_values is not None:
+        artifacts.input_dict["joint_denoise_shared_sigmas"] = timestep_plan.shared_sigma_values.detach().clone()
 
 
 def prepare_parallel_exact_train_artifacts(
@@ -692,15 +711,19 @@ def prepare_parallel_exact_train_artifacts(
     )
     action_scheduler.set_timesteps(training_config.action_num_train_timesteps, training=True)
 
-    coupled_action_video_timesteps = (
-        should_couple_action_to_video_timesteps(policy_config)
-        and policy_config.variant_profile != ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING
-    )
+    joint_timestep_coupling = resolve_parallel_joint_timestep_coupling(policy_config)
     shared_sigma_values: torch.Tensor | None = None
     latent_timestep_values: torch.Tensor | None = None
     action_timestep_values: torch.Tensor | None = None
-    if coupled_action_video_timesteps:
+    if joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA:
         latent_timestep_values, action_timestep_values, shared_sigma_values = _sample_coupled_timestep_values(
+            latent_scheduler=latent_scheduler,
+            action_scheduler=action_scheduler,
+            num_frames=num_frames,
+            device=video_latents.device,
+        )
+    elif joint_timestep_coupling == JointTimestepCoupling.MATCH_INDEX:
+        latent_timestep_values, action_timestep_values = _sample_index_matched_timestep_values(
             latent_scheduler=latent_scheduler,
             action_scheduler=action_scheduler,
             num_frames=num_frames,
@@ -839,7 +862,8 @@ def prepare_parallel_exact_train_artifacts(
                 getattr(policy_config, "preserve_video_pretrain_history", False)
             ),
             "force_clean_video_condition": bool(force_clean_video_condition),
-            "coupled_action_video_timesteps": bool(coupled_action_video_timesteps),
+            "joint_timestep_coupling": joint_timestep_coupling.value,
+            "coupled_action_video_timesteps": bool(joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA),
             "video_condition_source": condition_source,
         },
         latent_scheduler=latent_scheduler,
@@ -3201,9 +3225,9 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             "set `video_num_inference_steps == action_num_inference_steps` for this mode."
         )
 
-    couple_action_video_timesteps = should_couple_action_to_video_timesteps(policy_config)
+    joint_timestep_coupling = resolve_parallel_joint_timestep_coupling(policy_config)
     action_timestep_lookup_scheduler: FlowMatchScheduler | None = None
-    if couple_action_video_timesteps:
+    if joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA:
         action_timestep_lookup_scheduler = FlowMatchScheduler(
             shift=training_config.action_sigma_shift,
             sigma_min=0.0,
@@ -3229,7 +3253,7 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             latents[:, :, 0:1] = initial_observed_video_anchor
             video_timestep_values = video_timestep_values.clone()
             video_timestep_values[:, 0] = 0.0
-        if couple_action_video_timesteps:
+        if joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA:
             if action_timestep_lookup_scheduler is None:  # pragma: no cover - defensive guard
                 raise RuntimeError("Coupled joint denoise requires an action timestep lookup scheduler.")
             shared_sigma = video_sigma_values_list[index]
@@ -3244,7 +3268,7 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             shared_sigma_next = None
             action_timestep_values = action_timestep.expand(batch_size, inference_config.frame_chunk_size)
         if forced_action_latents is not None:
-            if couple_action_video_timesteps:
+            if joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA:
                 sigma = shared_sigma.to(device=device, dtype=model_dtype).view(1, 1, 1, 1, 1)
                 actions = (1 - sigma) * forced_action_latents + sigma * forced_action_noise
             else:
@@ -3323,7 +3347,7 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             latent_width,
             batch_size=batch_size,
         )
-        if couple_action_video_timesteps:
+        if joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA:
             latents = video_scheduler.step_with_sigmas(
                 video_noise_pred,
                 sigma=shared_sigma,
@@ -3340,7 +3364,7 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             f=inference_config.frame_chunk_size,
         )
         if forced_action_latents is None:
-            if couple_action_video_timesteps:
+            if joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA:
                 actions = action_scheduler.step_with_sigmas(
                     action_noise_pred,
                     sigma=shared_sigma,
@@ -3404,7 +3428,8 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
         "video_action_condition_source": str(policy_config.video_action_condition_source),
         "video_action_attention_scope": str(policy_config.video_action_attention_scope),
         "current_block_coupling": current_block_coupling.value,
-        "couple_action_to_video_timesteps": bool(couple_action_video_timesteps),
+        "joint_timestep_coupling": joint_timestep_coupling.value,
+        "couple_action_to_video_timesteps": bool(joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA),
         "joint_denoise": True,
         "uses_explicit_clean_condition": False,
         "use_cache": bool(inference_config.use_cache),

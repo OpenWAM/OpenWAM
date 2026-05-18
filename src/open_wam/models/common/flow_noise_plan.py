@@ -5,6 +5,7 @@ from typing import Protocol
 
 import torch
 
+from open_wam.configs.enums import JointTimestepCoupling
 from open_wam.models.common.flow_matching import sample_timestep_id
 
 
@@ -29,6 +30,17 @@ class CoupledTimestepValues:
     video_timesteps: torch.Tensor
     action_timesteps: torch.Tensor
     sigma_values: torch.Tensor
+
+
+@dataclass(frozen=True)
+class JointDenoiseTimestepValues:
+    """Per-frame timestep values for a joint/conditional denoising segment."""
+
+    video_timesteps: torch.Tensor
+    action_timesteps: torch.Tensor
+    shared_sigma_values: torch.Tensor | None
+    video_sigma_values: torch.Tensor | None
+    action_sigma_values: torch.Tensor | None
 
 
 def clean_timestep_values(
@@ -80,6 +92,73 @@ def sample_coupled_timestep_values(
         video_timesteps=_timesteps_matching_sigmas(video_scheduler, sigma_values),
         action_timesteps=_timesteps_matching_sigmas(action_scheduler, sigma_values),
         sigma_values=sigma_values,
+    )
+
+
+def sample_joint_denoise_timestep_values(
+    *,
+    video_scheduler: TimestepGridSchedulerLike,
+    action_scheduler: TimestepGridSchedulerLike,
+    num_frames: int,
+    device: torch.device,
+    coupling: JointTimestepCoupling,
+    clean_video: bool = False,
+    clean_action: bool = False,
+) -> JointDenoiseTimestepValues:
+    """Sample per-frame timesteps for joint/FDM/IDM denoising.
+
+    ``MATCH_SIGMA`` is the canonical GJD rule: sample the video scheduler and
+    map action timesteps onto that same video-sigma clock. Clean conditional
+    modalities keep timestep 0 and do not receive explicit noising sigmas.
+    """
+
+    coupling = JointTimestepCoupling(coupling)
+    clean_values = clean_timestep_values(num_frames=num_frames, device=device)
+    if coupling == JointTimestepCoupling.MATCH_SIGMA:
+        coupled = sample_coupled_timestep_values(
+            video_scheduler=video_scheduler,
+            action_scheduler=action_scheduler,
+            num_frames=num_frames,
+            device=device,
+        )
+        return JointDenoiseTimestepValues(
+            video_timesteps=clean_values if clean_video else coupled.video_timesteps,
+            action_timesteps=clean_values if clean_action else coupled.action_timesteps,
+            shared_sigma_values=coupled.sigma_values,
+            video_sigma_values=None if clean_video else coupled.sigma_values,
+            action_sigma_values=None if clean_action else coupled.sigma_values,
+        )
+    if coupling == JointTimestepCoupling.MATCH_INDEX:
+        if int(video_scheduler.timesteps.numel()) != int(action_scheduler.timesteps.numel()):
+            raise ValueError(
+                "Index-matched joint denoising requires equal video/action train timestep grid lengths, "
+                f"got video={int(video_scheduler.timesteps.numel())}, "
+                f"action={int(action_scheduler.timesteps.numel())}."
+            )
+        timestep_ids = sample_timestep_id(
+            batch_size=num_frames,
+            num_train_timesteps=int(video_scheduler.timesteps.numel()),
+            device=device,
+        )
+        return JointDenoiseTimestepValues(
+            video_timesteps=clean_values if clean_video else video_scheduler.timesteps.to(device=device)[timestep_ids],
+            action_timesteps=clean_values
+            if clean_action
+            else action_scheduler.timesteps.to(device=device)[timestep_ids],
+            shared_sigma_values=None,
+            video_sigma_values=None,
+            action_sigma_values=None,
+        )
+    return JointDenoiseTimestepValues(
+        video_timesteps=clean_values
+        if clean_video
+        else sample_timestep_values(video_scheduler, num_frames=num_frames, device=device),
+        action_timesteps=clean_values
+        if clean_action
+        else sample_timestep_values(action_scheduler, num_frames=num_frames, device=device),
+        shared_sigma_values=None,
+        video_sigma_values=None,
+        action_sigma_values=None,
     )
 
 

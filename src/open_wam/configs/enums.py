@@ -189,6 +189,15 @@ class LatentWindowProfile(StrEnum):
     STANDARD_POLICY_WINDOW = "standard_policy_window"
 
 
+class LatentTemporalLayout(StrEnum):
+    """How raw video frames map onto encoded video latent indices."""
+
+    # Wan/LingBot VAE encodes the first frame alone, then causal stride-4 groups.
+    WAN_CAUSAL_STRIDE4 = "wan_causal_stride4"
+    # Deprecated sentinel. Configs using this value are rejected with an explicit error.
+    EQUAL_BUCKET_LEGACY = "equal_bucket_legacy"
+
+
 class SampleWeightMode(StrEnum):
     """How local latent datasets weight train-sampler draws."""
 
@@ -654,6 +663,17 @@ class CurrentBlockCoupling(StrEnum):
     ACTION_NOISY_TO_VIDEO = "action_noisy_to_video"
 
 
+class JointTimestepCoupling(StrEnum):
+    """How joint video/action denoising synchronizes modality noise clocks."""
+
+    # Canonical joint denoising: action and video share the same actual noise amount.
+    MATCH_SIGMA = "match_sigma"
+    # Ablation: action and video use the same scheduler grid index/progress.
+    MATCH_INDEX = "match_index"
+    # Legacy/control: action and video sample or step their clocks independently.
+    INDEPENDENT = "independent"
+
+
 # Backward-compatible export for early Method-1 configs/code paths.
 ParallelCurrentBlockCoupling = CurrentBlockCoupling
 
@@ -668,11 +688,11 @@ class ProprioContextMode(StrEnum):
 class MoTGeneralistTrainingMode(StrEnum):
     """Per-segment training regime for the M5 generalist joint-denoise variant.
 
-    Mirrors Method-1 generalist joint denoising: under a fixed JOINT
-    coupling, each training segment samples one regime. ``joint`` denoises
-    both modalities; the two conditional modes place the clean modality into
-    its noisy slot, zero the corresponding condition slot, force its per-frame
-    timesteps to 0, and mask its loss.
+    Under a fixed JOINT coupling, each training segment samples one regime.
+    ``joint`` denoises both modalities with the same packed clean-history
+    condition slots used by plain M5 joint rollout. The conditional modes place
+    the clean modality into its noisy slot, force its per-frame timesteps to 0,
+    and mask its loss; only the unused clean-action slot is zeroed for FDM.
     """
 
     JOINT = "joint"

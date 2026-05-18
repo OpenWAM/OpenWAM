@@ -22,6 +22,7 @@ if str(SRC_ROOT) not in sys.path:
 from open_wam.configs import ActionTargetRepresentation, ReferenceCoreInitMode  # noqa: E402
 from open_wam.data import reconstruct_absolute_pose_targets  # noqa: E402
 from open_wam.data.action_transforms import PoseSequence, normalize_quaternion, quaternion_to_axis_angle  # noqa: E402
+from open_wam.data.latent_temporal import raw_window_frames_for_latents  # noqa: E402
 from open_wam.integrations import (  # noqa: E402
     LiberoControlConfig,
     LiberoTaskSpec,
@@ -108,7 +109,7 @@ def main() -> None:
         "--raw-window-frames",
         type=int,
         default=None,
-        help="Number of raw env frames to encode into one latent window. Defaults to 4 * latent_num_frames - 1.",
+        help="Number of raw env frames to encode into one latent window. Defaults to Wan's 1 + 4 * (latent_num_frames - 1).",
     )
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--runtime-device", type=str, default=None)
@@ -894,11 +895,7 @@ def _resolve_runtime_devices(
 
 
 def _default_raw_window_frames(latent_num_frames: int) -> int:
-    if latent_num_frames <= 0:
-        raise ValueError(f"Expected positive latent_num_frames, got {latent_num_frames}.")
-    # Wan/LingBot frontend uses temporal compression that maps 15 raw frames -> 4 latent frames.
-    # The equivalent general form is 4 * latent_num_frames - 1.
-    return 4 * latent_num_frames - 1
+    return raw_window_frames_for_latents(latent_num_frames)
 
 
 def _initial_generation_action_start(initial_obs_window: list[dict[str, np.ndarray]]) -> int:

@@ -1281,6 +1281,108 @@ def test_uniform_segment_action_count_uses_configured_actions_per_latent_frame(t
     assert sample.metadata["lingbot_window_action_alignment"]["required_action_num"] == 80 * expected_actions_per_frame
 
 
+def test_lingbot_exact_actions_use_wan_causal_latent_anchors(tmp_path: Path) -> None:
+    repo_root = tmp_path / "libero_local_latent_wan_temporal_layout"
+    _build_local_robotwin_latent_repo(
+        repo_root,
+        total_rows=32,
+        latent_num_frames=4,
+        state_key="observation.state",
+        action_dim=7,
+        state_dim=8,
+        camera_names=("observation.images.agentview_rgb", "observation.images.eye_in_hand_rgb"),
+    )
+    for latent_path in (repo_root / "latents" / "chunk-000").glob("*/episode_000000_0_4.pth"):
+        payload = dict(torch.load(latent_path, map_location="cpu", weights_only=False))
+        payload["frame_ids"] = list(range(15))
+        torch.save(payload, latent_path)
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            local_root=str(repo_root),
+            empty_text_embedding_path=None,
+            train_fraction=1.0,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.FULL_SEGMENT,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    sample = train_dataset[0]
+
+    assert sample.metadata["observed_frame_ids"] == [0, 4, 8, 12]
+    assert sample.metadata["sample_start_frame"] == 0
+    assert sample.metadata["sample_end_frame"] == 13
+    assert sample.metadata["lingbot_window_action_alignment"]["action_start_offset"] == 0
+    assert sample.actions.shape == (16, 7)
+    torch.testing.assert_close(sample.actions[:4], torch.zeros(4, 7))
+    torch.testing.assert_close(sample.actions[4:8, 0], torch.tensor([0.0, 1.0, 2.0, 3.0]))
+
+
+def test_hierarchical_exact_actions_use_wan_causal_latent_anchors(tmp_path: Path) -> None:
+    repo_root = tmp_path / "libero_hierarchical_wan_temporal_layout"
+    _build_local_robotwin_latent_repo(
+        repo_root,
+        total_rows=64,
+        latent_num_frames=8,
+        state_key="observation.state",
+        action_dim=7,
+        state_dim=8,
+        camera_names=("observation.images.agentview_rgb", "observation.images.eye_in_hand_rgb"),
+    )
+    for latent_path in (repo_root / "latents" / "chunk-000").glob("*/episode_000000_0_8.pth"):
+        payload = dict(torch.load(latent_path, map_location="cpu", weights_only=False))
+        payload["frame_ids"] = list(range(31))
+        torch.save(payload, latent_path)
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            local_root=str(repo_root),
+            empty_text_embedding_path=None,
+            train_fraction=1.0,
+            split_seed=0,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+                segment_frames=4,
+                chunk_size=2,
+                randomize_geometry=False,
+                start_padding_frames=0,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    sample = None
+    for index in range(100):
+        candidate = train_dataset[index]
+        if candidate.metadata["subwindow_latent_start"] == 0:
+            sample = candidate
+            break
+    assert sample is not None
+
+    assert sample.metadata["observed_frame_ids"] == [0, 4, 8, 12]
+    assert sample.metadata["sample_start_frame"] == 0
+    assert sample.metadata["sample_end_frame"] == 13
+    assert sample.metadata["lingbot_window_action_alignment"]["action_start_offset"] == 0
+    torch.testing.assert_close(sample.actions[:4], torch.zeros(4, 7))
+    torch.testing.assert_close(sample.actions[4:8, 0], torch.tensor([0.0, 1.0, 2.0, 3.0]))
+
+
 def test_uniform_segment_frame_shift_uses_latent_frame_not_raw_frame(tmp_path: Path) -> None:
     repo_root = tmp_path / "robotwin_local_latent_uniform_segment_latent_frame_shift"
     _build_local_robotwin_latent_repo(repo_root, total_rows=400, latent_num_frames=80)

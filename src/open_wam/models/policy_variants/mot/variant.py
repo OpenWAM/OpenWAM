@@ -15,6 +15,7 @@ from open_wam.models.common.flow_matching import (
     build_frame_aligned_action_flow_match_train_artifacts,
     denoised_actions_from_flow,
     denoised_video_latents_from_flow,
+    sample_timestep_id,
     timesteps_matching_sigmas,
 )
 from open_wam.models.common.flow_noise_plan import frame_sigmas_for_timesteps
@@ -26,6 +27,7 @@ from open_wam.models.common.modality_slots import clean_noisy_slot_tensor, zero_
 from open_wam.configs import (
     CurrentBlockCoupling,
     InferenceConfig,
+    JointTimestepCoupling,
     MoTGeneralistTrainingMode,
     MoTPolicyConfig,
     MoTRuntimeMode,
@@ -115,9 +117,49 @@ def _should_couple_mot_action_to_video_sigmas(
     config: MoTPolicyConfig,
     coupling: CurrentBlockCoupling,
 ) -> bool:
-    """Match M5 generalist joint training's shared-sigma denoise contract."""
+    """Return whether M5 rollout should map action timesteps from video sigmas."""
 
-    return config.mot_generalist_training_mode_probs is not None and _is_mot_same_step_coupling(coupling)
+    return _resolve_mot_joint_timestep_coupling(config, coupling) == JointTimestepCoupling.MATCH_SIGMA
+
+
+def _resolve_mot_joint_timestep_coupling(
+    config: MoTPolicyConfig,
+    coupling: CurrentBlockCoupling,
+) -> JointTimestepCoupling:
+    """Resolve M5 joint-like action/video timestep coupling."""
+
+    if coupling not in {
+        CurrentBlockCoupling.JOINT,
+        CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
+        CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
+    }:
+        return JointTimestepCoupling.INDEPENDENT
+    return JointTimestepCoupling(config.joint_timestep_coupling)
+
+
+def _slice_current_noisy_action_flow(
+    packed_action_flow: torch.Tensor,
+    *,
+    history_action_tokens: int,
+    action_horizon: int,
+) -> torch.Tensor:
+    """Select current noisy-action tokens from a packed M5 action stream."""
+
+    start = int(history_action_tokens)
+    end = start + int(action_horizon)
+    if start < 0 or action_horizon <= 0:
+        raise ValueError(
+            "M5 packed action flow slicing requires non-negative history tokens "
+            f"and positive action_horizon, got history_action_tokens={history_action_tokens}, "
+            f"action_horizon={action_horizon}."
+        )
+    if packed_action_flow.ndim < 2 or packed_action_flow.shape[1] < end:
+        raise ValueError(
+            "M5 packed action flow is too short to contain the current noisy-action window, "
+            f"got shape={tuple(packed_action_flow.shape)}, history_action_tokens={history_action_tokens}, "
+            f"action_horizon={action_horizon}."
+        )
+    return packed_action_flow[:, start:end].contiguous()
 
 
 def _scheduler_next_sigma(scheduler, step_index: int) -> torch.Tensor:
@@ -202,6 +244,7 @@ def _apply_mot_generalist_training_mode(
     noisy_slot_timesteps: torch.Tensor,
     future_loss_mask: torch.Tensor,
     effective_action_mask: torch.Tensor | None,
+    clean_action_condition_mask: torch.Tensor | None = None,
 ) -> tuple[
     VideoFlowMatchTrainArtifacts,
     torch.Tensor,
@@ -210,32 +253,28 @@ def _apply_mot_generalist_training_mode(
     torch.Tensor,
     torch.Tensor | None,
 ]:
-    """A1 strict parity with M1 PR #95 for M5's two-expert architecture.
+    """Apply M5 generalist denoising mode semantics to packed train tensors.
 
     Realizes the conditional sub-modes by placing the clean modality into its
     noisy slot, zeroing the corresponding condition slot, forcing per-frame
-    timesteps to 0 on the conditioned side, and masking that side's loss.
-    Returns updated copies of every tensor that the conditional branch needs
-    to override; ``JOINT`` keeps both noisy slots active and zeroes unused clean condition slots.
+    timesteps to 0 on the conditioned side, and masking that side's loss. The
+    ``JOINT`` bucket intentionally preserves the clean condition slots so its
+    training contract matches plain M5 packed-joint training and rollout:
+    noisy current tokens can use past clean video/action context through the
+    same Method-1-style packed mask.
 
-    The conditioned-side ``noisy_video_condition_prob`` augmentation is
-    cancelled here (we force ``condition_timesteps`` to zero) so that the
-    "clean condition" the model receives is genuinely clean — matching PR
-    #95 where ``_zero_condition_slot`` zeros the unused condition slot.
+    ``effective_action_mask`` is the supervised action-loss mask. It may be
+    narrower than the raw valid-action mask under fixed-segment sampling, so it
+    must not be reused to hide clean action conditions from FDM/IDM context.
     """
 
-    zero_condition_video_artifacts = _dataclass_replace(
-        video_artifacts,
-        condition_latents=torch.zeros_like(video_artifacts.condition_latents),
-        condition_timesteps=torch.zeros_like(video_artifacts.condition_timesteps),
-    )
     zero_clean_actions = torch.zeros_like(clean_actions)
 
     if sampled_mode == MoTGeneralistTrainingMode.JOINT:
         return (
-            zero_condition_video_artifacts,
+            video_artifacts,
             noisy_actions,
-            zero_clean_actions,
+            clean_actions,
             noisy_slot_timesteps,
             future_loss_mask,
             effective_action_mask,
@@ -247,13 +286,13 @@ def _apply_mot_generalist_training_mode(
         # gradients drive this segment.
         new_noisy_actions = clean_noisy_slot_tensor(
             clean_actions.clone(),
-            action_mask=effective_action_mask,
+            action_mask=clean_action_condition_mask,
         )
         new_clean_actions = zero_clean_actions
         new_noisy_slot_timesteps = torch.zeros_like(noisy_slot_timesteps)
         new_action_mask = zero_loss_mask_like(effective_action_mask, fallback_like=noisy_actions)
         return (
-            zero_condition_video_artifacts,
+            video_artifacts,
             new_noisy_actions,
             new_clean_actions,
             new_noisy_slot_timesteps,
@@ -263,10 +302,11 @@ def _apply_mot_generalist_training_mode(
 
     if sampled_mode == MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION:
         # Clean video overwrites the V_noisy slot at timestep 0; V_clean
-        # condition slot is zeroed; video loss is masked out so action-only
-        # gradients drive this segment.
+        # remains available as past clean context under the packed attention
+        # mask; video loss is masked out so action-only gradients drive this
+        # segment.
         new_video_artifacts = _dataclass_replace(
-            zero_condition_video_artifacts,
+            video_artifacts,
             noisy_latents=video_artifacts.condition_latents.clone(),
             timesteps=torch.zeros_like(video_artifacts.timesteps),
         )
@@ -274,7 +314,7 @@ def _apply_mot_generalist_training_mode(
         return (
             new_video_artifacts,
             noisy_actions,
-            zero_clean_actions,
+            clean_actions,
             noisy_slot_timesteps,
             new_future_loss_mask,
             effective_action_mask,
@@ -1263,10 +1303,12 @@ class MoTPolicyVariant(PolicyVariant):
                     device=video_latents.device,
                 )
             )
+        current_block_coupling = resolve_mot_current_block_coupling(self.config)
         effective_action_mask = self._build_effective_action_mask(
             batch=prepared_inputs.batch,
             observed_num_frames=num_video_frames,
         )
+        clean_action_condition_mask = prepared_inputs.batch.action_mask
         action_tokens_per_frame = self._resolve_train_action_tokens_per_frame(
             batch=prepared_inputs.batch,
             observed_num_frames=num_video_frames,
@@ -1297,17 +1339,37 @@ class MoTPolicyVariant(PolicyVariant):
                 device=video_latents.device,
             )
 
+        joint_timestep_coupling = _resolve_mot_joint_timestep_coupling(
+            self.config,
+            current_block_coupling,
+        )
+        shared_timestep_ids = None
+        if joint_timestep_coupling == JointTimestepCoupling.MATCH_INDEX:
+            if int(self.training_config.video_num_train_timesteps) != int(self.training_config.action_num_train_timesteps):
+                raise ValueError(
+                    "M5 index-matched joint denoising requires equal video/action train timestep counts, "
+                    f"got video={self.training_config.video_num_train_timesteps}, "
+                    f"action={self.training_config.action_num_train_timesteps}."
+                )
+            shared_timestep_ids = sample_timestep_id(
+                batch_size=int(video_latents.shape[0]),
+                sample_shape=(num_video_frames,),
+                num_train_timesteps=int(self.training_config.video_num_train_timesteps),
+                device=video_latents.device,
+            )
+
         video_artifacts = build_video_flow_match_train_artifacts(
             video_latents,
             training_config=self.training_config,
             condition_latents=condition_latents,
+            timestep_ids=shared_timestep_ids,
             noisy_condition_prob=0.0
             if sampled_generalist_mode is not None
             else float(self.config.noisy_video_condition_prob),
         )
         coupled_action_sigma_values = (
             frame_sigmas_for_timesteps(video_artifacts.scheduler, video_artifacts.timesteps)
-            if sampled_generalist_mode == MoTGeneralistTrainingMode.JOINT
+            if joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA
             else None
         )
         future_loss_mask = self._build_effective_video_loss_mask(
@@ -1322,6 +1384,7 @@ class MoTPolicyVariant(PolicyVariant):
             num_frames=num_video_frames,
             action_per_frame=int(action_tokens_per_frame),
             frame_sigma_values=coupled_action_sigma_values,
+            frame_timestep_ids=shared_timestep_ids,
         )
         noisy_actions = action_artifacts.noisy_actions
         clean_actions = action_artifacts.condition_actions.to(
@@ -1332,7 +1395,6 @@ class MoTPolicyVariant(PolicyVariant):
                 "Packed action training requires noisy/clean actions to share shape, "
                 f"got noisy={tuple(noisy_actions.shape)}, clean={tuple(clean_actions.shape)}."
             )
-        current_block_coupling = resolve_mot_current_block_coupling(self.config)
         action_seq_len = int(noisy_actions.shape[1])
         num_action_frames = action_seq_len // int(action_tokens_per_frame)
 
@@ -1362,6 +1424,7 @@ class MoTPolicyVariant(PolicyVariant):
                 noisy_slot_timesteps=noisy_slot_timesteps,
                 future_loss_mask=future_loss_mask,
                 effective_action_mask=effective_action_mask,
+                clean_action_condition_mask=clean_action_condition_mask,
             )
 
         packed_action_tokens = torch.cat([noisy_actions, clean_actions], dim=1)
@@ -1681,6 +1744,10 @@ class MoTPolicyVariant(PolicyVariant):
             self.config,
             current_block_coupling,
         )
+        joint_timestep_coupling = _resolve_mot_joint_timestep_coupling(
+            self.config,
+            current_block_coupling,
+        )
         action_timestep_lookup_scheduler = None
         if couple_action_video_sigmas:
             action_timestep_lookup_scheduler = build_action_flow_match_inference_scheduler(
@@ -1869,7 +1936,11 @@ class MoTPolicyVariant(PolicyVariant):
         ) -> None:
             nonlocal action_sample
             packed_action_flow = self.action_expert.post_dit(packed_action_hidden, packed_action_pre)
-            action_flow_pred = packed_action_flow[:, : self.action_horizon]
+            action_flow_pred = _slice_current_noisy_action_flow(
+                packed_action_flow,
+                history_action_tokens=history_action_tokens,
+                action_horizon=self.action_horizon,
+            )
             if sigma is None or sigma_next is None:
                 action_sample = action_scheduler.step(action_flow_pred, action_timestep, action_sample)
             else:
@@ -1998,6 +2069,8 @@ class MoTPolicyVariant(PolicyVariant):
                     "current_clean_condition_frames": int(current_clean_video.shape[2]),
                     "packed_video_frames": int(shared_history_frames + frame_chunk_size),
                     "packed_action_frames": int(shared_history_frames + frame_chunk_size),
+                    "current_action_flow_start": int(history_action_tokens),
+                    "current_action_flow_end": int(history_action_tokens + self.action_horizon),
                     "history_window_frames": int(history_window_frames),
                     "max_history_frames": int(max_history_frames),
                     "next_past_clean_latent_frames": int(runtime_state.past_clean_latents.shape[2]),
@@ -2005,6 +2078,7 @@ class MoTPolicyVariant(PolicyVariant):
                     "sequence_frame_start": int(sequence_frame_start),
                     "current_frame_start": int(infer_state.cursor.current_start_frame),
                     "mode_uses_packed_cache": True,
+                    "joint_timestep_coupling": joint_timestep_coupling.value,
                     "coupled_action_video_sigmas": bool(couple_action_video_sigmas),
                 },
                 "mot_infer_artifacts": MoTInferArtifacts(
@@ -2193,6 +2267,10 @@ class MoTPolicyVariant(PolicyVariant):
                 self.config,
                 current_block_coupling,
             )
+            joint_timestep_coupling = _resolve_mot_joint_timestep_coupling(
+                self.config,
+                current_block_coupling,
+            )
             action_timestep_lookup_scheduler = None
             if couple_action_video_sigmas:
                 action_timestep_lookup_scheduler = build_action_flow_match_inference_scheduler(
@@ -2312,6 +2390,7 @@ class MoTPolicyVariant(PolicyVariant):
                         condition_mode=str(self.config.condition_mode),
                         runtime_mode=str(self.config.runtime_mode),
                     ),
+                    "joint_timestep_coupling": joint_timestep_coupling.value,
                     "coupled_action_video_sigmas": bool(couple_action_video_sigmas),
                 },
             )

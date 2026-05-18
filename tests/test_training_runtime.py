@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from dataclasses import replace
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -275,6 +276,53 @@ def test_step_loop_resume_cursor_skips_seen_batches_within_current_loader_pass()
             {"epoch_index": 0, "skip_batches": 2, "seen_batches": 2},
         )
     ]
+
+
+def test_step_loop_interval_checkpoint_runs_after_micro_step_returns() -> None:
+    runtime = TrainingRuntime.__new__(TrainingRuntime)
+    runtime.train_loader = [0, 1]
+    runtime.train_state = TrainState(run_name="interval-checkpoint-test")
+    runtime.config = SimpleNamespace(
+        trainer=SimpleNamespace(
+            limit_train_batches=None,
+            save_interval=1,
+            validation_interval=1,
+        )
+    )
+    runtime.strategy = SimpleNamespace(is_main_process=True)
+
+    in_micro_step = False
+    processed_batches: list[int] = []
+    events: list[tuple[str, int]] = []
+    checkpoint_calls: list[tuple[bool, bool, int]] = []
+
+    def run_validation(*, limit_batches) -> None:
+        del limit_batches
+        events.append(("validation", runtime.train_state.optimizer_step))
+
+    def train_one_batch(batch) -> None:
+        nonlocal in_micro_step
+        in_micro_step = True
+        processed_batches.append(int(batch))
+        runtime.train_state.global_step += 1
+        runtime.train_state.seen_batches += 1
+        if int(batch) == 1:
+            runtime.train_state.optimizer_step += 1
+        in_micro_step = False
+
+    def save_checkpoint(*, final: bool) -> None:
+        checkpoint_calls.append((final, in_micro_step, runtime.train_state.optimizer_step))
+        events.append(("checkpoint", runtime.train_state.optimizer_step))
+
+    runtime._run_all_validation = run_validation
+    runtime._train_micro_step = train_one_batch
+    runtime._save_checkpoint = save_checkpoint
+
+    TrainingRuntime._run_step_loop(runtime, StepLoopPolicy(max_steps=1))
+
+    assert processed_batches == [0, 1]
+    assert events[:2] == [("validation", 1), ("checkpoint", 1)]
+    assert checkpoint_calls[0] == (False, False, 1)
 
 
 def test_sample_loss_weight_can_scale_by_valid_action_steps() -> None:
@@ -604,6 +652,41 @@ def test_model_only_checkpoint_does_not_collect_optimizer_state(tmp_path: Path, 
     assert (checkpoint_dir / "model_state.pt").exists()
     assert not (checkpoint_dir / "full_training_state.pt").exists()
     assert (checkpoint_dir / ".checkpoint_complete").exists()
+
+
+def test_model_only_checkpoint_loads_sibling_train_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
+    manager = CheckpointManager(
+        root_dir=tmp_path / "checkpoints",
+        config=config,
+        checkpoint_mode=CheckpointMode.MODEL_ONLY,
+    )
+    checkpoint_dir = manager.checkpoint_dir_for_step(500)
+    checkpoint_dir.mkdir(parents=True)
+    torch.save({"model_state_dict": {"weight": torch.ones(1)}}, checkpoint_dir / "model_state.pt")
+    (checkpoint_dir / "train_state.json").write_text(
+        json.dumps({"global_step": 10000, "optimizer_step": 500, "seen_batches": 10000}),
+        encoding="utf-8",
+    )
+
+    loaded_keys: list[str] = []
+
+    def fake_set_model_state_dict(model, state_dict, options):
+        del model, options
+        loaded_keys.extend(state_dict.keys())
+
+    monkeypatch.setattr("open_wam.training.checkpoints.set_model_state_dict", fake_set_model_state_dict)
+
+    train_state, payload = manager.load(path=checkpoint_dir / "model_state.pt", model=torch.nn.Linear(1, 1))
+
+    assert loaded_keys == ["weight"]
+    assert "optimizer_state_dict" not in payload
+    assert train_state.global_step == 10000
+    assert train_state.optimizer_step == 500
+    assert train_state.seen_batches == 0
+    assert train_state.resume_source == str(checkpoint_dir / "model_state.pt")
 
 
 def test_final_checkpoint_skips_when_interval_checkpoint_already_saved(tmp_path: Path) -> None:

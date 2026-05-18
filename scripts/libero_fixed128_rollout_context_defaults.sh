@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Shared LIBERO policy-training defaults. These are applied by the maintained
-# training launchers before user-provided CLI args, so explicit `--set` values
-# passed by the caller still win.
+# Shared LIBERO fixed-128 policy-training defaults. These are applied by the
+# maintained training launchers before user-provided CLI args, so explicit
+# `--set` values passed by the caller still win.
 
 OPEN_WAM_FIXED128_ROLLOUT_CONTEXT_DEFAULT_ARGS=(
   --set data.sample_construction.mode=hierarchical_fixed_segment
@@ -10,7 +10,7 @@ OPEN_WAM_FIXED128_ROLLOUT_CONTEXT_DEFAULT_ARGS=(
   --set data.sample_construction.window_size=30
   --set data.sample_construction.randomize_geometry=true
   --set data.sample_construction.start_padding_frames=3
-  --set data.sample_construction.context_prefix_policy=rollout_history
+  --set data.sample_construction.context_prefix_policy=none
   --set data.sample_construction.tail_padding_policy=zero_order_hold
   --set data.sample_construction.padded_target_policy=mask_loss
   --set data.sample_construction.task_start_power=0.5

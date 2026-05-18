@@ -9,10 +9,12 @@ from typing import Any
 import imageio.v2 as imageio
 import torch
 
-from open_wam.data.lerobot_v2_latent import _LATENT_FILE_PATTERN
+from open_wam.configs import LatentTemporalLayout
+from open_wam.data.latent_temporal import observed_frame_ids_for_latent_segment
 from open_wam.data.raw_video import ViewPlacement
 from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
 from open_wam.models.visual_tower.reference_assets import LingbotReferenceAssets
+from open_wam.utils.latent_filenames import match_latent_window_filename
 
 
 def main() -> None:
@@ -118,7 +120,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Augment LeRobot local latent payloads with `condition_latent`: "
-            "single-frame Wan VAE latents encoded from the first raw RGB frame of each latent bucket."
+            "single-frame Wan VAE latents encoded from each latent slot's Wan-consistent anchor frame."
         )
     )
     parser.add_argument("--data-root", required=True, help="LeRobot local dataset root containing meta/data/videos/latents.")
@@ -478,7 +480,7 @@ def _batch_encoding_max_diff(
 def _build_payload_tasks(payload_paths: list[Path]) -> list[tuple[Path, ...]]:
     grouped: dict[tuple[Path, str], list[Path]] = {}
     for path in payload_paths:
-        match = _LATENT_FILE_PATTERN.match(path.name)
+        match = match_latent_window_filename(path.name)
         if match is None:
             raise ValueError(f"Could not parse latent filename: {path}")
         group_key = (path.parent.parent, path.name)
@@ -618,26 +620,19 @@ def _save_payload_atomic(payload: dict[str, Any], latent_path: Path) -> None:
     tmp_path.replace(latent_path)
 
 
-def _condition_source_frame_indices(*, frame_ids: list[int], latent_num_frames: int) -> list[int]:
-    if latent_num_frames <= 0:
-        raise ValueError(f"Expected positive latent_num_frames, got {latent_num_frames}.")
-    if not frame_ids:
-        raise ValueError("Expected non-empty frame_ids.")
-    raw_count = len(frame_ids)
-    boundaries = [(latent_index * raw_count) // latent_num_frames for latent_index in range(latent_num_frames + 1)]
-    boundaries[-1] = raw_count
-    indices: list[int] = []
-    for latent_index in range(latent_num_frames):
-        bucket_start = boundaries[latent_index]
-        bucket_end = boundaries[latent_index + 1]
-        if bucket_start >= raw_count:
-            raw_position = raw_count - 1
-        elif bucket_end > bucket_start:
-            raw_position = min(bucket_end - 1, raw_count - 1)
-        else:
-            raw_position = min(bucket_start, raw_count - 1)
-        indices.append(int(frame_ids[raw_position]))
-    return indices
+def _condition_source_frame_indices(
+    *,
+    frame_ids: list[int],
+    latent_num_frames: int,
+    latent_temporal_layout: LatentTemporalLayout | str = LatentTemporalLayout.WAN_CAUSAL_STRIDE4,
+) -> list[int]:
+    return observed_frame_ids_for_latent_segment(
+        raw_frame_ids=frame_ids,
+        source_latent_frames=latent_num_frames,
+        latent_start=0,
+        segment_length=latent_num_frames,
+        layout=latent_temporal_layout,
+    )
 
 
 def _read_video_frame(reader: Any, frame_index: int) -> Any:
@@ -673,7 +668,7 @@ def _resolve_output_dtype(name: str, payload: dict[str, Any]) -> torch.dtype:
 
 
 def _episode_index_from_latent_path(path: Path) -> int:
-    match = _LATENT_FILE_PATTERN.match(path.name)
+    match = match_latent_window_filename(path.name)
     if match is None:
         raise ValueError(f"Could not parse latent filename: {path}")
     return int(match.group("episode"))
