@@ -3,6 +3,11 @@ from __future__ import annotations
 import torch
 
 from open_wam.models.common.attention_profiles import build_chunked_temporal_exact_attention_profile
+from open_wam.models.common.packed_token_layout import (
+    PackedTokenKind,
+    PackedTokenStream,
+    build_exact_video_action_token_layout,
+)
 from open_wam.models.policy_variants.parallel_stream.reference_runtime import get_mesh_id
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore
@@ -165,6 +170,45 @@ def test_chunked_temporal_exact_action_context_mask_hides_startup_action_tokens(
     assert profile.cross_attention_mask is not None
     assert bool(profile.cross_attention_mask[kv_action_noisy_frame0].any().item()) is True
     assert profile.metadata["invalid_action_context_tokens"] == 4
+
+
+def test_packed_token_layout_separates_query_and_kv_validity() -> None:
+    action_context_mask = torch.ones(1, 1, 5, 4, 1)
+    action_context_mask[:, :, 0] = 0.0
+
+    layout = build_exact_video_action_token_layout(
+        batch_size=1,
+        latent_frames=5,
+        latent_height=1,
+        latent_width=1,
+        action_frames=5,
+        action_height=4,
+        action_width=1,
+        patch_size=(1, 1, 1),
+        chunk_size=4,
+        chunk_origin_frame=1,
+        current_block_coupling="video_then_action",
+        device=torch.device("cpu"),
+        action_context_mask=action_context_mask,
+    )
+
+    latent_token_count = 5
+    action_token_count = 20
+    action_noisy_start = latent_token_count * 2
+    action_clean_start = action_noisy_start + action_token_count
+
+    assert layout.valid_for_loss[:latent_token_count].all()
+    assert not layout.valid_for_loss[latent_token_count : latent_token_count * 2].any()
+    assert int(layout.token_kind[action_noisy_start]) == int(PackedTokenKind.ACTION_NOISY)
+    assert int(layout.stream_id[action_noisy_start]) == int(PackedTokenStream.ACTION)
+    assert layout.valid_as_query[action_noisy_start : action_noisy_start + 4].all()
+    assert not layout.valid_as_kv[action_noisy_start : action_noisy_start + 4].any()
+    assert not layout.valid_as_kv[action_clean_start : action_clean_start + 4].any()
+    assert layout.valid_as_kv[action_noisy_start + 4 : action_noisy_start + 8].all()
+    assert not layout.valid_for_loss[action_noisy_start : action_noisy_start + 4].any()
+    assert layout.valid_for_loss[action_noisy_start + 4 : action_noisy_start + 8].all()
+    assert not layout.valid_for_loss[action_clean_start:].any()
+    assert layout.valid_for_loss.shape == layout.valid_as_kv.shape
 
 
 def test_chunked_temporal_exact_cross_mask_keeps_cfg_rows_isolated() -> None:

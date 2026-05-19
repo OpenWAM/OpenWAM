@@ -5,6 +5,8 @@ from typing import Any
 
 import torch
 
+from open_wam.models.common.packed_token_layout import build_exact_video_action_token_layout
+
 try:
     from torch.nn.attention.flex_attention import BlockMask, create_block_mask, flex_attention
 except ImportError:  # pragma: no cover - older torch builds may not expose FlexAttention
@@ -257,67 +259,6 @@ def build_chunked_text_context_cross_attention_mask(
     return mask[None, :, :].expand(resolved_batch_size, -1, -1).contiguous()
 
 
-def _flatten_action_context_mask(
-    action_context_mask: torch.Tensor,
-    *,
-    batch_size: int,
-    action_frames: int,
-    action_height: int,
-    action_width: int,
-    device: torch.device,
-) -> torch.Tensor:
-    """Return per-action-token context visibility in profile token order."""
-
-    token_count = int(action_frames) * int(action_height) * int(action_width)
-    mask = action_context_mask.to(device=device)
-    if mask.ndim == 5:
-        # [B, C, F, H, W] action-latent mask. Collapse action channels because
-        # the exact runtime has one token per [F, H, W] slot.
-        if tuple(int(dim) for dim in mask.shape[2:]) != (
-            int(action_frames),
-            int(action_height),
-            int(action_width),
-        ):
-            raise ValueError(
-                "action_context_mask shape does not match action token geometry: "
-                f"mask={tuple(mask.shape)}, expected trailing=({action_frames}, {action_height}, {action_width})."
-            )
-        token_valid = mask.float().amax(dim=1).reshape(int(mask.shape[0]), token_count) > 0
-    elif mask.ndim == 4:
-        if tuple(int(dim) for dim in mask.shape[1:]) != (
-            int(action_frames),
-            int(action_height),
-            int(action_width),
-        ):
-            raise ValueError(
-                "action_context_mask shape does not match action token geometry: "
-                f"mask={tuple(mask.shape)}, expected [B, {action_frames}, {action_height}, {action_width}]."
-            )
-        token_valid = mask.reshape(int(mask.shape[0]), token_count).bool()
-    elif mask.ndim == 3 and int(mask.shape[1]) == token_count:
-        # [B, T_action, C] sequence mask. Collapse feature/channel dim.
-        token_valid = mask.float().amax(dim=-1) > 0
-    elif mask.ndim == 2 and int(mask.shape[1]) == token_count:
-        token_valid = mask.bool()
-    else:
-        raise ValueError(
-            "Unsupported action_context_mask shape. Expected [B,C,F,H,W], [B,F,H,W], "
-            f"[B,T,C], or [B,T] for token_count={token_count}; got {tuple(mask.shape)}."
-        )
-
-    if int(token_valid.shape[0]) != int(batch_size):
-        if int(batch_size) == 1:
-            # Packed shared profiles are batch-agnostic. A token is visible
-            # only if every sample in the runtime batch says it is real.
-            token_valid = token_valid.all(dim=0, keepdim=True)
-        else:
-            raise ValueError(
-                "action_context_mask batch size does not match attention profile batch size: "
-                f"mask_batch={int(token_valid.shape[0])}, profile_batch={int(batch_size)}."
-            )
-    return token_valid.reshape(-1).to(device=device, dtype=torch.bool)
-
-
 def build_chunked_temporal_exact_attention_profile(
     *,
     latent_shape: tuple[int, int, int, int, int],
@@ -382,84 +323,41 @@ def build_chunked_temporal_exact_attention_profile(
             f"proprio={resolved_proprio_context_token_count}, text={text_token_count}."
         )
 
-    latent_seq_id = (
-        torch.arange(batch_size, device=device)[:, None, None, None]
-        .expand(-1, latent_frames // patch_t, latent_height // patch_h, latent_width // patch_w)
-        .flatten()
+    layout = build_exact_video_action_token_layout(
+        batch_size=batch_size,
+        latent_frames=latent_frames,
+        latent_height=latent_height,
+        latent_width=latent_width,
+        action_frames=action_frames,
+        action_height=action_height,
+        action_width=action_width,
+        patch_size=patch_size,
+        chunk_size=chunk_size,
+        chunk_origin_frame=chunk_origin_frame,
+        current_block_coupling=current_block_coupling,
+        device=device,
+        action_context_mask=action_context_mask,
     )
-    action_seq_id = (
-        torch.arange(batch_size, device=device)[:, None, None, None]
-        .expand(-1, action_frames, action_height, action_width)
-        .flatten()
-    )
-    invalid_action_token_count = 0
-    action_context_valid_tokens: tuple[bool, ...] | None = None
-    latent_token_valid = torch.ones_like(latent_seq_id, dtype=torch.bool)
-    if action_context_mask is not None:
-        action_token_valid = _flatten_action_context_mask(
-            action_context_mask,
-            batch_size=batch_size,
-            action_frames=action_frames,
-            action_height=action_height,
-            action_width=action_width,
-            device=device,
-        )
-        invalid_action_token_count = int((~action_token_valid).sum().item())
-        action_context_valid_tokens = tuple(bool(value) for value in action_token_valid.detach().cpu().tolist())
-    else:
-        action_token_valid = torch.ones_like(action_seq_id, dtype=torch.bool)
-    seq_ids = torch.cat([latent_seq_id] * 2 + [action_seq_id] * 2)
-    # Invalid/context action tokens are still real queries: the transformer
-    # must produce finite hidden states for their rows. Hide them only as K/V
-    # context so valid target tokens cannot attend to dummy startup actions.
-    token_valid_as_query = torch.cat([latent_token_valid] * 2 + [torch.ones_like(action_token_valid)] * 2)
-    token_valid_as_kv = torch.cat([latent_token_valid] * 2 + [action_token_valid] * 2)
-
-    latent_frame_id = (
-        torch.arange(latent_frames // patch_t, device=device)[None, :, None, None]
-        .expand(batch_size, -1, latent_height // patch_h, latent_width // patch_w)[None]
-        .flatten()
-    )
-    action_frame_id = (
-        torch.arange(action_frames, device=device)[None, :, None, None]
-        .expand(batch_size, -1, action_height, action_width)[None]
-        .flatten()
-    )
-    latent_chunk_id = torch.div(latent_frame_id - chunk_origin_frame, chunk_size, rounding_mode="floor")
-    action_chunk_id = torch.div(action_frame_id - chunk_origin_frame, chunk_size, rounding_mode="floor")
-    if current_block_coupling in {ACTION_THEN_VIDEO_COUPLING, ACTION_NOISY_TO_VIDEO_COUPLING}:
-        latent_block_id = latent_chunk_id * 2 + 1
-        action_block_id = action_chunk_id * 2
-    else:
-        latent_block_id = latent_chunk_id * 2
-        action_block_id = action_chunk_id * 2 + 1
-    frame_ids = torch.cat([latent_block_id] * 2 + [action_block_id] * 2)
-    chunk_ids = torch.cat([latent_chunk_id] * 2 + [action_chunk_id] * 2)
-    noise_ids = torch.cat(
-        [
-            torch.zeros_like(latent_frame_id),
-            torch.ones_like(latent_frame_id),
-            torch.zeros_like(action_frame_id),
-            torch.ones_like(action_frame_id),
-        ]
-    )
-    stream_ids = torch.cat(
-        [
-            torch.zeros_like(latent_frame_id),
-            torch.zeros_like(latent_frame_id),
-            torch.ones_like(action_frame_id),
-            torch.ones_like(action_frame_id),
-        ]
+    layout = layout.with_padding(padded_length)
+    latent_token_count = int(batch_size) * int(latent_frames // patch_t) * int(latent_height // patch_h) * int(latent_width // patch_w)
+    action_token_count = int(batch_size) * int(action_frames) * int(action_height) * int(action_width)
+    action_token_valid = layout.valid_as_kv[
+        2 * latent_token_count : 2 * latent_token_count + action_token_count
+    ]
+    invalid_action_token_count = int((~action_token_valid).sum().item())
+    action_context_valid_tokens: tuple[bool, ...] | None = (
+        tuple(bool(value) for value in action_token_valid.detach().cpu().tolist())
+        if action_context_mask is not None
+        else None
     )
 
-    if padded_length > 0:
-        seq_ids = torch.nn.functional.pad(seq_ids, (0, padded_length), value=-1)
-        frame_ids = torch.nn.functional.pad(frame_ids, (0, padded_length), value=-1)
-        chunk_ids = torch.nn.functional.pad(chunk_ids, (0, padded_length), value=-1)
-        noise_ids = torch.nn.functional.pad(noise_ids, (0, padded_length), value=-1)
-        stream_ids = torch.nn.functional.pad(stream_ids, (0, padded_length), value=-1)
-        token_valid_as_query = torch.nn.functional.pad(token_valid_as_query, (0, padded_length), value=False)
-        token_valid_as_kv = torch.nn.functional.pad(token_valid_as_kv, (0, padded_length), value=False)
+    seq_ids = layout.seq_id
+    block_ids = layout.block_id
+    chunk_ids = layout.chunk_id
+    noise_ids = layout.noise_id
+    stream_ids = layout.stream_id
+    token_valid_as_query = layout.valid_as_query
+    token_valid_as_kv = layout.valid_as_kv
 
     text_seq_ids = torch.arange(batch_size, device=device)[:, None].expand(-1, text_token_count).flatten()
     text_context_positions = torch.arange(text_token_count, device=device)[None, :].expand(batch_size, -1).flatten()
@@ -469,15 +367,14 @@ def build_chunked_temporal_exact_attention_profile(
     if build_dense_masks:
         q_seq = seq_ids[:, None]
         kv_seq = seq_ids[None, :]
-        q_frame = frame_ids[:, None]
-        kv_frame = frame_ids[None, :]
+        q_block_id = block_ids[:, None]
+        kv_block_id = block_ids[None, :]
         q_noise = noise_ids[:, None]
         kv_noise = noise_ids[None, :]
         q_stream = stream_ids[:, None]
         kv_stream = stream_ids[None, :]
         q_chunk = chunk_ids[:, None]
-        q_block = torch.div(q_frame, 2, rounding_mode="floor")
-        kv_block = torch.div(kv_frame, 2, rounding_mode="floor")
+        kv_chunk = chunk_ids[None, :]
         q_valid = token_valid_as_query[:, None]
         kv_valid = token_valid_as_kv[None, :]
 
@@ -492,8 +389,8 @@ def build_chunked_temporal_exact_attention_profile(
                 (q_noise == 1)
                 & (kv_noise == 1)
                 & (
-                    ((kv_block < q_block) & history_stream_ok)
-                    | ((kv_block == q_block) & (kv_stream == q_stream))
+                    ((kv_chunk < q_chunk) & history_stream_ok)
+                    | ((kv_chunk == q_chunk) & (kv_stream == q_stream))
                 )
             )
         else:
@@ -501,8 +398,8 @@ def build_chunked_temporal_exact_attention_profile(
                 (q_noise == 1)
                 & (kv_noise == 1)
                 & (
-                    ((kv_block < q_block) & history_stream_ok)
-                    | ((kv_block == q_block) & (kv_frame <= q_frame))
+                    ((kv_chunk < q_chunk) & history_stream_ok)
+                    | ((kv_chunk == q_chunk) & (kv_block_id <= q_block_id))
                 )
             )
         joint_like_couplings = {
@@ -517,39 +414,39 @@ def build_chunked_temporal_exact_attention_profile(
         if current_block_coupling in joint_like_couplings:
             # Joint-like: noise_to_clean only fires on past chunks.
             noise_to_clean = (
-                (q_noise == 0) & (kv_noise == 1) & (kv_block < q_block) & history_stream_ok
+                (q_noise == 0) & (kv_noise == 1) & (kv_chunk < q_chunk) & history_stream_ok
             )
         else:
             # Staged: split history (filtered) from current-chunk earlier-stage
             # clean (unfiltered) so V_THEN_A's "A reads current Vc" and
             # A_THEN_V's "V reads current Ac" still work after we tighten
             # history visibility.
-            in_history = kv_block < q_block
-            in_current_chunk_earlier = (kv_block == q_block) & (kv_frame < q_frame)
+            in_history = kv_chunk < q_chunk
+            in_current_chunk_earlier = (kv_chunk == q_chunk) & (kv_block_id < q_block_id)
             noise_to_clean = (
                 (q_noise == 0)
                 & (kv_noise == 1)
                 & ((in_history & history_stream_ok) | in_current_chunk_earlier)
             )
         if current_block_coupling == JOINT_COUPLING:
-            noise_to_noise = (q_noise == 0) & (kv_noise == 0) & (kv_block == q_block)
+            noise_to_noise = (q_noise == 0) & (kv_noise == 0) & (kv_chunk == q_chunk)
         elif current_block_coupling == VIDEO_NOISY_TO_ACTION_COUPLING:
             noise_to_noise = (
                 (q_noise == 0)
                 & (kv_noise == 0)
-                & (kv_block == q_block)
+                & (kv_chunk == q_chunk)
                 & ((q_stream == kv_stream) | ((q_stream == 1) & (kv_stream == 0)))
             )
         elif current_block_coupling == ACTION_NOISY_TO_VIDEO_COUPLING:
             noise_to_noise = (
                 (q_noise == 0)
                 & (kv_noise == 0)
-                & (kv_block == q_block)
+                & (kv_chunk == q_chunk)
                 & ((q_stream == kv_stream) | ((q_stream == 0) & (kv_stream == 1)))
             )
         else:
-            noise_to_noise = (q_noise == 0) & (kv_noise == 0) & (kv_frame == q_frame)
-        within_window = (q_frame - kv_frame).abs() <= int(window_size)
+            noise_to_noise = (q_noise == 0) & (kv_noise == 0) & (kv_block_id == q_block_id)
+        within_window = (q_block_id - kv_block_id).abs() <= int(window_size)
         self_attention_mask = same_seq & within_window & (clean_to_clean | noise_to_clean | noise_to_noise)
         same_text_sample = (
             (seq_ids[:, None] == text_seq_ids[None, :])
@@ -574,7 +471,7 @@ def build_chunked_temporal_exact_attention_profile(
     cross_attention_block_mask = None
     if build_flex_masks and create_block_mask is not None:
         seq_ids_flex = seq_ids.to(device=device, dtype=torch.long)
-        frame_ids_flex = frame_ids.to(device=device, dtype=torch.long)
+        block_ids_flex = block_ids.to(device=device, dtype=torch.long)
         chunk_ids_flex = chunk_ids.to(device=device, dtype=torch.long)
         noise_ids_flex = noise_ids.to(device=device, dtype=torch.long)
         stream_ids_flex = stream_ids.to(device=device, dtype=torch.long)
@@ -597,8 +494,10 @@ def build_chunked_temporal_exact_attention_profile(
                 & token_valid_as_query_flex[q_idx]
                 & token_valid_as_kv_flex[kv_idx]
             )
-            q_block = torch.div(frame_ids_flex[q_idx], 2, rounding_mode="floor")
-            kv_block = torch.div(frame_ids_flex[kv_idx], 2, rounding_mode="floor")
+            q_chunk = chunk_ids_flex[q_idx]
+            kv_chunk = chunk_ids_flex[kv_idx]
+            q_block_id = block_ids_flex[q_idx]
+            kv_block_id = block_ids_flex[kv_idx]
             if preserve_video_pretrain_history:
                 history_stream_ok = (stream_ids_flex[q_idx] == stream_ids_flex[kv_idx]) | (
                     stream_ids_flex[q_idx] == 1
@@ -610,8 +509,8 @@ def build_chunked_temporal_exact_attention_profile(
                     (noise_ids_flex[q_idx] == 1)
                     & (noise_ids_flex[kv_idx] == 1)
                     & (
-                        ((kv_block < q_block) & history_stream_ok)
-                        | ((kv_block == q_block) & (stream_ids_flex[kv_idx] == stream_ids_flex[q_idx]))
+                        ((kv_chunk < q_chunk) & history_stream_ok)
+                        | ((kv_chunk == q_chunk) & (stream_ids_flex[kv_idx] == stream_ids_flex[q_idx]))
                     )
                 )
             else:
@@ -619,8 +518,8 @@ def build_chunked_temporal_exact_attention_profile(
                     (noise_ids_flex[q_idx] == 1)
                     & (noise_ids_flex[kv_idx] == 1)
                     & (
-                        ((kv_block < q_block) & history_stream_ok)
-                        | ((kv_block == q_block) & (frame_ids_flex[kv_idx] <= frame_ids_flex[q_idx]))
+                        ((kv_chunk < q_chunk) & history_stream_ok)
+                        | ((kv_chunk == q_chunk) & (block_ids_flex[kv_idx] <= block_ids_flex[q_idx]))
                     )
                 )
             joint_like_couplings = {
@@ -633,26 +532,24 @@ def build_chunked_temporal_exact_attention_profile(
                 noise_to_clean = (
                     (noise_ids_flex[q_idx] == 0)
                     & (noise_ids_flex[kv_idx] == 1)
-                    & (kv_block < q_block)
+                    & (kv_chunk < q_chunk)
                     & history_stream_ok
                 )
             else:
-                in_history = kv_block < q_block
-                in_current_chunk_earlier = (kv_block == q_block) & (
-                    frame_ids_flex[kv_idx] < frame_ids_flex[q_idx]
-                )
+                in_history = kv_chunk < q_chunk
+                in_current_chunk_earlier = (kv_chunk == q_chunk) & (kv_block_id < q_block_id)
                 noise_to_clean = (
                     (noise_ids_flex[q_idx] == 0)
                     & (noise_ids_flex[kv_idx] == 1)
                     & ((in_history & history_stream_ok) | in_current_chunk_earlier)
                 )
             if current_block_coupling == JOINT_COUPLING:
-                noise_to_noise = (noise_ids_flex[q_idx] == 0) & (noise_ids_flex[kv_idx] == 0) & (kv_block == q_block)
+                noise_to_noise = (noise_ids_flex[q_idx] == 0) & (noise_ids_flex[kv_idx] == 0) & (kv_chunk == q_chunk)
             elif current_block_coupling == VIDEO_NOISY_TO_ACTION_COUPLING:
                 noise_to_noise = (
                     (noise_ids_flex[q_idx] == 0)
                     & (noise_ids_flex[kv_idx] == 0)
-                    & (kv_block == q_block)
+                    & (kv_chunk == q_chunk)
                     & (
                         (stream_ids_flex[q_idx] == stream_ids_flex[kv_idx])
                         | ((stream_ids_flex[q_idx] == 1) & (stream_ids_flex[kv_idx] == 0))
@@ -662,7 +559,7 @@ def build_chunked_temporal_exact_attention_profile(
                 noise_to_noise = (
                     (noise_ids_flex[q_idx] == 0)
                     & (noise_ids_flex[kv_idx] == 0)
-                    & (kv_block == q_block)
+                    & (kv_chunk == q_chunk)
                     & (
                         (stream_ids_flex[q_idx] == stream_ids_flex[kv_idx])
                         | ((stream_ids_flex[q_idx] == 0) & (stream_ids_flex[kv_idx] == 1))
@@ -672,9 +569,9 @@ def build_chunked_temporal_exact_attention_profile(
                 noise_to_noise = (
                     (noise_ids_flex[q_idx] == 0)
                     & (noise_ids_flex[kv_idx] == 0)
-                    & (frame_ids_flex[kv_idx] == frame_ids_flex[q_idx])
+                    & (block_ids_flex[kv_idx] == block_ids_flex[q_idx])
                 )
-            within_window = (frame_ids_flex[q_idx] - frame_ids_flex[kv_idx]).abs() <= int(window_size)
+            within_window = (q_block_id - kv_block_id).abs() <= int(window_size)
             return same_seq & within_window & (clean_to_clean | noise_to_clean | noise_to_noise)
 
         def cross_mask_mod(

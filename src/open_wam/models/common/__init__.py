@@ -51,6 +51,13 @@ from .flow_matching import (
 )
 from .flow_unipc_multistep_scheduler import FlowUniPCMultistepScheduler
 from .joint_runtime import JointInferenceLoopResult, JointTrainFlowResult, resolve_joint_train_flow_result, run_joint_inference_loop
+from .packed_token_layout import (
+    PackedTokenKind,
+    PackedTokenLayout,
+    PackedTokenStream,
+    build_exact_video_action_token_layout,
+    flatten_action_token_mask,
+)
 from .register_sequence import (
     RegisterSequenceLayout,
     build_register_attention_mask,
@@ -89,6 +96,9 @@ __all__ = [
     "JointInferenceLoopResult",
     "JointTrainFlowResult",
     "PreparedAttentionProfile",
+    "PackedTokenKind",
+    "PackedTokenLayout",
+    "PackedTokenStream",
     "JointRuntimeSchedulers",
     "MergedPrefixCachePayload",
     "RuntimeCachePolicy",
@@ -113,6 +123,7 @@ __all__ = [
     "run_joint_inference_loop",
     "resolve_joint_train_flow_result",
     "build_lingbot_chunked_exact_attention_profile",
+    "build_exact_video_action_token_layout",
     "build_frame_aligned_action_flow_match_train_artifacts",
     "build_flow_unipc_inference_scheduler",
     "build_register_attention_mask",
@@ -145,6 +156,7 @@ __all__ = [
     "resolve_runtime_guidance",
     "sample_timestep_id",
     "select_attention_profile_mask",
+    "flatten_action_token_mask",
     "slice_token_grid_frames",
     "restore_slot_pool_slots",
     "should_update_cache_during_denoise",
