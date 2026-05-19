@@ -61,6 +61,10 @@ class MoTRuntimeState:
     video_tokens_per_frame: int | None = None
     next_condition_frame_start: int = 0
     chunk_advance_frames: int = 0
+    # Absolute frame offset used when assigning chunk ids in split-cache
+    # rollout masks. Strict one-frame startup uses origin 1 so frames 1..4
+    # form the first generated chunk, matching packed/train profiles.
+    chunk_origin_frame: int = 0
 
 
 @dataclass(frozen=True)

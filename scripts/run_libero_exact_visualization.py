@@ -91,9 +91,9 @@ def main() -> None:
         action=argparse.BooleanOptionalAction,
         default=None,
         help=(
-            "Exact-runtime startup parity mode. The default is the legacy single-frame first-chunk startup. "
-            "Pass --exact-startup-bootstrap-padding to encode the first observation once, repeat that latent "
-            "to a full startup chunk, warm negative frames, and execute from generated frame 1."
+            "Exact-runtime startup parity mode. The default writes observation frame 0 as prefix context, "
+            "generates frames 1..4, and executes the full first 16 actions. "
+            "The legacy bootstrap-padding path is deprecated because it warms synthetic zero actions."
         ),
     )
     parser.add_argument(
@@ -325,10 +325,11 @@ def main() -> None:
                     dtype=chunk.chunk_action_pred.dtype,
                 )
             obs_stride = max(1, raw_actions.shape[1] // max(1, config.inference.frame_chunk_size))
+            generation_frame_start = int(chunk.debug.get("generation_frame_start", 0))
             if stateless_first_frame_action:
                 start_frame_group = 0
             else:
-                start_frame_group = 0 if (first_chunk and exact_startup_bootstrap_padding) else (1 if first_chunk else 0)
+                start_frame_group = 1 if first_chunk and generation_frame_start <= 0 else 0
             partial_execution_enabled = (
                 args.execute_action_steps is not None
                 or bool(args.binarize_gripper)
@@ -468,6 +469,9 @@ def main() -> None:
                 )
                 if exact_startup_bootstrap_padding:
                     initial_latents = first_chunk_inputs["video_latents"][:, :, -1:]
+                    combined_latents = new_visual_outputs["video_latents"]
+                elif int(chunk.debug.get("generation_frame_start", 0)) > 0:
+                    initial_latents = chunk.visual_outputs.frontend.video_latents
                     combined_latents = new_visual_outputs["video_latents"]
                 else:
                     initial_latents = chunk.visual_outputs.frontend.video_latents
@@ -626,8 +630,13 @@ def _resolve_exact_startup_bootstrap_padding(
     checkpoint_path: Path | None,
 ) -> bool:
     del config, checkpoint_path
+    if cli_value:
+        raise ValueError(
+            "`--exact-startup-bootstrap-padding` is deprecated because it can expose synthetic zero actions "
+            "as model context. Use the default one-observation startup contract instead."
+        )
     if cli_value is not None:
-        return bool(cli_value)
+        return False
     return False
 
 
@@ -692,12 +701,10 @@ def _exact_startup_bootstrap_action_history(
             "Expected positive startup bootstrap action dimensions, "
             f"got frame_chunk_size={frame_chunk_size}, action_per_frame={action_per_frame}, action_dim={action_dim}."
         )
-    return torch.zeros(
-        1,
-        frame_chunk_size * action_per_frame,
-        action_dim,
-        device=device,
-        dtype=torch.float32,
+    del device
+    raise ValueError(
+        "Exact startup bootstrap action history is deprecated because it exposes synthetic zero actions "
+        "as model context. Use strict frame-0 prefix conditioning instead."
     )
 
 
@@ -755,13 +762,12 @@ def _build_warmup_raw_actions(
     partial_execution_enabled: bool,
     binarize_gripper: bool,
 ) -> torch.Tensor:
-    if first_chunk and not exact_startup_bootstrap_padding and int(start_frame_group) > 0:
-        prefix_actions = raw_actions[: int(start_frame_group)]
-        if binarize_gripper:
-            prefix_actions = _binarize_raw_gripper_actions(prefix_actions)
-        if partial_execution_enabled:
-            return torch.cat([prefix_actions, executed_raw_actions], dim=0)
-        return raw_actions
+    if int(start_frame_group) > 0:
+        raise ValueError(
+            "First-chunk warmup with skipped frame groups is deprecated because it can feed unexecuted or "
+            "synthetic action context into the model. Use the strict frame-0 condition -> frames 1..4 "
+            "execution contract instead."
+        )
     if partial_execution_enabled:
         return executed_raw_actions
     return executed_raw_actions

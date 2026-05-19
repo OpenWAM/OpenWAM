@@ -25,6 +25,10 @@ from open_wam.models.common.joint_conditioning import (
     should_drop_text_for_conditioning_mode,
 )
 from open_wam.models.common.modality_slots import clean_noisy_slot_tensor, zero_loss_mask_like
+from open_wam.models.common.rollout_startup import (
+    build_strict_action_context_mask,
+    resolve_strict_startup_plan,
+)
 from open_wam.configs import (
     CurrentBlockCoupling,
     InferenceConfig,
@@ -528,6 +532,7 @@ class MoTPolicyVariant(PolicyVariant):
         query_frames_per_copy: int,
         tokens_per_frame: int,
         chunk_size_frames: int,
+        chunk_origin_frame: int = 0,
         repeat_copies: int = 1,
     ) -> torch.Tensor | None:
         proprio_token_count = self._proprio_context_token_count(proprio_state)
@@ -544,7 +549,11 @@ class MoTPolicyVariant(PolicyVariant):
             device=resolved_text_context.device,
             dtype=torch.long,
         ).repeat_interleave(int(tokens_per_frame))
-        query_chunk_ids = torch.div(frame_ids, chunk_size, rounding_mode="floor").repeat(int(repeat_copies))
+        query_chunk_ids = torch.div(
+            frame_ids - int(chunk_origin_frame),
+            chunk_size,
+            rounding_mode="floor",
+        ).repeat(int(repeat_copies))
         base_text_token_count = int(resolved_text_context.shape[1]) - int(proprio_token_count)
         return build_chunked_text_context_cross_attention_mask(
             query_chunk_ids=query_chunk_ids,
@@ -769,6 +778,23 @@ class MoTPolicyVariant(PolicyVariant):
         if sample_metadata is None or sample_metadata.frame_shift is None:
             return 0
         return int(sample_metadata.frame_shift)
+
+    @staticmethod
+    def _resolve_train_chunk_origin_frame(
+        *,
+        batch: PolicyTrainBatch,
+        observed_num_frames: int,
+    ) -> int:
+        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
+        if sample_metadata is None:
+            return 0
+        if str(sample_metadata.raw.get("target_alignment", "")) != "next_after_context":
+            return 0
+        loss_frame_start, _ = sample_metadata.frame_range_or_default(
+            observed_num_frames=observed_num_frames,
+            error_label="M5 train chunk-origin metadata",
+        )
+        return int(loss_frame_start)
 
     def _sample_full_segment_train_geometry(
         self,
@@ -1037,12 +1063,17 @@ class MoTPolicyVariant(PolicyVariant):
         if sampled_window_size is None:
             sampled_window_size = max(1, int(self.training_config.window_size))
         frame_shift = self._resolve_train_frame_shift(batch=prepared_inputs.batch)
+        chunk_origin_frame = self._resolve_train_chunk_origin_frame(
+            batch=prepared_inputs.batch,
+            observed_num_frames=int(video_latents.shape[2]),
+        )
         chunk_causal_video_mask = build_chunk_causal_video_mask(
             video_seq_len=video_tokens_per_frame * int(video_latents.shape[2]),
             video_tokens_per_frame=video_tokens_per_frame,
             action_chunk_size_frames=sampled_chunk_size,
             device=video_latents.device,
             attention_window_size=sampled_window_size,
+            chunk_origin_frame=chunk_origin_frame,
         )
 
         # Method-5 video-prefill action denoise is aligned to method-1 full-seg
@@ -1065,6 +1096,7 @@ class MoTPolicyVariant(PolicyVariant):
             query_frames_per_copy=int(action_condition_latents.shape[2]),
             tokens_per_frame=video_tokens_per_frame,
             chunk_size_frames=sampled_chunk_size,
+            chunk_origin_frame=chunk_origin_frame,
         ) if video_text_context is not None else None
         video_cache = prefill_video_kv_cache(
             visual_tower=visual_tower,
@@ -1106,6 +1138,7 @@ class MoTPolicyVariant(PolicyVariant):
                 query_frames_per_copy=int(video_latents.shape[2]),
                 tokens_per_frame=int(action_tokens_per_frame),
                 chunk_size_frames=sampled_chunk_size,
+                chunk_origin_frame=chunk_origin_frame,
             )
         )
         action_pre = self.action_expert.pre_dit(
@@ -1246,6 +1279,10 @@ class MoTPolicyVariant(PolicyVariant):
         if sampled_window_size is None:
             sampled_window_size = max(1, int(self.training_config.window_size))
         frame_shift = self._resolve_train_frame_shift(batch=prepared_inputs.batch)
+        chunk_origin_frame = self._resolve_train_chunk_origin_frame(
+            batch=prepared_inputs.batch,
+            observed_num_frames=num_video_frames,
+        )
 
         train_artifacts = build_action_flow_match_train_artifacts(
             prepared_inputs.batch.actions,
@@ -1428,6 +1465,10 @@ class MoTPolicyVariant(PolicyVariant):
             observed_num_frames=num_video_frames,
         )
         frame_shift = self._resolve_train_frame_shift(batch=prepared_inputs.batch)
+        chunk_origin_frame = self._resolve_train_chunk_origin_frame(
+            batch=prepared_inputs.batch,
+            observed_num_frames=num_video_frames,
+        )
 
         if action_tokens_per_frame is None:
             raise ValueError(
@@ -1580,6 +1621,7 @@ class MoTPolicyVariant(PolicyVariant):
             query_frames_per_copy=num_video_frames,
             tokens_per_frame=video_tokens_per_frame,
             chunk_size_frames=sampled_chunk_size,
+            chunk_origin_frame=chunk_origin_frame,
             repeat_copies=2,
         )
 
@@ -1597,6 +1639,7 @@ class MoTPolicyVariant(PolicyVariant):
             query_frames_per_copy=num_action_frames,
             tokens_per_frame=int(action_tokens_per_frame),
             chunk_size_frames=sampled_chunk_size,
+            chunk_origin_frame=chunk_origin_frame,
             repeat_copies=2,
         )
 
@@ -1616,6 +1659,8 @@ class MoTPolicyVariant(PolicyVariant):
             device=noisy_actions.device,
             attention_window_size=sampled_window_size,
             current_block_coupling=current_block_coupling,
+            chunk_origin_frame=chunk_origin_frame,
+            action_context_mask=clean_action_condition_mask,
         )
         video_flow_pred, packed_action_hidden = forward_mot_packed_coupling_denoise(
             visual_tower=visual_tower,
@@ -1756,7 +1801,15 @@ class MoTPolicyVariant(PolicyVariant):
         latent_height = int(video_latents.shape[-2])
         latent_width = int(video_latents.shape[-1])
         video_tokens_per_frame = int(visual_outputs.frontend.token_grid.tokens_per_frame)
-        first_step_bootstrap = int(infer_state.step_index) == 0 and int(infer_state.cursor.current_start_frame) == 0
+        current_start_frame = int(infer_state.cursor.current_start_frame)
+        startup_plan = resolve_strict_startup_plan(
+            step_index=int(infer_state.step_index),
+            current_start_frame=current_start_frame,
+            frame_chunk_size=frame_chunk_size,
+            action_tokens_per_frame=action_tokens_per_frame,
+            action_horizon=self.action_horizon,
+        )
+        first_step_bootstrap = startup_plan.is_startup
 
         past_clean_latents = runtime_state.past_clean_latents
         if past_clean_latents is not None:
@@ -1785,28 +1838,42 @@ class MoTPolicyVariant(PolicyVariant):
                     f"got past_action_tokens={past_clean_actions.shape[1]}, action_tokens_per_frame={action_tokens_per_frame}."
                 )
 
-        current_video_observation = video_latents[:, :, -1:].contiguous() if first_step_bootstrap else video_latents
-        current_video_frames = int(current_video_observation.shape[2])
-        if current_video_frames >= frame_chunk_size:
-            current_video_condition = current_video_observation[:, :, -frame_chunk_size:].contiguous()
+        current_video_prefix_frames = startup_plan.video_prefix_frames
+        generation_frame_start = startup_plan.generation_frame_start
+        if first_step_bootstrap:
+            observed_prefix = video_latents[:, :, -1:].contiguous()
+            current_generated_video = torch.randn(
+                batch_size,
+                video_latents.shape[1],
+                frame_chunk_size,
+                latent_height,
+                latent_width,
+                device=device,
+                dtype=dtype,
+            )
+            current_noisy_video = torch.cat([observed_prefix.to(dtype=dtype), current_generated_video], dim=2)
+            current_clean_video = torch.zeros_like(current_noisy_video)
+            current_clean_video[:, :, :1] = observed_prefix.to(dtype=dtype)
         else:
-            pad_frames = frame_chunk_size - current_video_frames
-            current_video_condition = torch.cat(
-                [
-                    current_video_observation,
-                    current_video_observation[:, :, -1:].expand(-1, -1, pad_frames, -1, -1),
-                ],
-                dim=2,
-            ).contiguous()
-        current_noisy_video = torch.randn_like(current_video_condition, device=device, dtype=dtype)
-        current_clean_video = torch.zeros_like(current_noisy_video)
+            current_video_observation = video_latents
+            current_video_frames = int(current_video_observation.shape[2])
+            if current_video_frames >= frame_chunk_size:
+                current_video_condition = current_video_observation[:, :, -frame_chunk_size:].contiguous()
+            else:
+                pad_frames = frame_chunk_size - current_video_frames
+                current_video_condition = torch.cat(
+                    [
+                        current_video_observation,
+                        current_video_observation[:, :, -1:].expand(-1, -1, pad_frames, -1, -1),
+                    ],
+                    dim=2,
+                ).contiguous()
+            current_noisy_video = torch.randn_like(current_video_condition, device=device, dtype=dtype)
+            current_clean_video = torch.zeros_like(current_noisy_video)
+        current_video_sequence_frames = int(current_noisy_video.shape[2])
         current_action_sample = torch.randn(batch_size, self.action_horizon, self.action_dim, device=device, dtype=dtype)
-        first_frame_video_cond = first_step_bootstrap and current_video_condition.shape[2] > 0
-        first_action_tokens = action_tokens_per_frame if first_step_bootstrap else 0
-        if first_frame_video_cond:
-            current_noisy_video[:, :, 0:1] = current_video_condition[:, :, 0:1]
-        if first_action_tokens > 0:
-            current_action_sample[:, :first_action_tokens] = 0.0
+        current_action_prefix_tokens = startup_plan.action_prefix_tokens
+        current_action_sequence_tokens = startup_plan.current_action_sequence_tokens
 
         history_window_frames = resolve_mot_rollout_cache_window_frames(
             window_size=int(self.training_config.window_size),
@@ -1837,13 +1904,23 @@ class MoTPolicyVariant(PolicyVariant):
             noisy_video_sequence = torch.cat([history_video, current_noisy_video], dim=2)
             clean_video_sequence = torch.cat([history_video, current_clean_video], dim=2)
         history_video_timesteps = torch.zeros(batch_size, shared_history_frames, device=device, dtype=torch.float32)
-        current_zero_video_timesteps = torch.zeros(batch_size, frame_chunk_size, device=device, dtype=torch.float32)
-        zero_action_current_timesteps = torch.zeros(batch_size, self.action_horizon, device=device, dtype=torch.float32)
-
-        if history_actions is None:
-            clean_action_condition = current_action_sample.new_zeros(batch_size, self.action_horizon, self.action_dim)
-        else:
-            clean_action_condition = torch.cat([history_actions, torch.zeros_like(current_action_sample)], dim=1)
+        current_zero_video_timesteps = torch.zeros(
+            batch_size,
+            current_video_sequence_frames,
+            device=device,
+            dtype=torch.float32,
+        )
+        zero_action_current_timesteps = torch.zeros(
+            batch_size,
+            current_action_sequence_tokens,
+            device=device,
+            dtype=torch.float32,
+        )
+        zero_current_action_condition = current_action_sample.new_zeros(
+            batch_size,
+            current_action_sequence_tokens,
+            self.action_dim,
+        )
 
         text_context = runtime_state.text_context
         if text_context is None:
@@ -1887,25 +1964,36 @@ class MoTPolicyVariant(PolicyVariant):
                 inference_config=self.inference_config,
                 num_inference_steps_override=self.training_config.action_num_train_timesteps,
             )
+        sequence_frame_start = current_start_frame - shared_history_frames
+        packed_chunk_origin_frame = startup_plan.chunk_origin_frame(shared_history_frames)
+        packed_action_context_mask = build_strict_action_context_mask(
+            batch_size=batch_size,
+            history_action_tokens=history_action_tokens,
+            current_action_sequence_tokens=current_action_sequence_tokens,
+            invalid_current_prefix_tokens=current_action_prefix_tokens,
+            device=device,
+            dtype=torch.float32,
+        )
         attention_profile = build_mot_packed_coupling_attention_profile(
-            num_video_frames=shared_history_frames + frame_chunk_size,
+            num_video_frames=shared_history_frames + current_video_sequence_frames,
             video_tokens_per_frame=video_tokens_per_frame,
-            num_action_frames=shared_history_frames + frame_chunk_size,
+            num_action_frames=shared_history_frames + current_video_prefix_frames + frame_chunk_size,
             action_tokens_per_frame=action_tokens_per_frame,
             chunk_size_frames=frame_chunk_size,
             device=device,
             attention_window_size=max(1, int(self.training_config.window_size)),
             current_block_coupling=current_block_coupling,
+            chunk_origin_frame=packed_chunk_origin_frame,
+            action_context_mask=packed_action_context_mask,
             build_dense_masks=True,
             build_flex_masks=False,
         )
-        sequence_frame_start = int(infer_state.cursor.current_start_frame) - shared_history_frames
         action_grid_ids = self._build_action_grid_ids_for_sequence(
             batch_size=batch_size,
-            seq_len=self.action_horizon,
+            seq_len=current_action_sequence_tokens,
             action_tokens_per_frame=action_tokens_per_frame,
             device=device,
-            frame_shift=int(infer_state.cursor.current_start_frame),
+            frame_shift=current_start_frame,
         )
         if shared_history_frames > 0:
             history_action_grid_ids = self._build_action_grid_ids_for_sequence(
@@ -1924,22 +2012,31 @@ class MoTPolicyVariant(PolicyVariant):
         action_sample = current_action_sample
         zero_current_video_timestep = torch.zeros(
             batch_size,
-            frame_chunk_size,
+            current_video_sequence_frames,
             device=device,
             dtype=torch.float32,
         )
         zero_current_action_timestep = torch.zeros(
             batch_size,
-            self.action_horizon,
+            current_action_sequence_tokens,
             device=device,
             dtype=torch.float32,
         )
-        zero_current_action_condition = torch.zeros_like(current_action_sample)
 
         def _compose_clean_video_sequence(current_clean_video_for_step: torch.Tensor) -> torch.Tensor:
             if history_video is None:
                 return current_clean_video_for_step
             return torch.cat([history_video, current_clean_video_for_step], dim=2)
+
+        def _compose_current_action_sequence(action_tokens: torch.Tensor) -> torch.Tensor:
+            if current_action_prefix_tokens <= 0:
+                return action_tokens
+            invalid_prefix = action_tokens.new_zeros(
+                action_tokens.shape[0],
+                current_action_prefix_tokens,
+                action_tokens.shape[-1],
+            )
+            return torch.cat([invalid_prefix, action_tokens], dim=1)
 
         def _build_packed_action_pre(
             *,
@@ -1967,7 +2064,7 @@ class MoTPolicyVariant(PolicyVariant):
                     noisy_action_timesteps,
                     torch.zeros(
                         batch_size,
-                        history_action_tokens + self.action_horizon,
+                        history_action_tokens + current_action_sequence_tokens,
                         device=device,
                         dtype=torch.float32,
                     ),
@@ -1990,7 +2087,7 @@ class MoTPolicyVariant(PolicyVariant):
         ):
             dense_video_timestep = torch.cat([history_video_timesteps, video_timestep], dim=1)
             packed_action_pre = _build_packed_action_pre(
-                action_tokens=action_sample,
+                action_tokens=_compose_current_action_sequence(action_sample),
                 action_timestep=action_timestep,
                 current_clean_action_for_step=current_clean_action_for_step,
             )
@@ -2013,23 +2110,26 @@ class MoTPolicyVariant(PolicyVariant):
         def _video_timestep(value: torch.Tensor) -> torch.Tensor:
             timestep = _expand_scalar_timestep(
                 value,
-                shape=(batch_size, frame_chunk_size),
+                shape=(batch_size, current_video_sequence_frames),
                 device=device,
             )
-            if first_frame_video_cond:
-                timestep[:, 0:1] = 0.0
-                predicted_video_sequence[:, :, shared_history_frames : shared_history_frames + 1] = current_video_condition[:, :, 0:1]
+            if current_video_prefix_frames > 0:
+                timestep[:, :current_video_prefix_frames] = 0.0
+                predicted_video_sequence[
+                    :,
+                    :,
+                    shared_history_frames : shared_history_frames + current_video_prefix_frames,
+                ] = current_clean_video[:, :, :current_video_prefix_frames]
             return timestep
 
         def _action_timestep(value: torch.Tensor) -> torch.Tensor:
             timestep = _expand_scalar_timestep(
                 value,
-                shape=(batch_size, self.action_horizon),
+                shape=(batch_size, current_action_sequence_tokens),
                 device=device,
             )
-            if first_action_tokens > 0:
-                timestep[:, :first_action_tokens] = 0.0
-                action_sample[:, :first_action_tokens] = 0.0
+            if current_action_prefix_tokens > 0:
+                timestep[:, :current_action_prefix_tokens] = 0.0
             return timestep
 
         def _update_video(
@@ -2040,8 +2140,13 @@ class MoTPolicyVariant(PolicyVariant):
             sigma_next: torch.Tensor | None = None,
         ) -> None:
             nonlocal predicted_video_sequence
-            current_video_flow = video_flow_pred[:, :, -frame_chunk_size:].contiguous()
-            current_predicted_video = predicted_video_sequence[:, :, -frame_chunk_size:].contiguous()
+            generated_start = shared_history_frames + current_video_prefix_frames
+            current_video_flow = video_flow_pred[:, :, generated_start : generated_start + frame_chunk_size].contiguous()
+            current_predicted_video = predicted_video_sequence[
+                :,
+                :,
+                generated_start : generated_start + frame_chunk_size,
+            ].contiguous()
             if sigma is None or sigma_next is None:
                 current_predicted_video = video_scheduler.step(current_video_flow, video_timestep, current_predicted_video)
             else:
@@ -2051,10 +2156,8 @@ class MoTPolicyVariant(PolicyVariant):
                     sigma=sigma,
                     sigma_next=sigma_next,
                 )
-            if first_frame_video_cond:
-                current_predicted_video[:, :, 0:1] = current_video_condition[:, :, 0:1]
             predicted_video_sequence = torch.cat(
-                [predicted_video_sequence[:, :, :shared_history_frames], current_predicted_video],
+                [predicted_video_sequence[:, :, :generated_start], current_predicted_video],
                 dim=2,
             )
 
@@ -2068,13 +2171,12 @@ class MoTPolicyVariant(PolicyVariant):
         ) -> None:
             nonlocal action_sample
             packed_action_flow = self.action_expert.post_dit(packed_action_hidden, packed_action_pre)
-            action_flow_pred = _slice_current_noisy_action_flow(
-                packed_action_flow,
-                history_action_tokens=history_action_tokens,
-                action_horizon=self.action_horizon,
-            )
+            flow_start = history_action_tokens + current_action_prefix_tokens
+            action_flow_pred = packed_action_flow[:, flow_start : flow_start + self.action_horizon].contiguous()
+            generated_action_timestep = action_timestep[:, current_action_prefix_tokens:].contiguous()
+            scheduler_timestep = generated_action_timestep.reshape(-1)[0]
             if sigma is None or sigma_next is None:
-                action_sample = action_scheduler.step(action_flow_pred, action_timestep, action_sample)
+                action_sample = action_scheduler.step(action_flow_pred, scheduler_timestep, action_sample)
             else:
                 action_sample = _flow_step_with_sigmas(
                     action_sample,
@@ -2082,8 +2184,6 @@ class MoTPolicyVariant(PolicyVariant):
                     sigma=sigma,
                     sigma_next=sigma_next,
                 )
-            if first_action_tokens > 0:
-                action_sample[:, :first_action_tokens] = 0.0
 
         if current_block_coupling == CurrentBlockCoupling.VIDEO_THEN_ACTION:
             for video_timestep in video_scheduler.timesteps:
@@ -2095,7 +2195,7 @@ class MoTPolicyVariant(PolicyVariant):
                     current_clean_action_for_step=zero_current_action_condition,
                 )
                 _update_video(video_flow_pred, video_timestep)
-            current_clean_video = predicted_video_sequence[:, :, -frame_chunk_size:].contiguous()
+            current_clean_video = predicted_video_sequence[:, :, shared_history_frames:].contiguous()
             for action_timestep in action_scheduler.timesteps:
                 current_action_timestep = _action_timestep(action_timestep)
                 _, packed_action_hidden, packed_action_pre = _run_packed_step(
@@ -2104,7 +2204,7 @@ class MoTPolicyVariant(PolicyVariant):
                     current_clean_video_for_step=current_clean_video,
                     current_clean_action_for_step=zero_current_action_condition,
                 )
-                _update_action(packed_action_hidden, packed_action_pre, action_timestep)
+                _update_action(packed_action_hidden, packed_action_pre, current_action_timestep)
         elif current_block_coupling == CurrentBlockCoupling.ACTION_THEN_VIDEO:
             for action_timestep in action_scheduler.timesteps:
                 current_action_timestep = _action_timestep(action_timestep)
@@ -2114,8 +2214,8 @@ class MoTPolicyVariant(PolicyVariant):
                     current_clean_video_for_step=current_clean_video,
                     current_clean_action_for_step=zero_current_action_condition,
                 )
-                _update_action(packed_action_hidden, packed_action_pre, action_timestep)
-            current_clean_action = action_sample
+                _update_action(packed_action_hidden, packed_action_pre, current_action_timestep)
+            current_clean_action = _compose_current_action_sequence(action_sample)
             for video_timestep in video_scheduler.timesteps:
                 current_video_timestep = _video_timestep(video_timestep)
                 video_flow_pred, _, _ = _run_packed_step(
@@ -2159,15 +2259,17 @@ class MoTPolicyVariant(PolicyVariant):
                 _update_action(
                     packed_action_hidden,
                     packed_action_pre,
-                    action_timestep,
+                    current_action_timestep,
                     sigma=shared_sigma,
                     sigma_next=shared_sigma_next,
                 )
 
         predicted_chunk_latents = predicted_video_sequence[:, :, -frame_chunk_size:].contiguous()
-        if first_frame_video_cond:
-            predicted_chunk_latents[:, :, 0:1] = current_video_condition[:, :, 0:1]
-        next_clean_context = torch.cat([clean_video_sequence[:, :, :shared_history_frames], predicted_chunk_latents], dim=2)
+        clean_video_prefix_frames = shared_history_frames + current_video_prefix_frames
+        next_clean_context = torch.cat(
+            [clean_video_sequence[:, :, :clean_video_prefix_frames], predicted_chunk_latents],
+            dim=2,
+        )
         runtime_state.past_clean_latents = next_clean_context[:, :, -history_window_frames:].detach()
         if history_actions is None:
             next_clean_actions = action_sample
@@ -2175,10 +2277,10 @@ class MoTPolicyVariant(PolicyVariant):
             next_clean_actions = torch.cat([history_actions, action_sample], dim=1)
         max_action_history_tokens = history_window_frames * action_tokens_per_frame
         runtime_state.past_clean_actions = next_clean_actions[:, -max_action_history_tokens:].detach()
-        runtime_state.next_condition_frame_start = int(infer_state.cursor.current_start_frame + frame_chunk_size)
+        runtime_state.next_condition_frame_start = int(generation_frame_start + frame_chunk_size)
         next_state = infer_state
         next_state.step_index += 1
-        next_state.cursor.current_start_frame = int(infer_state.cursor.current_start_frame + frame_chunk_size)
+        next_state.cursor.current_start_frame = int(generation_frame_start + frame_chunk_size)
         next_state.variant_state = runtime_state
         return PolicyInferOutput(
             policy_features=action_sample.new_zeros(batch_size, 0, self.action_expert.hidden_size),
@@ -2188,10 +2290,15 @@ class MoTPolicyVariant(PolicyVariant):
                 "method_family": "mot",
                 "condition_mode": str(self.config.condition_mode),
                 "current_block_coupling": current_block_coupling.value,
+                "generation_frame_start": int(generation_frame_start),
                 "predicted_latents": predicted_chunk_latents.detach(),
                 "predicted_video_latents": predicted_chunk_latents.detach(),
                 "mot_first_step_bootstrap": first_step_bootstrap,
-                "mot_action_cond_tokens": first_action_tokens,
+                "mot_action_cond_tokens": 0,
+                "mot_invalid_startup_action_tokens": int(current_action_prefix_tokens),
+                "mot_action_context_invalid_tokens": int(
+                    attention_profile.metadata.get("invalid_action_context_tokens", 0)
+                ),
                 "mot_history_anchor_frames": int(shared_history_frames),
                 "mot_packed_history_debug": {
                     "past_clean_latent_frames": 0 if past_clean_latents is None else int(past_clean_latents.shape[2]),
@@ -2199,16 +2306,18 @@ class MoTPolicyVariant(PolicyVariant):
                     "shared_history_frames": int(shared_history_frames),
                     "current_observed_latent_frames": int(video_latents.shape[2]),
                     "current_clean_condition_frames": int(current_clean_video.shape[2]),
-                    "packed_video_frames": int(shared_history_frames + frame_chunk_size),
-                    "packed_action_frames": int(shared_history_frames + frame_chunk_size),
-                    "current_action_flow_start": int(history_action_tokens),
-                    "current_action_flow_end": int(history_action_tokens + self.action_horizon),
+                    "packed_video_frames": int(shared_history_frames + current_video_sequence_frames),
+                    "packed_action_frames": int(shared_history_frames + current_video_prefix_frames + frame_chunk_size),
+                    "current_action_flow_start": int(history_action_tokens + current_action_prefix_tokens),
+                    "current_action_flow_end": int(history_action_tokens + current_action_prefix_tokens + self.action_horizon),
                     "history_window_frames": int(history_window_frames),
                     "max_history_frames": int(max_history_frames),
                     "next_past_clean_latent_frames": int(runtime_state.past_clean_latents.shape[2]),
                     "next_past_clean_action_frames": int(runtime_state.past_clean_actions.shape[1] // action_tokens_per_frame),
                     "sequence_frame_start": int(sequence_frame_start),
-                    "current_frame_start": int(infer_state.cursor.current_start_frame),
+                    "current_frame_start": int(current_start_frame),
+                    "current_video_prefix_frames": int(current_video_prefix_frames),
+                    "current_action_prefix_tokens": int(current_action_prefix_tokens),
                     "mode_uses_packed_cache": True,
                     "joint_timestep_coupling": joint_timestep_coupling.value,
                     "coupled_action_video_sigmas": bool(couple_action_video_sigmas),
@@ -2685,6 +2794,8 @@ class MoTPolicyVariant(PolicyVariant):
             if skip_observation_update
             else current_obs_frame_start + int(observed_prefix.shape[2])
         )
+        if is_first_chunk:
+            runtime_state.chunk_origin_frame = int(generation_frame_start) % int(chunk_frames)
         runtime_state.next_condition_frame_start = (
             generation_frame_start + chunk_frames if skip_observation_update else generation_frame_start
         )
@@ -2932,6 +3043,7 @@ class MoTPolicyVariant(PolicyVariant):
             video_frame_start=video_frame_start,
             past_action_frame_start=past_action_frame_start,
             current_action_frame_start=current_action_frame_start,
+            chunk_origin_frame=int(runtime_state.chunk_origin_frame),
             current_block_coupling=current_block_coupling,
         )
         # Method-1-aligned cache write: run the denoise loop without
@@ -3074,6 +3186,7 @@ class MoTPolicyVariant(PolicyVariant):
                 "method_family": "mot",
                 "condition_mode": str(self.config.condition_mode),
                 "current_block_coupling": current_block_coupling.value,
+                "generation_frame_start": int(current_action_frame_start),
                 "mot_cache_debug": {
                     "video_cache_seq_len": int(runtime_state.video_cache.video_seq_len) if runtime_state.video_cache is not None else 0,
                     "action_video_cache_seq_len": int(action_video_cache.video_seq_len),
@@ -3089,6 +3202,7 @@ class MoTPolicyVariant(PolicyVariant):
                     "video_frame_start": int(video_frame_start),
                     "past_action_frame_start": int(past_action_frame_start),
                     "current_action_frame_start": int(current_action_frame_start),
+                    "chunk_origin_frame": int(runtime_state.chunk_origin_frame),
                     "skip_observation_update": bool(skip_observation_update),
                     "condition_frame_start_override": (
                         None

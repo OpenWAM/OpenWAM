@@ -257,6 +257,67 @@ def build_chunked_text_context_cross_attention_mask(
     return mask[None, :, :].expand(resolved_batch_size, -1, -1).contiguous()
 
 
+def _flatten_action_context_mask(
+    action_context_mask: torch.Tensor,
+    *,
+    batch_size: int,
+    action_frames: int,
+    action_height: int,
+    action_width: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """Return per-action-token context visibility in profile token order."""
+
+    token_count = int(action_frames) * int(action_height) * int(action_width)
+    mask = action_context_mask.to(device=device)
+    if mask.ndim == 5:
+        # [B, C, F, H, W] action-latent mask. Collapse action channels because
+        # the exact runtime has one token per [F, H, W] slot.
+        if tuple(int(dim) for dim in mask.shape[2:]) != (
+            int(action_frames),
+            int(action_height),
+            int(action_width),
+        ):
+            raise ValueError(
+                "action_context_mask shape does not match action token geometry: "
+                f"mask={tuple(mask.shape)}, expected trailing=({action_frames}, {action_height}, {action_width})."
+            )
+        token_valid = mask.float().amax(dim=1).reshape(int(mask.shape[0]), token_count) > 0
+    elif mask.ndim == 4:
+        if tuple(int(dim) for dim in mask.shape[1:]) != (
+            int(action_frames),
+            int(action_height),
+            int(action_width),
+        ):
+            raise ValueError(
+                "action_context_mask shape does not match action token geometry: "
+                f"mask={tuple(mask.shape)}, expected [B, {action_frames}, {action_height}, {action_width}]."
+            )
+        token_valid = mask.reshape(int(mask.shape[0]), token_count).bool()
+    elif mask.ndim == 3 and int(mask.shape[1]) == token_count:
+        # [B, T_action, C] sequence mask. Collapse feature/channel dim.
+        token_valid = mask.float().amax(dim=-1) > 0
+    elif mask.ndim == 2 and int(mask.shape[1]) == token_count:
+        token_valid = mask.bool()
+    else:
+        raise ValueError(
+            "Unsupported action_context_mask shape. Expected [B,C,F,H,W], [B,F,H,W], "
+            f"[B,T,C], or [B,T] for token_count={token_count}; got {tuple(mask.shape)}."
+        )
+
+    if int(token_valid.shape[0]) != int(batch_size):
+        if int(batch_size) == 1:
+            # Packed shared profiles are batch-agnostic. A token is visible
+            # only if every sample in the runtime batch says it is real.
+            token_valid = token_valid.all(dim=0, keepdim=True)
+        else:
+            raise ValueError(
+                "action_context_mask batch size does not match attention profile batch size: "
+                f"mask_batch={int(token_valid.shape[0])}, profile_batch={int(batch_size)}."
+            )
+    return token_valid.reshape(-1).to(device=device, dtype=torch.bool)
+
+
 def build_chunked_temporal_exact_attention_profile(
     *,
     latent_shape: tuple[int, int, int, int, int],
@@ -268,7 +329,9 @@ def build_chunked_temporal_exact_attention_profile(
     text_token_count: int,
     base_text_token_count: int | None = None,
     proprio_context_token_count: int = 0,
+    chunk_origin_frame: int = 0,
     device: torch.device,
+    action_context_mask: torch.Tensor | None = None,
     build_dense_masks: bool = False,
     build_flex_masks: bool = False,
     allow_joint_noisy_block_attention: bool | None = None,
@@ -292,6 +355,7 @@ def build_chunked_temporal_exact_attention_profile(
                 "`allow_joint_noisy_block_attention`."
             )
     current_block_coupling = normalize_chunked_temporal_exact_coupling(current_block_coupling)
+    chunk_origin_frame = int(chunk_origin_frame)
 
     batch_size, _, latent_frames, latent_height, latent_width = latent_shape
     _, _, action_frames, action_height, action_width = action_shape
@@ -328,6 +392,20 @@ def build_chunked_temporal_exact_attention_profile(
         .expand(-1, action_frames, action_height, action_width)
         .flatten()
     )
+    invalid_action_token_count = 0
+    action_context_valid_tokens: tuple[bool, ...] | None = None
+    if action_context_mask is not None:
+        action_token_valid = _flatten_action_context_mask(
+            action_context_mask,
+            batch_size=batch_size,
+            action_frames=action_frames,
+            action_height=action_height,
+            action_width=action_width,
+            device=device,
+        )
+        invalid_action_token_count = int((~action_token_valid).sum().item())
+        action_context_valid_tokens = tuple(bool(value) for value in action_token_valid.detach().cpu().tolist())
+        action_seq_id = action_seq_id.masked_fill(~action_token_valid, -1)
     seq_ids = torch.cat([latent_seq_id] * 2 + [action_seq_id] * 2)
 
     latent_frame_id = (
@@ -340,8 +418,8 @@ def build_chunked_temporal_exact_attention_profile(
         .expand(batch_size, -1, action_height, action_width)[None]
         .flatten()
     )
-    latent_chunk_id = latent_frame_id // chunk_size
-    action_chunk_id = action_frame_id // chunk_size
+    latent_chunk_id = torch.div(latent_frame_id - chunk_origin_frame, chunk_size, rounding_mode="floor")
+    action_chunk_id = torch.div(action_frame_id - chunk_origin_frame, chunk_size, rounding_mode="floor")
     if current_block_coupling in {ACTION_THEN_VIDEO_COUPLING, ACTION_NOISY_TO_VIDEO_COUPLING}:
         latent_block_id = latent_chunk_id * 2 + 1
         action_block_id = action_chunk_id * 2
@@ -650,6 +728,9 @@ def build_chunked_temporal_exact_attention_profile(
             "text_token_count": int(text_token_count),
             "base_text_token_count": int(resolved_base_text_token_count),
             "proprio_context_token_count": int(resolved_proprio_context_token_count),
+            "chunk_origin_frame": int(chunk_origin_frame),
+            "invalid_action_context_tokens": int(invalid_action_token_count),
+            "action_context_valid_tokens": action_context_valid_tokens,
             "allow_joint_noisy_block_attention": current_block_coupling == JOINT_COUPLING,
             "current_block_coupling": current_block_coupling,
             "preserve_video_pretrain_history": bool(preserve_video_pretrain_history),

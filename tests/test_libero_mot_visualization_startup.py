@@ -197,23 +197,19 @@ class _FakePipeline:
         )
 
 
-def test_build_executed_action_history_uses_clipped_controls_and_bootstrap_zeros() -> None:
+def test_build_executed_action_history_rejects_bootstrap_zero_actions() -> None:
     executed = [
         np.array([2.0, -2.0, 0.5], dtype=np.float32),
         np.array([0.25, 0.5, -0.25], dtype=np.float32),
     ]
 
-    history = mot_viz._build_executed_action_history_tensor(
-        executed,
-        start_frame_group=1,
-        action_per_frame=2,
-        action_dim=3,
-    )
-
-    assert history is not None
-    assert history.shape == (1, 4, 3)
-    assert torch.equal(history[0, :2], torch.zeros(2, 3))
-    assert torch.equal(history[0, 2:], torch.from_numpy(np.stack(executed, axis=0)))
+    with pytest.raises(ValueError, match="deprecated"):
+        mot_viz._build_executed_action_history_tensor(
+            executed,
+            start_frame_group=1,
+            action_per_frame=2,
+            action_dim=3,
+        )
 
 
 def test_build_executed_action_history_returns_none_when_nothing_executed() -> None:

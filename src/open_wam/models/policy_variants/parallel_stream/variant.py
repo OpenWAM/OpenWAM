@@ -251,6 +251,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 action_loss_frame_start=sampled_geometry["action_loss_frame_start"],
                 action_loss_frame_end=sampled_geometry["action_loss_frame_end"],
                 frame_shift=sampled_geometry["frame_shift"],
+                chunk_origin_frame=sampled_geometry["chunk_origin_frame"],
                 generalist_training_mode_override=generalist_metadata["mode_override"],
                 generalist_drop_text_conditioning=generalist_metadata["drop_text"],
                 generalist_training_source=generalist_metadata["source"],
@@ -274,6 +275,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 action_loss_frame_start=sampled_geometry["action_loss_frame_start"],
                 action_loss_frame_end=sampled_geometry["action_loss_frame_end"],
                 frame_shift=sampled_geometry["frame_shift"],
+                chunk_origin_frame=sampled_geometry["chunk_origin_frame"],
             )
         if proprio_state is not None:
             train_artifacts.input_dict["proprio_state"] = proprio_state
@@ -384,6 +386,9 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             and sample_metadata.frame_shift is not None
             else 0
         )
+        chunk_origin_frame = 0
+        if str(sample_metadata.raw.get("target_alignment", "")) == "next_after_context":
+            chunk_origin_frame = int(loss_frame_start)
         return {
             "chunk_size": sample_metadata.sampled_chunk_size_for(observed_num_frames),
             "window_size": sample_metadata.sampled_window_size,
@@ -394,6 +399,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             "action_loss_frame_start": action_loss_frame_start,
             "action_loss_frame_end": action_loss_frame_end,
             "frame_shift": frame_shift,
+            "chunk_origin_frame": chunk_origin_frame,
         }
 
     def _prepare_exact_train_actions(

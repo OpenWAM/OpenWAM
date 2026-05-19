@@ -76,6 +76,26 @@ def _coerce_enum_tuple(enum_cls: type[EnumT], values: tuple[EnumT | str, ...] | 
     return tuple(_coerce_enum(enum_cls, value) for value in values)
 
 
+def _coerce_strict_chunk_size(name: str, value: Any) -> int:
+    """Coerce strict rollout chunk-size fields with a clear config error."""
+
+    try:
+        if isinstance(value, bool):
+            raise TypeError
+        coerced = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(
+            "`sample_construction.target_alignment=next_after_context` requires integer chunk-size fields; "
+            f"got {name}={value!r}."
+        ) from None
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError(
+            "`sample_construction.target_alignment=next_after_context` requires integer chunk-size fields; "
+            f"got {name}={value!r}."
+        )
+    return coerced
+
+
 def _load_consortium_channel_mappings(raw_value: Any) -> tuple[ConsortiumChannelMappingConfig, ...]:
     mappings_raw = raw_value or ()
     if not isinstance(mappings_raw, (list, tuple)):
@@ -981,6 +1001,22 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         config_enums.WindowSamplingMode,
         sample_construction_raw.get("mode", data_defaults.sample_construction.mode),
     )
+    sample_target_alignment = _coerce_enum(
+        config_enums.SampleTargetAlignment,
+        sample_construction_raw.get(
+            "target_alignment",
+            data_defaults.sample_construction.target_alignment,
+        ),
+    )
+    if sample_target_alignment == config_enums.SampleTargetAlignment.NEXT_AFTER_CONTEXT:
+        legacy_context_keys = [key for key in ("context_prefix_policy", "context_prefix_frames") if key in sample_construction_raw]
+        if legacy_context_keys:
+            joined = ", ".join(f"`{key}`" for key in legacy_context_keys)
+            raise ValueError(
+                "`sample_construction.target_alignment=next_after_context` uses "
+                "`rollout_context_policy` / `rollout_context_frames`; remove legacy context fields: "
+                f"{joined}."
+            )
     if sample_construction_mode == config_enums.WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT:
         legacy_hierarchical_keys = (
             "segment_min_frames",
@@ -1171,6 +1207,18 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
             randomize_geometry=sample_construction_raw.get(
                 "randomize_geometry",
                 data_defaults.sample_construction.randomize_geometry,
+            ),
+            target_alignment=sample_target_alignment,
+            rollout_context_policy=_coerce_enum(
+                config_enums.RolloutContextPolicy,
+                sample_construction_raw.get(
+                    "rollout_context_policy",
+                    data_defaults.sample_construction.rollout_context_policy,
+                ),
+            ),
+            rollout_context_frames=sample_construction_raw.get(
+                "rollout_context_frames",
+                data_defaults.sample_construction.rollout_context_frames,
             ),
             segment_frames=sample_construction_raw.get(
                 "segment_frames",
@@ -1656,6 +1704,27 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         run_name=trainer_raw.get("run_name"),
     )
     validation_config = _load_validation_config(raw.get("validation", {}))
+
+    if data_config.sample_construction.target_alignment == config_enums.SampleTargetAlignment.NEXT_AFTER_CONTEXT:
+        strict_chunk_sources = {
+            "data.sample_construction.chunk_size": data_config.sample_construction.chunk_size,
+            "training.chunk_size": training_config.chunk_size,
+            "inference.frame_chunk_size": inference_config.frame_chunk_size,
+        }
+        policy_frame_chunk_size = getattr(policy_variant_config, "frame_chunk_size", None)
+        if policy_frame_chunk_size is not None:
+            strict_chunk_sources["policy_variant.frame_chunk_size"] = policy_frame_chunk_size
+        invalid_chunk_sources = {
+            name: value
+            for name, value in strict_chunk_sources.items()
+            if _coerce_strict_chunk_size(name, value) != 4
+        }
+        if invalid_chunk_sources:
+            joined = ", ".join(f"{name}={value}" for name, value in sorted(invalid_chunk_sources.items()))
+            raise ValueError(
+                "`sample_construction.target_alignment=next_after_context` requires fixed 4-frame chunks "
+                f"across data/training/inference/policy; got {joined}."
+            )
 
     return ExperimentConfig(
         name=raw.get("name", "unnamed_experiment"),

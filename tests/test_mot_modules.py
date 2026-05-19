@@ -35,6 +35,7 @@ from open_wam.models.policy_variants.mot.modules import (
 )
 from open_wam.models.policy_variants.mot.packed_block import MoTPackedBlock
 from open_wam.models.policy_variants.mot.runtime import (
+    build_chunk_causal_video_mask,
     build_mot_inference_action_attention_mask,
     build_mot_attention_mask,
     build_mot_packed_coupling_attention_mask,
@@ -251,6 +252,63 @@ def test_build_mot_inference_action_mask_decouples_same_step_video() -> None:
     assert mask[current_action_query, previous_video_frame_token]
 
 
+def test_build_mot_inference_action_mask_honors_strict_chunk_origin() -> None:
+    origin_zero = build_mot_inference_action_attention_mask(
+        video_seq_len=5,
+        past_action_seq_len=0,
+        current_action_seq_len=4,
+        video_tokens_per_frame=1,
+        action_tokens_per_frame=1,
+        chunk_size_frames=4,
+        window_size_frames=8,
+        device=torch.device("cpu"),
+        video_frame_start=0,
+        current_action_frame_start=1,
+        chunk_origin_frame=0,
+        current_block_coupling=CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+    )
+    strict_origin = build_mot_inference_action_attention_mask(
+        video_seq_len=5,
+        past_action_seq_len=0,
+        current_action_seq_len=4,
+        video_tokens_per_frame=1,
+        action_tokens_per_frame=1,
+        chunk_size_frames=4,
+        window_size_frames=8,
+        device=torch.device("cpu"),
+        video_frame_start=0,
+        current_action_frame_start=1,
+        chunk_origin_frame=1,
+        current_block_coupling=CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+    )
+
+    first_current_action_query = 5
+    frame0_video_key = 0
+    assert not origin_zero[first_current_action_query, frame0_video_key]
+    assert strict_origin[first_current_action_query, frame0_video_key]
+
+
+def test_build_mot_inference_action_mask_keeps_strict_first_target_chunk_together() -> None:
+    mask = build_mot_inference_action_attention_mask(
+        video_seq_len=5,
+        past_action_seq_len=0,
+        current_action_seq_len=4,
+        video_tokens_per_frame=1,
+        action_tokens_per_frame=1,
+        chunk_size_frames=4,
+        window_size_frames=8,
+        device=torch.device("cpu"),
+        video_frame_start=0,
+        current_action_frame_start=1,
+        chunk_origin_frame=1,
+        current_block_coupling=CurrentBlockCoupling.VIDEO_THEN_ACTION,
+    )
+
+    first_current_action_query = 5
+    frame4_video_key = 4
+    assert mask[first_current_action_query, frame4_video_key]
+
+
 def test_build_packed_action_mask_decouples_same_step_clean_video() -> None:
     mask = build_packed_action_attention_mask(
         num_video_frames=2,
@@ -440,6 +498,39 @@ def test_build_mot_packed_coupling_profile_matches_method1_dense_mask(
     assert m5_profile.self_attention_mask is not None
     assert method1_profile.self_attention_mask is not None
     assert torch.equal(m5_profile.self_attention_mask, method1_profile.self_attention_mask)
+
+
+def test_mot_packed_coupling_action_context_mask_hides_startup_action_tokens() -> None:
+    action_context_mask = torch.ones(1, 20, 1)
+    action_context_mask[:, :4] = 0.0
+    profile = build_mot_packed_coupling_attention_profile(
+        num_video_frames=5,
+        video_tokens_per_frame=1,
+        num_action_frames=5,
+        action_tokens_per_frame=4,
+        chunk_size_frames=4,
+        attention_window_size=8,
+        device=torch.device("cpu"),
+        current_block_coupling=CurrentBlockCoupling.VIDEO_THEN_ACTION,
+        chunk_origin_frame=1,
+        action_context_mask=action_context_mask,
+    )
+
+    assert profile.self_attention_mask is not None
+    mask = profile.self_attention_mask
+    latent_token_count = 5
+    action_token_count = 20
+    action_noisy_start = latent_token_count * 2
+    action_clean_start = action_noisy_start + action_token_count
+    query_action_frame1 = action_noisy_start + 4
+    kv_video_clean_frame0 = latent_token_count
+    kv_action_noisy_frame0 = action_noisy_start
+    kv_action_clean_frame0 = action_clean_start
+
+    assert bool(mask[query_action_frame1, kv_video_clean_frame0].item()) is True
+    assert bool(mask[query_action_frame1, kv_action_noisy_frame0].item()) is False
+    assert bool(mask[query_action_frame1, kv_action_clean_frame0].item()) is False
+    assert profile.metadata["invalid_action_context_tokens"] == 4
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Flex block mask requires CUDA in this setup")
@@ -887,6 +978,69 @@ def test_mot_proprio_context_mask_exposes_matching_chunk_token_only() -> None:
             dtype=torch.bool,
         ),
     )
+
+
+def test_mot_chunk_origin_aligns_one_frame_context_with_first_target_chunk() -> None:
+    video_mask = build_chunk_causal_video_mask(
+        video_seq_len=5,
+        video_tokens_per_frame=1,
+        action_chunk_size_frames=4,
+        device=torch.device("cpu"),
+        chunk_origin_frame=1,
+    )
+
+    # Context frame 0 is chunk -1, so it must not see target frame 1. Target
+    # frames 1 and 4 remain in the same generated chunk.
+    assert bool(video_mask[0, 1].item()) is False
+    assert bool(video_mask[4, 1].item()) is True
+
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=5,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=5, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=MoTPolicyConfig(
+            hidden_size=32,
+            condition_mode=MoTConditionMode.FIRST_FRAME,
+            video_prefix_frames=1,
+            teacher_forcing_video_noise_prob=0.0,
+            num_action_layers=1,
+            proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,
+        ),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=5),
+        training=TrainingConfig(chunk_size=4, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
+        inference=InferenceConfig(frame_chunk_size=4),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    resolved_text = torch.zeros(1, 3, 16)
+    proprio_context_state = torch.zeros(1, 2, 4)
+
+    cross_mask = pipeline.policy_variant._build_proprio_cross_attention_mask(
+        resolved_text_context=resolved_text,
+        proprio_state=proprio_context_state,
+        query_frames_per_copy=5,
+        tokens_per_frame=1,
+        chunk_size_frames=4,
+        chunk_origin_frame=1,
+    )
+
+    assert cross_mask is not None
+    assert cross_mask[0, 0, :3].tolist() == [True, False, False]
+    assert cross_mask[0, 1, :3].tolist() == [True, True, False]
+    assert cross_mask[0, 4, :3].tolist() == [True, True, False]
 
 
 def test_mot_packed_block_accepts_query_dependent_cross_attention_masks() -> None:
@@ -1439,13 +1593,17 @@ def test_mot_packed_infer_chunk0_uses_one_frame_startup_bootstrap() -> None:
     )
 
     assert first.policy_output.aux["mot_first_step_bootstrap"] is True
-    assert first.policy_output.aux["mot_action_cond_tokens"] == 2
-    assert torch.allclose(first.policy_output.aux["predicted_latents"][:, :, 0:1], video_latents)
-    assert torch.allclose(first.decoder_output.action_pred[:, :2], torch.zeros_like(first.decoder_output.action_pred[:, :2]))
+    assert first.policy_output.aux["generation_frame_start"] == 1
+    assert first.policy_output.aux["mot_action_cond_tokens"] == 0
+    assert first.policy_output.aux["mot_invalid_startup_action_tokens"] == 2
+    assert first.policy_output.aux["mot_action_context_invalid_tokens"] == 2
+    assert first.decoder_output.action_pred.shape == (1, 4, 4)
 
     packed_state = first.policy_output.next_state.variant_state
     assert isinstance(packed_state, MoTRuntimeState)
-    history_anchor = packed_state.past_clean_latents[:, :, -1:].clone()
+    assert packed_state.past_clean_latents.shape[2] == 3
+    assert packed_state.past_clean_actions.shape[1] == 4
+    assert first.policy_output.next_state.cursor.current_start_frame == 3
     second_latents = torch.randn(1, 48, 2, 8, 8)
     second = pipeline.forward_infer_step_from_latents(
         second_latents,
@@ -1458,9 +1616,9 @@ def test_mot_packed_infer_chunk0_uses_one_frame_startup_bootstrap() -> None:
     assert second.policy_output.aux["mot_action_cond_tokens"] == 0
     assert second.policy_output.aux["mot_history_anchor_frames"] >= 1
     history_debug = second.policy_output.aux["mot_packed_history_debug"]
-    assert history_debug["past_clean_latent_frames"] >= 2
-    assert history_debug["past_clean_action_frames"] >= 2
-    assert history_debug["shared_history_frames"] >= 1
+    assert history_debug["past_clean_latent_frames"] == 3
+    assert history_debug["past_clean_action_frames"] == 2
+    assert history_debug["shared_history_frames"] == 2
     assert history_debug["current_observed_latent_frames"] == 2
     assert history_debug["current_clean_condition_frames"] == 2
 

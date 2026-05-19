@@ -22,9 +22,10 @@ FIXED_128_VALUES = (
     "data.sample_construction.segment_frames=128",
     "data.sample_construction.chunk_size=4",
     "data.sample_construction.window_size=30",
-    "data.sample_construction.randomize_geometry=true",
-    "data.sample_construction.start_padding_frames=3",
-    "data.sample_construction.context_prefix_policy=none",
+    "data.sample_construction.randomize_geometry=false",
+    "data.sample_construction.start_padding_frames=0",
+    "data.sample_construction.target_alignment=next_after_context",
+    "data.sample_construction.rollout_context_policy=one_frame",
     "data.sample_construction.tail_padding_policy=zero_order_hold",
     "data.sample_construction.padded_target_policy=mask_loss",
     "data.sample_construction.task_start_power=0.5",
@@ -67,11 +68,34 @@ open_wam_reject_cli_config_override_args "$@"
     )
 
 
+def _launcher_train_argv(relative_path: str, *, env_overrides: dict[str, str] | None = None) -> list[str]:
+    env = os.environ.copy()
+    env.update(
+        {
+            "OPEN_WAM_PRINT_TRAIN_ARGV": "1",
+            "NGPU": "1",
+        }
+    )
+    if env_overrides:
+        env.update(env_overrides)
+    result = subprocess.run(
+        ["bash", str(REPO_ROOT / relative_path)],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return json.loads(result.stdout)
+
+
 def test_fixed128_rollout_context_defaults_apply_to_supported_policy_training_configs() -> None:
     for config_name in (
         "parallel_stream_libero_lingbot_exact_heng_compatible",
         "parallel_stream_libero_lingbot_m1_joint_heng_compatible",
         "mot_libero_latent_local_full_segment_non_joint_action_only",
+        "mot_libero_latent_local_video_then_action_heng_compatible",
+        "mot_libero_latent_local_joint_heng_compatible",
         "mot_libero_latent_local_generalist_joint_denoising_heng_compatible",
     ):
         args = _default_args_for(config_name)
@@ -127,6 +151,52 @@ def test_libero_posttrain_launchers_inherit_shared_fixed128_defaults() -> None:
         assert "open_wam_append_fixed128_rollout_context_args" in text
         assert "open_wam_maybe_print_train_argv" in text
         assert '"${OPEN_WAM_FIXED128_ROLLOUT_CONTEXT_ARGS[@]}"' in text
+
+
+def test_mot_posttrain_launcher_defaults_to_strict_fixed128_joint_config() -> None:
+    argv = _launcher_train_argv("scripts/run_mot_posttrain_libero.sh")
+
+    assert argv[:4] == [
+        "--config-name",
+        "mot_libero_latent_local_joint_heng_compatible",
+        "--devices",
+        "1",
+    ]
+    for value in FIXED_128_VALUES:
+        assert value in argv
+
+
+def test_mot_nonjoint_launcher_defaults_to_strict_fixed128_video_then_action_config() -> None:
+    argv = _launcher_train_argv("scripts/run_mot_full_segment_nonjoint_libero.sh")
+
+    assert argv[:4] == [
+        "--config-name",
+        "mot_libero_latent_local_video_then_action_heng_compatible",
+        "--devices",
+        "1",
+    ]
+    for value in FIXED_128_VALUES:
+        assert value in argv
+
+
+def test_mot_launchers_keep_legacy_configs_explicit_only() -> None:
+    legacy_joint_argv = _launcher_train_argv(
+        "scripts/run_mot_posttrain_libero.sh",
+        env_overrides={"CONFIG_NAME": "mot_libero_latent_local_joint"},
+    )
+    legacy_nonjoint_argv = _launcher_train_argv(
+        "scripts/run_mot_full_segment_nonjoint_libero.sh",
+        env_overrides={"CONFIG_NAME": "mot_libero_latent_local_full_segment_non_joint_aligned"},
+    )
+
+    assert legacy_joint_argv[:2] == ["--config-name", "mot_libero_latent_local_joint"]
+    assert legacy_nonjoint_argv[:2] == [
+        "--config-name",
+        "mot_libero_latent_local_full_segment_non_joint_aligned",
+    ]
+    for value in FIXED_128_VALUES:
+        assert value not in legacy_joint_argv
+        assert value not in legacy_nonjoint_argv
 
 
 def test_libero_posttrain_launcher_can_print_exact_train_argv_without_running() -> None:

@@ -157,6 +157,15 @@ def test_method4_generated_video_condition_source_is_tracked(tmp_path: Path) -> 
     assert "train_video_condition:generated_future" in build_wandb_tags(metadata)
 
 
+def test_legacy_sample_construction_does_not_emit_rollout_context_tag(tmp_path: Path) -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    metadata = build_run_tracking_metadata(config, run_name=config.name, output_dir=tmp_path / config.name)
+
+    assert metadata["target_alignment"] == "legacy"
+    assert metadata["rollout_context_policy"] == "one_frame"
+    assert "rollout_context:one_frame" not in build_wandb_tags(metadata)
+
+
 def test_method1_coupling_and_segment_sampling_are_tracked(tmp_path: Path) -> None:
     config = load_experiment_config(
         REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_video_then_action_heng_compatible.yaml"
@@ -168,7 +177,9 @@ def test_method1_coupling_and_segment_sampling_are_tracked(tmp_path: Path) -> No
     assert metadata["reference_profile"] == "libero"
     assert metadata["sample_construction_mode"] == "hierarchical_fixed_segment"
     assert metadata["segment_frames"] == 128
-    assert metadata["start_padding_frames"] == 3
+    assert metadata["start_padding_frames"] == 0
+    assert metadata["target_alignment"] == "next_after_context"
+    assert metadata["rollout_context_policy"] == "one_frame"
     assert metadata["task_start_power"] == 0.5
     assert metadata["demo_count_power"] == 0.0
     assert metadata["trajectory_start_power"] == 1.0
@@ -176,7 +187,8 @@ def test_method1_coupling_and_segment_sampling_are_tracked(tmp_path: Path) -> No
     assert "coupling:video_then_action" in tags
     assert "sample:hierarchical_fixed_segment" in tags
     assert "segment_frames:128" in tags
-    assert "start_padding_frames:3" in tags
+    assert "target_alignment:next_after_context" in tags
+    assert "rollout_context:one_frame" in tags
 
 
 def test_method1_generalist_joint_denoising_tracking_metadata(tmp_path: Path) -> None:

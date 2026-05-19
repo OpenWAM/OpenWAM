@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Any
 
 from open_wam.configs import CurrentBlockCoupling, MoTRuntimeMode, PolicyVariantName
+from open_wam.configs.enums import RolloutContextPolicy, SampleTargetAlignment
 
 
 class MoTRuntimeRouteKind(str, Enum):
@@ -132,6 +133,65 @@ def should_use_mot_legacy_split_cache_inference(config: Any) -> bool:
     """Return whether this M5 config must restore split-cache module ownership."""
 
     return mot_policy_requires_legacy_split_cache_inference(_policy_config(config))
+
+
+def resolve_mot_sequence_actions_per_frame(*, action_horizon: int, frame_chunk_size: int) -> int:
+    """Resolve low-level control actions represented by one generated video frame."""
+
+    action_horizon = int(action_horizon)
+    frame_chunk_size = int(frame_chunk_size)
+    if frame_chunk_size <= 0:
+        raise ValueError(f"Expected frame_chunk_size > 0, got {frame_chunk_size}.")
+    if action_horizon <= 0:
+        raise ValueError(f"Expected action_horizon > 0, got {action_horizon}.")
+    if action_horizon % frame_chunk_size != 0:
+        raise ValueError(
+            "MoT realtime rollout expects action_horizon to divide by inference.frame_chunk_size, "
+            f"got action_horizon={action_horizon}, frame_chunk_size={frame_chunk_size}."
+        )
+    return action_horizon // frame_chunk_size
+
+
+def resolve_mot_sequence_execution_action_offset(
+    config_or_policy_config: Any,
+    *,
+    action_horizon: int,
+    frame_chunk_size: int,
+) -> int:
+    """Resolve action-index offset between model output and executable actions.
+
+    Strict rollout-parity M5 emits only executable generated actions, including
+    split-cache routes when the full experiment config is available. Older
+    split-cache/legacy M5 routes can still include the observed frame's action
+    group in the returned chunk, so they keep the historical one-frame
+    execution reindexing behind the legacy config contract.
+    """
+
+    route = resolve_mot_runtime_route(config_or_policy_config)
+    if not route.is_mot:
+        return 0
+    actions_per_frame = resolve_mot_sequence_actions_per_frame(
+        action_horizon=action_horizon,
+        frame_chunk_size=frame_chunk_size,
+    )
+    if route.uses_native_packed_rollout or mot_config_uses_strict_rollout_parity(config_or_policy_config):
+        return 0
+    return actions_per_frame
+
+
+def mot_config_uses_strict_rollout_parity(config_or_policy_config: Any) -> bool:
+    """Return whether the experiment data config uses strict rollout-parity targets."""
+
+    data_config = getattr(config_or_policy_config, "data", None)
+    sample_config = getattr(data_config, "sample_construction", None)
+    if sample_config is None:
+        return False
+    return (
+        _enum_value(getattr(sample_config, "target_alignment", None))
+        == SampleTargetAlignment.NEXT_AFTER_CONTEXT.value
+        and _enum_value(getattr(sample_config, "rollout_context_policy", None))
+        == RolloutContextPolicy.ONE_FRAME.value
+    )
 
 
 def ensure_mot_policy_variant_inference_backend(

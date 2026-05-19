@@ -35,8 +35,11 @@ from open_wam.configs import (
     AnchorPolicy,
     PaddedTargetPolicy,
     ProprioContextMode,
+    RolloutContextPolicy,
+    SampleConstructionConfig,
     SampleStateAnchorMode,
     SampleLossWeightMode,
+    SampleTargetAlignment,
     SampleWeightMode,
     SegmentContextPolicy,
     TailPaddingPolicy,
@@ -1160,6 +1163,116 @@ def test_hierarchical_fixed_segment_sample_construction_loads_explicit_sampler_f
     assert config.data.sample_construction.task_start_power == pytest.approx(0.5)
     assert config.data.sample_construction.demo_count_power == pytest.approx(0.0)
     assert config.data.sample_construction.trajectory_start_power == pytest.approx(1.0)
+
+
+def test_hierarchical_fixed_segment_loads_strict_rollout_parity_fields(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/register_attached_libero_latent_local.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw.setdefault("data", {})
+    raw["data"]["sample_construction"] = {
+        "mode": "hierarchical_fixed_segment",
+        "segment_frames": 128,
+        "chunk_size": 4,
+        "window_size": 30,
+        "randomize_geometry": False,
+        "start_padding_frames": 0,
+        "target_alignment": "next_after_context",
+        "rollout_context_policy": "one_frame",
+        "tail_padding_policy": "zero_order_hold",
+        "padded_target_policy": "mask_loss",
+        "task_start_power": 0.5,
+        "demo_count_power": 0.0,
+        "trajectory_start_power": 1.0,
+    }
+    raw.setdefault("training", {})["chunk_size"] = 4
+    raw.setdefault("inference", {})["frame_chunk_size"] = 4
+
+    config_path = tmp_path / "register_attached_hierarchical_rollout_parity.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    assert config.data.sample_construction.target_alignment == SampleTargetAlignment.NEXT_AFTER_CONTEXT
+    assert config.data.sample_construction.rollout_context_policy == RolloutContextPolicy.ONE_FRAME
+    assert config.data.sample_construction.rollout_context_frames is None
+    assert config.data.sample_construction.randomize_geometry is False
+    assert config.data.sample_construction.start_padding_frames == 0
+
+
+def test_hierarchical_fixed_segment_rollout_parity_rejects_legacy_context_fields(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/register_attached_libero_latent_local.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw.setdefault("data", {})
+    raw["data"]["sample_construction"] = {
+        "mode": "hierarchical_fixed_segment",
+        "segment_frames": 128,
+        "chunk_size": 4,
+        "randomize_geometry": False,
+        "start_padding_frames": 0,
+        "target_alignment": "next_after_context",
+        "context_prefix_policy": "none",
+    }
+
+    config_path = tmp_path / "register_attached_bad_hierarchical_rollout_parity.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    with pytest.raises(ValueError, match="remove legacy context fields: `context_prefix_policy`"):
+        load_experiment_config(config_path)
+
+
+def test_sample_construction_rollout_parity_rejects_programmatic_legacy_context_fields() -> None:
+    with pytest.raises(ValueError, match="remove legacy context fields"):
+        SampleConstructionConfig(
+            mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+            segment_frames=128,
+            chunk_size=4,
+            randomize_geometry=False,
+            start_padding_frames=0,
+            target_alignment=SampleTargetAlignment.NEXT_AFTER_CONTEXT,
+            context_prefix_policy=SegmentContextPolicy.FIXED,
+        )
+
+    with pytest.raises(ValueError, match="remove legacy context fields"):
+        SampleConstructionConfig(
+            mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+            segment_frames=128,
+            chunk_size=4,
+            randomize_geometry=False,
+            start_padding_frames=0,
+            target_alignment=SampleTargetAlignment.NEXT_AFTER_CONTEXT,
+            context_prefix_frames=4,
+        )
+
+
+def test_hierarchical_fixed_segment_rollout_parity_rejects_malformed_chunk_size(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/register_attached_libero_latent_local.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw.setdefault("data", {})
+    raw["data"]["sample_construction"] = {
+        "mode": "hierarchical_fixed_segment",
+        "segment_frames": 128,
+        "chunk_size": 4,
+        "randomize_geometry": False,
+        "start_padding_frames": 0,
+        "target_alignment": "next_after_context",
+    }
+    raw.setdefault("training", {})["chunk_size"] = "four"
+    raw.setdefault("inference", {})["frame_chunk_size"] = 4
+
+    config_path = tmp_path / "register_attached_bad_strict_chunk.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    with pytest.raises(ValueError, match="training\\.chunk_size='four'"):
+        load_experiment_config(config_path)
 
 
 def test_hierarchical_fixed_segment_rejects_legacy_full_segment_flag(tmp_path: Path) -> None:

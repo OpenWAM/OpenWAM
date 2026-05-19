@@ -14,17 +14,18 @@ data:
   num_frames: 4
   frame_stride: 1
   sample_stride: 1
-  # Match the M1 benchmark-facing sampler: task/trajectory/start are sampled
-  # hierarchically, boundary samples use head/tail padding, and padded targets
-  # are masked from loss.
+  # Match the M1 benchmark-facing strict sampler: task/trajectory/start are
+  # sampled hierarchically, one real context frame precedes the 128 supervised
+  # targets, tail overflow is metadata-only, and chunk geometry is fixed at 4.
   sample_construction:
     mode: hierarchical_fixed_segment
     segment_frames: 128
     chunk_size: 4
     window_size: 30
-    randomize_geometry: true
-    start_padding_frames: 3
-    context_prefix_policy: none
+    randomize_geometry: false
+    start_padding_frames: 0
+    target_alignment: next_after_context
+    rollout_context_policy: one_frame
     tail_padding_policy: zero_order_hold
     padded_target_policy: mask_loss
     task_start_power: 0.5

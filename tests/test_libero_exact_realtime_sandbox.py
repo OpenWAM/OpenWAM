@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 
 def _load_sandbox_module():
@@ -28,3 +31,21 @@ def test_build_output_stem_sanitizes_prompt_and_suffix(tmp_path: Path) -> None:
 
     assert output_stem.parent.name == "1_put_both_things_in_basket"
     assert output_stem.name == "7_step600_unsafe"
+
+
+def test_legacy_exact_realtime_rejects_frame_zero_startup_actions() -> None:
+    sandbox = _load_sandbox_module()
+    chunk = SimpleNamespace(
+        raw_chunk_action_pred=sandbox.torch.zeros(1, 16, 1),
+        debug={"generation_frame_start": 0},
+        session=SimpleNamespace(policy_state=SimpleNamespace(step_index=0)),
+    )
+
+    with pytest.raises(ValueError, match="generation_frame_start < 1"):
+        sandbox._chunk_to_planned_frames(
+            first_chunk=chunk,
+            frame_chunk_size=4,
+            action_per_frame=4,
+            source="startup_plan",
+            ready_monotonic_s=0.0,
+        )

@@ -12,10 +12,10 @@ source "${SCRIPT_DIR}/libero_fixed128_rollout_context_defaults.sh"
 NGPU=${NGPU:-"1"}
 MASTER_PORT=${MASTER_PORT:-"29501"}
 LOG_RANK=${LOG_RANK:-"0"}
-# Defaults to the method-1-non-joint-aligned two-stream MoT config. Override
-# with `CONFIG_NAME=mot_libero_latent_local_full_segment_non_joint_action_only`
-# for the action-only retrain path (frozen video backbone).
-CONFIG_NAME=${CONFIG_NAME:-"mot_libero_latent_local_full_segment_non_joint_aligned"}
+# Default to the maintained strict fixed-128 M5 video-then-action config.
+# Legacy/full-segment configs remain available only through an explicit
+# CONFIG_NAME=... opt-in.
+CONFIG_NAME=${CONFIG_NAME:-"mot_libero_latent_local_video_then_action_heng_compatible"}
 open_wam_reject_cli_config_override_args "$@"
 OPEN_WAM_FIXED128_ROLLOUT_CONTEXT_ARGS=()
 open_wam_append_fixed128_rollout_context_args OPEN_WAM_FIXED128_ROLLOUT_CONTEXT_ARGS "${CONFIG_NAME}"

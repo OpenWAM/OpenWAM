@@ -34,9 +34,13 @@ from open_wam.configs import ActionTargetRepresentation, GripperRepresentation, 
 from open_wam.configs.enums import DeadlineMissPolicy, FallbackHistoryPolicy  # noqa: E402
 from open_wam.integrations import LiberoControlConfig, compute_osc_pose_action, ensure_local_libero_config  # noqa: E402
 from open_wam.integrations.realtime_control import build_live_rollout_summary  # noqa: E402
+from open_wam.models.common.rollout_startup import require_strict_startup_generation_frame  # noqa: E402
 from open_wam.models.policy_variants import PolicyInferContext  # noqa: E402
 from open_wam.models.policy_variants.mot.runtime_routing import (  # noqa: E402
     ensure_mot_inference_backend,
+    mot_config_uses_strict_rollout_parity,
+    resolve_mot_sequence_actions_per_frame,
+    resolve_mot_sequence_execution_action_offset,
     resolve_mot_runtime_route,
 )
 from open_wam.pipelines import LingbotExactRunner, VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
@@ -397,10 +401,9 @@ def main() -> None:
         action=argparse.BooleanOptionalAction,
         default=None,
         help=(
-            "Exact-runtime M1/M2 startup parity mode. The default is the legacy single-frame first-chunk "
-            "condition. Pass --exact-startup-bootstrap-padding to duplicate the initial encoded latent into "
-            "a full startup latent chunk, warm the exact cache at negative frame ids, then generate the first "
-            "executable chunk from frame 1."
+            "Exact-runtime startup mode. The default writes observation frame 0 as prefix context, generates "
+            "frames 1..4, and executes the full first 16 actions. The legacy bootstrap-padding path is "
+            "deprecated because it warms synthetic zero actions."
         ),
     )
     parser.add_argument(
@@ -689,8 +692,13 @@ def _resolve_exact_startup_bootstrap_padding(
     checkpoint_path: Path | None = None,
 ) -> bool:
     del config, checkpoint_path
+    if cli_value:
+        raise ValueError(
+            "`--exact-startup-bootstrap-padding` is deprecated because it can expose synthetic zero actions "
+            "as model context. Use the default one-observation startup contract instead."
+        )
     if cli_value is not None:
-        return bool(cli_value)
+        return False
     return False
 
 
@@ -729,6 +737,28 @@ def _is_mot_non_joint_two_stream(config) -> bool:
     # Historical helper name retained for call-site locality: this means the
     # Method-1-style split-cache MoT route, not every non-joint packed coupling.
     return resolve_mot_runtime_route(config).uses_split_cache_rollout
+
+
+def _uses_strict_mot_split_cache_startup(config) -> bool:
+    route = resolve_mot_runtime_route(config)
+    return bool(route.uses_split_cache_rollout and mot_config_uses_strict_rollout_parity(config))
+
+
+def _sequence_startup_model_obs_window(
+    config,
+    initial_obs_window: list[dict[str, np.ndarray]],
+) -> list[dict[str, np.ndarray]]:
+    if not initial_obs_window:
+        raise ValueError("Cannot build sequence startup observation window from an empty initial window.")
+    if _uses_strict_mot_split_cache_startup(config):
+        return [_copy_obs_record(initial_obs_window[-1])]
+    return _copy_obs_window(initial_obs_window)
+
+
+def _sequence_startup_env_init_frames(config, *, raw_window_frames: int) -> int:
+    if _uses_strict_mot_split_cache_startup(config):
+        return 1
+    return int(raw_window_frames)
 
 
 def _resolve_checkpoint_path_for_config(*, config, checkpoint_arg: str | None) -> Path | None:
@@ -1066,11 +1096,11 @@ def _maybe_append_exact_history_record(
     state: ExactFallbackHistoryState,
     absolute_frame_index: int,
     current_obs: dict[str, np.ndarray],
-    proprio_state: np.ndarray | torch.Tensor | None,
     frame_obs_sequence: list[dict[str, np.ndarray]],
     frame_actions: list[np.ndarray],
     frame_action_sources: list[str],
     frame_chunk_size: int,
+    proprio_state: np.ndarray | torch.Tensor | None = None,
 ) -> str:
     contains_fallback_action = _frame_contains_fallback_action(frame_action_sources)
     history_record = {
@@ -1410,6 +1440,11 @@ def _run_exact_like_realtime_rollout(
                         f"elapsed_s={startup_infer_s:.3f} debug={first_chunk.debug}",
                         flush=True,
                     )
+                if (
+                    startup_history_raw_actions is None
+                    and int(first_chunk.debug.get("generation_frame_start", 0)) > startup_history_frame_index
+                ):
+                    startup_history_raw_actions = np.zeros((action_per_frame, action_dim), dtype=np.float32)
                 if debug_startup_dump:
                     startup_debug_report = _build_exact_startup_debug_report(
                         first_obs=first_obs,
@@ -2302,14 +2337,11 @@ def _exact_chunk_to_planned_steps(
         a=action_per_frame,
     )
     generation_frame_start = int(chunk.debug.get("generation_frame_start", 1))
+    require_strict_startup_generation_frame(generation_frame_start)
     generation_action_start = _frame_index_to_action_start(generation_frame_start, action_per_frame)
     planned_steps: list[PlannedControlStep] = []
     for frame_offset in range(raw_actions.shape[0]):
         absolute_frame_index = generation_frame_start + frame_offset
-        # Exact LIBERO rollout uses frame 0 only as the startup conditioning
-        # block. The first executable actions come from absolute frame 1.
-        if absolute_frame_index < 1:
-            continue
         for action_offset in range(raw_actions.shape[1]):
             absolute_action_index = _frame_index_to_action_start(
                 absolute_frame_index,
@@ -2353,16 +2385,23 @@ def _exact_startup_conditioning_history_record(
         if conditioning_frame_index is None
         else int(conditioning_frame_index)
     )
+    generation_frame_start = int(chunk.debug.get("generation_frame_start", resolved_conditioning_frame_index))
+    require_strict_startup_generation_frame(generation_frame_start)
     resolved_raw_actions = (
         raw_actions[0].detach().to(dtype=torch.float32).cpu().numpy()
         if raw_actions_override is None
         else np.asarray(raw_actions_override, dtype=np.float32)
     )
+    raw_actions_valid = generation_frame_start <= resolved_conditioning_frame_index
+    if not raw_actions_valid:
+        resolved_raw_actions = np.zeros((0, int(raw_actions.shape[-1])), dtype=np.float32)
     record = {
         "absolute_frame_index": int(resolved_conditioning_frame_index),
         "obs": {key: np.array(value, copy=True) for key, value in initial_obs.items()},
         "obs_sequence": [],
         "raw_actions": resolved_raw_actions,
+        "raw_actions_valid": bool(raw_actions_valid),
+        "raw_action_dim": int(raw_actions.shape[-1]),
         "video_latents": initial_video_latents.detach(),
         "source": "startup_conditioning_frame",
     }
@@ -2501,6 +2540,7 @@ def _run_sequence_policy_realtime_rollout(
         "sequence_buffer_threshold": int(sequence_buffer_threshold),
         "startup_open_loop_chunks": int(startup_open_loop_chunks),
         "replan_low_watermark_actions": int(replan_low_watermark_actions),
+        "strict_mot_split_cache_startup": bool(_uses_strict_mot_split_cache_startup(config)),
         "decoder_runtime": _collect_decoder_runtime_metadata(pipeline, config),
     }
     if mot_inference_backend is not None:
@@ -2520,6 +2560,12 @@ def _run_sequence_policy_realtime_rollout(
     deadline_tolerance_s = float(deadline_tolerance_ms) / 1000.0
     action_horizon = int(config.data.action_schema.action_horizon)
     raw_window_frames = video_viz._default_raw_window_frames(int(config.data.num_frames))
+    startup_env_init_frames = _sequence_startup_env_init_frames(
+        config,
+        raw_window_frames=raw_window_frames,
+    )
+    load_report["raw_window_frames"] = int(raw_window_frames)
+    load_report["startup_env_init_frames"] = int(startup_env_init_frames)
     control_config = LiberoControlConfig()
 
     try:
@@ -2527,13 +2573,14 @@ def _run_sequence_policy_realtime_rollout(
             initial_obs_window = video_viz._init_single_env(
                 env,
                 init_states[episode_idx % len(init_states)],
-                num_frames=raw_window_frames,
+                num_frames=startup_env_init_frames,
             )
             _print_stage(f"{rollout_label}_init_env_done", initial_window=len(initial_obs_window))
+            startup_model_obs_window = _sequence_startup_model_obs_window(config, initial_obs_window)
             startup_prepare_t0 = time.perf_counter()
             initial_inputs = video_viz._prepare_rollout_inputs(
                 pipeline,
-                views=video_viz._obs_window_to_rollout_views(initial_obs_window, device=frontend_device),
+                views=video_viz._obs_window_to_rollout_views(startup_model_obs_window, device=frontend_device),
                 task_text=(prompt,),
                 frontend_device=frontend_device,
                 runtime_device=runtime_device,
@@ -2550,7 +2597,7 @@ def _run_sequence_policy_realtime_rollout(
             startup = _run_sequence_replan_job(
                 runner=runner,
                 session=session,
-                obs_window=[{key: np.array(value, copy=True) for key, value in obs.items()} for obs in initial_obs_window],
+                obs_window=_copy_obs_window(startup_model_obs_window),
                 prompt=prompt,
                 task_id=int(task_id),
                 episode_idx=int(episode_idx),
@@ -3158,6 +3205,8 @@ def _run_sequence_policy_realtime_rollout(
                 "action_num_inference_steps": int(config.inference.action_num_inference_steps),
                 "guidance_scale": float(config.inference.guidance_scale),
                 "action_guidance_scale": float(config.inference.action_guidance_scale),
+                "raw_window_frames": int(raw_window_frames),
+                "startup_env_init_frames": int(startup_env_init_frames),
                 "planner_mode": planner_mode,
                 "sequence_buffer_threshold": int(sequence_buffer_threshold),
                 "sequence_empty_plan_policy": str(sequence_empty_plan_policy),
@@ -3204,6 +3253,34 @@ def _run_sequence_policy_realtime_rollout(
         env.close()
 
 
+def _validate_strict_mot_split_cache_startup_inputs(
+    *,
+    config,
+    source: str,
+    generation_action_start: int,
+    video_latents: object,
+) -> None:
+    if not _uses_strict_mot_split_cache_startup(config) or str(source) != "startup_plan":
+        return
+    if int(generation_action_start) != 0:
+        raise ValueError(
+            "M5 strict split-cache startup expects generation_action_start=0 so executable "
+            f"actions start at action index 0; got {generation_action_start}."
+        )
+    if not isinstance(video_latents, torch.Tensor) or video_latents.ndim != 5:
+        raise ValueError(
+            "M5 strict split-cache startup expects tensor video_latents with shape [B, C, T, H, W], "
+            f"got {type(video_latents).__name__}."
+        )
+    latent_context_frames = int(video_latents.shape[2])
+    if latent_context_frames != 1:
+        raise ValueError(
+            "M5 strict split-cache startup expects exactly one latent context frame before "
+            f"the first generated chunk; got {latent_context_frames}. This would break "
+            "target_alignment=next_after_context parity."
+        )
+
+
 def _run_sequence_replan_job(
     *,
     runner: VariantRolloutRunner,
@@ -3244,6 +3321,12 @@ def _run_sequence_replan_job(
         )
         exact_sandbox._synchronize_devices(frontend_device, runtime_device)
         prepare_s = time.perf_counter() - prepare_t0
+        _validate_strict_mot_split_cache_startup_inputs(
+            config=config,
+            source=source,
+            generation_action_start=int(generation_action_start),
+            video_latents=rollout_inputs.get("video_latents"),
+        )
 
         infer_t0 = time.perf_counter()
         inference_session = (
@@ -3298,6 +3381,9 @@ def _run_sequence_replan_job(
         )
 
     policy_aux = step_output.infer_output.policy_output.aux
+    mot_cache_debug = policy_aux.get("mot_cache_debug")
+    if not isinstance(mot_cache_debug, dict):
+        mot_cache_debug = {}
     sequence_context = step_output.infer_output.policy_output.decoder_sequence_context
     video_condition_window = None if sequence_context is None else sequence_context.video_condition_window
     video_condition_metadata = {} if video_condition_window is None else dict(video_condition_window.metadata)
@@ -3340,6 +3426,11 @@ def _run_sequence_replan_job(
             "mot_condition_frame_start": mot_condition_frame_start,
             "mot_action_cache_rewind_frame_start": mot_action_cache_rewind_frame_start,
             "mot_runtime_route": mot_runtime_route.to_report() if mot_runtime_route.is_mot else None,
+            "model_generation_frame_start": _json_scalar_from_tensor(policy_aux.get("generation_frame_start")),
+            "mot_chunk_origin_frame": _json_scalar_from_tensor(mot_cache_debug.get("chunk_origin_frame")),
+            "mot_current_action_frame_start": _json_scalar_from_tensor(
+                mot_cache_debug.get("current_action_frame_start")
+            ),
             "preserve_rng_state": bool(preserve_rng_state),
             "planned_action_ids": [int(plan.absolute_action_index) for plan in planned_steps],
             "prepare_s": float(prepare_s),
@@ -3534,9 +3625,7 @@ def _sequence_buffer_tail_ready_for_history_promotion(
 
 
 def _mot_condition_frame_start_for_generation(*, config, generation_action_start: int) -> int:
-    action_per_frame = _sequence_execution_action_offset(config)
-    if action_per_frame <= 0:
-        raise ValueError("MoT generation/frame mapping requires a positive action-per-frame value.")
+    action_per_frame = _sequence_actions_per_frame(config)
     return int(generation_action_start) // int(action_per_frame)
 
 
@@ -3712,17 +3801,18 @@ def _sequence_chunk_to_planned_steps(
 def _sequence_execution_action_offset(config) -> int:
     if str(config.policy_variant.name) != "mot":
         return 0
-    action_horizon = int(config.data.action_schema.action_horizon)
-    frame_chunk_size = max(1, int(config.inference.frame_chunk_size))
-    if action_horizon % frame_chunk_size != 0:
-        raise ValueError(
-            "MoT realtime rollout expects action_horizon to divide by inference.frame_chunk_size, "
-            f"got action_horizon={action_horizon}, frame_chunk_size={frame_chunk_size}."
-        )
-    # The first model frame is the observed conditioning frame. Method-1
-    # realtime rollouts start executing from frame 1, so reindex MoT action
-    # plans by one model frame to keep the live env action stream contiguous.
-    return action_horizon // frame_chunk_size
+    return resolve_mot_sequence_execution_action_offset(
+        config,
+        action_horizon=int(config.data.action_schema.action_horizon),
+        frame_chunk_size=int(config.inference.frame_chunk_size),
+    )
+
+
+def _sequence_actions_per_frame(config) -> int:
+    return resolve_mot_sequence_actions_per_frame(
+        action_horizon=int(config.data.action_schema.action_horizon),
+        frame_chunk_size=int(config.inference.frame_chunk_size),
+    )
 
 
 def _materialize_sequence_control_action(

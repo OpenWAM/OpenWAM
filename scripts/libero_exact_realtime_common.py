@@ -30,6 +30,10 @@ from open_wam.integrations.realtime_control import (  # noqa: E402
     PlannedFrameAction,
     make_planned_frame_actions,
 )
+from open_wam.models.common.rollout_startup import (  # noqa: E402
+    require_strict_startup_generation_frame,
+    strict_startup_conditioning_frame_index,
+)
 from open_wam.models.policy_variants import PolicyInferState, RolloutCursor  # noqa: E402
 from open_wam.utils import validate_positive_step_override  # noqa: E402
 
@@ -112,6 +116,7 @@ def _chunk_to_planned_frames(
         if generation_frame_start is None
         else int(generation_frame_start)
     )
+    require_strict_startup_generation_frame(resolved_generation_frame_start)
     return make_planned_frame_actions(
         raw_actions.detach().to(dtype=torch.float32).cpu().numpy(),
         generation_frame_start=resolved_generation_frame_start,
@@ -138,12 +143,21 @@ def _startup_conditioning_history_record(
         f=frame_chunk_size,
         a=action_per_frame,
     )
-    conditioning_frame_index = int(first_chunk.debug.get("generation_frame_start", 0))
+    generation_frame_start = int(first_chunk.debug.get("generation_frame_start", 0))
+    conditioning_frame_index = strict_startup_conditioning_frame_index(generation_frame_start)
+    raw_actions_valid = generation_frame_start <= conditioning_frame_index
+    history_raw_actions = (
+        raw_actions[0].detach().to(dtype=torch.float32).cpu().numpy()
+        if raw_actions_valid
+        else np.zeros((0, int(raw_actions.shape[-1])), dtype=np.float32)
+    )
     record = {
         "absolute_frame_index": int(conditioning_frame_index),
         "obs": {key: np.array(value, copy=True) for key, value in initial_obs.items()},
         "obs_sequence": [],
-        "raw_actions": raw_actions[0].detach().to(dtype=torch.float32).cpu().numpy(),
+        "raw_actions": history_raw_actions,
+        "raw_actions_valid": bool(raw_actions_valid),
+        "raw_action_dim": int(raw_actions.shape[-1]),
         "video_latents": initial_video_latents.detach(),
         "source": "startup_conditioning_frame",
     }
@@ -340,8 +354,13 @@ def _copy_history_record_for_worker(record: dict[str, Any]) -> dict[str, Any]:
             key: np.array(value, copy=True)
             for key, value in record["obs"].items()
         },
-        "raw_actions": np.array(record["raw_actions"], copy=True),
     }
+    if "raw_actions" in record:
+        copied["raw_actions"] = np.array(record["raw_actions"], copy=True)
+    if "raw_actions_valid" in record:
+        copied["raw_actions_valid"] = bool(record["raw_actions_valid"])
+    if "raw_action_dim" in record:
+        copied["raw_action_dim"] = int(record["raw_action_dim"])
     if "obs_sequence" in record:
         copied["obs_sequence"] = [
             {
@@ -404,12 +423,10 @@ def _exact_startup_bootstrap_action_history(
             "Expected positive startup bootstrap action dimensions, "
             f"got frame_chunk_size={frame_chunk_size}, action_per_frame={action_per_frame}, action_dim={action_dim}."
         )
-    return torch.zeros(
-        1,
-        frame_chunk_size * action_per_frame,
-        action_dim,
-        device=device,
-        dtype=torch.float32,
+    del device
+    raise ValueError(
+        "Exact startup bootstrap action history is deprecated because it exposes synthetic zero actions "
+        "as model context. Use strict frame-0 prefix conditioning instead."
     )
 
 
@@ -447,6 +464,7 @@ def _resolve_exact_startup_sessions(
     frame_chunk_size: int,
 ):
     generation_frame_start = int(first_chunk.debug.get("generation_frame_start", 0))
+    require_strict_startup_generation_frame(generation_frame_start)
     current_chunk_session = first_chunk.session
     history_base_session = _resolve_exact_startup_history_base_session(
         config=config,
@@ -499,6 +517,7 @@ def _run_replan_job(
     if not history_records:
         raise ValueError("Realtime replan requires at least one observed history frame.")
     observed_frame_index = int(history_records[-1]["absolute_frame_index"])
+    history_frame_start = int(history_records[0]["absolute_frame_index"])
     raw_observation_count = _count_history_raw_observations(history_records)
     history_views = [
         {key: np.array(value, copy=True) for key, value in obs.items()}
@@ -510,10 +529,7 @@ def _run_replan_job(
         config=config,
         device=runtime_device,
     )
-    action_history = np.concatenate(
-        [np.asarray(record["raw_actions"], dtype=np.float32) for record in history_records],
-        axis=0,
-    )
+    action_history = _history_records_to_action_history(history_records, config=config)
     with _isolated_torch_rng(job_seed, frontend_device, runtime_device), torch.inference_mode():
         prepare_t0 = time.perf_counter()
         prepared = _prepare_history_runtime_inputs(
@@ -538,6 +554,7 @@ def _run_replan_job(
             negative_text_context=prepared["negative_text_context"],
             action_history=torch.as_tensor(action_history, device=runtime_device, dtype=torch.float32).unsqueeze(0),
             action_space="raw",
+            frame_start_override=history_frame_start,
             proprio_state=proprio_state,
         )
         _synchronize_devices(runtime_device)
@@ -576,6 +593,7 @@ def _run_replan_job(
             "job_kind": "history_replan",
             "observed_frame_index": int(observed_frame_index),
             "history_frame_count": int(len(history_records)),
+            "history_frame_start": int(history_frame_start),
             "raw_observation_count": int(raw_observation_count),
             "precomputed_video_latent_frames": (
                 0
@@ -714,6 +732,31 @@ def _count_history_raw_observations(history_records: list[dict[str, Any]]) -> in
         elif "obs" in record and not isinstance(record.get("video_latents"), torch.Tensor):
             raw_count += 1
     return int(raw_count)
+
+
+def _history_records_to_action_history(history_records: list[dict[str, Any]], *, config) -> np.ndarray:
+    action_rows: list[np.ndarray] = []
+    inferred_dim: int | None = None
+    for record in history_records:
+        if "raw_action_dim" in record:
+            inferred_dim = int(record["raw_action_dim"])
+        raw_actions = record.get("raw_actions")
+        if raw_actions is None or record.get("raw_actions_valid") is False:
+            continue
+        raw_array = np.asarray(raw_actions, dtype=np.float32)
+        if raw_array.ndim != 2:
+            raise ValueError(f"History raw_actions must be [T, D], got {raw_array.shape}.")
+        inferred_dim = int(raw_array.shape[-1])
+        if int(raw_array.shape[0]) > 0:
+            action_rows.append(raw_array)
+    if action_rows:
+        return np.concatenate(action_rows, axis=0)
+    if inferred_dim is None:
+        action_schema = getattr(getattr(config, "data", None), "action_schema", None)
+        inferred_dim = int(getattr(action_schema, "action_dim", 0) or 0)
+    if inferred_dim is None or inferred_dim <= 0:
+        raise ValueError("Unable to infer raw action dimension for empty exact rollout history.")
+    return np.zeros((0, int(inferred_dim)), dtype=np.float32)
 
 
 def _history_records_to_precomputed_video_latents(history_records: list[dict[str, Any]]) -> torch.Tensor | None:

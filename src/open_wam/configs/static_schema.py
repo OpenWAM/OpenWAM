@@ -36,7 +36,9 @@ from open_wam.configs.enums import (
     PaddedTargetPolicy,
     PolicyVariantName,
     ProprioContextMode,
+    RolloutContextPolicy,
     SampleStateAnchorMode,
+    SampleTargetAlignment,
     SegmentContextPolicy,
     StrEnum,
     TailPaddingPolicy,
@@ -387,6 +389,14 @@ def _validate_sample_construction(
         issues,
         "data.sample_construction",
     )
+    _validate_enum(sample_construction, "target_alignment", SampleTargetAlignment, issues, "data.sample_construction")
+    _validate_enum(
+        sample_construction,
+        "rollout_context_policy",
+        RolloutContextPolicy,
+        issues,
+        "data.sample_construction",
+    )
     _validate_enum(sample_construction, "tail_padding_policy", TailPaddingPolicy, issues, "data.sample_construction")
     _validate_enum(sample_construction, "padded_target_policy", PaddedTargetPolicy, issues, "data.sample_construction")
     _validate_enum(sample_construction, "state_anchor_mode", SampleStateAnchorMode, issues, "data.sample_construction")
@@ -410,6 +420,10 @@ def _validate_sample_construction(
         value = _optional_int(sample_construction["context_prefix_frames"])
         if value is None or value < 0:
             issues.error("data.sample_construction.context_prefix_frames", "Expected a non-negative integer.")
+    if "rollout_context_frames" in sample_construction and sample_construction["rollout_context_frames"] is not None:
+        value = _optional_int(sample_construction["rollout_context_frames"])
+        if value is None or value <= 0:
+            issues.error("data.sample_construction.rollout_context_frames", "Expected a positive integer or null.")
     mode = sample_construction.get("mode")
     if mode != WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT.value:
         return
@@ -433,6 +447,29 @@ def _validate_sample_construction(
                 "`hierarchical_fixed_segment` uses fixed segment and hierarchical power fields; "
                 f"do not set `{legacy_key}`.",
             )
+    if sample_construction.get("target_alignment") == SampleTargetAlignment.NEXT_AFTER_CONTEXT.value:
+        if sample_construction.get("randomize_geometry", True):
+            issues.error(
+                "data.sample_construction.randomize_geometry",
+                "`target_alignment=next_after_context` requires fixed rollout chunking; set this to false.",
+            )
+        if sample_construction.get("start_padding_frames", 0) not in (0, None):
+            issues.error(
+                "data.sample_construction.start_padding_frames",
+                "`target_alignment=next_after_context` deprecates virtual head padding; set this to 0.",
+            )
+        if sample_construction.get("chunk_size") not in (4, "4"):
+            issues.error(
+                "data.sample_construction.chunk_size",
+                "`target_alignment=next_after_context` currently requires chunk_size=4.",
+            )
+        for legacy_context_key in ("context_prefix_policy", "context_prefix_frames"):
+            if legacy_context_key in sample_construction:
+                issues.error(
+                    f"data.sample_construction.{legacy_context_key}",
+                    "`target_alignment=next_after_context` uses rollout_context_policy/rollout_context_frames; "
+                    f"do not set legacy `{legacy_context_key}`.",
+                )
 
 
 def _validate_generalist_dynamics_mixture(

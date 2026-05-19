@@ -223,6 +223,7 @@ def build_chunk_causal_video_mask(
     action_chunk_size_frames: int,
     device: torch.device,
     attention_window_size: int | None = None,
+    chunk_origin_frame: int = 0,
 ) -> torch.Tensor:
     """Chunk-causal self-attention mask for a video-only forward.
 
@@ -251,7 +252,11 @@ def build_chunk_causal_video_mask(
         )
     token_ids = torch.arange(video_seq_len, device=device)
     frame_ids = torch.div(token_ids, int(video_tokens_per_frame), rounding_mode="floor")
-    chunk_ids = torch.div(frame_ids, int(action_chunk_size_frames), rounding_mode="floor")
+    chunk_ids = torch.div(
+        frame_ids - int(chunk_origin_frame),
+        int(action_chunk_size_frames),
+        rounding_mode="floor",
+    )
     q_chunk = chunk_ids[:, None]
     kv_chunk = chunk_ids[None, :]
     mask = kv_chunk <= q_chunk
@@ -466,6 +471,8 @@ def build_mot_packed_coupling_attention_profile(
     current_block_coupling: CurrentBlockCoupling | str = CurrentBlockCoupling.VIDEO_THEN_ACTION,
     build_dense_masks: bool | None = None,
     build_flex_masks: bool | None = None,
+    chunk_origin_frame: int = 0,
+    action_context_mask: torch.Tensor | None = None,
 ) -> PreparedAttentionProfile:
     """Build the Method-1 exact attention profile for M5 packed coupling.
 
@@ -498,6 +505,8 @@ def build_mot_packed_coupling_attention_profile(
         build_flex_masks=build_flex_masks,
         attention_window_size=attention_window_size,
         current_block_coupling=current_block_coupling,
+        chunk_origin_frame=int(chunk_origin_frame),
+        action_context_mask=action_context_mask,
         preserve_video_pretrain_history=True,
     )
 
@@ -781,6 +790,7 @@ def build_mot_inference_action_attention_mask(
     video_frame_start: int = 0,
     past_action_frame_start: int = 0,
     current_action_frame_start: int | None = None,
+    chunk_origin_frame: int = 0,
     current_block_coupling: CurrentBlockCoupling | str = CurrentBlockCoupling.VIDEO_THEN_ACTION,
 ) -> torch.Tensor:
     """Inference-only MoT action attention mask (Method-1 byte-aligned).
@@ -788,6 +798,7 @@ def build_mot_inference_action_attention_mask(
     Mirrors `build_chunked_temporal_exact_attention_profile` for the
     inference layout `[video_cache; past_action_cache; current_action]`:
 
+      * chunk ids are computed relative to ``chunk_origin_frame``
       * block ids: video at chunk*2, action at chunk*2 + 1 (so the same chunk
         gets adjacent ids and `(q - kv).abs() <= window_size` collapses to the
         same window for both streams)
@@ -842,21 +853,28 @@ def build_mot_inference_action_attention_mask(
             f"got current_action_seq_len={current_action_seq_len}, action_tokens_per_frame={action_tokens_per_frame}."
         )
 
+    chunk_origin_frame = int(chunk_origin_frame)
     video_token_ids = torch.arange(video_seq_len, device=device)
     video_frame_ids = torch.div(video_token_ids, int(video_tokens_per_frame), rounding_mode="floor") + int(
         video_frame_start
     )
-    video_block_ids = torch.div(video_frame_ids, int(chunk_size_frames), rounding_mode="floor") * 2
-    video_chunk_ids = torch.div(video_frame_ids, int(chunk_size_frames), rounding_mode="floor")
+    video_chunk_ids = torch.div(
+        video_frame_ids - chunk_origin_frame,
+        int(chunk_size_frames),
+        rounding_mode="floor",
+    )
+    video_block_ids = video_chunk_ids * 2
 
     past_action_token_ids = torch.arange(past_action_seq_len, device=device)
     past_action_frame_ids = torch.div(
         past_action_token_ids, int(action_tokens_per_frame), rounding_mode="floor"
     ) + int(past_action_frame_start)
-    past_action_block_ids = (
-        torch.div(past_action_frame_ids, int(chunk_size_frames), rounding_mode="floor") * 2 + 1
+    past_action_chunk_ids = torch.div(
+        past_action_frame_ids - chunk_origin_frame,
+        int(chunk_size_frames),
+        rounding_mode="floor",
     )
-    past_action_chunk_ids = torch.div(past_action_frame_ids, int(chunk_size_frames), rounding_mode="floor")
+    past_action_block_ids = past_action_chunk_ids * 2 + 1
 
     past_action_frames_count = past_action_seq_len // int(action_tokens_per_frame)
     if current_action_frame_start is None:
@@ -865,10 +883,12 @@ def build_mot_inference_action_attention_mask(
     current_action_frame_ids = torch.div(
         current_action_token_ids, int(action_tokens_per_frame), rounding_mode="floor"
     ) + int(current_action_frame_start)
-    current_action_block_ids = (
-        torch.div(current_action_frame_ids, int(chunk_size_frames), rounding_mode="floor") * 2 + 1
+    current_action_chunk_ids = torch.div(
+        current_action_frame_ids - chunk_origin_frame,
+        int(chunk_size_frames),
+        rounding_mode="floor",
     )
-    current_action_chunk_ids = torch.div(current_action_frame_ids, int(chunk_size_frames), rounding_mode="floor")
+    current_action_block_ids = current_action_chunk_ids * 2 + 1
 
     block_ids = torch.cat(
         [video_block_ids, past_action_block_ids, current_action_block_ids], dim=0

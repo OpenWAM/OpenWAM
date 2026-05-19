@@ -1381,6 +1381,16 @@ class SharedVideoTransformerCore(nn.Module):
                         else int(metadata["base_text_token_count"])
                     ),
                     proprio_context_token_count=int(metadata.get("proprio_context_token_count", 0)),
+                    chunk_origin_frame=int(metadata.get("chunk_origin_frame", 0)),
+                    action_context_mask=(
+                        torch.tensor(
+                            metadata["action_context_valid_tokens"],
+                            device=device,
+                            dtype=torch.bool,
+                        )[None, :]
+                        if metadata.get("action_context_valid_tokens") is not None
+                        else None
+                    ),
                     device=device,
                     build_dense_masks=(
                         profile.self_attention_mask is not None

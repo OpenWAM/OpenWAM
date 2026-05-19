@@ -32,6 +32,10 @@ from open_wam.integrations.realtime_control import (  # noqa: E402
 )
 from open_wam.configs import ParallelRuntimeMode  # noqa: E402
 from open_wam.configs.enums import DeadlineMissPolicy  # noqa: E402
+from open_wam.models.common.rollout_startup import (  # noqa: E402
+    require_strict_startup_generation_frame,
+    strict_startup_conditioning_frame_index,
+)
 from open_wam.models.policy_variants import PolicyInferState, RolloutCursor  # noqa: E402
 from open_wam.pipelines import build_exact_runtime_runner_from_config  # noqa: E402
 from open_wam.utils import (  # noqa: E402
@@ -603,9 +607,11 @@ def _chunk_to_planned_frames(
         f=frame_chunk_size,
         a=action_per_frame,
     )
+    generation_frame_start = int(first_chunk.debug.get("generation_frame_start", 0))
+    require_strict_startup_generation_frame(generation_frame_start)
     return make_planned_frame_actions(
         raw_actions.detach().to(dtype=torch.float32).cpu().numpy(),
-        generation_frame_start=int(first_chunk.debug.get("generation_frame_start", 0)),
+        generation_frame_start=generation_frame_start,
         source=source,
         planner_step_index=int(first_chunk.session.policy_state.step_index),
         ready_monotonic_s=ready_monotonic_s,
@@ -629,12 +635,21 @@ def _startup_conditioning_history_record(
         f=frame_chunk_size,
         a=action_per_frame,
     )
-    conditioning_frame_index = int(first_chunk.debug.get("generation_frame_start", 0))
+    generation_frame_start = int(first_chunk.debug.get("generation_frame_start", 0))
+    conditioning_frame_index = strict_startup_conditioning_frame_index(generation_frame_start)
+    raw_actions_valid = generation_frame_start <= conditioning_frame_index
+    history_raw_actions = (
+        raw_actions[0].detach().to(dtype=torch.float32).cpu().numpy()
+        if raw_actions_valid
+        else np.zeros((0, int(raw_actions.shape[-1])), dtype=np.float32)
+    )
     record = {
         "absolute_frame_index": int(conditioning_frame_index),
         "obs": {key: np.array(value, copy=True) for key, value in initial_obs.items()},
         "obs_sequence": [],
-        "raw_actions": raw_actions[0].detach().to(dtype=torch.float32).cpu().numpy(),
+        "raw_actions": history_raw_actions,
+        "raw_actions_valid": bool(raw_actions_valid),
+        "raw_action_dim": int(raw_actions.shape[-1]),
         "video_latents": initial_video_latents.detach(),
         "source": "startup_conditioning_frame",
     }
@@ -848,6 +863,7 @@ def _resolve_exact_startup_sessions(
     frame_chunk_size: int,
 ):
     generation_frame_start = int(first_chunk.debug.get("generation_frame_start", 0))
+    require_strict_startup_generation_frame(generation_frame_start)
     current_chunk_session = first_chunk.session
     history_base_session = _resolve_exact_startup_history_base_session(
         config=config,

@@ -28,7 +28,9 @@ from .enums import (
     PaddedTargetPolicy,
     ReplayStatusPolicy,
     RotationRepresentation,
+    RolloutContextPolicy,
     SampleStateAnchorMode,
+    SampleTargetAlignment,
     SampleWeightMode,
     SegmentContextPolicy,
     TailPaddingPolicy,
@@ -391,6 +393,16 @@ class SampleConstructionConfig:
     # useful for fixed-geometry cold-start training without rewriting latent
     # datasets on disk.
     start_padding_frames: int = 0
+    # `legacy` preserves historical fixed-segment behavior. `next_after_context`
+    # is the strict rollout-parity contract: materialize context before the
+    # target horizon, mask it from supervision, and supervise only the next
+    # `segment_frames` latent frames.
+    target_alignment: SampleTargetAlignment = SampleTargetAlignment.LEGACY
+    # Strict rollout-parity context source. `one_frame` matches live rollout
+    # bootstrap; `rollout_history` prepends the configured inference history
+    # outside the supervised target horizon.
+    rollout_context_policy: RolloutContextPolicy = RolloutContextPolicy.ONE_FRAME
+    rollout_context_frames: int | None = None
     # Hierarchical fixed-segment context reservation. Prefix frames are
     # prepended outside `segment_frames`, so the configured segment length
     # remains the target horizon. `none` keeps legacy behavior; `fixed` uses
@@ -423,6 +435,8 @@ class SampleConstructionConfig:
                 "anchor_policy": AnchorPolicy,
                 "state_anchor_mode": SampleStateAnchorMode,
                 "sample_weight_mode": SampleWeightMode,
+                "target_alignment": SampleTargetAlignment,
+                "rollout_context_policy": RolloutContextPolicy,
                 "context_prefix_policy": SegmentContextPolicy,
                 "tail_padding_policy": TailPaddingPolicy,
                 "padded_target_policy": PaddedTargetPolicy,
@@ -464,6 +478,8 @@ class SampleConstructionConfig:
             raise ValueError("`sample_construction.segment_locality_block_size` must be positive.")
         if self.start_padding_frames < 0:
             raise ValueError("`sample_construction.start_padding_frames` must be non-negative.")
+        if self.rollout_context_frames is not None and int(self.rollout_context_frames) <= 0:
+            raise ValueError("`sample_construction.rollout_context_frames` must be positive or null.")
         if self.context_prefix_frames < 0:
             raise ValueError("`sample_construction.context_prefix_frames` must be non-negative.")
         if self.mode == WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT:
@@ -496,6 +512,28 @@ class SampleConstructionConfig:
                 raise ValueError("`hierarchical_fixed_segment` currently supports only zero-order-hold tail padding.")
             if self.padded_target_policy != PaddedTargetPolicy.MASK_LOSS:
                 raise ValueError("`hierarchical_fixed_segment` currently supports only masked padded targets.")
+            if self.target_alignment == SampleTargetAlignment.NEXT_AFTER_CONTEXT:
+                if self.chunk_size != 4:
+                    raise ValueError(
+                        "`target_alignment=next_after_context` currently requires "
+                        "`sample_construction.chunk_size=4` to match rollout chunking."
+                    )
+                if self.randomize_geometry:
+                    raise ValueError(
+                        "`target_alignment=next_after_context` requires fixed rollout chunking; "
+                        "set `sample_construction.randomize_geometry=false`."
+                    )
+                if self.start_padding_frames != 0:
+                    raise ValueError(
+                        "`target_alignment=next_after_context` deprecates virtual head padding; "
+                        "set `sample_construction.start_padding_frames=0`."
+                    )
+                if self.context_prefix_policy != SegmentContextPolicy.NONE or self.context_prefix_frames != 0:
+                    raise ValueError(
+                        "`target_alignment=next_after_context` uses "
+                        "`rollout_context_policy` / `rollout_context_frames`; remove legacy context fields "
+                        "`sample_construction.context_prefix_policy` and `sample_construction.context_prefix_frames`."
+                    )
         for bucket in self.causal_prefix_suffix_buckets:
             if bucket.observed_frames <= 0 or bucket.future_frames <= 0:
                 raise ValueError(

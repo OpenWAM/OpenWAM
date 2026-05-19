@@ -19,15 +19,17 @@ data:
   episode_cache_size: 2
   train_fraction: 1.0
   split_seed: 0
-  # Fixed-128 rollout-context training; chunk size is randomized 1..4.
+  # Strict fixed-128 rollout-parity training:
+  # one observed context frame, then 128 supervised target frames.
   sample_construction:
     mode: hierarchical_fixed_segment
     segment_frames: 128
     chunk_size: 4
     window_size: 30
-    randomize_geometry: true
-    start_padding_frames: 3
-    context_prefix_policy: rollout_history
+    randomize_geometry: false
+    start_padding_frames: 0
+    target_alignment: next_after_context
+    rollout_context_policy: one_frame
     tail_padding_policy: zero_order_hold
     padded_target_policy: mask_loss
     task_start_power: 0.5

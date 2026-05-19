@@ -20,18 +20,18 @@ data:
   episode_cache_size: 2
   train_fraction: 1.0
   split_seed: 0
-  # Shared fixed-128 hierarchical segments. Boundary starts stay eligible, but
-  # compact boundary tensors do not materialize held head/tail frames. Missing
-  # actions and padded targets are excluded from loss. chunk_size is the max sampled train chunk
-  # (randomized 1..4); window_size keeps the rollout lookback bounded.
+  # Strict fixed-128 rollout-parity segments. One real context frame is
+  # materialized before the 128 supervised targets. Tail overflow remains
+  # metadata-only, unavailable targets are masked, and chunk geometry is fixed at 4.
   sample_construction:
     mode: hierarchical_fixed_segment
     segment_frames: 128
     chunk_size: 4
     window_size: 30
-    randomize_geometry: true
-    start_padding_frames: 3
-    context_prefix_policy: rollout_history
+    randomize_geometry: false
+    start_padding_frames: 0
+    target_alignment: next_after_context
+    rollout_context_policy: one_frame
     tail_padding_policy: zero_order_hold
     padded_target_policy: mask_loss
     task_start_power: 0.5

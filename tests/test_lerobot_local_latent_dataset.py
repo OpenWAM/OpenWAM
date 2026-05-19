@@ -15,8 +15,10 @@ from torch.utils.data import DataLoader
 from open_wam.configs import (
     DataSplit,
     ReplayStatusPolicy,
+    RolloutContextPolicy,
     SampleStateAnchorMode,
     SampleWeightMode,
+    SampleTargetAlignment,
     SegmentContextPolicy,
     WindowSamplingMode,
 )
@@ -1226,6 +1228,150 @@ def test_hierarchical_fixed_segment_without_context_keeps_geometry_history_frame
     assert sample.metadata["history_frames"] == 4
 
 
+def test_hierarchical_fixed_segment_rollout_parity_uses_one_context_frame(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent_hierarchical_fixed_segment_rollout_parity"
+    _build_local_robotwin_latent_repo(repo_root, total_rows=6, latent_num_frames=6)
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            split_seed=29,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+                segment_frames=4,
+                chunk_size=4,
+                window_size=30,
+                randomize_geometry=False,
+                start_padding_frames=0,
+                target_alignment=SampleTargetAlignment.NEXT_AFTER_CONTEXT,
+                rollout_context_policy=RolloutContextPolicy.ONE_FRAME,
+                task_start_power=0.5,
+                demo_count_power=0.0,
+                trajectory_start_power=1.0,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+
+    assert len(train_dataset) == 5
+    assert train_dataset._window_start_ranges_by_chunk == (((4, 1, 5, 5),),)
+
+    first_target_index = next(
+        index
+        for index in range(100)
+        if train_dataset.resolve_hierarchical_sample_key(index)["latent_start"] == 1
+    )
+    tail_target_index = next(
+        index
+        for index in range(100)
+        if train_dataset.resolve_hierarchical_sample_key(index)["latent_start"] == 5
+    )
+    first_target_sample = train_dataset[first_target_index]
+    tail_target_sample = train_dataset[tail_target_index]
+
+    assert first_target_sample.metadata["target_alignment"] == "next_after_context"
+    assert first_target_sample.metadata["rollout_context_policy"] == "one_frame"
+    assert first_target_sample.metadata["virtual_latent_start"] == 1
+    assert first_target_sample.metadata["effective_frame_start"] == 0
+    assert first_target_sample.metadata["effective_frame_end"] == 5
+    assert first_target_sample.metadata["target_frame_start"] == 1
+    assert first_target_sample.metadata["target_frame_end"] == 5
+    assert first_target_sample.metadata["context_prefix_frames_requested"] == 1
+    assert first_target_sample.metadata["context_prefix_frames_in_sample"] == 1
+    assert first_target_sample.metadata["latent_loss_frame_start"] == 1
+    assert first_target_sample.metadata["latent_loss_frame_end"] == 5
+    assert first_target_sample.metadata["history_frames"] == 1
+    assert first_target_sample.metadata["observed_frame_ids"] == [0, 1, 2, 3, 4]
+    assert first_target_sample.video_latents.shape[1] == 5
+    prefix_actions = config.data.action_schema.action_horizon // config.data.num_frames
+    assert first_target_sample.action_mask[:prefix_actions].sum().item() == 0
+    assert first_target_sample.action_mask[prefix_actions:].sum().item() > 0
+    assert first_target_sample.metadata["lingbot_window_action_alignment"]["leading_zero_action_frames"] == 1
+    assert first_target_sample.metadata["lingbot_window_action_alignment"]["leading_zero_action_mask"] == 0.0
+
+    assert tail_target_sample.metadata["virtual_latent_start"] == 5
+    assert tail_target_sample.metadata["effective_frame_start"] == 4
+    assert tail_target_sample.metadata["effective_frame_end"] == 6
+    assert tail_target_sample.metadata["target_frame_start"] == 5
+    assert tail_target_sample.metadata["target_frame_end"] == 9
+    assert tail_target_sample.metadata["tail_padded_frame_count"] == 3
+    assert tail_target_sample.metadata["segment_valid_latent_frames"] == 2
+    assert tail_target_sample.metadata["segment_padded_latent_frames"] == 3
+    assert tail_target_sample.metadata["latent_loss_frame_start"] == 1
+    assert tail_target_sample.metadata["latent_loss_frame_end"] == 2
+    assert tail_target_sample.metadata["history_frames"] == 1
+    assert tail_target_sample.metadata["observed_frame_ids"] == [4, 5]
+    assert tail_target_sample.video_latents.shape[1] == 2
+    assert tail_target_sample.action_mask[:prefix_actions].sum().item() == 0
+    assert tail_target_sample.action_mask[prefix_actions:].sum().item() > 0
+
+
+def test_hierarchical_fixed_segment_rollout_parity_history_stays_outside_target_budget(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent_hierarchical_fixed_segment_rollout_history"
+    _build_local_robotwin_latent_repo(repo_root, total_rows=40, latent_num_frames=40)
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            split_seed=31,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+                segment_frames=8,
+                chunk_size=4,
+                window_size=6,
+                randomize_geometry=False,
+                start_padding_frames=0,
+                target_alignment=SampleTargetAlignment.NEXT_AFTER_CONTEXT,
+                rollout_context_policy=RolloutContextPolicy.ROLLOUT_HISTORY,
+                task_start_power=0.5,
+                demo_count_power=0.0,
+                trajectory_start_power=1.0,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    sample_index = next(
+        index
+        for index in range(500)
+        if train_dataset.resolve_hierarchical_sample_key(index)["latent_start"] == 20
+    )
+    sample = train_dataset[sample_index]
+
+    assert sample.metadata["context_prefix_frames_requested"] == 12
+    assert sample.metadata["context_prefix_frames_in_sample"] == 12
+    assert sample.metadata["effective_frame_start"] == 8
+    assert sample.metadata["effective_frame_end"] == 28
+    assert sample.metadata["target_frame_start"] == 20
+    assert sample.metadata["target_frame_end"] == 28
+    assert sample.metadata["latent_loss_frame_start"] == 12
+    assert sample.metadata["latent_loss_frame_end"] == 20
+    assert sample.metadata["history_frames"] == 12
+    assert sample.video_latents.shape[1] == 20
+    prefix_actions = config.data.action_schema.action_horizon // config.data.num_frames
+    assert sample.action_mask[:prefix_actions].sum().item() == 0
+    assert sample.action_mask[prefix_actions : 12 * prefix_actions].sum().item() > 0
+
+
 def test_uniform_segment_require_full_segment_uses_short_payload_as_full_segment(tmp_path: Path) -> None:
     repo_root = tmp_path / "robotwin_local_latent_uniform_segment_payload_count"
     _build_local_robotwin_latent_repo(repo_root, total_rows=80, latent_num_frames=24)
@@ -1392,6 +1538,7 @@ def test_hierarchical_exact_actions_use_wan_causal_latent_anchors(tmp_path: Path
                 chunk_size=2,
                 randomize_geometry=False,
                 start_padding_frames=0,
+                target_alignment=SampleTargetAlignment.LEGACY,
             ),
         ),
     )
@@ -1958,6 +2105,8 @@ def test_contextual_subwindow_sampling_falls_back_to_geometry_that_fits_segment(
                 chunk_size=4,
                 window_size=64,
                 predict_blocks_per_sample=1,
+                randomize_geometry=True,
+                target_alignment=SampleTargetAlignment.LEGACY,
             ),
         ),
     )

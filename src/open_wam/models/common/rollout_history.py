@@ -13,9 +13,9 @@ def build_executed_action_history_tensor(
 ) -> torch.Tensor | None:
     """Build MoT/LIBERO warmup history from actions sent to the simulator.
 
-    The helper returns a CPU float32 tensor and prepends zero bootstrap tokens
-    for skipped frame groups. Broader rollout-history state should use a
-    richer typed contract instead of this visualization warmup helper.
+    The helper returns a CPU float32 tensor for actions actually sent to the
+    simulator. Legacy zero-bootstrap rows for skipped frame groups are
+    deprecated because they expose synthetic action context to the model.
     """
 
     if action_per_frame <= 0:
@@ -32,6 +32,9 @@ def build_executed_action_history_tensor(
         )
     skipped_tokens = max(0, int(start_frame_group)) * int(action_per_frame)
     if skipped_tokens > 0:
-        bootstrap_actions = np.zeros((skipped_tokens, action_dim), dtype=np.float32)
-        executed = np.concatenate([bootstrap_actions, executed], axis=0)
+        raise ValueError(
+            "Skipped frame-group action bootstrap is deprecated because it would expose synthetic zero "
+            "actions as model context. Use first-frame prefix conditioning that executes the full generated "
+            "chunk instead."
+        )
     return torch.from_numpy(executed).unsqueeze(0)

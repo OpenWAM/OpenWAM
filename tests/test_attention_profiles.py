@@ -96,6 +96,71 @@ def test_chunked_temporal_exact_cross_mask_limits_per_chunk_proprio_tokens() -> 
     assert bool(mask[-1].any().item()) is False
 
 
+def test_chunked_temporal_exact_chunk_origin_keeps_context_frame_out_of_first_target_chunk() -> None:
+    profile = build_chunked_temporal_exact_attention_profile(
+        latent_shape=(1, 1, 5, 1, 1),
+        action_shape=(1, 1, 5, 1, 1),
+        padded_length=0,
+        chunk_size=4,
+        window_size=8,
+        patch_size=(1, 1, 1),
+        text_token_count=3,
+        base_text_token_count=1,
+        proprio_context_token_count=2,
+        chunk_origin_frame=1,
+        device=torch.device("cpu"),
+        build_dense_masks=True,
+        build_flex_masks=False,
+    )
+
+    assert profile.cross_attention_mask is not None
+    mask = profile.cross_attention_mask
+    # Frame 0 is a prefix-context chunk (-1): it sees text, but no per-target
+    # proprio token. Frames 1 and 4 are both in generated chunk 0.
+    assert mask[0, :3].tolist() == [True, False, False]
+    assert mask[1, :3].tolist() == [True, True, False]
+    assert mask[4, :3].tolist() == [True, True, False]
+    assert profile.metadata["chunk_origin_frame"] == 1
+
+
+def test_chunked_temporal_exact_action_context_mask_hides_startup_action_tokens() -> None:
+    action_context_mask = torch.ones(1, 1, 5, 4, 1)
+    action_context_mask[:, :, 0] = 0.0
+    profile = build_chunked_temporal_exact_attention_profile(
+        latent_shape=(1, 1, 5, 1, 1),
+        action_shape=(1, 1, 5, 4, 1),
+        padded_length=0,
+        chunk_size=4,
+        window_size=8,
+        patch_size=(1, 1, 1),
+        text_token_count=1,
+        chunk_origin_frame=1,
+        action_context_mask=action_context_mask,
+        device=torch.device("cpu"),
+        build_dense_masks=True,
+        build_flex_masks=False,
+        preserve_video_pretrain_history=True,
+    )
+
+    assert profile.self_attention_mask is not None
+    mask = profile.self_attention_mask
+    latent_token_count = 5
+    action_token_count = 20
+    action_noisy_start = latent_token_count * 2
+    action_clean_start = action_noisy_start + action_token_count
+    query_action_frame1 = action_noisy_start + 4
+    kv_video_clean_frame0 = latent_token_count
+    kv_action_noisy_frame0 = action_noisy_start
+    kv_action_clean_frame0 = action_clean_start
+
+    assert bool(mask[query_action_frame1, kv_video_clean_frame0].item()) is True
+    assert bool(mask[query_action_frame1, kv_action_noisy_frame0].item()) is False
+    assert bool(mask[query_action_frame1, kv_action_clean_frame0].item()) is False
+    assert bool(mask[kv_action_noisy_frame0].any().item()) is False
+    assert bool(mask[:, kv_action_clean_frame0].any().item()) is False
+    assert profile.metadata["invalid_action_context_tokens"] == 4
+
+
 def test_chunked_temporal_exact_cross_mask_keeps_cfg_rows_isolated() -> None:
     profile = build_chunked_temporal_exact_attention_profile(
         latent_shape=(2, 1, 2, 1, 1),

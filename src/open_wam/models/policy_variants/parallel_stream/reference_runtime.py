@@ -41,6 +41,7 @@ from open_wam.models.common.joint_conditioning import (
     should_drop_text_for_conditioning_mode,
 )
 from open_wam.models.common.modality_slots import force_clean_noisy_slot, zero_condition_slot
+from open_wam.models.common.rollout_startup import resolve_strict_startup_plan
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig, resolve_stage_attention_mode
 from open_wam.models.video_backbone.contracts import CacheState
 from open_wam.models.visual_tower import (
@@ -668,6 +669,7 @@ def prepare_parallel_exact_train_artifacts(
     action_loss_frame_start: int | None = None,
     action_loss_frame_end: int | None = None,
     frame_shift: int = 0,
+    chunk_origin_frame: int = 0,
     force_clean_video_condition: bool = False,
 ) -> LingbotParallelTrainArtifacts:
     batch_size, _, num_frames, _, _ = video_latents.shape
@@ -857,6 +859,7 @@ def prepare_parallel_exact_train_artifacts(
             "action_loss_frame_start": resolved_action_loss_frame_start,
             "action_loss_frame_end": resolved_action_loss_frame_end,
             "frame_shift": int(frame_shift),
+            "chunk_origin_frame": int(chunk_origin_frame),
             "attention_profile_name": attention_profile_name,
             "preserve_video_pretrain_history": bool(
                 getattr(policy_config, "preserve_video_pretrain_history", False)
@@ -1196,6 +1199,7 @@ def prepare_parallel_action_conditioned_train_artifacts(
     action_loss_frame_start: int | None = None,
     action_loss_frame_end: int | None = None,
     frame_shift: int = 0,
+    chunk_origin_frame: int = 0,
     force_clean_video_condition: bool = False,
     generalist_training_mode_override: JointDenoiseTrainingMode | str | None = None,
     generalist_drop_text_conditioning: bool | None = None,
@@ -1233,6 +1237,7 @@ def prepare_parallel_action_conditioned_train_artifacts(
         action_loss_frame_start=action_loss_frame_start,
         action_loss_frame_end=action_loss_frame_end,
         frame_shift=frame_shift,
+        chunk_origin_frame=chunk_origin_frame,
         force_clean_video_condition=force_clean_video_condition,
     )
     if policy_config.variant_profile == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING:
@@ -1826,6 +1831,91 @@ def run_parallel_exact_cache_warmup(
     }
 
 
+def _maybe_commit_initial_observed_video_context(
+    *,
+    transformer: torch.nn.Module,
+    cache_spec: ExactCacheInterfaceSpec,
+    cache_name: str,
+    backbone_config: SharedVideoTransformerConfig,
+    policy_config: ParallelStreamPolicyConfig,
+    inference_config: InferenceConfig,
+    condition_latents: torch.Tensor | None,
+    text_emb: torch.Tensor,
+    negative_text_emb: torch.Tensor | None,
+    use_cfg: bool,
+    action_channel_mask: torch.Tensor | None,
+    action_dim: int,
+    model_dtype: torch.dtype,
+    current_frame_start: int,
+    step_index: int,
+    current_block_coupling: CurrentBlockCoupling,
+) -> tuple[int, bool]:
+    """Commit frame 0 as pure prefix context before generating frame 1.
+
+    The rollout-parity contract is: observed frame 0 is conditioning only, and
+    the first denoised chunk starts at frame 1. This helper writes that observed
+    video frame into the exact cache without materializing dummy action tokens.
+    """
+
+    startup_plan = resolve_strict_startup_plan(
+        step_index=step_index,
+        current_start_frame=current_frame_start,
+        frame_chunk_size=inference_config.frame_chunk_size,
+        action_tokens_per_frame=policy_config.action_per_frame,
+        action_horizon=inference_config.frame_chunk_size * policy_config.action_per_frame,
+    )
+    if not inference_config.use_cache or not startup_plan.is_startup or condition_latents is None:
+        return int(current_frame_start), False
+
+    observed_video = condition_latents[:, :, :1].to(dtype=model_dtype)
+    observed_actions = observed_video.new_empty(
+        observed_video.shape[0],
+        int(action_dim),
+        0,
+        int(policy_config.action_per_frame),
+        1,
+    )
+    prefix_cache_spec = cache_spec
+    if cache_spec.write_mode != ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED:
+        prefix_cache_spec = _build_exact_cache_spec(
+            write_mode=ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED,
+            batch_size=int(observed_video.shape[0]),
+            use_cfg=bool(use_cfg),
+            prefix_visibility_mode=cache_spec.prefix_visibility_mode,
+        )
+    prefix_coupling = (
+        current_block_coupling
+        if current_block_coupling
+        in {
+            CurrentBlockCoupling.VIDEO_THEN_ACTION,
+            CurrentBlockCoupling.ACTION_THEN_VIDEO,
+            CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+        }
+        else CurrentBlockCoupling.VIDEO_THEN_ACTION
+    )
+    _write_exact_cache_chunk(
+        transformer=transformer,
+        cache_spec=prefix_cache_spec,
+        cache_name=cache_name,
+        frame_start=0,
+        backbone_config=backbone_config,
+        video_latents=observed_video,
+        action_latents=observed_actions,
+        text_emb=text_emb,
+        negative_text_emb=negative_text_emb,
+        use_cfg=bool(use_cfg),
+        action_channel_mask=action_channel_mask,
+        update_cache=2,
+        chunk_size=inference_config.frame_chunk_size,
+        window_size=policy_config.attn_window,
+        current_block_coupling=prefix_coupling,
+        preserve_video_pretrain_history=bool(
+            getattr(policy_config, "preserve_video_pretrain_history", False)
+        ),
+    )
+    return startup_plan.generation_frame_start, True
+
+
 def run_parallel_exact_inference_rollout(
     *,
     transformer: torch.nn.Module,
@@ -1909,8 +1999,33 @@ def run_parallel_exact_inference_rollout(
             cache_spec=cache_spec,
         )
     generation_frame_start = current_frame_start
+    initial_observed_context_committed = False
+    if cache_context.cache_initialized:
+        generation_frame_start, initial_observed_context_committed = _maybe_commit_initial_observed_video_context(
+            transformer=transformer,
+            cache_spec=cache_spec,
+            cache_name=cache_name,
+            backbone_config=backbone_config,
+            policy_config=policy_config,
+            inference_config=inference_config,
+            condition_latents=condition_latents,
+            text_emb=text_emb,
+            negative_text_emb=negative_text_emb,
+            use_cfg=cache_context.use_cfg and inference_config.use_cache,
+            action_channel_mask=action_channel_mask,
+            action_dim=action_dim,
+            model_dtype=model_dtype,
+            current_frame_start=current_frame_start,
+            step_index=int(infer_cache.get("step_index", 0)),
+            current_block_coupling=current_block_coupling,
+        )
     latent_cond = None
-    if infer_cache.get("step_index", 0) == 0 and condition_latents is not None and current_frame_start == 0:
+    if (
+        not initial_observed_context_committed
+        and infer_cache.get("step_index", 0) == 0
+        and condition_latents is not None
+        and current_frame_start == 0
+    ):
         latent_cond = condition_latents[:, :, 0:1].to(dtype=model_dtype)
 
     latents = torch.randn(
@@ -2102,7 +2217,7 @@ def run_parallel_exact_inference_rollout(
         "cache_backend_name": cache_backend_name,
         "cache_initialized": cache_context.cache_initialized and inference_config.use_cache,
         "frame_start": int(
-            current_frame_start + inference_config.frame_chunk_size if advance_frame_start else current_frame_start
+            generation_frame_start + inference_config.frame_chunk_size if advance_frame_start else generation_frame_start
         ),
         "latent_height": latent_height,
         "latent_width": latent_width,
@@ -2115,6 +2230,7 @@ def run_parallel_exact_inference_rollout(
         "cache_backend_name": cache_backend_name,
         "use_cfg": cache_context.use_cfg,
         "generation_frame_start": generation_frame_start,
+        "initial_observed_context_committed": bool(initial_observed_context_committed),
         "advance_frame_start": advance_frame_start,
         "video_timesteps": video_timesteps.tolist(),
         "action_timesteps": action_timesteps.tolist(),
@@ -2196,6 +2312,12 @@ def _run_parallel_exact_joint_forward_manual(
                 else int(input_dict["base_text_token_count"])
             ),
             proprio_context_token_count=int(input_dict.get("proprio_context_token_count", 0) or 0),
+            chunk_origin_frame=int(input_dict.get("chunk_origin_frame", 0) or 0),
+            action_context_mask=(
+                action_dict.get("actions_mask")
+                if torch.is_tensor(action_dict.get("actions_mask"))
+                else None
+            ),
             device=hidden_states.device,
             build_dense_masks=True,
             build_flex_masks=False,
@@ -3125,7 +3247,8 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
         proprio_state=proprio_state,
     )
     model_dtype = cache_context.model_dtype
-    generation_frame_start = int(infer_cache.get("frame_start", 0))
+    current_frame_start = int(infer_cache.get("frame_start", 0))
+    generation_frame_start = current_frame_start
     cache_name = cache_context.cache_name
     cache_backend_name = cache_context.cache_backend_name
     cache_spec = _build_exact_cache_spec(
@@ -3145,6 +3268,26 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             inference_config=inference_config,
             cache_context=cache_context,
             cache_spec=cache_spec,
+        )
+    initial_observed_context_committed = False
+    if cache_context.cache_initialized:
+        generation_frame_start, initial_observed_context_committed = _maybe_commit_initial_observed_video_context(
+            transformer=transformer,
+            cache_spec=cache_spec,
+            cache_name=cache_name,
+            backbone_config=backbone_config,
+            policy_config=policy_config,
+            inference_config=inference_config,
+            condition_latents=condition_latents,
+            text_emb=text_emb,
+            negative_text_emb=negative_text_emb,
+            use_cfg=cache_context.use_cfg and inference_config.use_cache,
+            action_channel_mask=action_channel_mask,
+            action_dim=action_dim,
+            model_dtype=model_dtype,
+            current_frame_start=current_frame_start,
+            step_index=int(infer_cache.get("step_index", 0)),
+            current_block_coupling=current_block_coupling,
         )
     latents = torch.randn(
         batch_size,
@@ -3198,7 +3341,12 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
         if action_denoise_mask is not None:
             commit_action_latents = commit_action_latents * action_denoise_mask
     initial_observed_video_anchor = None
-    if infer_cache.get("step_index", 0) == 0 and condition_latents is not None and generation_frame_start == 0:
+    if (
+        not initial_observed_context_committed
+        and infer_cache.get("step_index", 0) == 0
+        and condition_latents is not None
+        and generation_frame_start == 0
+    ):
         initial_observed_video_anchor = condition_latents[:, :, 0:1].to(device=device, dtype=model_dtype)
     # Keep the packed four-branch sequence contract for compatibility with the
     # trained backbone, but do not provide any explicit clean conditioning
@@ -3444,6 +3592,7 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
         "use_cache": bool(inference_config.use_cache),
         "cache_commit_mode": str(cache_spec.write_mode),
         "use_cfg": cache_context.use_cfg,
+        "initial_observed_context_committed": bool(initial_observed_context_committed),
         "video_num_inference_steps": int(inference_config.video_num_inference_steps),
         "action_num_inference_steps": int(inference_config.action_num_inference_steps),
         "action_conditioning_mode": action_conditioning_mode,

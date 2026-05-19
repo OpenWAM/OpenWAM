@@ -361,7 +361,13 @@ def main() -> None:
             real_future_frames: list[dict[str, np.ndarray]] = []
             executed_actions = 0
             executed_control_actions: list[np.ndarray] = []
-            start_frame_group = 1 if chunk_count == 0 else 0
+            policy_debug = _summarize_policy_debug(infer_output.policy_output.aux)
+            generation_frame_start = int(
+                policy_debug.get("generation_frame_start", 0)
+                if "generation_frame_start" in policy_debug
+                else policy_debug.get("mot_cache_debug", {}).get("current_action_frame_start", 0)
+            )
+            start_frame_group = 1 if chunk_count == 0 and generation_frame_start <= 0 else 0
             for frame_group in range(start_frame_group, frame_actions.shape[0]):
                 for action_offset, action in enumerate(frame_actions[frame_group]):
                     absolute_action_index = frame_group * action_per_frame + action_offset

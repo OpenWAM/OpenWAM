@@ -18,6 +18,7 @@ from open_wam.configs import (
     DataSplit,
     GeneralistDynamicsMixtureConfig,
     PaddedTargetPolicy,
+    SampleTargetAlignment,
     TailPaddingPolicy,
     WindowSamplingMode,
 )
@@ -169,6 +170,9 @@ class EncodedCounterfactualDynamicsLatentDataset(Dataset[LatentWAMSample]):
             latent_start=int(latent_start),
             segment_length=int(segment_length),
             action_per_frame=action_per_frame,
+            mask_leading_zero_action_context=(
+                self.data_config.sample_construction.target_alignment == SampleTargetAlignment.NEXT_AFTER_CONTEXT
+            ),
         )
         video_latents = segment["video_latents"]
         actions = segment["actions"]
@@ -1016,6 +1020,7 @@ def _build_counterfactual_fixed_segment(
     latent_start: int,
     segment_length: int,
     action_per_frame: int,
+    mask_leading_zero_action_context: bool = False,
 ) -> dict[str, Any]:
     source_frames = int(video_latents.shape[1])
     if source_frames <= 0:
@@ -1047,7 +1052,7 @@ def _build_counterfactual_fixed_segment(
     )
     action_mask = torch.zeros_like(segment_actions)
     leading_zero_action_frames = int(pre_start_frames) if int(pre_start_frames) > 0 else 1
-    leading_zero_action_mask = 0.0 if int(pre_start_frames) > 0 else 1.0
+    leading_zero_action_mask = 0.0 if int(pre_start_frames) > 0 or mask_leading_zero_action_context else 1.0
     for output_frame in range(segment_length):
         dst_start = output_frame * action_per_frame
         dst_end = dst_start + action_per_frame

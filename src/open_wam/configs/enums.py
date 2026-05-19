@@ -150,6 +150,22 @@ class SegmentContextPolicy(StrEnum):
     ROLLOUT_HISTORY = "rollout_history"
 
 
+class SampleTargetAlignment(StrEnum):
+    """How fixed-segment samples align materialized context to supervised targets."""
+
+    LEGACY = "legacy"
+    # Materialize context before the first supervised target. Frame 0 is
+    # observed context; frames 1..segment_frames are generated targets.
+    NEXT_AFTER_CONTEXT = "next_after_context"
+
+
+class RolloutContextPolicy(StrEnum):
+    """How strict rollout-parity fixed segments choose pre-target context."""
+
+    ONE_FRAME = "one_frame"
+    ROLLOUT_HISTORY = "rollout_history"
+
+
 class TailPaddingPolicy(StrEnum):
     """How fixed segment samplers fill positions beyond the real trajectory tail."""
 

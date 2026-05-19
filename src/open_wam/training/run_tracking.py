@@ -150,6 +150,17 @@ def build_run_tracking_metadata(
             if sample_construction is not None
             else 0
         ),
+        "target_alignment": (
+            str(sample_construction.target_alignment) if sample_construction is not None else None
+        ),
+        "rollout_context_policy": (
+            str(sample_construction.rollout_context_policy) if sample_construction is not None else None
+        ),
+        "rollout_context_frames": (
+            int(sample_construction.rollout_context_frames)
+            if sample_construction is not None and sample_construction.rollout_context_frames is not None
+            else None
+        ),
         "tail_padding_policy": (
             str(sample_construction.tail_padding_policy) if sample_construction is not None else None
         ),
@@ -270,6 +281,14 @@ def build_wandb_tags(tracking_metadata: dict[str, Any]) -> tuple[str, ...]:
         ordered_tags.append(f"segment_frames:{tracking_metadata['segment_min_frames']}")
     if int(tracking_metadata.get("start_padding_frames") or 0) > 0:
         ordered_tags.append(f"start_padding_frames:{tracking_metadata['start_padding_frames']}")
+    if tracking_metadata.get("target_alignment") and tracking_metadata["target_alignment"] != "legacy":
+        ordered_tags.append(f"target_alignment:{tracking_metadata['target_alignment']}")
+    if (
+        tracking_metadata.get("target_alignment")
+        and tracking_metadata["target_alignment"] != "legacy"
+        and tracking_metadata.get("rollout_context_policy")
+    ):
+        ordered_tags.append(f"rollout_context:{tracking_metadata['rollout_context_policy']}")
     if tracking_metadata.get("sample_weight_mode"):
         ordered_tags.append(f"sample_weight:{tracking_metadata['sample_weight_mode']}")
     if tracking_metadata.get("preserve_video_pretrain_history") is True:

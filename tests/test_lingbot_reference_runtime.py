@@ -6,7 +6,6 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
-import pytest
 from torch import nn
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -51,6 +50,7 @@ from open_wam.models.video_backbone.contracts import ChunkMetadata, Conditioning
 from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig, SharedVideoTransformerConfig
 from open_wam.models.visual_tower.contracts import VisualFrontendOutput, VisualStageOutputs
 from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore
+from open_wam.models.visual_tower.sequence_adapters import prepare_exact_dual_stream_train_sequence
 from open_wam.models.visual_tower.tower import VisualTower
 from scripts.run_libero_exact_visualization import (
     _binarize_raw_gripper_actions,
@@ -163,7 +163,7 @@ def test_exact_visualization_partial_execution_selects_executed_tail() -> None:
     assert torch.equal(executed, raw_actions[:2])
 
 
-def test_exact_visualization_default_warmup_keeps_legacy_first_chunk_prefix() -> None:
+def test_exact_visualization_warmup_rejects_skipped_first_chunk_prefix() -> None:
     raw_actions = torch.arange(4 * 4 * 7, dtype=torch.float32).reshape(4, 4, 7)
     executed = _select_executed_raw_actions(
         raw_actions,
@@ -172,27 +172,16 @@ def test_exact_visualization_default_warmup_keeps_legacy_first_chunk_prefix() ->
         action_per_frame=4,
     )
 
-    default_warmup = _build_warmup_raw_actions(
-        raw_actions=raw_actions,
-        executed_raw_actions=executed,
-        start_frame_group=1,
-        first_chunk=True,
-        exact_startup_bootstrap_padding=False,
-        partial_execution_enabled=False,
-        binarize_gripper=False,
-    )
-    partial_warmup = _build_warmup_raw_actions(
-        raw_actions=raw_actions,
-        executed_raw_actions=executed[:2],
-        start_frame_group=1,
-        first_chunk=True,
-        exact_startup_bootstrap_padding=False,
-        partial_execution_enabled=True,
-        binarize_gripper=False,
-    )
-
-    assert torch.equal(default_warmup, raw_actions)
-    assert torch.equal(partial_warmup, raw_actions[:3])
+    with pytest.raises(ValueError, match="deprecated"):
+        _build_warmup_raw_actions(
+            raw_actions=raw_actions,
+            executed_raw_actions=executed,
+            start_frame_group=1,
+            first_chunk=True,
+            exact_startup_bootstrap_padding=False,
+            partial_execution_enabled=False,
+            binarize_gripper=False,
+        )
 
 
 def test_exact_visualization_gripper_binarization_applies_to_last_channel_only() -> None:
@@ -1016,9 +1005,13 @@ def test_action_then_video_skip_video_prediction_runs_action_only(monkeypatch) -
     )
 
     assert calls
-    assert all(action_mode for action_mode, _ in calls)
-    assert all(update_cache == 0 for _, update_cache in calls)
+    assert calls[0] == (False, 2)
+    assert all(action_mode for action_mode, _ in calls[1:])
+    assert calls[0][1] == 2
+    assert all(update_cache == 0 for _, update_cache in calls[1:])
     assert artifacts.predicted_latents.shape[2] == 0
+    assert artifacts.debug["generation_frame_start"] == 1
+    assert artifacts.debug["initial_observed_context_committed"] is True
     assert artifacts.debug["skip_video_prediction"] is True
     assert artifacts.debug["cache_commit_strategy"] == "action_then_video_action_only_no_predicted_cache"
 
@@ -1921,6 +1914,111 @@ def test_current_frame_action_chunk_train_artifacts_use_anchor_frame_only() -> N
     assert torch.all(input_dict["action_dict"]["latent"] == 0)
 
 
+def test_exact_dual_stream_adapter_rejects_invalid_action_context_without_profile() -> None:
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=2,
+        patch_size_w=2,
+    )
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode=ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK,
+        frame_chunk_size=4,
+        action_per_frame=4,
+        attn_window=8,
+    )
+    training_config = TrainingConfig(
+        chunk_size=4,
+        window_size=8,
+        video_num_train_timesteps=10,
+        action_num_train_timesteps=10,
+    )
+    artifacts = prepare_parallel_current_frame_action_chunk_train_artifacts(
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        video_latents=torch.randn(1, 48, 8, 8, 16),
+        actions=torch.randn(1, 32, 30),
+        action_mask=torch.ones(1, 32, 30),
+        text_emb=torch.randn(1, 512, 16),
+        frame_shift=17,
+    )
+    input_dict = dict(artifacts.input_dict)
+    action_dict = dict(input_dict["action_dict"])
+    action_mask = action_dict["actions_mask"].clone()
+    action_mask[:, :, 0, 0, 0] = 0
+    action_dict["actions_mask"] = action_mask
+    input_dict["action_dict"] = action_dict
+
+    def _input_embed(tensor: torch.Tensor, input_type: str) -> torch.Tensor:
+        del input_type
+        return torch.zeros(
+            int(tensor.shape[0]),
+            int(tensor.shape[2]) * int(tensor.shape[3]) * int(tensor.shape[4]),
+            8,
+            dtype=tensor.dtype,
+            device=tensor.device,
+        )
+
+    def _text_hidden(text_emb: torch.Tensor) -> torch.Tensor:
+        return torch.zeros(
+            int(text_emb.shape[0]),
+            int(text_emb.shape[1]),
+            8,
+            dtype=text_emb.dtype,
+            device=text_emb.device,
+        )
+
+    def _time_embed(
+        timesteps: torch.Tensor,
+        height: int,
+        width: int,
+        dtype: torch.dtype,
+        action_mode: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        del height, width, action_mode
+        projected = torch.zeros(
+            int(timesteps.shape[0]),
+            int(timesteps.shape[1]),
+            6,
+            8,
+            dtype=dtype,
+            device=timesteps.device,
+        )
+        return projected, projected
+
+    def _rope(grid_ids: torch.Tensor) -> torch.Tensor:
+        return torch.zeros(
+            int(grid_ids.shape[0]),
+            int(grid_ids.shape[2]),
+            1,
+            dtype=torch.float32,
+            device=grid_ids.device,
+        )
+
+    with pytest.raises(ValueError, match="invalid action tokens"):
+        prepare_exact_dual_stream_train_sequence(
+            input_dict,
+            config=backbone_config,
+            patch_size=(
+                backbone_config.patch_size_t,
+                backbone_config.patch_size_h,
+                backbone_config.patch_size_w,
+            ),
+            model_dtype=torch.float32,
+            input_embed=_input_embed,
+            exact_text_hidden_states=_text_hidden,
+            time_embed=_time_embed,
+            rope=_rope,
+        )
+
+
 def test_parallel_exact_train_artifacts_prefer_full_condition_latents() -> None:
     backbone_config = LingbotCompatibleVideoBackboneConfig(
         hidden_size=32,
@@ -2542,6 +2640,7 @@ def test_parallel_action_conditioned_train_artifacts_accept_contextual_overrides
         loss_frame_start=4,
         loss_frame_end=6,
         frame_shift=9,
+        chunk_origin_frame=4,
     )
 
     assert artifacts.input_dict["chunk_size"] == 2
@@ -2549,6 +2648,7 @@ def test_parallel_action_conditioned_train_artifacts_accept_contextual_overrides
     assert artifacts.input_dict["loss_frame_start"] == 4
     assert artifacts.input_dict["loss_frame_end"] == 6
     assert artifacts.input_dict["frame_shift"] == 9
+    assert artifacts.input_dict["chunk_origin_frame"] == 4
     assert artifacts.input_dict["attention_profile_name"] == "chunked_temporal_exact_joint"
 
 

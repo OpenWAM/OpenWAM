@@ -430,6 +430,12 @@ def prepare_exact_dual_stream_train_sequence(
                 None if base_text_token_count is None else int(base_text_token_count)
             ),
             proprio_context_token_count=proprio_context_token_count,
+            chunk_origin_frame=int(input_dict.get("chunk_origin_frame", 0) or 0),
+            action_context_mask=(
+                action_dict.get("actions_mask")
+                if torch.is_tensor(action_dict.get("actions_mask"))
+                else None
+            ),
             device=hidden_states.device,
             build_dense_masks=hidden_states.device.type != "cuda",
             build_flex_masks=hidden_states.device.type == "cuda",
@@ -443,6 +449,13 @@ def prepare_exact_dual_stream_train_sequence(
             "Exact dual-stream adapter only supports `attention_profile_name` of "
             "`None`, `none`, or a `chunked_temporal_exact*` profile, "
             f"got {attention_profile_name!r}."
+        )
+    elif _action_mask_has_invalid_tokens(action_dict.get("actions_mask")):
+        raise ValueError(
+            "Exact dual-stream training received invalid action tokens without a visibility profile. "
+            "This unsafe legacy mode is deprecated because zero/invalid action tokens could be attended; "
+            "use a `chunked_temporal_exact*` attention profile so `actions_mask` is applied as "
+            "an action-context visibility mask."
         )
 
     return PreparedExactTrainSequence(
@@ -461,6 +474,24 @@ def prepare_exact_dual_stream_train_sequence(
         batch_size=batch_size,
         attention_profile=exact_attention_profile,
     )
+
+
+def _action_mask_has_invalid_tokens(mask: Any) -> bool:
+    if not torch.is_tensor(mask):
+        return False
+    if mask.numel() == 0:
+        return False
+    if mask.ndim == 5:
+        token_valid = mask.float().amax(dim=1) > 0
+    elif mask.ndim == 4:
+        token_valid = mask.float() > 0
+    elif mask.ndim == 3:
+        token_valid = mask.float().amax(dim=-1) > 0
+    elif mask.ndim == 2:
+        token_valid = mask.float() > 0
+    else:
+        raise ValueError(f"Unsupported action visibility mask shape {tuple(mask.shape)}.")
+    return bool((~token_valid).any().item())
 
 
 def prepare_runtime_sequence(

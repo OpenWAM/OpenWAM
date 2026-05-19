@@ -13,6 +13,12 @@ from open_wam.configs.variant_semantics import (
 from open_wam.models.common.flow_matching import FlowMatchScheduler
 from open_wam.models.common.flow_noise_plan import sample_coupled_timestep_values, sample_timestep_values
 from open_wam.models.common.modality_slots import force_clean_noisy_slot, zero_condition_slot, zero_loss_mask_like
+from open_wam.models.common.rollout_startup import (
+    build_strict_action_context_mask,
+    require_strict_startup_generation_frame,
+    resolve_strict_startup_plan,
+    strict_startup_conditioning_frame_index,
+)
 from open_wam.models.common.rollout_history import build_executed_action_history_tensor
 from open_wam.models.common.metric_rollups import add_joint_conditioning_mode_metrics
 from open_wam.models.common.video_geometry import slice_token_grid_frames, video_token_grid_from_latent_shape
@@ -184,23 +190,87 @@ def test_shared_metric_rollup_matches_m1_m5_generalist_shape() -> None:
 
 
 @pytest.mark.unit
-def test_shared_rollout_history_uses_executed_actions_and_bootstrap_zeros() -> None:
+def test_shared_rollout_history_rejects_bootstrap_zero_actions() -> None:
     executed = [
         np.array([1.0, -1.0], dtype=np.float32),
         np.array([0.5, -0.5], dtype=np.float32),
     ]
 
+    with pytest.raises(ValueError, match="deprecated"):
+        build_executed_action_history_tensor(
+            executed,
+            start_frame_group=1,
+            action_per_frame=2,
+            action_dim=2,
+        )
+
     history = build_executed_action_history_tensor(
         executed,
-        start_frame_group=1,
+        start_frame_group=0,
         action_per_frame=2,
         action_dim=2,
     )
-
     assert history is not None
-    assert history.shape == (1, 4, 2)
-    assert torch.equal(history[0, :2], torch.zeros(2, 2))
-    assert torch.equal(history[0, 2:], torch.from_numpy(np.stack(executed, axis=0)))
+    assert torch.equal(history[0], torch.from_numpy(np.stack(executed, axis=0)))
+
+
+@pytest.mark.unit
+def test_shared_strict_startup_plan_matches_rollout_contract() -> None:
+    startup = resolve_strict_startup_plan(
+        step_index=0,
+        current_start_frame=0,
+        frame_chunk_size=4,
+        action_tokens_per_frame=4,
+        action_horizon=16,
+    )
+
+    assert startup.is_startup is True
+    assert startup.video_prefix_frames == 1
+    assert startup.generation_frame_start == 1
+    assert startup.action_prefix_tokens == 4
+    assert startup.current_action_sequence_tokens == 20
+    assert startup.chunk_origin_frame(history_frames=8) == 9
+
+    next_chunk = resolve_strict_startup_plan(
+        step_index=1,
+        current_start_frame=5,
+        frame_chunk_size=4,
+        action_tokens_per_frame=4,
+        action_horizon=16,
+    )
+
+    assert next_chunk.is_startup is False
+    assert next_chunk.video_prefix_frames == 0
+    assert next_chunk.generation_frame_start == 5
+    assert next_chunk.action_prefix_tokens == 0
+    assert next_chunk.current_action_sequence_tokens == 16
+    assert next_chunk.chunk_origin_frame(history_frames=8) == 8
+
+
+@pytest.mark.unit
+def test_shared_strict_action_context_mask_hides_only_startup_prefix() -> None:
+    mask = build_strict_action_context_mask(
+        batch_size=2,
+        history_action_tokens=8,
+        current_action_sequence_tokens=20,
+        invalid_current_prefix_tokens=4,
+        device=torch.device("cpu"),
+    )
+
+    assert mask.shape == (2, 28, 1)
+    assert torch.all(mask[:, :8] == 1.0)
+    assert torch.all(mask[:, 8:12] == 0.0)
+    assert torch.all(mask[:, 12:] == 1.0)
+
+
+@pytest.mark.unit
+def test_shared_strict_startup_generation_frame_guard() -> None:
+    assert strict_startup_conditioning_frame_index(1) == 0
+    assert strict_startup_conditioning_frame_index(5) == 4
+    require_strict_startup_generation_frame(1)
+
+    with pytest.raises(ValueError, match="generation_frame_start < 1"):
+        require_strict_startup_generation_frame(0)
 
 
 @pytest.mark.unit
