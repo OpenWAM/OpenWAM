@@ -156,8 +156,14 @@ def test_chunked_temporal_exact_action_context_mask_hides_startup_action_tokens(
     assert bool(mask[query_action_frame1, kv_video_clean_frame0].item()) is True
     assert bool(mask[query_action_frame1, kv_action_noisy_frame0].item()) is False
     assert bool(mask[query_action_frame1, kv_action_clean_frame0].item()) is False
-    assert bool(mask[kv_action_noisy_frame0].any().item()) is False
+    # Invalid/context action tokens are hidden as keys, but remain safe query
+    # rows so FlexAttention never sees an all-masked query during strict
+    # one-frame startup training.
+    assert bool(mask[kv_action_noisy_frame0].any().item()) is True
+    assert bool(mask[:, kv_action_noisy_frame0].any().item()) is False
     assert bool(mask[:, kv_action_clean_frame0].any().item()) is False
+    assert profile.cross_attention_mask is not None
+    assert bool(profile.cross_attention_mask[kv_action_noisy_frame0].any().item()) is True
     assert profile.metadata["invalid_action_context_tokens"] == 4
 
 

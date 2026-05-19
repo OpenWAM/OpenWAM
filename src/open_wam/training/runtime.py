@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
+import os
 from pathlib import Path
 
 import torch
@@ -89,6 +90,16 @@ def _normalize_optimizer_state_dtypes(optimizer: torch.optim.Optimizer) -> None:
                 continue
             if torch.is_tensor(value) and torch.is_floating_point(value) and value.dtype != state_dtype:
                 state[key] = value.to(dtype=state_dtype)
+
+
+def _local_tensor_view(tensor: torch.Tensor) -> torch.Tensor:
+    try:
+        from torch.distributed.tensor import DTensor
+    except ImportError:
+        DTensor = None
+    if DTensor is not None and isinstance(tensor, DTensor):
+        return tensor.to_local()
+    return tensor
 
 
 class TrainingRuntime:
@@ -367,6 +378,9 @@ class TrainingRuntime:
             grad_norm = self.strategy.clip_grad_norm_(self.model.parameters(), self.config.training.max_grad_norm)
         else:
             grad_norm = None
+        if grad_norm is not None and not torch.isfinite(grad_norm):
+            self._report_nonfinite_gradients()
+            raise RuntimeError(f"Non-finite gradient norm detected before optimizer step: {grad_norm.item()}.")
         _normalize_optimizer_state_dtypes(self.optimizer)
         self.strategy.optimizer_step(self.optimizer)
         self.scheduler.step()
@@ -387,6 +401,39 @@ class TrainingRuntime:
             or self.train_state.optimizer_step % self.config.trainer.log_every_n_steps == 0
         ):
             self.log_sink.log_metrics(step=self.train_state.optimizer_step, phase="train", metrics=metric_payload)
+
+    def _report_nonfinite_gradients(self, *, limit: int = 20) -> None:
+        diagnostics: list[dict[str, object]] = []
+        for name, param in self.model.named_parameters():
+            grad = getattr(param, "grad", None)
+            if grad is None:
+                continue
+            local_grad = _local_tensor_view(grad)
+            finite = torch.isfinite(local_grad)
+            if bool(finite.all().item()):
+                continue
+            nonfinite_count = int((~finite).sum().item())
+            finite_abs = local_grad.detach().float().abs().masked_fill(~finite, 0.0)
+            diagnostics.append(
+                {
+                    "rank": int(getattr(self.strategy, "rank", 0)),
+                    "name": name,
+                    "shape": tuple(int(value) for value in local_grad.shape),
+                    "nonfinite_count": nonfinite_count,
+                    "max_finite_abs": float(finite_abs.max().item()) if finite_abs.numel() else 0.0,
+                }
+            )
+            if len(diagnostics) >= limit:
+                break
+        if self.strategy.is_main_process:
+            self.log_sink.log_event(
+                name="nonfinite_gradients",
+                payload={"diagnostics": diagnostics, "limit": int(limit)},
+            )
+        if os.getenv("OPEN_WAM_DEBUG_NONFINITE_GRADS", "0") == "1":
+            for item in diagnostics:
+                print(f"[open_wam][nonfinite_grad] {item}", flush=True)
+
     def _run_all_validation(self, *, limit_batches: int | None) -> None:
         current_step = int(self.train_state.optimizer_step)
         if getattr(self, "_last_validation_optimizer_step", None) == current_step:

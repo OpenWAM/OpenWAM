@@ -394,6 +394,7 @@ def build_chunked_temporal_exact_attention_profile(
     )
     invalid_action_token_count = 0
     action_context_valid_tokens: tuple[bool, ...] | None = None
+    latent_token_valid = torch.ones_like(latent_seq_id, dtype=torch.bool)
     if action_context_mask is not None:
         action_token_valid = _flatten_action_context_mask(
             action_context_mask,
@@ -405,8 +406,14 @@ def build_chunked_temporal_exact_attention_profile(
         )
         invalid_action_token_count = int((~action_token_valid).sum().item())
         action_context_valid_tokens = tuple(bool(value) for value in action_token_valid.detach().cpu().tolist())
-        action_seq_id = action_seq_id.masked_fill(~action_token_valid, -1)
+    else:
+        action_token_valid = torch.ones_like(action_seq_id, dtype=torch.bool)
     seq_ids = torch.cat([latent_seq_id] * 2 + [action_seq_id] * 2)
+    # Invalid/context action tokens are still real queries: the transformer
+    # must produce finite hidden states for their rows. Hide them only as K/V
+    # context so valid target tokens cannot attend to dummy startup actions.
+    token_valid_as_query = torch.cat([latent_token_valid] * 2 + [torch.ones_like(action_token_valid)] * 2)
+    token_valid_as_kv = torch.cat([latent_token_valid] * 2 + [action_token_valid] * 2)
 
     latent_frame_id = (
         torch.arange(latent_frames // patch_t, device=device)[None, :, None, None]
@@ -451,6 +458,8 @@ def build_chunked_temporal_exact_attention_profile(
         chunk_ids = torch.nn.functional.pad(chunk_ids, (0, padded_length), value=-1)
         noise_ids = torch.nn.functional.pad(noise_ids, (0, padded_length), value=-1)
         stream_ids = torch.nn.functional.pad(stream_ids, (0, padded_length), value=-1)
+        token_valid_as_query = torch.nn.functional.pad(token_valid_as_query, (0, padded_length), value=False)
+        token_valid_as_kv = torch.nn.functional.pad(token_valid_as_kv, (0, padded_length), value=False)
 
     text_seq_ids = torch.arange(batch_size, device=device)[:, None].expand(-1, text_token_count).flatten()
     text_context_positions = torch.arange(text_token_count, device=device)[None, :].expand(batch_size, -1).flatten()
@@ -469,8 +478,10 @@ def build_chunked_temporal_exact_attention_profile(
         q_chunk = chunk_ids[:, None]
         q_block = torch.div(q_frame, 2, rounding_mode="floor")
         kv_block = torch.div(kv_frame, 2, rounding_mode="floor")
+        q_valid = token_valid_as_query[:, None]
+        kv_valid = token_valid_as_kv[None, :]
 
-        same_seq = (q_seq == kv_seq) & (q_seq >= 0) & (kv_seq >= 0)
+        same_seq = (q_seq == kv_seq) & (q_seq >= 0) & (kv_seq >= 0) & q_valid & kv_valid
         history_stream_ok = (
             ((q_stream == kv_stream) | (q_stream == 1))
             if preserve_video_pretrain_history
@@ -544,6 +555,7 @@ def build_chunked_temporal_exact_attention_profile(
             (seq_ids[:, None] == text_seq_ids[None, :])
             & (seq_ids[:, None] >= 0)
             & (text_seq_ids[None, :] >= 0)
+            & token_valid_as_query[:, None]
         )
         if resolved_proprio_context_token_count > 0:
             text_position = text_context_positions[None, :]
@@ -566,6 +578,8 @@ def build_chunked_temporal_exact_attention_profile(
         chunk_ids_flex = chunk_ids.to(device=device, dtype=torch.long)
         noise_ids_flex = noise_ids.to(device=device, dtype=torch.long)
         stream_ids_flex = stream_ids.to(device=device, dtype=torch.long)
+        token_valid_as_query_flex = token_valid_as_query.to(device=device, dtype=torch.bool)
+        token_valid_as_kv_flex = token_valid_as_kv.to(device=device, dtype=torch.bool)
         text_seq_ids_flex = text_seq_ids.to(device=device, dtype=torch.long)
         text_context_positions_flex = text_context_positions.to(device=device, dtype=torch.long)
 
@@ -580,6 +594,8 @@ def build_chunked_temporal_exact_attention_profile(
                 (seq_ids_flex[q_idx] == seq_ids_flex[kv_idx])
                 & (seq_ids_flex[q_idx] >= 0)
                 & (seq_ids_flex[kv_idx] >= 0)
+                & token_valid_as_query_flex[q_idx]
+                & token_valid_as_kv_flex[kv_idx]
             )
             q_block = torch.div(frame_ids_flex[q_idx], 2, rounding_mode="floor")
             kv_block = torch.div(frame_ids_flex[kv_idx], 2, rounding_mode="floor")
@@ -672,6 +688,7 @@ def build_chunked_temporal_exact_attention_profile(
                 (seq_ids_flex[q_idx] == text_seq_ids_flex[kv_idx])
                 & (seq_ids_flex[q_idx] >= 0)
                 & (text_seq_ids_flex[kv_idx] >= 0)
+                & token_valid_as_query_flex[q_idx]
             )
             if resolved_proprio_context_token_count <= 0:
                 return same_text_sample

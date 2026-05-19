@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import os
 from pathlib import Path
 
 SRC_ROOT = Path(__file__).resolve().parents[2]
@@ -25,6 +26,10 @@ def _import_lightning_trainer():
 
 
 def main() -> None:
+    if os.getenv("OPEN_WAM_DETECT_ANOMALY", "0") == "1":
+        import torch
+
+        torch.autograd.set_detect_anomaly(True)
     try:
         overrides = parse_train_cli()
         config = load_training_cli_config(overrides)

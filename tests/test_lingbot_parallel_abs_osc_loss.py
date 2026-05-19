@@ -143,6 +143,42 @@ def test_recovered_osc_loss_has_finite_gradients_for_invalid_early_predictions()
     assert torch.isfinite(pred_flow.grad).all()
 
 
+def test_recovered_osc_loss_has_finite_gradients_for_near_identity_rotation() -> None:
+    decoder = LingbotParallelActionDecoder(
+        hidden_size=8,
+        action_dim=30,
+        action_horizon=4,
+        recovered_osc_loss_weight=0.001,
+        source_action_channel_ids=(0, 1, 2, 3, 4, 5, 6, 7, 8, 29),
+    )
+    source = torch.zeros(1, 4, 10, dtype=torch.float32)
+    source[..., 3] = 1.0
+    source[..., 7] = 1.0
+    source = source.requires_grad_(True)
+    target = source.detach().clone()
+    # Keep the relative rotation very close to identity. The previous
+    # acos-based conversion could hit a non-finite backward derivative here
+    # under bf16/autocast startup training.
+    target[:, 1:, 3] = 0.999999
+    target[:, 1:, 4] = 0.000001
+    target[:, 1:, 6] = -0.000001
+    target[:, 1:, 7] = 0.999999
+    source_mask = torch.ones_like(target)
+
+    _, osc_loss = decoder._source_recovered_osc_metrics(
+        source,
+        target,
+        source_mask,
+        source_mask,
+        zero=source.sum() * 0.0,
+    )
+    osc_loss.backward()
+
+    assert torch.isfinite(osc_loss)
+    assert source.grad is not None
+    assert torch.isfinite(source.grad).all()
+
+
 def test_recovered_osc_loss_includes_rotation_error() -> None:
     decoder = LingbotParallelActionDecoder(
         hidden_size=8,

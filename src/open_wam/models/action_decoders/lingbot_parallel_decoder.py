@@ -365,8 +365,7 @@ class LingbotParallelActionDecoder(ActionDecoder):
 
     def _rotation_matrix_to_axis_angle_stable(self, matrix: torch.Tensor) -> torch.Tensor:
         trace = matrix[..., 0, 0] + matrix[..., 1, 1] + matrix[..., 2, 2]
-        cos_angle = ((trace - 1.0) * 0.5).clamp(min=-1.0 + 1e-5, max=1.0 - 1e-5)
-        angle = torch.acos(cos_angle)
+        cos_angle = ((trace - 1.0) * 0.5).clamp(min=-1.0, max=1.0)
         vee = torch.stack(
             [
                 matrix[..., 2, 1] - matrix[..., 1, 2],
@@ -375,9 +374,10 @@ class LingbotParallelActionDecoder(ActionDecoder):
             ],
             dim=-1,
         )
-        sin_angle = torch.sin(angle)
+        sin_angle = 0.5 * torch.linalg.vector_norm(vee, dim=-1)
+        angle = torch.atan2(sin_angle, cos_angle)
         scale = torch.where(
-            sin_angle.abs() > 1e-4,
+            sin_angle > 1e-4,
             angle / (2.0 * sin_angle.clamp_min(1e-6)),
             torch.full_like(angle, 0.5),
         )
