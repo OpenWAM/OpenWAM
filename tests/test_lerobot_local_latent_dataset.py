@@ -1292,6 +1292,11 @@ def test_hierarchical_fixed_segment_rollout_parity_uses_one_context_frame(tmp_pa
     assert first_target_sample.metadata["latent_loss_frame_end"] == 5
     assert first_target_sample.metadata["history_frames"] == 1
     assert first_target_sample.metadata["observed_frame_ids"] == [0, 1, 2, 3, 4]
+    assert first_target_sample.proprio_context_state is not None
+    torch.testing.assert_close(
+        first_target_sample.proprio_context_state[:, 0],
+        torch.tensor([0.0, 4.0]),
+    )
     assert first_target_sample.video_latents.shape[1] == 5
     prefix_actions = config.data.action_schema.action_horizon // config.data.num_frames
     assert first_target_sample.action_mask[:prefix_actions].sum().item() == 0

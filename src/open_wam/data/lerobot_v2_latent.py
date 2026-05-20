@@ -943,6 +943,7 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
         rows: list[dict[str, Any]],
         observed_frame_ids: list[int],
         chunk_size: int,
+        loss_frame_start: int = 0,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if not observed_frame_ids:
             raise ValueError("Per-chunk proprio context requires non-empty observed_frame_ids.")
@@ -953,7 +954,10 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
         for chunk_index in range(chunk_count):
             local_context_index = max(
                 0,
-                min(len(observed_frame_ids) - 1, chunk_index * resolved_chunk_size - 1),
+                min(
+                    len(observed_frame_ids) - 1,
+                    int(loss_frame_start) + chunk_index * resolved_chunk_size - 1,
+                ),
             )
             frame_index = int(observed_frame_ids[local_context_index])
             state, state_mask = self._extract_state_at_frame(rows=rows, frame_index=frame_index)
@@ -1777,6 +1781,7 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
                 if compact_boundary_padding
                 else max(1, int(self.data_config.sample_construction.chunk_size))
             ),
+            loss_frame_start=loss_frame_start,
         )
         return {
             "video_latents": self._slice_video_latents_with_zero_hold(
