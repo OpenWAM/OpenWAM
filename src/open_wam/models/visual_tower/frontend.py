@@ -141,6 +141,13 @@ class SharedVideoFrontend(nn.Module):
         negative_text_context: torch.Tensor | None,
     ) -> VisualFrontendOutput:
         video_tokens, token_grid = self.tokenize_video_latents(video_latents)
+        metadata = {
+            "backbone_config": serialize_enum_values(asdict(self.config)),
+            "video_frame_mapping": self._video_frame_mapping(
+                canonical_video=canonical_video,
+                video_latents=video_latents,
+            ),
+        }
         return VisualFrontendOutput(
             canonical_video=canonical_video,
             video_latents=video_latents,
@@ -158,9 +165,35 @@ class SharedVideoFrontend(nn.Module):
                 text_context=text_context,
                 negative_text_context=negative_text_context,
                 first_frame_context=video_latents[:, :, :1],
-                metadata={"backbone_config": serialize_enum_values(asdict(self.config))},
+                metadata=metadata,
             ),
         )
+
+    def _video_frame_mapping(
+        self,
+        *,
+        canonical_video: torch.Tensor,
+        video_latents: torch.Tensor,
+    ) -> dict[str, int | str]:
+        raw_frames = int(canonical_video.shape[2])
+        latent_frames = int(video_latents.shape[2])
+        if raw_frames == latent_frames:
+            return {
+                "kind": "identity",
+                "raw_frames": raw_frames,
+                "latent_frames": latent_frames,
+            }
+        if self.reference_assets.has_vae:
+            return {
+                "kind": "wan_temporal_downsample",
+                "raw_frames": raw_frames,
+                "latent_frames": latent_frames,
+            }
+        return {
+            "kind": "unknown_temporal_mapping",
+            "raw_frames": raw_frames,
+            "latent_frames": latent_frames,
+        }
 
     def encode_video(
         self,

@@ -18,6 +18,17 @@ paths:
     robotwin_lerobot_video_root: /path/to/datasets/robotwin/lerobot_member
     # Local CALVIN debug or full split root containing episode_*.npz files.
     calvin_root: /path/to/datasets/calvin/task_D_D
+    # Manifest-first RGB video source bundle for mixed video-only pretraining.
+    # The manifest follows the nmotions mixed-video CSV columns and points at
+    # local video_path entries relative to mixed_video_root or HF shard paths.
+    mixed_video_root: /path/to/datasets/mixed_video
+    mixed_video_manifest: ${paths.datasets.mixed_video_root}/mixed_video_manifest.csv
+    mixed_video_libero_manifest: ${paths.datasets.mixed_video_root}/index/libero_manifest.csv
+    mixed_video_oxe_openvla_manifest: ${paths.datasets.mixed_video_root}/index/oxe-openvla_manifest.csv
+    # Optional root for precomputed mixed-video latent sidecars referenced by
+    # manifest latent_path / video_latents_path columns.
+    mixed_video_latent_root: ${paths.datasets.mixed_video_root}/latents
+    mixed_video_hf_cache: ${paths.datasets.mixed_video_root}/hf_cache
 
   simulators:
     # Local RoboTwin simulator checkout containing envs/ and task_config/.

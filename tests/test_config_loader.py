@@ -24,6 +24,13 @@ from open_wam.configs import (
     JointTimestepCoupling,
     LatentWindowProfile,
     LoopPolicyName,
+    MixedVideoDataConfig,
+    MixedVideoDecodeSizeMode,
+    MixedVideoFrameFitMode,
+    MixedVideoMissingStreamPolicy,
+    MixedVideoRandomMode,
+    MixedVideoSourceFormat,
+    MixedVideoWeightMode,
     MoTPolicyConfig,
     MoTRuntimeMode,
     MoTPreset,
@@ -331,6 +338,272 @@ trainer:
     assert config.data.action_target.joint_position_normalization.lower[0] == -2.0
     assert config.data.action_target.normalization.mode == ActionNormalizationMode.GAUSSIAN
     assert config.data.action_target.normalization.mean[-1] == 0.7
+
+
+def test_mixed_video_config_loads_from_yaml(tmp_path: Path) -> None:
+    config_path = tmp_path / "mixed_video.yaml"
+    manifest_path = tmp_path / "mixed_manifest.csv"
+    config_path.write_text(
+        f"""
+name: mixed_video_smoke
+data:
+  dataset_name: mixed_video
+  dataset_type: mixed_video
+  video_sources:
+    - source_id: bridge_video
+      manifest_csv: {manifest_path}
+      local_root: {tmp_path}
+      latent_root: {tmp_path / "latents"}
+      source_format: rgb_and_latent
+      latent_key: encoded_latents
+      sampling_weight: 2.0
+  camera_names: [observation.images.slot0]
+  latent_camera_names: [observation.images.slot0]
+  canonical_height: 8
+  canonical_width: 8
+  view_layout:
+    - source_name: observation.images.slot0
+      canonical_name: observation.images.slot0
+      top: 0
+      left: 0
+      height: 8
+      width: 8
+  num_frames: 4
+  frame_stride: 1
+  sample_stride: 1
+  train_batch_size: 1
+  val_batch_size: 1
+  decode_size_mode: aspect_ratio_bins
+  decode_resize_bins:
+    - name: square_8
+      aspect_width: 1
+      aspect_height: 1
+      target_height: 8
+      target_width: 8
+      max_pixels: 64
+    - name: four_three
+      aspect_width: 4
+      aspect_height: 3
+      target_height: 12
+      target_width: 16
+  decode_height: 8
+  decode_width: 8
+  decode_fit_mode: letterbox_pad
+  target_observation_fps: 15.0
+  missing_observation_fps: 30.0
+  missing_stream_policy: zero_fill
+  random_mode: within_source
+  weight_mode: proportional_then_manual_scale
+  action_schema:
+    action_dim: 1
+    action_horizon: 0
+    state_dim: 1
+    state_horizon: 0
+  sample_construction:
+    mode: causal_prefix_suffix
+    num_frames: 4
+    action_horizon: 0
+    state_horizon: 0
+    causal_prefix_suffix_buckets:
+      - observed_frames: 1
+        future_frames: 3
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: causal_video_prediction
+action_decoder:
+  name: video_only_decoder
+  action_dim: 1
+  action_horizon: 0
+trainer:
+  accelerator: cpu
+  batch_adapter: views
+""",
+        encoding="utf-8",
+    )
+
+    config = load_experiment_config(config_path)
+
+    assert isinstance(config.data, MixedVideoDataConfig)
+    assert config.data.video_sources[0].source_id == "bridge_video"
+    assert config.data.video_sources[0].source_format == MixedVideoSourceFormat.RGB_AND_LATENT
+    assert config.data.video_sources[0].latent_root == str(tmp_path / "latents")
+    assert config.data.video_sources[0].latent_key == "encoded_latents"
+    assert config.data.video_sources[0].sampling_weight == 2.0
+    assert config.data.decode_size_mode == MixedVideoDecodeSizeMode.ASPECT_RATIO_BINS
+    assert config.data.decode_resize_bins[0].name == "square_8"
+    assert config.data.decode_resize_bins[1].target_width == 16
+    assert config.data.decode_height == 8
+    assert config.data.decode_fit_mode == MixedVideoFrameFitMode.LETTERBOX_PAD
+    assert config.data.target_observation_fps == 15.0
+    assert config.data.missing_observation_fps == 30.0
+    assert config.data.missing_stream_policy == MixedVideoMissingStreamPolicy.ZERO_FILL
+    assert config.data.random_mode == MixedVideoRandomMode.WITHIN_SOURCE
+    assert config.data.weight_mode == MixedVideoWeightMode.PROPORTIONAL_THEN_MANUAL_SCALE
+    assert config.trainer.batch_adapter == BatchAdapterName.VIEWS
+
+
+def test_mixed_video_wan_causal_buckets_reject_zero_future_latents(tmp_path: Path) -> None:
+    config_path = tmp_path / "mixed_video_bad_wan_bucket.yaml"
+    manifest_path = tmp_path / "mixed_manifest.csv"
+    config_path.write_text(
+        f"""
+name: mixed_video_bad_wan_bucket
+data:
+  dataset_name: mixed_video
+  dataset_type: mixed_video
+  video_sources:
+    - source_id: bridge_video
+      manifest_csv: {manifest_path}
+      local_root: {tmp_path}
+  camera_names: [observation.images.slot0]
+  latent_camera_names: [observation.images.slot0]
+  canonical_height: 8
+  canonical_width: 8
+  view_layout:
+    - source_name: observation.images.slot0
+      canonical_name: observation.images.slot0
+      top: 0
+      left: 0
+      height: 8
+      width: 8
+  num_frames: 4
+  train_batch_size: 1
+  val_batch_size: 1
+  action_schema:
+    action_dim: 1
+    action_horizon: 0
+    state_dim: 1
+    state_horizon: 0
+  sample_construction:
+    mode: causal_prefix_suffix
+    num_frames: 4
+    action_horizon: 0
+    state_horizon: 0
+    causal_prefix_suffix_buckets:
+      - observed_frames: 1
+        future_frames: 3
+backbone:
+  implementation: shared_transformer
+  load_wan_vae_frontend: true
+policy_variant:
+  name: causal_video_prediction
+action_decoder:
+  name: video_only_decoder
+  action_dim: 1
+  action_horizon: 0
+trainer:
+  accelerator: cpu
+  batch_adapter: views
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="at least one future latent target"):
+        load_experiment_config(config_path)
+
+
+def test_mixed_video_wan_causal_bucket_fallback_is_validated(tmp_path: Path) -> None:
+    config_path = tmp_path / "mixed_video_bad_implicit_wan_bucket.yaml"
+    manifest_path = tmp_path / "mixed_manifest.csv"
+    config_path.write_text(
+        f"""
+name: mixed_video_bad_implicit_wan_bucket
+data:
+  dataset_name: mixed_video
+  dataset_type: mixed_video
+  video_sources:
+    - source_id: bridge_video
+      manifest_csv: {manifest_path}
+      local_root: {tmp_path}
+  camera_names: [observation.images.slot0]
+  latent_camera_names: [observation.images.slot0]
+  canonical_height: 8
+  canonical_width: 8
+  view_layout:
+    - source_name: observation.images.slot0
+      canonical_name: observation.images.slot0
+      top: 0
+      left: 0
+      height: 8
+      width: 8
+  num_frames: 4
+  train_batch_size: 1
+  val_batch_size: 1
+  action_schema:
+    action_dim: 1
+    action_horizon: 0
+    state_dim: 1
+    state_horizon: 0
+  sample_construction:
+    mode: causal_prefix_suffix
+    num_frames: 4
+    action_horizon: 0
+    state_horizon: 0
+backbone:
+  implementation: shared_transformer
+  load_wan_vae_frontend: true
+policy_variant:
+  name: causal_video_prediction
+action_decoder:
+  name: video_only_decoder
+  action_dim: 1
+  action_horizon: 0
+trainer:
+  accelerator: cpu
+  batch_adapter: views
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="observed_frames=2 future_frames=2"):
+        load_experiment_config(config_path)
+
+
+def test_mixed_video_aspect_ratio_bins_reject_multi_sample_batches(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "mixed_manifest.csv"
+    config_path = tmp_path / "mixed_video_bad_batch.yaml"
+    config_path.write_text(
+        f"""
+name: mixed_video_bad_batch
+data:
+  dataset_name: mixed_video
+  dataset_type: mixed_video
+  video_sources:
+    - source_id: bridge_video
+      manifest_csv: {manifest_path}
+      local_root: {tmp_path}
+  camera_names: [observation.images.slot0]
+  latent_camera_names: [observation.images.slot0]
+  train_batch_size: 2
+  val_batch_size: 1
+  decode_size_mode: aspect_ratio_bins
+  action_schema:
+    action_dim: 1
+    action_horizon: 0
+    state_dim: 1
+    state_horizon: 0
+  sample_construction:
+    mode: causal_prefix_suffix
+    num_frames: 16
+    action_horizon: 0
+    state_horizon: 0
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: causal_video_prediction
+action_decoder:
+  name: video_only_decoder
+  action_dim: 1
+  action_horizon: 0
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="train_batch_size=1"):
+        load_experiment_config(config_path)
 
 
 def test_raw_libero_smoke_variant_yaml_configs_load() -> None:
@@ -1461,4 +1734,32 @@ def test_causal_video_prediction_config_loads() -> None:
         CausalPrefixSuffixBucketConfig(observed_frames=1, future_frames=3),
         CausalPrefixSuffixBucketConfig(observed_frames=2, future_frames=6),
         CausalPrefixSuffixBucketConfig(observed_frames=5, future_frames=10),
+    )
+
+
+def test_causal_video_prediction_mixed_video_config_loads() -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/causal_video_prediction_mixed_video.yaml")
+
+    assert isinstance(config.policy_variant, CausalVideoPredictionPolicyConfig)
+    assert isinstance(config.data, MixedVideoDataConfig)
+    assert config.backbone.load_wan_vae_frontend is True
+    assert config.trainer.batch_adapter == BatchAdapterName.VIEWS
+    assert config.data.sample_construction.causal_prefix_suffix_buckets[0] == CausalPrefixSuffixBucketConfig(
+        observed_frames=1,
+        future_frames=4,
+    )
+
+
+def test_causal_video_prediction_mixed_video_libero_only_config_loads() -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/causal_video_prediction_mixed_video_libero_only.yaml"
+    )
+
+    assert isinstance(config.policy_variant, CausalVideoPredictionPolicyConfig)
+    assert isinstance(config.data, MixedVideoDataConfig)
+    assert config.backbone.load_wan_vae_frontend is True
+    assert config.trainer.batch_adapter == BatchAdapterName.VIEWS
+    assert config.data.sample_construction.causal_prefix_suffix_buckets[0] == CausalPrefixSuffixBucketConfig(
+        observed_frames=1,
+        future_frames=4,
     )

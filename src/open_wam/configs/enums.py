@@ -254,6 +254,35 @@ class ConsortiumMissingChannelPolicy(StrEnum):
     ZERO_FILL = "zero_fill"
 
 
+class MixedVideoMissingStreamPolicy(StrEnum):
+    """What to do when a mixed-video episode lacks a configured output stream."""
+
+    ERROR = "error"
+    ZERO_FILL = "zero_fill"
+
+
+class MixedVideoDecodeSizeMode(StrEnum):
+    """How mixed-video RGB streams are resized before VAE encoding."""
+
+    FIXED = "fixed"
+    ASPECT_RATIO_BINS = "aspect_ratio_bins"
+
+
+class MixedVideoFrameFitMode(StrEnum):
+    """How mixed-video RGB frames are fit into the selected decode canvas."""
+
+    CENTER_CROP = "center_crop"
+    LETTERBOX_PAD = "letterbox_pad"
+
+
+class MixedVideoSourceFormat(StrEnum):
+    """Which media representations one mixed-video source can provide."""
+
+    RGB = "rgb"
+    LATENT = "latent"
+    RGB_AND_LATENT = "rgb_and_latent"
+
+
 class ConsortiumRandomMode(StrEnum):
     """How the train sampler randomizes consortium samples."""
 
@@ -262,8 +291,24 @@ class ConsortiumRandomMode(StrEnum):
     TRAJECTORY_GLOBAL = "trajectory_global"
 
 
+class MixedVideoRandomMode(StrEnum):
+    """How the mixed-video train sampler randomizes source-balanced samples."""
+
+    NONE = "none"
+    WITHIN_SOURCE = "within_source"
+    GLOBAL = "global"
+
+
 class ConsortiumWeightMode(StrEnum):
     """How per-dataset weight overrides affect one training epoch."""
+
+    PROPORTIONAL_TO_SIZE = "proportional_to_size"
+    PROPORTIONAL_THEN_MANUAL_SCALE = "proportional_then_manual_scale"
+    MANUAL_OVERRIDE = "manual_override"
+
+
+class MixedVideoWeightMode(StrEnum):
+    """How mixed-video source weights are converted into one training epoch."""
 
     PROPORTIONAL_TO_SIZE = "proportional_to_size"
     PROPORTIONAL_THEN_MANUAL_SCALE = "proportional_then_manual_scale"

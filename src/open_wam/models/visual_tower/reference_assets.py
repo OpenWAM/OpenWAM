@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
@@ -9,6 +9,7 @@ from diffusers import AutoencoderKLWan
 
 from open_wam.configs import ReferenceAssetsDevicePolicy
 from open_wam.data.raw_video import ViewPlacement
+from open_wam.models.common.video_geometry import WAN_TEMPORAL_CHUNK_SIZE, wan_safe_temporal_frame_count
 from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
 
 from .reference_loader import resolve_pretrained_component_dir
@@ -91,6 +92,10 @@ def _patchify(x: torch.Tensor, patch_size: int | None) -> torch.Tensor:
     )
 
 
+def _wan_safe_frame_count(num_frames: int, *, cache_initialized: bool) -> int:
+    return wan_safe_temporal_frame_count(num_frames, cache_initialized=cache_initialized)
+
+
 class WanVAEStreamingWrapper:
     def __init__(self, vae_model: AutoencoderKLWan) -> None:
         self.vae = vae_model
@@ -112,11 +117,41 @@ class WanVAEStreamingWrapper:
         self.feat_cache = [None] * self.enc_conv_num
 
     def encode_chunk(self, x_chunk: torch.Tensor) -> torch.Tensor:
+        if x_chunk.ndim != 5:
+            raise ValueError(f"Expected Wan VAE input [B,C,T,H,W], got {tuple(x_chunk.shape)}.")
+        cache_initialized = any(value is not None for value in self.feat_cache)
         if hasattr(self.vae.config, "patch_size") and self.vae.config.patch_size is not None:
             x_chunk = _patchify(x_chunk, self.vae.config.patch_size)
-        feat_idx = [0]
-        out = self.encoder(x_chunk, feat_cache=self.feat_cache, feat_idx=feat_idx)
+
+        outputs: list[torch.Tensor] = []
+        chunk_ranges = self._stream_chunk_ranges(int(x_chunk.shape[2]), cache_initialized=cache_initialized)
+        if not chunk_ranges:
+            raise ValueError(
+                "Streaming Wan VAE chunks after cache warmup must contain at least one complete "
+                f"{WAN_TEMPORAL_CHUNK_SIZE}-frame group; got {int(x_chunk.shape[2])} frames."
+            )
+        for start, end in chunk_ranges:
+            feat_idx = [0]
+            outputs.append(self.encoder(x_chunk[:, :, start:end], feat_cache=self.feat_cache, feat_idx=feat_idx))
+        out = torch.cat(outputs, dim=2)
         return self.quant_conv(out)
+
+    @staticmethod
+    def _stream_chunk_ranges(num_frames: int, *, cache_initialized: bool) -> tuple[tuple[int, int], ...]:
+        if num_frames <= 0:
+            raise ValueError(f"Wan VAE encoding requires at least one frame, got num_frames={num_frames}.")
+        consumed_frames = _wan_safe_frame_count(num_frames, cache_initialized=cache_initialized)
+        if cache_initialized:
+            return tuple(
+                (start, start + WAN_TEMPORAL_CHUNK_SIZE)
+                for start in range(0, consumed_frames, WAN_TEMPORAL_CHUNK_SIZE)
+            )
+        ranges = [(0, 1)]
+        ranges.extend(
+            (start, start + WAN_TEMPORAL_CHUNK_SIZE)
+            for start in range(1, consumed_frames, WAN_TEMPORAL_CHUNK_SIZE)
+        )
+        return tuple(ranges)
 
 
 @dataclass
@@ -124,6 +159,7 @@ class LingbotReferenceAssets:
     config: LingbotCompatibleVideoBackboneConfig
     vae: AutoencoderKLWan | None = None
     streaming_vae: WanVAEStreamingWrapper | None = None
+    streaming_vae_by_key: dict[str, WanVAEStreamingWrapper] = field(default_factory=dict)
     text_encoder: Any | None = None
     tokenizer: Any | None = None
 
@@ -200,6 +236,8 @@ class LingbotReferenceAssets:
     def reset_runtime_state(self) -> None:
         if self.streaming_vae is not None:
             self.streaming_vae.clear_cache()
+        for streaming_vae in self.streaming_vae_by_key.values():
+            streaming_vae.clear_cache()
 
     def encode_text(
         self,
@@ -303,9 +341,17 @@ class LingbotReferenceAssets:
                 right.left : right.left + right.width,
             ]
             right_video = self._resize_rgb_chunk(right_video, right.height, right.width)
-            high_latent = self._encode_chunk(high_video, reset_cache=reset_cache)
-            wrist_latent_left = self._encode_chunk(left_video, reset_cache=reset_cache)
-            wrist_latent_right = self._encode_chunk(right_video, reset_cache=reset_cache)
+            high_latent = self._encode_chunk(high_video, reset_cache=reset_cache, cache_key="robotwin:cam_high")
+            wrist_latent_left = self._encode_chunk(
+                left_video,
+                reset_cache=reset_cache,
+                cache_key="robotwin:cam_left_wrist",
+            )
+            wrist_latent_right = self._encode_chunk(
+                right_video,
+                reset_cache=reset_cache,
+                cache_key="robotwin:cam_right_wrist",
+            )
             wrist_latent = torch.cat([wrist_latent_left, wrist_latent_right], dim=-1)
             return torch.cat([high_latent, wrist_latent], dim=-2)
 
@@ -338,7 +384,13 @@ class LingbotReferenceAssets:
 
         return self._encode_chunk(canonical_video, reset_cache=reset_cache)
 
-    def _encode_chunk(self, video: torch.Tensor, *, reset_cache: bool = True) -> torch.Tensor:
+    def _encode_chunk(
+        self,
+        video: torch.Tensor,
+        *,
+        reset_cache: bool = True,
+        cache_key: str | None = None,
+    ) -> torch.Tensor:
         vae_device = next(self.vae.parameters()).device
         vae_dtype = next(self.vae.parameters()).dtype
         # Match Heng's reference path exactly: normalize RGB to [-1, 1] in
@@ -346,13 +398,27 @@ class LingbotReferenceAssets:
         # directly in bf16 perturbs the conditioned first-frame latent enough
         # to break exact rollout parity.
         scaled = (video.to(device=vae_device, dtype=torch.float32) * 2.0 - 1.0).to(dtype=vae_dtype)
+        streaming_vae = self._streaming_vae_for_key(cache_key)
         if reset_cache:
-            self.streaming_vae.clear_cache()
+            streaming_vae.clear_cache()
         with torch.no_grad():
-            enc_out = self.streaming_vae.encode_chunk(scaled)
+            enc_out = streaming_vae.encode_chunk(scaled)
         mu, _ = torch.chunk(enc_out, 2, dim=1)
         normalized = self._normalize_reference_latents(mu)
         return normalized.to(device=video.device)
+
+    def _streaming_vae_for_key(self, cache_key: str | None) -> WanVAEStreamingWrapper:
+        if self.vae is None:
+            raise RuntimeError("Wan VAE assets are not loaded for LingBot reference frontend.")
+        if cache_key is None:
+            if self.streaming_vae is None:
+                self.streaming_vae = WanVAEStreamingWrapper(self.vae)
+            return self.streaming_vae
+        streaming_vae = self.streaming_vae_by_key.get(cache_key)
+        if streaming_vae is None or streaming_vae.vae is not self.vae:
+            streaming_vae = WanVAEStreamingWrapper(self.vae)
+            self.streaming_vae_by_key[cache_key] = streaming_vae
+        return streaming_vae
 
     def _normalize_reference_latents(self, latents: torch.Tensor) -> torch.Tensor:
         latents_mean = torch.tensor(self.vae.config.latents_mean, device=latents.device).view(1, -1, 1, 1, 1)
@@ -367,6 +433,7 @@ class LingbotReferenceAssets:
         if not self._module_matches_runtime(self.vae, device=target_device, dtype=target_dtype):
             self.vae = self.vae.to(device=target_device, dtype=target_dtype)
             self.streaming_vae = WanVAEStreamingWrapper(self.vae)
+            self.streaming_vae_by_key.clear()
 
     def _ensure_text_encoder_runtime_device(self, device: torch.device) -> None:
         if self.text_encoder is None or not isinstance(self.text_encoder, torch.nn.Module):

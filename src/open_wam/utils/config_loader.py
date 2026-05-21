@@ -39,6 +39,9 @@ from open_wam.configs import (
     GeneralistDynamicsMixtureConfig,
     LeRobotConsortiumDataConfig,
     LiberoDataConfig,
+    MixedVideoDataConfig,
+    MixedVideoResizeBinConfig,
+    MixedVideoSourceConfig,
     RobotWinDataConfig,
     SampleConstructionConfig,
     TrainerConfig,
@@ -52,6 +55,7 @@ from open_wam.configs.inference import InferenceConfig
 from open_wam.configs.training import TrainingConfig
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig, normalize_backbone_implementation
 from .local_paths import read_yaml_with_local_paths
+from .video_timeline import VideoFrameMapping
 
 EnumT = TypeVar("EnumT", bound=StrEnum)
 
@@ -184,6 +188,123 @@ def _load_consortium_members(raw_value: Any) -> tuple[ConsortiumMemberConfig, ..
             )
         )
     return tuple(members)
+
+
+def _load_mixed_video_sources(raw_value: Any) -> tuple[MixedVideoSourceConfig, ...]:
+    sources_raw = raw_value or ()
+    if not isinstance(sources_raw, (list, tuple)):
+        raise ValueError("Expected `video_sources` to be a list of source mappings.")
+    sources: list[MixedVideoSourceConfig] = []
+    for item in sources_raw:
+        if not isinstance(item, dict):
+            raise ValueError("Expected each `video_sources` entry to be a mapping.")
+        sources.append(
+            MixedVideoSourceConfig(
+                source_id=str(item["source_id"]),
+                manifest_csv=str(item["manifest_csv"]),
+                repo_id=item.get("repo_id"),
+                local_root=item.get("local_root"),
+                latent_root=item.get("latent_root"),
+                source_format=_coerce_enum(
+                    config_enums.MixedVideoSourceFormat,
+                    item.get("source_format", "rgb"),
+                ),
+                latent_key=str(item.get("latent_key", "video_latents")),
+                enabled=item.get("enabled", True),
+                source_group=item.get("source_group"),
+                include_streams=tuple(item.get("include_streams", ())),
+                channel_mappings=_load_consortium_channel_mappings(item.get("channel_mappings")),
+                sampling_weight=item.get("sampling_weight"),
+            )
+        )
+    return tuple(sources)
+
+
+def _load_mixed_video_resize_bins(raw_value: Any) -> tuple[MixedVideoResizeBinConfig, ...] | None:
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, (list, tuple)):
+        raise ValueError("Expected `decode_resize_bins` to be a list of bin mappings.")
+    bins: list[MixedVideoResizeBinConfig] = []
+    for item in raw_value:
+        if not isinstance(item, dict):
+            raise ValueError("Expected each `decode_resize_bins` entry to be a mapping.")
+        bins.append(
+            MixedVideoResizeBinConfig(
+                name=str(item["name"]),
+                aspect_width=int(item["aspect_width"]),
+                aspect_height=int(item["aspect_height"]),
+                target_height=int(item["target_height"]),
+                target_width=int(item["target_width"]),
+                max_pixels=item.get("max_pixels"),
+            )
+        )
+    return tuple(bins)
+
+
+def _load_mixed_video_fit_mode(
+    data_raw: dict[str, Any],
+    data_defaults: MixedVideoDataConfig,
+) -> config_enums.MixedVideoFrameFitMode:
+    if "decode_fit_mode" in data_raw:
+        return _coerce_enum(config_enums.MixedVideoFrameFitMode, data_raw["decode_fit_mode"])
+    if "decode_center_crop" in data_raw:
+        return (
+            config_enums.MixedVideoFrameFitMode.CENTER_CROP
+            if bool(data_raw["decode_center_crop"])
+            else config_enums.MixedVideoFrameFitMode.LETTERBOX_PAD
+        )
+    return data_defaults.decode_fit_mode
+
+
+def _validate_mixed_video_wan_causal_buckets(
+    *,
+    data_config: DataConfig,
+    backbone_config: SharedVideoTransformerConfig,
+    policy_variant_config: PolicyVariantConfig,
+    trainer_config: TrainerConfig,
+) -> None:
+    if not isinstance(data_config, MixedVideoDataConfig):
+        return
+    if not isinstance(policy_variant_config, CausalVideoPredictionPolicyConfig):
+        return
+    if trainer_config.batch_adapter != config_enums.BatchAdapterName.VIEWS:
+        return
+    if not backbone_config.load_wan_vae_frontend:
+        return
+    sample_construction = data_config.sample_construction
+    if sample_construction.mode != config_enums.WindowSamplingMode.CAUSAL_PREFIX_SUFFIX:
+        return
+
+    invalid_buckets: list[str] = []
+    max_raw_span = int(sample_construction.num_frames)
+    for index, bucket in enumerate(sample_construction.effective_causal_prefix_suffix_buckets):
+        raw_observed_frames = int(bucket.observed_frames)
+        raw_future_frames = int(bucket.future_frames)
+        raw_total_frames = raw_observed_frames + raw_future_frames
+        if raw_total_frames > max_raw_span:
+            invalid_buckets.append(
+                f"#{index} observed_frames={raw_observed_frames} future_frames={raw_future_frames} "
+                f"exceeds sample_construction.num_frames={max_raw_span}"
+            )
+            continue
+        try:
+            VideoFrameMapping.wan_causal_prefix_suffix(
+                raw_observed_frames=raw_observed_frames,
+                raw_future_frames=raw_future_frames,
+            )
+        except ValueError:
+            invalid_buckets.append(
+                f"#{index} observed_frames={raw_observed_frames} future_frames={raw_future_frames} "
+                "maps to zero future Wan latent targets"
+            )
+    if invalid_buckets:
+        formatted = "\n".join(f"- {item}" for item in invalid_buckets)
+        raise ValueError(
+            "Mixed-video causal buckets with the Wan VAE frontend must produce at least one future latent target. "
+            "Wan fresh-clip encoding maps raw frames as frame 0 plus complete 4-frame groups; choose buckets such "
+            f"as observed_frames=1, future_frames=4 instead of 1+3.\n{formatted}"
+        )
 
 
 def _load_visual_readout_config(raw_value: Any) -> VisualReadoutConfig | None:
@@ -1028,6 +1149,11 @@ def load_experiment_config(path: str | Path, *, checkpoint_runtime_compat: bool 
     elif dataset_type == "lerobot_consortium" or dataset_name == "lerobot_consortium":
         data_defaults = LeRobotConsortiumDataConfig()
         data_config_cls = LeRobotConsortiumDataConfig
+    elif dataset_type == "mixed_video" or dataset_name == "mixed_video":
+        data_defaults = MixedVideoDataConfig(
+            video_sources=_load_mixed_video_sources(data_raw.get("video_sources")),
+        )
+        data_config_cls = MixedVideoDataConfig
     elif dataset_name == "calvin" or dataset_type == "calvin_npz":
         data_defaults = CalvinDataConfig()
         data_config_cls = CalvinDataConfig
@@ -1434,6 +1560,42 @@ def load_experiment_config(path: str | Path, *, checkpoint_runtime_compat: bool 
                 root=(data_raw.get("cloud_cache", {}) or {}).get("root", data_defaults.cloud_cache.root),
             ),
         )
+    if data_config_cls is MixedVideoDataConfig:
+        resize_bins = _load_mixed_video_resize_bins(data_raw.get("decode_resize_bins"))
+        common_data_kwargs.update(
+            video_sources=_load_mixed_video_sources(data_raw.get("video_sources")),
+            decode_size_mode=_coerce_enum(
+                config_enums.MixedVideoDecodeSizeMode,
+                data_raw.get("decode_size_mode", data_defaults.decode_size_mode),
+            ),
+            decode_resize_bins=data_defaults.decode_resize_bins if resize_bins is None else resize_bins,
+            decode_height=int(data_raw.get("decode_height", data_defaults.decode_height)),
+            decode_width=int(data_raw.get("decode_width", data_defaults.decode_width)),
+            decode_fit_mode=_load_mixed_video_fit_mode(data_raw, data_defaults),
+            decode_center_crop=bool(data_raw.get("decode_center_crop", data_defaults.decode_center_crop)),
+            decode_allow_upscale=bool(data_raw.get("decode_allow_upscale", data_defaults.decode_allow_upscale)),
+            target_observation_fps=(
+                None
+                if data_raw.get("target_observation_fps", data_defaults.target_observation_fps) is None
+                else float(data_raw.get("target_observation_fps", data_defaults.target_observation_fps))
+            ),
+            missing_observation_fps=float(
+                data_raw.get("missing_observation_fps", data_defaults.missing_observation_fps)
+            ),
+            missing_stream_policy=_coerce_enum(
+                config_enums.MixedVideoMissingStreamPolicy,
+                data_raw.get("missing_stream_policy", data_defaults.missing_stream_policy),
+            ),
+            random_mode=_coerce_enum(
+                config_enums.MixedVideoRandomMode,
+                data_raw.get("random_mode", data_defaults.random_mode),
+            ),
+            weight_mode=_coerce_enum(
+                config_enums.MixedVideoWeightMode,
+                data_raw.get("weight_mode", data_defaults.weight_mode),
+            ),
+            sampling_seed=data_raw.get("sampling_seed", data_defaults.sampling_seed),
+        )
 
     # `data_config_cls` may be a benchmark-specific preset or the generic
     # fallback. In both cases, the instantiated object carries the exact view
@@ -1749,6 +1911,12 @@ def load_experiment_config(path: str | Path, *, checkpoint_runtime_compat: bool 
         run_name=trainer_raw.get("run_name"),
     )
     validation_config = _load_validation_config(raw.get("validation", {}))
+    _validate_mixed_video_wan_causal_buckets(
+        data_config=data_config,
+        backbone_config=backbone_config,
+        policy_variant_config=policy_variant_config,
+        trainer_config=trainer_config,
+    )
 
     if data_config.sample_construction.target_alignment == config_enums.SampleTargetAlignment.NEXT_AFTER_CONTEXT:
         strict_chunk_sources = {

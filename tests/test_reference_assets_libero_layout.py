@@ -6,8 +6,44 @@ from types import MethodType
 import torch
 
 from open_wam.data.raw_video import ViewPlacement
+from open_wam.models.common.video_geometry import (
+    wan_raw_frame_count_to_latent_count,
+    wan_safe_temporal_frame_count,
+)
 from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
-from open_wam.models.visual_tower.reference_assets import LingbotReferenceAssets
+from open_wam.models.visual_tower.reference_assets import (
+    LingbotReferenceAssets,
+    WanVAEStreamingWrapper,
+)
+
+
+class _RecordingWanEncoder(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[torch.Tensor] = []
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        *,
+        feat_cache: list[torch.Tensor | None],
+        feat_idx: list[int],
+    ) -> torch.Tensor:
+        self.calls.append(x.detach().clone())
+        feat_cache[feat_idx[0]] = x[:, :, -1:].detach().clone()
+        feat_idx[0] += 1
+        return x
+
+
+def _recording_wan_wrapper() -> tuple[WanVAEStreamingWrapper, _RecordingWanEncoder]:
+    encoder = _RecordingWanEncoder()
+    vae = SimpleNamespace(
+        config=SimpleNamespace(patch_size=None),
+        encoder=encoder,
+        quant_conv=torch.nn.Identity(),
+        _cached_conv_counts={"encoder": 1},
+    )
+    return WanVAEStreamingWrapper(vae), encoder
 
 
 def test_reference_video_scaling_matches_float32_then_cast_behavior() -> None:
@@ -29,6 +65,42 @@ def test_reference_video_scaling_matches_float32_then_cast_behavior() -> None:
     assert not torch.equal(scaled, wrong)
 
 
+def test_wan_temporal_counts_match_diffusers_chunking() -> None:
+    fresh_counts = [wan_safe_temporal_frame_count(frames, cache_initialized=False) for frames in range(1, 19)]
+    streaming_counts = [wan_safe_temporal_frame_count(frames, cache_initialized=True) for frames in range(1, 10)]
+    latent_counts = [wan_raw_frame_count_to_latent_count(frames) for frames in range(1, 19)]
+
+    assert fresh_counts == [1, 1, 1, 1, 5, 5, 5, 5, 9, 9, 9, 9, 13, 13, 13, 13, 17, 17]
+    assert streaming_counts == [0, 0, 0, 4, 4, 4, 4, 8, 8]
+    assert latent_counts == [1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5]
+
+
+def test_wan_streaming_wrapper_matches_fresh_diffusers_windows() -> None:
+    wrapper, encoder = _recording_wan_wrapper()
+    video = torch.arange(16, dtype=torch.float32).view(1, 1, 16, 1, 1).expand(1, 3, 16, 1, 1)
+
+    _ = wrapper.encode_chunk(video)
+    encoded_input = torch.cat(encoder.calls, dim=2)
+
+    assert [call.shape[2] for call in encoder.calls] == [1, 4, 4, 4]
+    assert encoded_input.shape[2] == 13
+    assert torch.equal(encoded_input, video[:, :, :13])
+
+
+def test_wan_streaming_wrapper_uses_only_complete_existing_cache_groups() -> None:
+    wrapper, encoder = _recording_wan_wrapper()
+    wrapper.encode_chunk(torch.zeros(1, 3, 1, 1, 1))
+    encoder.calls.clear()
+    video = torch.arange(7, dtype=torch.float32).view(1, 1, 7, 1, 1).expand(1, 3, 7, 1, 1)
+
+    _ = wrapper.encode_chunk(video)
+    encoded_input = torch.cat(encoder.calls, dim=2)
+
+    assert [call.shape[2] for call in encoder.calls] == [4]
+    assert encoded_input.shape[2] == 4
+    assert torch.equal(encoded_input, video[:, :, :4])
+
+
 def test_libero_layout_encodes_views_separately_and_concatenates_latents() -> None:
     assets = LingbotReferenceAssets(
         config=LingbotCompatibleVideoBackboneConfig(),
@@ -36,8 +108,14 @@ def test_libero_layout_encodes_views_separately_and_concatenates_latents() -> No
         streaming_vae=object(),
     )
 
-    def fake_encode_chunk(self, video: torch.Tensor, *, reset_cache: bool = True) -> torch.Tensor:
-        del reset_cache
+    def fake_encode_chunk(
+        self,
+        video: torch.Tensor,
+        *,
+        reset_cache: bool = True,
+        cache_key: str | None = None,
+    ) -> torch.Tensor:
+        del reset_cache, cache_key
         batch_size, _, num_frames, height, width = video.shape
         means = video.mean(dim=(1, 2, 3, 4), keepdim=True)
         return means.expand(batch_size, 48, num_frames, height // 16, width // 16).clone()
@@ -64,6 +142,65 @@ def test_libero_layout_encodes_views_separately_and_concatenates_latents() -> No
     assert encoded.shape == (1, 48, 2, 8, 16)
     assert torch.allclose(encoded[..., :8], torch.ones_like(encoded[..., :8]))
     assert torch.allclose(encoded[..., 8:], torch.full_like(encoded[..., 8:], 3.0))
+
+
+def test_robotwin_layout_uses_independent_streaming_cache_keys() -> None:
+    assets = LingbotReferenceAssets(
+        config=LingbotCompatibleVideoBackboneConfig(),
+        vae=object(),
+        streaming_vae=object(),
+    )
+    calls: list[tuple[str | None, bool]] = []
+
+    def fake_encode_chunk(
+        self,
+        video: torch.Tensor,
+        *,
+        reset_cache: bool = True,
+        cache_key: str | None = None,
+    ) -> torch.Tensor:
+        calls.append((cache_key, reset_cache))
+        batch_size, _, num_frames, height, width = video.shape
+        means = video.mean(dim=(1, 2, 3, 4), keepdim=True)
+        return means.expand(batch_size, 48, num_frames, height // 16, width // 16).clone()
+
+    assets._encode_chunk = MethodType(fake_encode_chunk, assets)  # type: ignore[method-assign]
+
+    canonical_video = torch.zeros(1, 3, 2, 384, 320, dtype=torch.float32)
+    canonical_video[:, :, :, :256, :] = 1.0
+    canonical_video[:, :, :, 256:, :160] = 2.0
+    canonical_video[:, :, :, 256:, 160:] = 4.0
+    placements = (
+        ViewPlacement(source_name="cam_high", canonical_name="cam_high", top=0, left=0, height=256, width=320),
+        ViewPlacement(
+            source_name="cam_left_wrist",
+            canonical_name="cam_left_wrist",
+            top=256,
+            left=0,
+            height=128,
+            width=160,
+        ),
+        ViewPlacement(
+            source_name="cam_right_wrist",
+            canonical_name="cam_right_wrist",
+            top=256,
+            left=160,
+            height=128,
+            width=160,
+        ),
+    )
+
+    encoded = assets.encode_video(canonical_video, placements=placements, reset_cache=False)
+
+    assert calls == [
+        ("robotwin:cam_high", False),
+        ("robotwin:cam_left_wrist", False),
+        ("robotwin:cam_right_wrist", False),
+    ]
+    assert encoded.shape == (1, 48, 2, 24, 20)
+    assert torch.allclose(encoded[..., :16, :], torch.ones_like(encoded[..., :16, :]))
+    assert torch.allclose(encoded[..., 16:, :10], torch.full_like(encoded[..., 16:, :10], 2.0))
+    assert torch.allclose(encoded[..., 16:, 10:], torch.full_like(encoded[..., 16:, 10:], 4.0))
 
 
 def test_reference_latent_normalization_uses_float32_stats_before_casting_back() -> None:
@@ -104,8 +241,14 @@ def test_encode_video_moves_reference_vae_to_runtime_device() -> None:
     def fake_ensure_vae_runtime_device(self, device: torch.device) -> None:
         recorded_devices.append(torch.device(device))
 
-    def fake_encode_chunk(self, video: torch.Tensor, *, reset_cache: bool = True) -> torch.Tensor:
-        del reset_cache
+    def fake_encode_chunk(
+        self,
+        video: torch.Tensor,
+        *,
+        reset_cache: bool = True,
+        cache_key: str | None = None,
+    ) -> torch.Tensor:
+        del reset_cache, cache_key
         batch_size, _, num_frames, height, width = video.shape
         return torch.zeros(batch_size, 48, num_frames, height // 16, width // 16, dtype=video.dtype, device=video.device)
 

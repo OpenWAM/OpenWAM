@@ -84,8 +84,9 @@ class ViewBatchAdapter:
         # policy-batch extras additive for the rare cases where a view batch
         # subtype chooses to include them.
         video_latents = getattr(batch, "video_latents", None)
+        views = repeat_invalid_tail_view_frames(batch.views, batch.metadata)
         return PreparedTrainInput(
-            views=batch.views,
+            views=views,
             policy_batch=build_policy_train_batch(
                 actions=batch.actions,
                 action_mask=batch.action_mask,
@@ -97,6 +98,52 @@ class ViewBatchAdapter:
                 video_latents=video_latents,
             ),
         )
+
+
+def repeat_invalid_tail_view_frames(
+    views: Mapping[str, torch.Tensor],
+    metadata: tuple[dict[str, object], ...],
+) -> dict[str, torch.Tensor]:
+    """Replace invalid padded RGB tail frames with the last valid frame.
+
+    Datasets still emit fixed-length view tensors for collation. Before online
+    VAE encoding, zero-padded tails would become real visual evidence. Repeating
+    the last valid frame keeps the tensor length fixed while preserving the
+    semantic padding contract consumed later by policy masks.
+    """
+
+    valid_counts = _valid_video_frame_counts(metadata)
+    if valid_counts is None:
+        return dict(views)
+    repaired_views: dict[str, torch.Tensor] = {}
+    for name, value in views.items():
+        if value.ndim < 2 or value.shape[0] != len(valid_counts):
+            repaired_views[name] = value
+            continue
+        num_frames = int(value.shape[1])
+        needs_repair = any(0 < valid_count < num_frames for valid_count in valid_counts)
+        if not needs_repair:
+            repaired_views[name] = value
+            continue
+        repaired = value.clone()
+        for batch_index, valid_count in enumerate(valid_counts):
+            if valid_count <= 0 or valid_count >= num_frames:
+                continue
+            tail = repaired[batch_index, valid_count - 1 : valid_count]
+            repaired[batch_index, valid_count:] = tail.expand_as(repaired[batch_index, valid_count:])
+        repaired_views[name] = repaired
+    return repaired_views
+
+
+def _valid_video_frame_counts(metadata: tuple[dict[str, object], ...]) -> tuple[int, ...] | None:
+    if not metadata:
+        return None
+    counts: list[int] = []
+    for sample_metadata in metadata:
+        if "valid_video_frames" not in sample_metadata:
+            return None
+        counts.append(max(0, int(sample_metadata["valid_video_frames"])))
+    return tuple(counts)
 
 
 class LatentBatchAdapter:

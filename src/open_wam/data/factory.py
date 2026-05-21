@@ -13,6 +13,7 @@ from .lerobot_consortium import build_lerobot_consortium_train_val_datasets
 from .libero_hdf5 import LiberoOfflineWindowDataset, build_libero_offline_train_val_episode_split
 from .lerobot_v2 import LeRobotV2WindowDataset, build_lerobot_train_val_episode_split
 from .lerobot_video import build_lerobot_v2_video_train_val_datasets
+from .mixed_video import build_mixed_video_train_val_datasets
 from .synthetic import SyntheticWindowDataset
 
 
@@ -108,3 +109,4 @@ register_dataset_builder("libero_hdf5", _build_libero_hdf5_datasets)
 register_dataset_builder("lerobot_consortium", build_lerobot_consortium_train_val_datasets)
 register_dataset_builder("calvin_npz", build_calvin_npz_train_val_datasets)
 register_dataset_builder("lerobot_v2_video", build_lerobot_v2_video_train_val_datasets)
+register_dataset_builder("mixed_video", build_mixed_video_train_val_datasets)

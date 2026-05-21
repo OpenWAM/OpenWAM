@@ -934,84 +934,8 @@ def _encode_video_window_offline(
 ) -> torch.Tensor:
     if not assets.has_vae:
         raise RuntimeError("Wan VAE assets are not loaded for offline video encoding.")
-    assets._ensure_vae_runtime_device(device)
-
-    if assets._matches_robotwin_layout(placements, canonical_video):
-        top = placements[0]
-        left = placements[1]
-        right = placements[2]
-        high_video = canonical_video[
-            :,
-            :,
-            :,
-            top.top : top.top + top.height,
-            top.left : top.left + top.width,
-        ]
-        high_video = assets._resize_rgb_chunk(high_video, top.height, top.width)
-        left_video = canonical_video[
-            :,
-            :,
-            :,
-            left.top : left.top + left.height,
-            left.left : left.left + left.width,
-        ]
-        left_video = assets._resize_rgb_chunk(left_video, left.height, left.width)
-        right_video = canonical_video[
-            :,
-            :,
-            :,
-            right.top : right.top + right.height,
-            right.left : right.left + right.width,
-        ]
-        right_video = assets._resize_rgb_chunk(right_video, right.height, right.width)
-        high_latent = _offline_encode_chunk(assets, high_video)
-        wrist_latent_left = _offline_encode_chunk(assets, left_video)
-        wrist_latent_right = _offline_encode_chunk(assets, right_video)
-        wrist_latent = torch.cat([wrist_latent_left, wrist_latent_right], dim=-1)
-        return torch.cat([high_latent, wrist_latent], dim=-2)
-
-    if assets._matches_libero_layout(placements, canonical_video):
-        agentview = placements[0]
-        wrist = placements[1]
-        agentview_video = canonical_video[
-            :,
-            :,
-            :,
-            agentview.top : agentview.top + agentview.height,
-            agentview.left : agentview.left + agentview.width,
-        ]
-        agentview_video = assets._resize_rgb_chunk(agentview_video, agentview.height, agentview.width)
-        wrist_video = canonical_video[
-            :,
-            :,
-            :,
-            wrist.top : wrist.top + wrist.height,
-            wrist.left : wrist.left + wrist.width,
-        ]
-        wrist_video = assets._resize_rgb_chunk(wrist_video, wrist.height, wrist.width)
-        batch_size = canonical_video.shape[0]
-        encoded = _offline_encode_chunk(assets, torch.cat([agentview_video, wrist_video], dim=0))
-        agentview_latent, wrist_latent = encoded.split(batch_size, dim=0)
-        return torch.cat([agentview_latent, wrist_latent], dim=-1)
-
-    return _offline_encode_chunk(assets, canonical_video)
-
-
-def _offline_encode_chunk(assets, video: torch.Tensor) -> torch.Tensor:
-    vae = assets.vae
-    vae_device = next(vae.parameters()).device
-    vae_dtype = next(vae.parameters()).dtype
-    scaled = (video.to(device=vae_device, dtype=torch.float32) * 2.0 - 1.0).to(dtype=vae_dtype)
-    with torch.no_grad():
-        posterior = vae.encode(scaled, return_dict=False)[0]
-    if hasattr(posterior, "mode"):
-        latents = posterior.mode()
-    elif hasattr(posterior, "mean"):
-        latents = posterior.mean
-    else:
-        raise TypeError(f"Unsupported VAE encode output type: {type(posterior)!r}")
-    normalized = assets._normalize_reference_latents(latents)
-    return normalized.to(device=video.device)
+    del device
+    return assets.encode_video(canonical_video, placements=placements, reset_cache=True)
 
 
 

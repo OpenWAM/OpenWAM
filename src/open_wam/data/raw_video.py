@@ -7,6 +7,7 @@ import torch
 import torch.nn.functional as F
 
 from open_wam.configs.data import DataConfig, ViewLayoutConfig
+from open_wam.configs.enums import MixedVideoDecodeSizeMode
 
 
 @dataclass(frozen=True)
@@ -206,6 +207,48 @@ class RobotWinCanonicalVideoPreprocessor(ConfiguredCanonicalVideoPreprocessor):
         )
 
 
+class AdaptiveSingleViewCanonicalVideoPreprocessor(ConfiguredCanonicalVideoPreprocessor):
+    """Use the already-decoded single view as the canonical VAE input canvas."""
+
+    def __init__(self, *, source_name: str, canonical_name: str) -> None:
+        super().__init__(
+            placements=(ViewPlacement(source_name, canonical_name, top=0, left=0, height=1, width=1),),
+            canvas_height=1,
+            canvas_width=1,
+        )
+        self.source_name = source_name
+        self.canonical_name = canonical_name
+
+    def forward(self, views: Mapping[str, torch.Tensor]) -> CanonicalVideoBatch:
+        resolved_key = self._resolve_view_key(views, self.source_name)
+        if resolved_key is None:
+            raise KeyError(f"Missing camera view for adaptive canonical layout: {self.source_name!r}")
+        canonical = self._to_bcthw(views[resolved_key])
+        height = int(canonical.shape[-2])
+        width = int(canonical.shape[-1])
+        placement = ViewPlacement(
+            self.source_name,
+            self.canonical_name,
+            top=0,
+            left=0,
+            height=height,
+            width=width,
+        )
+        return CanonicalVideoBatch(
+            video=canonical,
+            placements=(placement,),
+            metadata={
+                "canvas_height": height,
+                "canvas_width": width,
+                "num_frames": int(canonical.shape[2]),
+                "view_names": (self.source_name,),
+                "canonical_view_names": (self.canonical_name,),
+                "resolved_view_names": (resolved_key,),
+                "adaptive_canvas": True,
+            },
+        )
+
+
 def build_canonical_video_preprocessor(data_config: DataConfig) -> ConfiguredCanonicalVideoPreprocessor:
     """Construct the canonicalizer from the experiment data config.
 
@@ -213,6 +256,18 @@ def build_canonical_video_preprocessor(data_config: DataConfig) -> ConfiguredCan
     dataset-specific camera names and placements into the fixed RGB canvas seen
     by the shared video backbone.
     """
+
+    if getattr(data_config, "decode_size_mode", None) == MixedVideoDecodeSizeMode.ASPECT_RATIO_BINS:
+        if len(data_config.view_layout) != 1:
+            raise ValueError(
+                "`decode_size_mode=aspect_ratio_bins` currently supports one mixed-video view per sample. "
+                f"Got {len(data_config.view_layout)} view placements."
+            )
+        view = data_config.view_layout[0]
+        return AdaptiveSingleViewCanonicalVideoPreprocessor(
+            source_name=view.source_name,
+            canonical_name=view.canonical_name,
+        )
 
     placements = tuple(_view_layout_to_placement(view) for view in data_config.view_layout)
     return ConfiguredCanonicalVideoPreprocessor(

@@ -1252,6 +1252,40 @@ def test_exact_history_action_history_skips_invalid_startup_rows() -> None:
     np.testing.assert_allclose(action_history, np.ones((4, 7), dtype=np.float32))
 
 
+def test_exact_history_records_feed_wan_aligned_streaming_chunks() -> None:
+    from open_wam.models.common.video_geometry import wan_safe_temporal_frame_count
+
+    sandbox = _load_sandbox_module()
+    pending_history = []
+    state = sandbox.ExactFallbackHistoryState(
+        policy=sandbox.FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY,
+    )
+    current_obs, frame_obs_sequence, frame_actions = _build_exact_history_frame_payload()
+
+    decision = sandbox._maybe_append_exact_history_record(
+        pending_history=pending_history,
+        state=state,
+        absolute_frame_index=4,
+        current_obs=current_obs,
+        frame_obs_sequence=frame_obs_sequence,
+        frame_actions=frame_actions,
+        frame_action_sources=["history_replan"] * 4,
+        frame_chunk_size=4,
+    )
+
+    assert decision == "included"
+    assert len(pending_history) == 1
+    assert len(pending_history[0]["obs_sequence"]) == 4
+    assert pending_history[0]["raw_actions"].shape == (4, 7)
+    assert wan_safe_temporal_frame_count(4, cache_initialized=True) == 4
+
+    views = sandbox.exact_sandbox._history_records_to_obs_sequence(pending_history)
+    raw_count = sandbox.exact_sandbox._count_history_raw_observations(pending_history)
+
+    assert len(views) == 4
+    assert raw_count == 4
+
+
 def test_exact_future_result_drops_partial_stale_chunks() -> None:
     sandbox = _load_sandbox_module()
     frame_cls = sandbox.exact_sandbox.PlannedFrameAction

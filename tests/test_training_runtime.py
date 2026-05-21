@@ -14,7 +14,7 @@ import yaml
 
 from open_wam.configs import AuxiliaryValidationTaskConfig, TrainingConfig
 from open_wam.configs.enums import CheckpointMode
-from open_wam.data import LatentWAMSample, collate_latent_wam_samples, move_latent_wam_batch_to_device
+from open_wam.data import LatentWAMSample, WAMBatch, collate_latent_wam_samples, move_latent_wam_batch_to_device
 from open_wam.models.policy_variants import PolicyTrainBatch
 from open_wam.training import TrainingRuntime
 from open_wam.training.checkpoints import CheckpointManager
@@ -25,7 +25,7 @@ from open_wam.training.runtime import (
     _resolve_auxiliary_validation_source,
 )
 from open_wam.training.state import TrainState
-from open_wam.training.step_executor import LatentBatchAdapter, resolve_sample_loss_weight
+from open_wam.training.step_executor import LatentBatchAdapter, ViewBatchAdapter, resolve_sample_loss_weight
 from open_wam.utils.config_loader import load_experiment_config
 
 
@@ -68,6 +68,29 @@ def test_normalize_optimizer_state_handles_wrapped_parameter_keys() -> None:
     assert optimizer.state[parameter]["step"].dtype == torch.float32
     assert optimizer.state[parameter]["exp_avg"].dtype == torch.bfloat16
     assert optimizer.state[parameter]["exp_avg_sq"].dtype == torch.bfloat16
+
+
+def test_view_batch_adapter_repeats_invalid_video_tail_before_online_frontend() -> None:
+    view = torch.arange(2 * 6, dtype=torch.float32).view(2, 6, 1, 1, 1)
+    batch = WAMBatch(
+        views={"cam": view},
+        actions=torch.zeros(2, 0, 1),
+        action_mask=torch.zeros(2, 0, 1),
+        state=torch.zeros(2, 0, 1),
+        state_mask=torch.zeros(2, 0, 1),
+        metadata=(
+            {"valid_video_frames": 4},
+            {"valid_video_frames": 6},
+        ),
+    )
+
+    prepared = ViewBatchAdapter().prepare(batch)
+    repaired = prepared.views["cam"]
+
+    assert torch.equal(repaired[0, :4], view[0, :4])
+    assert torch.equal(repaired[0, 4:], view[0, 3:4].expand_as(repaired[0, 4:]))
+    assert torch.equal(repaired[1], view[1])
+    assert torch.equal(batch.views["cam"], view)
 
 
 def test_train_micro_step_normalizes_optimizer_state_after_gradients() -> None:

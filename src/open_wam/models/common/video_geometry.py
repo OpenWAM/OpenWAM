@@ -3,6 +3,12 @@ from __future__ import annotations
 import torch
 
 from open_wam.models.video_backbone.contracts import TokenGridMetadata
+from open_wam.utils.wan_geometry import (
+    WAN_TEMPORAL_CHUNK_SIZE,
+    wan_fully_observed_latent_count,
+    wan_raw_frame_count_to_latent_count,
+    wan_safe_temporal_frame_count,
+)
 
 
 def video_token_grid_from_latent_shape(

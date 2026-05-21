@@ -197,6 +197,24 @@ class _FakePipeline:
         )
 
 
+class _FakeReferenceAssets:
+    has_vae = True
+
+    def __init__(self, output: torch.Tensor) -> None:
+        self.output = output
+        self.calls: list[dict[str, object]] = []
+
+    def encode_video(self, canonical_video, *, placements=None, reset_cache: bool = True):
+        self.calls.append(
+            {
+                "shape": tuple(canonical_video.shape),
+                "placements": placements,
+                "reset_cache": reset_cache,
+            }
+        )
+        return self.output
+
+
 def test_build_executed_action_history_rejects_bootstrap_zero_actions() -> None:
     executed = [
         np.array([2.0, -2.0, 0.5], dtype=np.float32),
@@ -342,3 +360,31 @@ def test_prepare_mot_visual_outputs_streaming_path_uses_run_frontend() -> None:
 
     assert pipeline.calls == ["canonicalize", "run_frontend:False", "from_latents:(1, 48, 1, 2, 2)"]
     assert outputs.frontend.video_latents.shape[2] == 1
+
+
+def test_standalone_offline_visualization_encoding_uses_shared_reference_assets() -> None:
+    canonical_video = torch.zeros(1, 3, 3, 8, 8)
+    encoded = torch.ones(1, 48, 1, 2, 2)
+    placements = ("placement",)
+
+    for helper in (
+        mot_viz._encode_video_window_offline,
+        mot_viz.video_viz._encode_video_window_offline,
+    ):
+        assets = _FakeReferenceAssets(encoded)
+
+        result = helper(
+            assets,
+            canonical_video=canonical_video,
+            placements=placements,
+            device=torch.device("cpu"),
+        )
+
+        assert result is encoded
+        assert assets.calls == [
+            {
+                "shape": tuple(canonical_video.shape),
+                "placements": placements,
+                "reset_cache": True,
+            }
+        ]
