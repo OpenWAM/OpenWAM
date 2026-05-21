@@ -30,6 +30,59 @@ def _load_sandbox_module():
     return module
 
 
+def _load_module_from_path(module_path: Path, module_name: str):
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Failed to load module spec for {module_path}.")
+    module = importlib.util.module_from_spec(spec)
+    previous_module = sys.modules.get(spec.name)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if previous_module is None:
+            sys.modules.pop(spec.name, None)
+        else:
+            sys.modules[spec.name] = previous_module
+    return module
+
+
+def test_legacy_helper_imports_prefer_deprecated_scripts_when_scripts_path_preexists() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    scripts_root = str(repo_root / "scripts")
+    deprecated_root = repo_root / "scripts" / "deprecated"
+    deprecated_root_str = str(deprecated_root)
+    imported_module_names = ("run_libero_exact_visualization", "libero_exact_realtime_common")
+    missing = object()
+    previous_path = list(sys.path)
+    previous_modules = {name: sys.modules.get(name, missing) for name in imported_module_names}
+    try:
+        for name in imported_module_names:
+            sys.modules.pop(name, None)
+        sys.path[:] = [
+            scripts_root,
+            deprecated_root_str,
+            *[entry for entry in previous_path if entry not in {scripts_root, deprecated_root_str}],
+        ]
+
+        sandbox = _load_sandbox_module()
+        abs_joint = _load_module_from_path(
+            repo_root / "scripts" / "run_libero_abs_joint_rollout_debug.py",
+            f"run_libero_abs_joint_rollout_debug_test_{uuid.uuid4().hex}",
+        )
+
+        assert Path(sandbox.exact_viz.__file__).resolve().parent == deprecated_root
+        assert Path(sandbox.exact_sandbox.exact_viz.__file__).resolve().parent == deprecated_root
+        assert Path(abs_joint.exact_viz.__file__).resolve().parent == deprecated_root
+    finally:
+        sys.path[:] = previous_path
+        for name, module in previous_modules.items():
+            if module is missing:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+
 def _build_exact_history_frame_payload() -> tuple[dict[str, np.ndarray], list[dict[str, np.ndarray]], list[np.ndarray]]:
     current_obs = {"image": np.full((1, 1, 3), 9, dtype=np.uint8)}
     frame_obs_sequence = [
@@ -43,12 +96,18 @@ def _build_exact_history_frame_payload() -> tuple[dict[str, np.ndarray], list[di
     return current_obs, frame_obs_sequence, frame_actions
 
 
-def _strict_split_cache_mot_config(sandbox, *, action_horizon: int = 16, frame_chunk_size: int = 4):
+def _strict_split_cache_mot_config(
+    sandbox,
+    *,
+    action_horizon: int = 16,
+    frame_chunk_size: int = 4,
+    current_block_coupling: str = "video_then_action",
+):
     return SimpleNamespace(
         policy_variant=SimpleNamespace(
             name="mot",
             runtime_mode="non_joint_two_stream",
-            current_block_coupling="video_then_action",
+            current_block_coupling=str(current_block_coupling),
         ),
         data=SimpleNamespace(
             sample_construction=SimpleNamespace(
@@ -2119,7 +2178,61 @@ def test_strict_split_cache_mot_startup_env_init_uses_single_frame() -> None:
     sandbox = _load_sandbox_module()
     config = _strict_split_cache_mot_config(sandbox)
 
+    assert sandbox._uses_strict_mot_split_cache_startup(config)
+    assert sandbox._uses_strict_mot_one_frame_history(config)
     assert sandbox._sequence_startup_env_init_frames(config, raw_window_frames=13) == 1
+    assert sandbox._sequence_model_obs_window_frames(config, raw_window_frames=13) == 1
+
+
+def test_strict_native_packed_mot_startup_env_init_uses_single_frame() -> None:
+    sandbox = _load_sandbox_module()
+    config = _strict_split_cache_mot_config(sandbox, current_block_coupling="joint")
+    initial_obs_window = [_minimal_obs_record(float(index)) for index in range(13)]
+
+    assert not sandbox._uses_strict_mot_split_cache_startup(config)
+    assert sandbox._uses_strict_mot_one_frame_history(config)
+    assert sandbox._sequence_startup_env_init_frames(config, raw_window_frames=13) == 1
+    assert sandbox._sequence_model_obs_window_frames(config, raw_window_frames=13) == 1
+
+    startup_window = sandbox._sequence_startup_model_obs_window(config, initial_obs_window)
+    assert len(startup_window) == 1
+    np.testing.assert_allclose(startup_window[0]["robot0_eef_pos"], initial_obs_window[-1]["robot0_eef_pos"])
+
+
+def test_strict_split_cache_mot_model_history_keeps_latest_observation() -> None:
+    sandbox = _load_sandbox_module()
+    config = _strict_split_cache_mot_config(sandbox, action_horizon=16, frame_chunk_size=4)
+    model_obs_window = sandbox._sequence_startup_model_obs_window(
+        config,
+        [_minimal_obs_record(float(index)) for index in range(4)],
+    )
+    state = sandbox.SequenceFallbackHistoryState(
+        policy=sandbox.FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY,
+    )
+
+    assert len(model_obs_window) == 1
+    assert (
+        sandbox._maybe_append_sequence_model_observation(
+            model_obs_window=model_obs_window,
+            state=state,
+            current_obs=_minimal_obs_record(4.0),
+            action_source="startup_plan",
+            clean_actions_required=16,
+            max_window_frames=sandbox._sequence_model_obs_window_frames(config, raw_window_frames=13),
+        )
+        == "included"
+    )
+
+    assert len(model_obs_window) == 1
+    np.testing.assert_allclose(model_obs_window[0]["robot0_eef_pos"], [4.0, 4.0, 4.0])
+    condition_frame_start = sandbox._mot_condition_frame_start_for_generation(
+        config=config,
+        generation_action_start=16,
+    )
+    generation_frame_start = condition_frame_start + len(model_obs_window)
+    assert condition_frame_start == 4
+    assert generation_frame_start == 5
+    assert sandbox._frame_index_to_action_start(generation_frame_start, 4) == 16
 
 
 def test_strict_split_cache_mot_realtime_init_calls_env_with_single_frame(monkeypatch) -> None:

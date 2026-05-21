@@ -17,7 +17,7 @@ import re
 import subprocess
 import sys
 import time
-from typing import Any
+from typing import Any, Mapping
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +64,8 @@ class DatasetEpisode:
     replay_status: str | None = None
     episode_id: int | None = None
     init_id: int | None = None
+    resolved_init_state_index: int | None = None
+    init_id_source: str = "task_local_rank"
 
     def __post_init__(self) -> None:
         if self.episode_id is None:
@@ -158,6 +160,8 @@ class EvalCase:
     summary_glob: str
     command_template: list[str]
     preflight_problem: str | None = None
+    resolved_init_state_index: int | None = None
+    init_id_source: str = "task_local_rank"
 
 
 METHODS: tuple[MethodSpec, ...] = (
@@ -167,6 +171,7 @@ METHODS: tuple[MethodSpec, ...] = (
         config=DEFAULT_CONFIG,
         reference_assets_device_policy="runtime",
         async_low_watermark=8,
+        extra_args=("--merge-checkpoint-runtime-config",),
     ),
     MethodSpec(
         key="m2",
@@ -174,6 +179,7 @@ METHODS: tuple[MethodSpec, ...] = (
         config="configs/experiments/parallel_stream_libero_lingbot_joint_denoise_heng_compatible.yaml",
         reference_assets_device_policy="runtime",
         async_low_watermark=12,
+        extra_args=("--merge-checkpoint-runtime-config",),
     ),
     MethodSpec(
         key="m5",
@@ -429,6 +435,14 @@ def main() -> None:
         ),
     )
     parser.add_argument("--write-fallback-timeline-video", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--allow-deprecated-libero-config",
+        action="store_true",
+        help=(
+            "Forward the historical-config opt-in to child realtime rollouts. Without this, deprecated "
+            "LIBERO M1/M5 configs fail before rollout."
+        ),
+    )
     parser.add_argument("--collect", type=Path, default=None, help="Collect an existing run directory and exit.")
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument(
@@ -521,7 +535,11 @@ def main() -> None:
             task_text_to_task_id=task_id_map,
             task_text_to_task_name=task_name_map,
         )
-        dataset_episodes = attach_replay_status_to_dataset_episodes(dataset_episodes, replay_status_records)
+        dataset_episodes = attach_replay_status_to_dataset_episodes(
+            dataset_episodes,
+            replay_status_records,
+            use_resolved_init_ids=args.sample_mode != "full",
+        )
         if args.sample_mode == "full":
             full_init_counts_by_task_id = resolve_libero_init_counts(
                 benchmark=args.benchmark,
@@ -853,23 +871,40 @@ def build_dataset_episodes(
     return episodes
 
 
+def _replay_resolved_init_state_index(record: Any) -> int | None:
+    raw = getattr(record, "raw", None)
+    if isinstance(raw, Mapping):
+        value = raw.get("resolved_init_state_index")
+        if value is not None:
+            return int(value)
+    value = getattr(record, "resolved_init_state_index", None)
+    return None if value is None else int(value)
+
+
 def attach_replay_status_to_dataset_episodes(
     episodes: list[DatasetEpisode],
     replay_status_records: dict[int, Any],
+    *,
+    use_resolved_init_ids: bool = False,
 ) -> list[DatasetEpisode]:
     if not replay_status_records:
         return list(episodes)
-    return [
-        replace(
-            episode,
-            replay_status=(
-                replay_status_records[episode.dataset_episode_index].replay_status
-                if episode.dataset_episode_index in replay_status_records
-                else None
-            ),
-        )
-        for episode in episodes
-    ]
+    attached: list[DatasetEpisode] = []
+    for episode in episodes:
+        record = replay_status_records.get(episode.dataset_episode_index)
+        if record is None:
+            attached.append(replace(episode, replay_status=None))
+            continue
+        resolved_init_state_index = _replay_resolved_init_state_index(record)
+        updates: dict[str, Any] = {
+            "replay_status": record.replay_status,
+            "resolved_init_state_index": resolved_init_state_index,
+        }
+        if use_resolved_init_ids and resolved_init_state_index is not None:
+            updates["init_id"] = resolved_init_state_index
+            updates["init_id_source"] = "replay_status.resolved_init_state_index"
+        attached.append(replace(episode, **updates))
+    return attached
 
 
 def filter_dataset_episodes_by_replay_status(
@@ -1508,6 +1543,8 @@ def build_cases(
             command.extend(scheduler_flags)
             if args.write_fallback_timeline_video:
                 command.append("--write-fallback-timeline-video")
+            if getattr(args, "allow_deprecated_libero_config", False):
+                command.append("--allow-deprecated-libero-config")
             cases.append(
                 EvalCase(
                     index=len(cases),
@@ -1545,6 +1582,8 @@ def build_cases(
                     ),
                     command_template=command,
                     preflight_problem=checkpoint_spec.preflight_problem,
+                    resolved_init_state_index=episode.resolved_init_state_index,
+                    init_id_source=episode.init_id_source,
                 )
             )
     return cases
@@ -2194,6 +2233,8 @@ def build_paired_rows(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "task_text": case["task_text"],
                 "init_id": case.get("init_id", case["episode_idx"]),
                 "episode_idx": case["episode_idx"],
+                "resolved_init_state_index": case.get("resolved_init_state_index"),
+                "init_id_source": case.get("init_id_source", "task_local_rank"),
                 "replay_status": case.get("replay_status"),
             },
         )
@@ -2219,6 +2260,8 @@ def write_results_csv(path: Path, summary: dict[str, Any]) -> None:
         "task_id",
         "init_id",
         "episode_idx",
+        "resolved_init_state_index",
+        "init_id_source",
         "replay_status",
         "task_text",
     ]

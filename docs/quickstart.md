@@ -91,8 +91,9 @@ OPEN_WAM_LOCAL_PATHS=/absolute/path/to/local_paths.yaml uv run open-wam-eval ...
 
 ## LIBERO Local Rollout Setup
 
-To actually run a LIBERO realtime rollout (e.g.
-`scripts/run_libero_realtime_ablation.py`) on your own machine, the
+To actually run a LIBERO realtime rollout (for example through
+`scripts/run_libero_realtime_sandbox.py` or
+`scripts/run_libero_sampled_eval.py`) on your own machine, the
 `[libero]` extra is necessary but not sufficient — it pins the LIBERO-side
 runtime deps (`gym==0.25.2`, `robosuite==1.4.0`, `bddl==1.0.1`, etc.) but
 not the model stack (Torch, diffusers, transformers, ...). Three additional

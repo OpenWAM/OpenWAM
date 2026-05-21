@@ -354,16 +354,19 @@ metadata path:
 uv run python -m open_wam.training.train --cfg configs/experiments/contract_only_libero_local.yaml
 ```
 
-Run the Heng-compatible exact LIBERO side-by-side render with a fixed seed:
+Run a current Heng-compatible exact LIBERO realtime rollout with a fixed seed:
 
 ```bash
-uv run python scripts/run_libero_exact_visualization.py \
+uv run python scripts/run_libero_realtime_sandbox.py \
   --cfg configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml \
+  --checkpoint <CURRENT_METHOD1_CHECKPOINT>/model_state.pt \
+  --merge-checkpoint-runtime-config \
   --benchmark libero_10 \
   --task-id 8 \
   --episode-idx 0 \
-  --max-chunks 6 \
+  --max-actions 96 \
   --seed 1234 \
+  --artifact-profile standard \
   --output-dir outputs/libero_exact_visualization_chunks6_seeded
 
 uv run python scripts/run_heng_libero_exact_visualization.py \
@@ -378,7 +381,9 @@ uv run python scripts/run_heng_libero_exact_visualization.py \
 ```
 
 Replace `<LINGBOT_VA_BASE_ROOT>` with the local LingBot/Wan base model root and
-`<METHOD1_STEP400_CHECKPOINT>` with the local checkpoint-step directory.
+`<CURRENT_METHOD1_CHECKPOINT>` / `<METHOD1_STEP400_CHECKPOINT>` with local
+checkpoint-step directories. The legacy Open-WAM visualization wrappers now live
+under `scripts/deprecated/` and require an explicit historical-debug opt-in.
 
 Run eval:
 

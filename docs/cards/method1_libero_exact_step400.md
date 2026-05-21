@@ -39,21 +39,33 @@ checksum, and license are still pending.
 ## Local Rollout
 
 For a verified causal-realtime rollout against an already-trained checkpoint,
-use the ablation wrapper. The `live_async_history_first_startup_hold` profile
-combined with `--replan-low-watermark-actions auto` resolves K=8 for Method 1
-(verified in PR #58: K=4/10/12 fail; only K=8 succeeds at 2 Hz):
+use the realtime sandbox directly. The current path loads the checkpoint
+`resolved_config.yaml` before the LIBERO paradigm guard, so trained exact
+checkpoints carry their strict rollout/proprio runtime settings into eval:
 
 ```bash
-uv run --extra sim python scripts/run_libero_realtime_ablation.py \
-  --cases method1_exact_step400:configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml:/absolute/path/to/checkpoint_step_400 \
-  --profiles live_async_history_first_startup_hold \
-  --target-action-hz 2 --max-actions 520 \
+uv run --extra sim python scripts/run_libero_realtime_sandbox.py \
+  --cfg configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml \
+  --checkpoint /absolute/path/to/checkpoint_step_400/model_state.pt \
+  --merge-checkpoint-runtime-config \
+  --benchmark libero_10 \
+  --task-id 0 \
+  --episode-idx 0 \
+  --eval-profile libero_10hz_full \
+  --target-action-hz 2 \
+  --max-actions 520 \
+  --realtime-scheduler-profile async_history_first \
   --fallback-history-policy freeze_until_clean_chunk \
-  --replan-low-watermark-actions auto \
+  --startup-open-loop-chunks 1 \
+  --replan-low-watermark-actions 8 \
   --output-dir outputs/libero_method1_recommended \
   --suffix recommended_live_causal \
   --runtime-device cuda:0 --frontend-device cuda:0 --decode-device cuda:0
 ```
+
+The old realtime-ablation wrapper is retained under `scripts/deprecated/` for
+historical PR #58 reproduction and requires the explicit deprecated-config
+opt-in.
 
 Local rollout prerequisites — see
 [docs/quickstart.md](../quickstart.md) "LIBERO Local Rollout Setup":

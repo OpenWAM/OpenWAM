@@ -33,6 +33,7 @@ from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
 from open_wam.runtime import build_result_envelope  # noqa: E402
 from open_wam.utils import load_experiment_config, seed_everywhere  # noqa: E402
+from open_wam.utils.libero_paradigm import require_current_libero_policy_paradigm  # noqa: E402
 
 
 def main() -> None:
@@ -48,6 +49,14 @@ def main() -> None:
     parser.add_argument("--max-batches", type=int, default=1)
     parser.add_argument("--rollout-steps", type=int, default=3)
     parser.add_argument("--require-gpu", action="store_true")
+    parser.add_argument(
+        "--allow-deprecated-libero-config",
+        action="store_true",
+        help=(
+            "Allow historical LIBERO M1/M5 configs that do not match the current strict fixed-128, "
+            "one-frame, proprio-conditioned training/eval paradigm."
+        ),
+    )
     parser.add_argument("--output-json", type=str, default=None)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
@@ -68,6 +77,12 @@ def main() -> None:
     if not config_path.is_absolute():
         config_path = (REPO_ROOT / config_path).resolve()
     config = load_experiment_config(config_path)
+    require_current_libero_policy_paradigm(
+        config,
+        config_path=config_path,
+        source="run_benchmark_pipeline_sanity.py",
+        allow_deprecated=bool(args.allow_deprecated_libero_config),
+    )
     mapping_report = validate_action_mapping_preflight(
         config.data.action_mapping,
         action_schema_dim=config.data.action_schema.action_dim,

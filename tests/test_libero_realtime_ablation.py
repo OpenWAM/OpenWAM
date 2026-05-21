@@ -10,7 +10,7 @@ import pytest
 
 
 def _load_ablation_module():
-    module_path = Path(__file__).resolve().parents[1] / "scripts" / "run_libero_realtime_ablation.py"
+    module_path = Path(__file__).resolve().parents[1] / "scripts" / "deprecated" / "run_libero_realtime_ablation.py"
     module_name = f"run_libero_realtime_ablation_test_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(module_name, module_path)
     if spec is None or spec.loader is None:

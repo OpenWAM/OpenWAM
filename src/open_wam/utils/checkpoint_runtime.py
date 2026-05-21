@@ -85,6 +85,38 @@ def merge_checkpoint_runtime_config(
     )
 
 
+def _path_or_none(path: str | Path | None) -> Path | None:
+    if path is None:
+        return None
+    return Path(str(path)).expanduser()
+
+
+def _apply_portable_checkpoint_backbone_paths(
+    config: ExperimentConfig,
+    *,
+    base_config: ExperimentConfig,
+    checkpoint_dir: Path,
+) -> ExperimentConfig:
+    backbone_updates: dict[str, str] = {}
+
+    base_pretrained = _path_or_none(base_config.backbone.pretrained_model_name_or_path)
+    checkpoint_pretrained = _path_or_none(config.backbone.pretrained_model_name_or_path)
+    if (
+        base_pretrained is not None
+        and base_pretrained.exists()
+        and (checkpoint_pretrained is None or not checkpoint_pretrained.exists())
+    ):
+        backbone_updates["pretrained_model_name_or_path"] = str(base_pretrained.resolve())
+
+    checkpoint_transformer = checkpoint_dir / "transformer"
+    if checkpoint_transformer.is_dir() and any(checkpoint_transformer.iterdir()):
+        backbone_updates["transformer_subdir"] = str(checkpoint_transformer.resolve())
+
+    if not backbone_updates:
+        return config
+    return replace(config, backbone=replace(config.backbone, **backbone_updates))
+
+
 def merge_runtime_config_from_checkpoint(
     base_config: ExperimentConfig,
     checkpoint_path: str | Path | None,
@@ -92,5 +124,11 @@ def merge_runtime_config_from_checkpoint(
     resolved_config_path = find_checkpoint_resolved_config(checkpoint_path)
     if resolved_config_path is None:
         return base_config, None
-    checkpoint_config = load_experiment_config(resolved_config_path)
-    return merge_checkpoint_runtime_config(base_config, checkpoint_config), resolved_config_path
+    checkpoint_config = load_experiment_config(resolved_config_path, checkpoint_runtime_compat=True)
+    merged_config = merge_checkpoint_runtime_config(base_config, checkpoint_config)
+    merged_config = _apply_portable_checkpoint_backbone_paths(
+        merged_config,
+        base_config=base_config,
+        checkpoint_dir=resolved_config_path.parent,
+    )
+    return merged_config, resolved_config_path

@@ -15,8 +15,18 @@ import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
+DEPRECATED_SCRIPT_ROOT = REPO_ROOT / "scripts" / "deprecated"
+
+
+def _prepend_import_path(path: Path) -> None:
+    path_str = str(path)
+    sys.path[:] = [entry for entry in sys.path if entry != path_str]
+    sys.path.insert(0, path_str)
+
+
+_prepend_import_path(SRC_ROOT)
+_prepend_import_path(REPO_ROOT / "scripts")
+_prepend_import_path(DEPRECATED_SCRIPT_ROOT)
 
 import run_libero_exact_visualization as exact_viz  # noqa: E402
 from open_wam.configs import ActionTargetRepresentation, LiberoAbsoluteJointExecutionMode  # noqa: E402

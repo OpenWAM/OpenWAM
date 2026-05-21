@@ -368,9 +368,9 @@ def test_raw_libero_smoke_variant_yaml_configs_load() -> None:
 
 
 def test_latent_libero_local_training_yaml_configs_load() -> None:
-    mot = load_experiment_config(REPO_ROOT / "configs/experiments/mot_libero_latent_local.yaml")
-    mot_idm = load_experiment_config(REPO_ROOT / "configs/experiments/mot_libero_latent_local_idm.yaml")
-    mot_joint = load_experiment_config(REPO_ROOT / "configs/experiments/mot_libero_latent_local_joint.yaml")
+    mot = load_experiment_config(REPO_ROOT / "configs/experiments/deprecated/mot_libero_latent_local.yaml")
+    mot_idm = load_experiment_config(REPO_ROOT / "configs/experiments/deprecated/mot_libero_latent_local_idm.yaml")
+    mot_joint = load_experiment_config(REPO_ROOT / "configs/experiments/deprecated/mot_libero_latent_local_joint.yaml")
     post_latent = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_libero_latent_local.yaml")
     post_decoded = load_experiment_config(REPO_ROOT / "configs/experiments/post_decoded_libero_latent_local.yaml")
     post_latent_video_conditioned = load_experiment_config(
@@ -706,7 +706,9 @@ def test_local_libero_yaml_config_loads() -> None:
 
 
 def test_exact_local_libero_yaml_config_loads() -> None:
-    exact_libero = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_local.yaml")
+    exact_libero = load_experiment_config(
+        REPO_ROOT / "configs/experiments/deprecated/parallel_stream_libero_lingbot_exact_local.yaml"
+    )
     assert isinstance(exact_libero.policy_variant, ParallelStreamPolicyConfig)
     assert exact_libero.policy_variant.runtime_mode == "lingbot_exact"
     assert exact_libero.policy_variant.reference_profile == "libero"

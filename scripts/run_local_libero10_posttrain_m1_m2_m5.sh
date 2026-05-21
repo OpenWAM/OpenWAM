@@ -553,7 +553,7 @@ case_command() {
     launcher="scripts/run_parallel_stream_posttrain_libero.sh"
     config_name="parallel_stream_libero_lingbot_joint_denoise_heng_compatible"
   elif [[ "${case_key}" == "m5" ]]; then
-    launcher="scripts/run_mot_full_segment_nonjoint_libero.sh"
+    launcher="scripts/run_mot_nonjoint_posttrain_libero.sh"
     config_name="mot_libero_latent_local_full_segment_non_joint_action_only"
   else
     log "unknown case: ${case_key}"

@@ -52,7 +52,7 @@ from open_wam.models.visual_tower.contracts import VisualFrontendOutput, VisualS
 from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore
 from open_wam.models.visual_tower.sequence_adapters import prepare_exact_dual_stream_train_sequence
 from open_wam.models.visual_tower.tower import VisualTower
-from scripts.run_libero_exact_visualization import (
+from scripts.deprecated.run_libero_exact_visualization import (
     _binarize_raw_gripper_actions,
     _build_warmup_raw_actions,
     _extract_libero_eef_axisangle_gripper_state,

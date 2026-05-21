@@ -16,10 +16,12 @@ LOG_RANK=${LOG_RANK:-"0"}
 # remain available only through an explicit CONFIG_NAME=... opt-in.
 CONFIG_NAME=${CONFIG_NAME:-"mot_libero_latent_local_joint_heng_compatible"}
 open_wam_reject_cli_config_override_args "$@"
+open_wam_reject_deprecated_libero_policy_config "${CONFIG_NAME}"
+CONFIG_NAME_FOR_TRAIN="$(open_wam_resolve_libero_policy_config_name "${CONFIG_NAME}")"
 OPEN_WAM_FIXED128_ROLLOUT_CONTEXT_ARGS=()
-open_wam_append_fixed128_rollout_context_args OPEN_WAM_FIXED128_ROLLOUT_CONTEXT_ARGS "${CONFIG_NAME}"
+open_wam_append_fixed128_rollout_context_args OPEN_WAM_FIXED128_ROLLOUT_CONTEXT_ARGS "${CONFIG_NAME_FOR_TRAIN}"
 OPEN_WAM_TRAIN_ARGS=(
-  --config-name "${CONFIG_NAME}"
+  --config-name "${CONFIG_NAME_FOR_TRAIN}"
   --devices "${NGPU}"
   "${OPEN_WAM_FIXED128_ROLLOUT_CONTEXT_ARGS[@]}"
   "$@"

@@ -100,6 +100,65 @@ def test_filter_dataset_episodes_by_replay_status_filters_distribution_candidate
     assert report.filtered_episodes == 1
 
 
+def test_attach_replay_status_can_use_resolved_init_state_for_dataset_eval() -> None:
+    episode = sampled_eval.DatasetEpisode(
+        dataset_episode_index=12,
+        task_text="task",
+        task_index=0,
+        task_id=3,
+        task_name=None,
+        episode_idx=4,
+        length=100,
+    )
+    records = {
+        12: SimpleNamespace(
+            replay_status="success",
+            raw={"resolved_init_state_index": 19},
+        )
+    }
+
+    [attached] = sampled_eval.attach_replay_status_to_dataset_episodes(
+        [episode],
+        records,
+        use_resolved_init_ids=True,
+    )
+
+    assert attached.episode_idx == 4
+    assert attached.init_id == 19
+    assert attached.resolved_init_state_index == 19
+    assert attached.init_id_source == "replay_status.resolved_init_state_index"
+    assert attached.replay_status == "success"
+
+
+def test_attach_replay_status_keeps_task_local_init_for_full_grid() -> None:
+    episode = sampled_eval.DatasetEpisode(
+        dataset_episode_index=12,
+        task_text="task",
+        task_index=0,
+        task_id=3,
+        task_name=None,
+        episode_idx=4,
+        length=100,
+    )
+    records = {
+        12: SimpleNamespace(
+            replay_status="success",
+            raw={"resolved_init_state_index": 19},
+        )
+    }
+
+    [attached] = sampled_eval.attach_replay_status_to_dataset_episodes(
+        [episode],
+        records,
+        use_resolved_init_ids=False,
+    )
+
+    assert attached.episode_idx == 4
+    assert attached.init_id == 4
+    assert attached.resolved_init_state_index == 19
+    assert attached.init_id_source == "task_local_rank"
+
+
 def test_filter_dataset_episodes_by_replay_status_rejects_failed_task_axis_request() -> None:
     episodes = [
         sampled_eval.DatasetEpisode(
@@ -665,6 +724,60 @@ def test_build_cases_uses_method_config_scheduler_and_device_templates() -> None
     assert cases[0].episode_id == 12
     assert cases[0].init_id == 4
     assert cases[0].replay_status == "success"
+
+
+def test_build_cases_merges_checkpoint_runtime_config_for_exact_methods() -> None:
+    args = argparse.Namespace(
+        python=Path("/venv/bin/python"),
+        run_label="matrix",
+        eval_profile="libero_10hz_full",
+        max_actions=None,
+        env_horizon=None,
+        target_action_hz=None,
+        video_fps=None,
+        rollout_artifact_profile="lean",
+        deadline_miss_policy=None,
+        write_fallback_timeline_video=False,
+    )
+    episode = sampled_eval.DatasetEpisode(
+        dataset_episode_index=12,
+        task_text="task",
+        task_index=0,
+        task_id=3,
+        task_name=None,
+        episode_idx=4,
+        length=100,
+        replay_status="success",
+    )
+    scheduler = next(scheduler for scheduler in sampled_eval.SCHEDULERS if scheduler.key == "blocking_control")
+    specs = [
+        sampled_eval.CheckpointSpec(
+            key=f"{method.key}_posttrained",
+            label=f"{method.label} posttrained",
+            checkpoint="/tmp/model_state.pt",
+            method_key=method.key,
+            method_label=method.label,
+            config=method.config,
+            reference_assets_device_policy=method.reference_assets_device_policy,
+            extra_args=method.extra_args,
+        )
+        for method in sampled_eval.METHODS
+    ]
+
+    cases = sampled_eval.build_cases(
+        [episode],
+        checkpoint_specs=specs,
+        output_root=Path("/tmp/out"),
+        benchmark="libero_10",
+        seed=0,
+        scheduler_spec=scheduler,
+        args=args,
+    )
+
+    command_by_method = {case.method_key: case.command_template for case in cases}
+    assert "--merge-checkpoint-runtime-config" in command_by_method["m1"]
+    assert "--merge-checkpoint-runtime-config" in command_by_method["m2"]
+    assert "--merge-checkpoint-runtime-config" not in command_by_method["m5"]
 
 
 def test_acquire_case_claim_is_exclusive_and_stale_recoverable(tmp_path: Path) -> None:

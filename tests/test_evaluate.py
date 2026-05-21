@@ -142,7 +142,7 @@ def test_mot_libero_eval_configs_resolve_model_checkpoints(
     config_name: str,
     checkpoint_suffix: str,
 ) -> None:
-    config_path = REPO_ROOT / "configs/evals" / config_name
+    config_path = REPO_ROOT / "configs/evals/deprecated" / config_name
     request = resolve_evaluation_request(config_path)
 
     assert request.experiment_config_path == config_path.resolve()

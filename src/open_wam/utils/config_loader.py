@@ -60,6 +60,49 @@ def _read_yaml(path: str | Path) -> dict[str, Any]:
     return read_yaml_with_local_paths(path)
 
 
+def _raw_enum_value(value: Any) -> Any:
+    if isinstance(value, StrEnum):
+        return value.value
+    return value
+
+
+def _apply_checkpoint_runtime_compat(raw: dict[str, Any]) -> dict[str, Any]:
+    """Drop stale resolved-config fields that are invalid in authored YAML."""
+
+    normalized = dict(raw)
+    data_raw = normalized.get("data")
+    if not isinstance(data_raw, dict):
+        return normalized
+    data_raw = dict(data_raw)
+    normalized["data"] = data_raw
+
+    sample_construction_raw = data_raw.get("sample_construction")
+    if not isinstance(sample_construction_raw, dict):
+        return normalized
+    sample_construction_raw = dict(sample_construction_raw)
+    data_raw["sample_construction"] = sample_construction_raw
+
+    target_alignment = _raw_enum_value(sample_construction_raw.get("target_alignment"))
+    if target_alignment == config_enums.SampleTargetAlignment.NEXT_AFTER_CONTEXT.value:
+        for key in ("context_prefix_policy", "context_prefix_frames"):
+            sample_construction_raw.pop(key, None)
+
+    mode = _raw_enum_value(sample_construction_raw.get("mode"))
+    if mode == config_enums.WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT.value:
+        for key in (
+            "segment_min_frames",
+            "segment_max_frames",
+            "randomize_segment_length",
+            "randomize_segment_start",
+            "require_full_segment",
+            "sample_weight_mode",
+            "sample_weight_length_power",
+        ):
+            sample_construction_raw.pop(key, None)
+
+    return normalized
+
+
 def _coerce_enum(enum_cls: type[EnumT], value: EnumT | str) -> EnumT:
     if isinstance(value, enum_cls):
         return value
@@ -956,10 +999,12 @@ def _load_action_decoder_config(
     raise ValueError(f"Unsupported action decoder '{name}'.")
 
 
-def load_experiment_config(path: str | Path) -> ExperimentConfig:
+def load_experiment_config(path: str | Path, *, checkpoint_runtime_compat: bool = False) -> ExperimentConfig:
     """Load one root experiment YAML into the typed config boundary."""
 
     raw = _read_yaml(path)
+    if checkpoint_runtime_compat:
+        raw = _apply_checkpoint_runtime_compat(raw)
     data_raw = raw.get("data", {})
     action_schema_raw = data_raw.get("action_schema", {})
     action_target_raw = data_raw.get("action_target", {})

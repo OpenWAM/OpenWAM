@@ -21,10 +21,19 @@ from einops import rearrange
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
-if str(Path(__file__).resolve().parent) not in sys.path:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
+SCRIPT_ROOT = Path(__file__).resolve().parent
+DEPRECATED_SCRIPT_ROOT = SCRIPT_ROOT / "deprecated"
+
+
+def _prepend_import_path(path: Path) -> None:
+    path_str = str(path)
+    sys.path[:] = [entry for entry in sys.path if entry != path_str]
+    sys.path.insert(0, path_str)
+
+
+_prepend_import_path(SRC_ROOT)
+_prepend_import_path(SCRIPT_ROOT)
+_prepend_import_path(DEPRECATED_SCRIPT_ROOT)
 
 import libero_exact_realtime_common as exact_sandbox  # noqa: E402
 import run_libero_exact_visualization as exact_viz  # noqa: E402
@@ -51,6 +60,7 @@ from open_wam.utils import (  # noqa: E402
     seed_everywhere,
     validate_positive_step_override,
 )
+from open_wam.utils.libero_paradigm import require_current_libero_policy_paradigm  # noqa: E402
 
 VERBOSE = False
 
@@ -258,7 +268,7 @@ def main() -> None:
         default=None,
         help=(
             "Exact/joint exported-transformer override. This mirrors "
-            "scripts/run_libero_exact_visualization.py and intentionally does not merge "
+            "scripts/deprecated/run_libero_exact_visualization.py and intentionally does not merge "
             "checkpoint resolved_config.yaml."
         ),
     )
@@ -453,6 +463,14 @@ def main() -> None:
             "This is disabled by default and does not change the model forward path."
         ),
     )
+    parser.add_argument(
+        "--allow-deprecated-libero-config",
+        action="store_true",
+        help=(
+            "Allow historical LIBERO M1/M5 configs that do not match the current strict fixed-128, "
+            "one-frame, proprio-conditioned training/eval paradigm."
+        ),
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
     _apply_realtime_cli_profiles(args, sys.argv[1:])
@@ -510,6 +528,12 @@ def main() -> None:
         _apply_checkpoint_backbone_override(config, checkpoint_path=checkpoint_path)
     object.__setattr__(config.backbone, "reference_assets_device_policy", args.reference_assets_device_policy)
     video_viz._apply_rollout_chunk_steps_override(config, args.rollout_chunk_steps)
+    require_current_libero_policy_paradigm(
+        config,
+        config_path=config_path,
+        source="run_libero_realtime_sandbox.py",
+        allow_deprecated=bool(args.allow_deprecated_libero_config),
+    )
 
     runtime_device = exact_viz._resolve_device(args.runtime_device)
     frontend_device = exact_viz._resolve_device(args.frontend_device, fallback=runtime_device)
@@ -744,19 +768,30 @@ def _uses_strict_mot_split_cache_startup(config) -> bool:
     return bool(route.uses_split_cache_rollout and mot_config_uses_strict_rollout_parity(config))
 
 
+def _uses_strict_mot_one_frame_history(config) -> bool:
+    route = resolve_mot_runtime_route(config)
+    return bool(route.is_mot and mot_config_uses_strict_rollout_parity(config))
+
+
 def _sequence_startup_model_obs_window(
     config,
     initial_obs_window: list[dict[str, np.ndarray]],
 ) -> list[dict[str, np.ndarray]]:
     if not initial_obs_window:
         raise ValueError("Cannot build sequence startup observation window from an empty initial window.")
-    if _uses_strict_mot_split_cache_startup(config):
+    if _uses_strict_mot_one_frame_history(config):
         return [_copy_obs_record(initial_obs_window[-1])]
     return _copy_obs_window(initial_obs_window)
 
 
+def _sequence_model_obs_window_frames(config, *, raw_window_frames: int) -> int:
+    if _uses_strict_mot_one_frame_history(config):
+        return 1
+    return int(raw_window_frames)
+
+
 def _sequence_startup_env_init_frames(config, *, raw_window_frames: int) -> int:
-    if _uses_strict_mot_split_cache_startup(config):
+    if _uses_strict_mot_one_frame_history(config):
         return 1
     return int(raw_window_frames)
 
@@ -1348,7 +1383,7 @@ def _run_exact_like_realtime_rollout(
         startup_history_frame_index = 0
         with torch.inference_mode():
             session = runner.reset(task_text=(prompt,))
-            # Match scripts/run_libero_exact_visualization.py, which seeds
+            # Match scripts/deprecated/run_libero_exact_visualization.py, which seeds
             # immediately before each chunk instead of only at process start.
             with exact_sandbox._isolated_torch_rng(seed, frontend_device, runtime_device):
                 startup_prepare_t0 = time.perf_counter()
@@ -2541,6 +2576,7 @@ def _run_sequence_policy_realtime_rollout(
         "startup_open_loop_chunks": int(startup_open_loop_chunks),
         "replan_low_watermark_actions": int(replan_low_watermark_actions),
         "strict_mot_split_cache_startup": bool(_uses_strict_mot_split_cache_startup(config)),
+        "strict_mot_one_frame_history": bool(_uses_strict_mot_one_frame_history(config)),
         "decoder_runtime": _collect_decoder_runtime_metadata(pipeline, config),
     }
     if mot_inference_backend is not None:
@@ -2564,8 +2600,13 @@ def _run_sequence_policy_realtime_rollout(
         config,
         raw_window_frames=raw_window_frames,
     )
+    model_obs_window_frames = _sequence_model_obs_window_frames(
+        config,
+        raw_window_frames=raw_window_frames,
+    )
     load_report["raw_window_frames"] = int(raw_window_frames)
     load_report["startup_env_init_frames"] = int(startup_env_init_frames)
+    load_report["model_obs_window_frames"] = int(model_obs_window_frames)
     control_config = LiberoControlConfig()
 
     try:
@@ -2633,7 +2674,7 @@ def _run_sequence_policy_realtime_rollout(
         plan_by_action = _merge_future_step_actions({}, startup["planned_steps"], next_action_to_execute=0)
         current_obs = _copy_obs_record(initial_obs_window[-1])
         obs_window = _copy_obs_window(initial_obs_window)
-        model_obs_window = _copy_obs_window(initial_obs_window)
+        model_obs_window = _sequence_startup_model_obs_window(config, initial_obs_window)
         sequence_fallback_state = SequenceFallbackHistoryState(policy=fallback_history_policy)
         sequence_clean_actions_required = max(1, int(config.data.action_schema.action_horizon))
         extension_records: list[dict[str, Any]] = []
@@ -2923,7 +2964,7 @@ def _run_sequence_policy_realtime_rollout(
                     current_obs=current_obs,
                     action_source=source,
                     clean_actions_required=sequence_clean_actions_required,
-                    max_window_frames=raw_window_frames,
+                    max_window_frames=model_obs_window_frames,
                 )
                 last_action = np.array(action, copy=True)
 
@@ -3207,6 +3248,8 @@ def _run_sequence_policy_realtime_rollout(
                 "action_guidance_scale": float(config.inference.action_guidance_scale),
                 "raw_window_frames": int(raw_window_frames),
                 "startup_env_init_frames": int(startup_env_init_frames),
+                "model_obs_window_frames": int(model_obs_window_frames),
+                "strict_mot_one_frame_history": bool(_uses_strict_mot_one_frame_history(config)),
                 "planner_mode": planner_mode,
                 "sequence_buffer_threshold": int(sequence_buffer_threshold),
                 "sequence_empty_plan_policy": str(sequence_empty_plan_policy),

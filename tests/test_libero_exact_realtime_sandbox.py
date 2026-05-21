@@ -8,7 +8,12 @@ import pytest
 
 
 def _load_sandbox_module():
-    module_path = Path(__file__).resolve().parents[1] / "scripts" / "run_libero_exact_realtime_sandbox.py"
+    module_path = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "deprecated"
+        / "run_libero_exact_realtime_sandbox.py"
+    )
     spec = importlib.util.spec_from_file_location("run_libero_exact_realtime_sandbox", module_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Failed to load module spec for {module_path}.")
