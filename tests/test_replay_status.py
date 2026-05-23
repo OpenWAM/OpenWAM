@@ -8,6 +8,7 @@ import pytest
 from open_wam.data.replay_status import (
     filter_episode_indices_by_replay_status,
     load_replay_status_records,
+    split_episode_indices_by_replay_status,
 )
 
 
@@ -104,6 +105,119 @@ def test_empty_replay_status_file_is_reported_as_present(tmp_path: Path) -> None
     assert report.labeled_episodes == 0
 
 
+def test_split_episode_indices_can_validate_on_unused_failures(tmp_path: Path) -> None:
+    records, path = load_replay_status_records(
+        None,
+        replay_status_path=_fixture_replay_status_path(tmp_path),
+        require=True,
+    )
+
+    split = split_episode_indices_by_replay_status(
+        [0, 1, 2],
+        replay_status_records=records,
+        replay_status_path=path,
+        replay_status_policy="successful_only",
+        require_replay_status=True,
+        val_replay_status_policy="failure_only",
+        val_require_replay_status=None,
+        train_fraction=1.0,
+        split_seed=0,
+    )
+
+    assert set(split.train_episodes) == {0, 2}
+    assert split.val_episodes == [1]
+    assert split.used_explicit_val_policy is True
+    assert split.val_report is not None
+    assert split.val_report.kept_episodes == 1
+
+
+def test_explicit_val_replay_status_policy_fails_when_no_validation_rows(tmp_path: Path) -> None:
+    path = tmp_path / "replay_status.jsonl"
+    _write_jsonl(
+        path,
+        [
+            {"dataset_episode_index": 0, "replay_status": "success"},
+            {"dataset_episode_index": 1, "replay_status": "success"},
+        ],
+    )
+    records, _ = load_replay_status_records(None, replay_status_path=path, require=True)
+
+    with pytest.raises(ValueError, match="selected no validation episodes"):
+        split_episode_indices_by_replay_status(
+            [0, 1],
+            replay_status_records=records,
+            replay_status_path=path,
+            replay_status_policy="successful_only",
+            require_replay_status=False,
+            val_replay_status_policy="failure_only",
+            val_require_replay_status=False,
+            train_fraction=1.0,
+            split_seed=0,
+        )
+
+
+def test_explicit_val_replay_status_policy_shuffles_before_cap(tmp_path: Path) -> None:
+    records, path = load_replay_status_records(
+        None,
+        replay_status_path=_fixture_many_failure_replay_status_path(tmp_path),
+        require=True,
+    )
+
+    split_a = split_episode_indices_by_replay_status(
+        [0, 1, 2, 3, 4],
+        replay_status_records=records,
+        replay_status_path=path,
+        replay_status_policy="successful_only",
+        require_replay_status=True,
+        val_replay_status_policy="failure_only",
+        val_require_replay_status=True,
+        train_fraction=1.0,
+        split_seed=7,
+        max_val_episodes=2,
+    )
+    split_b = split_episode_indices_by_replay_status(
+        [4, 3, 2, 1, 0],
+        replay_status_records=records,
+        replay_status_path=path,
+        replay_status_policy="successful_only",
+        require_replay_status=True,
+        val_replay_status_policy="failure_only",
+        val_require_replay_status=True,
+        train_fraction=1.0,
+        split_seed=7,
+        max_val_episodes=2,
+    )
+
+    assert split_a.val_episodes == split_b.val_episodes
+    assert split_a.val_episodes != [1, 2]
+    assert len(split_a.val_episodes) == 2
+
+
+def test_split_episode_indices_preserves_legacy_fraction_when_no_val_policy(tmp_path: Path) -> None:
+    records, path = load_replay_status_records(
+        None,
+        replay_status_path=_fixture_replay_status_path(tmp_path),
+        require=True,
+    )
+
+    split = split_episode_indices_by_replay_status(
+        [0, 1, 2],
+        replay_status_records=records,
+        replay_status_path=path,
+        replay_status_policy="successful_only",
+        require_replay_status=True,
+        val_replay_status_policy=None,
+        val_require_replay_status=None,
+        train_fraction=0.5,
+        split_seed=0,
+    )
+
+    assert len(split.train_episodes) == 1
+    assert len(split.val_episodes) == 1
+    assert set(split.train_episodes + split.val_episodes) == {0, 2}
+    assert split.used_explicit_val_policy is False
+
+
 def test_malformed_replay_status_rows_include_file_and_line_context(tmp_path: Path) -> None:
     path = tmp_path / "replay_status.jsonl"
     _write_jsonl(path, [{"dataset_episode_index": "not-an-int", "replay_status": "success"}])
@@ -120,6 +234,21 @@ def _fixture_replay_status_path(tmp_path: Path) -> Path:
             {"dataset_episode_index": 0, "replay_status": "success"},
             {"dataset_episode_index": 1, "replay_status": "failure"},
             {"dataset_episode_index": 2, "replay_status": "success"},
+        ],
+    )
+    return path
+
+
+def _fixture_many_failure_replay_status_path(tmp_path: Path) -> Path:
+    path = tmp_path / "many_failure_replay_status.jsonl"
+    _write_jsonl(
+        path,
+        [
+            {"dataset_episode_index": 0, "replay_status": "success"},
+            {"dataset_episode_index": 1, "replay_status": "failure"},
+            {"dataset_episode_index": 2, "replay_status": "failure"},
+            {"dataset_episode_index": 3, "replay_status": "failure"},
+            {"dataset_episode_index": 4, "replay_status": "failure"},
         ],
     )
     return path

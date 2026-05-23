@@ -5,6 +5,11 @@ data:
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
   local_root: "${paths.datasets.libero_heng_root}"
+  replay_status_path: "${paths.datasets.libero_replay_status_path}"
+  replay_status_policy: successful_only
+  val_replay_status_policy: failure_only
+  require_replay_status: true
+  val_require_replay_status: true
   empty_text_embedding_path: "${paths.datasets.empty_text_embedding}"
   split: train
   # View + latent layout knobs

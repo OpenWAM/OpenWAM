@@ -4,6 +4,10 @@ paths:
     # configs/local_paths.yaml and replace every /path/to/... placeholder with
     # machine-local paths before running real data jobs.
     libero_heng_root: /path/to/datasets/libero_heng/libero_10
+    # Replay-status labels used by maintained LIBERO training configs to split
+    # successful training episodes from unused failure/error validation episodes.
+    # Active LIBERO configs require this path for real training.
+    libero_replay_status_path: ${paths.datasets.libero_heng_root}/meta/replay_status.jsonl
     # LeRobot overlay produced from verified absolute joint-position sidecars.
     libero_abs_joint_root: /path/to/datasets/libero_heng/libero_10_abs_joint_overlay
     # LeRobot overlay with recoverable 10D integrated EEF6D pseudo-absolute targets.

@@ -36,6 +36,7 @@ from open_wam.configs.enums import (
     PaddedTargetPolicy,
     PolicyVariantName,
     ProprioContextMode,
+    ReplayStatusPolicy,
     RolloutContextPolicy,
     SampleStateAnchorMode,
     SampleTargetAlignment,
@@ -136,6 +137,8 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
             "`equal_bucket_legacy` is deprecated and unsupported. Equal-bucket latent/action alignment "
             "silently drops early actions for Wan/LingBot latents; use `wan_causal_stride4`.",
         )
+    _validate_enum(data, "replay_status_policy", ReplayStatusPolicy, issues, "data")
+    _validate_enum(data, "val_replay_status_policy", ReplayStatusPolicy, issues, "data")
     _validate_positive_ints(
         data,
         issues,

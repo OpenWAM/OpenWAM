@@ -4,6 +4,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
+import random
 from typing import Any, Iterable, Mapping
 
 
@@ -38,6 +39,17 @@ class ReplayStatusFilterReport:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class ReplayStatusTrainValSplit:
+    """Episode split after optional replay-status train/val filtering."""
+
+    train_episodes: list[int]
+    val_episodes: list[int]
+    train_report: ReplayStatusFilterReport
+    val_report: ReplayStatusFilterReport | None
+    used_explicit_val_policy: bool
 
 
 def resolve_replay_status_path(
@@ -170,6 +182,101 @@ def filter_episode_indices_by_replay_status(
         policy=normalized_policy,
         require_labeled=require_labeled,
         source_path=source_path,
+    )
+
+
+def split_episode_indices_by_replay_status(
+    episode_indices: Iterable[int],
+    *,
+    replay_status_records: Mapping[int, ReplayStatusRecord],
+    replay_status_path: str | Path | None,
+    replay_status_policy: Any,
+    require_replay_status: bool,
+    val_replay_status_policy: Any | None,
+    val_require_replay_status: bool | None,
+    train_fraction: float,
+    split_seed: int,
+    max_train_episodes: int | None = None,
+    max_val_episodes: int | None = None,
+) -> ReplayStatusTrainValSplit:
+    """Split episodes, optionally validating on replay-labeled unused trajectories.
+
+    When `val_replay_status_policy` is unset, this preserves the historical
+    behavior: apply the train replay-status policy first, then randomly split
+    the remaining episodes by `train_fraction`.
+
+    When `val_replay_status_policy` is set and labels are present or required,
+    train and validation are selected independently from the original episode
+    set and validation episodes used by training are removed. This lets configs
+    train on successful replay rows while validating on unused failure/error
+    rows without adding runtime-specific launch logic.
+    """
+
+    all_episodes = [int(index) for index in episode_indices]
+    train_policy = normalize_replay_status_policy(replay_status_policy)
+    train_require_labeled = bool(replay_status_records) or bool(require_replay_status)
+    val_require_labeled = bool(replay_status_records) or bool(
+        require_replay_status if val_require_replay_status is None else val_require_replay_status
+    )
+    use_explicit_val_policy = val_replay_status_policy is not None and (
+        bool(replay_status_records) or val_require_labeled
+    )
+
+    train_candidates, train_report = filter_episode_indices_by_replay_status(
+        all_episodes,
+        replay_status_records=replay_status_records,
+        policy=train_policy,
+        require_labeled=train_require_labeled,
+        source_path=replay_status_path,
+    )
+    rng = random.Random(split_seed)
+    rng.shuffle(train_candidates)
+    train_count = int(len(train_candidates) * train_fraction)
+    train_count = min(max(train_count, 1), len(train_candidates)) if train_candidates else 0
+    train_episodes = train_candidates[:train_count]
+    if max_train_episodes is not None:
+        train_episodes = train_episodes[:max_train_episodes]
+
+    if not use_explicit_val_policy:
+        val_episodes = train_candidates[train_count:]
+        if max_val_episodes is not None:
+            val_episodes = val_episodes[:max_val_episodes]
+        if not val_episodes and train_episodes:
+            val_episodes = train_episodes[:1]
+        return ReplayStatusTrainValSplit(
+            train_episodes=train_episodes,
+            val_episodes=val_episodes,
+            train_report=train_report,
+            val_report=None,
+            used_explicit_val_policy=False,
+        )
+
+    val_policy = normalize_replay_status_policy(val_replay_status_policy)
+    val_candidates, val_report = filter_episode_indices_by_replay_status(
+        all_episodes,
+        replay_status_records=replay_status_records,
+        policy=val_policy,
+        require_labeled=val_require_labeled,
+        source_path=replay_status_path,
+    )
+    val_candidates = sorted(val_candidates)
+    random.Random(split_seed + 1).shuffle(val_candidates)
+    train_episode_set = set(train_episodes)
+    val_episodes = [episode for episode in val_candidates if episode not in train_episode_set]
+    if max_val_episodes is not None:
+        val_episodes = val_episodes[:max_val_episodes]
+    if not val_episodes:
+        raise ValueError(
+            "`data.val_replay_status_policy` selected no validation episodes after removing training episodes. "
+            "Use a non-overlapping validation policy, fix the replay-status labels, lower `train_fraction`, or unset "
+            "`val_replay_status_policy` to keep legacy train-fraction validation."
+        )
+    return ReplayStatusTrainValSplit(
+        train_episodes=train_episodes,
+        val_episodes=val_episodes,
+        train_report=train_report,
+        val_report=val_report,
+        used_explicit_val_policy=True,
     )
 
 

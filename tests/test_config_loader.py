@@ -42,6 +42,7 @@ from open_wam.configs import (
     AnchorPolicy,
     PaddedTargetPolicy,
     ProprioContextMode,
+    ReplayStatusPolicy,
     RolloutContextPolicy,
     SampleConstructionConfig,
     SampleStateAnchorMode,
@@ -1020,6 +1021,10 @@ def test_heng_compatible_libero_yaml_config_loads() -> None:
     assert heng_libero.data.action_target.source_key == "action"
     assert heng_libero.data.action_target.pose_source_key == "observation.state"
     assert heng_libero.data.latent_window_profile == LatentWindowProfile.EXACT_CHUNKED_WINDOW
+    assert heng_libero.data.replay_status_policy == ReplayStatusPolicy.SUCCESSFUL_ONLY
+    assert heng_libero.data.val_replay_status_policy == ReplayStatusPolicy.FAILURE_ONLY
+    assert heng_libero.data.require_replay_status is True
+    assert heng_libero.data.val_require_replay_status is True
     assert heng_libero.training.learning_rate == 1e-5
     assert heng_libero.training.gradient_accumulation_steps == 10
     assert heng_libero.training.num_steps == 5000

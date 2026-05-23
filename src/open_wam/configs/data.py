@@ -735,8 +735,11 @@ class DataConfig:
     max_train_episodes: int | None
     max_val_episodes: int | None
     replay_status_path: str | None
+    val_replay_status_path: str | None
     replay_status_policy: ReplayStatusPolicy
     require_replay_status: bool
+    val_replay_status_policy: ReplayStatusPolicy | None
+    val_require_replay_status: bool | None
     train_batch_size: int
     val_batch_size: int
     num_workers: int
@@ -757,6 +760,9 @@ class DataConfig:
                 "latent_window_profile": LatentWindowProfile,
                 "latent_temporal_layout": LatentTemporalLayout,
                 "replay_status_policy": ReplayStatusPolicy,
+            },
+            optional_enum_fields={
+                "val_replay_status_policy": ReplayStatusPolicy,
             },
         )
         if self.latent_temporal_layout is LatentTemporalLayout.EQUAL_BUCKET_LEGACY:
@@ -813,8 +819,11 @@ class GenericDataConfig(DataConfig):
     max_train_episodes: int | None = None
     max_val_episodes: int | None = None
     replay_status_path: str | None = None
+    val_replay_status_path: str | None = None
     replay_status_policy: ReplayStatusPolicy = ReplayStatusPolicy.INCLUDE_ALL
     require_replay_status: bool = False
+    val_replay_status_policy: ReplayStatusPolicy | None = None
+    val_require_replay_status: bool | None = None
     train_batch_size: int = 2
     val_batch_size: int = 2
     num_workers: int = 0
@@ -895,8 +904,11 @@ class RobotWinDataConfig(DataConfig):
     max_train_episodes: int | None = None
     max_val_episodes: int | None = None
     replay_status_path: str | None = None
+    val_replay_status_path: str | None = None
     replay_status_policy: ReplayStatusPolicy = ReplayStatusPolicy.INCLUDE_ALL
     require_replay_status: bool = False
+    val_replay_status_policy: ReplayStatusPolicy | None = None
+    val_require_replay_status: bool | None = None
     train_batch_size: int = 2
     val_batch_size: int = 2
     num_workers: int = 0
@@ -981,8 +993,11 @@ class LiberoDataConfig(DataConfig):
     max_train_episodes: int | None = None
     max_val_episodes: int | None = None
     replay_status_path: str | None = None
+    val_replay_status_path: str | None = None
     replay_status_policy: ReplayStatusPolicy = ReplayStatusPolicy.SUCCESSFUL_ONLY
     require_replay_status: bool = False
+    val_replay_status_policy: ReplayStatusPolicy | None = None
+    val_require_replay_status: bool | None = None
     train_batch_size: int = 2
     val_batch_size: int = 2
     num_workers: int = 0
@@ -1065,8 +1080,11 @@ class CalvinDataConfig(DataConfig):
     max_train_episodes: int | None = None
     max_val_episodes: int | None = None
     replay_status_path: str | None = None
+    val_replay_status_path: str | None = None
     replay_status_policy: ReplayStatusPolicy = ReplayStatusPolicy.INCLUDE_ALL
     require_replay_status: bool = False
+    val_replay_status_policy: ReplayStatusPolicy | None = None
+    val_require_replay_status: bool | None = None
     train_batch_size: int = 2
     val_batch_size: int = 2
     num_workers: int = 0
@@ -1135,8 +1153,11 @@ class MixedVideoDataConfig(DataConfig):
     max_train_episodes: int | None = None
     max_val_episodes: int | None = None
     replay_status_path: str | None = None
+    val_replay_status_path: str | None = None
     replay_status_policy: ReplayStatusPolicy = ReplayStatusPolicy.INCLUDE_ALL
     require_replay_status: bool = False
+    val_replay_status_policy: ReplayStatusPolicy | None = None
+    val_require_replay_status: bool | None = None
     train_batch_size: int = 2
     val_batch_size: int = 2
     num_workers: int = 0
@@ -1307,8 +1328,11 @@ class LeRobotConsortiumDataConfig(DataConfig):
     max_train_episodes: int | None = None
     max_val_episodes: int | None = None
     replay_status_path: str | None = None
+    val_replay_status_path: str | None = None
     replay_status_policy: ReplayStatusPolicy = ReplayStatusPolicy.INCLUDE_ALL
     require_replay_status: bool = False
+    val_replay_status_policy: ReplayStatusPolicy | None = None
+    val_require_replay_status: bool | None = None
     train_batch_size: int = 2
     val_batch_size: int = 2
     num_workers: int = 0

@@ -4,7 +4,6 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from io import BytesIO
 import json
-import random
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +28,7 @@ from .action_mapping import (
     resolve_action_source_dim,
 )
 from .contracts import WAMSample
-from .replay_status import filter_episode_indices_by_replay_status, load_replay_status_records
+from .replay_status import load_replay_status_records, split_episode_indices_by_replay_status
 
 
 def _resolve_row_key(row: dict[str, Any], key: str) -> str:
@@ -515,35 +514,25 @@ def build_lerobot_train_val_episode_split(data_config: DataConfig) -> tuple[list
         raise ValueError("LeRobot-v2 datasets require `data.repo_id` in the experiment config.")
 
     metadata = load_lerobot_v2_metadata(repo_id=data_config.repo_id, cache_dir=data_config.cache_dir)
-    episode_indices = [episode.episode_index for episode in metadata.episodes]
     replay_status_records, replay_status_path = load_replay_status_records(
         None,
         replay_status_path=data_config.replay_status_path,
         require=data_config.require_replay_status,
     )
-    episode_indices, _ = filter_episode_indices_by_replay_status(
-        episode_indices,
+    split = split_episode_indices_by_replay_status(
+        [episode.episode_index for episode in metadata.episodes],
         replay_status_records=replay_status_records,
-        policy=data_config.replay_status_policy,
-        require_labeled=bool(replay_status_records) or bool(data_config.require_replay_status),
-        source_path=replay_status_path,
+        replay_status_path=replay_status_path,
+        replay_status_policy=data_config.replay_status_policy,
+        require_replay_status=data_config.require_replay_status,
+        val_replay_status_policy=data_config.val_replay_status_policy,
+        val_require_replay_status=data_config.val_require_replay_status,
+        train_fraction=data_config.train_fraction,
+        split_seed=data_config.split_seed,
+        max_train_episodes=data_config.max_train_episodes,
+        max_val_episodes=data_config.max_val_episodes,
     )
-    rng = random.Random(data_config.split_seed)
-    rng.shuffle(episode_indices)
-
-    train_count = int(len(episode_indices) * data_config.train_fraction)
-    train_count = min(max(train_count, 1), len(episode_indices))
-    train_episodes = episode_indices[:train_count]
-    val_episodes = episode_indices[train_count:]
-
-    if data_config.max_train_episodes is not None:
-        train_episodes = train_episodes[: data_config.max_train_episodes]
-    if data_config.max_val_episodes is not None:
-        val_episodes = val_episodes[: data_config.max_val_episodes]
-
-    if not val_episodes and train_episodes:
-        val_episodes = train_episodes[:1]
-    return train_episodes, val_episodes
+    return split.train_episodes, split.val_episodes
 
 
 def load_lerobot_v2_metadata(

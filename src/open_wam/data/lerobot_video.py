@@ -4,7 +4,6 @@ from collections import OrderedDict
 from dataclasses import dataclass
 import json
 from pathlib import Path
-import random
 from typing import Any
 
 import imageio.v2 as imageio
@@ -17,7 +16,7 @@ from open_wam.configs import ActionTargetRepresentation, DataConfig
 from .action_mapping import apply_action_mapping, resolve_action_source_dim
 from .contracts import WAMSample
 from .lerobot_v2 import EpisodeWindow, LeRobotEpisodeRecord, _resolve_row_key
-from .replay_status import filter_episode_indices_by_replay_status, load_replay_status_records
+from .replay_status import load_replay_status_records, split_episode_indices_by_replay_status
 
 
 @dataclass(frozen=True)
@@ -261,32 +260,27 @@ def build_lerobot_v2_video_train_val_datasets(
     if data_config.local_root is None:
         raise ValueError("`lerobot_v2_video` requires `data.local_root`.")
     metadata = load_lerobot_v2_video_metadata(Path(data_config.local_root).expanduser())
-    episode_indices = [episode.episode_index for episode in metadata.episodes]
     replay_status_records, replay_status_path = load_replay_status_records(
         metadata.repo_root,
         replay_status_path=data_config.replay_status_path,
         require=data_config.require_replay_status,
     )
-    episode_indices, _ = filter_episode_indices_by_replay_status(
-        episode_indices,
+    split = split_episode_indices_by_replay_status(
+        [episode.episode_index for episode in metadata.episodes],
         replay_status_records=replay_status_records,
-        policy=data_config.replay_status_policy,
-        require_labeled=bool(replay_status_records) or bool(data_config.require_replay_status),
-        source_path=replay_status_path,
+        replay_status_path=replay_status_path,
+        replay_status_policy=data_config.replay_status_policy,
+        require_replay_status=data_config.require_replay_status,
+        val_replay_status_policy=data_config.val_replay_status_policy,
+        val_require_replay_status=data_config.val_require_replay_status,
+        train_fraction=data_config.train_fraction,
+        split_seed=data_config.split_seed,
+        max_train_episodes=data_config.max_train_episodes,
+        max_val_episodes=data_config.max_val_episodes,
     )
-    rng = random.Random(data_config.split_seed)
-    rng.shuffle(episode_indices)
-    train_count = int(len(episode_indices) * data_config.train_fraction)
-    train_count = min(max(train_count, 1), len(episode_indices))
-    train_episodes = episode_indices[:train_count]
-    val_episodes = episode_indices[train_count:] or train_episodes[:1]
-    if data_config.max_train_episodes is not None:
-        train_episodes = train_episodes[: data_config.max_train_episodes]
-    if data_config.max_val_episodes is not None:
-        val_episodes = val_episodes[: data_config.max_val_episodes]
     return (
-        LeRobotV2VideoWindowDataset(data_config=data_config, episodes=train_episodes),
-        LeRobotV2VideoWindowDataset(data_config=data_config, episodes=val_episodes),
+        LeRobotV2VideoWindowDataset(data_config=data_config, episodes=split.train_episodes),
+        LeRobotV2VideoWindowDataset(data_config=data_config, episodes=split.val_episodes),
     )
 
 

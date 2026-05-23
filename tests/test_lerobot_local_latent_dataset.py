@@ -31,6 +31,18 @@ from open_wam.utils.config_loader import load_experiment_config
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _disable_replay_status(data_config):
+    return replace(
+        data_config,
+        replay_status_path=None,
+        val_replay_status_path=None,
+        replay_status_policy=ReplayStatusPolicy.INCLUDE_ALL,
+        require_replay_status=False,
+        val_replay_status_policy=None,
+        val_require_replay_status=False,
+    )
+
+
 def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
@@ -246,7 +258,7 @@ def test_local_lerobot_latent_dataset_builds_canonical_latents(tmp_path: Path) -
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -287,7 +299,7 @@ def test_scan_local_latent_windows_requires_complete_multicamera_latents(tmp_pat
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             camera_names=("cam_high", "cam_left_wrist", "cam_right_wrist"),
@@ -314,7 +326,7 @@ def test_local_lerobot_latent_dataset_filters_failed_replay_status(tmp_path: Pat
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -332,6 +344,41 @@ def test_local_lerobot_latent_dataset_filters_failed_replay_status(tmp_path: Pat
     assert {window.episode_index for window in val_dataset.windows} == {0}
 
 
+def test_local_lerobot_latent_dataset_uses_unused_failed_replay_rows_for_val(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent"
+    _build_local_robotwin_latent_repo(repo_root)
+    _append_second_latent_episode(repo_root)
+    _write_jsonl(
+        repo_root / "meta" / "replay_status.jsonl",
+        [
+            {"dataset_episode_index": 0, "replay_status": "success"},
+            {"dataset_episode_index": 1, "replay_status": "failure"},
+        ],
+    )
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            _disable_replay_status(config.data),
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            replay_status_policy=ReplayStatusPolicy.SUCCESSFUL_ONLY,
+            require_replay_status=True,
+            val_replay_status_policy=ReplayStatusPolicy.FAILURE_ONLY,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+        ),
+    )
+
+    train_dataset, val_dataset = build_train_val_latent_datasets(config.data)
+
+    assert {window.episode_index for window in train_dataset.windows} == {0}
+    assert {window.episode_index for window in val_dataset.windows} == {1}
+
+
 def test_val_local_root_dataset_uses_val_split_semantics(tmp_path: Path) -> None:
     train_root = tmp_path / "train_robotwin_local_latent"
     val_root = tmp_path / "val_robotwin_local_latent"
@@ -342,7 +389,7 @@ def test_val_local_root_dataset_uses_val_split_semantics(tmp_path: Path) -> None
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(train_root),
             val_local_root=str(val_root),
@@ -359,6 +406,48 @@ def test_val_local_root_dataset_uses_val_split_semantics(tmp_path: Path) -> None
     assert val_dataset.data_config.split == DataSplit.VAL
     assert {window.repo_root for window in train_dataset.windows} == {train_root}
     assert {window.repo_root for window in val_dataset.windows} == {val_root}
+
+
+def test_val_local_root_uses_val_root_replay_status_when_train_path_is_absolute(tmp_path: Path) -> None:
+    train_root = tmp_path / "train_robotwin_local_latent"
+    val_root = tmp_path / "val_robotwin_local_latent"
+    _build_local_robotwin_latent_repo(train_root)
+    _build_local_robotwin_latent_repo(val_root)
+    _write_jsonl(
+        train_root / "meta" / "replay_status.jsonl",
+        [{"dataset_episode_index": 0, "replay_status": "success"}],
+    )
+    _write_jsonl(
+        val_root / "meta" / "replay_status.jsonl",
+        [{"dataset_episode_index": 0, "replay_status": "failure"}],
+    )
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            _disable_replay_status(config.data),
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(train_root),
+            val_local_root=str(val_root),
+            replay_status_path=str(train_root / "meta" / "replay_status.jsonl"),
+            replay_status_policy=ReplayStatusPolicy.SUCCESSFUL_ONLY,
+            val_replay_status_policy=ReplayStatusPolicy.FAILURE_ONLY,
+            require_replay_status=True,
+            val_require_replay_status=True,
+            train_fraction=1.0,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+        ),
+    )
+
+    train_dataset, val_dataset = build_train_val_latent_datasets(config.data)
+
+    assert {window.repo_root for window in train_dataset.windows} == {train_root}
+    assert {window.episode_index for window in train_dataset.windows} == {0}
+    assert {window.repo_root for window in val_dataset.windows} == {val_root}
+    assert {window.episode_index for window in val_dataset.windows} == {0}
 
 
 def test_local_lerobot_latent_dataset_weights_long_depleted_tasks(tmp_path: Path) -> None:
@@ -378,7 +467,7 @@ def test_local_lerobot_latent_dataset_weights_long_depleted_tasks(tmp_path: Path
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -428,7 +517,7 @@ def test_inverse_task_demo_count_counts_unique_demos_not_windows(tmp_path: Path)
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -472,7 +561,7 @@ def test_local_lerobot_latent_weighted_sampler_shards_with_replacement(tmp_path:
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -505,7 +594,7 @@ def test_uniform_segment_sampling_pads_tail_with_zero_order_hold(tmp_path: Path)
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -557,7 +646,7 @@ def test_uniform_segment_randomizes_attention_geometry(tmp_path: Path) -> None:
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -610,7 +699,7 @@ def test_uniform_segment_randomizes_start_and_requires_full_segment(tmp_path: Pa
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -659,7 +748,7 @@ def test_uniform_segment_preserves_optional_condition_latents(tmp_path: Path) ->
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -699,7 +788,7 @@ def test_uniform_segment_require_full_segment_drops_short_tail_starts(tmp_path: 
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -736,7 +825,7 @@ def test_uniform_segment_start_padding_repeats_first_latent_and_masks_virtual_ac
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -812,7 +901,7 @@ def test_uniform_segment_randomized_start_samples_head_and_tail_padding(
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -860,7 +949,7 @@ def test_hierarchical_fixed_segment_samples_padded_start_range_and_masks_targets
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -935,7 +1024,7 @@ def test_hierarchical_fixed_segment_rejects_multi_sample_compact_batches(tmp_pat
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -964,7 +1053,7 @@ def test_hierarchical_fixed_segment_randomizes_chunk_geometry(tmp_path: Path) ->
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -1039,7 +1128,7 @@ def test_hierarchical_fixed_segment_rollout_context_prefix_masks_context(tmp_pat
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -1140,7 +1229,7 @@ def test_hierarchical_fixed_segment_context_prefix_aligns_loss_to_chunk_boundary
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -1191,7 +1280,7 @@ def test_hierarchical_fixed_segment_without_context_keeps_geometry_history_frame
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -1236,7 +1325,7 @@ def test_hierarchical_fixed_segment_rollout_parity_uses_one_context_frame(tmp_pa
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -1329,7 +1418,7 @@ def test_hierarchical_fixed_segment_rollout_parity_history_stays_outside_target_
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -1390,7 +1479,7 @@ def test_uniform_segment_require_full_segment_uses_short_payload_as_full_segment
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -1433,7 +1522,7 @@ def test_uniform_segment_action_count_uses_configured_actions_per_latent_frame(t
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -1482,7 +1571,7 @@ def test_lingbot_exact_actions_use_wan_causal_latent_anchors(tmp_path: Path) -> 
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             local_root=str(repo_root),
             empty_text_embedding_path=None,
             train_fraction=1.0,
@@ -1528,7 +1617,7 @@ def test_hierarchical_exact_actions_use_wan_causal_latent_anchors(tmp_path: Path
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             local_root=str(repo_root),
             empty_text_embedding_path=None,
             train_fraction=1.0,
@@ -1577,7 +1666,7 @@ def test_uniform_segment_frame_shift_uses_latent_frame_not_raw_frame(tmp_path: P
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -1611,7 +1700,7 @@ def test_uniform_segment_length_is_deterministic_for_virtual_sample(tmp_path: Pa
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -1655,7 +1744,7 @@ def test_uniform_segment_sampler_round_robins_trajectory_blocks(tmp_path: Path) 
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -1699,7 +1788,7 @@ def test_uniform_segment_task_virtual_start_power_balances_task_mass(tmp_path: P
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -1755,7 +1844,7 @@ def test_hierarchical_fixed_segment_task_power_is_explicit_task_mass(tmp_path: P
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -1810,7 +1899,7 @@ def test_hierarchical_fixed_segment_dataloader_samples_stepwise_valid_keys(tmp_p
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
@@ -1872,7 +1961,7 @@ def test_standard_policy_full_segment_latent_profile_uses_schema_horizon(tmp_pat
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             local_root=str(repo_root),
             empty_text_embedding_path=None,
             train_fraction=1.0,
@@ -1906,7 +1995,7 @@ def test_local_lerobot_latent_dataset_loads_empty_text_embedding_as_negative_con
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             empty_text_embedding_path=str(empty_emb_path),
@@ -1932,7 +2021,7 @@ def test_local_lerobot_latent_dataset_raises_for_missing_configured_empty_text_e
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             empty_text_embedding_path=str(tmp_path / "missing_empty_emb.pt"),
@@ -1961,7 +2050,7 @@ def test_local_lerobot_latent_dataset_uses_pose_source_key_for_state(tmp_path: P
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             local_root=str(repo_root),
             empty_text_embedding_path=None,
             train_fraction=1.0,
@@ -1992,7 +2081,7 @@ def test_local_lerobot_latent_dataset_supports_random_subwindow_sampling(tmp_pat
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             local_root=str(repo_root),
             empty_text_embedding_path=None,
             train_fraction=1.0,
@@ -2036,7 +2125,7 @@ def test_local_lerobot_latent_dataset_supports_contextual_subwindow_sampling(tmp
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             local_root=str(repo_root),
             empty_text_embedding_path=None,
             train_fraction=1.0,
@@ -2094,7 +2183,7 @@ def test_contextual_subwindow_sampling_falls_back_to_geometry_that_fits_segment(
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             local_root=str(repo_root),
             empty_text_embedding_path=None,
             train_fraction=1.0,
@@ -2142,7 +2231,7 @@ def test_contextual_subwindow_sampling_can_use_fixed_geometry(tmp_path: Path) ->
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             local_root=str(repo_root),
             empty_text_embedding_path=None,
             train_fraction=1.0,
@@ -2189,7 +2278,7 @@ def test_aligned_subwindow_sampling_uses_sample_construction_horizons_and_stride
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             local_root=str(repo_root),
             empty_text_embedding_path=None,
             train_fraction=1.0,
@@ -2239,7 +2328,7 @@ def test_local_lerobot_latent_dataset_supports_causal_prefix_suffix_sampling(tmp
     config = replace(
         config,
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             local_root=str(repo_root),
             empty_text_embedding_path=None,
             train_fraction=1.0,
@@ -2280,7 +2369,7 @@ def test_parallel_stream_runtime_runs_on_local_lerobot_latent_dataset(tmp_path: 
         config,
         training=replace(config.training, num_steps=1),
         data=replace(
-            config.data,
+            _disable_replay_status(config.data),
             dataset_type="lerobot_v2_latent_local",
             local_root=str(repo_root),
             train_fraction=1.0,
