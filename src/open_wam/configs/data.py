@@ -27,6 +27,7 @@ from .enums import (
     LatentWindowProfile,
     MixedVideoDecodeSizeMode,
     MixedVideoFrameFitMode,
+    MixedVideoLatentEncodingMode,
     MixedVideoMissingStreamPolicy,
     MixedVideoRandomMode,
     MixedVideoSourceFormat,
@@ -369,6 +370,35 @@ class MixedVideoResizeBinConfig:
     @property
     def aspect_ratio(self) -> float:
         return float(self.aspect_width) / float(self.aspect_height)
+
+
+@dataclass(frozen=True)
+class MixedVideoViewCombinationConfig:
+    """Ordered latent slots assembled into one training sample."""
+
+    name: str
+    slots: tuple[str, ...]
+    sampling_weight: float = 1.0
+    source_ids: tuple[str, ...] = ()
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", str(self.name))
+        object.__setattr__(self, "slots", tuple(str(slot) for slot in self.slots))
+        object.__setattr__(self, "sampling_weight", float(self.sampling_weight))
+        object.__setattr__(self, "source_ids", tuple(str(source_id) for source_id in self.source_ids))
+        object.__setattr__(self, "enabled", bool(self.enabled))
+        if not self.name:
+            raise ValueError("MixedVideoViewCombinationConfig requires a non-empty `name`.")
+        if not 1 <= len(self.slots) <= 4:
+            raise ValueError(
+                "Mixed-video latent view combinations support 1 to 4 slots, "
+                f"got {len(self.slots)} for {self.name!r}."
+            )
+        if len(set(self.slots)) != len(self.slots):
+            raise ValueError(f"Mixed-video latent view combination {self.name!r} contains duplicate slots.")
+        if not math.isfinite(self.sampling_weight) or self.sampling_weight <= 0.0:
+            raise ValueError("Mixed-video latent view combination `sampling_weight` must be finite and positive.")
 
 
 def default_mixed_video_resize_bins() -> tuple[MixedVideoResizeBinConfig, ...]:
@@ -1180,6 +1210,8 @@ class MixedVideoDataConfig(DataConfig):
         )
     )
     video_sources: tuple[MixedVideoSourceConfig, ...] = ()
+    latent_encoding_mode: MixedVideoLatentEncodingMode = MixedVideoLatentEncodingMode.CANONICAL
+    latent_view_combinations: tuple[MixedVideoViewCombinationConfig, ...] = field(default_factory=tuple)
     decode_size_mode: MixedVideoDecodeSizeMode = MixedVideoDecodeSizeMode.FIXED
     decode_resize_bins: tuple[MixedVideoResizeBinConfig, ...] = field(default_factory=default_mixed_video_resize_bins)
     decode_height: int = 128
@@ -1201,6 +1233,7 @@ class MixedVideoDataConfig(DataConfig):
             enum_fields={
                 "decode_size_mode": MixedVideoDecodeSizeMode,
                 "decode_fit_mode": MixedVideoFrameFitMode,
+                "latent_encoding_mode": MixedVideoLatentEncodingMode,
                 "missing_stream_policy": MixedVideoMissingStreamPolicy,
                 "random_mode": MixedVideoRandomMode,
                 "weight_mode": MixedVideoWeightMode,
@@ -1216,6 +1249,19 @@ class MixedVideoDataConfig(DataConfig):
                 for bin_config in self.decode_resize_bins
             ),
         )
+        object.__setattr__(
+            self,
+            "latent_view_combinations",
+            tuple(
+                combination
+                if isinstance(combination, MixedVideoViewCombinationConfig)
+                else MixedVideoViewCombinationConfig(**combination)
+                for combination in self.latent_view_combinations
+            ),
+        )
+        combination_names = [combination.name for combination in self.latent_view_combinations if combination.enabled]
+        if len(set(combination_names)) != len(combination_names):
+            raise ValueError("Enabled mixed-video latent view combination names must be unique.")
         if self.decode_center_crop and self.decode_fit_mode != MixedVideoFrameFitMode.CENTER_CROP:
             raise ValueError(
                 "`decode_center_crop=True` is a legacy alias for `decode_fit_mode=center_crop`; "

@@ -27,6 +27,7 @@ from open_wam.configs import (
     MixedVideoDataConfig,
     MixedVideoDecodeSizeMode,
     MixedVideoFrameFitMode,
+    MixedVideoLatentEncodingMode,
     MixedVideoMissingStreamPolicy,
     MixedVideoRandomMode,
     MixedVideoSourceFormat,
@@ -360,6 +361,12 @@ data:
       sampling_weight: 2.0
   camera_names: [observation.images.slot0]
   latent_camera_names: [observation.images.slot0]
+  latent_encoding_mode: per_view
+  latent_view_combinations:
+    - name: slot0_only
+      slots: [observation.images.slot0]
+      sampling_weight: 2.5
+      source_ids: [bridge_video]
   canonical_height: 8
   canonical_width: 8
   view_layout:
@@ -431,6 +438,11 @@ trainer:
     assert config.data.video_sources[0].latent_root == str(tmp_path / "latents")
     assert config.data.video_sources[0].latent_key == "encoded_latents"
     assert config.data.video_sources[0].sampling_weight == 2.0
+    assert config.data.latent_encoding_mode == MixedVideoLatentEncodingMode.PER_VIEW
+    assert config.data.latent_view_combinations[0].name == "slot0_only"
+    assert config.data.latent_view_combinations[0].slots == ("observation.images.slot0",)
+    assert config.data.latent_view_combinations[0].sampling_weight == 2.5
+    assert config.data.latent_view_combinations[0].source_ids == ("bridge_video",)
     assert config.data.decode_size_mode == MixedVideoDecodeSizeMode.ASPECT_RATIO_BINS
     assert config.data.decode_resize_bins[0].name == "square_8"
     assert config.data.decode_resize_bins[1].target_width == 16

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 import csv
 from dataclasses import asdict, dataclass, replace
@@ -30,8 +30,10 @@ from open_wam.configs import (  # noqa: E402
     MixedVideoDataConfig,
     MixedVideoDecodeSizeMode,
     MixedVideoFrameFitMode,
+    MixedVideoLatentEncodingMode,
     MixedVideoResizeBinConfig,
     MixedVideoSourceFormat,
+    ViewLayoutConfig,
 )
 from open_wam.configs.enums import serialize_enum_values  # noqa: E402
 from open_wam.data.mixed_video import (  # noqa: E402
@@ -125,6 +127,20 @@ class EncodedEpisode:
     raw_length_frames: int
     latent_length_frames: int
     tasks: tuple[str, ...]
+    target_slot: str = "observation.images.slot0"
+    encoded_slots: tuple[str, ...] = ()
+    encoding_mode: str = "canonical"
+
+
+@dataclass(frozen=True)
+class EncodingTarget:
+    name: str
+    mode: MixedVideoLatentEncodingMode
+    target_slot: str
+    source_slots: tuple[str, ...]
+    latent_path: Path
+    compatible_existing_paths: tuple[Path, ...] = ()
+    include_in_training_manifest: bool = True
 
 
 @dataclass(frozen=True)
@@ -299,8 +315,9 @@ def main(argv: list[str] | None = None) -> int:
         )
     selected_episodes = _select_encoder_episodes(data_config, selection=selection, apply_shard=True)
     all_selected_sidecars_exist = all(
-        _latent_path_for_episode(output_root / "latents", episode).exists()
+        _resolve_existing_target_path(target) is not None
         for episode in selected_episodes
+        for target in _encoding_targets_for_episode(output_root / "latents", episode, data_config)
     )
     if args.skip_existing and all_selected_sidecars_exist:
         assets = None
@@ -380,6 +397,7 @@ def launch_parallel_mixed_video_encoding(
     all_episodes = _select_encoder_episodes(data_config, selection=selection, apply_shard=False)
     _preflight_output_paths(
         all_episodes,
+        data_config=data_config,
         output_root=output_root,
         latents_root=latents_root,
         manifests_root=manifests_root,
@@ -548,6 +566,7 @@ def encode_mixed_video_latent_sources(
     episodes = _select_encoder_episodes(data_config, selection=selection, apply_shard=True)
     _preflight_output_paths(
         episodes,
+        data_config=data_config,
         output_root=output_root,
         latents_root=latents_root,
         manifests_root=manifests_root,
@@ -556,93 +575,118 @@ def encode_mixed_video_latent_sources(
         write_manifests=write_manifests,
     )
 
-    canonicalizer = build_canonical_video_preprocessor(data_config) if assets is not None else None
     rows_by_source: dict[str, list[dict[str, Any]]] = {}
     encoded: list[EncodedEpisode] = []
-    reused_episodes = 0
+    manifest_records: list[EncodedEpisode] = []
+    newly_encoded_records: list[EncodedEpisode] = []
+    reused_records: list[EncodedEpisode] = []
     save_executor: ThreadPoolExecutor | None = None
     save_futures: list[tuple[Path, Future]] = []
     try:
         for episode in episodes:
-            latent_path = _latent_path_for_episode(latents_root, episode)
-            latent_path.parent.mkdir(parents=True, exist_ok=True)
-            if skip_existing and latent_path.exists():
-                record = _encoded_episode_from_existing_sidecar(latent_path, episode, data_config=data_config)
-                reused_episodes += 1
-            else:
-                if assets is None or canonicalizer is None:
-                    raise FileNotFoundError(
-                        f"Missing encoded sidecar for source={episode.source_id!r}, "
-                        f"episode={episode.episode_index}: {latent_path}"
+            targets = _encoding_targets_for_episode(latents_root, episode, data_config)
+            if not targets:
+                continue
+            for target in targets:
+                latent_path = target.latent_path
+                latent_path.parent.mkdir(parents=True, exist_ok=True)
+                existing_path = _resolve_existing_target_path(target) if skip_existing else None
+                target_data_config = _data_config_for_encoding_target(data_config, target)
+                target_episode = _episode_for_encoding_target(episode, target)
+                if existing_path is not None:
+                    record = _encoded_episode_from_existing_sidecar(
+                        existing_path,
+                        target_episode,
+                        data_config=target_data_config,
+                        target=target,
                     )
-                latents, encoding_metadata = _encode_episode_latents_streaming(
-                    data_config,
-                    episode,
-                    canonicalizer=canonicalizer,
-                    assets=assets,
-                    device=device,
-                    chunk_frames=chunk_frames,
-                )
-                latents = latents.detach().cpu().contiguous()[0]
-                payload = {
-                    LATENT_KEY: latents,
-                    "metadata": {
-                        "source_id": episode.source_id,
-                        "dataset_id": episode.dataset_id,
-                        "episode_index": episode.episode_index,
-                        "clip_id": episode.clip_id,
-                        "raw_length_frames": int(episode.length_frames),
-                        "native_length_frames": int(episode.native_length_frames),
-                        "target_observation_fps": data_config.target_observation_fps,
-                        "missing_observation_fps": float(data_config.missing_observation_fps),
-                        "latent_length_frames": int(latents.shape[1]),
-                        "latent_shape": list(latents.shape),
-                        "decode_size_mode": data_config.decode_size_mode.value,
-                        "decode_fit_mode": data_config.decode_fit_mode.value,
-                        "decode_allow_upscale": bool(data_config.decode_allow_upscale),
-                        "decode_height": int(data_config.decode_height),
-                        "decode_width": int(data_config.decode_width),
-                        "decode_resize_bins": _mixed_video_transform_signature(data_config)["decode_resize_bins"],
-                        "stream_transform_signature": _mixed_video_transform_signature(data_config, episode).get(
-                            "streams",
-                            [],
-                        ),
-                        "transform_signature_hash": _mixed_video_transform_signature_hash(data_config, episode),
-                        **encoding_metadata,
-                        "tasks": list(episode.tasks),
-                    },
-                }
-                # WHY async save: torch.save serializes to disk synchronously which
-                # blocks the next episode's decode. Keep only one pending sidecar so
-                # large latent tensors cannot accumulate across the whole encode run.
-                if save_executor is None:
-                    save_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mixed-video-save")
-                _submit_latent_save(
-                    save_executor=save_executor,
-                    save_futures=save_futures,
-                    latent_path=latent_path,
-                    payload=payload,
-                )
-                record = EncodedEpisode(
-                    source_id=episode.source_id,
-                    dataset_id=episode.dataset_id,
-                    episode_index=episode.episode_index,
-                    clip_id=episode.clip_id,
-                    latent_path=latent_path,
-                    latent_shape=tuple(int(value) for value in latents.shape),
-                    raw_length_frames=int(episode.length_frames),
-                    latent_length_frames=int(latents.shape[1]),
-                    tasks=episode.tasks,
-                )
-            encoded.append(record)
-            manifest_path = manifests_root / f"{_safe_path_part(episode.source_id)}.csv"
-            rows_by_source.setdefault(episode.source_id, []).append(
-                _manifest_row_for_encoded_episode(
-                    record,
-                    manifest_path=manifest_path,
-                    target_slot=_encoded_latent_target_slot(data_config),
-                )
-            )
+                    reused_records.append(record)
+                else:
+                    if assets is None:
+                        raise FileNotFoundError(
+                            f"Missing encoded sidecar for source={episode.source_id!r}, "
+                            f"episode={episode.episode_index}, target={target.name}: {latent_path}"
+                        )
+                    canonicalizer = build_canonical_video_preprocessor(target_data_config)
+                    latents, encoding_metadata = _encode_episode_latents_streaming(
+                        target_data_config,
+                        target_episode,
+                        canonicalizer=canonicalizer,
+                        assets=assets,
+                        device=device,
+                        chunk_frames=chunk_frames,
+                    )
+                    latents = latents.detach().cpu().contiguous()[0]
+                    payload = {
+                        LATENT_KEY: latents,
+                        "metadata": {
+                            "source_id": target_episode.source_id,
+                            "dataset_id": target_episode.dataset_id,
+                            "episode_index": target_episode.episode_index,
+                            "clip_id": target_episode.clip_id,
+                            "raw_length_frames": int(target_episode.length_frames),
+                            "native_length_frames": int(target_episode.native_length_frames),
+                            "target_observation_fps": target_data_config.target_observation_fps,
+                            "missing_observation_fps": float(target_data_config.missing_observation_fps),
+                            "latent_length_frames": int(latents.shape[1]),
+                            "latent_shape": list(latents.shape),
+                            "target_slot": target.target_slot,
+                            "encoded_slots": list(target.source_slots),
+                            "encoding_mode": target.mode.value,
+                            "decode_size_mode": target_data_config.decode_size_mode.value,
+                            "decode_fit_mode": target_data_config.decode_fit_mode.value,
+                            "decode_allow_upscale": bool(target_data_config.decode_allow_upscale),
+                            "decode_height": int(target_data_config.decode_height),
+                            "decode_width": int(target_data_config.decode_width),
+                            "decode_resize_bins": _mixed_video_transform_signature(target_data_config)["decode_resize_bins"],
+                            "stream_transform_signature": _mixed_video_transform_signature(
+                                target_data_config,
+                                target_episode,
+                            ).get("streams", []),
+                            "transform_signature_hash": _mixed_video_transform_signature_hash(
+                                target_data_config,
+                                target_episode,
+                            ),
+                            **encoding_metadata,
+                            "tasks": list(target_episode.tasks),
+                        },
+                    }
+                    # WHY async save: torch.save serializes to disk synchronously which
+                    # blocks the next episode's decode. Keep only one pending sidecar so
+                    # large latent tensors cannot accumulate across the whole encode run.
+                    if save_executor is None:
+                        save_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mixed-video-save")
+                    _submit_latent_save(
+                        save_executor=save_executor,
+                        save_futures=save_futures,
+                        latent_path=latent_path,
+                        payload=payload,
+                    )
+                    record = EncodedEpisode(
+                        source_id=target_episode.source_id,
+                        dataset_id=target_episode.dataset_id,
+                        episode_index=target_episode.episode_index,
+                        clip_id=target_episode.clip_id,
+                        latent_path=latent_path,
+                        latent_shape=tuple(int(value) for value in latents.shape),
+                        raw_length_frames=int(target_episode.length_frames),
+                        latent_length_frames=int(latents.shape[1]),
+                        tasks=target_episode.tasks,
+                        target_slot=target.target_slot,
+                        encoded_slots=target.source_slots,
+                        encoding_mode=target.mode.value,
+                    )
+                    newly_encoded_records.append(record)
+                encoded.append(record)
+                if target.include_in_training_manifest:
+                    manifest_records.append(record)
+                    manifest_path = manifests_root / f"{_safe_path_part(episode.source_id)}.csv"
+                    rows_by_source.setdefault(episode.source_id, []).append(
+                        _manifest_row_for_encoded_episode(
+                            record,
+                            manifest_path=manifest_path,
+                        )
+                    )
     finally:
         if save_executor is not None:
             save_executor.shutdown(wait=True)
@@ -656,11 +700,17 @@ def encode_mixed_video_latent_sources(
     config_patch_path: Path | None = None
     latent_training_config_path: Path | None = None
     if write_manifests:
+        if not manifest_records:
+            raise ValueError(
+                "Mixed-video latent encoding produced no trainable manifest records. "
+                "Check source filters, episode filters, camera_names, and latent_encoding_mode."
+            )
         if experiment_config is not None:
-            _validate_encoded_records_for_backbone(encoded, experiment_config=experiment_config)
+            _validate_encoded_records_for_backbone(manifest_records, experiment_config=experiment_config)
         manifest_paths = _write_source_manifests(rows_by_source, manifests_root=manifests_root, overwrite=True)
         config_patch_path = _write_latent_source_config_patch(
             data_config,
+            encoded_records=manifest_records,
             manifest_paths=manifest_paths,
             output_root=output_root,
         )
@@ -668,14 +718,20 @@ def encode_mixed_video_latent_sources(
             latent_training_config_path = _write_latent_training_config(
                 experiment_config,
                 data_config=data_config,
+                encoded_records=manifest_records,
                 manifest_paths=manifest_paths,
                 output_root=output_root,
             )
     report = {
         "output_root": str(output_root),
-        "encoded_episodes": len(encoded),
-        "newly_encoded_episodes": len(encoded) - reused_episodes,
-        "reused_episodes": reused_episodes,
+        "encoded_episodes": _encoded_record_episode_count(encoded),
+        "encoded_targets": len(encoded),
+        "manifest_encoded_episodes": _encoded_record_episode_count(manifest_records),
+        "manifest_encoded_targets": len(manifest_records),
+        "newly_encoded_episodes": _encoded_record_episode_count(newly_encoded_records),
+        "newly_encoded_targets": len(newly_encoded_records),
+        "reused_episodes": _encoded_record_episode_count(reused_records),
+        "reused_targets": len(reused_records),
         "selected_episodes": len(all_selected_episodes),
         "shard_episodes": len(episodes),
         "split": selection.split,
@@ -690,9 +746,7 @@ def encode_mixed_video_latent_sources(
             None if latent_training_config_path is None else str(latent_training_config_path)
         ),
         "latent_shapes": {
-            f"{record.source_id}:{record.dataset_id}:{record.episode_index}:{record.clip_id}": list(
-                record.latent_shape
-            )
+            _encoded_record_report_key(record): list(record.latent_shape)
             for record in encoded
         },
     }
@@ -747,9 +801,128 @@ def _episode_has_rgb_streams(episode: MixedVideoEpisodeRecord) -> bool:
     )
 
 
+def _encoding_targets_for_episode(
+    latents_root: Path,
+    episode: MixedVideoEpisodeRecord,
+    data_config: MixedVideoDataConfig,
+) -> tuple[EncodingTarget, ...]:
+    streams_by_slot = {stream.target_slot: stream for stream in episode.streams}
+    configured_slots = tuple(slot for slot in data_config.camera_names if slot in streams_by_slot)
+    rgb_slots = tuple(
+        slot
+        for slot in configured_slots
+        if streams_by_slot[slot].source_format in {MixedVideoSourceFormat.RGB, MixedVideoSourceFormat.RGB_AND_LATENT}
+    )
+    targets: list[EncodingTarget] = []
+    mode = data_config.latent_encoding_mode
+    if mode in {
+        MixedVideoLatentEncodingMode.CANONICAL,
+        MixedVideoLatentEncodingMode.CANONICAL_AND_PER_VIEW,
+    }:
+        canonical_slots = tuple(data_config.camera_names)
+        missing_canonical_slots = tuple(slot for slot in canonical_slots if slot not in rgb_slots)
+        if missing_canonical_slots and mode == MixedVideoLatentEncodingMode.CANONICAL:
+            raise KeyError(
+                f"Cannot encode canonical mixed-video episode {episode.key!r}: missing RGB streams for "
+                f"configured slots {list(missing_canonical_slots)!r}."
+            )
+        if canonical_slots and not missing_canonical_slots:
+            targets.append(
+                EncodingTarget(
+                    name="canonical",
+                    mode=MixedVideoLatentEncodingMode.CANONICAL,
+                    target_slot=_encoded_latent_target_slot(data_config),
+                    source_slots=canonical_slots,
+                    latent_path=_latent_path_for_episode(latents_root, episode),
+                    include_in_training_manifest=mode == MixedVideoLatentEncodingMode.CANONICAL,
+                )
+            )
+    if mode in {
+        MixedVideoLatentEncodingMode.PER_VIEW,
+        MixedVideoLatentEncodingMode.CANONICAL_AND_PER_VIEW,
+    }:
+        for slot in rgb_slots:
+            target_path = _latent_path_for_episode_view(latents_root, episode, slot)
+            compatible = ()
+            if mode == MixedVideoLatentEncodingMode.PER_VIEW and slot == _encoded_latent_target_slot(data_config):
+                compatible = (_latent_path_for_episode(latents_root, episode),)
+            targets.append(
+                EncodingTarget(
+                    name=f"per_view:{slot}",
+                    mode=MixedVideoLatentEncodingMode.PER_VIEW,
+                    target_slot=slot,
+                    source_slots=(slot,),
+                    latent_path=target_path,
+                    compatible_existing_paths=compatible,
+                )
+            )
+    return tuple(targets)
+
+
+def _resolve_existing_target_path(target: EncodingTarget) -> Path | None:
+    if target.latent_path.exists():
+        return target.latent_path
+    for path in target.compatible_existing_paths:
+        if path.exists():
+            return path
+    return None
+
+
+def _data_config_for_encoding_target(
+    data_config: MixedVideoDataConfig,
+    target: EncodingTarget,
+) -> MixedVideoDataConfig:
+    if target.mode == MixedVideoLatentEncodingMode.CANONICAL:
+        return data_config
+    if len(target.source_slots) != 1:
+        raise ValueError(f"Per-view encoding target expects exactly one source slot, got {target.source_slots!r}.")
+    slot = target.source_slots[0]
+    return replace(
+        data_config,
+        camera_names=(slot,),
+        latent_camera_names=(slot,),
+        canonical_height=int(data_config.decode_height),
+        canonical_width=int(data_config.decode_width),
+        view_layout=(
+            ViewLayoutConfig(
+                source_name=slot,
+                canonical_name=slot,
+                top=0,
+                left=0,
+                height=int(data_config.decode_height),
+                width=int(data_config.decode_width),
+            ),
+        ),
+    )
+
+
+def _episode_for_encoding_target(
+    episode: MixedVideoEpisodeRecord,
+    target: EncodingTarget,
+) -> MixedVideoEpisodeRecord:
+    selected_streams = tuple(stream for stream in episode.streams if stream.target_slot in set(target.source_slots))
+    if not selected_streams:
+        raise ValueError(f"Episode {episode.key!r} has no streams for encoding target {target.name!r}.")
+    native_length = min(stream.length_frames for stream in selected_streams if stream.length_frames > 0)
+    length = min(int(stream.clip.normalized_length_frames) for stream in selected_streams)
+    latent_lengths = [
+        int(stream.latent_length_frames)
+        for stream in selected_streams
+        if stream.latent_length_frames is not None and stream.latent_length_frames > 0
+    ]
+    return replace(
+        episode,
+        native_length_frames=native_length,
+        length_frames=length,
+        latent_length_frames=min(latent_lengths) if latent_lengths else None,
+        streams=selected_streams,
+    )
+
+
 def _preflight_output_paths(
     episodes: list[MixedVideoEpisodeRecord],
     *,
+    data_config: MixedVideoDataConfig,
     output_root: Path,
     latents_root: Path,
     manifests_root: Path,
@@ -757,7 +930,11 @@ def _preflight_output_paths(
     skip_existing: bool = False,
     write_manifests: bool = True,
 ) -> None:
-    latent_paths = [_latent_path_for_episode(latents_root, episode) for episode in episodes]
+    latent_paths = [
+        target.latent_path
+        for episode in episodes
+        for target in _encoding_targets_for_episode(latents_root, episode, data_config)
+    ]
     source_manifest_paths = [
         manifests_root / f"{_safe_path_part(source_id)}.csv"
         for source_id in sorted({episode.source_id for episode in episodes})
@@ -799,6 +976,7 @@ def _encoded_episode_from_existing_sidecar(
     episode: MixedVideoEpisodeRecord,
     *,
     data_config: MixedVideoDataConfig,
+    target: EncodingTarget | None = None,
 ) -> EncodedEpisode:
     payload = torch.load(latent_path, map_location="cpu")
     if isinstance(payload, torch.Tensor):
@@ -819,7 +997,11 @@ def _encoded_episode_from_existing_sidecar(
         episode=episode,
         data_config=data_config,
         latent_shape=latent_shape,
+        target=target,
     )
+    target_slot = _encoded_latent_target_slot(data_config) if target is None else target.target_slot
+    encoded_slots = tuple(data_config.camera_names) if target is None else target.source_slots
+    encoding_mode = MixedVideoLatentEncodingMode.CANONICAL.value if target is None else target.mode.value
     return EncodedEpisode(
         source_id=episode.source_id,
         dataset_id=episode.dataset_id,
@@ -830,6 +1012,9 @@ def _encoded_episode_from_existing_sidecar(
         raw_length_frames=int(episode.length_frames),
         latent_length_frames=int(latents.shape[1]),
         tasks=episode.tasks,
+        target_slot=target_slot,
+        encoded_slots=encoded_slots,
+        encoding_mode=encoding_mode,
     )
 
 
@@ -840,6 +1025,7 @@ def _validate_existing_sidecar_metadata(
     episode: MixedVideoEpisodeRecord,
     data_config: MixedVideoDataConfig,
     latent_shape: tuple[int, int, int, int],
+    target: EncodingTarget | None = None,
 ) -> None:
     expected_fields = {
         "source_id": str(episode.source_id),
@@ -910,6 +1096,35 @@ def _validate_existing_sidecar_metadata(
                 f"Existing sidecar decode_resize_bins metadata mismatch for {latent_path}; "
                 "re-run without --skip-existing or pass --overwrite to regenerate it."
             )
+    if target is not None:
+        compatible_legacy_sidecar = latent_path in target.compatible_existing_paths
+        optional_expected = {"target_slot": target.target_slot}
+        for field_name, expected in optional_expected.items():
+            if field_name in metadata and str(metadata[field_name]) != str(expected):
+                raise ValueError(
+                    f"Existing sidecar metadata mismatch for {latent_path}: "
+                    f"{field_name}={metadata[field_name]!r}, expected {expected!r}."
+                )
+        if "encoding_mode" in metadata:
+            allowed_modes = {target.mode.value}
+            if compatible_legacy_sidecar:
+                allowed_modes.add(MixedVideoLatentEncodingMode.CANONICAL.value)
+            if str(metadata["encoding_mode"]) not in allowed_modes:
+                raise ValueError(
+                    f"Existing sidecar metadata mismatch for {latent_path}: "
+                    f"encoding_mode={metadata['encoding_mode']!r}, expected one of {sorted(allowed_modes)!r}."
+                )
+        if "encoded_slots" in metadata:
+            raw_encoded_slots = metadata["encoded_slots"]
+            if isinstance(raw_encoded_slots, str):
+                encoded_slots = tuple(slot for slot in raw_encoded_slots.split("|") if slot)
+            else:
+                encoded_slots = tuple(str(value) for value in raw_encoded_slots)
+            if encoded_slots != target.source_slots:
+                raise ValueError(
+                    f"Existing sidecar metadata mismatch for {latent_path}: "
+                    f"encoded_slots={encoded_slots!r}, expected {target.source_slots!r}."
+                )
 
 
 def _encode_episode_latents_streaming(
@@ -1074,11 +1289,22 @@ def _latent_path_for_episode(latents_root: Path, episode: MixedVideoEpisodeRecor
     return latents_root / source / dataset / f"episode_{int(episode.episode_index):06d}{suffix}.pt"
 
 
+def _latent_path_for_episode_view(
+    latents_root: Path,
+    episode: MixedVideoEpisodeRecord,
+    target_slot: str,
+) -> Path:
+    source = _safe_path_part(episode.source_id)
+    dataset = _safe_path_part(episode.dataset_id)
+    suffix = "" if episode.clip_id == "default" else f"_{_safe_path_part(episode.clip_id)}"
+    slot_suffix = _safe_path_part(target_slot)
+    return latents_root / source / dataset / f"episode_{int(episode.episode_index):06d}{suffix}__{slot_suffix}.pt"
+
+
 def _manifest_row_for_encoded_episode(
     record: EncodedEpisode,
     *,
     manifest_path: Path,
-    target_slot: str,
 ) -> dict[str, Any]:
     return {
         "source_id": record.source_id,
@@ -1086,8 +1312,8 @@ def _manifest_row_for_encoded_episode(
         "episode_index": int(record.episode_index),
         "clip_id": record.clip_id,
         "stream_index": 0,
-        "stream_key": "encoded_video_latents",
-        "target_slot_key": target_slot,
+        "stream_key": _encoded_stream_key(record),
+        "target_slot_key": record.target_slot,
         "latent_path": os.path.relpath(record.latent_path, manifest_path.parent),
         "latent_length_frames": int(record.latent_length_frames),
         "length_frames": int(record.latent_length_frames),
@@ -1096,8 +1322,36 @@ def _manifest_row_for_encoded_episode(
         "width": int(record.latent_shape[-1]),
         "height": int(record.latent_shape[-2]),
         "channels": int(record.latent_shape[0]),
+        "encoding_mode": record.encoding_mode,
+        "encoded_slots": "|".join(record.encoded_slots),
         "tasks": "|".join(record.tasks),
     }
+
+
+def _encoded_record_report_key(record: EncodedEpisode) -> str:
+    return (
+        f"{record.source_id}:{record.dataset_id}:{record.episode_index}:"
+        f"{record.clip_id}:{record.encoding_mode}:{record.target_slot}"
+    )
+
+
+def _encoded_record_episode_count(records: Sequence[EncodedEpisode]) -> int:
+    return len(
+        {
+            (record.source_id, record.dataset_id, int(record.episode_index), record.clip_id)
+            for record in records
+        }
+    )
+
+
+def _encoded_stream_key(record: EncodedEpisode) -> str:
+    if record.encoding_mode == MixedVideoLatentEncodingMode.PER_VIEW.value and record.encoded_slots:
+        return f"encoded_video_latents:{record.encoded_slots[0]}"
+    return "encoded_video_latents"
+
+
+def _yaml_inline_str_list(values: Sequence[str]) -> str:
+    return "[" + ", ".join(json.dumps(str(value)) for value in values) + "]"
 
 
 def _encoded_latent_target_slot(data_config: MixedVideoDataConfig) -> str:
@@ -1106,16 +1360,51 @@ def _encoded_latent_target_slot(data_config: MixedVideoDataConfig) -> str:
     return data_config.camera_names[0]
 
 
-def _encoded_latent_view_layout(data_config: MixedVideoDataConfig) -> dict[str, Any]:
-    target_slot = _encoded_latent_target_slot(data_config)
-    return {
-        "source_name": target_slot,
-        "canonical_name": target_slot,
-        "top": 0,
-        "left": 0,
-        "height": int(data_config.canonical_height),
-        "width": int(data_config.canonical_width),
-    }
+def _encoded_latent_target_slots(
+    data_config: MixedVideoDataConfig,
+    encoded_records: list[EncodedEpisode],
+) -> tuple[str, ...]:
+    slots = tuple(dict.fromkeys(record.target_slot for record in encoded_records))
+    if slots:
+        return slots
+    return (_encoded_latent_target_slot(data_config),)
+
+
+def _encoded_records_latent_encoding_mode(
+    encoded_records: list[EncodedEpisode],
+    *,
+    fallback: MixedVideoLatentEncodingMode,
+) -> str:
+    modes = {record.encoding_mode for record in encoded_records}
+    if modes == {MixedVideoLatentEncodingMode.CANONICAL.value}:
+        return MixedVideoLatentEncodingMode.CANONICAL.value
+    if modes == {MixedVideoLatentEncodingMode.PER_VIEW.value}:
+        return MixedVideoLatentEncodingMode.PER_VIEW.value
+    if modes == {
+        MixedVideoLatentEncodingMode.CANONICAL.value,
+        MixedVideoLatentEncodingMode.PER_VIEW.value,
+    }:
+        return MixedVideoLatentEncodingMode.CANONICAL_AND_PER_VIEW.value
+    return fallback.value
+
+
+def _encoded_latent_view_layouts(
+    data_config: MixedVideoDataConfig,
+    target_slots: Sequence[str],
+) -> list[dict[str, Any]]:
+    layouts: list[dict[str, Any]] = []
+    for slot in target_slots:
+        layouts.append(
+            {
+                "source_name": slot,
+                "canonical_name": slot,
+                "top": 0,
+                "left": 0,
+                "height": int(data_config.canonical_height),
+                "width": int(data_config.canonical_width),
+            }
+        )
+    return layouts
 
 
 def _write_source_manifests(
@@ -1141,6 +1430,8 @@ def _write_source_manifests(
         "width",
         "height",
         "channels",
+        "encoding_mode",
+        "encoded_slots",
         "tasks",
     )
     for source_id, rows in sorted(rows_by_source.items()):
@@ -1158,35 +1449,64 @@ def _write_source_manifests(
 def _write_latent_source_config_patch(
     data_config: MixedVideoDataConfig,
     *,
+    encoded_records: list[EncodedEpisode],
     manifest_paths: dict[str, Path],
     output_root: Path,
 ) -> Path:
     source_by_id = {source.source_id: source for source in data_config.video_sources}
     latent_num_frames = wan_raw_frame_count_to_latent_count(int(data_config.num_frames))
     latent_buckets = _latent_causal_bucket_specs(data_config)
-    target_slot = _encoded_latent_target_slot(data_config)
-    latent_view_layout = _encoded_latent_view_layout(data_config)
+    target_slots = _encoded_latent_target_slots(data_config, encoded_records)
+    latent_view_layouts = _encoded_latent_view_layouts(data_config, target_slots)
+    manifest_encoding_mode = _encoded_records_latent_encoding_mode(
+        encoded_records,
+        fallback=data_config.latent_encoding_mode,
+    )
     lines = [
         "# Include this block in a mixed-video latent-first training config.",
         "# The generated manifests use latent-frame units for length_frames.",
         "# These num_frames/bucket values are converted from the RGB/WAN raw-frame config.",
         "data:",
-        f"  camera_names: [{json.dumps(target_slot)}]",
-        f"  latent_camera_names: [{json.dumps(target_slot)}]",
+        f"  camera_names: {_yaml_inline_str_list(target_slots)}",
+        f"  latent_camera_names: {_yaml_inline_str_list(target_slots)}",
+        f"  latent_encoding_mode: {manifest_encoding_mode}",
         f"  canonical_height: {int(data_config.canonical_height)}",
         f"  canonical_width: {int(data_config.canonical_width)}",
         "  view_layout:",
-        f"    - source_name: {json.dumps(latent_view_layout['source_name'])}",
-        f"      canonical_name: {json.dumps(latent_view_layout['canonical_name'])}",
-        f"      top: {latent_view_layout['top']}",
-        f"      left: {latent_view_layout['left']}",
-        f"      height: {latent_view_layout['height']}",
-        f"      width: {latent_view_layout['width']}",
-        f"  num_frames: {latent_num_frames}",
-        "  frame_stride: 1",
-        "  sample_stride: 1",
-        "  video_sources:",
     ]
+    for latent_view_layout in latent_view_layouts:
+        lines.extend(
+            [
+                f"    - source_name: {json.dumps(latent_view_layout['source_name'])}",
+                f"      canonical_name: {json.dumps(latent_view_layout['canonical_name'])}",
+                f"      top: {latent_view_layout['top']}",
+                f"      left: {latent_view_layout['left']}",
+                f"      height: {latent_view_layout['height']}",
+                f"      width: {latent_view_layout['width']}",
+            ]
+        )
+    if data_config.latent_view_combinations:
+        lines.append("  latent_view_combinations:")
+        for combination in data_config.latent_view_combinations:
+            lines.extend(
+                [
+                    f"    - name: {json.dumps(combination.name)}",
+                    f"      slots: {_yaml_inline_str_list(combination.slots)}",
+                    f"      sampling_weight: {float(combination.sampling_weight)}",
+                ]
+            )
+            if combination.source_ids:
+                lines.append(f"      source_ids: {_yaml_inline_str_list(combination.source_ids)}")
+            if not combination.enabled:
+                lines.append("      enabled: false")
+    lines.extend(
+        [
+            f"  num_frames: {latent_num_frames}",
+            "  frame_stride: 1",
+            "  sample_stride: 1",
+            "  video_sources:",
+        ]
+    )
     for source_id, manifest_path in sorted(manifest_paths.items()):
         source = source_by_id.get(source_id)
         sampling_weight = None if source is None else source.sampling_weight
@@ -1236,6 +1556,7 @@ def _write_latent_training_config(
     experiment_config,
     *,
     data_config: MixedVideoDataConfig,
+    encoded_records: list[EncodedEpisode],
     manifest_paths: dict[str, Path],
     output_root: Path,
 ) -> Path:
@@ -1246,16 +1567,31 @@ def _write_latent_training_config(
 
     data_payload = dict(payload.get("data", {}))
     latent_num_frames = wan_raw_frame_count_to_latent_count(int(data_config.num_frames))
-    target_slot = _encoded_latent_target_slot(data_config)
+    target_slots = _encoded_latent_target_slots(data_config, encoded_records)
+    manifest_encoding_mode = _encoded_records_latent_encoding_mode(
+        encoded_records,
+        fallback=data_config.latent_encoding_mode,
+    )
     data_payload.update(
         {
             "dataset_name": data_config.dataset_name,
             "dataset_type": data_config.dataset_type,
-            "camera_names": [target_slot],
-            "latent_camera_names": [target_slot],
+            "camera_names": list(target_slots),
+            "latent_camera_names": list(target_slots),
+            "latent_encoding_mode": manifest_encoding_mode,
+            "latent_view_combinations": [
+                {
+                    "name": combination.name,
+                    "slots": list(combination.slots),
+                    "sampling_weight": float(combination.sampling_weight),
+                    **({"source_ids": list(combination.source_ids)} if combination.source_ids else {}),
+                    **({"enabled": False} if not combination.enabled else {}),
+                }
+                for combination in data_config.latent_view_combinations
+            ],
             "canonical_height": int(data_config.canonical_height),
             "canonical_width": int(data_config.canonical_width),
-            "view_layout": [_encoded_latent_view_layout(data_config)],
+            "view_layout": _encoded_latent_view_layouts(data_config, target_slots),
             "num_frames": latent_num_frames,
             "frame_stride": 1,
             "sample_stride": 1,

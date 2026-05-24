@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from collections import Counter
 from concurrent.futures import Future
 from dataclasses import replace as _dataclass_replace
 import importlib.util
@@ -18,12 +19,15 @@ from open_wam.configs import (
     ActionSchemaConfig,
     BatchAdapterName,
     CausalPrefixSuffixBucketConfig,
+    ConsortiumChannelMappingConfig,
     MixedVideoDataConfig,
     MixedVideoDecodeSizeMode,
     MixedVideoFrameFitMode,
+    MixedVideoLatentEncodingMode,
     MixedVideoRandomMode,
     MixedVideoSourceFormat,
     MixedVideoSourceConfig,
+    MixedVideoViewCombinationConfig,
     SampleConstructionConfig,
     ViewLayoutConfig,
     WindowSamplingMode,
@@ -39,6 +43,7 @@ from open_wam.data.raw_video import build_canonical_video_preprocessor
 from open_wam.data.mixed_video import (
     MixedVideoLatentWindowDataset,
     MixedVideoWindowDataset,
+    assemble_mixed_video_latent_views,
     decode_video_frames,
     load_mixed_video_catalog,
     normalized_video_frame_count,
@@ -83,6 +88,32 @@ def _write_manifest(path: Path, rows: list[dict[str, object]]) -> None:
         "width",
         "height",
         "channels",
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+
+def _write_pr143_manifest(path: Path, rows: list[dict[str, object]]) -> None:
+    fieldnames = (
+        "source_id",
+        "dataset_id",
+        "episode_index",
+        "stream_index",
+        "stream_key",
+        "target_slot_key",
+        "video_path",
+        "length_frames",
+        "observation_fps",
+        "tasks",
+        "width",
+        "height",
+        "channels",
+        "from_timestamp",
+        "to_timestamp",
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
@@ -375,6 +406,82 @@ def test_mixed_video_dataset_decodes_multiple_sources_to_common_view_shape(tmp_p
     batch = collate_wam_samples([sample, train_dataset[1]])
     canonical = build_canonical_video_preprocessor(config)(batch.views)
     assert canonical.video.shape == (2, 3, 4, 8, 8)
+
+
+def test_mixed_video_loads_pr143_manifest_schema_with_semicolon_tasks_and_mapping(tmp_path: Path) -> None:
+    root = tmp_path / "pr143_source"
+    _write_video(root / "cam_high.mp4", num_frames=8, height=8, width=8, offset=0)
+    _write_video(root / "cam_left_wrist.mp4", num_frames=8, height=8, width=8, offset=64)
+    manifest = root / "manifest.csv"
+    _write_pr143_manifest(
+        manifest,
+        [
+            {
+                "source_id": "robotwin_aug",
+                "dataset_id": "task_a",
+                "episode_index": 0,
+                "stream_index": 0,
+                "stream_key": "observation.images.cam_high",
+                "target_slot_key": "observation.images.slot0",
+                "video_path": "cam_high.mp4",
+                "length_frames": 8,
+                "observation_fps": 50,
+                "tasks": "pick block; place block",
+                "width": 8,
+                "height": 8,
+                "channels": 3,
+                "from_timestamp": "",
+                "to_timestamp": "",
+            },
+            {
+                "source_id": "robotwin_aug",
+                "dataset_id": "task_a",
+                "episode_index": 0,
+                "stream_index": 0,
+                "stream_key": "observation.images.cam_left_wrist",
+                "target_slot_key": "observation.images.slot0",
+                "video_path": "cam_left_wrist.mp4",
+                "length_frames": 8,
+                "observation_fps": 50,
+                "tasks": "pick block; place block",
+                "width": 8,
+                "height": 8,
+                "channels": 3,
+                "from_timestamp": "",
+                "to_timestamp": "",
+            },
+        ],
+    )
+    config = _dataclass_replace(
+        _two_camera_mixed_video_fixture_config(tmp_path),
+        video_sources=(
+            MixedVideoSourceConfig(
+                source_id="robotwin_aug",
+                manifest_csv=str(manifest),
+                local_root=str(root),
+                channel_mappings=(
+                    ConsortiumChannelMappingConfig(
+                        source_name="observation.images.cam_high",
+                        target_slot="observation.images.slot0",
+                    ),
+                    ConsortiumChannelMappingConfig(
+                        source_name="observation.images.cam_left_wrist",
+                        target_slot="observation.images.slot1",
+                    ),
+                ),
+            ),
+        ),
+        target_observation_fps=None,
+        train_fraction=1.0,
+    )
+
+    catalog = load_mixed_video_catalog(config)
+    assert len(catalog.episodes) == 1
+    assert catalog.episodes[0].tasks == ("pick block", "place block")
+    assert {stream.target_slot for stream in catalog.episodes[0].streams} == {
+        "observation.images.slot0",
+        "observation.images.slot1",
+    }
 
 
 def test_mixed_video_frame_cache_respects_timestamp_windows(tmp_path: Path) -> None:
@@ -1099,6 +1206,202 @@ def test_mixed_video_latent_dataset_uses_latent_camera_names(tmp_path: Path) -> 
     assert sample.metadata["stream_keys"] == {"latent.video": "encoded"}
 
 
+def test_mixed_video_latent_view_assembly_supports_weighted_combinations(tmp_path: Path) -> None:
+    config = _two_camera_mixed_video_fixture_config(tmp_path)
+    root = Path(config.video_sources[0].local_root)
+    _write_latents(root / "front_latents.pt", episode_offset=0)
+    _write_latents(root / "wrist_latents.pt", episode_offset=1000)
+    source = _dataclass_replace(config.video_sources[0], source_format=MixedVideoSourceFormat.RGB_AND_LATENT)
+    config = _dataclass_replace(
+        config,
+        video_sources=(source,),
+        latent_view_combinations=(
+            MixedVideoViewCombinationConfig(
+                name="front_only",
+                slots=("observation.images.slot0",),
+                sampling_weight=1.0,
+            ),
+            MixedVideoViewCombinationConfig(
+                name="wrist_only",
+                slots=("observation.images.slot1",),
+                sampling_weight=1.0,
+            ),
+            MixedVideoViewCombinationConfig(
+                name="front_wrist",
+                slots=("observation.images.slot0", "observation.images.slot1"),
+                sampling_weight=2.0,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config)
+    counts = Counter(window.view_combination_name for window in train_dataset.sample_index)
+
+    assert counts["front_only"] == 1
+    assert counts["wrist_only"] == 1
+    assert counts["front_wrist"] == 2
+
+    samples = {
+        sample.metadata["view_combination_name"]: sample
+        for sample in (train_dataset[index] for index in range(len(train_dataset)))
+    }
+    assert samples["front_only"].video_latents.shape == (48, 8, 2, 4)
+    assert samples["front_only"].metadata["latent_view_assembly"]["placements"] == [
+        {"slot": "observation.images.slot0", "top": 0, "left": 1, "height": 2, "width": 2}
+    ]
+    assert samples["front_wrist"].video_latents.shape == (48, 8, 2, 4)
+    assert samples["front_wrist"].metadata["latent_view_assembly"]["placements"] == [
+        {"slot": "observation.images.slot0", "top": 0, "left": 0, "height": 2, "width": 2},
+        {"slot": "observation.images.slot1", "top": 0, "left": 2, "height": 2, "width": 2},
+    ]
+
+    batch = collate_latent_wam_samples([samples["front_only"], samples["front_wrist"]])
+    assert batch.video_latents.shape == (2, 48, 8, 2, 4)
+
+
+def test_mixed_video_latent_view_combinations_can_select_manifest_only_slots(tmp_path: Path) -> None:
+    config = _two_camera_mixed_video_fixture_config(tmp_path)
+    root = Path(config.video_sources[0].local_root)
+    _write_latents(root / "front_latents.pt", episode_offset=0)
+    _write_latents(root / "wrist_latents.pt", episode_offset=1000)
+    source = _dataclass_replace(config.video_sources[0], source_format=MixedVideoSourceFormat.RGB_AND_LATENT)
+    config = _dataclass_replace(
+        config,
+        video_sources=(source,),
+        camera_names=("observation.images.slot0",),
+        latent_camera_names=("observation.images.slot0",),
+        view_layout=config.view_layout[:1],
+        latent_view_combinations=(
+            MixedVideoViewCombinationConfig(
+                name="manifest_wrist_only",
+                slots=("observation.images.slot1",),
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config)
+    sample = train_dataset[0]
+
+    assert sample.metadata["view_combination_slots"] == ["observation.images.slot1"]
+    assert sample.metadata["stream_keys"] == {"observation.images.slot1": "wrist"}
+    assert sample.video_latents.shape == (48, 8, 2, 2)
+
+
+def test_mixed_video_disabled_latent_view_combinations_do_not_load_slots(tmp_path: Path) -> None:
+    base_config = _mixed_video_fixture_config(tmp_path)
+    latent_root = tmp_path / "enabled_latent_source"
+    rgb_root = tmp_path / "disabled_rgb_source"
+    _write_latents(latent_root / "enabled_latents.pt", episode_offset=0)
+    _write_video(rgb_root / "disabled.mp4", num_frames=8, height=8, width=8, offset=32)
+    latent_manifest = latent_root / "manifest.csv"
+    rgb_manifest = rgb_root / "manifest.csv"
+    _write_manifest(
+        latent_manifest,
+        [
+            {
+                "source_id": "enabled_latent_source",
+                "dataset_id": "enabled_latent_dataset",
+                "episode_index": 0,
+                "stream_index": 0,
+                "stream_key": "enabled",
+                "target_slot_key": "observation.images.slot0",
+                "latent_path": "enabled_latents.pt",
+                "length_frames": 8,
+                "latent_length_frames": 8,
+                "latent_key": "video_latents",
+                "tasks": "enabled latent task",
+            }
+        ],
+    )
+    _write_manifest(
+        rgb_manifest,
+        [
+            {
+                "source_id": "disabled_rgb_source",
+                "dataset_id": "disabled_rgb_dataset",
+                "episode_index": 0,
+                "stream_index": 0,
+                "stream_key": "disabled",
+                "target_slot_key": "observation.images.slot1",
+                "video_path": "disabled.mp4",
+                "length_frames": 8,
+                "observation_fps": 10,
+                "tasks": "disabled rgb task",
+                "width": 8,
+                "height": 8,
+                "channels": 3,
+            }
+        ],
+    )
+    config = _dataclass_replace(
+        base_config,
+        video_sources=(
+            MixedVideoSourceConfig(
+                source_id="enabled_latent_source",
+                manifest_csv=str(latent_manifest),
+                local_root=str(latent_root),
+                source_format=MixedVideoSourceFormat.LATENT,
+            ),
+            MixedVideoSourceConfig(
+                source_id="disabled_rgb_source",
+                manifest_csv=str(rgb_manifest),
+                local_root=str(rgb_root),
+                source_format=MixedVideoSourceFormat.RGB,
+            ),
+        ),
+        latent_view_combinations=(
+            MixedVideoViewCombinationConfig(
+                name="enabled_latent_slot",
+                slots=("observation.images.slot0",),
+                source_ids=("enabled_latent_source",),
+            ),
+            MixedVideoViewCombinationConfig(
+                name="disabled_rgb_slot",
+                slots=("observation.images.slot1",),
+                source_ids=("disabled_rgb_source",),
+                enabled=False,
+            ),
+        ),
+    )
+
+    catalog = load_mixed_video_catalog(config)
+    assert [episode.source_id for episode in catalog.episodes] == ["enabled_latent_source"]
+
+    train_dataset, _ = build_train_val_latent_datasets(config)
+    sample = train_dataset[0]
+    assert sample.metadata["source_id"] == "enabled_latent_source"
+    assert sample.metadata["stream_keys"] == {"observation.images.slot0": "enabled"}
+
+
+def test_mixed_video_latent_view_assembly_layouts_one_to_four_views() -> None:
+    latents = [
+        torch.full((2, 3, 4, 5), float(index + 1))
+        for index in range(4)
+    ]
+
+    one, one_meta = assemble_mixed_video_latent_views(latents[:1], slots=("a",), canvas_view_count=2)
+    two, two_meta = assemble_mixed_video_latent_views(latents[:2], slots=("a", "b"), canvas_view_count=2)
+    three, three_meta = assemble_mixed_video_latent_views(
+        latents[:3],
+        slots=("a", "b", "c"),
+        canvas_view_count=3,
+    )
+    four, four_meta = assemble_mixed_video_latent_views(
+        latents,
+        slots=("a", "b", "c", "d"),
+        canvas_view_count=4,
+    )
+
+    assert one.shape == (2, 3, 4, 10)
+    assert one_meta["placements"][0]["left"] == 2
+    assert two.shape == (2, 3, 4, 10)
+    assert two_meta["placements"][1]["left"] == 5
+    assert three.shape == (2, 3, 8, 10)
+    assert three_meta["placements"][2] == {"slot": "c", "top": 4, "left": 2, "height": 4, "width": 5}
+    assert four.shape == (2, 3, 8, 10)
+    assert four_meta["placements"][3] == {"slot": "d", "top": 4, "left": 5, "height": 4, "width": 5}
+
+
 def test_mixed_video_decord_fallback_does_not_restart_after_partial_emit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1388,6 +1691,266 @@ def test_mixed_video_latent_encoder_writes_trainable_multicamera_config(tmp_path
 
     assert sample.video_latents.shape == (48, 2, 2, 2)
     assert sample.metadata["mixed_video_training_input"] == "latents"
+
+
+def test_mixed_video_canonical_encoder_requires_configured_rgb_slots(tmp_path: Path) -> None:
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "encode_mixed_video_latents.py"
+    spec = importlib.util.spec_from_file_location("encode_mixed_video_latents_test", script_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Failed to load module spec for {script_path}.")
+    encoder = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = encoder
+    try:
+        spec.loader.exec_module(encoder)
+    finally:
+        sys.modules.pop(spec.name, None)
+
+    config = _two_camera_mixed_video_fixture_config(tmp_path)
+    source = _dataclass_replace(config.video_sources[0], include_streams=("front",))
+    config = _dataclass_replace(config, video_sources=(source,))
+
+    with pytest.raises(KeyError, match="missing RGB streams"):
+        encoder.encode_mixed_video_latent_sources(
+            data_config=config,
+            assets=_FakeLatentEncoderAssets(),
+            output_root=tmp_path / "encoded_missing_slot",
+            device=torch.device("cpu"),
+            split="all",
+            source_ids=("two_camera_source",),
+            max_episodes=1,
+            chunk_frames=5,
+            overwrite=True,
+        )
+
+
+def test_mixed_video_encoder_rejects_empty_training_manifest(tmp_path: Path) -> None:
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "encode_mixed_video_latents.py"
+    spec = importlib.util.spec_from_file_location("encode_mixed_video_latents_test", script_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Failed to load module spec for {script_path}.")
+    encoder = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = encoder
+    try:
+        spec.loader.exec_module(encoder)
+    finally:
+        sys.modules.pop(spec.name, None)
+
+    config = _dataclass_replace(
+        _two_camera_mixed_video_fixture_config(tmp_path),
+        latent_encoding_mode=MixedVideoLatentEncodingMode.PER_VIEW,
+    )
+
+    with pytest.raises(ValueError, match="no trainable manifest records"):
+        encoder.encode_mixed_video_latent_sources(
+            data_config=config,
+            assets=_FakeLatentEncoderAssets(),
+            output_root=tmp_path / "encoded_empty_manifest",
+            device=torch.device("cpu"),
+            split="all",
+            source_ids=("two_camera_source",),
+            max_episodes=0,
+            chunk_frames=5,
+            overwrite=True,
+        )
+
+
+def test_mixed_video_latent_encoder_writes_per_view_sidecars_and_config(tmp_path: Path) -> None:
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "encode_mixed_video_latents.py"
+    spec = importlib.util.spec_from_file_location("encode_mixed_video_latents_test", script_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Failed to load module spec for {script_path}.")
+    encoder = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = encoder
+    try:
+        spec.loader.exec_module(encoder)
+    finally:
+        sys.modules.pop(spec.name, None)
+
+    config = _dataclass_replace(
+        _two_camera_mixed_video_fixture_config(tmp_path),
+        latent_encoding_mode=MixedVideoLatentEncodingMode.PER_VIEW,
+    )
+    assets = _FakeLatentEncoderAssets()
+    report = encoder.encode_mixed_video_latent_sources(
+        data_config=config,
+        assets=assets,
+        output_root=tmp_path / "encoded_per_view",
+        device=torch.device("cpu"),
+        experiment_config=_dataclass_replace(
+            load_experiment_config(
+                Path(__file__).resolve().parents[1]
+                / "configs"
+                / "experiments"
+                / "causal_video_prediction_robotwin_smoke.yaml"
+            ),
+            data=config,
+        ),
+        split="all",
+        source_ids=("two_camera_source",),
+        max_episodes=1,
+        chunk_frames=5,
+        overwrite=True,
+    )
+
+    manifest_path = Path(report["manifest_paths"]["two_camera_source"])
+    rows = list(csv.DictReader(manifest_path.open("r", encoding="utf-8")))
+    assert {row["target_slot_key"] for row in rows} == {
+        "observation.images.slot0",
+        "observation.images.slot1",
+    }
+    assert {row["encoding_mode"] for row in rows} == {"per_view"}
+    assert [call["shape"][-2:] for call in assets.calls] == [(8, 8), (8, 8)]
+
+    payloads = [
+        torch.load((manifest_path.parent / row["latent_path"]).resolve(), map_location="cpu")
+        for row in rows
+    ]
+    assert {payload["metadata"]["target_slot"] for payload in payloads} == {
+        "observation.images.slot0",
+        "observation.images.slot1",
+    }
+
+    latent_training_config = load_experiment_config(Path(report["latent_training_config_path"]))
+    assert tuple(latent_training_config.data.latent_camera_names) == (
+        "observation.images.slot0",
+        "observation.images.slot1",
+    )
+    assert latent_training_config.data.latent_encoding_mode == MixedVideoLatentEncodingMode.PER_VIEW
+
+    train_dataset, _ = build_train_val_latent_datasets(latent_training_config.data)
+    sample = train_dataset[0]
+    assert sample.video_latents.shape == (48, 2, 2, 4)
+    assert sample.metadata["view_combination_slots"] == [
+        "observation.images.slot0",
+        "observation.images.slot1",
+    ]
+
+
+def test_mixed_video_latent_encoder_canonical_and_per_view_manifest_is_trainable(tmp_path: Path) -> None:
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "encode_mixed_video_latents.py"
+    spec = importlib.util.spec_from_file_location("encode_mixed_video_latents_test", script_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Failed to load module spec for {script_path}.")
+    encoder = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = encoder
+    try:
+        spec.loader.exec_module(encoder)
+    finally:
+        sys.modules.pop(spec.name, None)
+
+    config = _dataclass_replace(
+        _two_camera_mixed_video_fixture_config(tmp_path),
+        latent_encoding_mode=MixedVideoLatentEncodingMode.CANONICAL_AND_PER_VIEW,
+    )
+    output_root = tmp_path / "encoded_canonical_and_per_view"
+    report = encoder.encode_mixed_video_latent_sources(
+        data_config=config,
+        assets=_FakeLatentEncoderAssets(),
+        output_root=output_root,
+        device=torch.device("cpu"),
+        experiment_config=_dataclass_replace(
+            load_experiment_config(
+                Path(__file__).resolve().parents[1]
+                / "configs"
+                / "experiments"
+                / "causal_video_prediction_robotwin_smoke.yaml"
+            ),
+            data=config,
+        ),
+        split="all",
+        source_ids=("two_camera_source",),
+        max_episodes=1,
+        chunk_frames=5,
+        overwrite=True,
+    )
+
+    latent_root = output_root / "latents" / "two_camera_source" / "two_camera_dataset"
+    assert (latent_root / "episode_000000.pt").exists()
+    assert (latent_root / "episode_000000__observation.images.slot0.pt").exists()
+    assert (latent_root / "episode_000000__observation.images.slot1.pt").exists()
+    assert report["encoded_episodes"] == 1
+    assert report["encoded_targets"] == 3
+    assert report["manifest_encoded_episodes"] == 1
+    assert report["manifest_encoded_targets"] == 2
+    assert report["newly_encoded_episodes"] == 1
+    assert report["newly_encoded_targets"] == 3
+    assert report["reused_episodes"] == 0
+    assert report["reused_targets"] == 0
+    assert len(report["latent_shapes"]) == 3
+    assert {
+        tuple(key.rsplit(":", 2)[-2:])
+        for key in report["latent_shapes"]
+    } == {
+        ("canonical", "observation.images.slot0"),
+        ("per_view", "observation.images.slot0"),
+        ("per_view", "observation.images.slot1"),
+    }
+
+    manifest_path = Path(report["manifest_paths"]["two_camera_source"])
+    rows = list(csv.DictReader(manifest_path.open("r", encoding="utf-8")))
+    assert len(rows) == 2
+    assert {row["encoding_mode"] for row in rows} == {"per_view"}
+    assert {row["target_slot_key"] for row in rows} == {
+        "observation.images.slot0",
+        "observation.images.slot1",
+    }
+
+    latent_training_config = load_experiment_config(Path(report["latent_training_config_path"]))
+    assert latent_training_config.data.latent_encoding_mode == MixedVideoLatentEncodingMode.PER_VIEW
+    train_dataset, _ = build_train_val_latent_datasets(latent_training_config.data)
+    sample = train_dataset[0]
+    assert sample.video_latents.shape == (48, 2, 2, 4)
+
+
+def test_mixed_video_per_view_encoder_reuses_existing_single_view_sidecar(tmp_path: Path) -> None:
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "encode_mixed_video_latents.py"
+    spec = importlib.util.spec_from_file_location("encode_mixed_video_latents_test", script_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Failed to load module spec for {script_path}.")
+    encoder = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = encoder
+    try:
+        spec.loader.exec_module(encoder)
+    finally:
+        sys.modules.pop(spec.name, None)
+
+    fixture_config = _mixed_video_fixture_config(tmp_path)
+    base_config = _with_wan_encoder_horizon(
+        fixture_config,
+        video_sources=(fixture_config.video_sources[0],),
+        train_fraction=1.0,
+    )
+    output_root = tmp_path / "encoded_reuse"
+    encoder.encode_mixed_video_latent_sources(
+        data_config=base_config,
+        assets=_FakeLatentEncoderAssets(),
+        output_root=output_root,
+        device=torch.device("cpu"),
+        split="all",
+        source_ids=("source_a",),
+        max_episodes=1,
+        chunk_frames=5,
+        overwrite=True,
+    )
+
+    per_view_config = _dataclass_replace(base_config, latent_encoding_mode=MixedVideoLatentEncodingMode.PER_VIEW)
+    resumed = encoder.encode_mixed_video_latent_sources(
+        data_config=per_view_config,
+        assets=None,
+        output_root=output_root,
+        device=torch.device("cpu"),
+        split="all",
+        source_ids=("source_a",),
+        max_episodes=1,
+        chunk_frames=5,
+        skip_existing=True,
+    )
+
+    manifest_path = Path(resumed["manifest_paths"]["source_a"])
+    row = next(csv.DictReader(manifest_path.open("r", encoding="utf-8")))
+    assert resumed["reused_episodes"] == 1
+    assert row["latent_path"].endswith("episode_000000.pt")
+    assert not row["latent_path"].endswith("__observation_images_slot0.pt")
 
 
 def test_mixed_video_latent_encoder_resamples_rgb_to_target_fps(tmp_path: Path) -> None:

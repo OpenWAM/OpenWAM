@@ -22,6 +22,37 @@ These scripts generate PR#108-compatible manifest CSVs for the `mixed_video` tra
 | `from_timestamp` | packed-bundle only | Start timestamp in shared MP4 (empty = full file) |
 | `to_timestamp` | packed-bundle only | End timestamp in shared MP4 (empty = full file) |
 
+## Multi-Camera Use
+
+The scripts below usually write one camera stream per invocation and set
+`target_slot_key` to `observation.images.slot0`. For multi-view encoding, run the
+script once per camera, concatenate the resulting rows into one manifest for the
+logical dataset, and configure one `data.video_sources` entry for that combined
+manifest.
+
+Use `channel_mappings` in the mixed-video config to map each native `stream_key`
+to the desired target slot:
+
+```yaml
+data:
+  video_sources:
+    - source_id: robotwin_aug
+      manifest_csv: /data/manifests/robotwin_aug_all_cameras.csv
+      source_format: rgb
+      channel_mappings:
+        - source_name: observation.images.cam_high
+          target_slot: robotwin.cam_high
+        - source_name: observation.images.cam_left_wrist
+          target_slot: robotwin.cam_left_wrist
+        - source_name: observation.images.cam_right_wrist
+          target_slot: robotwin.cam_right_wrist
+```
+
+Do not configure one `video_sources` entry per camera with the same
+`source_id`; enabled mixed-video source IDs must be unique. Separate sources are
+only appropriate when those cameras should be sampled as independent one-view
+datasets.
+
 ## Sources
 
 ### LIBERO-10

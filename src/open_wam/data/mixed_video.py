@@ -37,6 +37,7 @@ from open_wam.configs import (
     MixedVideoRandomMode,
     MixedVideoSourceFormat,
     MixedVideoSourceConfig,
+    MixedVideoViewCombinationConfig,
     MixedVideoWeightMode,
 )
 
@@ -111,6 +112,8 @@ class MixedVideoWindowRecord:
     observation_start: int
     observed_prefix_frames: int
     future_suffix_frames: int
+    view_combination_name: str | None = None
+    view_combination_slots: tuple[str, ...] = ()
 
     @property
     def valid_video_frames(self) -> int:
@@ -593,31 +596,56 @@ class MixedVideoLatentWindowDataset(MixedVideoWindowDataset):
         split: str,
         episode_keys: Sequence[str],
     ) -> None:
-        if len(data_config.latent_camera_names) != 1:
-            raise ValueError("Mixed-video latent mode currently expects exactly one configured camera slot.")
         super().__init__(data_config, catalog=catalog, split=split, episode_keys=episode_keys)
         self._video_frame_cache.clear()
         self._latent_cache: OrderedDict[tuple[str, str, str], torch.Tensor] = OrderedDict()
-
-    def _episode_window_length_frames(self, episode: MixedVideoEpisodeRecord) -> int:
-        if episode.latent_length_frames is None:
-            raise ValueError(
-                f"Mixed-video episode {episode.key!r} has no latent_length_frames; "
-                "latent training requires manifest latent sidecars."
-            )
-        return int(episode.latent_length_frames)
 
     def _allowed_source_formats(self) -> frozenset[MixedVideoSourceFormat]:
         return frozenset({MixedVideoSourceFormat.LATENT, MixedVideoSourceFormat.RGB_AND_LATENT})
 
     def _configured_stream_slots(self) -> tuple[str, ...]:
         slots = list(self.data_config.latent_camera_names)
+        for combination in self.data_config.latent_view_combinations:
+            if combination.enabled:
+                slots.extend(combination.slots)
         if len(self.data_config.camera_names) == 1:
             slots.append(self.data_config.camera_names[0])
         return tuple(dict.fromkeys(slots))
 
     def _source_format_adapter_name(self) -> str:
         return "trainer.batch_adapter=latents"
+
+    def _build_sample_index(self) -> tuple[MixedVideoWindowRecord, ...]:
+        windows: list[MixedVideoWindowRecord] = []
+        for episode_key in self.episode_keys:
+            episode = self.episode_records[episode_key]
+            combinations = _valid_latent_view_combinations(self.data_config, episode)
+            for combination in combinations:
+                episode_length = _latent_combination_length_frames(episode, combination.slots)
+                if episode_length <= 0:
+                    continue
+                repeat_count = _latent_view_combination_repeat_count(combination, combinations)
+                for start in range(0, episode_length, self.data_config.sample_stride):
+                    bucket = _select_valid_causal_bucket(
+                        self.data_config,
+                        episode,
+                        start,
+                        episode_length=episode_length,
+                    )
+                    if bucket is None:
+                        continue
+                    for _ in range(repeat_count):
+                        windows.append(
+                            MixedVideoWindowRecord(
+                                episode_key=episode_key,
+                                observation_start=start,
+                                observed_prefix_frames=bucket.observed_frames,
+                                future_suffix_frames=bucket.future_frames,
+                                view_combination_name=combination.name,
+                                view_combination_slots=combination.slots,
+                            )
+                        )
+        return tuple(windows)
 
     def __getitem__(self, index: int) -> LatentWAMSample:
         window = self.sample_index[index]
@@ -626,7 +654,12 @@ class MixedVideoLatentWindowDataset(MixedVideoWindowDataset):
             window.observation_start + offset * self.data_config.frame_stride
             for offset in range(window.valid_video_frames)
         ]
-        video_latents = self._build_latents(episode, frame_indices, valid_frame_count=window.valid_video_frames)
+        video_latents, assembly_metadata = self._build_latents(
+            episode,
+            frame_indices,
+            valid_frame_count=window.valid_video_frames,
+            view_combination_slots=window.view_combination_slots,
+        )
         action_shape = (
             self.data_config.action_schema.action_horizon,
             self.data_config.action_schema.action_dim,
@@ -660,10 +693,13 @@ class MixedVideoLatentWindowDataset(MixedVideoWindowDataset):
                 "valid_video_frames": window.valid_video_frames,
                 "padded_video_frames": self.data_config.num_frames,
                 "latent_shape": list(video_latents.shape),
+                "view_combination_name": window.view_combination_name,
+                "view_combination_slots": list(window.view_combination_slots),
+                "latent_view_assembly": assembly_metadata,
                 "stream_keys": {
                     stream.target_slot: stream.stream_key
                     for stream in episode.streams
-                    if stream.target_slot in self._configured_stream_slots()
+                    if stream.target_slot in window.view_combination_slots
                 },
                 "tasks": list(episode.tasks),
             },
@@ -675,35 +711,49 @@ class MixedVideoLatentWindowDataset(MixedVideoWindowDataset):
         frame_indices: Sequence[int],
         *,
         valid_frame_count: int,
-    ) -> torch.Tensor:
+        view_combination_slots: Sequence[str],
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
         streams_by_slot: dict[str, MixedVideoStreamRecord] = {}
         for stream in sorted(episode.streams, key=lambda item: item.stream_index):
             streams_by_slot.setdefault(stream.target_slot, stream)
-        camera_name = self.data_config.latent_camera_names[0]
-        stream = streams_by_slot.get(camera_name)
-        if stream is None and len(self.data_config.camera_names) == 1:
-            stream = streams_by_slot.get(self.data_config.camera_names[0])
-        if stream is None:
-            raise KeyError(f"Mixed-video latent episode is missing configured stream slot {camera_name!r}.")
-        if stream.source_format not in {
-            MixedVideoSourceFormat.LATENT,
-            MixedVideoSourceFormat.RGB_AND_LATENT,
-        }:
-            raise ValueError(
-                f"Mixed-video source={stream.source_id!r} is configured as {stream.source_format.value!r} "
-                "and has no latent sidecar for trainer.batch_adapter=latents. Encode this source first or "
-                "set source_format=rgb_and_latent/latent."
-            )
-        latents = self._load_stream_latents(stream)
+        slots = tuple(str(slot) for slot in view_combination_slots)
+        if not slots:
+            valid_combinations = _valid_latent_view_combinations(self.data_config, episode)
+            if not valid_combinations:
+                raise KeyError(f"Mixed-video latent episode {episode.key!r} has no valid latent view combinations.")
+            slots = valid_combinations[0].slots
+        selected_latents: list[torch.Tensor] = []
         index_tensor = torch.tensor(frame_indices, dtype=torch.long)
-        if index_tensor.numel() and int(index_tensor.max().item()) >= int(latents.shape[1]):
-            raise IndexError(
-                f"Mixed-video sample requested latent frame {int(index_tensor.max().item())} from "
-                f"source={stream.source_id}, episode={stream.episode_index}, stream={stream.stream_key}, "
-                f"but decoded latent stream has {latents.shape[1]} frames."
-            )
-        selected = latents.index_select(1, index_tensor)
-        return self._pad_latent_frames(selected, valid_frame_count=valid_frame_count)
+        for slot in slots:
+            stream = streams_by_slot.get(slot)
+            if stream is None:
+                raise KeyError(f"Mixed-video latent episode is missing configured stream slot {slot!r}.")
+            if stream.source_format not in {
+                MixedVideoSourceFormat.LATENT,
+                MixedVideoSourceFormat.RGB_AND_LATENT,
+            }:
+                raise ValueError(
+                    f"Mixed-video source={stream.source_id!r} is configured as {stream.source_format.value!r} "
+                    "and has no latent sidecar for trainer.batch_adapter=latents. Encode this source first or "
+                    "set source_format=rgb_and_latent/latent."
+                )
+            latents = self._load_stream_latents(stream)
+            if index_tensor.numel() and int(index_tensor.max().item()) >= int(latents.shape[1]):
+                raise IndexError(
+                    f"Mixed-video sample requested latent frame {int(index_tensor.max().item())} from "
+                    f"source={stream.source_id}, episode={stream.episode_index}, stream={stream.stream_key}, "
+                    f"but decoded latent stream has {latents.shape[1]} frames."
+                )
+            selected_latents.append(latents.index_select(1, index_tensor))
+        assembled, assembly_metadata = assemble_mixed_video_latent_views(
+            selected_latents,
+            slots=slots,
+            canvas_view_count=_latent_view_assembly_canvas_view_count(self.data_config),
+        )
+        return (
+            self._pad_latent_frames(assembled, valid_frame_count=valid_frame_count),
+            assembly_metadata,
+        )
 
     def _pad_latent_frames(self, latents: torch.Tensor, *, valid_frame_count: int) -> torch.Tensor:
         padded_frames = int(self.data_config.num_frames)
@@ -740,6 +790,178 @@ class MixedVideoLatentWindowDataset(MixedVideoWindowDataset):
         while len(self._latent_cache) > max_entries:
             self._latent_cache.popitem(last=False)
         return latents
+
+
+def assemble_mixed_video_latent_views(
+    latents_by_slot: Sequence[torch.Tensor],
+    *,
+    slots: Sequence[str],
+    canvas_view_count: int | None = None,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    """Assemble 1-4 same-resolution latent views into a deterministic canvas."""
+
+    latents = tuple(latents_by_slot)
+    slot_names = tuple(str(slot) for slot in slots)
+    if len(latents) != len(slot_names):
+        raise ValueError(f"Expected one latent tensor per slot, got {len(latents)} tensors and {len(slot_names)} slots.")
+    if not 1 <= len(latents) <= 4:
+        raise ValueError(f"Mixed-video latent view assembly supports 1 to 4 views, got {len(latents)}.")
+    first = latents[0]
+    if first.ndim != 4:
+        raise ValueError(f"Expected latent views shaped [C,T,H,W], got {tuple(first.shape)}.")
+    channels, frames, height, width = (int(value) for value in first.shape)
+    for slot, latent in zip(slot_names, latents, strict=True):
+        if latent.ndim != 4:
+            raise ValueError(f"Expected latent view {slot!r} shaped [C,T,H,W], got {tuple(latent.shape)}.")
+        if tuple(int(value) for value in latent.shape) != (channels, frames, height, width):
+            raise ValueError(
+                "Mixed-video latent view assembly requires same-resolution views, "
+                f"got first={(channels, frames, height, width)} and {slot!r}={tuple(latent.shape)}."
+            )
+
+    resolved_canvas_views = int(canvas_view_count or len(latents))
+    if not 1 <= resolved_canvas_views <= 4:
+        raise ValueError(f"Mixed-video latent assembly canvas supports 1 to 4 views, got {resolved_canvas_views}.")
+    if resolved_canvas_views < len(latents):
+        raise ValueError(
+            f"Assembly canvas for {resolved_canvas_views} views cannot hold {len(latents)} selected views."
+        )
+    canvas_height, canvas_width = _latent_assembly_canvas_shape(
+        resolved_canvas_views,
+        view_height=height,
+        view_width=width,
+    )
+    canvas = first.new_zeros(channels, frames, canvas_height, canvas_width)
+    placements = _latent_assembly_placements(
+        selected_view_count=len(latents),
+        canvas_view_count=resolved_canvas_views,
+        view_height=height,
+        view_width=width,
+    )
+    placement_metadata: list[dict[str, Any]] = []
+    for slot, latent, (top, left) in zip(slot_names, latents, placements, strict=True):
+        canvas[:, :, top : top + height, left : left + width] = latent
+        placement_metadata.append(
+            {
+                "slot": slot,
+                "top": int(top),
+                "left": int(left),
+                "height": int(height),
+                "width": int(width),
+            }
+        )
+    return canvas.contiguous(), {
+        "slots": list(slot_names),
+        "canvas_view_count": resolved_canvas_views,
+        "canvas_height": int(canvas_height),
+        "canvas_width": int(canvas_width),
+        "view_height": int(height),
+        "view_width": int(width),
+        "placements": placement_metadata,
+    }
+
+
+def _latent_assembly_canvas_shape(
+    view_count: int,
+    *,
+    view_height: int,
+    view_width: int,
+) -> tuple[int, int]:
+    if view_count == 1:
+        return int(view_height), int(view_width)
+    if view_count == 2:
+        return int(view_height), int(view_width) * 2
+    if view_count in {3, 4}:
+        return int(view_height) * 2, int(view_width) * 2
+    raise ValueError(f"Mixed-video latent assembly supports 1 to 4 views, got {view_count}.")
+
+
+def _latent_assembly_placements(
+    *,
+    selected_view_count: int,
+    canvas_view_count: int,
+    view_height: int,
+    view_width: int,
+) -> tuple[tuple[int, int], ...]:
+    canvas_height, canvas_width = _latent_assembly_canvas_shape(
+        canvas_view_count,
+        view_height=view_height,
+        view_width=view_width,
+    )
+    if selected_view_count == 1:
+        return ((max(0, (canvas_height - view_height) // 2), max(0, (canvas_width - view_width) // 2)),)
+    if selected_view_count == 2:
+        return ((0, 0), (0, view_width))
+    if selected_view_count == 3:
+        return ((0, 0), (0, view_width), (view_height, max(0, (canvas_width - view_width) // 2)))
+    if selected_view_count == 4:
+        return ((0, 0), (0, view_width), (view_height, 0), (view_height, view_width))
+    raise ValueError(f"Mixed-video latent assembly supports 1 to 4 views, got {selected_view_count}.")
+
+
+def _latent_view_assembly_canvas_view_count(data_config: MixedVideoDataConfig) -> int:
+    enabled = [combo for combo in data_config.latent_view_combinations if combo.enabled]
+    if enabled:
+        return max(len(combo.slots) for combo in enabled)
+    return max(1, min(4, len(data_config.latent_camera_names)))
+
+
+def _valid_latent_view_combinations(
+    data_config: MixedVideoDataConfig,
+    episode: MixedVideoEpisodeRecord,
+) -> tuple[MixedVideoViewCombinationConfig, ...]:
+    streams_by_slot = {stream.target_slot: stream for stream in episode.streams}
+    configured_slots = tuple(dict.fromkeys(data_config.latent_camera_names or data_config.camera_names))
+    present_slots = tuple(slot for slot in configured_slots if slot in streams_by_slot)
+    if data_config.latent_view_combinations:
+        valid: list[MixedVideoViewCombinationConfig] = []
+        for combination in data_config.latent_view_combinations:
+            if not combination.enabled:
+                continue
+            if combination.source_ids and episode.source_id not in combination.source_ids:
+                continue
+            if all(slot in streams_by_slot for slot in combination.slots):
+                valid.append(combination)
+        return tuple(valid)
+    if not present_slots:
+        return ()
+    return (
+        MixedVideoViewCombinationConfig(
+            name="all_available",
+            slots=present_slots,
+            sampling_weight=1.0,
+        ),
+    )
+
+
+def _latent_view_combination_repeat_count(
+    combination: MixedVideoViewCombinationConfig,
+    combinations: Sequence[MixedVideoViewCombinationConfig],
+) -> int:
+    positive_weights = [float(item.sampling_weight) for item in combinations if item.enabled]
+    if not positive_weights:
+        return 1
+    scale = min(positive_weights)
+    return max(1, int(round(float(combination.sampling_weight) / scale)))
+
+
+def _latent_combination_length_frames(
+    episode: MixedVideoEpisodeRecord,
+    slots: Sequence[str],
+) -> int:
+    streams_by_slot = {stream.target_slot: stream for stream in episode.streams}
+    lengths: list[int] = []
+    for slot in slots:
+        stream = streams_by_slot.get(slot)
+        if stream is None:
+            raise KeyError(f"Mixed-video latent episode {episode.key!r} is missing slot {slot!r}.")
+        if stream.latent_length_frames is None:
+            raise ValueError(
+                f"Mixed-video episode {episode.key!r}, slot {slot!r} has no latent_length_frames; "
+                "latent training requires manifest latent sidecars."
+            )
+        lengths.append(int(stream.latent_length_frames))
+    return min(lengths) if lengths else 0
 
 
 def build_mixed_video_train_val_datasets(
@@ -1506,6 +1728,9 @@ def _load_source_streams(
             continue
         target_slot = _target_slot_for_stream(row, source, data_config, stream_key, stream_index)
         configured_slots = set(data_config.camera_names) | set(data_config.latent_camera_names)
+        for combination in data_config.latent_view_combinations:
+            if combination.enabled:
+                configured_slots.update(combination.slots)
         if target_slot not in configured_slots:
             continue
         length_frames = _int_field(row, "length_frames", default=0)
@@ -2012,7 +2237,7 @@ def _parse_tasks(row: dict[str, str]) -> tuple[str, ...]:
     cleaned = raw.strip()
     if cleaned.startswith("[") and cleaned.endswith("]"):
         cleaned = cleaned[1:-1]
-    tasks = [item.strip().strip("'\"") for item in cleaned.replace("|", ",").split(",")]
+    tasks = [item.strip().strip("'\"") for item in cleaned.replace("|", ",").replace(";", ",").split(",")]
     return tuple(item for item in tasks if item)
 
 

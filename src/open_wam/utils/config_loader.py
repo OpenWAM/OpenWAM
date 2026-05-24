@@ -42,6 +42,7 @@ from open_wam.configs import (
     MixedVideoDataConfig,
     MixedVideoResizeBinConfig,
     MixedVideoSourceConfig,
+    MixedVideoViewCombinationConfig,
     RobotWinDataConfig,
     SampleConstructionConfig,
     TrainerConfig,
@@ -240,6 +241,28 @@ def _load_mixed_video_resize_bins(raw_value: Any) -> tuple[MixedVideoResizeBinCo
             )
         )
     return tuple(bins)
+
+
+def _load_mixed_video_view_combinations(raw_value: Any) -> tuple[MixedVideoViewCombinationConfig, ...]:
+    combinations_raw = raw_value or ()
+    if not isinstance(combinations_raw, (list, tuple)):
+        raise ValueError("Expected `latent_view_combinations` to be a list of mappings.")
+    combinations: list[MixedVideoViewCombinationConfig] = []
+    for item in combinations_raw:
+        if not isinstance(item, dict):
+            raise ValueError("Expected each `latent_view_combinations` entry to be a mapping.")
+        if "name" not in item:
+            raise ValueError("Expected each `latent_view_combinations` entry to define `name`.")
+        combinations.append(
+            MixedVideoViewCombinationConfig(
+                name=str(item["name"]),
+                slots=tuple(str(value) for value in item.get("slots", ())),
+                sampling_weight=float(item.get("sampling_weight", 1.0)),
+                source_ids=tuple(str(value) for value in item.get("source_ids", ())),
+                enabled=item.get("enabled", True),
+            )
+        )
+    return tuple(combinations)
 
 
 def _load_mixed_video_fit_mode(
@@ -1573,6 +1596,11 @@ def load_experiment_config(path: str | Path, *, checkpoint_runtime_compat: bool 
         resize_bins = _load_mixed_video_resize_bins(data_raw.get("decode_resize_bins"))
         common_data_kwargs.update(
             video_sources=_load_mixed_video_sources(data_raw.get("video_sources")),
+            latent_encoding_mode=_coerce_enum(
+                config_enums.MixedVideoLatentEncodingMode,
+                data_raw.get("latent_encoding_mode", data_defaults.latent_encoding_mode),
+            ),
+            latent_view_combinations=_load_mixed_video_view_combinations(data_raw.get("latent_view_combinations")),
             decode_size_mode=_coerce_enum(
                 config_enums.MixedVideoDecodeSizeMode,
                 data_raw.get("decode_size_mode", data_defaults.decode_size_mode),

@@ -275,6 +275,14 @@ class MixedVideoFrameFitMode(StrEnum):
     LETTERBOX_PAD = "letterbox_pad"
 
 
+class MixedVideoLatentEncodingMode(StrEnum):
+    """Which latent sidecar representation the mixed-video encoder writes."""
+
+    CANONICAL = "canonical"
+    PER_VIEW = "per_view"
+    CANONICAL_AND_PER_VIEW = "canonical_and_per_view"
+
+
 class MixedVideoSourceFormat(StrEnum):
     """Which media representations one mixed-video source can provide."""
 
