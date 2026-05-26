@@ -32,6 +32,7 @@ from open_wam.data.replay_status import (  # noqa: E402
     load_replay_status_records,
     normalize_replay_status_policy,
 )
+from open_wam.launch.preflight import has_transformer_weights  # noqa: E402
 
 DEFAULT_CONFIG = "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
 DEFAULT_BASE_CHECKPOINT = (
@@ -340,6 +341,17 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--task-axis-init-source",
+        choices=("auto", "replay_status", "task_local"),
+        default="auto",
+        help=(
+            "Controls which init-state index is passed to LIBERO rollouts after replay-status metadata is attached. "
+            "`auto` preserves the historical behavior of using replay_status.resolved_init_state_index outside full "
+            "grid evals. `task_local` keeps the explicit task-local episode/init index, which is required for "
+            "apple-to-apple comparisons against upstream LIBERO runners."
+        ),
+    )
+    parser.add_argument(
         "--methods",
         type=str,
         default=None,
@@ -414,6 +426,15 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, default=0, help="Rollout seed passed to run_libero_realtime_sandbox.py.")
     parser.add_argument("--deadline-miss-policy", type=str, default=None, help="Optional override for --eval-profile.")
+    parser.add_argument(
+        "--pretrained-model-root",
+        type=str,
+        default=None,
+        help=(
+            "Forward a VAE/text/tokenizer reference asset root to child realtime rollouts. "
+            "Use this for transformer-only external checkpoints such as the released LingBot-VA model root."
+        ),
+    )
     parser.add_argument(
         "--reference-assets-device-policy",
         choices=("cpu_offload", "runtime"),
@@ -538,7 +559,7 @@ def main() -> None:
         dataset_episodes = attach_replay_status_to_dataset_episodes(
             dataset_episodes,
             replay_status_records,
-            use_resolved_init_ids=args.sample_mode != "full",
+            use_resolved_init_ids=use_replay_resolved_init_ids(args),
         )
         if args.sample_mode == "full":
             full_init_counts_by_task_id = resolve_libero_init_counts(
@@ -612,6 +633,7 @@ def main() -> None:
             "rollout_artifact_profile": args.rollout_artifact_profile,
             "task_ids": args.task_ids,
             "episode_indices": args.episode_indices,
+            "task_axis_init_source": args.task_axis_init_source,
             "full_init_counts_by_task_id": {
                 str(task_id): count for task_id, count in sorted(full_init_counts_by_task_id.items())
             },
@@ -646,6 +668,7 @@ def main() -> None:
         "rollout_artifact_profile": args.rollout_artifact_profile,
         "task_ids": args.task_ids,
         "episode_indices": args.episode_indices,
+        "task_axis_init_source": args.task_axis_init_source,
         "full_init_counts_by_task_id": {
             str(task_id): count for task_id, count in sorted(full_init_counts_by_task_id.items())
         },
@@ -768,6 +791,8 @@ def resolve_checkpoint_specs(
         config = args.cfg or method.config
         reference_policy = args.reference_assets_device_policy or method.reference_assets_device_policy
         label = request.label or f"{method.label} {request.checkpoint_key}"
+        uses_transformer_only_input = resolution.checkpoint_file is None and resolution.runtime_transformer_dir is not None
+        extra_args = extra_args_for_transformer_only_input(method.extra_args) if uses_transformer_only_input else method.extra_args
         specs.append(
             CheckpointSpec(
                 key=key,
@@ -782,7 +807,7 @@ def resolve_checkpoint_specs(
                 runtime_transformer_dir=resolution.runtime_transformer_dir,
                 runtime_transformer_source=resolution.runtime_transformer_source,
                 reference_assets_device_policy=reference_policy,
-                extra_args=method.extra_args,
+                extra_args=extra_args,
                 preflight_problem=resolution.problem,
             )
         )
@@ -905,6 +930,17 @@ def attach_replay_status_to_dataset_episodes(
             updates["init_id_source"] = "replay_status.resolved_init_state_index"
         attached.append(replace(episode, **updates))
     return attached
+
+
+def use_replay_resolved_init_ids(args: argparse.Namespace) -> bool:
+    source = getattr(args, "task_axis_init_source", "auto")
+    if source == "task_local":
+        return False
+    if source == "replay_status":
+        return True
+    if source != "auto":
+        raise ValueError(f"Unsupported task_axis_init_source={source!r}.")
+    return args.sample_mode != "full"
 
 
 def filter_dataset_episodes_by_replay_status(
@@ -1497,6 +1533,10 @@ def build_cases(
             scheduler_flags = scheduler_flags_for(method, scheduler_spec)
             scheduler_suffix = scheduler_suffix_for(method, scheduler_spec)
             checkpoint_output_dir = output_root / checkpoint_spec.key
+            uses_transformer_dir = (
+                checkpoint_spec.checkpoint_file is None
+                and checkpoint_spec.runtime_transformer_dir is not None
+            )
             suffix = sanitize_label(
                 f"{checkpoint_spec.key}_{args.run_label}_{benchmark}_sample{sample_index:03d}_"
                 f"dataset_ep{episode.dataset_episode_index:06d}_t{episode.task_id:02d}_init{episode.init_id}_"
@@ -1507,8 +1547,6 @@ def build_cases(
                 "scripts/run_libero_realtime_sandbox.py",
                 "--cfg",
                 checkpoint_spec.config,
-                "--checkpoint",
-                checkpoint_spec.checkpoint,
                 "--task-id",
                 str(episode.task_id),
                 "--episode-idx",
@@ -1526,6 +1564,10 @@ def build_cases(
                 "--suffix",
                 suffix,
             ]
+            if uses_transformer_dir:
+                command.extend(["--transformer-dir", str(checkpoint_spec.runtime_transformer_dir)])
+            else:
+                command.extend(["--checkpoint", checkpoint_spec.checkpoint])
             append_optional_arg(command, "--benchmark", benchmark, default="libero_10")
             append_optional_arg(command, "--max-actions", args.max_actions)
             append_optional_arg(command, "--env-horizon", args.env_horizon)
@@ -1533,13 +1575,14 @@ def build_cases(
             append_optional_arg(command, "--video-fps", args.video_fps)
             append_optional_arg(command, "--seed", seed, default=0)
             append_optional_arg(command, "--deadline-miss-policy", args.deadline_miss_policy)
+            append_optional_arg(command, "--pretrained-model-root", getattr(args, "pretrained_model_root", None))
             append_optional_arg(
                 command,
                 "--reference-assets-device-policy",
                 checkpoint_spec.reference_assets_device_policy,
                 default="runtime",
             )
-            command.extend(checkpoint_spec.extra_args)
+            command.extend(extra_args_for_case(checkpoint_spec, uses_transformer_dir=uses_transformer_dir))
             command.extend(scheduler_flags)
             if args.write_fallback_timeline_video:
                 command.append("--write-fallback-timeline-video")
@@ -1587,6 +1630,19 @@ def build_cases(
                 )
             )
     return cases
+
+
+def extra_args_for_case(checkpoint_spec: CheckpointSpec, *, uses_transformer_dir: bool) -> list[str]:
+    """Return checkpoint-only runtime flags for one sampled-eval command."""
+
+    extra_args = list(checkpoint_spec.extra_args)
+    if uses_transformer_dir:
+        extra_args = list(extra_args_for_transformer_only_input(tuple(extra_args)))
+    return extra_args
+
+
+def extra_args_for_transformer_only_input(extra_args: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(arg for arg in extra_args if arg != "--merge-checkpoint-runtime-config")
 
 
 def preflight(
@@ -1682,13 +1738,26 @@ def resolve_checkpoint_input(raw_path: str | None) -> CheckpointResolution:
 
     checkpoint_file = find_checkpoint_file(candidate)
     if checkpoint_file is None:
+        transformer_dir, transformer_source = resolve_transformer_only_input(candidate)
+        if transformer_dir is not None:
+            return CheckpointResolution(
+                raw=raw_path,
+                checkpoint_file=None,
+                checkpoint_dir=str(candidate.resolve()),
+                runtime_transformer_dir=str(transformer_dir.resolve()),
+                runtime_transformer_source=transformer_source,
+                problem=None,
+            )
         return CheckpointResolution(
             raw=raw_path,
             checkpoint_file=None,
             checkpoint_dir=None,
             runtime_transformer_dir=None,
             runtime_transformer_source=None,
-            problem="could not resolve model_state.pt or full_training_state.pt",
+            problem=(
+                "could not resolve model_state.pt, full_training_state.pt, or transformer export "
+                "(config.json plus diffusion_pytorch_model*.safetensors)"
+            ),
         )
 
     checkpoint_dir = checkpoint_file.parent
@@ -1701,6 +1770,16 @@ def resolve_checkpoint_input(raw_path: str | None) -> CheckpointResolution:
         runtime_transformer_source=transformer_source,
         problem=transformer_problem,
     )
+
+
+def resolve_transformer_only_input(path: Path) -> tuple[Path | None, str | None]:
+    candidate = path.expanduser().resolve()
+    if is_transformer_only_input_dir(candidate):
+        return candidate, "input_transformer_dir"
+    nested = candidate / "transformer"
+    if is_transformer_only_input_dir(nested):
+        return nested.resolve(), "input_transformer_subdir"
+    return None, None
 
 
 def find_checkpoint_file(path: Path) -> Path | None:
@@ -1812,6 +1891,10 @@ def read_backbone_transformer_subdir_without_yaml(text: str) -> str | None:
 
 def is_usable_transformer_dir(path: Path) -> bool:
     return path.is_dir() and any(path.iterdir())
+
+
+def is_transformer_only_input_dir(path: Path) -> bool:
+    return path.is_dir() and (path / "config.json").is_file() and has_transformer_weights(path)
 
 
 def run_cases(cases: list[EvalCase], *, args: argparse.Namespace, status_dir: Path, logs_dir: Path) -> None:
@@ -2207,6 +2290,7 @@ def build_summary_payload(manifest: dict[str, Any], reports: list[dict[str, Any]
         "num_sampled_episodes": manifest["num_sampled_episodes"],
         "requested_num_episodes": manifest.get("requested_num_episodes", manifest["num_sampled_episodes"]),
         "task_allocations": manifest.get("task_allocations", {}),
+        "task_axis_init_source": manifest.get("task_axis_init_source"),
         "full_init_counts_by_task_id": manifest.get("full_init_counts_by_task_id", {}),
         "sample_warnings": manifest.get("sample_warnings", []),
         "target_keys": target_keys,
@@ -2404,6 +2488,7 @@ def write_status_note(path: Path, *, manifest: dict[str, Any], cases: list[EvalC
         f"Replay-status policy: `{manifest.get('replay_status_policy') or 'n/a'}`",
         f"Replay-status file: `{manifest.get('replay_status_path') or 'n/a'}`",
         f"Task id source: `{manifest.get('task_id_source', 'unknown')}`",
+        f"Task-axis init source: `{manifest.get('task_axis_init_source', 'auto')}`",
         f"Dataset root: `{manifest['dataset_root']}`",
         f"Output root: `{manifest['output_root']}`",
         f"Cases: `{len(cases)}`",

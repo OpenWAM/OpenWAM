@@ -16,6 +16,27 @@ from .external import ExternalModules, load_external_modules
 from .video import LIBERO_OBS_KEYS, save_libero_rollout_video
 
 
+def select_init_state(init_states: Any, episode_idx: int) -> Any:
+    init_count = len(init_states)
+    if init_count <= 0:
+        raise ValueError("LIBERO task has no init states.")
+    return init_states[int(episode_idx) % init_count]
+
+
+def load_task_init_states(task_spec: Any) -> Any:
+    from open_wam.integrations import load_libero_task_init_states
+
+    try:
+        return load_libero_task_init_states(task_spec)
+    except TypeError as exc:
+        if "weights_only" not in str(exc):
+            raise
+        # Older torch releases do not accept weights_only=False. This baseline
+        # may run inside the external LingBot environment, so keep a local
+        # compatibility fallback instead of changing the shared loader contract.
+        return torch.load(task_spec.init_states_path)
+
+
 @dataclass(frozen=True)
 class ChunkTrace:
     chunk_index: int
@@ -205,8 +226,11 @@ class LingBotVALiberoRunner:
         chunk_count = 0
         first = True
         try:
-            init_states = benchmark_instance.get_task_init_states(episode.task_id)
-            first_obs = self._init_env(env, init_states[episode.episode_idx % init_states.shape[0]])
+            from open_wam.integrations import resolve_libero_task_by_id
+
+            task_spec = resolve_libero_task_by_id(episode.benchmark, episode.task_id)
+            init_states = load_task_init_states(task_spec)
+            first_obs = self._init_env(env, select_init_state(init_states, episode.episode_idx))
 
             self.model.infer(dict(reset=True, prompt=prompt))
 

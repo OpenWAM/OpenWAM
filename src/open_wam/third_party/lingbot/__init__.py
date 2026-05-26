@@ -37,6 +37,13 @@ def _ensure_flash_attn_shims() -> None:
 
 _ensure_flash_attn_shims()
 
-from .model import WanTransformer3DModel
-
 __all__ = ["WanTransformer3DModel"]
+
+
+def __getattr__(name: str):
+    if name == "WanTransformer3DModel":
+        from .model import WanTransformer3DModel
+
+        globals()[name] = WanTransformer3DModel
+        return WanTransformer3DModel
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

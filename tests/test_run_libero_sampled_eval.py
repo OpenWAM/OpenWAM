@@ -159,6 +159,14 @@ def test_attach_replay_status_keeps_task_local_init_for_full_grid() -> None:
     assert attached.init_id_source == "task_local_rank"
 
 
+def test_task_axis_init_source_can_preserve_task_local_episode_index() -> None:
+    args = argparse.Namespace(sample_mode="task_episode_axis", task_axis_init_source="task_local")
+    assert sampled_eval.use_replay_resolved_init_ids(args) is False
+
+    args = argparse.Namespace(sample_mode="task_episode_axis", task_axis_init_source="auto")
+    assert sampled_eval.use_replay_resolved_init_ids(args) is True
+
+
 def test_filter_dataset_episodes_by_replay_status_rejects_failed_task_axis_request() -> None:
     episodes = [
         sampled_eval.DatasetEpisode(
@@ -659,6 +667,79 @@ def test_resolve_checkpoint_input_accepts_run_root_and_resolved_config_transform
     assert resolution.problem is None
 
 
+def test_resolve_checkpoint_input_accepts_transformer_only_model_root(tmp_path: Path) -> None:
+    model_root = tmp_path / "lingbot_va"
+    transformer_dir = model_root / "transformer"
+    transformer_dir.mkdir(parents=True)
+    (transformer_dir / "config.json").write_text("{}", encoding="utf-8")
+    (transformer_dir / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
+
+    resolution = sampled_eval.resolve_checkpoint_input(str(model_root))
+
+    assert resolution.checkpoint_file is None
+    assert resolution.checkpoint_dir == str(model_root.resolve())
+    assert resolution.runtime_transformer_dir == str(transformer_dir.resolve())
+    assert resolution.runtime_transformer_source == "input_transformer_subdir"
+    assert resolution.problem is None
+
+
+def test_transformer_only_model_root_requires_config_and_weights(tmp_path: Path) -> None:
+    model_root = tmp_path / "lingbot_va"
+    transformer_dir = model_root / "transformer"
+    transformer_dir.mkdir(parents=True)
+    (transformer_dir / "config.json").write_text("{}", encoding="utf-8")
+
+    resolution = sampled_eval.resolve_checkpoint_input(str(model_root))
+
+    assert resolution.checkpoint_file is None
+    assert resolution.runtime_transformer_dir is None
+    assert resolution.problem == (
+        "could not resolve model_state.pt, full_training_state.pt, or transformer export "
+        "(config.json plus diffusion_pytorch_model*.safetensors)"
+    )
+
+
+def test_checkpoint_transformer_dir_preserves_nonempty_legacy_detection(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "checkpoint_step_1"
+    transformer_dir = checkpoint_dir / "transformer"
+    transformer_dir.mkdir(parents=True)
+    (checkpoint_dir / "model_state.pt").write_bytes(b"state")
+    (transformer_dir / "weights.bin").write_bytes(b"placeholder")
+
+    resolution = sampled_eval.resolve_checkpoint_input(str(checkpoint_dir))
+
+    assert resolution.checkpoint_file == str((checkpoint_dir / "model_state.pt").resolve())
+    assert resolution.runtime_transformer_dir == str(transformer_dir.resolve())
+    assert resolution.runtime_transformer_source == "checkpoint"
+    assert resolution.problem is None
+
+
+def test_resolve_checkpoint_specs_reports_effective_transformer_only_flags(tmp_path: Path) -> None:
+    model_root = tmp_path / "lingbot_va"
+    transformer_dir = model_root / "transformer"
+    transformer_dir.mkdir(parents=True)
+    (transformer_dir / "config.json").write_text("{}", encoding="utf-8")
+    (transformer_dir / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
+    method = next(method for method in sampled_eval.METHODS if method.key == "m1")
+    args = argparse.Namespace(cfg=None, reference_assets_device_policy=None)
+
+    [spec] = sampled_eval.resolve_checkpoint_specs(
+        args=args,
+        selected_methods=[method],
+        target_requests=[
+            sampled_eval.TargetRequest(
+                method_key="m1",
+                checkpoint_key="lingbot_va",
+                label="LingBot-VA transformer",
+                checkpoint=str(model_root),
+            )
+        ],
+    )
+
+    assert spec.runtime_transformer_dir == str(transformer_dir.resolve())
+    assert spec.extra_args == ()
+
+
 def test_build_cases_uses_method_config_scheduler_and_device_templates() -> None:
     args = argparse.Namespace(
         python=Path("/venv/bin/python"),
@@ -724,6 +805,63 @@ def test_build_cases_uses_method_config_scheduler_and_device_templates() -> None
     assert cases[0].episode_id == 12
     assert cases[0].init_id == 4
     assert cases[0].replay_status == "success"
+
+
+def test_build_cases_uses_transformer_dir_without_checkpoint_only_flags() -> None:
+    args = argparse.Namespace(
+        python=Path("/venv/bin/python"),
+        run_label="lingbot_va",
+        eval_profile="libero_10hz_full",
+        max_actions=None,
+        env_horizon=None,
+        target_action_hz=None,
+        video_fps=None,
+        rollout_artifact_profile="lean",
+        deadline_miss_policy=None,
+        write_fallback_timeline_video=False,
+    )
+    episode = sampled_eval.DatasetEpisode(
+        dataset_episode_index=12,
+        task_text="task",
+        task_index=0,
+        task_id=3,
+        task_name=None,
+        episode_idx=4,
+        length=100,
+    )
+    method = next(method for method in sampled_eval.METHODS if method.key == "m1")
+    checkpoint = sampled_eval.CheckpointSpec(
+        key="m1_lingbot_va",
+        label="M1 LingBot-VA transformer",
+        checkpoint="/models/lingbot_va",
+        checkpoint_raw="/models/lingbot_va",
+        checkpoint_file=None,
+        checkpoint_dir="/models/lingbot_va",
+        runtime_transformer_dir="/models/lingbot_va/transformer",
+        runtime_transformer_source="input_transformer_subdir",
+        method_key=method.key,
+        method_label=method.label,
+        config=method.config,
+        reference_assets_device_policy=method.reference_assets_device_policy,
+        extra_args=method.extra_args,
+    )
+    scheduler = next(scheduler for scheduler in sampled_eval.SCHEDULERS if scheduler.key == "blocking_control")
+
+    cases = sampled_eval.build_cases(
+        [episode],
+        checkpoint_specs=[checkpoint],
+        output_root=Path("/tmp/out"),
+        benchmark="libero_10",
+        seed=0,
+        scheduler_spec=scheduler,
+        args=args,
+    )
+
+    command = cases[0].command_template
+    assert "--transformer-dir" in command
+    assert command[command.index("--transformer-dir") + 1] == "/models/lingbot_va/transformer"
+    assert "--checkpoint" not in command
+    assert "--merge-checkpoint-runtime-config" not in command
 
 
 def test_build_cases_merges_checkpoint_runtime_config_for_exact_methods() -> None:

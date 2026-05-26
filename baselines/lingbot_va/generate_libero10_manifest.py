@@ -12,6 +12,7 @@ from .external import _bootstrap_libero_config_without_prompt
 
 
 BENCHMARK = "libero_10"
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def main() -> None:
@@ -20,6 +21,15 @@ def main() -> None:
     parser.add_argument("--episodes-per-kind", type=int, default=100)
     parser.add_argument("--random-seed", type=int, default=20260430)
     parser.add_argument("--episode-seed", type=int, default=0)
+    parser.add_argument(
+        "--assume-init-count",
+        type=int,
+        default=None,
+        help=(
+            "Optional per-task init-state count override. This avoids loading LIBERO init-state tensors "
+            "when the caller already knows the benchmark has a uniform count."
+        ),
+    )
     parser.add_argument(
         "--sample-kinds",
         type=str,
@@ -34,6 +44,7 @@ def main() -> None:
         episodes_per_kind=args.episodes_per_kind,
         random_seed=args.random_seed,
         episode_seed=args.episode_seed,
+        assume_init_count=args.assume_init_count,
     )
     output_path = Path(args.output).expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -47,6 +58,7 @@ def build_manifest(
     episodes_per_kind: int = 100,
     random_seed: int = 20260430,
     episode_seed: int = 0,
+    assume_init_count: int | None = None,
 ) -> dict[str, Any]:
     if episodes_per_kind <= 0:
         raise ValueError("episodes_per_kind must be positive.")
@@ -55,11 +67,19 @@ def build_manifest(
         raise ValueError(f"Unsupported sample kinds: {sorted(unsupported)}")
 
     _bootstrap_libero_config_without_prompt()
+    from open_wam.integrations import ensure_local_libero_config
+
+    ensure_local_libero_config(REPO_ROOT)
     from libero.libero import benchmark  # type: ignore
 
     benchmark_instance = benchmark.get_benchmark_dict()[BENCHMARK]()
     task_count = _task_count(benchmark_instance)
-    init_counts = _init_counts(benchmark_instance, task_count)
+    if assume_init_count is not None:
+        if int(assume_init_count) <= 0:
+            raise ValueError("assume_init_count must be positive when provided.")
+        init_counts = {task_id: int(assume_init_count) for task_id in range(task_count)}
+    else:
+        init_counts = _init_counts(task_count)
     min_init_count = min(init_counts.values())
     total_pairs = task_count * min_init_count
     if episodes_per_kind > total_pairs:
@@ -109,6 +129,7 @@ def build_manifest(
             "task_count": task_count,
             "init_count_min": min_init_count,
             "init_count_max": max(init_counts.values()),
+            "assume_init_count": assume_init_count,
             "total_unique_pairs_at_min_init_count": total_pairs,
         },
         "episodes": episodes,
@@ -122,8 +143,14 @@ def _task_count(benchmark_instance) -> int:
     return len(benchmark_instance.tasks)
 
 
-def _init_counts(benchmark_instance, task_count: int) -> dict[int, int]:
-    return {task_id: len(benchmark_instance.get_task_init_states(task_id)) for task_id in range(task_count)}
+def _init_counts(task_count: int) -> dict[int, int]:
+    from open_wam.integrations import load_libero_task_init_states, resolve_libero_task_by_id
+
+    counts: dict[int, int] = {}
+    for task_id in range(task_count):
+        task_spec = resolve_libero_task_by_id(BENCHMARK, task_id, REPO_ROOT)
+        counts[task_id] = len(load_libero_task_init_states(task_spec, REPO_ROOT))
+    return counts
 
 
 def _deterministic_pairs(task_count: int, init_count: int, count: int) -> list[tuple[int, int]]:

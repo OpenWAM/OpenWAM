@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
+from baselines.lingbot_va import libero_rollout
 from baselines.lingbot_va.config import (
     CheckpointSpec,
     RolloutSuiteConfig,
@@ -11,7 +13,9 @@ from baselines.lingbot_va.config import (
     parse_int_selection,
     suite_config_from_mapping,
 )
+from baselines.lingbot_va.apple_to_apple import build_comparison_summary
 from baselines.lingbot_va.generate_libero10_manifest import _deterministic_pairs, _random_pairs
+from baselines.lingbot_va.libero_rollout import load_task_init_states, select_init_state
 from baselines.lingbot_va.run_robotwin_client import build_upstream_argv, patch_robotwin_client_source
 from baselines.lingbot_va.summarize_results import validate_rows
 
@@ -199,6 +203,175 @@ def test_summary_validation_rejects_bad_full_eval_rows(tmp_path: Path) -> None:
         assert "seeds" in str(exc)
     else:
         raise AssertionError("non-null seed should be rejected")
+
+
+def test_apple_to_apple_summary_aligns_lingbot_and_openwam_rows() -> None:
+    lingbot_summary = {
+        "suite": {"output_dir": "outputs/native"},
+        "checkpoints": [
+            {
+                "checkpoint_name": "lingbot_va_posttrain_libero_long",
+                "episodes": 1,
+                "successes": 1,
+            }
+        ],
+        "results": [
+            {
+                "checkpoint_name": "lingbot_va_posttrain_libero_long",
+                "benchmark": "libero_10",
+                "task_id": 2,
+                "episode_idx": 4,
+                "success": True,
+                "env_timestep": 123,
+            }
+        ],
+    }
+    openwam_summary = {
+        "benchmark": "libero_10",
+        "output_root": "outputs/openwam",
+        "target_keys": ["m1_lingbot_va_transformer"],
+        "checkpoint_specs": [
+            {
+                "key": "m1_lingbot_va_transformer",
+                "label": "Open-WAM LingBot-VA transformer",
+            }
+        ],
+        "by_checkpoint": {
+            "m1_lingbot_va_transformer": {
+                "label": "Open-WAM LingBot-VA transformer",
+                "total": 1,
+                "finished": 1,
+                "success": 0,
+            }
+        },
+        "paired_rows": [
+            {
+                "task_id": 2,
+                "init_id": 4,
+                "m1_lingbot_va_transformer_success": False,
+                "m1_lingbot_va_transformer_executed_actions": 800,
+            }
+        ],
+    }
+
+    summary = build_comparison_summary(
+        lingbot_summary=lingbot_summary,
+        openwam_summary=openwam_summary,
+        title="test",
+    )
+
+    assert summary["arms"] == [
+        {
+            "key": "lingbot:lingbot_va_posttrain_libero_long",
+            "label": "LingBot-VA native lingbot_va_posttrain_libero_long",
+            "source": "lingbot_va_native",
+            "success": 1,
+            "total": 1,
+            "success_rate": 1.0,
+        },
+        {
+            "key": "openwam:m1_lingbot_va_transformer",
+            "label": "Open-WAM LingBot-VA transformer",
+            "source": "open_wam",
+            "success": 0,
+            "total": 1,
+            "success_rate": 0.0,
+        },
+    ]
+    assert summary["per_episode"][0]["lingbot:lingbot_va_posttrain_libero_long:success"] is True
+    assert summary["per_episode"][0]["openwam:m1_lingbot_va_transformer:success"] is False
+    assert summary["row_set_warnings"] == []
+
+
+def test_apple_to_apple_summary_counts_unfinished_openwam_rows_in_denominator() -> None:
+    summary = build_comparison_summary(
+        lingbot_summary={
+            "checkpoints": [],
+            "results": [],
+        },
+        openwam_summary={
+            "benchmark": "libero_10",
+            "target_keys": ["m1_lingbot_va_transformer"],
+            "checkpoint_specs": [
+                {
+                    "key": "m1_lingbot_va_transformer",
+                    "label": "Open-WAM LingBot-VA transformer",
+                }
+            ],
+            "by_checkpoint": {
+                "m1_lingbot_va_transformer": {
+                    "label": "Open-WAM LingBot-VA transformer",
+                    "total": 2,
+                    "finished": 1,
+                    "success": 1,
+                }
+            },
+            "paired_rows": [
+                {
+                    "task_id": 2,
+                    "init_id": 4,
+                    "m1_lingbot_va_transformer_success": True,
+                    "m1_lingbot_va_transformer_executed_actions": 100,
+                },
+                {
+                    "task_id": 3,
+                    "init_id": 5,
+                    "m1_lingbot_va_transformer_success": None,
+                    "m1_lingbot_va_transformer_executed_actions": None,
+                },
+            ],
+        },
+        title="test",
+    )
+
+    assert summary["arms"] == [
+        {
+            "key": "openwam:m1_lingbot_va_transformer",
+            "label": "Open-WAM LingBot-VA transformer",
+            "source": "open_wam",
+            "success": 1,
+            "total": 2,
+            "success_rate": 0.5,
+        }
+    ]
+    assert summary["row_set_warnings"] == [
+        "Native LingBot summary is missing Open-WAM rows: libero_10:task2:init4, libero_10:task3:init5"
+    ]
+
+
+def test_select_init_state_supports_sequence_without_shape() -> None:
+    assert select_init_state(["a", "b"], 3) == "b"
+
+
+def test_select_init_state_rejects_empty_sequence() -> None:
+    try:
+        select_init_state([], 0)
+    except ValueError as exc:
+        assert "no init states" in str(exc)
+    else:
+        raise AssertionError("empty init states should be rejected")
+
+
+def test_load_task_init_states_falls_back_for_old_torch(monkeypatch) -> None:
+    import open_wam.integrations
+
+    def old_torch_loader(task_spec):
+        del task_spec
+        raise TypeError("load() got an unexpected keyword argument 'weights_only'")
+
+    monkeypatch.setattr(open_wam.integrations, "load_libero_task_init_states", old_torch_loader)
+    monkeypatch.setattr(libero_rollout.torch, "load", lambda path: ["fallback", str(path)])
+
+    assert load_task_init_states(SimpleNamespace(init_states_path="/tmp/init.pruned_init")) == [
+        "fallback",
+        "/tmp/init.pruned_init",
+    ]
+
+
+def test_lingbot_third_party_star_exports_only_public_model() -> None:
+    import open_wam.third_party.lingbot as lingbot
+
+    assert lingbot.__all__ == ["WanTransformer3DModel"]
 
 
 def test_robotwin_client_patch_only_rewrites_paths(tmp_path: Path) -> None:

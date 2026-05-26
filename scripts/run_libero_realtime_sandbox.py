@@ -273,6 +273,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--pretrained-model-root",
+        type=str,
+        default=None,
+        help=(
+            "Optional reference asset root override for VAE/text/tokenizer assets. "
+            "Use this with --transformer-dir when comparing against an external full-model export."
+        ),
+    )
+    parser.add_argument(
         "--merge-checkpoint-runtime-config",
         action="store_true",
         help=(
@@ -526,6 +535,11 @@ def main() -> None:
         else:
             checkpoint_runtime_config_path = None
         _apply_checkpoint_backbone_override(config, checkpoint_path=checkpoint_path)
+    if args.pretrained_model_root is not None:
+        pretrained_model_root = Path(args.pretrained_model_root).expanduser().resolve()
+        if not pretrained_model_root.is_dir():
+            raise FileNotFoundError(f"--pretrained-model-root must be an existing directory: {pretrained_model_root}")
+        object.__setattr__(config.backbone, "pretrained_model_name_or_path", str(pretrained_model_root))
     object.__setattr__(config.backbone, "reference_assets_device_policy", args.reference_assets_device_policy)
     video_viz._apply_rollout_chunk_steps_override(config, args.rollout_chunk_steps)
     require_current_libero_policy_paradigm(
