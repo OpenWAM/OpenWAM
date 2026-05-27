@@ -17,12 +17,24 @@ def _load_script_module():
     return module
 
 
-def test_condition_source_frame_indices_follow_wan_causal_anchors() -> None:
+def test_condition_source_frame_indices_follow_next_wan_source_boundaries() -> None:
     module = _load_script_module()
 
     indices = module._condition_source_frame_indices(
         frame_ids=list(range(10, 25)),
         latent_num_frames=4,
+    )
+
+    assert indices == [11, 15, 19, 23]
+
+
+def test_condition_source_frame_indices_support_previous_frame_offset() -> None:
+    module = _load_script_module()
+
+    indices = module._condition_source_frame_indices(
+        frame_ids=list(range(10, 25)),
+        latent_num_frames=4,
+        source_frame_offset=-1,
     )
 
     assert indices == [10, 14, 18, 22]
@@ -36,7 +48,7 @@ def test_condition_source_frame_indices_clamp_explicit_frame_ids() -> None:
         latent_num_frames=5,
     )
 
-    assert indices == [3, 7, 11, 11, 11]
+    assert indices == [7, 11, 11, 11, 11]
 
 
 def test_libero_canonical_video_from_single_view_duplicates_width_slots() -> None:

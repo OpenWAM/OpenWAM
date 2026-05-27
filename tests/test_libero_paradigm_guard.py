@@ -25,7 +25,10 @@ def test_libero_paradigm_guard_flags_no_proprio_strict_m1_config() -> None:
 
     issues = collect_current_libero_policy_paradigm_issues(config, config_path=config_path)
 
-    assert issues == ["policy_variant.proprio_context_mode='none', expected 'text_context_token'"]
+    assert issues == [
+        "policy_variant.proprio_context_mode='none', "
+        "expected 'per_chunk_additive' or 'text_context_token'"
+    ]
 
 
 def test_libero_paradigm_guard_accepts_strict_m1_config_with_proprio() -> None:
@@ -36,6 +39,20 @@ def test_libero_paradigm_guard_accepts_strict_m1_config_with_proprio() -> None:
         policy_variant=replace(
             config.policy_variant,
             proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,
+        ),
+    )
+
+    assert collect_current_libero_policy_paradigm_issues(config, config_path=config_path) == []
+
+
+def test_libero_paradigm_guard_accepts_strict_m1_config_with_per_chunk_proprio() -> None:
+    config_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
+    config = load_experiment_config(config_path)
+    config = replace(
+        config,
+        policy_variant=replace(
+            config.policy_variant,
+            proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
         ),
     )
 

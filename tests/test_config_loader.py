@@ -35,6 +35,8 @@ from open_wam.configs import (
     MoTPolicyConfig,
     MoTRuntimeMode,
     MoTPreset,
+    ParallelContextConditionLatentSource,
+    ParallelHistoryStreamVisibility,
     ParallelRuntimeMode,
     ParallelStreamPolicyConfig,
     ParallelStreamVariantProfile,
@@ -932,6 +934,25 @@ def test_mot_policy_yaml_config_loads(tmp_path: Path) -> None:
     assert config.action_decoder.name == ActionDecoderName.MOT
 
 
+def test_mot_policy_rejects_shared_video_schedule_until_implemented(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    raw["name"] = "mot_shared_video_schedule_robotwin"
+    raw["policy_variant"]["name"] = "mot"
+    raw["policy_variant"]["attach_site"] = "post_visual_core"
+    raw["policy_variant"]["runtime_mode"] = "video_prefill_action_denoise"
+    raw["policy_variant"]["joint_timestep_coupling"] = "shared_video_schedule"
+    raw["action_decoder"]["name"] = "mlp_decoder"
+
+    config_path = tmp_path / "mot_shared_video_schedule_robotwin.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    with pytest.raises(ValueError, match="MoT.*shared_video_schedule"):
+        load_experiment_config(config_path)
+
+
 def test_mot_policy_preset_applies_fastwam_joint_defaults(tmp_path: Path) -> None:
     source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
@@ -1366,6 +1387,86 @@ def test_backbone_exported_runtime_action_init_mode_loads_as_enum(tmp_path: Path
     assert config.backbone.exported_runtime_action_init_mode == ExportedRuntimeActionInitMode.RANDOM
 
 
+def test_parallel_stream_single_frame_context_flag_enables_condition_latents(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_decoupled_same_step_heng_compatible.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw["policy_variant"]["context_condition_latent_source"] = "single_frame_condition_latent"
+    raw["policy_variant"]["history_stream_visibility"] = "video_only"
+    raw.setdefault("data", {}).setdefault("sample_construction", {})["condition_source_frame_offset"] = -1
+
+    config_path = tmp_path / "parallel_single_frame_context.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    assert (
+        config.policy_variant.context_condition_latent_source
+        == ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+    )
+    assert config.policy_variant.history_stream_visibility == ParallelHistoryStreamVisibility.VIDEO_ONLY
+    assert config.policy_variant.use_condition_latents is True
+    assert config.policy_variant.require_condition_latents is True
+    assert config.data.sample_construction.condition_source_frame_offset == -1
+
+
+def test_parallel_stream_single_frame_context_rejects_default_condition_offset(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_decoupled_same_step_heng_compatible.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw["policy_variant"]["context_condition_latent_source"] = "single_frame_condition_latent"
+    raw.setdefault("data", {}).setdefault("sample_construction", {}).pop("condition_source_frame_offset", None)
+
+    config_path = tmp_path / "parallel_single_frame_context_leaky_default.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    with pytest.raises(ValueError, match="single_frame_condition_latent.*condition_source_frame_offset=-1"):
+        load_experiment_config(config_path)
+
+
+def test_parallel_stream_per_chunk_additive_proprio_flag_loads(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_decoupled_same_step_heng_compatible.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw["policy_variant"]["proprio_context_mode"] = "per_chunk_additive"
+    raw["policy_variant"]["context_condition_latent_source"] = "single_frame_condition_latent"
+    raw["policy_variant"]["history_stream_visibility"] = "video_only"
+    raw.setdefault("data", {}).setdefault("sample_construction", {})["condition_source_frame_offset"] = -1
+
+    config_path = tmp_path / "parallel_per_chunk_additive.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    assert config.policy_variant.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
+    assert config.policy_variant.use_condition_latents is True
+    assert config.policy_variant.require_condition_latents is True
+
+
+def test_parallel_stream_generalist_rejects_single_frame_context_source(tmp_path: Path) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
+    )
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw["policy_variant"]["context_condition_latent_source"] = "single_frame_condition_latent"
+
+    config_path = tmp_path / "generalist_single_frame_context.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    with pytest.raises(ValueError, match="single_frame_condition_latent.*generalist_joint_denoising"):
+        load_experiment_config(config_path)
+
+
 def test_sample_construction_yaml_strings_are_coerced_to_enum_members(tmp_path: Path) -> None:
     source_path = REPO_ROOT / "configs/experiments/register_attached_libero_latent_local.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
@@ -1470,6 +1571,7 @@ def test_hierarchical_fixed_segment_loads_strict_rollout_parity_fields(tmp_path:
         "window_size": 30,
         "randomize_geometry": False,
         "start_padding_frames": 0,
+        "condition_source_frame_offset": -1,
         "target_alignment": "next_after_context",
         "rollout_context_policy": "one_frame",
         "tail_padding_policy": "zero_order_hold",
@@ -1492,6 +1594,7 @@ def test_hierarchical_fixed_segment_loads_strict_rollout_parity_fields(tmp_path:
     assert config.data.sample_construction.rollout_context_frames is None
     assert config.data.sample_construction.randomize_geometry is False
     assert config.data.sample_construction.start_padding_frames == 0
+    assert config.data.sample_construction.condition_source_frame_offset == -1
 
 
 def test_hierarchical_fixed_segment_rollout_parity_rejects_legacy_context_fields(tmp_path: Path) -> None:
@@ -1675,6 +1778,7 @@ def test_composable_runtime_fields_load(tmp_path: Path) -> None:
     raw["trainer"]["checkpoint_dir"] = "/tmp/open-wam-test/checkpoints"
     raw["trainer"]["save_interval"] = 5
     raw["trainer"]["checkpoint_mode"] = "model_only"
+    raw["trainer"]["max_checkpoints_to_keep"] = 3
     raw["trainer"]["export_runtime_backbone"] = True
     raw["trainer"]["resume_from"] = "/tmp/open-wam-test/checkpoints/checkpoint_step_5"
     raw["trainer"]["enable_jsonl_logging"] = True
@@ -1720,6 +1824,7 @@ def test_composable_runtime_fields_load(tmp_path: Path) -> None:
     assert config.trainer.checkpoint_dir == "/tmp/open-wam-test/checkpoints"
     assert config.trainer.save_interval == 5
     assert config.trainer.checkpoint_mode == "model_only"
+    assert config.trainer.max_checkpoints_to_keep == 3
     assert config.trainer.export_runtime_backbone is True
     assert config.trainer.resume_from == "/tmp/open-wam-test/checkpoints/checkpoint_step_5"
     assert config.trainer.enable_jsonl_logging is True

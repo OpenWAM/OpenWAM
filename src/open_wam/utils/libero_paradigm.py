@@ -139,10 +139,15 @@ def collect_current_libero_policy_paradigm_issues(
 
     if require_proprio:
         proprio_mode = getattr(policy_variant, "proprio_context_mode", ProprioContextMode.NONE)
-        if _normalized_value(proprio_mode) != ProprioContextMode.TEXT_CONTEXT_TOKEN.value:
+        supported_proprio_modes = {
+            ProprioContextMode.TEXT_CONTEXT_TOKEN.value,
+            ProprioContextMode.PER_CHUNK_ADDITIVE.value,
+        }
+        if _normalized_value(proprio_mode) not in supported_proprio_modes:
+            expected = " or ".join(repr(value) for value in sorted(supported_proprio_modes))
             issues.append(
                 "policy_variant.proprio_context_mode="
-                f"{_display_value(proprio_mode)!r}, expected {ProprioContextMode.TEXT_CONTEXT_TOKEN.value!r}"
+                f"{_display_value(proprio_mode)!r}, expected {expected}"
             )
 
     if deprecated_reason is not None and issues:
@@ -172,7 +177,7 @@ def require_current_libero_policy_paradigm(
     raise ValueError(
         f"{source} refuses deprecated LIBERO M1/M5 config {config_label!r}.\n"
         "The current training/eval paradigm requires strict fixed-128 samples, one-frame rollout "
-        "conditioning, fixed 4-frame chunks, no head padding, and proprio text-context tokens.\n"
+        "conditioning, fixed 4-frame chunks, no head padding, and a supported proprio context mode.\n"
         f"Issues:\n{issue_lines}\n"
         f"Use a current *_heng_compatible config with proprio enabled, or set "
         f"{ALLOW_DEPRECATED_LIBERO_CONFIG_ENV}=1 / pass --allow-deprecated-libero-config "

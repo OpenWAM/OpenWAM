@@ -80,6 +80,18 @@ def _resolve_proprio_context_state_dim(config: ExperimentConfig) -> int | None:
     return state_dim
 
 
+def _resolve_proprio_hidden_context_state_dim(config: ExperimentConfig) -> int | None:
+    if not isinstance(config.policy_variant, ParallelStreamPolicyConfig):
+        return None
+    mode = ProprioContextMode(config.policy_variant.proprio_context_mode)
+    if mode != ProprioContextMode.PER_CHUNK_ADDITIVE:
+        return None
+    state_dim = int(config.data.action_schema.state_dim)
+    if state_dim <= 0:
+        raise ValueError("proprio_context_mode=per_chunk_additive requires positive data.action_schema.state_dim.")
+    return state_dim
+
+
 def validate_experiment_config(config: ExperimentConfig) -> None:
     action_schema = config.data.action_schema
     if isinstance(config.policy_variant, RegisterAttachedPolicyConfig):
@@ -596,11 +608,13 @@ def build_variant_pipeline_from_config(config: ExperimentConfig) -> VariantPipel
     validate_experiment_config(config)
     policy_action_dim = _resolve_parallel_stream_model_action_dim(config)
     proprio_context_state_dim = _resolve_proprio_context_state_dim(config)
+    proprio_hidden_context_state_dim = _resolve_proprio_hidden_context_state_dim(config)
     visual_tower = VisualTower(
         config.backbone,
         action_dim=policy_action_dim,
         state_dim=config.data.action_schema.state_dim,
         proprio_context_state_dim=proprio_context_state_dim,
+        proprio_hidden_context_state_dim=proprio_hidden_context_state_dim,
     )
     policy_variant = build_policy_variant(config)
     # Pipeline-time hook for variants that need cross-module surgery (e.g. MoT

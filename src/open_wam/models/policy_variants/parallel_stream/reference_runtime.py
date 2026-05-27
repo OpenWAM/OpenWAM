@@ -12,9 +12,12 @@ from open_wam.configs.enums import (
     CurrentBlockCoupling,
     JointDenoiseTrainingMode,
     JointTimestepCoupling,
+    ParallelContextConditionLatentSource,
     ParallelExactCacheWriteMode,
+    ParallelHistoryStreamVisibility,
     ParallelRuntimeMode,
     ParallelStreamVariantProfile,
+    ProprioContextMode,
 )
 from open_wam.configs.variant_semantics import GENERALIST_TRAINING_SOURCE_METADATA_KEY
 from open_wam.configs.inference import InferenceConfig
@@ -104,10 +107,39 @@ class ExactCacheContext:
 
 
 def _prefix_visibility_mode_for_policy(policy_config: ParallelStreamPolicyConfig) -> str:
+    history_visibility = resolve_parallel_history_stream_visibility(policy_config)
+    if history_visibility == ParallelHistoryStreamVisibility.VIDEO_ONLY:
+        return "video_history_only"
+    if history_visibility == ParallelHistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY:
+        return "preserve_video_pretrain_history"
     return (
         "preserve_video_pretrain_history"
         if bool(getattr(policy_config, "preserve_video_pretrain_history", False))
         else "full_history"
+    )
+
+
+def resolve_parallel_history_stream_visibility(
+    policy_config: ParallelStreamPolicyConfig,
+) -> ParallelHistoryStreamVisibility:
+    value = getattr(policy_config, "history_stream_visibility", ParallelHistoryStreamVisibility.FULL)
+    resolved = ParallelHistoryStreamVisibility(value)
+    if resolved == ParallelHistoryStreamVisibility.FULL and bool(
+        getattr(policy_config, "preserve_video_pretrain_history", False)
+    ):
+        return ParallelHistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
+    return resolved
+
+
+def resolve_parallel_context_condition_latent_source(
+    policy_config: ParallelStreamPolicyConfig,
+) -> ParallelContextConditionLatentSource:
+    return ParallelContextConditionLatentSource(
+        getattr(
+            policy_config,
+            "context_condition_latent_source",
+            ParallelContextConditionLatentSource.VIDEO_LATENTS,
+        )
     )
 
 
@@ -268,9 +300,12 @@ def resolve_parallel_current_block_coupling(
 def should_couple_action_to_video_timesteps(
     policy_config: ParallelStreamPolicyConfig,
 ) -> bool:
-    """Backward-compatible predicate for sigma-matched joint denoising."""
+    """Backward-compatible predicate for joint denoise modes with shared video clock."""
 
-    return resolve_parallel_joint_timestep_coupling(policy_config) == JointTimestepCoupling.MATCH_SIGMA
+    return resolve_parallel_joint_timestep_coupling(policy_config) in {
+        JointTimestepCoupling.MATCH_SIGMA,
+        JointTimestepCoupling.SHARED_VIDEO_SCHEDULE,
+    }
 
 
 def resolve_parallel_joint_timestep_coupling(
@@ -507,6 +542,34 @@ def _sample_coupled_timestep_values(
     return values.video_timesteps, values.action_timesteps, values.sigma_values
 
 
+def _share_video_scheduler_grid_with_action_scheduler(
+    *,
+    latent_scheduler: FlowMatchScheduler,
+    action_scheduler: FlowMatchScheduler,
+    device: torch.device,
+) -> None:
+    action_scheduler.timesteps = latent_scheduler.timesteps.to(device=device)
+    action_scheduler.sigmas = latent_scheduler.sigmas.to(device=device)
+    if hasattr(latent_scheduler, "linear_timesteps_weights"):
+        action_scheduler.linear_timesteps_weights = latent_scheduler.linear_timesteps_weights.to(device=device)
+
+
+def _sample_shared_video_schedule_timestep_values(
+    *,
+    latent_scheduler: FlowMatchScheduler,
+    num_frames: int,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    timestep_ids = sample_timestep_id(
+        batch_size=num_frames,
+        num_train_timesteps=int(latent_scheduler.timesteps.numel()),
+        device=device,
+    )
+    video_timesteps = latent_scheduler.timesteps.to(device=device)[timestep_ids]
+    sigma_values = latent_scheduler.sigmas.to(device=device)[timestep_ids]
+    return video_timesteps, video_timesteps, sigma_values
+
+
 def _sample_index_matched_timestep_values(
     *,
     latent_scheduler: FlowMatchScheduler,
@@ -573,6 +636,12 @@ def _apply_generalist_joint_denoise_training_mode(
         clean_video=mode == JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
         clean_action=mode == JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
     )
+    if joint_timestep_coupling == JointTimestepCoupling.SHARED_VIDEO_SCHEDULE:
+        _share_video_scheduler_grid_with_action_scheduler(
+            latent_scheduler=artifacts.latent_scheduler,
+            action_scheduler=artifacts.action_scheduler,
+            device=video_latents.device,
+        )
 
     latent_dict = _add_noise(
         video_latents,
@@ -673,11 +742,27 @@ def prepare_parallel_exact_train_artifacts(
     force_clean_video_condition: bool = False,
 ) -> LingbotParallelTrainArtifacts:
     batch_size, _, num_frames, _, _ = video_latents.shape
-    resolved_condition_latents, condition_source = _resolve_full_condition_latents(
-        video_latents,
-        condition_latents,
-        label="Parallel exact training",
-    )
+    context_condition_source = resolve_parallel_context_condition_latent_source(policy_config)
+    if context_condition_source == ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT:
+        if condition_latents is None:
+            raise ValueError(
+                "`context_condition_latent_source=single_frame_condition_latent` requires `condition_latents`."
+            )
+        resolved_condition_latents = None
+        condition_source = "video_latents"
+        context_condition_latents, context_condition_source_label = _resolve_full_condition_latents(
+            video_latents,
+            condition_latents,
+            label="Parallel exact context-condition training",
+        )
+    else:
+        context_condition_latents = None
+        context_condition_source_label = None
+        resolved_condition_latents, condition_source = _resolve_full_condition_latents(
+            video_latents,
+            condition_latents,
+            label="Parallel exact training",
+        )
     train_attn_mode = resolve_stage_attention_mode(backbone_config, stage="train", exact_runtime=True)
     # Exact parallel-stream training keeps video and action in the same frame
     # count. Actions are reshaped from `[B, F * A, D]` into
@@ -722,6 +807,17 @@ def prepare_parallel_exact_train_artifacts(
             latent_scheduler=latent_scheduler,
             action_scheduler=action_scheduler,
             num_frames=num_frames,
+            device=video_latents.device,
+        )
+    elif joint_timestep_coupling == JointTimestepCoupling.SHARED_VIDEO_SCHEDULE:
+        latent_timestep_values, action_timestep_values, shared_sigma_values = _sample_shared_video_schedule_timestep_values(
+            latent_scheduler=latent_scheduler,
+            num_frames=num_frames,
+            device=video_latents.device,
+        )
+        _share_video_scheduler_grid_with_action_scheduler(
+            latent_scheduler=latent_scheduler,
+            action_scheduler=action_scheduler,
             device=video_latents.device,
         )
     elif joint_timestep_coupling == JointTimestepCoupling.MATCH_INDEX:
@@ -817,6 +913,17 @@ def prepare_parallel_exact_train_artifacts(
         default_end=loss_frame_end,
         label="action-loss",
     )
+    if context_condition_latents is not None:
+        if resolved_loss_frame_start <= 0:
+            raise ValueError(
+                "`context_condition_latent_source=single_frame_condition_latent` requires at least one "
+                "pre-target context frame; resolved loss_frame_start=0."
+            )
+        latent_dict["latent"][:, :, :resolved_loss_frame_start] = context_condition_latents[
+            :, :, :resolved_loss_frame_start
+        ]
+        latent_dict["cond_timesteps"][:, :resolved_loss_frame_start] = 0
+        condition_source = f"context_{context_condition_source_label}"
     latent_loss_mask = torch.zeros_like(video_latents, device=video_latents.device)
     latent_loss_mask[:, :, resolved_latent_loss_frame_start:resolved_latent_loss_frame_end] = 1.0
     action_loss_mask = torch.zeros_like(action_latents, device=video_latents.device)
@@ -864,9 +971,13 @@ def prepare_parallel_exact_train_artifacts(
             "preserve_video_pretrain_history": bool(
                 getattr(policy_config, "preserve_video_pretrain_history", False)
             ),
+            "history_stream_visibility": resolve_parallel_history_stream_visibility(policy_config).value,
             "force_clean_video_condition": bool(force_clean_video_condition),
             "joint_timestep_coupling": joint_timestep_coupling.value,
-            "coupled_action_video_timesteps": bool(joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA),
+            "coupled_action_video_timesteps": bool(
+                joint_timestep_coupling
+                in {JointTimestepCoupling.MATCH_SIGMA, JointTimestepCoupling.SHARED_VIDEO_SCHEDULE}
+            ),
             "video_condition_source": condition_source,
         },
         latent_scheduler=latent_scheduler,
@@ -1309,6 +1420,42 @@ def _inject_proprio_text_context(
     return text_emb, negative_text_emb
 
 
+def _single_stream_hidden_proprio_context(
+    transformer: torch.nn.Module,
+    *,
+    proprio_state: torch.Tensor | None,
+    stream_latents: torch.Tensor,
+    action_mode: bool,
+) -> torch.Tensor | None:
+    if proprio_state is None:
+        return None
+    encode = getattr(transformer, "encode_proprio_hidden_context", None)
+    if not callable(encode):
+        raise ValueError("Per-chunk proprio mode requires `encode_proprio_hidden_context` on the runtime transformer.")
+    if proprio_state.ndim == 3:
+        proprio_state = proprio_state[:, -1, :]
+    if proprio_state.ndim != 2:
+        raise ValueError(
+            "Single-stream proprio context expects state with shape [B, state_dim] or [B, H, state_dim], "
+            f"got {tuple(proprio_state.shape)}."
+        )
+    batch_size, _, num_frames, height, width = stream_latents.shape
+    if int(proprio_state.shape[0]) != batch_size:
+        raise ValueError(
+            "Single-stream proprio batch mismatch, "
+            f"got proprio batch {proprio_state.shape[0]} and stream batch {batch_size}."
+        )
+    frame_state = proprio_state[:, None, :].expand(-1, int(num_frames), -1)
+    frame_context = encode(frame_state, device=stream_latents.device, dtype=stream_latents.dtype)
+    if action_mode:
+        tokens_per_frame = int(height) * int(width)
+    else:
+        patch_t, patch_h, patch_w = transformer.patch_size
+        frame_context = frame_context[:, :: int(patch_t), :]
+        tokens_per_frame = (int(height) // int(patch_h)) * (int(width) // int(patch_w))
+    return frame_context.repeat_interleave(tokens_per_frame, dim=1)
+
+
 def _resolve_exact_cache_context(
     *,
     transformer: torch.nn.Module,
@@ -1545,6 +1692,9 @@ def repeat_input_for_cfg(
             repeat_shape = (2,) + (1,) * (attention_mask.ndim - 1)
             attention_mask = attention_mask.repeat(*repeat_shape)
         repeated["attention_mask"] = attention_mask
+    hidden_context = input_dict.get("hidden_context")
+    if hidden_context is not None:
+        repeated["hidden_context"] = hidden_context.repeat(2, 1, 1)
     return repeated
 
 
@@ -1579,11 +1729,15 @@ def _repeat_joint_input_for_cfg(
         repeated_latent_dict["loss_mask"] = latent_dict["loss_mask"].repeat(2, 1, 1, 1, 1)
     if "loss_mask" in action_dict:
         repeated_action_dict["loss_mask"] = action_dict["loss_mask"].repeat(2, 1, 1, 1, 1)
-    return {
+    repeated_input = {
         **input_dict,
         "latent_dict": repeated_latent_dict,
         "action_dict": repeated_action_dict,
     }
+    proprio_state = input_dict.get("per_chunk_proprio_state")
+    if isinstance(proprio_state, torch.Tensor):
+        repeated_input["per_chunk_proprio_state"] = proprio_state.repeat(2, 1, 1)
+    return repeated_input
 
 
 def prepare_reference_forward_input(
@@ -1604,6 +1758,9 @@ def prepare_reference_forward_input(
     cross_attention_mask = input_dict.get("cross_attention_mask")
     if cross_attention_mask is not None:
         prepared["cross_attention_mask"] = cross_attention_mask
+    hidden_context = input_dict.get("hidden_context")
+    if hidden_context is not None:
+        prepared["hidden_context"] = hidden_context.to(model_dtype)
     return prepared
 
 
@@ -1726,6 +1883,7 @@ def run_parallel_exact_cache_warmup(
     cache_write_mode: ParallelExactCacheWriteMode | str = ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED,
     frame_start_override: int | None = None,
     proprio_state: torch.Tensor | None = None,
+    hidden_proprio_state: torch.Tensor | None = None,
 ) -> dict[str, Any]:
     device = observed_video_latents.device
     batch_size, _, observed_frames, latent_height, latent_width = observed_video_latents.shape
@@ -1746,6 +1904,18 @@ def run_parallel_exact_cache_warmup(
         text_emb=text_emb,
         negative_text_emb=negative_text_emb,
         proprio_state=proprio_state,
+    )
+    video_hidden_context = _single_stream_hidden_proprio_context(
+        transformer,
+        proprio_state=hidden_proprio_state,
+        stream_latents=observed_video_latents,
+        action_mode=False,
+    )
+    action_hidden_context = _single_stream_hidden_proprio_context(
+        transformer,
+        proprio_state=hidden_proprio_state,
+        stream_latents=observed_action_latents,
+        action_mode=True,
     )
     cache_spec = _build_exact_cache_spec(
         write_mode=cache_write_mode,
@@ -1804,6 +1974,9 @@ def run_parallel_exact_cache_warmup(
         preserve_video_pretrain_history=bool(
             getattr(policy_config, "preserve_video_pretrain_history", False)
         ),
+        history_stream_visibility=resolve_parallel_history_stream_visibility(policy_config),
+        video_hidden_context=video_hidden_context,
+        action_hidden_context=action_hidden_context,
     )
     debug = {
         "cache_name": cache_context.cache_name,
@@ -1849,6 +2022,7 @@ def _maybe_commit_initial_observed_video_context(
     current_frame_start: int,
     step_index: int,
     current_block_coupling: CurrentBlockCoupling,
+    hidden_proprio_state: torch.Tensor | None = None,
 ) -> tuple[int, bool]:
     """Commit frame 0 as pure prefix context before generating frame 1.
 
@@ -1893,6 +2067,12 @@ def _maybe_commit_initial_observed_video_context(
         }
         else CurrentBlockCoupling.VIDEO_THEN_ACTION
     )
+    video_hidden_context = _single_stream_hidden_proprio_context(
+        transformer,
+        proprio_state=hidden_proprio_state,
+        stream_latents=observed_video,
+        action_mode=False,
+    )
     _write_exact_cache_chunk(
         transformer=transformer,
         cache_spec=prefix_cache_spec,
@@ -1912,6 +2092,8 @@ def _maybe_commit_initial_observed_video_context(
         preserve_video_pretrain_history=bool(
             getattr(policy_config, "preserve_video_pretrain_history", False)
         ),
+        history_stream_visibility=resolve_parallel_history_stream_visibility(policy_config),
+        video_hidden_context=video_hidden_context,
     )
     return startup_plan.generation_frame_start, True
 
@@ -1932,6 +2114,7 @@ def run_parallel_exact_inference_rollout(
     advance_frame_start: bool = False,
     skip_video_prediction: bool = False,
     proprio_state: torch.Tensor | None = None,
+    hidden_proprio_state: torch.Tensor | None = None,
 ) -> LingbotParallelInferArtifacts:
     if condition_latents is not None:
         device = condition_latents.device
@@ -2018,6 +2201,7 @@ def run_parallel_exact_inference_rollout(
             current_frame_start=current_frame_start,
             step_index=int(infer_cache.get("step_index", 0)),
             current_block_coupling=current_block_coupling,
+            hidden_proprio_state=hidden_proprio_state,
         )
     latent_cond = None
     if (
@@ -2081,6 +2265,18 @@ def run_parallel_exact_inference_rollout(
             device=device,
             dtype=model_dtype,
         )
+    action_hidden_context = _single_stream_hidden_proprio_context(
+        transformer,
+        proprio_state=hidden_proprio_state,
+        stream_latents=actions,
+        action_mode=True,
+    )
+    video_hidden_context = _single_stream_hidden_proprio_context(
+        transformer,
+        proprio_state=hidden_proprio_state,
+        stream_latents=latents,
+        action_mode=False,
+    )
 
     def denoise_video_chunk(*, commit_to_cache: bool) -> None:
         nonlocal latents
@@ -2095,6 +2291,8 @@ def run_parallel_exact_inference_rollout(
                 action_mode=False,
                 cond=latent_cond,
             )
+            if video_hidden_context is not None:
+                video_input["hidden_context"] = video_hidden_context
             video_noise_pred = run_reference_single_stream_forward(
                 transformer,
                 input_dict=video_input,
@@ -2135,6 +2333,8 @@ def run_parallel_exact_inference_rollout(
                 cond=action_cond,
                 action_channel_mask=action_channel_mask,
             )
+            if action_hidden_context is not None:
+                action_input["hidden_context"] = action_hidden_context
             action_noise_pred = run_reference_single_stream_forward(
                 transformer,
                 input_dict=action_input,
@@ -2207,6 +2407,9 @@ def run_parallel_exact_inference_rollout(
                 preserve_video_pretrain_history=bool(
                     getattr(policy_config, "preserve_video_pretrain_history", False)
                 ),
+                history_stream_visibility=resolve_parallel_history_stream_visibility(policy_config),
+                video_hidden_context=video_hidden_context,
+                action_hidden_context=action_hidden_context,
             )
     else:  # pragma: no cover - enum guard
         raise ValueError(f"Unsupported M1 current-block coupling: {current_block_coupling!r}")
@@ -2285,6 +2488,12 @@ def _run_parallel_exact_joint_forward_manual(
     timestep_proj = prepared.timestep_proj
     split_list = prepared.split_list
     exact_attention_profile = prepared.attention_profile
+    hidden_states = _apply_parallel_chunk_proprio_context(
+        transformer,
+        hidden_states=hidden_states,
+        split_list=split_list,
+        input_dict=input_dict,
+    )
     cache_stream_ids = _stream_ids_for_exact_dual_stream_split(
         split_list,
         device=hidden_states.device,
@@ -2329,6 +2538,7 @@ def _run_parallel_exact_joint_forward_manual(
             preserve_video_pretrain_history=bool(
                 input_dict.get("preserve_video_pretrain_history", False)
             ),
+            history_stream_visibility=input_dict.get("history_stream_visibility"),
         )
         exact_attention_profile = PreparedAttentionProfile(
             spec=rebuilt_dense_profile.spec,
@@ -2411,6 +2621,142 @@ def _run_parallel_exact_joint_forward_manual(
             f"or effective_batch_size={effective_batch_size}, got {action_hidden_states.shape[0]}."
         )
     return latent_hidden_states, action_hidden_states
+
+
+def _apply_parallel_chunk_proprio_context(
+    transformer: torch.nn.Module,
+    *,
+    hidden_states: torch.Tensor,
+    split_list: list[int] | tuple[int, ...],
+    input_dict: dict[str, torch.Tensor | dict[str, torch.Tensor]],
+) -> torch.Tensor:
+    proprio_state = input_dict.get("per_chunk_proprio_state")
+    if proprio_state is None:
+        return hidden_states
+    if not isinstance(proprio_state, torch.Tensor):
+        raise ValueError("`per_chunk_proprio_state` must be a tensor.")
+    latent_dict = input_dict["latent_dict"]
+    action_dict = input_dict["action_dict"]
+    if not isinstance(latent_dict, dict) or not isinstance(action_dict, dict):
+        raise ValueError("Per-chunk proprio context requires latent_dict and action_dict payloads.")
+    latent_shape = tuple(int(dim) for dim in latent_dict["noisy_latents"].shape)
+    action_shape = tuple(int(dim) for dim in action_dict["noisy_latents"].shape)
+    batch_size, _, latent_frames, latent_height, latent_width = latent_shape
+    action_batch, _, action_frames, action_height, action_width = action_shape
+    if batch_size != action_batch:
+        raise ValueError(
+            "Per-chunk proprio context expects matching video/action batches, "
+            f"got {batch_size} and {action_batch}."
+        )
+    if proprio_state.ndim != 3 or int(proprio_state.shape[0]) != batch_size:
+        raise ValueError(
+            "Per-chunk proprio context expects state shape [B, frames_or_chunks, state_dim], "
+            f"got {tuple(proprio_state.shape)} for batch_size={batch_size}."
+        )
+    chunk_size = max(1, int(input_dict["chunk_size"]))
+    frame_ids = torch.arange(latent_frames, device=proprio_state.device, dtype=torch.long)
+    chunk_origin_frame = int(input_dict.get("chunk_origin_frame", 0) or 0)
+    relative_frame_ids = frame_ids - int(chunk_origin_frame)
+    boundary_state = torch.zeros(
+        batch_size,
+        latent_frames,
+        int(proprio_state.shape[-1]),
+        device=proprio_state.device,
+        dtype=proprio_state.dtype,
+    )
+    proprio_count = int(proprio_state.shape[1])
+    proprio_granularity = str(input_dict.get("per_chunk_proprio_state_granularity", "chunk"))
+    if proprio_granularity not in {"chunk", "frame"}:
+        raise ValueError(
+            "Per-chunk proprio context expects `per_chunk_proprio_state_granularity` to be "
+            f"'chunk' or 'frame', got {proprio_granularity!r}."
+        )
+    if proprio_granularity == "frame":
+        boundary_frame_ids = (
+            torch.div(relative_frame_ids.clamp_min(0), chunk_size, rounding_mode="floor") * chunk_size
+            + int(chunk_origin_frame)
+            - 1
+        )
+        valid_boundary_mask = boundary_frame_ids >= 0
+        if bool(valid_boundary_mask.any()):
+            selected_boundary_ids = boundary_frame_ids[valid_boundary_mask].clamp(
+                min=0,
+                max=proprio_count - 1,
+            )
+            boundary_state[:, valid_boundary_mask, :] = proprio_state.index_select(
+                dim=1,
+                index=selected_boundary_ids,
+            )
+    else:
+        chunk_ids = torch.div(relative_frame_ids.clamp_min(0), chunk_size, rounding_mode="floor")
+        valid_chunk_mask = (chunk_ids >= 0) & (chunk_ids < proprio_count)
+        if bool(valid_chunk_mask.any()):
+            selected_chunk_ids = chunk_ids[valid_chunk_mask].clamp(min=0, max=proprio_count - 1)
+            boundary_state[:, valid_chunk_mask, :] = proprio_state.index_select(
+                dim=1,
+                index=selected_chunk_ids,
+            )
+
+    encode = getattr(transformer, "encode_proprio_hidden_context", None)
+    if not callable(encode):
+        raise ValueError("Per-chunk proprio mode requires `encode_proprio_hidden_context` on the runtime transformer.")
+    chunk_context = encode(boundary_state, device=hidden_states.device, dtype=hidden_states.dtype)
+
+    patch_t, patch_h, patch_w = transformer.patch_size
+    video_frames = latent_frames // int(patch_t)
+    if int(patch_t) != 1:
+        chunk_context = chunk_context[:, :: int(patch_t), :]
+    video_tokens_per_frame = (latent_height // int(patch_h)) * (latent_width // int(patch_w))
+    action_tokens_per_frame = action_height * action_width
+    if video_frames != action_frames:
+        raise ValueError(
+            "Per-chunk proprio context expects patchified video frames to equal action frames, "
+            f"got video_frames={video_frames}, action_frames={action_frames}."
+        )
+    video_context = chunk_context.repeat_interleave(video_tokens_per_frame, dim=1)
+    action_context = chunk_context.repeat_interleave(action_tokens_per_frame, dim=1)
+    if hidden_states.shape[0] == 1:
+        video_context = rearrange(video_context, "b l c -> 1 (b l) c")
+        action_context = rearrange(action_context, "b l c -> 1 (b l) c")
+    elif hidden_states.shape[0] != batch_size:
+        raise ValueError(
+            "Unexpected hidden state layout for per-chunk proprio context: expected leading dimension "
+            f"1 or batch_size={batch_size}, got {hidden_states.shape[0]}."
+        )
+
+    latent_noisy_len, latent_condition_len, action_noisy_len, action_condition_len = (
+        int(split_list[0]),
+        int(split_list[1]),
+        int(split_list[2]),
+        int(split_list[3]),
+    )
+    if int(video_context.shape[1]) != latent_noisy_len or int(action_context.shape[1]) != action_noisy_len:
+        raise ValueError(
+            "Per-chunk proprio context token layout mismatch: "
+            f"video_context={tuple(video_context.shape)}, action_context={tuple(action_context.shape)}, "
+            f"split_list={tuple(int(value) for value in split_list)}."
+        )
+    output = hidden_states.clone()
+    output[:, :latent_noisy_len, :] = output[:, :latent_noisy_len, :] + video_context
+    if latent_condition_len > 0:
+        if int(video_context.shape[1]) != latent_condition_len:
+            raise ValueError(
+                "Per-chunk proprio video condition context length mismatch: "
+                f"video_context={tuple(video_context.shape)}, latent_condition_len={latent_condition_len}."
+            )
+        output[:, latent_noisy_len : latent_noisy_len + latent_condition_len, :] = (
+            output[:, latent_noisy_len : latent_noisy_len + latent_condition_len, :] + video_context
+        )
+    action_start = latent_noisy_len + latent_condition_len
+    output[:, action_start : action_start + action_noisy_len, :] = (
+        output[:, action_start : action_start + action_noisy_len, :] + action_context
+    )
+    condition_start = action_start + action_noisy_len
+    if action_condition_len > 0:
+        output[:, condition_start : condition_start + action_condition_len, :] = (
+            output[:, condition_start : condition_start + action_condition_len, :] + action_context
+        )
+    return output
 
 
 def _build_fastwam_first_frame_attention_profile(
@@ -2724,6 +3070,7 @@ def _build_joint_clean_cache_attention_mask(
     window_size: int,
     current_block_coupling: CurrentBlockCoupling | str,
     preserve_video_pretrain_history: bool,
+    history_stream_visibility: ParallelHistoryStreamVisibility | str | None = None,
 ) -> torch.Tensor:
     profile = _build_joint_clean_cache_attention_profile(
         latents=latents,
@@ -2734,6 +3081,7 @@ def _build_joint_clean_cache_attention_mask(
         window_size=window_size,
         current_block_coupling=current_block_coupling,
         preserve_video_pretrain_history=preserve_video_pretrain_history,
+        history_stream_visibility=history_stream_visibility,
     )
     if profile.self_attention_mask is None:
         raise ValueError("Joint clean cache attention profile did not materialize a clean self-attention mask.")
@@ -2750,6 +3098,7 @@ def _build_joint_clean_cache_attention_profile(
     window_size: int,
     current_block_coupling: CurrentBlockCoupling | str,
     preserve_video_pretrain_history: bool,
+    history_stream_visibility: ParallelHistoryStreamVisibility | str | None = None,
 ) -> PreparedAttentionProfile:
     # The clean-cache writer keeps batch as the real batch dimension. Build a
     # batch-local mask that can broadcast across CFG/batch rows instead of a
@@ -2773,6 +3122,11 @@ def _build_joint_clean_cache_attention_profile(
         build_flex_masks=False,
         current_block_coupling=CurrentBlockCoupling(current_block_coupling).value,
         preserve_video_pretrain_history=bool(preserve_video_pretrain_history),
+        history_stream_visibility=(
+            None
+            if history_stream_visibility is None
+            else ParallelHistoryStreamVisibility(history_stream_visibility).value
+        ),
     )
     if profile.self_attention_mask is None or profile.cross_attention_mask is None:
         raise ValueError("Joint clean cache attention profile did not materialize dense masks.")
@@ -2831,6 +3185,9 @@ def _write_joint_clean_tokens_to_exact_cache(
     window_size: int,
     current_block_coupling: CurrentBlockCoupling | str,
     preserve_video_pretrain_history: bool,
+    history_stream_visibility: ParallelHistoryStreamVisibility | str | None = None,
+    video_hidden_context: torch.Tensor | None = None,
+    action_hidden_context: torch.Tensor | None = None,
 ) -> None:
     model_dtype = reference_runtime_dtype(transformer)
     video_cache_input = prepare_reference_single_stream_input(
@@ -2850,6 +3207,10 @@ def _write_joint_clean_tokens_to_exact_cache(
         action_mode=True,
         action_channel_mask=action_channel_mask,
     )
+    if video_hidden_context is not None:
+        video_cache_input["hidden_context"] = video_hidden_context
+    if action_hidden_context is not None:
+        action_cache_input["hidden_context"] = action_hidden_context
     if use_cfg:
         if negative_text_emb is None:
             raise ValueError("Joint cache commit with CFG requires negative_text_emb.")
@@ -2864,6 +3225,30 @@ def _write_joint_clean_tokens_to_exact_cache(
         action_cache_input["noisy_latents"].to(dtype=model_dtype),
         input_type="action",
     ).contiguous().clone()
+    latent_hidden_context = video_cache_input.get("hidden_context")
+    if latent_hidden_context is not None:
+        if tuple(latent_hidden_context.shape) != tuple(latent_hidden_states.shape):
+            raise ValueError(
+                "Joint clean cache video hidden_context must match embedded hidden states, "
+                f"got hidden_context={tuple(latent_hidden_context.shape)}, "
+                f"hidden_states={tuple(latent_hidden_states.shape)}."
+            )
+        latent_hidden_states = latent_hidden_states + latent_hidden_context.to(
+            device=latent_hidden_states.device,
+            dtype=latent_hidden_states.dtype,
+        )
+    action_hidden_context_input = action_cache_input.get("hidden_context")
+    if action_hidden_context_input is not None:
+        if tuple(action_hidden_context_input.shape) != tuple(action_hidden_states.shape):
+            raise ValueError(
+                "Joint clean cache action hidden_context must match embedded hidden states, "
+                f"got hidden_context={tuple(action_hidden_context_input.shape)}, "
+                f"hidden_states={tuple(action_hidden_states.shape)}."
+            )
+        action_hidden_states = action_hidden_states + action_hidden_context_input.to(
+            device=action_hidden_states.device,
+            dtype=action_hidden_states.dtype,
+        )
     hidden_states = torch.cat([latent_hidden_states, action_hidden_states], dim=1)
     cache_stream_ids = _stream_ids_for_clean_video_action_tokens(
         video_token_count=int(latent_hidden_states.shape[1]),
@@ -2905,6 +3290,7 @@ def _write_joint_clean_tokens_to_exact_cache(
         window_size=window_size,
         current_block_coupling=current_block_coupling,
         preserve_video_pretrain_history=preserve_video_pretrain_history,
+        history_stream_visibility=history_stream_visibility,
     )
 
     cache_state = transformer._resolve_exact_cache_state(cache_name)
@@ -2964,6 +3350,9 @@ def _write_exact_cache_chunk(
     window_size: int,
     current_block_coupling: CurrentBlockCoupling | str = CurrentBlockCoupling.VIDEO_THEN_ACTION,
     preserve_video_pretrain_history: bool = False,
+    history_stream_visibility: ParallelHistoryStreamVisibility | str | None = None,
+    video_hidden_context: torch.Tensor | None = None,
+    action_hidden_context: torch.Tensor | None = None,
 ) -> None:
     if cache_spec.write_mode == ParallelExactCacheWriteMode.JOINT_PACKED:
         _write_joint_clean_tokens_to_exact_cache(
@@ -2982,6 +3371,9 @@ def _write_exact_cache_chunk(
             window_size=window_size,
             current_block_coupling=current_block_coupling,
             preserve_video_pretrain_history=preserve_video_pretrain_history,
+            history_stream_visibility=history_stream_visibility,
+            video_hidden_context=video_hidden_context,
+            action_hidden_context=action_hidden_context,
         )
         return
     if cache_spec.write_mode == ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED:
@@ -2991,7 +3383,20 @@ def _write_exact_cache_chunk(
         action_frames = int(action_latents.shape[2])
         total_frames = max(video_frames, action_frames)
 
-        def _write_video_cache(video_chunk: torch.Tensor, *, chunk_frame_start: int) -> None:
+        def _slice_hidden_context(
+            hidden_context: torch.Tensor | None,
+            *,
+            chunk_offset: int,
+            frame_count: int,
+            tokens_per_frame: int,
+        ) -> torch.Tensor | None:
+            if hidden_context is None:
+                return None
+            start = int(chunk_offset) * int(tokens_per_frame)
+            end = start + int(frame_count) * int(tokens_per_frame)
+            return hidden_context[:, start:end, :]
+
+        def _write_video_cache(video_chunk: torch.Tensor, *, chunk_frame_start: int, chunk_offset: int) -> None:
             video_cache_input = prepare_reference_single_stream_input(
                 latents=video_chunk,
                 timestep=0.0,
@@ -3000,6 +3405,18 @@ def _write_exact_cache_chunk(
                 backbone_config=backbone_config,
                 action_mode=False,
             )
+            video_context = _slice_hidden_context(
+                video_hidden_context,
+                chunk_offset=chunk_offset,
+                frame_count=int(video_chunk.shape[2]),
+                tokens_per_frame=(
+                    int(video_chunk.shape[3])
+                    // max(1, int(backbone_config.patch_size_h))
+                    * (int(video_chunk.shape[4]) // max(1, int(backbone_config.patch_size_w)))
+                ),
+            )
+            if video_context is not None:
+                video_cache_input["hidden_context"] = video_context
             run_reference_single_stream_forward(
                 transformer,
                 input_dict=video_cache_input,
@@ -3012,7 +3429,7 @@ def _write_exact_cache_chunk(
                 force_cfg_batch=use_cfg,
             )
 
-        def _write_action_cache(action_chunk: torch.Tensor, *, chunk_frame_start: int) -> None:
+        def _write_action_cache(action_chunk: torch.Tensor, *, chunk_frame_start: int, chunk_offset: int) -> None:
             action_cache_input = prepare_reference_single_stream_input(
                 latents=action_chunk,
                 timestep=0.0,
@@ -3022,6 +3439,14 @@ def _write_exact_cache_chunk(
                 action_mode=True,
                 action_channel_mask=action_channel_mask,
             )
+            action_context = _slice_hidden_context(
+                action_hidden_context,
+                chunk_offset=chunk_offset,
+                frame_count=int(action_chunk.shape[2]),
+                tokens_per_frame=int(action_chunk.shape[3]) * int(action_chunk.shape[4]),
+            )
+            if action_context is not None:
+                action_cache_input["hidden_context"] = action_context
             run_reference_single_stream_forward(
                 transformer,
                 input_dict=action_cache_input,
@@ -3044,12 +3469,12 @@ def _write_exact_cache_chunk(
 
             if current_block_coupling == CurrentBlockCoupling.VIDEO_THEN_ACTION:
                 if has_video:
-                    _write_video_cache(video_chunk, chunk_frame_start=chunk_frame_start)
+                    _write_video_cache(video_chunk, chunk_frame_start=chunk_frame_start, chunk_offset=chunk_offset)
                 if has_action:
-                    _write_action_cache(action_chunk, chunk_frame_start=chunk_frame_start)
+                    _write_action_cache(action_chunk, chunk_frame_start=chunk_frame_start, chunk_offset=chunk_offset)
             elif current_block_coupling == CurrentBlockCoupling.ACTION_THEN_VIDEO:
                 if has_action:
-                    _write_action_cache(action_chunk, chunk_frame_start=chunk_frame_start)
+                    _write_action_cache(action_chunk, chunk_frame_start=chunk_frame_start, chunk_offset=chunk_offset)
                 if has_video and has_action:
                     metadata_previous = _set_slot_pool_layer_metadata(
                         transformer,
@@ -3061,11 +3486,11 @@ def _write_exact_cache_chunk(
                         },
                     )
                     try:
-                        _write_video_cache(video_chunk, chunk_frame_start=chunk_frame_start)
+                        _write_video_cache(video_chunk, chunk_frame_start=chunk_frame_start, chunk_offset=chunk_offset)
                     finally:
                         _restore_slot_pool_layer_metadata(metadata_previous)
                 elif has_video:
-                    _write_video_cache(video_chunk, chunk_frame_start=chunk_frame_start)
+                    _write_video_cache(video_chunk, chunk_frame_start=chunk_frame_start, chunk_offset=chunk_offset)
             elif current_block_coupling == CurrentBlockCoupling.DECOUPLED_SAME_STEP:
                 overlap_frames = min(int(video_chunk.shape[2]), int(action_chunk.shape[2]))
                 if overlap_frames > 0:
@@ -3085,16 +3510,35 @@ def _write_exact_cache_chunk(
                         window_size=window_size,
                         current_block_coupling=current_block_coupling,
                         preserve_video_pretrain_history=preserve_video_pretrain_history,
+                        history_stream_visibility=history_stream_visibility,
+                        video_hidden_context=_slice_hidden_context(
+                            video_hidden_context,
+                            chunk_offset=chunk_offset,
+                            frame_count=overlap_frames,
+                            tokens_per_frame=(
+                                int(video_chunk.shape[3])
+                                // max(1, int(backbone_config.patch_size_h))
+                                * (int(video_chunk.shape[4]) // max(1, int(backbone_config.patch_size_w)))
+                            ),
+                        ),
+                        action_hidden_context=_slice_hidden_context(
+                            action_hidden_context,
+                            chunk_offset=chunk_offset,
+                            frame_count=overlap_frames,
+                            tokens_per_frame=int(action_chunk.shape[3]) * int(action_chunk.shape[4]),
+                        ),
                     )
                 if int(video_chunk.shape[2]) > overlap_frames:
                     _write_video_cache(
                         video_chunk[:, :, overlap_frames:],
                         chunk_frame_start=chunk_frame_start + overlap_frames,
+                        chunk_offset=chunk_offset + overlap_frames,
                     )
                 if int(action_chunk.shape[2]) > overlap_frames:
                     _write_action_cache(
                         action_chunk[:, :, overlap_frames:],
                         chunk_frame_start=chunk_frame_start + overlap_frames,
+                        chunk_offset=chunk_offset + overlap_frames,
                     )
             else:
                 raise ValueError(
@@ -3148,6 +3592,9 @@ def _commit_joint_chunk_to_exact_cache(
         )
         if policy_config is not None
         else False,
+        history_stream_visibility=(
+            resolve_parallel_history_stream_visibility(policy_config) if policy_config is not None else None
+        ),
     )
 
 
@@ -3198,6 +3645,7 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
     forced_action_noise: torch.Tensor | None = None,
     action_conditioning_mode: str = "vanilla_joint_rollout",
     proprio_state: torch.Tensor | None = None,
+    hidden_proprio_state: torch.Tensor | None = None,
 ) -> LingbotParallelInferArtifacts:
     current_block_coupling = resolve_parallel_current_block_coupling(policy_config)
     joint_packed_couplings = {
@@ -3288,6 +3736,7 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             current_frame_start=current_frame_start,
             step_index=int(infer_cache.get("step_index", 0)),
             current_block_coupling=current_block_coupling,
+            hidden_proprio_state=hidden_proprio_state,
         )
     latents = torch.randn(
         batch_size,
@@ -3410,22 +3859,31 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             latents[:, :, 0:1] = initial_observed_video_anchor
             video_timestep_values = video_timestep_values.clone()
             video_timestep_values[:, 0] = 0.0
-        if joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA:
-            if action_timestep_lookup_scheduler is None:  # pragma: no cover - defensive guard
-                raise RuntimeError("Coupled joint denoise requires an action timestep lookup scheduler.")
+        if joint_timestep_coupling in {
+            JointTimestepCoupling.MATCH_SIGMA,
+            JointTimestepCoupling.SHARED_VIDEO_SCHEDULE,
+        }:
             shared_sigma = video_sigma_values_list[index]
             shared_sigma_next = video_scheduler.next_sigma(index).to(device=device, dtype=torch.float32)
-            action_timestep = action_timestep_lookup_scheduler.timestep_matching_sigma(shared_sigma).to(
-                device=device,
-                dtype=torch.float32,
-            )
+            if joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA:
+                if action_timestep_lookup_scheduler is None:  # pragma: no cover - defensive guard
+                    raise RuntimeError("Coupled joint denoise requires an action timestep lookup scheduler.")
+                action_timestep = action_timestep_lookup_scheduler.timestep_matching_sigma(shared_sigma).to(
+                    device=device,
+                    dtype=torch.float32,
+                )
+            else:
+                action_timestep = video_timestep.to(device=device, dtype=torch.float32)
             action_timestep_values = action_timestep.expand(batch_size, inference_config.frame_chunk_size)
         else:
             shared_sigma = None
             shared_sigma_next = None
             action_timestep_values = action_timestep.expand(batch_size, inference_config.frame_chunk_size)
         if forced_action_latents is not None:
-            if joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA:
+            if joint_timestep_coupling in {
+                JointTimestepCoupling.MATCH_SIGMA,
+                JointTimestepCoupling.SHARED_VIDEO_SCHEDULE,
+            }:
                 sigma = shared_sigma.to(device=device, dtype=model_dtype).view(1, 1, 1, 1, 1)
                 actions = (1 - sigma) * forced_action_latents + sigma * forced_action_noise
             else:
@@ -3486,7 +3944,13 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             "preserve_video_pretrain_history": bool(
                 getattr(policy_config, "preserve_video_pretrain_history", False)
             ),
+            "history_stream_visibility": resolve_parallel_history_stream_visibility(policy_config),
         }
+        if hidden_proprio_state is not None:
+            input_dict["per_chunk_proprio_state"] = hidden_proprio_state[:, None, :].to(
+                device=device,
+                dtype=model_dtype,
+            )
         video_noise_pred, action_noise_pred = _run_parallel_action_conditioned_forward(
             transformer,
             input_dict=input_dict,
@@ -3504,7 +3968,10 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             latent_width,
             batch_size=batch_size,
         )
-        if joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA:
+        if joint_timestep_coupling in {
+            JointTimestepCoupling.MATCH_SIGMA,
+            JointTimestepCoupling.SHARED_VIDEO_SCHEDULE,
+        }:
             latents = video_scheduler.step_with_sigmas(
                 video_noise_pred,
                 sigma=shared_sigma,
@@ -3521,7 +3988,10 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             f=inference_config.frame_chunk_size,
         )
         if forced_action_latents is None:
-            if joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA:
+            if joint_timestep_coupling in {
+                JointTimestepCoupling.MATCH_SIGMA,
+                JointTimestepCoupling.SHARED_VIDEO_SCHEDULE,
+            }:
                 actions = action_scheduler.step_with_sigmas(
                     action_noise_pred,
                     sigma=shared_sigma,
@@ -3537,6 +4007,18 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
         commit_action_latents
         if commit_action_latents is not None
         else (forced_action_latents if forced_action_latents is not None else actions)
+    )
+    video_hidden_context = _single_stream_hidden_proprio_context(
+        transformer,
+        proprio_state=hidden_proprio_state,
+        stream_latents=latents,
+        action_mode=False,
+    )
+    action_hidden_context = _single_stream_hidden_proprio_context(
+        transformer,
+        proprio_state=hidden_proprio_state,
+        stream_latents=final_action_latents,
+        action_mode=True,
     )
 
     if inference_config.use_cache:
@@ -3559,6 +4041,9 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             preserve_video_pretrain_history=bool(
                 getattr(policy_config, "preserve_video_pretrain_history", False)
             ),
+            history_stream_visibility=resolve_parallel_history_stream_visibility(policy_config),
+            video_hidden_context=video_hidden_context,
+            action_hidden_context=action_hidden_context,
         )
 
     next_cache = {
@@ -3586,7 +4071,10 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
         "video_action_attention_scope": str(policy_config.video_action_attention_scope),
         "current_block_coupling": current_block_coupling.value,
         "joint_timestep_coupling": joint_timestep_coupling.value,
-        "couple_action_to_video_timesteps": bool(joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA),
+        "couple_action_to_video_timesteps": bool(
+            joint_timestep_coupling
+            in {JointTimestepCoupling.MATCH_SIGMA, JointTimestepCoupling.SHARED_VIDEO_SCHEDULE}
+        ),
         "joint_denoise": True,
         "uses_explicit_clean_condition": False,
         "use_cache": bool(inference_config.use_cache),
@@ -3628,6 +4116,7 @@ def run_parallel_action_conditioned_inference_rollout(
     infer_cache: dict[str, Any],
     advance_frame_start: bool = False,
     proprio_state: torch.Tensor | None = None,
+    hidden_proprio_state: torch.Tensor | None = None,
 ) -> LingbotParallelInferArtifacts:
     return _run_parallel_action_conditioned_inference_rollout_impl(
         transformer=transformer,
@@ -3643,6 +4132,7 @@ def run_parallel_action_conditioned_inference_rollout(
         infer_cache=infer_cache,
         advance_frame_start=advance_frame_start,
         proprio_state=proprio_state,
+        hidden_proprio_state=hidden_proprio_state,
     )
 
 
@@ -4041,6 +4531,7 @@ def run_parallel_action_conditioned_action_override_inference_rollout(
     forced_action_noise: torch.Tensor | None = None,
     action_conditioning_mode: str = "forced_action_joint_fdm",
     proprio_state: torch.Tensor | None = None,
+    hidden_proprio_state: torch.Tensor | None = None,
 ) -> LingbotParallelInferArtifacts:
     """Run joint-denoise inference with ablation-owned action overrides.
 
@@ -4048,6 +4539,15 @@ def run_parallel_action_conditioned_action_override_inference_rollout(
     denoising timestep. `commit_action_latents` only changes the clean action
     tokens committed into history after the chunk is generated.
     """
+
+    resolved_proprio_state = proprio_state
+    resolved_hidden_proprio_state = hidden_proprio_state
+    if ProprioContextMode(policy_config.proprio_context_mode) == ProprioContextMode.PER_CHUNK_ADDITIVE:
+        if resolved_hidden_proprio_state is None:
+            resolved_hidden_proprio_state = proprio_state
+        if isinstance(resolved_hidden_proprio_state, torch.Tensor) and resolved_hidden_proprio_state.ndim == 3:
+            resolved_hidden_proprio_state = resolved_hidden_proprio_state[:, -1, :]
+        resolved_proprio_state = None
 
     return _run_parallel_action_conditioned_inference_rollout_impl(
         transformer=transformer,
@@ -4066,7 +4566,8 @@ def run_parallel_action_conditioned_action_override_inference_rollout(
         commit_action_latents=commit_action_latents,
         forced_action_noise=forced_action_noise,
         action_conditioning_mode=action_conditioning_mode,
-        proprio_state=proprio_state,
+        proprio_state=resolved_proprio_state,
+        hidden_proprio_state=resolved_hidden_proprio_state,
     )
 
 
@@ -4074,6 +4575,8 @@ def run_parallel_exact_train(
     transformer: torch.nn.Module,
     input_dict: dict[str, torch.Tensor | dict[str, torch.Tensor]],
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    if input_dict.get("per_chunk_proprio_state") is not None:
+        return _run_parallel_exact_joint_forward_manual(transformer, input_dict)
     if hasattr(transformer, "execute_runtime_step"):
         step_output = transformer.execute_runtime_step(
             RuntimeStepInput(

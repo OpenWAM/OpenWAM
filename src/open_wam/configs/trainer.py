@@ -42,6 +42,7 @@ class TrainerConfig:
     checkpoint_dir: str | None = None
     save_interval: int | None = None
     checkpoint_mode: CheckpointMode = CheckpointMode.FULL_TRAINING_STATE
+    max_checkpoints_to_keep: int | None = None
     export_runtime_backbone: bool = False
     resume_from: str | None = None
 
@@ -72,3 +73,7 @@ class TrainerConfig:
             if isinstance(self.validation_interval, bool) or int(self.validation_interval) <= 0:
                 raise ValueError("`trainer.validation_interval` must be a positive integer or null.")
             object.__setattr__(self, "validation_interval", int(self.validation_interval))
+        if self.max_checkpoints_to_keep is not None:
+            if isinstance(self.max_checkpoints_to_keep, bool) or int(self.max_checkpoints_to_keep) <= 0:
+                raise ValueError("`trainer.max_checkpoints_to_keep` must be a positive integer or null.")
+            object.__setattr__(self, "max_checkpoints_to_keep", int(self.max_checkpoints_to_keep))

@@ -151,13 +151,21 @@ def _set_component_requires_grad(
 
 def _resolve_component_modules(pipeline: nn.Module, selector: TrainingComponentSelector) -> list[nn.Module]:
     def _resolve_proprio_context_encoder(module: nn.Module) -> list[nn.Module]:
-        encoder = getattr(module.visual_tower.core, "proprio_context_encoder", None)
-        if encoder is None:
+        encoders = [
+            encoder
+            for encoder in (
+                getattr(module.visual_tower.core, "proprio_context_encoder", None),
+                getattr(module.visual_tower.core, "proprio_hidden_context_encoder", None),
+            )
+            if encoder is not None
+        ]
+        if not encoders:
             raise ValueError(
                 "Training component selector `visual_tower.proprio_context_encoder` requires "
-                "`pipeline.visual_tower.core.proprio_context_encoder`."
+                "`pipeline.visual_tower.core.proprio_context_encoder` or "
+                "`pipeline.visual_tower.core.proprio_hidden_context_encoder`."
             )
-        return [encoder]
+        return encoders
 
     def _resolve_policy_action_expert(module: nn.Module) -> list[nn.Module]:
         action_expert = getattr(module.policy_variant, "action_expert", None)
@@ -258,9 +266,15 @@ def _enable_proprio_context_encoder_when_used(
     policy_config = getattr(policy_variant, "config", policy_variant)
     if not isinstance(policy_config, (MoTPolicyConfig, ParallelStreamPolicyConfig)):
         return False
-    if ProprioContextMode(policy_config.proprio_context_mode) != ProprioContextMode.TEXT_CONTEXT_TOKEN:
+    proprio_mode = ProprioContextMode(policy_config.proprio_context_mode)
+    if proprio_mode not in {ProprioContextMode.TEXT_CONTEXT_TOKEN, ProprioContextMode.PER_CHUNK_ADDITIVE}:
         return False
-    encoder = getattr(getattr(pipeline.visual_tower, "core", None), "proprio_context_encoder", None)
+    encoder_name = (
+        "proprio_context_encoder"
+        if proprio_mode == ProprioContextMode.TEXT_CONTEXT_TOKEN
+        else "proprio_hidden_context_encoder"
+    )
+    encoder = getattr(getattr(pipeline.visual_tower, "core", None), encoder_name, None)
     if encoder is None:
         return False
     for parameter in encoder.parameters():

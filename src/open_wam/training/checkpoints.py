@@ -5,6 +5,7 @@ from dataclasses import asdict, is_dataclass
 import gc
 import json
 from pathlib import Path
+import shutil
 import time
 from typing import Any
 
@@ -203,12 +204,18 @@ class CheckpointManager:
         root_dir: Path,
         config: ExperimentConfig,
         checkpoint_mode: CheckpointMode | str,
+        max_checkpoints_to_keep: int | None = None,
         export_runtime_backbone: bool = False,
     ) -> None:
         self.root_dir = root_dir
         self.root_dir.mkdir(parents=True, exist_ok=True)
         self.config = config
         self.checkpoint_mode = checkpoint_mode
+        if max_checkpoints_to_keep is not None:
+            if isinstance(max_checkpoints_to_keep, bool) or int(max_checkpoints_to_keep) <= 0:
+                raise ValueError("`max_checkpoints_to_keep` must be a positive integer or None.")
+            max_checkpoints_to_keep = int(max_checkpoints_to_keep)
+        self.max_checkpoints_to_keep = max_checkpoints_to_keep
         self.export_runtime_backbone = export_runtime_backbone
 
     def checkpoint_dir_for_step(self, step: int) -> Path:
@@ -289,8 +296,11 @@ class CheckpointManager:
 
         if _is_rank_zero():
             completion_marker.write_text("ok\n", encoding="utf-8")
+            self._prune_old_checkpoints(keep=self.max_checkpoints_to_keep, preserve=checkpoint_dir)
         elif dist.is_initialized():
             _wait_for_file(completion_marker)
+        if dist.is_initialized():
+            dist.barrier()
         return checkpoint_dir
 
     def load(
@@ -345,16 +355,37 @@ class CheckpointManager:
         raise FileNotFoundError(f"Unable to resolve a checkpoint file from {candidate}.")
 
     def find_latest_checkpoint(self, root: str | Path) -> Path | None:
-        root_path = Path(root)
-        checkpoint_dirs = sorted(
-            [
-                path
-                for path in root_path.glob("checkpoint_step_*")
-                if path.is_dir() and ((path / "full_training_state.pt").exists() or (path / "model_state.pt").exists())
-            ],
-            key=lambda path: int(path.name.split("_")[-1]),
-        )
+        checkpoint_dirs = self._complete_checkpoint_dirs(Path(root))
         return checkpoint_dirs[-1] if checkpoint_dirs else None
+
+    def _complete_checkpoint_dirs(self, root: Path | None = None) -> list[Path]:
+        root_path = self.root_dir if root is None else Path(root)
+        checkpoint_dirs: list[Path] = []
+        for path in root_path.glob("checkpoint_step_*"):
+            if not path.is_dir():
+                continue
+            try:
+                int(path.name.split("_")[-1])
+            except ValueError:
+                continue
+            if (path / "full_training_state.pt").exists() or (path / "model_state.pt").exists():
+                checkpoint_dirs.append(path)
+        return sorted(checkpoint_dirs, key=lambda path: int(path.name.split("_")[-1]))
+
+    def _prune_old_checkpoints(self, *, keep: int | None, preserve: Path) -> list[Path]:
+        if keep is None:
+            return []
+        checkpoint_dirs = self._complete_checkpoint_dirs()
+        if len(checkpoint_dirs) <= int(keep):
+            return []
+        preserve = preserve.resolve()
+        removed: list[Path] = []
+        for checkpoint_dir in checkpoint_dirs[: max(0, len(checkpoint_dirs) - int(keep))]:
+            if checkpoint_dir.resolve() == preserve:
+                continue
+            shutil.rmtree(checkpoint_dir)
+            removed.append(checkpoint_dir)
+        return removed
 
     def _write_resolved_config(self, checkpoint_dir: Path) -> None:
         with (checkpoint_dir / "resolved_config.yaml").open("w", encoding="utf-8") as handle:

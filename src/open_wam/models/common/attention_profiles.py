@@ -68,6 +68,14 @@ ACTION_THEN_VIDEO_COUPLING = "action_then_video"
 DECOUPLED_SAME_STEP_COUPLING = "decoupled_same_step"
 VIDEO_NOISY_TO_ACTION_COUPLING = "video_noisy_to_action"
 ACTION_NOISY_TO_VIDEO_COUPLING = "action_noisy_to_video"
+HISTORY_STREAM_VISIBILITY_FULL = "full"
+HISTORY_STREAM_VISIBILITY_VIDEO_QUERIES_VIDEO_ONLY = "video_queries_video_only"
+HISTORY_STREAM_VISIBILITY_VIDEO_ONLY = "video_only"
+_HISTORY_STREAM_VISIBILITY_VALUES = {
+    HISTORY_STREAM_VISIBILITY_FULL,
+    HISTORY_STREAM_VISIBILITY_VIDEO_QUERIES_VIDEO_ONLY,
+    HISTORY_STREAM_VISIBILITY_VIDEO_ONLY,
+}
 
 _CHUNKED_EXACT_PROFILE_BY_COUPLING: dict[str, str] = {
     VIDEO_THEN_ACTION_COUPLING: "chunked_temporal_exact",
@@ -127,6 +135,26 @@ def normalize_chunked_temporal_exact_coupling(coupling: str | None) -> str:
     )
 
 
+def normalize_parallel_history_stream_visibility(
+    visibility: str | None,
+    *,
+    preserve_video_pretrain_history: bool = False,
+) -> str:
+    """Normalize exact Method-1 clean-history stream visibility."""
+
+    if visibility is None:
+        return (
+            HISTORY_STREAM_VISIBILITY_VIDEO_QUERIES_VIDEO_ONLY
+            if preserve_video_pretrain_history
+            else HISTORY_STREAM_VISIBILITY_FULL
+        )
+    value = str(getattr(visibility, "value", visibility))
+    if value in _HISTORY_STREAM_VISIBILITY_VALUES:
+        return value
+    raise ValueError(
+        f"Unsupported history stream visibility {visibility!r}. "
+        f"Expected one of {tuple(sorted(_HISTORY_STREAM_VISIBILITY_VALUES))}."
+    )
 def chunked_temporal_exact_profile_name_for_coupling(coupling: str | None) -> str:
     """Return the attention-profile name for an exact method-1 coupling mode."""
 
@@ -278,6 +306,7 @@ def build_chunked_temporal_exact_attention_profile(
     allow_joint_noisy_block_attention: bool | None = None,
     current_block_coupling: str | None = None,
     preserve_video_pretrain_history: bool = False,
+    history_stream_visibility: str | None = None,
 ) -> PreparedAttentionProfile:
     # When preserve_video_pretrain_history=True, restrict the noise_to_clean
     # rule on PAST CHUNKS so that the video stream's K/V context matches the
@@ -296,6 +325,10 @@ def build_chunked_temporal_exact_attention_profile(
                 "`allow_joint_noisy_block_attention`."
             )
     current_block_coupling = normalize_chunked_temporal_exact_coupling(current_block_coupling)
+    resolved_history_stream_visibility = normalize_parallel_history_stream_visibility(
+        history_stream_visibility,
+        preserve_video_pretrain_history=preserve_video_pretrain_history,
+    )
     chunk_origin_frame = int(chunk_origin_frame)
 
     batch_size, _, latent_frames, latent_height, latent_width = latent_shape
@@ -379,11 +412,14 @@ def build_chunked_temporal_exact_attention_profile(
         kv_valid = token_valid_as_kv[None, :]
 
         same_seq = (q_seq == kv_seq) & (q_seq >= 0) & (kv_seq >= 0) & q_valid & kv_valid
-        history_stream_ok = (
-            ((q_stream == kv_stream) | (q_stream == 1))
-            if preserve_video_pretrain_history
-            else torch.ones_like(q_seq, dtype=torch.bool)
-        )
+        if resolved_history_stream_visibility == HISTORY_STREAM_VISIBILITY_FULL:
+            history_stream_ok = torch.ones_like(q_seq, dtype=torch.bool)
+        elif resolved_history_stream_visibility == HISTORY_STREAM_VISIBILITY_VIDEO_QUERIES_VIDEO_ONLY:
+            history_stream_ok = (q_stream == kv_stream) | (q_stream == 1)
+        elif resolved_history_stream_visibility == HISTORY_STREAM_VISIBILITY_VIDEO_ONLY:
+            history_stream_ok = kv_stream == 0
+        else:  # pragma: no cover - normalized above
+            raise ValueError(f"Unsupported history stream visibility {resolved_history_stream_visibility!r}.")
         if current_block_coupling == DECOUPLED_SAME_STEP_COUPLING:
             clean_to_clean = (
                 (q_noise == 1)
@@ -498,12 +534,16 @@ def build_chunked_temporal_exact_attention_profile(
             kv_chunk = chunk_ids_flex[kv_idx]
             q_block_id = block_ids_flex[q_idx]
             kv_block_id = block_ids_flex[kv_idx]
-            if preserve_video_pretrain_history:
+            if resolved_history_stream_visibility == HISTORY_STREAM_VISIBILITY_FULL:
+                history_stream_ok = torch.ones((), dtype=torch.bool, device=q_idx.device)
+            elif resolved_history_stream_visibility == HISTORY_STREAM_VISIBILITY_VIDEO_QUERIES_VIDEO_ONLY:
                 history_stream_ok = (stream_ids_flex[q_idx] == stream_ids_flex[kv_idx]) | (
                     stream_ids_flex[q_idx] == 1
                 )
-            else:
-                history_stream_ok = torch.ones((), dtype=torch.bool, device=q_idx.device)
+            elif resolved_history_stream_visibility == HISTORY_STREAM_VISIBILITY_VIDEO_ONLY:
+                history_stream_ok = stream_ids_flex[kv_idx] == 0
+            else:  # pragma: no cover - normalized above
+                raise ValueError(f"Unsupported history stream visibility {resolved_history_stream_visibility!r}.")
             if current_block_coupling == DECOUPLED_SAME_STEP_COUPLING:
                 clean_to_clean = (
                     (noise_ids_flex[q_idx] == 1)
@@ -648,6 +688,7 @@ def build_chunked_temporal_exact_attention_profile(
             "allow_joint_noisy_block_attention": current_block_coupling == JOINT_COUPLING,
             "current_block_coupling": current_block_coupling,
             "preserve_video_pretrain_history": bool(preserve_video_pretrain_history),
+            "history_stream_visibility": resolved_history_stream_visibility,
         },
     )
 

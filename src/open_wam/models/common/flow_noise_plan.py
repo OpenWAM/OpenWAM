@@ -128,6 +128,22 @@ def sample_joint_denoise_timestep_values(
             video_sigma_values=None if clean_video else coupled.sigma_values,
             action_sigma_values=None if clean_action else coupled.sigma_values,
         )
+    if coupling == JointTimestepCoupling.SHARED_VIDEO_SCHEDULE:
+        video_grid_length = _validate_timestep_grid(video_scheduler)
+        timestep_ids = sample_timestep_id(
+            batch_size=num_frames,
+            num_train_timesteps=video_grid_length,
+            device=device,
+        )
+        video_timesteps = video_scheduler.timesteps.to(device=device)[timestep_ids]
+        sigma_values = video_scheduler.sigmas.to(device=device)[timestep_ids]
+        return JointDenoiseTimestepValues(
+            video_timesteps=clean_values if clean_video else video_timesteps,
+            action_timesteps=clean_values if clean_action else video_timesteps,
+            shared_sigma_values=sigma_values,
+            video_sigma_values=None if clean_video else sigma_values,
+            action_sigma_values=None if clean_action else sigma_values,
+        )
     if coupling == JointTimestepCoupling.MATCH_INDEX:
         if int(video_scheduler.timesteps.numel()) != int(action_scheduler.timesteps.numel()):
             raise ValueError(

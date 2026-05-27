@@ -443,6 +443,7 @@ def prepare_exact_dual_stream_train_sequence(
             preserve_video_pretrain_history=bool(
                 input_dict.get("preserve_video_pretrain_history", False)
             ),
+            history_stream_visibility=input_dict.get("history_stream_visibility"),
         )
     elif attention_profile_name not in (None, "none"):
         raise ValueError(

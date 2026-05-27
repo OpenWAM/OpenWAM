@@ -31,6 +31,8 @@ from open_wam.configs.enums import (
     MoTConditionMode,
     MoTGeneralistTrainingMode,
     MoTRuntimeMode,
+    ParallelContextConditionLatentSource,
+    ParallelHistoryStreamVisibility,
     ParallelRuntimeMode,
     ParallelStreamVariantProfile,
     PaddedTargetPolicy,
@@ -204,6 +206,36 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
                 "policy_variant",
             )
             _validate_enum(policy_variant, "proprio_context_mode", ProprioContextMode, issues, "policy_variant")
+            _validate_enum(
+                policy_variant,
+                "context_condition_latent_source",
+                ParallelContextConditionLatentSource,
+                issues,
+                "policy_variant",
+            )
+            _validate_enum(
+                policy_variant,
+                "history_stream_visibility",
+                ParallelHistoryStreamVisibility,
+                issues,
+                "policy_variant",
+            )
+            if (
+                policy_variant.get("context_condition_latent_source")
+                == ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT.value
+            ):
+                offset = (
+                    None
+                    if sample_construction is None
+                    else _optional_int(sample_construction.get("condition_source_frame_offset"))
+                )
+                if offset != -1:
+                    issues.error(
+                        "data.sample_construction.condition_source_frame_offset",
+                        "Expected -1 when "
+                        "`policy_variant.context_condition_latent_source=single_frame_condition_latent`; "
+                        "offset 0 can expose the first target raw frame.",
+                    )
             _validate_joint_denoise_training_mode_probs(policy_variant, issues)
         if policy_variant.get("name") == PolicyVariantName.MOT.value:
             _validate_enum(policy_variant, "runtime_mode", MoTRuntimeMode, issues, "policy_variant")
@@ -211,6 +243,12 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
             _validate_enum(policy_variant, "action_expert_init_mode", MoTActionExpertInitMode, issues, "policy_variant")
             _validate_enum(policy_variant, "current_block_coupling", CurrentBlockCoupling, issues, "policy_variant")
             _validate_enum(policy_variant, "joint_timestep_coupling", JointTimestepCoupling, issues, "policy_variant")
+            if policy_variant.get("joint_timestep_coupling") == JointTimestepCoupling.SHARED_VIDEO_SCHEDULE.value:
+                issues.error(
+                    "policy_variant.joint_timestep_coupling",
+                    "`shared_video_schedule` is not implemented for MoT/M5 in this PR; use `match_sigma`, "
+                    "`match_index`, or `independent` until the follow-up M5 implementation lands.",
+                )
             _validate_enum(policy_variant, "proprio_context_mode", ProprioContextMode, issues, "policy_variant")
             _validate_enum(
                 policy_variant,
@@ -419,6 +457,13 @@ def _validate_sample_construction(
         value = _optional_int(sample_construction["start_padding_frames"])
         if value is None or value < 0:
             issues.error("data.sample_construction.start_padding_frames", "Expected a non-negative integer.")
+    if (
+        "condition_source_frame_offset" in sample_construction
+        and sample_construction["condition_source_frame_offset"] is not None
+    ):
+        value = _optional_int(sample_construction["condition_source_frame_offset"])
+        if value is None:
+            issues.error("data.sample_construction.condition_source_frame_offset", "Expected an integer.")
     if "context_prefix_frames" in sample_construction and sample_construction["context_prefix_frames"] is not None:
         value = _optional_int(sample_construction["context_prefix_frames"])
         if value is None or value < 0:

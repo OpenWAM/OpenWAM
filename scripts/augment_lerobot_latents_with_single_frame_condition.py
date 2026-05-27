@@ -9,8 +9,12 @@ from typing import Any
 import imageio.v2 as imageio
 import torch
 
-from open_wam.configs import LatentTemporalLayout
-from open_wam.data.latent_temporal import observed_frame_ids_for_latent_segment
+from open_wam.data.latent_temporal import (
+    CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET,
+    latent_raw_boundaries,
+)
+
+CONDITION_SOURCE_FRAME_POLICY = CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET
 from open_wam.data.raw_video import ViewPlacement
 from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
 from open_wam.models.visual_tower.reference_assets import LingbotReferenceAssets
@@ -44,6 +48,7 @@ def main() -> None:
             device=torch.device(args.device),
             batch_size=int(args.batch_size),
             atol=float(args.sanity_atol),
+            source_frame_offset=int(args.source_frame_offset),
         )
 
     updated = 0
@@ -53,7 +58,12 @@ def main() -> None:
             latent_path.parent.name: _load_payload(latent_path)
             for latent_path in task
         }
-        if not args.overwrite and all("condition_latent" in payload for payload in payloads.values()):
+        if not args.overwrite and all(
+            "condition_latent" in payload
+            and int(payload.get("condition_source_frame_offset", 0)) == int(args.source_frame_offset)
+            and payload.get("condition_source_frame_policy") == CONDITION_SOURCE_FRAME_POLICY
+            for payload in payloads.values()
+        ):
             skipped += len(task)
             continue
 
@@ -67,6 +77,7 @@ def main() -> None:
                 device=torch.device(args.device),
                 output_dtype_name=args.output_dtype,
                 batch_size=int(args.batch_size),
+                source_frame_offset=int(args.source_frame_offset),
             )
         else:
             latent_path = task[0]
@@ -86,6 +97,7 @@ def main() -> None:
                     device=torch.device(args.device),
                     output_dtype=_resolve_output_dtype(args.output_dtype, payload),
                     batch_size=int(args.batch_size),
+                    source_frame_offset=int(args.source_frame_offset),
                 )
             }
 
@@ -108,6 +120,8 @@ def main() -> None:
                 camera_name = latent_path.parent.name
                 payload = payloads[camera_name]
                 payload["condition_latent"] = encoded[camera_name].contiguous()
+                payload["condition_source_frame_offset"] = int(args.source_frame_offset)
+                payload["condition_source_frame_policy"] = CONDITION_SOURCE_FRAME_POLICY
                 _save_payload_atomic(payload, latent_path)
         updated += len(task)
         if args.log_every > 0 and (index + 1) % int(args.log_every) == 0:
@@ -120,7 +134,8 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Augment LeRobot local latent payloads with `condition_latent`: "
-            "single-frame Wan VAE latents encoded from each latent slot's Wan-consistent anchor frame."
+            "single-frame Wan VAE latents encoded from each materialized context slot's "
+            "rollout-parity source frame."
         )
     )
     parser.add_argument("--data-root", required=True, help="LeRobot local dataset root containing meta/data/videos/latents.")
@@ -138,6 +153,15 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--output-dtype", default="match", choices=("match", "float32", "bfloat16", "float16"))
+    parser.add_argument(
+        "--source-frame-offset",
+        type=int,
+        default=0,
+        help=(
+            "Raw-frame offset applied to each latent bucket's source-span start before single-frame VAE encoding. "
+            "Use -1 for previous-frame conditioning."
+        ),
+    )
     parser.add_argument("--overwrite", action="store_true", help="Recompute condition_latent if already present.")
     parser.add_argument("--dry-run", action="store_true", help="Print planned writes without modifying payloads.")
     parser.add_argument(
@@ -185,6 +209,7 @@ def _encode_condition_latents(
     device: torch.device,
     output_dtype: torch.dtype,
     batch_size: int,
+    source_frame_offset: int = 0,
 ) -> torch.Tensor:
     latent_num_frames = int(payload["latent_num_frames"])
     latent_height = int(payload["latent_height"])
@@ -198,6 +223,7 @@ def _encode_condition_latents(
     source_indices = _condition_source_frame_indices(
         frame_ids=frame_ids,
         latent_num_frames=latent_num_frames,
+        source_frame_offset=source_frame_offset,
     )
 
     reader = imageio.get_reader(str(video_path))
@@ -231,6 +257,7 @@ def _encode_libero_condition_latents_for_task(
     device: torch.device,
     output_dtype_name: str,
     batch_size: int,
+    source_frame_offset: int = 0,
 ) -> dict[str, torch.Tensor]:
     if len(task) != 2:
         raise ValueError(f"Expected paired LIBERO task, got {task}.")
@@ -243,7 +270,10 @@ def _encode_libero_condition_latents_for_task(
     latent_num_frames = int(agent_payload["latent_num_frames"])
     latent_height = int(agent_payload["latent_height"])
     latent_width = int(agent_payload["latent_width"])
-    source_indices = _source_indices_from_payload(agent_payload)
+    source_indices = _source_indices_from_payload(
+        agent_payload,
+        source_frame_offset=source_frame_offset,
+    )
     episode_index = _episode_index_from_latent_path(camera_paths[agent_camera])
     agent_video_path = _source_video_path(
         video_root=video_root,
@@ -326,6 +356,7 @@ def _run_encoding_sanity_checks(
     device: torch.device,
     batch_size: int,
     atol: float,
+    source_frame_offset: int,
 ) -> None:
     if not _is_libero_task(task):
         _run_single_camera_encoding_sanity_check(
@@ -336,6 +367,7 @@ def _run_encoding_sanity_checks(
             device=device,
             batch_size=batch_size,
             atol=atol,
+            source_frame_offset=source_frame_offset,
         )
         return
     _run_libero_pair_encoding_sanity_check(
@@ -346,6 +378,7 @@ def _run_encoding_sanity_checks(
         device=device,
         batch_size=batch_size,
         atol=atol,
+        source_frame_offset=source_frame_offset,
     )
 
 
@@ -358,9 +391,10 @@ def _run_single_camera_encoding_sanity_check(
     device: torch.device,
     batch_size: int,
     atol: float,
+    source_frame_offset: int,
 ) -> None:
     payload = _load_payload(latent_path)
-    source_frame = _source_indices_from_payload(payload)[0]
+    source_frame = _source_indices_from_payload(payload, source_frame_offset=source_frame_offset)[0]
     episode_index = _episode_index_from_latent_path(latent_path)
     camera_name = latent_path.parent.name
     video_path = _source_video_path(
@@ -410,13 +444,16 @@ def _run_libero_pair_encoding_sanity_check(
     device: torch.device,
     batch_size: int,
     atol: float,
+    source_frame_offset: int,
 ) -> None:
     payloads = {path.parent.name: _load_payload(path) for path in task}
     camera_paths = {path.parent.name: path for path in task}
     agent_camera = _resolve_libero_camera_name(camera_paths, slot=0)
     wrist_camera = _resolve_libero_camera_name(camera_paths, slot=1)
     _validate_paired_payloads(payloads[agent_camera], payloads[wrist_camera], task=task)
-    source_frame = _source_indices_from_payload(payloads[agent_camera])[0]
+    source_indices = _source_indices_from_payload(payloads[agent_camera], source_frame_offset=source_frame_offset)
+    zero_offset_indices = _source_indices_from_payload(payloads[agent_camera], source_frame_offset=0)
+    source_frame = source_indices[0]
     episode_index = _episode_index_from_latent_path(camera_paths[agent_camera])
     agent_frame = _read_single_video_frame(
         _source_video_path(
@@ -455,6 +492,8 @@ def _run_libero_pair_encoding_sanity_check(
         "atol": atol,
         "single_shape": list(single.shape),
         "batch_size": int(batch_size),
+        "source_indices_preview": source_indices[:8],
+        "zero_offset_indices_preview": zero_offset_indices[:8],
     }
     print(f"[sanity] {json.dumps(report, sort_keys=True)}", flush=True)
     if batch_max_diff > atol:
@@ -527,7 +566,7 @@ def _load_payload(latent_path: Path) -> dict[str, Any]:
     return payload
 
 
-def _source_indices_from_payload(payload: dict[str, Any]) -> list[int]:
+def _source_indices_from_payload(payload: dict[str, Any], *, source_frame_offset: int = 0) -> list[int]:
     frame_ids = [int(value) for value in payload.get("frame_ids", [])]
     if not frame_ids:
         video_num_frames = int(payload.get("video_num_frames", 0))
@@ -537,6 +576,7 @@ def _source_indices_from_payload(payload: dict[str, Any]) -> list[int]:
     return _condition_source_frame_indices(
         frame_ids=frame_ids,
         latent_num_frames=int(payload["latent_num_frames"]),
+        source_frame_offset=source_frame_offset,
     )
 
 
@@ -624,15 +664,36 @@ def _condition_source_frame_indices(
     *,
     frame_ids: list[int],
     latent_num_frames: int,
-    latent_temporal_layout: LatentTemporalLayout | str = LatentTemporalLayout.WAN_CAUSAL_STRIDE4,
+    source_frame_offset: int = 0,
 ) -> list[int]:
-    return observed_frame_ids_for_latent_segment(
-        raw_frame_ids=frame_ids,
-        source_latent_frames=latent_num_frames,
-        latent_start=0,
-        segment_length=latent_num_frames,
-        layout=latent_temporal_layout,
+    """Return rollout-parity condition frames for each materialized context slot.
+
+    In strict fixed-128 training, materialized condition slot ``j`` is used as
+    the one-frame context immediately before target latent slot ``j + 1``.
+    Therefore the source frame for condition slot ``j`` is computed from the
+    *next* latent raw-span boundary. With Wan stride-4 and
+    ``source_frame_offset=-1``, this yields the previous raw frame before the
+    next target span, e.g. ``[0, 4, 8, 12]`` for anchors
+    ``[0, 4, 8, 12]``.
+    """
+
+    if latent_num_frames <= 0:
+        raise ValueError(f"Expected positive latent_num_frames, got {latent_num_frames}.")
+    if not frame_ids:
+        raise ValueError("Expected non-empty frame_ids.")
+    raw_count = len(frame_ids)
+    boundaries = latent_raw_boundaries(
+        raw_frame_count=raw_count,
+        latent_num_frames=latent_num_frames,
+        layout="wan_causal_stride4",
     )
+    indices: list[int] = []
+    for latent_index in range(latent_num_frames):
+        boundary_index = min(int(latent_index) + 1, len(boundaries) - 1)
+        raw_position = min(int(boundaries[boundary_index]), raw_count - 1)
+        raw_position = max(0, min(raw_position + int(source_frame_offset), raw_count - 1))
+        indices.append(int(frame_ids[raw_position]))
+    return indices
 
 
 def _read_video_frame(reader: Any, frame_index: int) -> Any:

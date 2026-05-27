@@ -4,6 +4,7 @@ from open_wam.configs import LatentTemporalLayout
 
 
 WAN_CAUSAL_LATENT_STRIDE_FRAMES = 4
+CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET = "next_latent_source_offset"
 
 
 def raw_window_frames_for_latents(

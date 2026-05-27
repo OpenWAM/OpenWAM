@@ -736,6 +736,24 @@ class ParallelActionAttentionScope(StrEnum):
     BLOCK_LOCAL = "block_local"
 
 
+class ParallelContextConditionLatentSource(StrEnum):
+    """Which latent source supplies clean pre-target video context frames."""
+
+    VIDEO_LATENTS = "video_latents"
+    SINGLE_FRAME_CONDITION_LATENT = "single_frame_condition_latent"
+
+
+class ParallelHistoryStreamVisibility(StrEnum):
+    """Which clean history streams exact Method-1 queries may attend."""
+
+    FULL = "full"
+    # Backward-compatible behavior of `preserve_video_pretrain_history=true`:
+    # video queries see only video history, action queries keep full history.
+    VIDEO_QUERIES_VIDEO_ONLY = "video_queries_video_only"
+    # Strict history filter: all queries see video history only.
+    VIDEO_ONLY = "video_only"
+
+
 class CurrentBlockCoupling(StrEnum):
     """Same-chunk video/action visibility for video/action rollout variants."""
 
@@ -755,6 +773,8 @@ class JointTimestepCoupling(StrEnum):
     MATCH_SIGMA = "match_sigma"
     # Ablation: action and video use the same scheduler grid index/progress.
     MATCH_INDEX = "match_index"
+    # Ablation: action reuses the video scheduler timestep/sigma grid directly.
+    SHARED_VIDEO_SCHEDULE = "shared_video_schedule"
     # Legacy/control: action and video sample or step their clocks independently.
     INDEPENDENT = "independent"
 
@@ -768,6 +788,7 @@ class ProprioContextMode(StrEnum):
 
     NONE = "none"
     TEXT_CONTEXT_TOKEN = "text_context_token"
+    PER_CHUNK_ADDITIVE = "per_chunk_additive"
 
 
 class MoTGeneralistTrainingMode(StrEnum):

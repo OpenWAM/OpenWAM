@@ -5,7 +5,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from open_wam.configs import BackboneImplementation
+from open_wam.configs import BackboneImplementation, ExportedRuntimeActionInitMode
 from open_wam.data.raw_video import ViewPlacement
 from open_wam.models.common import (
     RolloutCursor,
@@ -21,6 +21,7 @@ from .contracts import VisualCoreInput, VisualReadoutRequest, VisualStageOutputs
 from .core import PackedSequenceVisualCore
 from .decoder import VisualFeatureDecoder
 from .exported_runtime_backbone import (
+    is_allowed_runtime_missing_key,
     is_open_wam_exported_runtime_backbone_dir,
     load_exported_runtime_backbone_into_replica_core,
     resolve_runtime_backbone_dir,
@@ -38,7 +39,6 @@ from .runtime_programs import (
 )
 
 _MAX_CACHED_FRAMES_UNSET = object()
-_ALLOWED_RUNTIME_MISSING_PREFIXES = ("proprio_context_encoder.",)
 
 
 class VisualTower(nn.Module):
@@ -51,6 +51,7 @@ class VisualTower(nn.Module):
         action_dim: int | None = None,
         state_dim: int | None = None,
         proprio_context_state_dim: int | None = None,
+        proprio_hidden_context_state_dim: int | None = None,
     ) -> None:
         super().__init__()
         self.config = config or SharedVideoTransformerConfig()
@@ -65,6 +66,11 @@ class VisualTower(nn.Module):
                 if not callable(configure_proprio):
                     raise ValueError("Proprio context mode requires a shared transformer core.")
                 configure_proprio(enabled=True, state_dim=int(proprio_context_state_dim))
+            if proprio_hidden_context_state_dim is not None:
+                configure_proprio_hidden = getattr(self.core, "configure_proprio_hidden_context_encoder", None)
+                if not callable(configure_proprio_hidden):
+                    raise ValueError("Per-chunk proprio context mode requires a shared transformer core.")
+                configure_proprio_hidden(enabled=True, state_dim=int(proprio_hidden_context_state_dim))
         elif implementation == BackboneImplementation.DUMMY:
             self.core = PackedSequenceVisualCore(self.config)
         else:
@@ -1122,7 +1128,7 @@ class VisualTower(nn.Module):
                 f"missing_keys={len(self.reference_core_load_report.missing_reference_keys)}",
                 flush=True,
             )
-            self._log_runtime_backbone_missing_keys(self.reference_core_load_report)
+            self._log_runtime_backbone_missing_keys(self.reference_core_load_report, config=self.config)
             return
         self.reference_core_load_report = load_reference_weights_into_replica_core(
             self.core,
@@ -1135,17 +1141,26 @@ class VisualTower(nn.Module):
             f"missing_keys={len(self.reference_core_load_report.missing_reference_keys)}",
             flush=True,
         )
-        self._log_runtime_backbone_missing_keys(self.reference_core_load_report)
+        self._log_runtime_backbone_missing_keys(self.reference_core_load_report, config=self.config)
 
     @staticmethod
-    def _log_runtime_backbone_missing_keys(report: BackboneLoadReport | None) -> None:
+    def _log_runtime_backbone_missing_keys(
+        report: BackboneLoadReport | None,
+        *,
+        config: SharedVideoTransformerConfig,
+    ) -> None:
         if report is None or not report.missing_reference_keys:
             return
+        allow_random_action = config.exported_runtime_action_init_mode == ExportedRuntimeActionInitMode.RANDOM
         allowed = tuple(
-            key for key in report.missing_reference_keys if key.startswith(_ALLOWED_RUNTIME_MISSING_PREFIXES)
+            key
+            for key in report.missing_reference_keys
+            if is_allowed_runtime_missing_key(key, allow_random_action=allow_random_action)
         )
         unexpected = tuple(
-            key for key in report.missing_reference_keys if not key.startswith(_ALLOWED_RUNTIME_MISSING_PREFIXES)
+            key
+            for key in report.missing_reference_keys
+            if not is_allowed_runtime_missing_key(key, allow_random_action=allow_random_action)
         )
         if allowed:
             print(

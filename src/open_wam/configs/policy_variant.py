@@ -10,6 +10,8 @@ from .enums import (
     JointTimestepCoupling,
     ParallelActionAttentionScope,
     ParallelActionConditionSource,
+    ParallelContextConditionLatentSource,
+    ParallelHistoryStreamVisibility,
     AttachSite,
     DecodeFeatureMode,
     GeneralistTrainingParadigm,
@@ -382,6 +384,12 @@ class MoTPolicyConfig(PolicyVariantConfig):
                 if bool(self.couple_action_to_video_timesteps)
                 else JointTimestepCoupling.INDEPENDENT,
             )
+        if self.joint_timestep_coupling == JointTimestepCoupling.SHARED_VIDEO_SCHEDULE:
+            raise ValueError(
+                "MoT does not support `joint_timestep_coupling = shared_video_schedule` in this PR. "
+                "Use `match_sigma`, `match_index`, or `independent`; M5 shared-video-schedule support "
+                "must be introduced by the follow-up implementation PR."
+            )
         if self.mot_generalist_training_mode_probs is not None:
             if self.current_block_coupling != CurrentBlockCoupling.JOINT:
                 raise ValueError(
@@ -488,6 +496,10 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
     # at all transformer depths. Default false preserves backward compat
     # with existing checkpoints.
     preserve_video_pretrain_history: bool = False
+    history_stream_visibility: ParallelHistoryStreamVisibility = ParallelHistoryStreamVisibility.FULL
+    context_condition_latent_source: ParallelContextConditionLatentSource = (
+        ParallelContextConditionLatentSource.VIDEO_LATENTS
+    )
     use_condition_latents: bool = True
     require_condition_latents: bool = False
     proprio_context_mode: ProprioContextMode = ProprioContextMode.NONE
@@ -510,6 +522,8 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
                 "video_action_condition_source": ParallelActionConditionSource,
                 "video_action_attention_scope": ParallelActionAttentionScope,
                 "generalist_training_paradigm": GeneralistTrainingParadigm,
+                "history_stream_visibility": ParallelHistoryStreamVisibility,
+                "context_condition_latent_source": ParallelContextConditionLatentSource,
                 "proprio_context_mode": ProprioContextMode,
                 "temporal_position_mode": TemporalPositionMode,
                 "action_norm_method": ActionNormMethod,
@@ -538,6 +552,15 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
                 "Parallel-stream `require_condition_latents` cannot be true when `use_condition_latents` is false."
             )
         if self.variant_profile == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING:
+            if (
+                self.context_condition_latent_source
+                == ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+            ):
+                raise ValueError(
+                    "`context_condition_latent_source = single_frame_condition_latent` is not supported with "
+                    "`variant_profile = generalist_joint_denoising`; the generalist rewrite expects full clean "
+                    "video condition latents."
+                )
             if self.runtime_mode != ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
                 raise ValueError(
                     "`variant_profile = generalist_joint_denoising` requires "

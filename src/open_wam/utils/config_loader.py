@@ -812,6 +812,69 @@ def _load_policy_variant_config(
             1,
             data_config.action_schema.action_horizon // max(1, data_config.num_frames),
         )
+        runtime_mode = _coerce_enum(
+            config_enums.ParallelRuntimeMode,
+            resolved_raw.get("runtime_mode", config_enums.ParallelRuntimeMode.LINGBOT_EXACT),
+        )
+        current_block_coupling = (
+            _coerce_enum(
+                config_enums.CurrentBlockCoupling,
+                resolved_raw["current_block_coupling"],
+            )
+            if "current_block_coupling" in resolved_raw
+            else None
+        )
+        preserve_video_pretrain_history = bool(
+            resolved_raw.get("preserve_video_pretrain_history", False)
+        )
+        history_stream_visibility = _coerce_enum(
+            config_enums.ParallelHistoryStreamVisibility,
+            resolved_raw.get(
+                "history_stream_visibility",
+                (
+                    config_enums.ParallelHistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
+                    if preserve_video_pretrain_history
+                    else config_enums.ParallelHistoryStreamVisibility.FULL
+                ),
+            ),
+        )
+        context_condition_latent_source = _coerce_enum(
+            config_enums.ParallelContextConditionLatentSource,
+            resolved_raw.get(
+                "context_condition_latent_source",
+                config_enums.ParallelContextConditionLatentSource.VIDEO_LATENTS,
+            ),
+        )
+        proprio_context_mode = _coerce_enum(
+            config_enums.ProprioContextMode,
+            resolved_raw.get("proprio_context_mode", config_enums.ProprioContextMode.NONE),
+        )
+        if proprio_context_mode == config_enums.ProprioContextMode.PER_CHUNK_ADDITIVE:
+            if current_block_coupling is None:
+                raise ValueError(
+                    "proprio_context_mode=per_chunk_additive requires "
+                    "`policy_variant.current_block_coupling` for Method-1 chunk semantics."
+                )
+            if runtime_mode not in {
+                config_enums.ParallelRuntimeMode.LINGBOT_EXACT,
+                config_enums.ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
+            }:
+                raise ValueError(
+                    "proprio_context_mode=per_chunk_additive is only supported for "
+                    "LingBot exact Method-1 runtime modes."
+                )
+        use_condition_latents = (
+            True
+            if context_condition_latent_source
+            == config_enums.ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+            else bool(resolved_raw.get("use_condition_latents", True))
+        )
+        require_condition_latents = (
+            True
+            if context_condition_latent_source
+            == config_enums.ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+            else bool(resolved_raw.get("require_condition_latents", False))
+        )
         sequence_order = tuple(
             resolved_raw.get(
                 "sequence_order",
@@ -825,10 +888,7 @@ def _load_policy_variant_config(
         )
         return ParallelStreamPolicyConfig(
             hidden_size=hidden_size,
-            runtime_mode=_coerce_enum(
-                config_enums.ParallelRuntimeMode,
-                resolved_raw.get("runtime_mode", config_enums.ParallelRuntimeMode.LINGBOT_EXACT),
-            ),
+            runtime_mode=runtime_mode,
             variant_profile=_coerce_enum(
                 config_enums.ParallelStreamVariantProfile,
                 resolved_raw.get("variant_profile", config_enums.ParallelStreamVariantProfile.STANDARD),
@@ -878,23 +938,13 @@ def _load_policy_variant_config(
                     config_enums.GeneralistTrainingParadigm.DEMO_ONLY,
                 ),
             ),
-            current_block_coupling=(
-                _coerce_enum(
-                    config_enums.CurrentBlockCoupling,
-                    resolved_raw["current_block_coupling"],
-                )
-                if "current_block_coupling" in resolved_raw
-                else None
-            ),
-            preserve_video_pretrain_history=resolved_raw.get(
-                "preserve_video_pretrain_history", False
-            ),
-            use_condition_latents=bool(resolved_raw.get("use_condition_latents", True)),
-            proprio_context_mode=_coerce_enum(
-                config_enums.ProprioContextMode,
-                resolved_raw.get("proprio_context_mode", config_enums.ProprioContextMode.NONE),
-            ),
-            require_condition_latents=bool(resolved_raw.get("require_condition_latents", False)),
+            current_block_coupling=current_block_coupling,
+            preserve_video_pretrain_history=preserve_video_pretrain_history,
+            history_stream_visibility=history_stream_visibility,
+            context_condition_latent_source=context_condition_latent_source,
+            use_condition_latents=use_condition_latents,
+            proprio_context_mode=proprio_context_mode,
+            require_condition_latents=require_condition_latents,
             temporal_position_mode=_coerce_enum(
                 config_enums.TemporalPositionMode,
                 resolved_raw.get(
@@ -1141,6 +1191,28 @@ def _load_action_decoder_config(
             dropout=dropout,
         )
     raise ValueError(f"Unsupported action decoder '{name}'.")
+
+
+def _validate_cross_config_contracts(
+    *,
+    data_config: DataConfig,
+    policy_variant_config: PolicyVariantConfig,
+) -> None:
+    if not isinstance(policy_variant_config, ParallelStreamPolicyConfig):
+        return
+    if (
+        policy_variant_config.context_condition_latent_source
+        != config_enums.ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+    ):
+        return
+    condition_source_frame_offset = int(data_config.sample_construction.condition_source_frame_offset)
+    if condition_source_frame_offset != -1:
+        raise ValueError(
+            "`policy_variant.context_condition_latent_source=single_frame_condition_latent` requires "
+            "`data.sample_construction.condition_source_frame_offset=-1` so the clean context latent is encoded "
+            "from the raw frame immediately before the target latent span. Offset 0 can expose the first target "
+            "raw frame and is not a safe default; use a separate explicit ablation path if that behavior is intended."
+        )
 
 
 def load_experiment_config(path: str | Path, *, checkpoint_runtime_compat: bool = False) -> ExperimentConfig:
@@ -1458,6 +1530,10 @@ def load_experiment_config(path: str | Path, *, checkpoint_runtime_compat: bool 
             start_padding_frames=sample_construction_raw.get(
                 "start_padding_frames",
                 data_defaults.sample_construction.start_padding_frames,
+            ),
+            condition_source_frame_offset=sample_construction_raw.get(
+                "condition_source_frame_offset",
+                data_defaults.sample_construction.condition_source_frame_offset,
             ),
             context_prefix_policy=_coerce_enum(
                 config_enums.SegmentContextPolicy,
@@ -1886,6 +1962,10 @@ def load_experiment_config(path: str | Path, *, checkpoint_runtime_compat: bool 
         training_config=training_config,
         inference_config=inference_config,
     )
+    _validate_cross_config_contracts(
+        data_config=data_config,
+        policy_variant_config=policy_variant_config,
+    )
     action_decoder_config = _load_action_decoder_config(
         action_decoder_raw=raw.get("action_decoder", {}),
         policy_variant_config=policy_variant_config,
@@ -1934,6 +2014,7 @@ def load_experiment_config(path: str | Path, *, checkpoint_runtime_compat: bool 
             config_enums.CheckpointMode,
             trainer_raw.get("checkpoint_mode", "full_training_state"),
         ),
+        max_checkpoints_to_keep=trainer_raw.get("max_checkpoints_to_keep"),
         export_runtime_backbone=trainer_raw.get("export_runtime_backbone", False),
         resume_from=trainer_raw.get("resume_from"),
         enable_jsonl_logging=trainer_raw.get("enable_jsonl_logging", False),

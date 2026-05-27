@@ -47,6 +47,9 @@ from .reference_runtime import (
 )
 from .action_adapter import LingbotActionAdapter, build_action_adapter_spec
 
+_PER_CHUNK_PROPRIO_GRANULARITY_CHUNK = "chunk"
+_PER_CHUNK_PROPRIO_GRANULARITY_FRAME = "frame"
+
 
 class ParallelStreamPolicyVariant(PolicyVariant):
     """LingBot-style parallel-stream policy variant.
@@ -92,10 +95,16 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         self._validate_reference_profile()
 
     def _uses_proprio_context(self) -> bool:
+        return ProprioContextMode(self.config.proprio_context_mode) != ProprioContextMode.NONE
+
+    def _uses_text_proprio_context(self) -> bool:
         return ProprioContextMode(self.config.proprio_context_mode) == ProprioContextMode.TEXT_CONTEXT_TOKEN
 
+    def _uses_per_chunk_proprio_context(self) -> bool:
+        return ProprioContextMode(self.config.proprio_context_mode) == ProprioContextMode.PER_CHUNK_ADDITIVE
+
     def _require_proprio_state(self, state: torch.Tensor | None, *, label: str) -> torch.Tensor | None:
-        if not self._uses_proprio_context():
+        if not self._uses_text_proprio_context():
             return None
         selected = self._select_proprio_state(state)
         if selected is None:
@@ -103,7 +112,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         return selected
 
     def _require_train_proprio_context(self, batch: PolicyTrainBatch) -> torch.Tensor | None:
-        if not self._uses_proprio_context():
+        if not self._uses_text_proprio_context():
             return None
         proprio_context_state = batch.extra.get("proprio_context_state")
         if isinstance(proprio_context_state, torch.Tensor):
@@ -127,6 +136,37 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             return proprio_context_state
         return self._require_proprio_state(batch.state, label="parallel-stream training")
 
+    def _require_per_chunk_proprio_state(
+        self,
+        batch: PolicyTrainBatch,
+        *,
+        label: str,
+    ) -> tuple[torch.Tensor, str] | None:
+        if not self._uses_per_chunk_proprio_context():
+            return None
+        value = batch.extra.get("proprio_context_frames")
+        mask = batch.extra.get("proprio_context_frames_mask")
+        granularity = _PER_CHUNK_PROPRIO_GRANULARITY_FRAME
+        if not isinstance(value, torch.Tensor):
+            value = batch.extra.get("proprio_context_state")
+            mask = batch.extra.get("proprio_context_state_mask")
+            granularity = _PER_CHUNK_PROPRIO_GRANULARITY_CHUNK
+        if not isinstance(value, torch.Tensor):
+            raise ValueError(f"proprio_context_mode=per_chunk_additive requires per-frame proprio context for {label}.")
+        if value.ndim != 3:
+            raise ValueError(
+                "Per-chunk proprio context expects state with shape [B, frames, state_dim], "
+                f"got {tuple(value.shape)}."
+            )
+        if isinstance(mask, torch.Tensor):
+            if tuple(mask.shape) != tuple(value.shape):
+                raise ValueError(
+                    "Per-chunk proprio context mask must match state shape, "
+                    f"got mask={tuple(mask.shape)}, state={tuple(value.shape)}."
+                )
+            value = value * mask.to(device=value.device, dtype=value.dtype)
+        return value, granularity
+
     def _resolve_proprio_state(
         self,
         state: torch.Tensor | None,
@@ -134,7 +174,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         label: str,
         infer_cache: dict | None = None,
     ) -> torch.Tensor | None:
-        if not self._uses_proprio_context():
+        if not self._uses_text_proprio_context():
             return None
         selected = self._select_anchor_state(state)
         if selected is None and isinstance(infer_cache, dict):
@@ -145,6 +185,24 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             raise ValueError(f"Proprio context mode is enabled but no state was provided for {label}.")
         return selected
 
+    def _resolve_per_chunk_proprio_state(
+        self,
+        state: torch.Tensor | None,
+        *,
+        label: str,
+        infer_cache: dict | None = None,
+    ) -> torch.Tensor | None:
+        if not self._uses_per_chunk_proprio_context():
+            return None
+        selected = self._select_anchor_state(state)
+        if selected is None and isinstance(infer_cache, dict):
+            cached_state = infer_cache.get("last_proprio_state")
+            if isinstance(cached_state, torch.Tensor):
+                selected = self._select_anchor_state(cached_state)
+        if selected is None:
+            raise ValueError(f"Per-chunk proprio mode is enabled but no state was provided for {label}.")
+        return selected
+
     def _cache_proprio_state(self, cache: dict, state: torch.Tensor | None) -> None:
         if self._uses_proprio_context() and state is not None:
             cache["last_proprio_state"] = state.detach().clone()
@@ -152,7 +210,11 @@ class ParallelStreamPolicyVariant(PolicyVariant):
     def attach_visual_tower(self, visual_tower: VisualTower) -> None:
         if not self._uses_proprio_context():
             return
-        configure = getattr(visual_tower.core, "configure_proprio_context_encoder", None)
+        configure = (
+            getattr(visual_tower.core, "configure_proprio_context_encoder", None)
+            if self._uses_text_proprio_context()
+            else getattr(visual_tower.core, "configure_proprio_hidden_context_encoder", None)
+        )
         if not callable(configure):
             raise ValueError("Proprio context mode requires a shared transformer core.")
         state_dim = int(visual_tower.state_dim or 0)
@@ -204,6 +266,10 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         sampled_geometry = self._resolve_train_sampling_metadata(batch, observed_num_frames=observed_num_frames)
         generalist_metadata = self._resolve_generalist_training_metadata(batch)
         proprio_state = self._require_train_proprio_context(batch)
+        per_chunk_proprio_payload = self._require_per_chunk_proprio_state(
+            batch,
+            label="parallel-stream training",
+        )
         condition_latents = self._resolve_train_condition_latents(
             batch,
             video_latents=visual_outputs.frontend.video_latents,
@@ -279,6 +345,13 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             )
         if proprio_state is not None:
             train_artifacts.input_dict["proprio_state"] = proprio_state
+        if per_chunk_proprio_payload is not None:
+            per_chunk_proprio_state, per_chunk_proprio_granularity = per_chunk_proprio_payload
+            train_artifacts.input_dict["per_chunk_proprio_state"] = per_chunk_proprio_state.to(
+                device=visual_outputs.frontend.video_latents.device,
+                dtype=visual_outputs.frontend.video_latents.dtype,
+            )
+            train_artifacts.input_dict["per_chunk_proprio_state_granularity"] = per_chunk_proprio_granularity
         return PolicyPreparedInputs(batch=batch, variant_inputs={"lingbot_train_artifacts": train_artifacts})
 
     def _resolve_train_condition_latents(
@@ -615,6 +688,11 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             label="parallel-stream cache warmup",
             infer_cache=infer_state.cache,
         )
+        resolved_hidden_proprio_state = self._resolve_per_chunk_proprio_state(
+            proprio_state,
+            label="parallel-stream cache warmup",
+            infer_cache=infer_state.cache,
+        )
         next_cache = run_parallel_exact_cache_warmup(
             transformer=reference_transformer,
             backbone_config=self.backbone_config,
@@ -632,8 +710,12 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             cache_write_mode=self.exact_cache_write_mode(),
             frame_start_override=frame_start_override,
             proprio_state=resolved_proprio_state,
+            hidden_proprio_state=resolved_hidden_proprio_state,
         )
-        self._cache_proprio_state(next_cache, resolved_proprio_state)
+        self._cache_proprio_state(
+            next_cache,
+            resolved_proprio_state if resolved_proprio_state is not None else resolved_hidden_proprio_state,
+        )
         next_cache["backbone_cache"] = visual_tower.resolve_runtime_cache_state(
             next_cache.get("backbone_cache") if isinstance(next_cache.get("backbone_cache"), CacheState) else None,
             cursor=infer_state.cursor,
@@ -684,6 +766,11 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             negative_text_emb = negative_text_context
             output_dtype = torch.float32 if parameter.device.type == "cpu" else parameter.dtype
         resolved_proprio_state = self._resolve_proprio_state(
+            proprio_state,
+            label="parallel-stream inference",
+            infer_cache=infer_state.cache,
+        )
+        resolved_hidden_proprio_state = self._resolve_per_chunk_proprio_state(
             proprio_state,
             label="parallel-stream inference",
             infer_cache=infer_state.cache,
@@ -754,6 +841,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 infer_cache=infer_state.cache,
                 advance_frame_start=advance_frame_start,
                 proprio_state=resolved_proprio_state,
+                hidden_proprio_state=resolved_hidden_proprio_state,
             )
         else:
             infer_artifacts = run_parallel_exact_inference_rollout(
@@ -774,8 +862,12 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 advance_frame_start=advance_frame_start,
                 skip_video_prediction=skip_video_prediction,
                 proprio_state=resolved_proprio_state,
+                hidden_proprio_state=resolved_hidden_proprio_state,
             )
-        self._cache_proprio_state(infer_artifacts.next_cache, resolved_proprio_state)
+        self._cache_proprio_state(
+            infer_artifacts.next_cache,
+            resolved_proprio_state if resolved_proprio_state is not None else resolved_hidden_proprio_state,
+        )
         next_cursor = RolloutCursor(
             current_start_frame=int(
                 infer_artifacts.next_cache.get("frame_start", infer_state.cursor.current_start_frame)

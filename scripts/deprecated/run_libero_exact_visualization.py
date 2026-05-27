@@ -151,7 +151,10 @@ def main() -> None:
     )
 
     request = _resolve_visualization_request(args.config)
-    config = load_experiment_config(request.experiment_config_path)
+    config = load_experiment_config(
+        request.experiment_config_path,
+        checkpoint_runtime_compat=request.experiment_config_path.name == "resolved_config.yaml",
+    )
     require_current_libero_policy_paradigm(
         config,
         config_path=request.experiment_config_path,
@@ -955,7 +958,10 @@ def _extract_obs(obs) -> dict[str, np.ndarray]:
 def _proprio_context_enabled(config) -> bool:
     policy_config = getattr(config, "policy_variant", None)
     mode = getattr(policy_config, "proprio_context_mode", ProprioContextMode.NONE)
-    return ProprioContextMode(mode) == ProprioContextMode.TEXT_CONTEXT_TOKEN
+    return ProprioContextMode(mode) in {
+        ProprioContextMode.TEXT_CONTEXT_TOKEN,
+        ProprioContextMode.PER_CHUNK_ADDITIVE,
+    }
 
 
 def _current_frame_action_chunk_enabled(config) -> bool:

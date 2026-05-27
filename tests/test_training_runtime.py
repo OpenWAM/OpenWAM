@@ -705,6 +705,38 @@ def test_model_only_checkpoint_does_not_collect_optimizer_state(tmp_path: Path, 
     assert (checkpoint_dir / ".checkpoint_complete").exists()
 
 
+def test_checkpoint_manager_prunes_old_checkpoints_after_successful_save(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
+    manager = CheckpointManager(
+        root_dir=tmp_path / "checkpoints",
+        config=config,
+        checkpoint_mode=CheckpointMode.MODEL_ONLY,
+        max_checkpoints_to_keep=3,
+    )
+    model = torch.nn.Linear(2, 2)
+
+    def fake_model_state_dict(model, options):
+        del model, options
+        return {"weight": torch.ones(1)}
+
+    monkeypatch.setattr("open_wam.training.checkpoints.get_model_state_dict", fake_model_state_dict)
+
+    for step in (100, 200, 300, 400, 500):
+        train_state = TrainState(optimizer_step=step)
+        manager.save(
+            step=step,
+            model=model,
+            optimizer=None,
+            scheduler=None,
+            train_state=train_state,
+        )
+
+    remaining = sorted(path.name for path in (tmp_path / "checkpoints").glob("checkpoint_step_*"))
+    assert remaining == ["checkpoint_step_300", "checkpoint_step_400", "checkpoint_step_500"]
+
+
 def test_model_only_checkpoint_loads_sibling_train_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

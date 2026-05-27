@@ -288,6 +288,29 @@ def _resolve_slot_pool_prefix_visibility(
                 & valid_streams
             )
         cached_prefix_visibility_2d = cached_prefix_visibility_2d.to(dtype=attention_mask.dtype)
+    elif prefix_visibility_mode == "video_history_only":
+        q_stream = _normalize_stream_ids(
+            query_stream_ids,
+            expected_len=int(attention_mask.shape[-2]),
+            label="query_stream_ids",
+        )
+        kv_stream = _normalize_stream_ids(
+            cached_prefix_stream_ids,
+            expected_len=prefix_len,
+            label="cached_prefix_stream_ids",
+        )
+        valid_streams = (q_stream[:, None] >= 0) & (kv_stream[None, :] >= 0)
+        cached_prefix_visibility_2d = (kv_stream[None, :] == 0) & valid_streams
+        tail_tokens = max(0, min(int(allow_video_query_to_action_prefix_tail_tokens), int(prefix_len)))
+        if tail_tokens > 0:
+            tail_positions = torch.arange(prefix_len, device=attention_mask.device) >= (prefix_len - tail_tokens)
+            cached_prefix_visibility_2d = cached_prefix_visibility_2d | (
+                (q_stream[:, None] == 0)
+                & (kv_stream[None, :] == 1)
+                & tail_positions[None, :]
+                & valid_streams
+            )
+        cached_prefix_visibility_2d = cached_prefix_visibility_2d.to(dtype=attention_mask.dtype)
     else:
         raise ValueError(f"Unsupported slot-pool prefix_visibility_mode {prefix_visibility_mode!r}.")
     if query_sequence_ids is not None or cached_prefix_sequence_ids is not None:
@@ -1146,6 +1169,37 @@ class ProprioContextEncoder(nn.Module):
         return self.proj(proprio_state)
 
 
+class ProprioHiddenContextEncoder(nn.Module):
+    """Project proprio state into additive transformer hidden context."""
+
+    def __init__(self, state_dim: int, hidden_size: int) -> None:
+        super().__init__()
+        state_dim = int(state_dim)
+        hidden_size = int(hidden_size)
+        if state_dim <= 0:
+            raise ValueError(f"Expected positive proprio state_dim, got {state_dim}.")
+        if hidden_size <= 0:
+            raise ValueError(f"Expected positive hidden_size, got {hidden_size}.")
+        self.state_dim = state_dim
+        self.hidden_size = hidden_size
+        self.proj = nn.Linear(state_dim, hidden_size)
+        nn.init.zeros_(self.proj.weight)
+        nn.init.zeros_(self.proj.bias)
+
+    def forward(self, proprio_state: torch.Tensor) -> torch.Tensor:
+        if proprio_state.ndim != 2:
+            raise ValueError(
+                "Proprio hidden context encoder expects state with shape [B, state_dim], "
+                f"got {tuple(proprio_state.shape)}."
+            )
+        if int(proprio_state.shape[-1]) != self.state_dim:
+            raise ValueError(
+                "Proprio hidden state dim mismatch, "
+                f"got {proprio_state.shape[-1]} and expected {self.state_dim}."
+            )
+        return self.proj(proprio_state)
+
+
 class SharedVideoTransformerCore(nn.Module):
     """Shared Wan-style transformer core for all policy variants."""
 
@@ -1177,6 +1231,7 @@ class SharedVideoTransformerCore(nn.Module):
         self.text_proj = PixArtAlphaTextProjection(self.config.text_dim, self.config.hidden_size, act_fn="gelu_tanh")
         self.action_text_proj = PixArtAlphaTextProjection(self.config.text_dim, self.config.hidden_size, act_fn="gelu_tanh")
         self.proprio_context_encoder: ProprioContextEncoder | None = None
+        self.proprio_hidden_context_encoder: ProprioHiddenContextEncoder | None = None
         self.patch_embedding_mlp = nn.Linear(
             self.config.latent_channels * self.config.patch_size_t * self.config.patch_size_h * self.config.patch_size_w,
             self.config.hidden_size,
@@ -1232,6 +1287,7 @@ class SharedVideoTransformerCore(nn.Module):
             self.text_proj,
             self.action_text_proj,
             self.proprio_context_encoder,
+            self.proprio_hidden_context_encoder,
             self.runtime_stream_adapters,
             self.rope,
         ):
@@ -1263,6 +1319,24 @@ class SharedVideoTransformerCore(nn.Module):
         self.proprio_context_encoder = ProprioContextEncoder(
             state_dim=resolved_state_dim,
             text_dim=self.config.text_dim,
+        )
+
+    def configure_proprio_hidden_context_encoder(self, *, enabled: bool, state_dim: int | None = None) -> None:
+        if not enabled:
+            self.proprio_hidden_context_encoder = None
+            return
+        resolved_state_dim = int(self.state_dim if state_dim is None else state_dim)
+        if resolved_state_dim <= 0:
+            raise ValueError("Per-chunk proprio context mode requires a positive visual-tower state_dim.")
+        if (
+            self.proprio_hidden_context_encoder is not None
+            and self.proprio_hidden_context_encoder.state_dim == resolved_state_dim
+            and self.proprio_hidden_context_encoder.hidden_size == self.config.hidden_size
+        ):
+            return
+        self.proprio_hidden_context_encoder = ProprioHiddenContextEncoder(
+            state_dim=resolved_state_dim,
+            hidden_size=self.config.hidden_size,
         )
 
     def append_proprio_context_tokens(
@@ -1303,6 +1377,28 @@ class SharedVideoTransformerCore(nn.Module):
             dtype=text_emb.dtype,
         )
         return torch.cat([text_emb, proprio_tokens], dim=1)
+
+    def encode_proprio_hidden_context(
+        self,
+        proprio_state: torch.Tensor,
+        *,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        encoder = self.proprio_hidden_context_encoder
+        if encoder is None:
+            raise ValueError("Per-chunk proprio context mode requires a configured hidden-context encoder.")
+        if proprio_state.ndim == 2:
+            proprio_state = proprio_state[:, None, :]
+        if proprio_state.ndim != 3:
+            raise ValueError(
+                "Per-chunk proprio hidden context expects state with shape [B, F, state_dim] or [B, state_dim], "
+                f"got {tuple(proprio_state.shape)}."
+            )
+        batch_size, frame_count, state_dim = proprio_state.shape
+        proprio_state = proprio_state.to(device=encoder.proj.weight.device, dtype=encoder.proj.weight.dtype)
+        hidden_context = encoder(proprio_state.reshape(batch_size * frame_count, state_dim))
+        return hidden_context.reshape(batch_size, frame_count, -1).to(device=device, dtype=dtype)
 
     @staticmethod
     def _move_optional_tensor(tensor: torch.Tensor | None, *, device: torch.device, dtype: torch.dtype | None = None):
@@ -1401,6 +1497,7 @@ class SharedVideoTransformerCore(nn.Module):
                     preserve_video_pretrain_history=bool(
                         metadata.get("preserve_video_pretrain_history", False)
                     ),
+                    history_stream_visibility=metadata.get("history_stream_visibility"),
                 )
             if profile.self_attention_mask is None and profile.cross_attention_mask is None:
                 return profile
@@ -1977,6 +2074,14 @@ class SharedVideoTransformerCore(nn.Module):
     ) -> torch.Tensor:
         prepared = self.prepare_exact_single_stream_inputs(input_dict, action_mode=action_mode)
         hidden_states = prepared["hidden_states"]
+        hidden_context = input_dict.get("hidden_context")
+        if hidden_context is not None:
+            if tuple(hidden_context.shape) != tuple(hidden_states.shape):
+                raise ValueError(
+                    "Exact single-stream hidden_context must match embedded hidden_states shape, "
+                    f"got hidden_context={tuple(hidden_context.shape)}, hidden_states={tuple(hidden_states.shape)}."
+                )
+            hidden_states = hidden_states + hidden_context.to(device=hidden_states.device, dtype=hidden_states.dtype)
         text_hidden_states = prepared["text_hidden_states"]
         rotary_emb = prepared["rotary_emb"]
         temb = prepared["temb"]

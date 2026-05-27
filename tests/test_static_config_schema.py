@@ -130,6 +130,124 @@ trainer:
 
 
 @pytest.mark.unit
+def test_static_validator_accepts_parallel_stream_context_and_history_flags(tmp_path: Path) -> None:
+    config_path = tmp_path / "parallel_context_flags.yaml"
+    config_path.write_text(
+        """
+name: parallel_context_flags
+data:
+  dataset_name: libero
+  dataset_type: synthetic_multiview
+  sample_construction:
+    condition_source_frame_offset: -1
+  action_schema:
+    action_dim: 7
+    action_horizon: 8
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: parallel_stream
+  runtime_mode: lingbot_exact
+  current_block_coupling: decoupled_same_step
+  context_condition_latent_source: single_frame_condition_latent
+  history_stream_visibility: video_only
+action_decoder:
+  name: lingbot_parallel_decoder
+  action_dim: 7
+  action_horizon: 8
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert report.ok
+
+
+@pytest.mark.unit
+def test_static_validator_rejects_single_frame_context_without_previous_frame_offset(tmp_path: Path) -> None:
+    config_path = tmp_path / "parallel_context_flags_leaky_offset.yaml"
+    config_path.write_text(
+        """
+name: parallel_context_flags_leaky_offset
+data:
+  dataset_name: libero
+  dataset_type: synthetic_multiview
+  sample_construction:
+    condition_source_frame_offset: 0
+  action_schema:
+    action_dim: 7
+    action_horizon: 8
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: parallel_stream
+  runtime_mode: lingbot_exact
+  current_block_coupling: decoupled_same_step
+  context_condition_latent_source: single_frame_condition_latent
+action_decoder:
+  name: lingbot_parallel_decoder
+  action_dim: 7
+  action_horizon: 8
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any(
+        "single_frame_condition_latent" in issue.message
+        and "offset 0 can expose the first target raw frame" in issue.message
+        for issue in report.errors
+    )
+
+
+@pytest.mark.unit
+def test_static_validator_catches_parallel_stream_history_visibility_typo(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_parallel_history_visibility.yaml"
+    config_path.write_text(
+        """
+name: bad_parallel_history_visibility
+data:
+  dataset_name: libero
+  dataset_type: synthetic_multiview
+  action_schema:
+    action_dim: 7
+    action_horizon: 8
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: parallel_stream
+  runtime_mode: lingbot_exact
+  history_stream_visibility: typo
+action_decoder:
+  name: lingbot_parallel_decoder
+  action_dim: 7
+  action_horizon: 8
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any("Invalid ParallelHistoryStreamVisibility" in issue.message for issue in report.errors)
+
+
+@pytest.mark.unit
 def test_static_validator_catches_mot_proprio_context_typo(tmp_path: Path) -> None:
     config_path = tmp_path / "bad_mot_proprio.yaml"
     config_path.write_text(
@@ -586,6 +704,47 @@ trainer:
 
     assert not report.ok
     assert any(issue.path == "policy_variant.current_block_coupling" for issue in report.errors)
+
+
+@pytest.mark.unit
+def test_static_validator_rejects_mot_shared_video_schedule_until_implemented(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_mot_shared_video_schedule.yaml"
+    config_path.write_text(
+        """
+name: bad_mot_shared_video_schedule
+data:
+  dataset_name: libero
+  dataset_type: lerobot_v2_latent_local
+  action_schema:
+    action_dim: 7
+    action_horizon: 16
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: mot
+  attach_site: post_visual_core
+  runtime_mode: non_joint_two_stream
+  current_block_coupling: joint
+  joint_timestep_coupling: shared_video_schedule
+action_decoder:
+  name: mot_decoder
+  action_dim: 7
+  action_horizon: 16
+trainer:
+  accelerator: gpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any(
+        issue.path == "policy_variant.joint_timestep_coupling" and "MoT/M5" in issue.message
+        for issue in report.errors
+    )
 
 
 @pytest.mark.unit

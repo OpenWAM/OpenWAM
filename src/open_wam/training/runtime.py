@@ -176,6 +176,7 @@ class TrainingRuntime:
             root_dir=checkpoint_root,
             config=config,
             checkpoint_mode=config.trainer.checkpoint_mode,
+            max_checkpoints_to_keep=config.trainer.max_checkpoints_to_keep,
             export_runtime_backbone=config.trainer.export_runtime_backbone,
         )
         run_name = config.trainer.run_name or config.name

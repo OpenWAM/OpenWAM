@@ -525,6 +525,10 @@ class SampleConstructionConfig:
     # useful for fixed-geometry cold-start training without rewriting latent
     # datasets on disk.
     start_padding_frames: int = 0
+    # Expected raw-frame offset used when precomputing `condition_latent`
+    # payloads. For single-frame context experiments, -1 means the condition is
+    # the raw frame immediately before the sampled latent source span.
+    condition_source_frame_offset: int = 0
     # `legacy` preserves historical fixed-segment behavior. `next_after_context`
     # is the strict rollout-parity contract: materialize context before the
     # target horizon, mask it from supervision, and supervise only the next
@@ -624,6 +628,8 @@ class SampleConstructionConfig:
             raise ValueError("`sample_construction.segment_locality_block_size` must be positive.")
         if self.start_padding_frames < 0:
             raise ValueError("`sample_construction.start_padding_frames` must be non-negative.")
+        if not isinstance(self.condition_source_frame_offset, int):
+            raise ValueError("`sample_construction.condition_source_frame_offset` must be an integer.")
         if self.rollout_context_frames is not None and int(self.rollout_context_frames) <= 0:
             raise ValueError("`sample_construction.rollout_context_frames` must be positive or null.")
         if self.context_prefix_frames < 0:

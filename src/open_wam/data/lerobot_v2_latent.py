@@ -47,6 +47,7 @@ from .action_mapping import (
 )
 from .latent_contracts import LatentWAMSample
 from .latent_temporal import (
+    CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET,
     latent_anchor_positions,
     latent_raw_boundaries,
     observed_frame_ids_for_latent_segment,
@@ -511,6 +512,43 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             raise ValueError("Expected at least one latent camera payload.")
         return canonical_latents.permute(3, 0, 1, 2).contiguous().to(dtype=torch.float32), metadata
 
+    def _condition_latent_offset_mismatches(
+        self,
+        latent_payloads: dict[str, dict[str, Any]],
+        *,
+        expected_offset: int,
+    ) -> list[str]:
+        mismatches: list[str] = []
+        for camera_name in self.data_config.latent_camera_names:
+            payload = latent_payloads[camera_name]
+            if "condition_latent" not in payload:
+                continue
+            payload_offset = payload.get("condition_source_frame_offset")
+            if payload_offset is None:
+                if int(expected_offset) == 0:
+                    # Legacy optional condition-latent payloads predate explicit source-frame
+                    # metadata. They are valid for the unshifted default path, but shifted
+                    # single-frame condition latents must be regenerated with metadata.
+                    continue
+                mismatches.append(f"{camera_name}: missing condition_source_frame_offset")
+                continue
+            if int(payload_offset) != int(expected_offset):
+                mismatches.append(f"{camera_name}: payload={int(payload_offset)} expected={int(expected_offset)}")
+                continue
+            payload_policy = payload.get("condition_source_frame_policy")
+            if payload_policy is None:
+                if int(expected_offset) == 0:
+                    continue
+                mismatches.append(f"{camera_name}: missing condition_source_frame_policy")
+                continue
+            if payload_policy != CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET:
+                mismatches.append(
+                    f"{camera_name}: condition_source_frame_policy={payload_policy!r} "
+                    f"expected {CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET!r}"
+                )
+                continue
+        return mismatches
+
     def _load_canonical_window_latents(
         self,
         window: LocalEpisodeWindow,
@@ -535,6 +573,25 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             payload_key="condition_latent",
             require_payload_key=False,
         )
+        if condition_latents is not None:
+            expected_offset = int(self.data_config.sample_construction.condition_source_frame_offset)
+            mismatches = self._condition_latent_offset_mismatches(
+                latent_payloads,
+                expected_offset=expected_offset,
+            )
+            if mismatches:
+                if expected_offset == 0:
+                    condition_latents = None
+                    condition_layout_metadata = {}
+                else:
+                    preview = "; ".join(mismatches[:4])
+                    raise ValueError(
+                        "Latent payload condition_source_frame_offset/policy does not match "
+                        f"`sample_construction.condition_source_frame_offset={expected_offset}`. "
+                        "Re-run scripts/augment_lerobot_latents_with_single_frame_condition.py "
+                        f"with --source-frame-offset {expected_offset} --overwrite. "
+                        f"Mismatches: {preview}"
+                    )
         primary_payload = dict(latent_payloads[self.data_config.latent_camera_names[0]])
         payload = (video_latents, latent_layout_metadata, primary_payload, condition_latents, condition_layout_metadata)
         self._latent_view_cache[cache_key] = payload

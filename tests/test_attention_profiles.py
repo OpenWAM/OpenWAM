@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import torch
 
-from open_wam.models.common.attention_profiles import build_chunked_temporal_exact_attention_profile
+from open_wam.models.common.attention_profiles import (
+    build_chunked_temporal_exact_attention_profile,
+    normalize_chunked_temporal_exact_coupling,
+)
 from open_wam.models.common.packed_token_layout import (
     PackedTokenKind,
     PackedTokenStream,
@@ -170,6 +173,45 @@ def test_chunked_temporal_exact_action_context_mask_hides_startup_action_tokens(
     assert profile.cross_attention_mask is not None
     assert bool(profile.cross_attention_mask[kv_action_noisy_frame0].any().item()) is True
     assert profile.metadata["invalid_action_context_tokens"] == 4
+
+
+def test_history_stream_visibility_video_only_filters_all_action_history() -> None:
+    profile = build_chunked_temporal_exact_attention_profile(
+        latent_shape=(1, 1, 2, 1, 1),
+        action_shape=(1, 1, 2, 1, 1),
+        padded_length=0,
+        chunk_size=1,
+        window_size=8,
+        patch_size=(1, 1, 1),
+        text_token_count=1,
+        device=torch.device("cpu"),
+        build_dense_masks=True,
+        build_flex_masks=False,
+        current_block_coupling="video_then_action",
+        history_stream_visibility="video_only",
+    )
+
+    assert profile.self_attention_mask is not None
+    mask = profile.self_attention_mask
+    latent_token_count = 2
+    action_token_count = 2
+    action_noisy_start = latent_token_count * 2
+    action_clean_start = action_noisy_start + action_token_count
+    query_video_frame1 = 1
+    query_action_frame1 = action_noisy_start + 1
+    kv_video_clean_frame0 = latent_token_count
+    kv_action_clean_frame0 = action_clean_start
+
+    assert bool(mask[query_video_frame1, kv_video_clean_frame0].item()) is True
+    assert bool(mask[query_video_frame1, kv_action_clean_frame0].item()) is False
+    assert bool(mask[query_action_frame1, kv_video_clean_frame0].item()) is True
+    assert bool(mask[query_action_frame1, kv_action_clean_frame0].item()) is False
+    assert profile.metadata["history_stream_visibility"] == "video_only"
+
+
+def test_chunked_temporal_exact_coupling_accepts_profile_aliases() -> None:
+    assert normalize_chunked_temporal_exact_coupling("lingbot_chunked_exact") == "video_then_action"
+    assert normalize_chunked_temporal_exact_coupling("chunked_temporal_exact_joint") == "joint"
 
 
 def test_packed_token_layout_separates_query_and_kv_validity() -> None:
