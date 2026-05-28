@@ -327,7 +327,13 @@ def main() -> None:
                 )
                 infer_output = pipeline._forward_infer_with_visual_outputs(
                     visual_outputs,
-                    context=_build_infer_context(prompt, action_device=action_device),
+                    context=_build_infer_context(
+                        prompt,
+                        action_device=action_device,
+                        model_obs_window=model_obs_window,
+                        config=config,
+                        runtime_device=runtime_device,
+                    ),
                     infer_state=None if args.reset_policy_state_each_chunk else session.policy_state,
                 )
                 _print_log(
@@ -579,8 +585,24 @@ def _resolve_mot_checkpoint_path(
         return None
 
 
-def _build_infer_context(prompt: str, *, action_device: torch.device):
-    return PolicyInferContext(extra={"task_text": (prompt,), "action_device": str(action_device)})
+def _build_infer_context(
+    prompt: str,
+    *,
+    action_device: torch.device,
+    model_obs_window: list[dict[str, np.ndarray]],
+    config,
+    runtime_device: torch.device,
+):
+    return PolicyInferContext(
+        state=video_viz._build_state_inputs_from_obs_window(
+            model_obs_window,
+            state_horizon=int(config.data.action_schema.state_horizon),
+            state_encoding=str(config.data.action_target.state_encoding),
+        )
+        .unsqueeze(0)
+        .to(device=runtime_device),
+        extra={"task_text": (prompt,), "action_device": str(action_device)},
+    )
 
 
 def _resolve_task_spec(benchmark_name: str, task_id: int) -> tuple[LiberoTaskSpec, str]:
@@ -652,6 +674,9 @@ def _extract_obs(obs) -> dict[str, np.ndarray]:
     return {
         LIBERO_OBS_KEYS[0]: np.ascontiguousarray(obs["agentview_image"][::-1]),
         LIBERO_OBS_KEYS[1]: np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1]),
+        "robot0_eef_pos": np.asarray(obs["robot0_eef_pos"], dtype=np.float32).copy(),
+        "robot0_eef_quat": np.asarray(obs["robot0_eef_quat"], dtype=np.float32).copy(),
+        "robot0_gripper_qpos": np.asarray(obs["robot0_gripper_qpos"], dtype=np.float32).copy(),
     }
 
 

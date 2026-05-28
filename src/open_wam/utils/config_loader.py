@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Collection, Mapping, TypeVar
 
 from open_wam.configs.enums import StrEnum
 from open_wam.configs import (
@@ -69,6 +70,158 @@ def _raw_enum_value(value: Any) -> Any:
     if isinstance(value, StrEnum):
         return value.value
     return value
+
+
+def _set_contract_default(
+    mapping: dict[str, Any],
+    *,
+    key: str,
+    value: Any,
+    path: str,
+    contract: config_enums.ParallelSequenceContract,
+) -> None:
+    existing = mapping.get(key)
+    if key in mapping and _raw_enum_value(existing) != _raw_enum_value(value):
+        raise ValueError(
+            f"`policy_variant.parallel_sequence_contract={contract.value}` requires "
+            f"`{path}={_raw_enum_value(value)}`, got {existing!r}."
+        )
+    mapping[key] = value
+
+
+_LEGACY_PREFIX_PARALLEL_RUNTIME_MODES = frozenset(
+    {
+        config_enums.ParallelRuntimeMode.LINGBOT_EXACT,
+        config_enums.ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
+    }
+)
+
+
+def _apply_parallel_sequence_contract(raw: dict[str, Any]) -> dict[str, Any]:
+    """Expand sequence contracts into raw defaults before typed parsing."""
+
+    normalized = dict(raw)
+    policy_variant_raw = normalized.get("policy_variant")
+    if not isinstance(policy_variant_raw, dict):
+        return normalized
+    policy_variant_raw = dict(policy_variant_raw)
+    normalized["policy_variant"] = policy_variant_raw
+
+    contract = _coerce_enum(
+        config_enums.ParallelSequenceContract,
+        policy_variant_raw.get(
+            "parallel_sequence_contract",
+            config_enums.ParallelSequenceContract.DEFAULT,
+        ),
+    )
+    if contract == config_enums.ParallelSequenceContract.DEFAULT:
+        return normalized
+
+    policy_name = _coerce_enum(
+        config_enums.PolicyVariantName,
+        policy_variant_raw.get("name", config_enums.PolicyVariantName.POST_LATENT),
+    )
+    if policy_name not in {
+        config_enums.PolicyVariantName.PARALLEL_STREAM,
+        config_enums.PolicyVariantName.MOT,
+    }:
+        raise ValueError(
+            f"`policy_variant.parallel_sequence_contract={contract.value}` is only supported for "
+            "`policy_variant.name` in {'parallel_stream', 'mot'}."
+        )
+
+    if contract == config_enums.ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO:
+        if policy_name == config_enums.PolicyVariantName.PARALLEL_STREAM:
+            runtime_mode = _coerce_enum(
+                config_enums.ParallelRuntimeMode,
+                policy_variant_raw.get("runtime_mode", config_enums.ParallelRuntimeMode.LINGBOT_EXACT),
+            )
+            if runtime_mode not in _LEGACY_PREFIX_PARALLEL_RUNTIME_MODES:
+                allowed = ", ".join(f"'{mode.value}'" for mode in sorted(_LEGACY_PREFIX_PARALLEL_RUNTIME_MODES))
+                raise ValueError(
+                    "`policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio` only "
+                    f"supports `policy_variant.runtime_mode` in {{{allowed}}}, got {runtime_mode.value!r}."
+                )
+        else:
+            runtime_mode = _coerce_enum(
+                config_enums.MoTRuntimeMode,
+                policy_variant_raw.get("runtime_mode", config_enums.MoTRuntimeMode.NON_JOINT_TWO_STREAM),
+            )
+            if runtime_mode != config_enums.MoTRuntimeMode.NON_JOINT_TWO_STREAM:
+                raise ValueError(
+                    "`policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio` "
+                    "requires `policy_variant.runtime_mode=non_joint_two_stream` for MoT/M5."
+                )
+
+    if contract not in {
+        config_enums.ParallelSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO,
+        config_enums.ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
+    }:
+        raise ValueError(f"Unsupported `policy_variant.parallel_sequence_contract={contract.value}`.")
+
+    if (
+        contract == config_enums.ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
+        and policy_name == config_enums.PolicyVariantName.MOT
+        and "joint_timestep_coupling" not in policy_variant_raw
+    ):
+        policy_variant_raw["joint_timestep_coupling"] = config_enums.JointTimestepCoupling.INDEPENDENT
+
+    for key, value in (
+        ("proprio_context_mode", config_enums.ProprioContextMode.PER_CHUNK_ADDITIVE),
+        (
+            "context_condition_latent_source",
+            config_enums.ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
+        ),
+        ("history_stream_visibility", config_enums.ParallelHistoryStreamVisibility.VIDEO_ONLY),
+        ("use_condition_latents", True),
+        ("require_condition_latents", True),
+    ):
+        _set_contract_default(
+            policy_variant_raw,
+            key=key,
+            value=value,
+            path=f"policy_variant.{key}",
+            contract=contract,
+        )
+
+    data_raw = normalized.get("data")
+    if not isinstance(data_raw, dict):
+        data_raw = {}
+    else:
+        data_raw = dict(data_raw)
+    normalized["data"] = data_raw
+    sample_construction_raw = data_raw.get("sample_construction")
+    if not isinstance(sample_construction_raw, dict):
+        sample_construction_raw = {}
+    else:
+        sample_construction_raw = dict(sample_construction_raw)
+    data_raw["sample_construction"] = sample_construction_raw
+
+    common_sample_defaults = {
+        "condition_source_frame_offset": -1,
+        "start_padding_frames": 0,
+    }
+    if contract == config_enums.ParallelSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO:
+        sample_defaults = {
+            **common_sample_defaults,
+            "target_alignment": config_enums.SampleTargetAlignment.NEXT_AFTER_CONTEXT,
+            "rollout_context_policy": config_enums.RolloutContextPolicy.ONE_FRAME,
+        }
+    else:
+        sample_defaults = {
+            **common_sample_defaults,
+            "target_alignment": config_enums.SampleTargetAlignment.LEGACY,
+        }
+    for key, value in sample_defaults.items():
+        _set_contract_default(
+            sample_construction_raw,
+            key=key,
+            value=value,
+            path=f"data.sample_construction.{key}",
+            contract=contract,
+        )
+
+    return normalized
 
 
 def _apply_checkpoint_runtime_compat(raw: dict[str, Any]) -> dict[str, Any]:
@@ -666,6 +819,13 @@ def _load_policy_variant_config(
                 "teacher_forcing_video_noise_prob": 0.0,
                 "video_prefix_frames": 1,
             }
+        context_condition_latent_source = _coerce_enum(
+            config_enums.ParallelContextConditionLatentSource,
+            resolved_raw.get(
+                "context_condition_latent_source",
+                config_enums.ParallelContextConditionLatentSource.VIDEO_LATENTS,
+            ),
+        )
         return MoTPolicyConfig(
             hidden_size=hidden_size,
             attach_site=_coerce_enum(
@@ -699,6 +859,7 @@ def _load_policy_variant_config(
                 "teacher_forcing_video_noise_prob",
                 mot_defaults.get("teacher_forcing_video_noise_prob", 0.5),
             ),
+            noisy_video_condition_prob=resolved_raw.get("noisy_video_condition_prob", 0.5),
             num_action_layers=resolved_raw.get("num_action_layers", backbone_config.num_layers),
             action_hidden_size=resolved_raw.get("action_hidden_size"),
             action_ffn_dim=resolved_raw.get("action_ffn_dim"),
@@ -714,9 +875,34 @@ def _load_policy_variant_config(
                 config_enums.ProprioContextMode,
                 resolved_raw.get("proprio_context_mode", config_enums.ProprioContextMode.NONE),
             ),
+            history_stream_visibility=_coerce_enum(
+                config_enums.ParallelHistoryStreamVisibility,
+                resolved_raw.get(
+                    "history_stream_visibility",
+                    config_enums.ParallelHistoryStreamVisibility.FULL,
+                ),
+            ),
+            context_condition_latent_source=context_condition_latent_source,
             use_activation_checkpointing=resolved_raw.get("use_activation_checkpointing", False),
-            use_condition_latents=bool(resolved_raw.get("use_condition_latents", True)),
-            require_condition_latents=bool(resolved_raw.get("require_condition_latents", False)),
+            use_condition_latents=(
+                True
+                if context_condition_latent_source
+                == config_enums.ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+                else bool(resolved_raw.get("use_condition_latents", True))
+            ),
+            require_condition_latents=(
+                True
+                if context_condition_latent_source
+                == config_enums.ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+                else bool(resolved_raw.get("require_condition_latents", False))
+            ),
+            parallel_sequence_contract=_coerce_enum(
+                config_enums.ParallelSequenceContract,
+                resolved_raw.get(
+                    "parallel_sequence_contract",
+                    config_enums.ParallelSequenceContract.DEFAULT,
+                ),
+            ),
             mot_generalist_training_mode_probs=resolved_raw.get("mot_generalist_training_mode_probs"),
             joint_timestep_coupling=_coerce_enum(
                 config_enums.JointTimestepCoupling,
@@ -945,6 +1131,13 @@ def _load_policy_variant_config(
             use_condition_latents=use_condition_latents,
             proprio_context_mode=proprio_context_mode,
             require_condition_latents=require_condition_latents,
+            parallel_sequence_contract=_coerce_enum(
+                config_enums.ParallelSequenceContract,
+                resolved_raw.get(
+                    "parallel_sequence_contract",
+                    config_enums.ParallelSequenceContract.DEFAULT,
+                ),
+            ),
             temporal_position_mode=_coerce_enum(
                 config_enums.TemporalPositionMode,
                 resolved_raw.get(
@@ -1198,7 +1391,7 @@ def _validate_cross_config_contracts(
     data_config: DataConfig,
     policy_variant_config: PolicyVariantConfig,
 ) -> None:
-    if not isinstance(policy_variant_config, ParallelStreamPolicyConfig):
+    if not isinstance(policy_variant_config, (ParallelStreamPolicyConfig, MoTPolicyConfig)):
         return
     if (
         policy_variant_config.context_condition_latent_source
@@ -1215,12 +1408,206 @@ def _validate_cross_config_contracts(
         )
 
 
+def validate_experiment_config_runtime_contract(config: ExperimentConfig) -> ExperimentConfig:
+    """Validate cross-section runtime contracts after YAML and CLI overrides."""
+
+    if getattr(config.policy_variant, "generalist_training_paradigm", None) == config_enums.GeneralistTrainingParadigm.MIXED_DYNAMICS:
+        if config.trainer.batch_adapter != config_enums.BatchAdapterName.LATENTS:
+            raise ValueError(
+                "`policy_variant.generalist_training_paradigm=mixed_dynamics` requires "
+                "`trainer.batch_adapter=latents` because the mixed-dynamics source mixture wraps latent datasets."
+            )
+        sample_construction = config.data.sample_construction
+        if sample_construction.sample_order_mode == config_enums.SampleOrderMode.REPLACEMENT:
+            raise ValueError(
+                "`data.sample_construction.sample_order_mode=replacement` is not supported with "
+                "`policy_variant.generalist_training_paradigm=mixed_dynamics` because the mixed-dynamics "
+                "wrapper owns source sampling and would bypass the local-latent replacement sampler."
+            )
+        if sample_construction.sample_weight_mode != config_enums.SampleWeightMode.UNIFORM:
+            raise ValueError(
+                "`data.sample_construction.sample_weight_mode` must be `uniform` with "
+                "`policy_variant.generalist_training_paradigm=mixed_dynamics` because the mixed-dynamics "
+                "wrapper owns source sampling and would bypass local-latent sample weights."
+            )
+
+    if config.data.sample_construction.target_alignment == config_enums.SampleTargetAlignment.NEXT_AFTER_CONTEXT:
+        strict_chunk_sources = {
+            "data.sample_construction.chunk_size": config.data.sample_construction.chunk_size,
+            "training.chunk_size": config.training.chunk_size,
+            "inference.frame_chunk_size": config.inference.frame_chunk_size,
+        }
+        policy_frame_chunk_size = getattr(config.policy_variant, "frame_chunk_size", None)
+        if policy_frame_chunk_size is not None:
+            strict_chunk_sources["policy_variant.frame_chunk_size"] = policy_frame_chunk_size
+        invalid_chunk_sources = {
+            name: value
+            for name, value in strict_chunk_sources.items()
+            if _coerce_strict_chunk_size(name, value) != 4
+        }
+        if invalid_chunk_sources:
+            joined = ", ".join(f"{name}={value}" for name, value in sorted(invalid_chunk_sources.items()))
+            raise ValueError(
+                "`sample_construction.target_alignment=next_after_context` requires fixed 4-frame chunks "
+                f"across data/training/inference/policy; got {joined}."
+            )
+
+    _validate_cross_config_contracts(
+        data_config=config.data,
+        policy_variant_config=config.policy_variant,
+    )
+    return config
+
+
+def apply_parallel_sequence_contract(
+    config: ExperimentConfig,
+    *,
+    explicit_override_keys: Collection[str] | None = None,
+) -> ExperimentConfig:
+    """Apply typed sequence-contract defaults after config overrides."""
+
+    policy_variant = config.policy_variant
+    contract = _coerce_enum(
+        config_enums.ParallelSequenceContract,
+        getattr(policy_variant, "parallel_sequence_contract", config_enums.ParallelSequenceContract.DEFAULT),
+    )
+    if contract == config_enums.ParallelSequenceContract.DEFAULT:
+        return validate_experiment_config_runtime_contract(config)
+
+    policy_name = _coerce_enum(config_enums.PolicyVariantName, policy_variant.name)
+    if policy_name not in {
+        config_enums.PolicyVariantName.PARALLEL_STREAM,
+        config_enums.PolicyVariantName.MOT,
+    }:
+        raise ValueError(
+            f"`policy_variant.parallel_sequence_contract={contract.value}` is only supported for "
+            "`policy_variant.name` in {'parallel_stream', 'mot'}."
+        )
+
+    if contract == config_enums.ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO:
+        if policy_name == config_enums.PolicyVariantName.PARALLEL_STREAM:
+            runtime_mode = _coerce_enum(
+                config_enums.ParallelRuntimeMode,
+                getattr(policy_variant, "runtime_mode", config_enums.ParallelRuntimeMode.LINGBOT_EXACT),
+            )
+            if runtime_mode not in _LEGACY_PREFIX_PARALLEL_RUNTIME_MODES:
+                allowed = ", ".join(f"'{mode.value}'" for mode in sorted(_LEGACY_PREFIX_PARALLEL_RUNTIME_MODES))
+                raise ValueError(
+                    "`policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio` only "
+                    f"supports `policy_variant.runtime_mode` in {{{allowed}}}, got {runtime_mode.value!r}."
+                )
+        else:
+            runtime_mode = _coerce_enum(
+                config_enums.MoTRuntimeMode,
+                getattr(policy_variant, "runtime_mode", config_enums.MoTRuntimeMode.NON_JOINT_TWO_STREAM),
+            )
+            if runtime_mode != config_enums.MoTRuntimeMode.NON_JOINT_TWO_STREAM:
+                raise ValueError(
+                    "`policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio` "
+                    "requires `policy_variant.runtime_mode=non_joint_two_stream` for MoT/M5."
+                )
+
+    if contract not in {
+        config_enums.ParallelSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO,
+        config_enums.ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
+    }:
+        raise ValueError(f"Unsupported `policy_variant.parallel_sequence_contract={contract.value}`.")
+
+    policy_updates: dict[str, Any] = {
+        "proprio_context_mode": config_enums.ProprioContextMode.PER_CHUNK_ADDITIVE,
+        "context_condition_latent_source": config_enums.ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
+        "history_stream_visibility": config_enums.ParallelHistoryStreamVisibility.VIDEO_ONLY,
+    }
+    if hasattr(policy_variant, "use_condition_latents"):
+        policy_updates["use_condition_latents"] = True
+    if hasattr(policy_variant, "require_condition_latents"):
+        policy_updates["require_condition_latents"] = True
+    if (
+        contract == config_enums.ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
+        and hasattr(policy_variant, "joint_timestep_coupling")
+    ):
+        explicit_keys = set(explicit_override_keys or ())
+        contract_set_by_cli = "policy_variant.parallel_sequence_contract" in explicit_keys
+        if (
+            contract_set_by_cli
+            and "policy_variant.joint_timestep_coupling" not in explicit_keys
+            and policy_variant.joint_timestep_coupling == config_enums.JointTimestepCoupling.MATCH_SIGMA
+        ):
+            policy_updates["joint_timestep_coupling"] = config_enums.JointTimestepCoupling.INDEPENDENT
+    updated_policy_variant = replace(policy_variant, **policy_updates)
+
+    sample_updates: dict[str, Any] = {
+        "condition_source_frame_offset": -1,
+        "start_padding_frames": 0,
+    }
+    if contract == config_enums.ParallelSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO:
+        sample_updates.update(
+            {
+                "target_alignment": config_enums.SampleTargetAlignment.NEXT_AFTER_CONTEXT,
+                "rollout_context_policy": config_enums.RolloutContextPolicy.ONE_FRAME,
+            }
+        )
+    else:
+        sample_updates.update(
+            {
+                "target_alignment": config_enums.SampleTargetAlignment.LEGACY,
+            }
+        )
+    updated_sample_construction = replace(config.data.sample_construction, **sample_updates)
+    updated_data = replace(config.data, sample_construction=updated_sample_construction)
+    return validate_experiment_config_runtime_contract(
+        replace(config, data=updated_data, policy_variant=updated_policy_variant)
+    )
+
+
+_PARALLEL_SEQUENCE_CONTRACT_MANAGED_OVERRIDE_KEYS = frozenset(
+    {
+        "policy_variant.proprio_context_mode",
+        "policy_variant.context_condition_latent_source",
+        "policy_variant.history_stream_visibility",
+        "policy_variant.use_condition_latents",
+        "policy_variant.require_condition_latents",
+        "policy_variant.joint_timestep_coupling",
+        "data.sample_construction.target_alignment",
+        "data.sample_construction.rollout_context_policy",
+        "data.sample_construction.condition_source_frame_offset",
+        "data.sample_construction.start_padding_frames",
+    }
+)
+
+
+def validate_parallel_sequence_contract_override_keys(
+    overrides: Mapping[str, Any],
+    *,
+    contract_value: Any | None = None,
+) -> None:
+    """Reject ambiguous CLI overrides of fields owned by a sequence contract."""
+
+    resolved_contract_value = overrides.get("policy_variant.parallel_sequence_contract", contract_value)
+    if resolved_contract_value is None:
+        return
+    contract = _coerce_enum(config_enums.ParallelSequenceContract, resolved_contract_value)
+    if contract == config_enums.ParallelSequenceContract.DEFAULT:
+        return
+    managed_keys = set(_PARALLEL_SEQUENCE_CONTRACT_MANAGED_OVERRIDE_KEYS)
+    if contract == config_enums.ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO:
+        managed_keys.discard("policy_variant.joint_timestep_coupling")
+    conflicting_keys = sorted(key for key in overrides if key in managed_keys)
+    if conflicting_keys:
+        joined = ", ".join(f"`{key}`" for key in conflicting_keys)
+        raise ValueError(
+            f"`policy_variant.parallel_sequence_contract={contract.value}` owns {joined}; "
+            "drop the contract or drop the individual override(s)."
+        )
+
+
 def load_experiment_config(path: str | Path, *, checkpoint_runtime_compat: bool = False) -> ExperimentConfig:
     """Load one root experiment YAML into the typed config boundary."""
 
     raw = _read_yaml(path)
     if checkpoint_runtime_compat:
         raw = _apply_checkpoint_runtime_compat(raw)
+    raw = _apply_parallel_sequence_contract(raw)
     data_raw = raw.get("data", {})
     action_schema_raw = data_raw.get("action_schema", {})
     action_target_raw = data_raw.get("action_target", {})
@@ -1483,6 +1870,10 @@ def load_experiment_config(path: str | Path, *, checkpoint_runtime_compat: bool 
                 "randomize_geometry",
                 data_defaults.sample_construction.randomize_geometry,
             ),
+            allow_next_after_context_random_geometry=sample_construction_raw.get(
+                "allow_next_after_context_random_geometry",
+                data_defaults.sample_construction.allow_next_after_context_random_geometry,
+            ),
             target_alignment=sample_target_alignment,
             rollout_context_policy=_coerce_enum(
                 config_enums.RolloutContextPolicy,
@@ -1577,6 +1968,13 @@ def load_experiment_config(path: str | Path, *, checkpoint_runtime_compat: bool 
                 sample_construction_raw.get(
                     "sample_weight_mode",
                     data_defaults.sample_construction.sample_weight_mode,
+                ),
+            ),
+            sample_order_mode=_coerce_enum(
+                config_enums.SampleOrderMode,
+                sample_construction_raw.get(
+                    "sample_order_mode",
+                    data_defaults.sample_construction.sample_order_mode,
                 ),
             ),
             sample_weight_length_power=sample_construction_raw.get(
@@ -2036,28 +2434,7 @@ def load_experiment_config(path: str | Path, *, checkpoint_runtime_compat: bool 
         trainer_config=trainer_config,
     )
 
-    if data_config.sample_construction.target_alignment == config_enums.SampleTargetAlignment.NEXT_AFTER_CONTEXT:
-        strict_chunk_sources = {
-            "data.sample_construction.chunk_size": data_config.sample_construction.chunk_size,
-            "training.chunk_size": training_config.chunk_size,
-            "inference.frame_chunk_size": inference_config.frame_chunk_size,
-        }
-        policy_frame_chunk_size = getattr(policy_variant_config, "frame_chunk_size", None)
-        if policy_frame_chunk_size is not None:
-            strict_chunk_sources["policy_variant.frame_chunk_size"] = policy_frame_chunk_size
-        invalid_chunk_sources = {
-            name: value
-            for name, value in strict_chunk_sources.items()
-            if _coerce_strict_chunk_size(name, value) != 4
-        }
-        if invalid_chunk_sources:
-            joined = ", ".join(f"{name}={value}" for name, value in sorted(invalid_chunk_sources.items()))
-            raise ValueError(
-                "`sample_construction.target_alignment=next_after_context` requires fixed 4-frame chunks "
-                f"across data/training/inference/policy; got {joined}."
-            )
-
-    return ExperimentConfig(
+    return apply_parallel_sequence_contract(ExperimentConfig(
         name=raw.get("name", "unnamed_experiment"),
         data=data_config,
         backbone=backbone_config,
@@ -2067,4 +2444,4 @@ def load_experiment_config(path: str | Path, *, checkpoint_runtime_compat: bool 
         inference=inference_config,
         trainer=trainer_config,
         validation=validation_config,
-    )
+    ))

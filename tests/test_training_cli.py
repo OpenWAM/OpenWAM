@@ -4,7 +4,21 @@ from pathlib import Path
 import subprocess
 import sys
 
-from open_wam.configs import BatchAdapterName, LoopPolicyName, StrategyName, TrainerRuntimeName, WandBMode
+import pytest
+
+from open_wam.configs import (
+    BatchAdapterName,
+    JointTimestepCoupling,
+    LoopPolicyName,
+    ParallelContextConditionLatentSource,
+    ParallelHistoryStreamVisibility,
+    ProprioContextMode,
+    RolloutContextPolicy,
+    SampleTargetAlignment,
+    StrategyName,
+    TrainerRuntimeName,
+    WandBMode,
+)
 from open_wam.training import TrainCliOverrides, load_training_cli_config, resolve_experiment_config_path
 
 
@@ -80,3 +94,159 @@ def test_cli_overrides_map_save_root_and_env_defaults(tmp_path: Path) -> None:
     assert config.trainer.wandb_project == "lingbot-va-posttrain-libero"
     assert config.trainer.wandb_entity == "codefishy-stanford-university"
     assert config.trainer.wandb_mode == WandBMode.OFFLINE
+
+
+def test_cli_overrides_apply_dependent_sample_construction_fields_together() -> None:
+    overrides = TrainCliOverrides(
+        config_name="parallel_stream_libero_lingbot_m1_decoupled_same_step_heng_compatible",
+        overrides=(
+            "data.sample_construction.mode=uniform_segment",
+            "data.sample_construction.sample_order_mode=replacement",
+            "data.sample_construction.randomize_segment_length=true",
+            "data.sample_construction.segment_min_frames=64",
+            "data.sample_construction.segment_max_frames=256",
+            "data.sample_construction.randomize_geometry=true",
+            "data.sample_construction.allow_next_after_context_random_geometry=true",
+        ),
+    )
+
+    config = load_training_cli_config(overrides, env={})
+
+    sample = config.data.sample_construction
+    assert getattr(sample.mode, "value", str(sample.mode)) == "uniform_segment"
+    assert getattr(sample.sample_order_mode, "value", str(sample.sample_order_mode)) == "replacement"
+    assert sample.randomize_segment_length is True
+    assert sample.segment_min_frames == 64
+    assert sample.segment_max_frames == 256
+    assert sample.randomize_geometry is True
+    assert sample.allow_next_after_context_random_geometry is True
+
+
+def test_cli_contract_override_expands_after_set_overrides() -> None:
+    overrides = TrainCliOverrides(
+        config_name="parallel_stream_libero_lingbot_m1_decoupled_same_step_heng_compatible",
+        overrides=(
+            "policy_variant.parallel_sequence_contract=rollout_parity_single_frame_perchunk_proprio",
+        ),
+    )
+
+    config = load_training_cli_config(overrides, env={})
+
+    assert config.policy_variant.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
+    assert (
+        config.policy_variant.context_condition_latent_source
+        == ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+    )
+    assert config.policy_variant.history_stream_visibility == ParallelHistoryStreamVisibility.VIDEO_ONLY
+    assert config.policy_variant.use_condition_latents is True
+    assert config.policy_variant.require_condition_latents is True
+    assert config.data.sample_construction.target_alignment == SampleTargetAlignment.NEXT_AFTER_CONTEXT
+    assert config.data.sample_construction.rollout_context_policy == RolloutContextPolicy.ONE_FRAME
+    assert config.data.sample_construction.condition_source_frame_offset == -1
+
+
+def test_cli_legacy_prefix_contract_override_restores_target_only_sampling() -> None:
+    overrides = TrainCliOverrides(
+        config_name="parallel_stream_libero_lingbot_m1_video_then_action_heng_compatible",
+        overrides=(
+            "policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio",
+        ),
+    )
+
+    config = load_training_cli_config(overrides, env={})
+
+    assert config.policy_variant.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
+    assert (
+        config.policy_variant.context_condition_latent_source
+        == ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+    )
+    assert config.policy_variant.history_stream_visibility == ParallelHistoryStreamVisibility.VIDEO_ONLY
+    assert config.policy_variant.noisy_video_condition_prob == 0.5
+    assert config.policy_variant.use_condition_latents is True
+    assert config.policy_variant.require_condition_latents is True
+    assert config.data.sample_construction.target_alignment == SampleTargetAlignment.LEGACY
+    assert config.data.sample_construction.condition_source_frame_offset == -1
+
+
+
+
+def test_cli_legacy_prefix_contract_allows_scheduler_override() -> None:
+    overrides = TrainCliOverrides(
+        config_name="parallel_stream_libero_lingbot_m1_video_then_action_heng_compatible",
+        overrides=(
+            "policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio",
+            "policy_variant.joint_timestep_coupling=shared_video_schedule",
+        ),
+    )
+
+    config = load_training_cli_config(overrides, env={})
+
+    assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.SHARED_VIDEO_SCHEDULE
+
+
+def test_cli_legacy_prefix_contract_allows_noisy_condition_prob_override() -> None:
+    overrides = TrainCliOverrides(
+        config_name="parallel_stream_libero_lingbot_m1_video_then_action_heng_compatible",
+        overrides=(
+            "policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio",
+            "policy_variant.noisy_video_condition_prob=0.0",
+        ),
+    )
+
+    config = load_training_cli_config(overrides, env={})
+
+    assert config.policy_variant.noisy_video_condition_prob == 0.0
+
+
+def test_cli_legacy_prefix_contract_defaults_joint_coupling_to_independent() -> None:
+    overrides = TrainCliOverrides(
+        config_name="mot_libero_latent_local_joint_heng_compatible",
+        overrides=(
+            "policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio",
+        ),
+    )
+
+    config = load_training_cli_config(overrides, env={})
+
+    assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.INDEPENDENT
+
+
+def test_cli_legacy_prefix_contract_allows_joint_coupling_override() -> None:
+    overrides = TrainCliOverrides(
+        config_name="mot_libero_latent_local_joint_heng_compatible",
+        overrides=(
+            "policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio",
+            "policy_variant.joint_timestep_coupling=shared_video_schedule",
+        ),
+    )
+
+    config = load_training_cli_config(overrides, env={})
+
+    assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.SHARED_VIDEO_SCHEDULE
+
+
+def test_cli_legacy_prefix_contract_allows_match_sigma_joint_coupling_override() -> None:
+    overrides = TrainCliOverrides(
+        config_name="mot_libero_latent_local_joint_heng_compatible",
+        overrides=(
+            "policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio",
+            "policy_variant.joint_timestep_coupling=match_sigma",
+        ),
+    )
+
+    config = load_training_cli_config(overrides, env={})
+
+    assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA
+
+
+def test_cli_contract_override_rejects_managed_field_override() -> None:
+    overrides = TrainCliOverrides(
+        config_name="parallel_stream_libero_lingbot_m1_decoupled_same_step_heng_compatible",
+        overrides=(
+            "policy_variant.parallel_sequence_contract=rollout_parity_single_frame_perchunk_proprio",
+            "policy_variant.proprio_context_mode=none",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="parallel_sequence_contract=.*proprio_context_mode"):
+        load_training_cli_config(overrides, env={})

@@ -36,6 +36,9 @@ from open_wam.configs import (
     MoTGeneralistTrainingMode,
     MoTPolicyConfig,
     MoTRuntimeMode,
+    ParallelSequenceContract,
+    ParallelContextConditionLatentSource,
+    ParallelHistoryStreamVisibility,
     ProprioContextMode,
     TrainingConfig,
 )
@@ -122,9 +125,12 @@ def _should_couple_mot_action_to_video_sigmas(
     config: MoTPolicyConfig,
     coupling: CurrentBlockCoupling,
 ) -> bool:
-    """Return whether M5 rollout should map action timesteps from video sigmas."""
+    """Return whether M5 rollout should integrate action on the video sigma clock."""
 
-    return _resolve_mot_joint_timestep_coupling(config, coupling) == JointTimestepCoupling.MATCH_SIGMA
+    return _resolve_mot_joint_timestep_coupling(config, coupling) in {
+        JointTimestepCoupling.MATCH_SIGMA,
+        JointTimestepCoupling.SHARED_VIDEO_SCHEDULE,
+    }
 
 
 def _resolve_mot_joint_timestep_coupling(
@@ -140,6 +146,13 @@ def _resolve_mot_joint_timestep_coupling(
     }:
         return JointTimestepCoupling.INDEPENDENT
     return JointTimestepCoupling(config.joint_timestep_coupling)
+
+
+def _uses_mot_legacy_prefix_contract(config: MoTPolicyConfig) -> bool:
+    return (
+        ParallelSequenceContract(config.parallel_sequence_contract)
+        == ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
+    )
 
 
 def _slice_current_noisy_action_flow(
@@ -408,6 +421,7 @@ class MoTPolicyVariant(PolicyVariant):
                 else (backbone_config.ffn_dim or (backbone_config.hidden_size * backbone_config.mlp_ratio))
             ),
             text_dim=backbone_config.text_dim,
+            hidden_context_dim=backbone_config.hidden_size,
             freq_dim=backbone_config.freq_dim,
             cross_attn_norm=backbone_config.cross_attn_norm,
             eps=backbone_config.latent_norm_eps,
@@ -422,7 +436,13 @@ class MoTPolicyVariant(PolicyVariant):
         self._legacy_inference_blocks_restored = False
 
     def _uses_proprio_context(self) -> bool:
+        return ProprioContextMode(self.config.proprio_context_mode) != ProprioContextMode.NONE
+
+    def _uses_text_proprio_context(self) -> bool:
         return ProprioContextMode(self.config.proprio_context_mode) == ProprioContextMode.TEXT_CONTEXT_TOKEN
+
+    def _uses_per_chunk_proprio_context(self) -> bool:
+        return ProprioContextMode(self.config.proprio_context_mode) == ProprioContextMode.PER_CHUNK_ADDITIVE
 
     @staticmethod
     def _select_anchor_state(state: torch.Tensor | None) -> torch.Tensor | None:
@@ -444,7 +464,7 @@ class MoTPolicyVariant(PolicyVariant):
         label: str,
         fallback_state: torch.Tensor | None = None,
     ) -> torch.Tensor | None:
-        if not self._uses_proprio_context():
+        if not self._uses_text_proprio_context():
             return None
         selected = self._select_anchor_state(state)
         if selected is None:
@@ -454,7 +474,7 @@ class MoTPolicyVariant(PolicyVariant):
         return selected
 
     def _resolve_train_proprio_context(self, batch: PolicyTrainBatch) -> torch.Tensor | None:
-        if not self._uses_proprio_context():
+        if not self._uses_text_proprio_context():
             return None
         proprio_context_state = batch.extra.get("proprio_context_state")
         if isinstance(proprio_context_state, torch.Tensor):
@@ -481,6 +501,52 @@ class MoTPolicyVariant(PolicyVariant):
             label="M5 training",
         )
 
+    def _resolve_train_hidden_proprio_context(self, batch: PolicyTrainBatch) -> torch.Tensor | None:
+        if not self._uses_per_chunk_proprio_context():
+            return None
+        value = batch.extra.get("proprio_context_frames")
+        mask = batch.extra.get("proprio_context_frames_mask")
+        if not isinstance(value, torch.Tensor):
+            fallback_value = batch.extra.get("proprio_context_state")
+            if _uses_mot_legacy_prefix_contract(self.config) and isinstance(fallback_value, torch.Tensor):
+                raise ValueError(
+                    "M5 legacy-prefix per-chunk additive proprio requires frame-level "
+                    "`proprio_context_frames`; chunk-level `proprio_context_state` cannot be "
+                    "safely aligned to prefix and causal chunk-boundary states."
+                )
+            value = fallback_value
+            mask = batch.extra.get("proprio_context_state_mask")
+        if not isinstance(value, torch.Tensor):
+            raise ValueError("proprio_context_mode=per_chunk_additive requires M5 per-frame or per-chunk proprio context.")
+        if value.ndim != 3:
+            raise ValueError(
+                "M5 per-chunk additive proprio expects state with shape [B, frames, state_dim], "
+                f"got {tuple(value.shape)}."
+            )
+        if isinstance(mask, torch.Tensor):
+            if tuple(mask.shape) != tuple(value.shape):
+                raise ValueError(
+                    "M5 per-chunk additive proprio mask must match state shape, "
+                    f"got mask={tuple(mask.shape)}, state={tuple(value.shape)}."
+                )
+            value = value * mask.to(device=value.device, dtype=value.dtype)
+        return value
+
+    def _resolve_infer_hidden_proprio_context(
+        self,
+        state: torch.Tensor | None,
+        *,
+        fallback_state: torch.Tensor | None = None,
+    ) -> torch.Tensor | None:
+        if not self._uses_per_chunk_proprio_context():
+            return None
+        selected = self._select_anchor_state(state)
+        if selected is None:
+            selected = self._select_anchor_state(fallback_state)
+        if selected is None:
+            raise ValueError("proprio_context_mode=per_chunk_additive requires M5 inference state.")
+        return selected
+
     def _resolve_text_context_with_proprio(
         self,
         visual_tower: VisualTower,
@@ -506,10 +572,112 @@ class MoTPolicyVariant(PolicyVariant):
             text_context = text_context.to(device=device, dtype=dtype)
         if proprio_state is None:
             return text_context
+        if not self._uses_text_proprio_context():
+            return text_context
         append = getattr(visual_tower.core, "append_proprio_context_tokens", None)
         if not callable(append):
             raise ValueError("Proprio context mode requires the visual tower core to support proprio appending.")
         return append(text_context, proprio_state)
+
+    def _encode_hidden_proprio_context(
+        self,
+        visual_tower: VisualTower,
+        proprio_state: torch.Tensor | None,
+        *,
+        num_frames: int,
+        device: torch.device,
+        dtype: torch.dtype,
+        chunk_size_frames: int | None = None,
+    ) -> torch.Tensor | None:
+        if proprio_state is None:
+            return None
+        encode = getattr(visual_tower.core, "encode_proprio_hidden_context", None)
+        if not callable(encode):
+            raise ValueError("proprio_context_mode=per_chunk_additive requires a core hidden proprio encoder hook.")
+        if proprio_state.ndim == 2:
+            frame_state = proprio_state[:, None, :].expand(-1, int(num_frames), -1)
+        elif proprio_state.ndim == 3:
+            if int(proprio_state.shape[1]) == int(num_frames):
+                frame_state = proprio_state
+            elif int(proprio_state.shape[1]) == 1:
+                frame_state = proprio_state.expand(-1, int(num_frames), -1)
+            elif chunk_size_frames is not None and int(chunk_size_frames) > 0:
+                expanded = proprio_state.repeat_interleave(int(chunk_size_frames), dim=1)
+                if int(expanded.shape[1]) < int(num_frames):
+                    raise ValueError(
+                        "M5 chunk-level hidden proprio context is too short for requested frames, "
+                        f"got state={tuple(proprio_state.shape)}, chunk_size_frames={chunk_size_frames}, "
+                        f"num_frames={num_frames}."
+                    )
+                frame_state = expanded[:, : int(num_frames), :]
+            else:
+                raise ValueError(
+                    "M5 hidden proprio context frame count must match requested frames, be singleton, "
+                    "or be chunk-level with `chunk_size_frames`, "
+                    f"got state={tuple(proprio_state.shape)}, num_frames={num_frames}."
+                )
+        else:
+            raise ValueError(
+                "M5 hidden proprio context expects shape [B, state_dim] or [B, frames, state_dim], "
+                f"got {tuple(proprio_state.shape)}."
+            )
+        return encode(frame_state, device=device, dtype=dtype)
+
+    def _video_hidden_context_for_tokens(
+        self,
+        visual_tower: VisualTower,
+        proprio_state: torch.Tensor | None,
+        *,
+        video_latents: torch.Tensor,
+        copies: int = 1,
+        chunk_size_frames: int | None = None,
+    ) -> torch.Tensor | None:
+        frame_context = self._encode_hidden_proprio_context(
+            visual_tower,
+            proprio_state,
+            num_frames=int(video_latents.shape[2]),
+            device=video_latents.device,
+            dtype=video_latents.dtype,
+            chunk_size_frames=chunk_size_frames,
+        )
+        if frame_context is None:
+            return None
+        patch_t, patch_h, patch_w = visual_tower.core.patch_size
+        frame_context = frame_context[:, :: int(patch_t), :]
+        tokens_per_frame = (int(video_latents.shape[3]) // int(patch_h)) * (
+            int(video_latents.shape[4]) // int(patch_w)
+        )
+        token_context = frame_context.repeat_interleave(tokens_per_frame, dim=1)
+        return token_context.repeat(1, int(copies), 1)
+
+    def _action_hidden_context_for_tokens(
+        self,
+        visual_tower: VisualTower,
+        proprio_state: torch.Tensor | None,
+        *,
+        action_tokens: torch.Tensor,
+        action_tokens_per_frame: int,
+        copies: int = 1,
+        chunk_size_frames: int | None = None,
+    ) -> torch.Tensor | None:
+        if action_tokens_per_frame <= 0 or int(action_tokens.shape[1]) % int(action_tokens_per_frame) != 0:
+            raise ValueError(
+                "M5 action hidden proprio context requires action length divisible by action_tokens_per_frame, "
+                f"got action_shape={tuple(action_tokens.shape)}, action_tokens_per_frame={action_tokens_per_frame}."
+            )
+        num_frames = int(action_tokens.shape[1]) // int(action_tokens_per_frame)
+        frame_context = self._encode_hidden_proprio_context(
+            visual_tower,
+            proprio_state,
+            num_frames=num_frames,
+            device=action_tokens.device,
+            dtype=action_tokens.dtype,
+            chunk_size_frames=chunk_size_frames,
+        )
+        if frame_context is None:
+            return None
+        token_context = frame_context.repeat_interleave(int(action_tokens_per_frame), dim=1)
+        return token_context.repeat(1, int(copies), 1)
 
     @staticmethod
     def _proprio_context_token_count(proprio_state: torch.Tensor | None) -> int:
@@ -578,10 +746,15 @@ class MoTPolicyVariant(PolicyVariant):
         ``self.action_expert.blocks``; after transfer both ModuleLists are
         empty.
         """
-        if self._uses_proprio_context():
+        if self._uses_text_proprio_context():
             configure = getattr(visual_tower.core, "configure_proprio_context_encoder", None)
             if not callable(configure):
                 raise ValueError("proprio_context_mode=text_context_token requires a core proprio encoder hook.")
+            configure(enabled=True, state_dim=int(self.state_dim))
+        elif self._uses_per_chunk_proprio_context():
+            configure = getattr(visual_tower.core, "configure_proprio_hidden_context_encoder", None)
+            if not callable(configure):
+                raise ValueError("proprio_context_mode=per_chunk_additive requires a core proprio hidden encoder hook.")
             configure(enabled=True, state_dim=int(self.state_dim))
         if self._packed_block_stack_attached:
             return
@@ -878,14 +1051,19 @@ class MoTPolicyVariant(PolicyVariant):
         attention_mask: torch.Tensor | None = None,
     ) -> MoTVideoTrainArtifacts:
         video_latents = visual_outputs.frontend.video_latents
+        clean_condition_latents, _ = self._train_clean_video_condition_latents(
+            video_latents=video_latents,
+            condition_latents=condition_latents,
+            history_frames=history_frames,
+        )
         video_artifacts = build_video_flow_match_train_artifacts(
             video_latents,
             training_config=self.training_config,
-            condition_latents=condition_latents,
+            condition_latents=clean_condition_latents,
         )
         noisy_latents = video_artifacts.noisy_latents.clone()
         timesteps = video_artifacts.timesteps.clone()
-        history_condition_latents = condition_latents if condition_latents is not None else video_latents
+        history_condition_latents = clean_condition_latents if clean_condition_latents is not None else video_latents
         noisy_latents[:, :, :history_frames] = history_condition_latents[:, :, :history_frames]
         timesteps[:, :history_frames] = 0.0
         future_loss_mask = self._build_effective_video_loss_mask(
@@ -945,12 +1123,14 @@ class MoTPolicyVariant(PolicyVariant):
             video_latents=visual_outputs.frontend.video_latents,
         )
         proprio_state = self._resolve_train_proprio_context(batch)
+        hidden_proprio_state = self._resolve_train_hidden_proprio_context(batch)
         return PolicyPreparedInputs(
             batch=batch,
             variant_inputs={
                 "video_latents": visual_outputs.frontend.video_latents,
                 "condition_latents": condition_latents,
                 "proprio_state": proprio_state,
+                "hidden_proprio_state": hidden_proprio_state,
                 "text_context": visual_outputs.frontend.conditioning.text_context,
                 "video_tokens_per_frame": visual_outputs.frontend.token_grid.tokens_per_frame,
             },
@@ -987,6 +1167,123 @@ class MoTPolicyVariant(PolicyVariant):
     @staticmethod
     def _video_condition_source(condition_latents: torch.Tensor | None) -> str:
         return "condition_latents" if condition_latents is not None else "video_latents"
+
+    def _context_condition_latent_source(self) -> ParallelContextConditionLatentSource:
+        return ParallelContextConditionLatentSource(self.config.context_condition_latent_source)
+
+    def _train_clean_video_condition_latents(
+        self,
+        *,
+        video_latents: torch.Tensor,
+        condition_latents: torch.Tensor | None,
+        history_frames: int,
+    ) -> tuple[torch.Tensor | None, str]:
+        if self._context_condition_latent_source() != ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT:
+            return condition_latents, self._video_condition_source(condition_latents)
+        if condition_latents is None:
+            raise ValueError(
+                "M5 `context_condition_latent_source=single_frame_condition_latent` requires `condition_latents`."
+            )
+        if history_frames <= 0:
+            raise ValueError(
+                "M5 single-frame condition latents require at least one history/context frame, "
+                f"got history_frames={history_frames}."
+            )
+        clean_condition = video_latents.clone()
+        clean_condition[:, :, : int(history_frames)] = condition_latents[:, :, : int(history_frames)].to(
+            device=video_latents.device,
+            dtype=video_latents.dtype,
+        )
+        return clean_condition, "context_condition_latents"
+
+    def _prepend_legacy_prefix_video_latents(
+        self,
+        *,
+        video_latents: torch.Tensor,
+        condition_latents: torch.Tensor | None,
+        hidden_proprio_state: torch.Tensor | None,
+        batch: PolicyTrainBatch,
+    ) -> tuple[torch.Tensor, torch.Tensor | None, int, str]:
+        if not _uses_mot_legacy_prefix_contract(self.config):
+            return video_latents, hidden_proprio_state, 0, self._video_condition_source(condition_latents)
+        if condition_latents is None:
+            raise ValueError(
+                "`parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio` requires "
+                "precomputed single-frame condition_latents for M5. "
+                "Run scripts/augment_lerobot_latents_with_single_frame_condition.py with --source-frame-offset -1."
+            )
+        if condition_latents.ndim != 5 or int(condition_latents.shape[2]) < 1:
+            raise ValueError(
+                "M5 legacy-prefix condition_latents must have shape [B, C, T>=1, H, W], "
+                f"got {tuple(condition_latents.shape)}."
+            )
+        prefix_latents = condition_latents[:, :, :1].to(device=video_latents.device, dtype=video_latents.dtype)
+        model_video_latents = torch.cat([prefix_latents, video_latents], dim=2)
+        if hidden_proprio_state is not None:
+            if hidden_proprio_state.ndim != 3:
+                raise ValueError(
+                    "M5 legacy-prefix per-chunk proprio expects target frame states with shape "
+                    "[B, target_frames, state_dim], "
+                    f"got {tuple(hidden_proprio_state.shape)}."
+                )
+            prefix_state = self._select_anchor_state(batch.state)
+            if prefix_state is None:
+                raise ValueError(
+                    "`parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio` requires "
+                    "batch.state for the prefix/current proprio frame."
+                )
+            target_frames = int(video_latents.shape[2])
+            if int(hidden_proprio_state.shape[1]) < target_frames:
+                raise ValueError(
+                    "M5 legacy-prefix per-chunk proprio expects at least one state per target frame, "
+                    f"got {tuple(hidden_proprio_state.shape)} for target_frames={target_frames}."
+                )
+            hidden_proprio_state = torch.cat(
+                [
+                    prefix_state[:, None, :].to(
+                        device=hidden_proprio_state.device,
+                        dtype=hidden_proprio_state.dtype,
+                    ),
+                    hidden_proprio_state[:, :target_frames, :],
+                ],
+                dim=1,
+            )
+        return model_video_latents, hidden_proprio_state, 1, "condition_latents_prefix"
+
+    @staticmethod
+    def _legacy_prefix_action_hidden_proprio_state(
+        hidden_proprio_state: torch.Tensor | None,
+        *,
+        prefix_condition_frames: int,
+        target_num_frames: int,
+        chunk_size_frames: int,
+    ) -> torch.Tensor | None:
+        if hidden_proprio_state is None or int(prefix_condition_frames) <= 0:
+            return hidden_proprio_state
+        if hidden_proprio_state.ndim != 3:
+            raise ValueError(
+                "M5 legacy-prefix per-chunk proprio expects frame state shape "
+                "[B, prefix_plus_target_frames, state_dim], "
+                f"got {tuple(hidden_proprio_state.shape)}."
+            )
+        required_frames = int(prefix_condition_frames) + int(target_num_frames)
+        if int(hidden_proprio_state.shape[1]) < required_frames:
+            raise ValueError(
+                "M5 legacy-prefix per-chunk proprio expects prefix plus target frame states, "
+                f"got {tuple(hidden_proprio_state.shape)} for required_frames={required_frames}."
+            )
+        chunk_size = max(1, int(chunk_size_frames))
+        target_frame_ids = torch.arange(
+            int(target_num_frames),
+            device=hidden_proprio_state.device,
+            dtype=torch.long,
+        )
+        target_boundary_ids = torch.div(target_frame_ids, chunk_size, rounding_mode="floor") * chunk_size
+        target_boundary_state = hidden_proprio_state.index_select(dim=1, index=target_boundary_ids)
+        return target_boundary_state
+
+    def _resolve_history_stream_visibility(self) -> ParallelHistoryStreamVisibility:
+        return ParallelHistoryStreamVisibility(self.config.history_stream_visibility)
 
     def forward_train(
         self,
@@ -1030,14 +1327,20 @@ class MoTPolicyVariant(PolicyVariant):
         condition_latents = prepared_inputs.variant_inputs.get("condition_latents")
         text_context = prepared_inputs.variant_inputs["text_context"]
         proprio_state = prepared_inputs.variant_inputs.get("proprio_state")
+        hidden_proprio_state = prepared_inputs.variant_inputs.get("hidden_proprio_state")
         history_frames = self._resolve_train_history_frames(
             batch=prepared_inputs.batch,
             observed_num_frames=int(video_latents.shape[2]),
         )
+        clean_video_condition_latents, video_condition_source = self._train_clean_video_condition_latents(
+            video_latents=video_latents,
+            condition_latents=condition_latents,
+            history_frames=history_frames,
+        )
         video_train_artifacts = build_video_flow_match_train_artifacts(
             video_latents,
             training_config=self.training_config,
-            condition_latents=condition_latents,
+            condition_latents=clean_video_condition_latents,
         )
         effective_action_mask = self._build_effective_action_mask(
             batch=prepared_inputs.batch,
@@ -1080,7 +1383,9 @@ class MoTPolicyVariant(PolicyVariant):
         # semantics: the action expert conditions on the full clean video
         # sample, but the video K/V prefill itself stays chunk-causal so future
         # chunks do not leak through the shared video backbone.
-        action_condition_latents = condition_latents if condition_latents is not None else video_latents
+        action_condition_latents = (
+            clean_video_condition_latents if clean_video_condition_latents is not None else video_latents
+        )
         video_text_context = self._resolve_text_context_with_proprio(
             visual_tower,
             text_context,
@@ -1153,6 +1458,17 @@ class MoTPolicyVariant(PolicyVariant):
                 device=train_artifacts.noisy_actions.device,
                 frame_shift=frame_shift,
             ) if action_tokens_per_frame is not None else None,
+            hidden_context=(
+                None
+                if action_tokens_per_frame is None
+                else self._action_hidden_context_for_tokens(
+                    visual_tower,
+                    hidden_proprio_state,
+                    action_tokens=train_artifacts.noisy_actions,
+                    action_tokens_per_frame=int(action_tokens_per_frame),
+                    chunk_size_frames=sampled_chunk_size,
+                )
+            ),
         )
         action_hidden_states = forward_action_with_video_cache(
             action_expert=self.action_expert,
@@ -1203,7 +1519,7 @@ class MoTPolicyVariant(PolicyVariant):
                 "runtime_mode": str(self.config.runtime_mode),
                 "sampled_chunk_size": sampled_chunk_size,
                 "sampled_window_size": sampled_window_size,
-                "video_condition_source": self._video_condition_source(condition_latents),
+                "video_condition_source": video_condition_source,
                 "mot_train_artifacts": MoTTrainArtifacts(
                     action=MoTActionTrainArtifacts(
                         flow_pred=flow_pred,
@@ -1232,6 +1548,7 @@ class MoTPolicyVariant(PolicyVariant):
         condition_latents = prepared_inputs.variant_inputs.get("condition_latents")
         text_context = prepared_inputs.variant_inputs["text_context"]
         proprio_state = prepared_inputs.variant_inputs.get("proprio_state")
+        hidden_proprio_state = prepared_inputs.variant_inputs.get("hidden_proprio_state")
         current_block_coupling = resolve_mot_current_block_coupling(self.config)
         if not _is_mot_same_step_coupling(current_block_coupling):
             raise NotImplementedError(
@@ -1243,15 +1560,20 @@ class MoTPolicyVariant(PolicyVariant):
             batch=prepared_inputs.batch,
             observed_num_frames=int(video_latents.shape[2]),
         )
+        clean_video_condition_latents, video_condition_source = self._train_clean_video_condition_latents(
+            video_latents=video_latents,
+            condition_latents=condition_latents,
+            history_frames=history_frames,
+        )
 
         video_artifacts = build_video_flow_match_train_artifacts(
             video_latents,
             training_config=self.training_config,
-            condition_latents=condition_latents,
+            condition_latents=clean_video_condition_latents,
         )
         noisy_video_latents = video_artifacts.noisy_latents.clone()
         video_timesteps = video_artifacts.timesteps.clone()
-        history_condition_latents = condition_latents if condition_latents is not None else video_latents
+        history_condition_latents = clean_video_condition_latents if clean_video_condition_latents is not None else video_latents
         noisy_video_latents[:, :, :history_frames] = history_condition_latents[:, :, :history_frames]
         video_timesteps[:, :history_frames] = 0.0
         future_loss_mask = self._build_effective_video_loss_mask(
@@ -1281,7 +1603,7 @@ class MoTPolicyVariant(PolicyVariant):
         frame_shift = self._resolve_train_frame_shift(batch=prepared_inputs.batch)
         chunk_origin_frame = self._resolve_train_chunk_origin_frame(
             batch=prepared_inputs.batch,
-            observed_num_frames=num_video_frames,
+            observed_num_frames=int(video_latents.shape[2]),
         )
 
         train_artifacts = build_action_flow_match_train_artifacts(
@@ -1330,6 +1652,17 @@ class MoTPolicyVariant(PolicyVariant):
                 device=train_artifacts.noisy_actions.device,
                 frame_shift=frame_shift,
             ) if action_tokens_per_frame is not None else None,
+            hidden_context=(
+                None
+                if action_tokens_per_frame is None
+                else self._action_hidden_context_for_tokens(
+                    visual_tower,
+                    hidden_proprio_state,
+                    action_tokens=train_artifacts.noisy_actions,
+                    action_tokens_per_frame=int(action_tokens_per_frame),
+                    chunk_size_frames=sampled_chunk_size,
+                )
+            ),
         )
         video_flow_pred, action_hidden_states = forward_joint_video_action_denoise(
             visual_tower=visual_tower,
@@ -1353,6 +1686,12 @@ class MoTPolicyVariant(PolicyVariant):
             ),
             use_activation_checkpointing=self.config.use_activation_checkpointing,
             video_cross_attention_mask=video_cross_attention_mask,
+            video_hidden_context=self._video_hidden_context_for_tokens(
+                visual_tower,
+                hidden_proprio_state,
+                video_latents=video_latents,
+                chunk_size_frames=sampled_chunk_size,
+            ),
         )
         flow_pred = self.action_expert.post_dit(action_hidden_states, action_pre)
         denoised_actions = denoised_actions_from_flow(
@@ -1382,7 +1721,7 @@ class MoTPolicyVariant(PolicyVariant):
                 "current_block_coupling": current_block_coupling.value,
                 "sampled_chunk_size": sampled_chunk_size,
                 "sampled_window_size": sampled_window_size,
-                "video_condition_source": self._video_condition_source(condition_latents),
+                "video_condition_source": video_condition_source,
                 "mot_train_artifacts": MoTTrainArtifacts(
                     action=MoTActionTrainArtifacts(
                         flow_pred=flow_pred,
@@ -1423,8 +1762,11 @@ class MoTPolicyVariant(PolicyVariant):
         condition_latents = prepared_inputs.variant_inputs.get("condition_latents")
         text_context = prepared_inputs.variant_inputs["text_context"]
         proprio_state = prepared_inputs.variant_inputs.get("proprio_state")
+        hidden_proprio_state = prepared_inputs.variant_inputs.get("hidden_proprio_state")
         video_tokens_per_frame = int(prepared_inputs.variant_inputs["video_tokens_per_frame"])
-        num_video_frames = int(video_latents.shape[2])
+        target_video_latents = video_latents
+        target_num_video_frames = int(target_video_latents.shape[2])
+        num_video_frames = target_num_video_frames
         # Geometry resolution: contextual_subwindow data path stamps
         # `sampled_chunk_size` etc. into per-sample metadata; FULL_SEGMENT
         # data path leaves it unset, so we draw it per-step here the same way
@@ -1438,11 +1780,11 @@ class MoTPolicyVariant(PolicyVariant):
         if metadata_has_geometry:
             history_frames = self._resolve_train_history_frames(
                 batch=prepared_inputs.batch,
-                observed_num_frames=num_video_frames,
+                observed_num_frames=target_num_video_frames,
             )
             sampled_chunk_size = self._resolve_train_sampled_chunk_size(
                 batch=prepared_inputs.batch,
-                observed_num_frames=num_video_frames,
+                observed_num_frames=target_num_video_frames,
             )
             sampled_window_size = self._resolve_train_sampled_window_size(
                 batch=prepared_inputs.batch,
@@ -1450,24 +1792,33 @@ class MoTPolicyVariant(PolicyVariant):
         else:
             sampled_chunk_size, sampled_window_size, history_frames = (
                 self._sample_full_segment_train_geometry(
-                    observed_num_frames=num_video_frames,
+                    observed_num_frames=target_num_video_frames,
                     device=video_latents.device,
                 )
             )
+        video_latents, hidden_proprio_state, prefix_condition_frames, legacy_video_condition_source = (
+            self._prepend_legacy_prefix_video_latents(
+                video_latents=target_video_latents,
+                condition_latents=condition_latents,
+                hidden_proprio_state=hidden_proprio_state,
+                batch=prepared_inputs.batch,
+            )
+        )
+        num_video_frames = int(video_latents.shape[2])
         current_block_coupling = resolve_mot_current_block_coupling(self.config)
         effective_action_mask = self._build_effective_action_mask(
             batch=prepared_inputs.batch,
-            observed_num_frames=num_video_frames,
+            observed_num_frames=target_num_video_frames,
         )
         clean_action_condition_mask = prepared_inputs.batch.action_mask
         action_tokens_per_frame = self._resolve_train_action_tokens_per_frame(
             batch=prepared_inputs.batch,
-            observed_num_frames=num_video_frames,
+            observed_num_frames=target_num_video_frames,
         )
         frame_shift = self._resolve_train_frame_shift(batch=prepared_inputs.batch)
         chunk_origin_frame = self._resolve_train_chunk_origin_frame(
             batch=prepared_inputs.batch,
-            observed_num_frames=num_video_frames,
+            observed_num_frames=target_num_video_frames,
         )
 
         if action_tokens_per_frame is None:
@@ -1499,32 +1850,57 @@ class MoTPolicyVariant(PolicyVariant):
             current_block_coupling,
         )
         shared_timestep_ids = None
-        if joint_timestep_coupling == JointTimestepCoupling.MATCH_INDEX:
+        if joint_timestep_coupling in {
+            JointTimestepCoupling.MATCH_INDEX,
+            JointTimestepCoupling.SHARED_VIDEO_SCHEDULE,
+        }:
             if int(self.training_config.video_num_train_timesteps) != int(self.training_config.action_num_train_timesteps):
-                raise ValueError(
-                    "M5 index-matched joint denoising requires equal video/action train timestep counts, "
-                    f"got video={self.training_config.video_num_train_timesteps}, "
-                    f"action={self.training_config.action_num_train_timesteps}."
-                )
+                if joint_timestep_coupling == JointTimestepCoupling.MATCH_INDEX:
+                    raise ValueError(
+                        "M5 index-matched joint denoising requires equal video/action train timestep counts, "
+                        f"got video={self.training_config.video_num_train_timesteps}, "
+                        f"action={self.training_config.action_num_train_timesteps}."
+                    )
             shared_timestep_ids = sample_timestep_id(
                 batch_size=int(video_latents.shape[0]),
                 sample_shape=(num_video_frames,),
                 num_train_timesteps=int(self.training_config.video_num_train_timesteps),
                 device=video_latents.device,
             )
+        if prefix_condition_frames > 0:
+            clean_video_condition_latents = video_latents
+            video_condition_source = legacy_video_condition_source
+        else:
+            clean_video_condition_latents, video_condition_source = self._train_clean_video_condition_latents(
+                video_latents=video_latents,
+                condition_latents=condition_latents,
+                history_frames=history_frames,
+            )
 
         video_artifacts = build_video_flow_match_train_artifacts(
             video_latents,
             training_config=self.training_config,
-            condition_latents=condition_latents,
+            condition_latents=clean_video_condition_latents,
             timestep_ids=shared_timestep_ids,
             noisy_condition_prob=0.0
             if sampled_generalist_mode is not None
             else float(self.config.noisy_video_condition_prob),
         )
+        if prefix_condition_frames > 0:
+            prefix_latents = video_latents[:, :, :prefix_condition_frames]
+            video_artifacts.noisy_latents[:, :, :prefix_condition_frames] = prefix_latents
+            video_artifacts.condition_latents[:, :, :prefix_condition_frames] = prefix_latents
+            video_artifacts.targets[:, :, :prefix_condition_frames] = 0
+            video_artifacts.timesteps[:, :prefix_condition_frames] = 0.0
+            video_artifacts.condition_timesteps[:, :prefix_condition_frames] = 0.0
         coupled_action_sigma_values = (
-            frame_sigmas_for_timesteps(video_artifacts.scheduler, video_artifacts.timesteps)
+            frame_sigmas_for_timesteps(video_artifacts.scheduler, video_artifacts.timesteps[:, prefix_condition_frames:])
             if joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA
+            else None
+        )
+        action_scheduler_override = (
+            video_artifacts.scheduler
+            if joint_timestep_coupling == JointTimestepCoupling.SHARED_VIDEO_SCHEDULE
             else None
         )
         future_loss_mask = self._build_effective_video_loss_mask(
@@ -1532,14 +1908,22 @@ class MoTPolicyVariant(PolicyVariant):
             batch=prepared_inputs.batch,
             default_history_frames=history_frames,
         )
+        if prefix_condition_frames > 0:
+            future_loss_mask.zero_()
+            future_loss_mask[:, :, prefix_condition_frames:] = 1.0
         action_artifacts = build_frame_aligned_action_flow_match_train_artifacts(
             prepared_inputs.batch.actions,
             effective_action_mask,
             training_config=self.training_config,
-            num_frames=num_video_frames,
+            num_frames=target_num_video_frames,
             action_per_frame=int(action_tokens_per_frame),
             frame_sigma_values=coupled_action_sigma_values,
-            frame_timestep_ids=shared_timestep_ids,
+            frame_timestep_ids=(
+                shared_timestep_ids[:, prefix_condition_frames:]
+                if shared_timestep_ids is not None and prefix_condition_frames > 0
+                else shared_timestep_ids
+            ),
+            scheduler_override=action_scheduler_override,
         )
         noisy_actions = action_artifacts.noisy_actions
         clean_actions = action_artifacts.condition_actions.to(
@@ -1583,6 +1967,20 @@ class MoTPolicyVariant(PolicyVariant):
             )
 
         packed_action_tokens = torch.cat([noisy_actions, clean_actions], dim=1)
+        action_hidden_proprio_state = self._legacy_prefix_action_hidden_proprio_state(
+            hidden_proprio_state,
+            prefix_condition_frames=prefix_condition_frames,
+            target_num_frames=target_num_video_frames,
+            chunk_size_frames=sampled_chunk_size,
+        )
+        packed_action_hidden_context = self._action_hidden_context_for_tokens(
+            visual_tower,
+            action_hidden_proprio_state,
+            action_tokens=noisy_actions,
+            action_tokens_per_frame=int(action_tokens_per_frame),
+            copies=2,
+            chunk_size_frames=sampled_chunk_size,
+        )
         clean_slot_timesteps = torch.zeros_like(noisy_slot_timesteps)
         packed_action_timesteps = torch.cat(
             [noisy_slot_timesteps, clean_slot_timesteps], dim=1
@@ -1649,6 +2047,7 @@ class MoTPolicyVariant(PolicyVariant):
             context=resolved_text,
             cross_attention_mask=packed_action_cross_attention_mask,
             action_grid_ids=packed_action_grid,
+            hidden_context=packed_action_hidden_context,
         )
         packed_attention_profile = build_mot_packed_coupling_attention_profile(
             num_video_frames=num_video_frames,
@@ -1661,6 +2060,19 @@ class MoTPolicyVariant(PolicyVariant):
             current_block_coupling=current_block_coupling,
             chunk_origin_frame=chunk_origin_frame,
             action_context_mask=clean_action_condition_mask,
+            history_stream_visibility=self._resolve_history_stream_visibility().value,
+            prefix_condition_frames=prefix_condition_frames,
+        )
+        packed_video_hidden_context = (
+            None
+            if prefix_condition_frames > 0
+            else self._video_hidden_context_for_tokens(
+                visual_tower,
+                hidden_proprio_state,
+                video_latents=video_latents,
+                copies=2,
+                chunk_size_frames=sampled_chunk_size,
+            )
         )
         video_flow_pred, packed_action_hidden = forward_mot_packed_coupling_denoise(
             visual_tower=visual_tower,
@@ -1672,10 +2084,11 @@ class MoTPolicyVariant(PolicyVariant):
             packed_action_pre=packed_action_pre,
             attention_profile=packed_attention_profile,
             text_context=resolved_text,
-            frame_start=frame_shift,
+            frame_start=frame_shift - prefix_condition_frames,
             use_activation_checkpointing=bool(self.config.use_activation_checkpointing),
             packed_block_stack=self.packed_block_stack,
             video_cross_attention_mask=packed_video_cross_attention_mask,
+            video_hidden_context=packed_video_hidden_context,
         )
         predicted_latents = denoised_video_latents_from_flow(
             noisy_latents=video_artifacts.noisy_latents,
@@ -1723,7 +2136,7 @@ class MoTPolicyVariant(PolicyVariant):
                 "sampled_window_size": sampled_window_size,
                 "generalist_training_paradigm": self.config.generalist_training_paradigm.value,
                 "generalist_training_source": generalist_source,
-                "video_condition_source": self._video_condition_source(condition_latents),
+                "video_condition_source": video_condition_source,
                 "mot_generalist_training_mode_override": (
                     forced_generalist_mode.value if forced_generalist_mode is not None else None
                 ),
@@ -1896,6 +2309,33 @@ class MoTPolicyVariant(PolicyVariant):
             history_video = None
             history_actions = None
             history_action_tokens = 0
+        hidden_proprio_state = runtime_state.hidden_proprio_state
+        history_hidden_proprio = runtime_state.past_hidden_proprio_states
+        if history_hidden_proprio is not None and shared_history_frames > 0:
+            history_hidden_proprio = history_hidden_proprio.to(device=device, dtype=dtype)
+            if int(history_hidden_proprio.shape[0]) != batch_size:
+                raise ValueError(
+                    "M5 packed hidden proprio history batch size does not match current batch, "
+                    f"got history={tuple(history_hidden_proprio.shape)}, batch_size={batch_size}."
+                )
+            history_hidden_proprio = history_hidden_proprio[:, -shared_history_frames:].contiguous()
+        else:
+            history_hidden_proprio = None
+        if shared_history_frames > 0 and self._uses_per_chunk_proprio_context() and history_hidden_proprio is None:
+            raise ValueError("M5 per-chunk additive proprio inference is missing hidden proprio history.")
+        current_hidden_proprio_frames = None
+        if hidden_proprio_state is not None:
+            current_hidden_proprio_frames = hidden_proprio_state.to(device=device, dtype=dtype)[:, None, :].expand(
+                -1,
+                current_video_sequence_frames,
+                -1,
+            )
+        if history_hidden_proprio is None:
+            video_hidden_proprio_sequence = current_hidden_proprio_frames
+        elif current_hidden_proprio_frames is None:
+            video_hidden_proprio_sequence = history_hidden_proprio
+        else:
+            video_hidden_proprio_sequence = torch.cat([history_hidden_proprio, current_hidden_proprio_frames], dim=1)
 
         if history_video is None:
             noisy_video_sequence = current_noisy_video
@@ -1958,7 +2398,7 @@ class MoTPolicyVariant(PolicyVariant):
             current_block_coupling,
         )
         action_timestep_lookup_scheduler = None
-        if couple_action_video_sigmas:
+        if joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA:
             action_timestep_lookup_scheduler = build_action_flow_match_inference_scheduler(
                 training_config=self.training_config,
                 inference_config=self.inference_config,
@@ -1987,6 +2427,7 @@ class MoTPolicyVariant(PolicyVariant):
             action_context_mask=packed_action_context_mask,
             build_dense_masks=True,
             build_flex_masks=False,
+            history_stream_visibility=self._resolve_history_stream_visibility().value,
         )
         action_grid_ids = self._build_action_grid_ids_for_sequence(
             batch_size=batch_size,
@@ -2010,6 +2451,7 @@ class MoTPolicyVariant(PolicyVariant):
 
         predicted_video_sequence = noisy_video_sequence
         action_sample = current_action_sample
+        apply_video_hidden_proprio = not _uses_mot_legacy_prefix_contract(self.config)
         zero_current_video_timestep = torch.zeros(
             batch_size,
             current_video_sequence_frames,
@@ -2059,6 +2501,13 @@ class MoTPolicyVariant(PolicyVariant):
                 )
                 clean_action_sequence = torch.cat([history_actions, current_clean_action_for_step], dim=1)
             packed_action_tokens = torch.cat([noisy_action_sequence, clean_action_sequence], dim=1)
+            packed_action_hidden_context = self._action_hidden_context_for_tokens(
+                visual_tower,
+                video_hidden_proprio_sequence,
+                action_tokens=noisy_action_sequence,
+                action_tokens_per_frame=int(action_tokens_per_frame),
+                copies=2,
+            )
             packed_action_timesteps = torch.cat(
                 [
                     noisy_action_timesteps,
@@ -2076,6 +2525,7 @@ class MoTPolicyVariant(PolicyVariant):
                 timestep=packed_action_timesteps,
                 context=text_context,
                 action_grid_ids=packed_action_grid_ids,
+                hidden_context=packed_action_hidden_context,
             )
 
         def _run_packed_step(
@@ -2086,6 +2536,16 @@ class MoTPolicyVariant(PolicyVariant):
             current_clean_action_for_step: torch.Tensor,
         ):
             dense_video_timestep = torch.cat([history_video_timesteps, video_timestep], dim=1)
+            packed_video_hidden_context = (
+                self._video_hidden_context_for_tokens(
+                    visual_tower,
+                    video_hidden_proprio_sequence,
+                    video_latents=predicted_video_sequence,
+                    copies=2,
+                )
+                if apply_video_hidden_proprio
+                else None
+            )
             packed_action_pre = _build_packed_action_pre(
                 action_tokens=_compose_current_action_sequence(action_sample),
                 action_timestep=action_timestep,
@@ -2105,6 +2565,7 @@ class MoTPolicyVariant(PolicyVariant):
                 use_activation_checkpointing=False,
                 packed_block_stack=self.packed_block_stack,
                 prefer_flex_attention=False,
+                video_hidden_context=packed_video_hidden_context,
             ) + (packed_action_pre,)
 
         def _video_timestep(value: torch.Tensor) -> torch.Tensor:
@@ -2231,17 +2692,22 @@ class MoTPolicyVariant(PolicyVariant):
                 shared_sigma = None
                 shared_sigma_next = None
                 if couple_action_video_sigmas:
-                    if action_timestep_lookup_scheduler is None:  # pragma: no cover - defensive guard
-                        raise RuntimeError("M5 coupled same-step inference requires an action timestep lookup scheduler.")
                     shared_sigma = video_scheduler.sigmas[step_index].to(device=device, dtype=torch.float32)
                     shared_sigma_next = _scheduler_next_sigma(video_scheduler, step_index).to(
                         device=device,
                         dtype=torch.float32,
                     )
-                    action_timestep = timesteps_matching_sigmas(
-                        action_timestep_lookup_scheduler,
-                        shared_sigma.reshape(1),
-                    )[0].to(device=device, dtype=torch.float32)
+                    if joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA:
+                        if action_timestep_lookup_scheduler is None:  # pragma: no cover - defensive guard
+                            raise RuntimeError(
+                                "M5 match-sigma same-step inference requires an action timestep lookup scheduler."
+                            )
+                        action_timestep = timesteps_matching_sigmas(
+                            action_timestep_lookup_scheduler,
+                            shared_sigma.reshape(1),
+                        )[0].to(device=device, dtype=torch.float32)
+                    elif joint_timestep_coupling == JointTimestepCoupling.SHARED_VIDEO_SCHEDULE:
+                        action_timestep = video_timestep.to(device=device, dtype=torch.float32)
                 current_video_timestep = _video_timestep(video_timestep)
                 current_action_timestep = _action_timestep(action_timestep)
                 video_flow_pred, packed_action_hidden, packed_action_pre = _run_packed_step(
@@ -2271,6 +2737,14 @@ class MoTPolicyVariant(PolicyVariant):
             dim=2,
         )
         runtime_state.past_clean_latents = next_clean_context[:, :, -history_window_frames:].detach()
+        if video_hidden_proprio_sequence is not None:
+            next_hidden_context = video_hidden_proprio_sequence[
+                :,
+                : clean_video_prefix_frames + frame_chunk_size,
+            ].contiguous()
+            runtime_state.past_hidden_proprio_states = next_hidden_context[:, -history_window_frames:].detach()
+        else:
+            runtime_state.past_hidden_proprio_states = None
         if history_actions is None:
             next_clean_actions = action_sample
         else:
@@ -2355,6 +2829,12 @@ class MoTPolicyVariant(PolicyVariant):
         )
         if proprio_state is not None:
             runtime_state.proprio_state = proprio_state.detach().clone()
+        hidden_proprio_state = self._resolve_infer_hidden_proprio_context(
+            context.state,
+            fallback_state=runtime_state.hidden_proprio_state,
+        )
+        if hidden_proprio_state is not None:
+            runtime_state.hidden_proprio_state = hidden_proprio_state.detach().clone()
         resolved_text_context = self._resolve_text_context_with_proprio(
             visual_tower,
             visual_outputs.frontend.conditioning.text_context,
@@ -2513,7 +2993,7 @@ class MoTPolicyVariant(PolicyVariant):
                 current_block_coupling,
             )
             action_timestep_lookup_scheduler = None
-            if couple_action_video_sigmas:
+            if joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA:
                 action_timestep_lookup_scheduler = build_action_flow_match_inference_scheduler(
                     training_config=self.training_config,
                     inference_config=self.inference_config,
@@ -2537,6 +3017,15 @@ class MoTPolicyVariant(PolicyVariant):
                 )
             else:
                 text_context = text_context.to(device=device, dtype=dtype)
+            hidden_proprio_state = runtime_state.hidden_proprio_state
+            hidden_proprio_sequence = None
+            if hidden_proprio_state is not None:
+                hidden_proprio_sequence = hidden_proprio_state.to(device=device, dtype=dtype)[:, None, :].expand(
+                    -1,
+                    int(video_latents.shape[2]),
+                    -1,
+                )
+            action_tokens_per_frame = self.action_horizon // frame_chunk_size
             attention_mask = build_mot_attention_mask(
                 video_seq_len=visual_outputs.frontend.token_grid.tokens_per_frame * video_latents.shape[2],
                 action_seq_len=self.action_horizon,
@@ -2544,7 +3033,7 @@ class MoTPolicyVariant(PolicyVariant):
                 condition_mode=self.config.condition_mode,
                 video_tokens_per_frame=visual_outputs.frontend.token_grid.tokens_per_frame,
                 video_can_attend_action=self.config.video_can_attend_action,
-                action_tokens_per_frame=self.action_horizon // frame_chunk_size,
+                action_tokens_per_frame=action_tokens_per_frame,
                 action_chunk_size_frames=frame_chunk_size,
                 clean_video_frames=observed_prefix_frames,
                 current_block_coupling=current_block_coupling,
@@ -2554,17 +3043,20 @@ class MoTPolicyVariant(PolicyVariant):
                 shared_sigma = None
                 shared_sigma_next = None
                 if couple_action_video_sigmas:
-                    if action_timestep_lookup_scheduler is None:  # pragma: no cover - defensive guard
-                        raise RuntimeError("M5 coupled joint denoise requires an action timestep lookup scheduler.")
                     shared_sigma = video_scheduler.sigmas[step_index].to(device=device, dtype=torch.float32)
                     shared_sigma_next = _scheduler_next_sigma(video_scheduler, step_index).to(
                         device=device,
                         dtype=torch.float32,
                     )
-                    action_timestep = timesteps_matching_sigmas(
-                        action_timestep_lookup_scheduler,
-                        shared_sigma.reshape(1),
-                    )[0].to(device=device, dtype=torch.float32)
+                    if joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA:
+                        if action_timestep_lookup_scheduler is None:  # pragma: no cover - defensive guard
+                            raise RuntimeError("M5 match-sigma joint denoise requires an action timestep lookup scheduler.")
+                        action_timestep = timesteps_matching_sigmas(
+                            action_timestep_lookup_scheduler,
+                            shared_sigma.reshape(1),
+                        )[0].to(device=device, dtype=torch.float32)
+                    elif joint_timestep_coupling == JointTimestepCoupling.SHARED_VIDEO_SCHEDULE:
+                        action_timestep = video_timestep.to(device=device, dtype=torch.float32)
                 dense_video_timestep = _expand_scalar_timestep(
                     video_timestep,
                     shape=(batch_size, video_latents.shape[2]),
@@ -2580,6 +3072,12 @@ class MoTPolicyVariant(PolicyVariant):
                     action_tokens=sample,
                     timestep=dense_action_timestep,
                     context=text_context,
+                    hidden_context=self._action_hidden_context_for_tokens(
+                        visual_tower,
+                        hidden_proprio_sequence,
+                        action_tokens=sample,
+                        action_tokens_per_frame=action_tokens_per_frame,
+                    ),
                 )
                 video_flow_pred, action_hidden_states = forward_joint_video_action_denoise(
                     visual_tower=visual_tower,
@@ -2590,6 +3088,11 @@ class MoTPolicyVariant(PolicyVariant):
                     text_context=text_context,
                     attention_mask=attention_mask,
                     frame_start=int(infer_state.cursor.current_start_frame),
+                    video_hidden_context=self._video_hidden_context_for_tokens(
+                        visual_tower,
+                        hidden_proprio_sequence,
+                        video_latents=noisy_video_latents,
+                    ),
                 )
                 flow_pred = self.action_expert.post_dit(action_hidden_states, action_pre)
                 if shared_sigma is None or shared_sigma_next is None:
@@ -3072,6 +3575,13 @@ class MoTPolicyVariant(PolicyVariant):
                     device=device,
                     frame_shift=int(current_action_frame_start),
                 ),
+                hidden_context=self._action_hidden_context_for_tokens(
+                    visual_tower,
+                    runtime_state.hidden_proprio_state,
+                    action_tokens=sample,
+                    action_tokens_per_frame=action_tokens_per_frame,
+                    chunk_size_frames=chunk_frames,
+                ),
             )
             action_hidden_states, _ = forward_action_with_video_and_action_cache(
                 action_expert=self.action_expert,
@@ -3099,6 +3609,13 @@ class MoTPolicyVariant(PolicyVariant):
                 action_tokens_per_frame=action_tokens_per_frame,
                 device=device,
                 frame_shift=int(current_action_frame_start),
+            ),
+            hidden_context=self._action_hidden_context_for_tokens(
+                visual_tower,
+                runtime_state.hidden_proprio_state,
+                action_tokens=sample,
+                action_tokens_per_frame=action_tokens_per_frame,
+                chunk_size_frames=chunk_frames,
             ),
         )
         _, fresh_action_kv = forward_action_with_video_and_action_cache(

@@ -8,6 +8,7 @@ from open_wam.configs import (
     InferenceConfig,
     ParallelExactCacheWriteMode,
     ParallelRuntimeMode,
+    ParallelSequenceContract,
     ParallelStreamPolicyConfig,
     ParallelStreamVariantProfile,
     ProprioContextMode,
@@ -35,6 +36,7 @@ from .reference_runtime import (
     prepare_parallel_action_conditioned_train_artifacts,
     prepare_parallel_exact_train_artifacts,
     prepare_parallel_fastwam_first_frame_train_artifacts,
+    prepare_parallel_prefix_condition_exact_train_artifacts,
     resolve_parallel_current_block_coupling,
     run_parallel_action_conditioned_inference_rollout,
     run_parallel_action_conditioned_train,
@@ -274,6 +276,18 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             batch,
             video_latents=visual_outputs.frontend.video_latents,
         )
+        legacy_prefix_contract = (
+            self.config.parallel_sequence_contract
+            == ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
+        )
+        if legacy_prefix_contract and self.config.runtime_mode not in {
+            ParallelRuntimeMode.LINGBOT_EXACT,
+            ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
+        }:
+            raise ValueError(
+                "`parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio` only supports "
+                "LingBot exact dual-stream M1 runtime modes."
+            )
         if self.config.runtime_mode == ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK:
             train_artifacts = prepare_parallel_current_frame_action_chunk_train_artifacts(
                 backbone_config=self.backbone_config,
@@ -297,6 +311,26 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 text_emb=visual_outputs.frontend.conditioning.text_context,
                 condition_latents=condition_latents,
                 frame_shift=0,
+            )
+        elif legacy_prefix_contract:
+            if not isinstance(condition_latents, torch.Tensor):
+                raise ValueError(
+                    "`parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio` requires "
+                    "precomputed single-frame condition_latents. "
+                    "Run scripts/augment_lerobot_latents_with_single_frame_condition.py with --source-frame-offset -1."
+                )
+            train_artifacts = prepare_parallel_prefix_condition_exact_train_artifacts(
+                backbone_config=self.backbone_config,
+                policy_config=self.config,
+                training_config=self.training_config,
+                video_latents=visual_outputs.frontend.video_latents,
+                actions=model_actions,
+                action_mask=model_action_mask,
+                text_emb=visual_outputs.frontend.conditioning.text_context,
+                condition_latents=condition_latents,
+                chunk_size_override=sampled_geometry["chunk_size"],
+                window_size_override=sampled_geometry["window_size"],
+                frame_shift=sampled_geometry["frame_shift"],
             )
         elif self.config.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
             train_artifacts = prepare_parallel_action_conditioned_train_artifacts(
@@ -347,6 +381,42 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             train_artifacts.input_dict["proprio_state"] = proprio_state
         if per_chunk_proprio_payload is not None:
             per_chunk_proprio_state, per_chunk_proprio_granularity = per_chunk_proprio_payload
+            if train_artifacts.input_dict.get("prefix_condition_frames"):
+                prefix_state = self._select_anchor_state(batch.state)
+                if prefix_state is None:
+                    raise ValueError(
+                        "`parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio` prefix "
+                        "conditioning requires batch.state for the condition frame."
+                    )
+                if per_chunk_proprio_granularity == _PER_CHUNK_PROPRIO_GRANULARITY_CHUNK:
+                    per_chunk_proprio_state = torch.cat(
+                        [
+                            prefix_state[:, None, :].to(
+                                device=per_chunk_proprio_state.device,
+                                dtype=per_chunk_proprio_state.dtype,
+                            ),
+                            per_chunk_proprio_state,
+                        ],
+                        dim=1,
+                    )
+                else:
+                    frame_count = int(visual_outputs.frontend.video_latents.shape[2])
+                    if int(per_chunk_proprio_state.shape[1]) < frame_count:
+                        raise ValueError(
+                            "Prefix per-chunk proprio frame context expects at least one state per target frame, "
+                            f"got {tuple(per_chunk_proprio_state.shape)} for target_frames={frame_count}."
+                        )
+                    per_chunk_proprio_state = torch.cat(
+                        [
+                            prefix_state[:, None, :].to(
+                                device=per_chunk_proprio_state.device,
+                                dtype=per_chunk_proprio_state.dtype,
+                            ),
+                            per_chunk_proprio_state[:, :frame_count, :],
+                        ],
+                        dim=1,
+                    )
+                    per_chunk_proprio_granularity = _PER_CHUNK_PROPRIO_GRANULARITY_FRAME
             train_artifacts.input_dict["per_chunk_proprio_state"] = per_chunk_proprio_state.to(
                 device=visual_outputs.frontend.video_latents.device,
                 dtype=visual_outputs.frontend.video_latents.dtype,

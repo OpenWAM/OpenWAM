@@ -458,6 +458,7 @@ def build_frame_aligned_action_flow_match_train_artifacts(
     action_per_frame: int,
     frame_sigma_values: torch.Tensor | None = None,
     frame_timestep_ids: torch.Tensor | None = None,
+    scheduler_override: FlowMatchScheduler | None = None,
 ) -> FrameAlignedActionFlowMatchTrainArtifacts:
     """Create frame-granular noisy actions for LingBot-style parallel-stream.
 
@@ -478,13 +479,16 @@ def build_frame_aligned_action_flow_match_train_artifacts(
             "Frame-aligned action diffusion expects `action_horizon == num_frames * action_per_frame`, "
             f"got action_horizon={action_horizon}, num_frames={num_frames}, action_per_frame={action_per_frame}."
         )
-    scheduler = FlowMatchScheduler(
-        shift=training_config.action_sigma_shift,
-        sigma_min=0.0,
-        extra_one_step=True,
-        num_train_timesteps=training_config.action_num_train_timesteps,
-    )
-    scheduler.set_timesteps(training_config.action_num_train_timesteps, training=True)
+    if scheduler_override is None:
+        scheduler = FlowMatchScheduler(
+            shift=training_config.action_sigma_shift,
+            sigma_min=0.0,
+            extra_one_step=True,
+            num_train_timesteps=training_config.action_num_train_timesteps,
+        )
+        scheduler.set_timesteps(training_config.action_num_train_timesteps, training=True)
+    else:
+        scheduler = scheduler_override
     action_volume = actions.view(batch_size, num_frames, action_per_frame, action_dim).permute(0, 3, 1, 2).unsqueeze(-1)
     action_mask_volume = None
     if action_mask is not None:

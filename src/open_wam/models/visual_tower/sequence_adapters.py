@@ -431,6 +431,7 @@ def prepare_exact_dual_stream_train_sequence(
             ),
             proprio_context_token_count=proprio_context_token_count,
             chunk_origin_frame=int(input_dict.get("chunk_origin_frame", 0) or 0),
+            prefix_condition_frames=int(input_dict.get("prefix_condition_frames", 0) or 0),
             action_context_mask=(
                 action_dict.get("actions_mask")
                 if torch.is_tensor(action_dict.get("actions_mask"))

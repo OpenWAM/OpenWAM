@@ -13,7 +13,7 @@ from torch.utils.data.distributed import DistributedSampler
 import yaml
 
 from open_wam.configs import AuxiliaryValidationTaskConfig, TrainingConfig
-from open_wam.configs.enums import CheckpointMode
+from open_wam.configs.enums import BatchAdapterName, CheckpointMode
 from open_wam.data import LatentWAMSample, WAMBatch, collate_latent_wam_samples, move_latent_wam_batch_to_device
 from open_wam.models.policy_variants import PolicyTrainBatch
 from open_wam.training import TrainingRuntime
@@ -23,6 +23,7 @@ from open_wam.training.runtime import (
     AuxiliaryValidationDataset,
     _normalize_optimizer_state_dtypes,
     _resolve_auxiliary_validation_source,
+    _validate_mixed_dynamics_source_sampling,
 )
 from open_wam.training.state import TrainState
 from open_wam.training.step_executor import LatentBatchAdapter, ViewBatchAdapter, resolve_sample_loss_weight
@@ -390,6 +391,31 @@ def test_sample_loss_weight_rejects_reduced_multi_sample_batches() -> None:
             training_config=TrainingConfig(sample_loss_weight_mode="valid_action_steps"),
             batch=batch,
         )
+
+
+def test_mixed_dynamics_source_sampling_runtime_guard_rejects_non_uniform_weights() -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        trainer=replace(config.trainer, batch_adapter=BatchAdapterName.LATENTS),
+        data=replace(
+            config.data,
+            sample_construction=replace(
+                config.data.sample_construction,
+                sample_weight_mode="valid_action_steps",
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="sample_weight_mode"):
+        _validate_mixed_dynamics_source_sampling(config)
+
+
+def test_mixed_dynamics_source_sampling_runtime_guard_rejects_views_adapter() -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+
+    with pytest.raises(ValueError, match="batch_adapter=latents"):
+        _validate_mixed_dynamics_source_sampling(config)
 
 
 def test_latent_batch_adapter_preserves_condition_latents() -> None:

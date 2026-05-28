@@ -104,6 +104,38 @@ def test_chunked_temporal_exact_cross_mask_limits_per_chunk_proprio_tokens() -> 
     assert bool(mask[-1].any().item()) is False
 
 
+def test_chunked_temporal_exact_prefix_condition_is_history_context() -> None:
+    profile = build_chunked_temporal_exact_attention_profile(
+        latent_shape=(1, 1, 5, 1, 1),
+        action_shape=(1, 1, 4, 1, 1),
+        padded_length=0,
+        chunk_size=2,
+        window_size=8,
+        patch_size=(1, 1, 1),
+        text_token_count=1,
+        current_block_coupling="decoupled_same_step",
+        history_stream_visibility="video_only",
+        prefix_condition_frames=1,
+        device=torch.device("cpu"),
+        build_dense_masks=True,
+        build_flex_masks=False,
+    )
+
+    assert profile.self_attention_mask is not None
+    mask = profile.self_attention_mask
+    video_noisy_start = 0
+    video_clean_start = 5
+    action_noisy_start = 10
+    prefix_clean = video_clean_start
+    first_target_video_noisy = video_noisy_start + 1
+    first_target_action_noisy = action_noisy_start
+    first_target_action_clean = 14
+
+    assert bool(mask[first_target_video_noisy, prefix_clean].item()) is True
+    assert bool(mask[first_target_action_noisy, prefix_clean].item()) is True
+    assert bool(mask[first_target_video_noisy, first_target_action_clean].item()) is False
+
+
 def test_chunked_temporal_exact_chunk_origin_keeps_context_frame_out_of_first_target_chunk() -> None:
     profile = build_chunked_temporal_exact_attention_profile(
         latent_shape=(1, 1, 5, 1, 1),

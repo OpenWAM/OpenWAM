@@ -473,6 +473,8 @@ def build_mot_packed_coupling_attention_profile(
     build_flex_masks: bool | None = None,
     chunk_origin_frame: int = 0,
     action_context_mask: torch.Tensor | None = None,
+    history_stream_visibility: str | None = None,
+    prefix_condition_frames: int = 0,
 ) -> PreparedAttentionProfile:
     """Build the Method-1 exact attention profile for M5 packed coupling.
 
@@ -508,6 +510,8 @@ def build_mot_packed_coupling_attention_profile(
         chunk_origin_frame=int(chunk_origin_frame),
         action_context_mask=action_context_mask,
         preserve_video_pretrain_history=True,
+        history_stream_visibility=history_stream_visibility,
+        prefix_condition_frames=int(prefix_condition_frames),
     )
 
 
@@ -1260,6 +1264,7 @@ def forward_mot_packed_coupling_denoise(
     packed_block_stack=None,
     prefer_flex_attention: bool = True,
     video_cross_attention_mask: torch.Tensor | None = None,
+    video_hidden_context: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Run M5's native four-stream packed coupling forward.
 
@@ -1322,6 +1327,17 @@ def forward_mot_packed_coupling_denoise(
         action_mode=False,
     )
     video_hidden_states = video_prepared["hidden_states"]
+    if video_hidden_context is not None:
+        if tuple(video_hidden_context.shape) != tuple(video_hidden_states.shape):
+            raise ValueError(
+                "M5 packed video hidden_context must match embedded video hidden states, "
+                f"got hidden_context={tuple(video_hidden_context.shape)}, "
+                f"hidden_states={tuple(video_hidden_states.shape)}."
+            )
+        video_hidden_states = video_hidden_states + video_hidden_context.to(
+            device=video_hidden_states.device,
+            dtype=video_hidden_states.dtype,
+        )
     video_text_hidden_states = video_prepared["text_hidden_states"]
     video_rotary_emb = video_prepared["rotary_emb"]
     video_temb = video_prepared["temb"]
@@ -1668,6 +1684,7 @@ def forward_joint_video_action_denoise(
     frame_start: int = 0,
     use_activation_checkpointing: bool = False,
     video_cross_attention_mask: torch.Tensor | None = None,
+    video_hidden_context: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Run true joint video+action denoising with cross-stream attention on every layer.
 
@@ -1705,6 +1722,17 @@ def forward_joint_video_action_denoise(
         action_mode=False,
     )
     video_hidden_states = video_prepared["hidden_states"]
+    if video_hidden_context is not None:
+        if tuple(video_hidden_context.shape) != tuple(video_hidden_states.shape):
+            raise ValueError(
+                "MoT joint video hidden_context must match embedded video hidden states, "
+                f"got hidden_context={tuple(video_hidden_context.shape)}, "
+                f"hidden_states={tuple(video_hidden_states.shape)}."
+            )
+        video_hidden_states = video_hidden_states + video_hidden_context.to(
+            device=video_hidden_states.device,
+            dtype=video_hidden_states.dtype,
+        )
     video_text_hidden_states = video_prepared["text_hidden_states"]
     video_rotary_emb = video_prepared["rotary_emb"]
     video_temb = video_prepared["temb"]

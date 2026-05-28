@@ -23,6 +23,7 @@ from .enums import (
     ParallelCacheMode,
     ParallelMaskMode,
     ParallelRuntimeMode,
+    ParallelSequenceContract,
     ParallelSequenceComponent,
     ParallelStreamVariantProfile,
     PolicyVariantName,
@@ -296,6 +297,10 @@ class MoTPolicyConfig(PolicyVariantConfig):
     use_text_conditioning: bool = True
     use_state_conditioning: bool = False
     proprio_context_mode: ProprioContextMode = ProprioContextMode.NONE
+    history_stream_visibility: ParallelHistoryStreamVisibility = ParallelHistoryStreamVisibility.FULL
+    context_condition_latent_source: ParallelContextConditionLatentSource = (
+        ParallelContextConditionLatentSource.VIDEO_LATENTS
+    )
     # Trade forward compute for activation memory by recomputing each
     # (video, action) block pair during backward instead of storing its
     # activations. Only affects two-stream train paths that run through
@@ -307,6 +312,7 @@ class MoTPolicyConfig(PolicyVariantConfig):
     # have not been augmented yet.
     use_condition_latents: bool = True
     require_condition_latents: bool = False
+    parallel_sequence_contract: ParallelSequenceContract = ParallelSequenceContract.DEFAULT
     # Optional M5 generalist joint-denoise sampling distribution. ``None``
     # preserves the fixed six-mode path; a dict samples one of joint /
     # action_conditioned_video / video_conditioned_action per segment.
@@ -366,6 +372,9 @@ class MoTPolicyConfig(PolicyVariantConfig):
                 "action_expert_init_mode": MoTActionExpertInitMode,
                 "generalist_training_paradigm": GeneralistTrainingParadigm,
                 "proprio_context_mode": ProprioContextMode,
+                "history_stream_visibility": ParallelHistoryStreamVisibility,
+                "context_condition_latent_source": ParallelContextConditionLatentSource,
+                "parallel_sequence_contract": ParallelSequenceContract,
                 "joint_timestep_coupling": JointTimestepCoupling,
             },
             optional_enum_fields={
@@ -383,12 +392,6 @@ class MoTPolicyConfig(PolicyVariantConfig):
                 JointTimestepCoupling.MATCH_SIGMA
                 if bool(self.couple_action_to_video_timesteps)
                 else JointTimestepCoupling.INDEPENDENT,
-            )
-        if self.joint_timestep_coupling == JointTimestepCoupling.SHARED_VIDEO_SCHEDULE:
-            raise ValueError(
-                "MoT does not support `joint_timestep_coupling = shared_video_schedule` in this PR. "
-                "Use `match_sigma`, `match_index`, or `independent`; M5 shared-video-schedule support "
-                "must be introduced by the follow-up implementation PR."
             )
         if self.mot_generalist_training_mode_probs is not None:
             if self.current_block_coupling != CurrentBlockCoupling.JOINT:
@@ -502,6 +505,7 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
     )
     use_condition_latents: bool = True
     require_condition_latents: bool = False
+    parallel_sequence_contract: ParallelSequenceContract = ParallelSequenceContract.DEFAULT
     proprio_context_mode: ProprioContextMode = ProprioContextMode.NONE
     temporal_position_mode: TemporalPositionMode = TemporalPositionMode.GLOBAL_SHIFTED
     used_action_channel_ids: tuple[int, ...] = field(default_factory=tuple)
@@ -524,6 +528,7 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
                 "generalist_training_paradigm": GeneralistTrainingParadigm,
                 "history_stream_visibility": ParallelHistoryStreamVisibility,
                 "context_condition_latent_source": ParallelContextConditionLatentSource,
+                "parallel_sequence_contract": ParallelSequenceContract,
                 "proprio_context_mode": ProprioContextMode,
                 "temporal_position_mode": TemporalPositionMode,
                 "action_norm_method": ActionNormMethod,

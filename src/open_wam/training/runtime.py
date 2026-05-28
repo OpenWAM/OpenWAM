@@ -17,7 +17,14 @@ from open_wam.configs import (
     StrategyName,
     TrainerRuntimeName,
 )
-from open_wam.configs.enums import AuxiliaryValidationSource, DataSplit, GeneralistTrainingParadigm, serialize_enum_values
+from open_wam.configs.enums import (
+    AuxiliaryValidationSource,
+    DataSplit,
+    GeneralistTrainingParadigm,
+    SampleOrderMode,
+    SampleWeightMode,
+    serialize_enum_values,
+)
 from open_wam.configs.variant_semantics import (
     GENERALIST_TRAINING_BUCKET_METADATA_KEY,
     GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY,
@@ -586,6 +593,8 @@ def _set_sampler_epoch(loader: DataLoader, epoch: int) -> None:
 
 
 def build_runtime_dataloaders(config: ExperimentConfig, strategy) -> tuple[DataLoader, DataLoader]:
+    if _uses_mixed_dynamics_paradigm(config):
+        _validate_mixed_dynamics_source_sampling(config)
     if config.trainer.batch_adapter == BatchAdapterName.LATENTS:
         train_dataset, val_dataset = build_train_val_latent_datasets(config.data)
         if _uses_mixed_dynamics_paradigm(config):
@@ -834,6 +843,27 @@ def _auxiliary_validation_summary_metrics(
 def _uses_mixed_dynamics_paradigm(config: ExperimentConfig) -> bool:
     paradigm = getattr(config.policy_variant, "generalist_training_paradigm", None)
     return paradigm == GeneralistTrainingParadigm.MIXED_DYNAMICS
+
+
+def _validate_mixed_dynamics_source_sampling(config: ExperimentConfig) -> None:
+    if config.trainer.batch_adapter != BatchAdapterName.LATENTS:
+        raise ValueError(
+            "`policy_variant.generalist_training_paradigm=mixed_dynamics` requires "
+            "`trainer.batch_adapter=latents` because the mixed-dynamics source mixture wraps latent datasets."
+        )
+    sample_construction = config.data.sample_construction
+    if sample_construction.sample_order_mode == SampleOrderMode.REPLACEMENT:
+        raise ValueError(
+            "`data.sample_construction.sample_order_mode=replacement` is not supported with "
+            "`policy_variant.generalist_training_paradigm=mixed_dynamics` because the mixed-dynamics "
+            "wrapper owns source sampling."
+        )
+    if sample_construction.sample_weight_mode != SampleWeightMode.UNIFORM:
+        raise ValueError(
+            "`data.sample_construction.sample_weight_mode` must be `uniform` with "
+            "`policy_variant.generalist_training_paradigm=mixed_dynamics` because the mixed-dynamics "
+            "wrapper owns source sampling."
+        )
 
 
 def build_log_sink(*, config: ExperimentConfig, output_dir: Path, run_name: str, strategy=None) -> CompositeLogSink:

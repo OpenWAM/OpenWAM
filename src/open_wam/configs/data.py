@@ -36,6 +36,7 @@ from .enums import (
     ReplayStatusPolicy,
     RotationRepresentation,
     RolloutContextPolicy,
+    SampleOrderMode,
     SampleStateAnchorMode,
     SampleTargetAlignment,
     SampleWeightMode,
@@ -501,6 +502,9 @@ class SampleConstructionConfig:
     window_size: int = 1
     predict_blocks_per_sample: int = 1
     randomize_geometry: bool = True
+    # Compatibility gate for strict next-after-context configs that
+    # intentionally randomize chunk/window geometry.
+    allow_next_after_context_random_geometry: bool = False
     segment_frames: int | None = None
     segment_min_frames: int | None = None
     segment_max_frames: int | None = None
@@ -555,6 +559,7 @@ class SampleConstructionConfig:
     demo_count_power: float = 0.0
     trajectory_start_power: float = 1.0
     sample_weight_mode: SampleWeightMode = SampleWeightMode.UNIFORM
+    sample_order_mode: SampleOrderMode = SampleOrderMode.EPOCH_ORDER
     # Used by task_virtual_start_count_power: task mass is proportional to the
     # number of eligible virtual starts raised to this power. 0 is task-uniform,
     # 1 is transition-uniform.
@@ -585,6 +590,7 @@ class SampleConstructionConfig:
                 "anchor_policy": AnchorPolicy,
                 "state_anchor_mode": SampleStateAnchorMode,
                 "sample_weight_mode": SampleWeightMode,
+                "sample_order_mode": SampleOrderMode,
                 "target_alignment": SampleTargetAlignment,
                 "rollout_context_policy": RolloutContextPolicy,
                 "context_prefix_policy": SegmentContextPolicy,
@@ -660,6 +666,8 @@ class SampleConstructionConfig:
                     "`hierarchical_fixed_segment` uses task/trajectory power fields; "
                     "do not set legacy `sample_weight_mode`."
                 )
+            if self.sample_order_mode != SampleOrderMode.EPOCH_ORDER:
+                raise ValueError("`hierarchical_fixed_segment` does not support replacement `sample_order_mode`.")
             if self.tail_padding_policy != TailPaddingPolicy.ZERO_ORDER_HOLD:
                 raise ValueError("`hierarchical_fixed_segment` currently supports only zero-order-hold tail padding.")
             if self.padded_target_policy != PaddedTargetPolicy.MASK_LOSS:
@@ -670,10 +678,11 @@ class SampleConstructionConfig:
                         "`target_alignment=next_after_context` currently requires "
                         "`sample_construction.chunk_size=4` to match rollout chunking."
                     )
-                if self.randomize_geometry:
+                if self.randomize_geometry and not self.allow_next_after_context_random_geometry:
                     raise ValueError(
                         "`target_alignment=next_after_context` requires fixed rollout chunking; "
-                        "set `sample_construction.randomize_geometry=false`."
+                        "set `sample_construction.randomize_geometry=false` unless "
+                        "`allow_next_after_context_random_geometry=true`."
                     )
                 if self.start_padding_frames != 0:
                     raise ValueError(

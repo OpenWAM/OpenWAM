@@ -307,6 +307,7 @@ def build_chunked_temporal_exact_attention_profile(
     current_block_coupling: str | None = None,
     preserve_video_pretrain_history: bool = False,
     history_stream_visibility: str | None = None,
+    prefix_condition_frames: int = 0,
 ) -> PreparedAttentionProfile:
     # When preserve_video_pretrain_history=True, restrict the noise_to_clean
     # rule on PAST CHUNKS so that the video stream's K/V context matches the
@@ -330,6 +331,7 @@ def build_chunked_temporal_exact_attention_profile(
         preserve_video_pretrain_history=preserve_video_pretrain_history,
     )
     chunk_origin_frame = int(chunk_origin_frame)
+    prefix_condition_frames = max(0, int(prefix_condition_frames))
 
     batch_size, _, latent_frames, latent_height, latent_width = latent_shape
     _, _, action_frames, action_height, action_width = action_shape
@@ -370,6 +372,7 @@ def build_chunked_temporal_exact_attention_profile(
         current_block_coupling=current_block_coupling,
         device=device,
         action_context_mask=action_context_mask,
+        prefix_condition_frames=prefix_condition_frames,
     )
     layout = layout.with_padding(padded_length)
     latent_token_count = int(batch_size) * int(latent_frames // patch_t) * int(latent_height // patch_h) * int(latent_width // patch_w)
@@ -420,7 +423,7 @@ def build_chunked_temporal_exact_attention_profile(
             history_stream_ok = kv_stream == 0
         else:  # pragma: no cover - normalized above
             raise ValueError(f"Unsupported history stream visibility {resolved_history_stream_visibility!r}.")
-        if current_block_coupling == DECOUPLED_SAME_STEP_COUPLING:
+        if prefix_condition_frames > 0 or current_block_coupling == DECOUPLED_SAME_STEP_COUPLING:
             clean_to_clean = (
                 (q_noise == 1)
                 & (kv_noise == 1)
@@ -444,14 +447,26 @@ def build_chunked_temporal_exact_attention_profile(
             VIDEO_NOISY_TO_ACTION_COUPLING,
             ACTION_NOISY_TO_VIDEO_COUPLING,
         }
+        prefix_action_then_video = (
+            prefix_condition_frames > 0
+            and current_block_coupling == ACTION_THEN_VIDEO_COUPLING
+        )
         # History stream filter: when preserve_video_pretrain_history is on,
         # current video queries see only same-stream (V) past clean; action
         # queries keep full visibility.
-        if current_block_coupling in joint_like_couplings:
+        if current_block_coupling in joint_like_couplings or prefix_action_then_video:
             # Joint-like: noise_to_clean only fires on past chunks.
             noise_to_clean = (
                 (q_noise == 0) & (kv_noise == 1) & (kv_chunk < q_chunk) & history_stream_ok
             )
+            if prefix_action_then_video:
+                noise_to_clean = noise_to_clean | (
+                    (q_noise == 0)
+                    & (q_stream == 0)
+                    & (kv_noise == 1)
+                    & (kv_stream == 1)
+                    & (kv_chunk == q_chunk)
+                )
         else:
             # Staged: split history (filtered) from current-chunk earlier-stage
             # clean (unfiltered) so V_THEN_A's "A reads current Vc" and
@@ -481,7 +496,10 @@ def build_chunked_temporal_exact_attention_profile(
                 & ((q_stream == kv_stream) | ((q_stream == 0) & (kv_stream == 1)))
             )
         else:
-            noise_to_noise = (q_noise == 0) & (kv_noise == 0) & (kv_block_id == q_block_id)
+            if prefix_condition_frames > 0:
+                noise_to_noise = (q_noise == 0) & (kv_noise == 0) & (kv_chunk == q_chunk) & (q_stream == kv_stream)
+            else:
+                noise_to_noise = (q_noise == 0) & (kv_noise == 0) & (kv_block_id == q_block_id)
         within_window = (q_block_id - kv_block_id).abs() <= int(window_size)
         self_attention_mask = same_seq & within_window & (clean_to_clean | noise_to_clean | noise_to_noise)
         same_text_sample = (
@@ -544,7 +562,7 @@ def build_chunked_temporal_exact_attention_profile(
                 history_stream_ok = stream_ids_flex[kv_idx] == 0
             else:  # pragma: no cover - normalized above
                 raise ValueError(f"Unsupported history stream visibility {resolved_history_stream_visibility!r}.")
-            if current_block_coupling == DECOUPLED_SAME_STEP_COUPLING:
+            if prefix_condition_frames > 0 or current_block_coupling == DECOUPLED_SAME_STEP_COUPLING:
                 clean_to_clean = (
                     (noise_ids_flex[q_idx] == 1)
                     & (noise_ids_flex[kv_idx] == 1)
@@ -568,13 +586,25 @@ def build_chunked_temporal_exact_attention_profile(
                 VIDEO_NOISY_TO_ACTION_COUPLING,
                 ACTION_NOISY_TO_VIDEO_COUPLING,
             }
-            if current_block_coupling in joint_like_couplings:
+            prefix_action_then_video = (
+                prefix_condition_frames > 0
+                and current_block_coupling == ACTION_THEN_VIDEO_COUPLING
+            )
+            if current_block_coupling in joint_like_couplings or prefix_action_then_video:
                 noise_to_clean = (
                     (noise_ids_flex[q_idx] == 0)
                     & (noise_ids_flex[kv_idx] == 1)
                     & (kv_chunk < q_chunk)
                     & history_stream_ok
                 )
+                if prefix_action_then_video:
+                    noise_to_clean = noise_to_clean | (
+                        (noise_ids_flex[q_idx] == 0)
+                        & (stream_ids_flex[q_idx] == 0)
+                        & (noise_ids_flex[kv_idx] == 1)
+                        & (stream_ids_flex[kv_idx] == 1)
+                        & (kv_chunk == q_chunk)
+                    )
             else:
                 in_history = kv_chunk < q_chunk
                 in_current_chunk_earlier = (kv_chunk == q_chunk) & (kv_block_id < q_block_id)
@@ -606,11 +636,19 @@ def build_chunked_temporal_exact_attention_profile(
                     )
                 )
             else:
-                noise_to_noise = (
-                    (noise_ids_flex[q_idx] == 0)
-                    & (noise_ids_flex[kv_idx] == 0)
-                    & (block_ids_flex[kv_idx] == block_ids_flex[q_idx])
-                )
+                if prefix_condition_frames > 0:
+                    noise_to_noise = (
+                        (noise_ids_flex[q_idx] == 0)
+                        & (noise_ids_flex[kv_idx] == 0)
+                        & (kv_chunk == q_chunk)
+                        & (stream_ids_flex[q_idx] == stream_ids_flex[kv_idx])
+                    )
+                else:
+                    noise_to_noise = (
+                        (noise_ids_flex[q_idx] == 0)
+                        & (noise_ids_flex[kv_idx] == 0)
+                        & (block_ids_flex[kv_idx] == block_ids_flex[q_idx])
+                    )
             within_window = (q_block_id - kv_block_id).abs() <= int(window_size)
             return same_seq & within_window & (clean_to_clean | noise_to_clean | noise_to_noise)
 
@@ -689,6 +727,7 @@ def build_chunked_temporal_exact_attention_profile(
             "current_block_coupling": current_block_coupling,
             "preserve_video_pretrain_history": bool(preserve_video_pretrain_history),
             "history_stream_visibility": resolved_history_stream_visibility,
+            "prefix_condition_frames": int(prefix_condition_frames),
         },
     )
 

@@ -8,8 +8,13 @@ from typing import Any, Mapping
 
 import yaml
 
+import open_wam.configs.enums as config_enums
 from open_wam.configs import ExperimentConfig
 from open_wam.utils import load_experiment_config
+from open_wam.utils.config_loader import (
+    apply_parallel_sequence_contract,
+    validate_parallel_sequence_contract_override_keys,
+)
 
 
 EXPERIMENT_CONFIG_ROOT = Path(__file__).resolve().parents[3] / "configs" / "experiments"
@@ -181,7 +186,16 @@ def apply_train_cli_overrides(
         update_map["trainer.wandb_mode"] = overrides.wandb_mode
 
     update_map.update(parse_override_assignments(overrides.overrides))
+    validate_parallel_sequence_contract_override_keys(
+        update_map,
+        contract_value=getattr(
+            config.policy_variant,
+            "parallel_sequence_contract",
+            config_enums.ParallelSequenceContract.DEFAULT,
+        ),
+    )
     config = apply_config_overrides(config, update_map)
+    config = apply_parallel_sequence_contract(config, explicit_override_keys=set(update_map))
     return apply_wandb_env_defaults(
         config,
         env=env or os.environ,
@@ -201,8 +215,12 @@ def parse_override_assignments(tokens: tuple[str, ...] | list[str]) -> dict[str,
 
 def apply_config_overrides(config: ExperimentConfig, overrides: Mapping[str, Any]) -> ExperimentConfig:
     updated = config
+    grouped_overrides: dict[tuple[str, ...], dict[str, Any]] = {}
     for key, value in overrides.items():
-        updated = _replace_dataclass_path(updated, key.split("."), value)
+        parts = tuple(part.replace("-", "_") for part in key.split("."))
+        grouped_overrides.setdefault(parts[:-1], {})[parts[-1]] = value
+    for parent_path, values in sorted(grouped_overrides.items(), key=lambda item: len(item[0]), reverse=True):
+        updated = _replace_dataclass_fields(updated, list(parent_path), values)
     return updated
 
 
@@ -264,6 +282,25 @@ def _replace_dataclass_path(node: object, path: list[str], value: Any):
         return replace(node, **{field_name: coerced})
     nested_value = _replace_dataclass_path(current_value, path[1:], value)
     return replace(node, **{field_name: nested_value})
+
+
+def _replace_dataclass_fields(node: object, path: list[str], values: Mapping[str, Any]):
+    if not is_dataclass(node):
+        raise ValueError(f"Cannot override nested path on non-dataclass node {type(node).__name__}.")
+    if path:
+        field_name = path[0].replace("-", "_")
+        if not hasattr(node, field_name):
+            raise ValueError(f"{type(node).__name__} has no field {field_name!r}.")
+        current_value = getattr(node, field_name)
+        nested_value = _replace_dataclass_fields(current_value, path[1:], values)
+        return replace(node, **{field_name: nested_value})
+    updates: dict[str, Any] = {}
+    for field_name, value in values.items():
+        normalized_field_name = field_name.replace("-", "_")
+        if not hasattr(node, normalized_field_name):
+            raise ValueError(f"{type(node).__name__} has no field {normalized_field_name!r}.")
+        updates[normalized_field_name] = _coerce_override_value(getattr(node, normalized_field_name), value)
+    return replace(node, **updates)
 
 
 def _coerce_override_value(current_value: Any, value: Any) -> Any:

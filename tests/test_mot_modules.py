@@ -18,11 +18,13 @@ from open_wam.configs import (
     MoTConditionMode,
     MoTPolicyConfig,
     MoTRuntimeMode,
+    ParallelSequenceContract,
     ProprioContextMode,
     RobotWinDataConfig,
     TrainingConfig,
 )
 from open_wam.models.common.attention_profiles import build_chunked_temporal_exact_attention_profile
+from open_wam.models.common.rollout_startup import build_strict_action_context_mask
 from open_wam.models.policy_variants import PolicyInferContext, PolicyInferState, PolicyTrainBatch, RolloutCursor
 from open_wam.models.policy_variants.mot.contracts import (
     MoTActionCache,
@@ -536,6 +538,115 @@ def test_mot_packed_coupling_action_context_mask_hides_startup_action_tokens() -
     assert profile.metadata["invalid_action_context_tokens"] == 4
 
 
+def test_mot_joint_strict_startup_action_prefix_is_not_kv_context() -> None:
+    action_tokens_per_frame = 4
+    action_horizon = 16
+    prefix_tokens = action_tokens_per_frame
+    current_action_sequence_tokens = prefix_tokens + action_horizon
+    video_tokens_per_frame = 2
+    current_video_sequence_frames = 5
+    action_context_mask = build_strict_action_context_mask(
+        batch_size=1,
+        history_action_tokens=0,
+        current_action_sequence_tokens=current_action_sequence_tokens,
+        invalid_current_prefix_tokens=prefix_tokens,
+        device=torch.device("cpu"),
+    )
+    profile = build_mot_packed_coupling_attention_profile(
+        num_video_frames=current_video_sequence_frames,
+        video_tokens_per_frame=video_tokens_per_frame,
+        num_action_frames=current_action_sequence_tokens // action_tokens_per_frame,
+        action_tokens_per_frame=action_tokens_per_frame,
+        chunk_size_frames=4,
+        attention_window_size=30,
+        device=torch.device("cpu"),
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        action_context_mask=action_context_mask,
+        history_stream_visibility="video_only",
+        prefix_condition_frames=1,
+    )
+
+    assert profile.self_attention_mask is not None
+    mask = profile.self_attention_mask
+    latent_tokens = current_video_sequence_frames * video_tokens_per_frame
+    action_tokens = current_action_sequence_tokens
+    action_noisy_start = 2 * latent_tokens
+    action_clean_start = action_noisy_start + action_tokens
+    invalid_noisy = slice(action_noisy_start, action_noisy_start + prefix_tokens)
+    invalid_clean = slice(action_clean_start, action_clean_start + prefix_tokens)
+    real_noisy = slice(action_noisy_start + prefix_tokens, action_noisy_start + action_tokens)
+    real_clean = slice(action_clean_start + prefix_tokens, action_clean_start + action_tokens)
+
+    invalid_kv = torch.zeros(mask.shape[1], dtype=torch.bool)
+    invalid_kv[invalid_noisy] = True
+    invalid_kv[invalid_clean] = True
+    real_queries = torch.zeros(mask.shape[0], dtype=torch.bool)
+    real_queries[: 2 * latent_tokens] = True
+    real_queries[real_noisy] = True
+    real_queries[real_clean] = True
+
+    assert bool(mask[real_queries][:, invalid_kv].any().item()) is False
+    assert bool(mask[invalid_kv].any().item()) is True
+    assert profile.metadata["invalid_action_context_tokens"] == prefix_tokens
+
+
+def test_mot_packed_coupling_profile_threads_history_stream_visibility() -> None:
+    profile = build_mot_packed_coupling_attention_profile(
+        num_video_frames=4,
+        video_tokens_per_frame=1,
+        num_action_frames=4,
+        action_tokens_per_frame=1,
+        chunk_size_frames=2,
+        attention_window_size=8,
+        device=torch.device("cpu"),
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        history_stream_visibility="video_only",
+    )
+
+    assert profile.self_attention_mask is not None
+    assert profile.metadata["history_stream_visibility"] == "video_only"
+    mask = profile.self_attention_mask
+    latent_tokens = 4
+    action_tokens = 4
+    video_noisy_chunk1 = 2
+    action_noisy_chunk1 = latent_tokens * 2 + action_tokens + 2
+    action_clean_history = latent_tokens * 2 + action_tokens
+    assert bool(mask[video_noisy_chunk1, action_clean_history].item()) is False
+    assert bool(mask[action_noisy_chunk1, action_clean_history].item()) is False
+
+
+def test_mot_packed_coupling_profile_threads_prefix_condition_frames() -> None:
+    profile = build_mot_packed_coupling_attention_profile(
+        num_video_frames=5,
+        video_tokens_per_frame=1,
+        num_action_frames=4,
+        action_tokens_per_frame=1,
+        chunk_size_frames=2,
+        attention_window_size=8,
+        device=torch.device("cpu"),
+        current_block_coupling=CurrentBlockCoupling.VIDEO_THEN_ACTION,
+        history_stream_visibility="video_only",
+        prefix_condition_frames=1,
+    )
+
+    assert profile.self_attention_mask is not None
+    assert profile.metadata["prefix_condition_frames"] == 1
+    mask = profile.self_attention_mask
+    latent_tokens = 5
+    action_tokens = 4
+    video_noisy_target0 = 1
+    video_clean_prefix = latent_tokens
+    video_clean_target0 = latent_tokens + 1
+    action_noisy_target0 = latent_tokens * 2
+    action_clean_target0 = latent_tokens * 2 + action_tokens
+
+    assert bool(mask[video_noisy_target0, video_clean_prefix].item()) is True
+    assert bool(mask[video_noisy_target0, action_clean_target0].item()) is False
+    assert bool(mask[action_noisy_target0, video_clean_prefix].item()) is True
+    assert bool(mask[action_noisy_target0, video_clean_target0].item()) is True
+    assert bool(mask[action_noisy_target0, action_clean_target0].item()) is False
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Flex block mask requires CUDA in this setup")
 def test_build_mot_packed_coupling_profile_uses_flex_on_cuda() -> None:
     profile = build_mot_packed_coupling_attention_profile(
@@ -919,6 +1030,74 @@ def test_mot_proprio_context_uses_shared_batch_context_for_train() -> None:
     assert resolved.shape == (1, 8, 16)
     assert torch.allclose(resolved[:, :5, :], text_context)
     assert torch.allclose(resolved[:, 5:, :], expected)
+
+
+def test_mot_per_chunk_additive_does_not_build_text_proprio_mask() -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=MoTPolicyConfig(
+            hidden_size=32,
+            runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.JOINT,
+            num_action_layers=1,
+            proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
+        ),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
+        inference=InferenceConfig(frame_chunk_size=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    video_latents = torch.randn(1, 48, 4, 8, 8)
+    text_context = torch.randn(1, 5, 16)
+    visual_outputs = pipeline.prepare_visual_outputs_from_latents(video_latents, text_context=text_context)
+    proprio_context_frames = torch.randn(1, 4, 4)
+    batch = PolicyTrainBatch(
+        actions=torch.randn(1, 4, 4),
+        extra={
+            "proprio_context_frames": proprio_context_frames,
+            "proprio_context_frames_mask": torch.ones_like(proprio_context_frames),
+        },
+    )
+
+    prepared = pipeline.policy_variant.prepare_train_inputs(visual_outputs, batch)
+    resolved = pipeline.policy_variant._resolve_text_context_with_proprio(
+        pipeline.visual_tower,
+        prepared.variant_inputs["text_context"],
+        prepared.variant_inputs["proprio_state"],
+        batch_size=1,
+        device=video_latents.device,
+        dtype=video_latents.dtype,
+        materialize_if_missing=True,
+    )
+    mask = pipeline.policy_variant._build_proprio_cross_attention_mask(
+        resolved_text_context=resolved,
+        proprio_state=prepared.variant_inputs["proprio_state"],
+        query_frames_per_copy=4,
+        tokens_per_frame=1,
+        chunk_size_frames=2,
+    )
+
+    assert prepared.variant_inputs["proprio_state"] is None
+    assert torch.equal(prepared.variant_inputs["hidden_proprio_state"], proprio_context_frames)
+    assert resolved is not None
+    assert resolved.shape == text_context.shape
+    assert mask is None
 
 
 def test_mot_proprio_context_mask_exposes_matching_chunk_token_only() -> None:
@@ -1392,6 +1571,72 @@ def test_mot_joint_denoise_infer_supports_same_step_couplings(
         assert pipeline.policy_variant._legacy_inference_blocks_restored is False
 
 
+@pytest.mark.parametrize(
+    "current_block_coupling",
+    [
+        CurrentBlockCoupling.VIDEO_THEN_ACTION,
+        CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+    ],
+)
+def test_mot_legacy_split_cache_infer_threads_per_chunk_action_proprio(
+    current_block_coupling: CurrentBlockCoupling,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=MoTPolicyConfig(
+            hidden_size=32,
+            runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=current_block_coupling,
+            video_prefix_frames=1,
+            num_action_layers=1,
+            proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
+        ),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
+        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    captured_hidden_contexts: list[torch.Tensor | None] = []
+    original_pre_dit = pipeline.policy_variant.action_expert.pre_dit
+
+    def capture_pre_dit(*args, **kwargs):
+        hidden_context = kwargs.get("hidden_context")
+        captured_hidden_contexts.append(None if hidden_context is None else hidden_context.detach().clone())
+        return original_pre_dit(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline.policy_variant.action_expert, "pre_dit", capture_pre_dit)
+
+    output = pipeline.forward_infer_step_from_latents(
+        torch.randn(1, 48, 1, 8, 8),
+        context=PolicyInferContext(state=torch.ones(1, 1, 4)),
+        text_context=torch.randn(1, 5, 16),
+    )
+
+    assert output.decoder_output.action_pred.shape == (1, 4, 4)
+    assert pipeline.policy_variant._legacy_inference_blocks_restored is True
+    assert len(captured_hidden_contexts) == 3
+    for hidden_context in captured_hidden_contexts:
+        assert hidden_context is not None
+        assert hidden_context.shape == (1, 4, 32)
+
+
 def test_mot_generalist_packed_infer_couples_action_to_video_sigma_schedule(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1694,6 +1939,234 @@ def test_mot_packed_infer_uses_rollout_history_contract_for_cached_context() -> 
     assert next_state.past_clean_actions is not None
     assert next_state.past_clean_latents.shape[2] == 10
     assert next_state.past_clean_actions.shape[1] == 10 * action_tokens_per_frame
+
+
+def test_mot_legacy_prefix_prepends_current_state_to_hidden_proprio() -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=MoTPolicyConfig(
+            hidden_size=32,
+            runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.JOINT,
+            num_action_layers=1,
+            proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
+            parallel_sequence_contract=ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
+        ),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(chunk_size=4, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
+        inference=InferenceConfig(frame_chunk_size=4),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    video_latents = torch.zeros(1, 48, 4, 8, 8)
+    condition_latents = torch.ones_like(video_latents)
+    target_states = torch.tensor([[[1.0], [2.0], [3.0], [4.0]]]).expand(-1, -1, 4).contiguous()
+    batch = PolicyTrainBatch(actions=torch.zeros(1, 4, 4), state=torch.full((1, 1, 4), 9.0))
+
+    model_video_latents, hidden_state, prefix_frames, source = pipeline.policy_variant._prepend_legacy_prefix_video_latents(
+        video_latents=video_latents,
+        condition_latents=condition_latents,
+        hidden_proprio_state=target_states,
+        batch=batch,
+    )
+
+    assert model_video_latents.shape[2] == 5
+    assert prefix_frames == 1
+    assert source == "condition_latents_prefix"
+    assert hidden_state is not None
+    assert hidden_state.shape == (1, 5, 4)
+    assert torch.equal(hidden_state[:, 0, :], torch.full((1, 4), 9.0))
+    assert torch.equal(hidden_state[:, 1:, :], target_states)
+
+
+def test_mot_legacy_prefix_action_hidden_proprio_uses_causal_chunk_boundaries() -> None:
+    states = torch.tensor([[[9.0], [1.0], [2.0], [3.0], [4.0], [5.0], [6.0], [7.0], [8.0]]])
+
+    resolved = MoTPolicyVariant._legacy_prefix_action_hidden_proprio_state(
+        states,
+        prefix_condition_frames=1,
+        target_num_frames=8,
+        chunk_size_frames=4,
+    )
+
+    assert resolved is not None
+    assert resolved.squeeze(-1).tolist() == [[9.0, 9.0, 9.0, 9.0, 4.0, 4.0, 4.0, 4.0]]
+
+
+def test_mot_legacy_prefix_requires_frame_level_hidden_proprio() -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=MoTPolicyConfig(
+            hidden_size=32,
+            runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.JOINT,
+            num_action_layers=1,
+            proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
+            parallel_sequence_contract=ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
+        ),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(chunk_size=4, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
+        inference=InferenceConfig(frame_chunk_size=4),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    batch = PolicyTrainBatch(
+        actions=torch.zeros(1, 4, 4),
+        state=torch.zeros(1, 1, 4),
+        extra={"proprio_context_state": torch.zeros(1, 1, 4)},
+    )
+
+    with pytest.raises(ValueError, match="requires frame-level `proprio_context_frames`"):
+        pipeline.policy_variant._resolve_train_hidden_proprio_context(batch)
+
+
+def test_mot_packed_strict_old_infer_skips_video_hidden_proprio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=MoTPolicyConfig(
+            hidden_size=32,
+            runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.JOINT,
+            video_prefix_frames=1,
+            num_action_layers=1,
+            proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
+            parallel_sequence_contract=ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
+        ),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
+        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    captured_video_inputs: list[torch.Tensor | None] = []
+    captured_action_inputs: list[torch.Tensor | None] = []
+    original_video_hidden = pipeline.policy_variant._video_hidden_context_for_tokens
+    original_action_hidden = pipeline.policy_variant._action_hidden_context_for_tokens
+
+    def capture_video_hidden(*args, **kwargs):
+        hidden_proprio_state = args[1] if len(args) > 1 else None
+        captured_video_inputs.append(None if hidden_proprio_state is None else hidden_proprio_state.detach().clone())
+        return original_video_hidden(*args, **kwargs)
+
+    def capture_action_hidden(*args, **kwargs):
+        hidden_proprio_state = args[1] if len(args) > 1 else None
+        captured_action_inputs.append(None if hidden_proprio_state is None else hidden_proprio_state.detach().clone())
+        return original_action_hidden(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline.policy_variant, "_video_hidden_context_for_tokens", capture_video_hidden)
+    monkeypatch.setattr(pipeline.policy_variant, "_action_hidden_context_for_tokens", capture_action_hidden)
+
+    output = pipeline.forward_infer_step_from_latents(
+        torch.randn(1, 48, 1, 8, 8),
+        context=PolicyInferContext(state=torch.ones(1, 1, 4)),
+        text_context=torch.randn(1, 5, 16),
+    )
+
+    assert output.decoder_output.action_pred.shape == (1, 4, 4)
+    assert captured_video_inputs == []
+    assert captured_action_inputs
+    assert all(hidden_state is not None for hidden_state in captured_action_inputs)
+
+
+def test_mot_packed_infer_tracks_per_chunk_hidden_proprio_history() -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=MoTPolicyConfig(
+            hidden_size=32,
+            runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.JOINT,
+            video_prefix_frames=1,
+            num_action_layers=1,
+            proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
+        ),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
+        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    first = pipeline.forward_infer_step_from_latents(
+        torch.randn(1, 48, 1, 8, 8),
+        context=PolicyInferContext(state=torch.ones(1, 1, 4)),
+        text_context=torch.randn(1, 5, 16),
+    )
+    first_state = first.policy_output.next_state.variant_state
+    assert isinstance(first_state, MoTRuntimeState)
+    assert first_state.past_hidden_proprio_states is not None
+    assert first_state.past_hidden_proprio_states.shape == (1, 3, 4)
+
+    second = pipeline.forward_infer_step_from_latents(
+        torch.randn(1, 48, 2, 8, 8),
+        context=PolicyInferContext(state=torch.full((1, 1, 4), 2.0)),
+        infer_state=first.policy_output.next_state,
+        text_context=torch.randn(1, 5, 16),
+    )
+    second_state = second.policy_output.next_state.variant_state
+    assert isinstance(second_state, MoTRuntimeState)
+    assert second_state.past_hidden_proprio_states is not None
+    assert second_state.past_hidden_proprio_states.shape[1] == second_state.past_clean_latents.shape[2]
 
 
 def test_mot_variant_builds_with_interpolated_action_expert_ffn() -> None:

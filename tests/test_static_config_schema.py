@@ -248,6 +248,91 @@ trainer:
 
 
 @pytest.mark.unit
+def test_static_validator_accepts_mot_context_and_history_flags(tmp_path: Path) -> None:
+    config_path = tmp_path / "mot_context_flags.yaml"
+    config_path.write_text(
+        """
+name: mot_context_flags
+data:
+  dataset_name: libero
+  dataset_type: synthetic_multiview
+  sample_construction:
+    condition_source_frame_offset: -1
+  action_schema:
+    action_dim: 7
+    action_horizon: 8
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: mot
+  runtime_mode: non_joint_two_stream
+  current_block_coupling: decoupled_same_step
+  proprio_context_mode: per_chunk_additive
+  context_condition_latent_source: single_frame_condition_latent
+  history_stream_visibility: video_only
+action_decoder:
+  name: mot_decoder
+  action_dim: 7
+  action_horizon: 8
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert report.ok
+
+
+@pytest.mark.unit
+def test_static_validator_rejects_mot_single_frame_context_without_previous_frame_offset(tmp_path: Path) -> None:
+    config_path = tmp_path / "mot_context_flags_leaky_offset.yaml"
+    config_path.write_text(
+        """
+name: mot_context_flags_leaky_offset
+data:
+  dataset_name: libero
+  dataset_type: synthetic_multiview
+  sample_construction:
+    condition_source_frame_offset: 0
+  action_schema:
+    action_dim: 7
+    action_horizon: 8
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: mot
+  runtime_mode: non_joint_two_stream
+  current_block_coupling: decoupled_same_step
+  proprio_context_mode: per_chunk_additive
+  context_condition_latent_source: single_frame_condition_latent
+  history_stream_visibility: video_only
+action_decoder:
+  name: mot_decoder
+  action_dim: 7
+  action_horizon: 8
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any(
+        "single_frame_condition_latent" in issue.message
+        and "offset 0 can expose the first target raw frame" in issue.message
+        for issue in report.errors
+    )
+
+
+@pytest.mark.unit
 def test_static_validator_catches_mot_proprio_context_typo(tmp_path: Path) -> None:
     config_path = tmp_path / "bad_mot_proprio.yaml"
     config_path.write_text(
@@ -295,6 +380,7 @@ data:
   sample_construction:
     mode: hierarchical_fixed_segment
     segment_frames: 128
+    sample_order_mode: epoch_order
     start_padding_frames: 3
     context_prefix_policy: rollout_history
     tail_padding_policy: zero_order_hold
@@ -325,6 +411,170 @@ trainer:
     report = validate_config_file(config_path, repo_root=tmp_path)
 
     assert report.ok
+
+
+@pytest.mark.unit
+def test_static_validator_rejects_replacement_order_on_hierarchical_sampler(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_hierarchical_replacement_order.yaml"
+    config_path.write_text(
+        """
+name: bad_hierarchical_replacement_order
+data:
+  dataset_name: libero
+  dataset_type: lerobot_v2_latent_local
+  sample_construction:
+    mode: hierarchical_fixed_segment
+    segment_frames: 128
+    sample_order_mode: replacement
+  action_schema:
+    action_dim: 7
+    action_horizon: 16
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: post_latent
+  attach_site: post_visual_core
+action_decoder:
+  name: mlp_decoder
+  action_dim: 7
+  action_horizon: 16
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any(issue.path == "data.sample_construction.sample_order_mode" for issue in report.errors)
+
+
+@pytest.mark.unit
+def test_static_validator_rejects_replacement_order_with_mixed_dynamics(tmp_path: Path) -> None:
+    config_path = tmp_path / "mixed_dynamics_replacement_order.yaml"
+    config_path.write_text(
+        """
+name: mixed_dynamics_replacement_order
+data:
+  dataset_name: libero
+  dataset_type: lerobot_v2_latent_local
+  sample_construction:
+    sample_order_mode: replacement
+  action_schema:
+    action_dim: 7
+    action_horizon: 16
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: parallel_stream
+  attach_site: within_visual_core
+  runtime_mode: lingbot_exact_action_conditioned
+  variant_profile: generalist_joint_denoising
+  current_block_coupling: joint
+  generalist_training_paradigm: mixed_dynamics
+action_decoder:
+  name: lingbot_parallel_decoder
+  action_dim: 7
+  action_horizon: 16
+trainer:
+  accelerator: cpu
+  batch_adapter: latents
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any(issue.path == "data.sample_construction.sample_order_mode" for issue in report.errors)
+
+
+@pytest.mark.unit
+def test_static_validator_rejects_mixed_dynamics_views_batch_adapter(tmp_path: Path) -> None:
+    config_path = tmp_path / "mixed_dynamics_views_adapter.yaml"
+    config_path.write_text(
+        """
+name: mixed_dynamics_views_adapter
+data:
+  dataset_name: libero
+  dataset_type: lerobot_v2_latent_local
+  action_schema:
+    action_dim: 7
+    action_horizon: 16
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: parallel_stream
+  attach_site: within_visual_core
+  runtime_mode: lingbot_exact_action_conditioned
+  variant_profile: generalist_joint_denoising
+  current_block_coupling: joint
+  generalist_training_paradigm: mixed_dynamics
+action_decoder:
+  name: lingbot_parallel_decoder
+  action_dim: 7
+  action_horizon: 16
+trainer:
+  accelerator: cpu
+  batch_adapter: views
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any(issue.path == "trainer.batch_adapter" for issue in report.errors)
+
+
+@pytest.mark.unit
+def test_static_validator_rejects_non_uniform_sample_weight_with_mixed_dynamics(tmp_path: Path) -> None:
+    config_path = tmp_path / "mixed_dynamics_weighted_source.yaml"
+    config_path.write_text(
+        """
+name: mixed_dynamics_weighted_source
+data:
+  dataset_name: libero
+  dataset_type: lerobot_v2_latent_local
+  sample_construction:
+    mode: uniform_segment
+    sample_weight_mode: valid_action_steps
+  action_schema:
+    action_dim: 7
+    action_horizon: 16
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: parallel_stream
+  attach_site: within_visual_core
+  runtime_mode: lingbot_exact_action_conditioned
+  variant_profile: generalist_joint_denoising
+  current_block_coupling: joint
+  generalist_training_paradigm: mixed_dynamics
+action_decoder:
+  name: lingbot_parallel_decoder
+  action_dim: 7
+  action_horizon: 16
+trainer:
+  accelerator: cpu
+  batch_adapter: latents
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any(issue.path == "data.sample_construction.sample_weight_mode" for issue in report.errors)
 
 
 @pytest.mark.unit
@@ -616,6 +866,79 @@ trainer:
     assert not report.ok
     assert any(issue.path == "data.sample_construction.require_full_segment" for issue in report.errors)
 
+@pytest.mark.unit
+def test_static_validator_rejects_legacy_prefix_fastwam_runtime(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_legacy_prefix_fastwam.yaml"
+    config_path.write_text(
+        """
+name: bad_legacy_prefix_fastwam
+data:
+  dataset_name: libero
+  dataset_type: synthetic_multiview
+  action_schema:
+    action_dim: 7
+    action_horizon: 8
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: parallel_stream
+  runtime_mode: fastwam_first_frame
+  parallel_sequence_contract: legacy_prefix_single_frame_perchunk_proprio
+action_decoder:
+  name: lingbot_parallel_decoder
+  action_dim: 7
+  action_horizon: 8
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any("legacy_prefix_single_frame_perchunk_proprio" in issue.message for issue in report.errors)
+
+
+@pytest.mark.unit
+def test_static_validator_rejects_contract_owned_history_visibility(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_contract_history_visibility.yaml"
+    config_path.write_text(
+        """
+name: bad_contract_history_visibility
+data:
+  dataset_name: libero
+  dataset_type: synthetic_multiview
+  action_schema:
+    action_dim: 7
+    action_horizon: 8
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: parallel_stream
+  runtime_mode: lingbot_exact
+  current_block_coupling: decoupled_same_step
+  parallel_sequence_contract: rollout_parity_single_frame_perchunk_proprio
+  history_stream_visibility: full
+action_decoder:
+  name: lingbot_parallel_decoder
+  action_dim: 7
+  action_horizon: 8
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any("history_stream_visibility" in issue.path for issue in report.errors)
+
 
 @pytest.mark.unit
 def test_static_validator_warns_for_legacy_action_head() -> None:
@@ -707,11 +1030,11 @@ trainer:
 
 
 @pytest.mark.unit
-def test_static_validator_rejects_mot_shared_video_schedule_until_implemented(tmp_path: Path) -> None:
-    config_path = tmp_path / "bad_mot_shared_video_schedule.yaml"
+def test_static_validator_allows_mot_shared_video_schedule(tmp_path: Path) -> None:
+    config_path = tmp_path / "mot_shared_video_schedule.yaml"
     config_path.write_text(
         """
-name: bad_mot_shared_video_schedule
+name: mot_shared_video_schedule
 data:
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
@@ -740,11 +1063,7 @@ trainer:
 
     report = validate_config_file(config_path, repo_root=tmp_path)
 
-    assert not report.ok
-    assert any(
-        issue.path == "policy_variant.joint_timestep_coupling" and "MoT/M5" in issue.message
-        for issue in report.errors
-    )
+    assert report.ok
 
 
 @pytest.mark.unit

@@ -191,6 +191,25 @@ def test_method1_coupling_and_segment_sampling_are_tracked(tmp_path: Path) -> No
     assert "rollout_context:one_frame" in tags
 
 
+def test_non_default_sample_order_is_tracked(tmp_path: Path) -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            sample_construction=replace(
+                config.data.sample_construction,
+                sample_order_mode="replacement",
+            ),
+        ),
+    )
+
+    metadata = build_run_tracking_metadata(config, run_name=config.name, output_dir=tmp_path / config.name)
+
+    assert metadata["sample_order_mode"] == "replacement"
+    assert "sample_order:replacement" in build_wandb_tags(metadata)
+
+
 def test_method1_generalist_joint_denoising_tracking_metadata(tmp_path: Path) -> None:
     config = load_experiment_config(
         REPO_ROOT

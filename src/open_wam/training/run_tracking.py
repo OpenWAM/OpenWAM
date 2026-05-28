@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess
 from typing import Any
 
-from open_wam.configs import ExperimentConfig, PolicyVariantName, SampleWeightMode
+from open_wam.configs import ExperimentConfig, PolicyVariantName, SampleOrderMode, SampleWeightMode
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -181,6 +181,11 @@ def build_run_tracking_metadata(
             if sample_construction is not None and sample_construction.sample_weight_mode != SampleWeightMode.UNIFORM
             else None
         ),
+        "sample_order_mode": (
+            str(sample_construction.sample_order_mode)
+            if sample_construction is not None and sample_construction.sample_order_mode != SampleOrderMode.EPOCH_ORDER
+            else None
+        ),
         "sample_weight_length_power": (
             float(sample_construction.sample_weight_length_power)
             if sample_construction is not None and sample_construction.sample_weight_length_power is not None
@@ -291,6 +296,8 @@ def build_wandb_tags(tracking_metadata: dict[str, Any]) -> tuple[str, ...]:
         ordered_tags.append(f"rollout_context:{tracking_metadata['rollout_context_policy']}")
     if tracking_metadata.get("sample_weight_mode"):
         ordered_tags.append(f"sample_weight:{tracking_metadata['sample_weight_mode']}")
+    if tracking_metadata.get("sample_order_mode"):
+        ordered_tags.append(f"sample_order:{tracking_metadata['sample_order_mode']}")
     if tracking_metadata.get("preserve_video_pretrain_history") is True:
         ordered_tags.append("video_pretrain_history:preserved")
     if tracking_metadata.get("generalist_training_paradigm"):

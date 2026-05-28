@@ -22,8 +22,10 @@ def build_exact_packed_video_action_coupling_profile(
     build_dense_masks: bool | None = None,
     build_flex_masks: bool | None = None,
     preserve_video_pretrain_history: bool = True,
+    history_stream_visibility: str | None = None,
     chunk_origin_frame: int = 0,
     action_context_mask: torch.Tensor | None = None,
+    prefix_condition_frames: int = 0,
 ) -> PreparedAttentionProfile:
     """Build the exact-runtime packed `[V_noisy,V_clean,A_noisy,A_clean]` profile.
 
@@ -80,6 +82,8 @@ def build_exact_packed_video_action_coupling_profile(
         chunk_origin_frame=int(chunk_origin_frame),
         action_context_mask=action_context_mask,
         preserve_video_pretrain_history=preserve_video_pretrain_history,
+        history_stream_visibility=history_stream_visibility,
+        prefix_condition_frames=int(prefix_condition_frames),
     )
 
 

@@ -197,6 +197,7 @@ def build_exact_video_action_token_layout(
     current_block_coupling: CurrentBlockCoupling | str,
     device: torch.device,
     action_context_mask: torch.Tensor | None = None,
+    prefix_condition_frames: int = 0,
 ) -> PackedTokenLayout:
     """Build `[V_noisy, V_clean, A_noisy, A_clean]` packed-token metadata."""
 
@@ -222,6 +223,12 @@ def build_exact_video_action_token_layout(
         )
     if chunk_size <= 0:
         raise ValueError(f"Expected chunk_size > 0, got {chunk_size}.")
+    prefix_condition_frames = max(0, int(prefix_condition_frames))
+    if prefix_condition_frames > 0 and prefix_condition_frames >= latent_frames:
+        raise ValueError(
+            "`prefix_condition_frames` must be smaller than latent_frames, "
+            f"got prefix_condition_frames={prefix_condition_frames}, latent_frames={latent_frames}."
+        )
 
     latent_seq_id = (
         torch.arange(batch_size, device=device)[:, None, None, None]
@@ -256,9 +263,32 @@ def build_exact_video_action_token_layout(
         .expand(batch_size, -1, action_height, action_width)[None]
         .flatten()
     )
-    latent_chunk_id = torch.div(latent_frame_id - chunk_origin_frame, chunk_size, rounding_mode="floor")
-    action_chunk_id = torch.div(action_frame_id - chunk_origin_frame, chunk_size, rounding_mode="floor")
-    if coupling in {CurrentBlockCoupling.ACTION_THEN_VIDEO, CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO}:
+    if prefix_condition_frames > 0:
+        latent_target_frame_id = (latent_frame_id - prefix_condition_frames).clamp_min(0)
+        target_latent_chunk_id = torch.div(
+            latent_target_frame_id - chunk_origin_frame,
+            chunk_size,
+            rounding_mode="floor",
+        )
+        latent_chunk_id = torch.where(
+            latent_frame_id < prefix_condition_frames,
+            torch.zeros_like(target_latent_chunk_id),
+            target_latent_chunk_id + 1,
+        )
+        action_chunk_id = (
+            torch.div(action_frame_id - chunk_origin_frame, chunk_size, rounding_mode="floor") + 1
+        )
+    else:
+        latent_chunk_id = torch.div(latent_frame_id - chunk_origin_frame, chunk_size, rounding_mode="floor")
+        action_chunk_id = torch.div(action_frame_id - chunk_origin_frame, chunk_size, rounding_mode="floor")
+    if prefix_condition_frames > 0:
+        latent_block_id = torch.where(
+            latent_frame_id < prefix_condition_frames,
+            torch.zeros_like(latent_frame_id),
+            latent_chunk_id * 2,
+        )
+        action_block_id = action_chunk_id * 2 + 1
+    elif coupling in {CurrentBlockCoupling.ACTION_THEN_VIDEO, CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO}:
         latent_block_id = latent_chunk_id * 2 + 1
         action_block_id = action_chunk_id * 2
     else:
@@ -324,6 +354,7 @@ def build_exact_video_action_token_layout(
             "action_frames": action_frames,
             "chunk_size": chunk_size,
             "chunk_origin_frame": chunk_origin_frame,
+            "prefix_condition_frames": prefix_condition_frames,
             "current_block_coupling": coupling.value,
         },
     )

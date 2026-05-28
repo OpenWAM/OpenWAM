@@ -16,6 +16,7 @@ from open_wam.configs import (
     DataSplit,
     ReplayStatusPolicy,
     RolloutContextPolicy,
+    SampleOrderMode,
     SampleStateAnchorMode,
     SampleWeightMode,
     SampleTargetAlignment,
@@ -23,7 +24,11 @@ from open_wam.configs import (
     WindowSamplingMode,
 )
 from open_wam.data import build_train_val_latent_datasets, collate_latent_wam_samples
-from open_wam.data.lerobot_v2_latent import scan_local_latent_windows
+from open_wam.data.lerobot_v2_latent import (
+    LocalLatentEpochOrderSampler,
+    LocalLatentWeightedTrainSampler,
+    scan_local_latent_windows,
+)
 from open_wam.training import TrainingRuntime
 from open_wam.utils.config_loader import load_experiment_config
 
@@ -1770,6 +1775,51 @@ def test_uniform_segment_sampler_round_robins_trajectory_blocks(tmp_path: Path) 
     assert len(train_dataset) == 10
     assert sorted(order) == list(range(len(train_dataset)))
     assert first_windows == {0, 1}
+
+
+def test_uniform_segment_replacement_order_uses_replacement_sampler(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent_uniform_segment_replacement_order"
+    _build_local_robotwin_latent_repo(repo_root, total_rows=4, latent_num_frames=4)
+    _append_latent_episode(
+        repo_root,
+        episode_index=1,
+        task_index=1,
+        task_text="longer task",
+        total_rows=6,
+        latent_num_frames=6,
+    )
+
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            _disable_replay_status(config.data),
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            split_seed=0,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.UNIFORM_SEGMENT,
+                segment_min_frames=2,
+                segment_max_frames=2,
+                segment_locality_block_size=1,
+                sample_order_mode=SampleOrderMode.REPLACEMENT,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    sampler = train_dataset.build_train_sampler(world_size=1, rank=0)
+    order = list(sampler)
+
+    assert isinstance(sampler, LocalLatentWeightedTrainSampler)
+    assert not isinstance(sampler, LocalLatentEpochOrderSampler)
+    assert len(order) == len(train_dataset)
+    assert all(0 <= index < len(train_dataset) for index in order)
 
 
 def test_uniform_segment_task_virtual_start_power_balances_task_mass(tmp_path: Path) -> None:

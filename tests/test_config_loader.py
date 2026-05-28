@@ -38,6 +38,7 @@ from open_wam.configs import (
     ParallelContextConditionLatentSource,
     ParallelHistoryStreamVisibility,
     ParallelRuntimeMode,
+    ParallelSequenceContract,
     ParallelStreamPolicyConfig,
     ParallelStreamVariantProfile,
     PostDecodedPolicyConfig,
@@ -48,6 +49,7 @@ from open_wam.configs import (
     ReplayStatusPolicy,
     RolloutContextPolicy,
     SampleConstructionConfig,
+    SampleOrderMode,
     SampleStateAnchorMode,
     SampleLossWeightMode,
     SampleTargetAlignment,
@@ -226,6 +228,7 @@ action_decoder:
   action_horizon: 16
 trainer:
   accelerator: cpu
+  batch_adapter: latents
 """,
         encoding="utf-8",
     )
@@ -238,6 +241,134 @@ trainer:
     assert config.data.generalist_dynamics_mixture.allow_train_latent_root_for_val is False
     assert config.data.generalist_dynamics_mixture.real_joint_weight == 0.6
     assert config.data.generalist_dynamics_mixture.conditional_history_frames == 8
+
+
+def test_generalist_mixed_dynamics_rejects_replacement_sample_order(tmp_path: Path) -> None:
+    config_path = tmp_path / "mixed_dynamics_replacement_order.yaml"
+    config_path.write_text(
+        """
+name: mixed_dynamics_replacement_order
+data:
+  dataset_name: libero
+  dataset_type: lerobot_v2_latent_local
+  sample_construction:
+    sample_order_mode: replacement
+  action_schema:
+    action_dim: 7
+    action_horizon: 16
+    state_dim: 8
+    state_horizon: 1
+  generalist_dynamics_mixture:
+    train_latent_root: /tmp/counterfactual_train/encoded_latents
+    val_latent_root: /tmp/counterfactual_val/encoded_latents
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: parallel_stream
+  attach_site: within_visual_core
+  runtime_mode: lingbot_exact_action_conditioned
+  variant_profile: generalist_joint_denoising
+  current_block_coupling: joint
+  video_condition_on_action: true
+  generalist_training_paradigm: mixed_dynamics
+action_decoder:
+  name: lingbot_parallel_decoder
+  action_dim: 7
+  action_horizon: 16
+trainer:
+  accelerator: cpu
+  batch_adapter: latents
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="sample_order_mode=replacement"):
+        load_experiment_config(config_path)
+
+
+def test_generalist_mixed_dynamics_rejects_views_batch_adapter(tmp_path: Path) -> None:
+    config_path = tmp_path / "mixed_dynamics_views_adapter.yaml"
+    config_path.write_text(
+        """
+name: mixed_dynamics_views_adapter
+data:
+  dataset_name: libero
+  dataset_type: lerobot_v2_latent_local
+  action_schema:
+    action_dim: 7
+    action_horizon: 16
+    state_dim: 8
+    state_horizon: 1
+  generalist_dynamics_mixture:
+    train_latent_root: /tmp/counterfactual_train/encoded_latents
+    val_latent_root: /tmp/counterfactual_val/encoded_latents
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: parallel_stream
+  attach_site: within_visual_core
+  runtime_mode: lingbot_exact_action_conditioned
+  variant_profile: generalist_joint_denoising
+  current_block_coupling: joint
+  video_condition_on_action: true
+  generalist_training_paradigm: mixed_dynamics
+action_decoder:
+  name: lingbot_parallel_decoder
+  action_dim: 7
+  action_horizon: 16
+trainer:
+  accelerator: cpu
+  batch_adapter: views
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="batch_adapter=latents"):
+        load_experiment_config(config_path)
+
+
+def test_generalist_mixed_dynamics_rejects_non_uniform_sample_weight(tmp_path: Path) -> None:
+    config_path = tmp_path / "mixed_dynamics_weighted_source.yaml"
+    config_path.write_text(
+        """
+name: mixed_dynamics_weighted_source
+data:
+  dataset_name: libero
+  dataset_type: lerobot_v2_latent_local
+  sample_construction:
+    mode: uniform_segment
+    sample_weight_mode: valid_action_steps
+  action_schema:
+    action_dim: 7
+    action_horizon: 16
+    state_dim: 8
+    state_horizon: 1
+  generalist_dynamics_mixture:
+    train_latent_root: /tmp/counterfactual_train/encoded_latents
+    val_latent_root: /tmp/counterfactual_val/encoded_latents
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: parallel_stream
+  attach_site: within_visual_core
+  runtime_mode: lingbot_exact_action_conditioned
+  variant_profile: generalist_joint_denoising
+  current_block_coupling: joint
+  video_condition_on_action: true
+  generalist_training_paradigm: mixed_dynamics
+action_decoder:
+  name: lingbot_parallel_decoder
+  action_dim: 7
+  action_horizon: 16
+trainer:
+  accelerator: cpu
+  batch_adapter: latents
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="sample_weight_mode"):
+        load_experiment_config(config_path)
 
 
 def test_auxiliary_validation_tasks_load_from_yaml(tmp_path: Path) -> None:
@@ -934,7 +1065,7 @@ def test_mot_policy_yaml_config_loads(tmp_path: Path) -> None:
     assert config.action_decoder.name == ActionDecoderName.MOT
 
 
-def test_mot_policy_rejects_shared_video_schedule_until_implemented(tmp_path: Path) -> None:
+def test_mot_policy_allows_shared_video_schedule(tmp_path: Path) -> None:
     source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
@@ -949,8 +1080,10 @@ def test_mot_policy_rejects_shared_video_schedule_until_implemented(tmp_path: Pa
     with config_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(raw, handle, sort_keys=False)
 
-    with pytest.raises(ValueError, match="MoT.*shared_video_schedule"):
-        load_experiment_config(config_path)
+    config = load_experiment_config(config_path)
+
+    assert isinstance(config.policy_variant, MoTPolicyConfig)
+    assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.SHARED_VIDEO_SCHEDULE
 
 
 def test_mot_policy_preset_applies_fastwam_joint_defaults(tmp_path: Path) -> None:
@@ -1449,6 +1582,323 @@ def test_parallel_stream_per_chunk_additive_proprio_flag_loads(tmp_path: Path) -
     assert config.policy_variant.require_condition_latents is True
 
 
+def test_mot_per_chunk_single_frame_context_flags_load(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_decoupled_same_step_heng_compatible.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw["policy_variant"]["proprio_context_mode"] = "per_chunk_additive"
+    raw["policy_variant"]["context_condition_latent_source"] = "single_frame_condition_latent"
+    raw["policy_variant"]["history_stream_visibility"] = "video_only"
+    raw.setdefault("data", {}).setdefault("sample_construction", {})["condition_source_frame_offset"] = -1
+
+    config_path = tmp_path / "mot_per_chunk_single_frame_context.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    assert isinstance(config.policy_variant, MoTPolicyConfig)
+    assert config.policy_variant.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
+    assert (
+        config.policy_variant.context_condition_latent_source
+        == ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+    )
+    assert config.policy_variant.history_stream_visibility == ParallelHistoryStreamVisibility.VIDEO_ONLY
+    assert config.policy_variant.use_condition_latents is True
+    assert config.policy_variant.require_condition_latents is True
+
+
+
+def test_parallel_sequence_contract_expands_parallel_stream_rollout_parity_defaults(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_decoupled_same_step_heng_compatible.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw["policy_variant"]["parallel_sequence_contract"] = "rollout_parity_single_frame_perchunk_proprio"
+    for key in (
+        "proprio_context_mode",
+        "context_condition_latent_source",
+        "history_stream_visibility",
+    ):
+        raw["policy_variant"].pop(key, None)
+    for key in (
+        "condition_source_frame_offset",
+        "target_alignment",
+        "rollout_context_policy",
+        "start_padding_frames",
+        "context_prefix_policy",
+        "context_prefix_frames",
+    ):
+        raw["data"]["sample_construction"].pop(key, None)
+
+    config_path = tmp_path / "parallel_contract.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    assert config.policy_variant.parallel_sequence_contract == (
+        ParallelSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO
+    )
+    assert config.policy_variant.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
+    assert (
+        config.policy_variant.context_condition_latent_source
+        == ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+    )
+    assert config.policy_variant.history_stream_visibility == ParallelHistoryStreamVisibility.VIDEO_ONLY
+    assert config.policy_variant.use_condition_latents is True
+    assert config.policy_variant.require_condition_latents is True
+    assert config.data.sample_construction.target_alignment == SampleTargetAlignment.NEXT_AFTER_CONTEXT
+    assert config.data.sample_construction.rollout_context_policy == RolloutContextPolicy.ONE_FRAME
+    assert config.data.sample_construction.condition_source_frame_offset == -1
+    assert config.data.sample_construction.context_prefix_policy == SegmentContextPolicy.NONE
+    assert config.data.sample_construction.context_prefix_frames == 0
+
+
+def test_parallel_sequence_contract_expands_mot_rollout_parity_defaults(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_video_then_action_heng_compatible.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw["policy_variant"]["parallel_sequence_contract"] = "rollout_parity_single_frame_perchunk_proprio"
+    for key in (
+        "proprio_context_mode",
+        "context_condition_latent_source",
+        "history_stream_visibility",
+    ):
+        raw["policy_variant"].pop(key, None)
+    for key in (
+        "condition_source_frame_offset",
+        "target_alignment",
+        "rollout_context_policy",
+        "start_padding_frames",
+        "context_prefix_policy",
+        "context_prefix_frames",
+    ):
+        raw["data"]["sample_construction"].pop(key, None)
+
+    config_path = tmp_path / "mot_contract.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    assert isinstance(config.policy_variant, MoTPolicyConfig)
+    assert config.policy_variant.parallel_sequence_contract == (
+        ParallelSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO
+    )
+    assert config.policy_variant.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
+    assert (
+        config.policy_variant.context_condition_latent_source
+        == ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+    )
+    assert config.policy_variant.history_stream_visibility == ParallelHistoryStreamVisibility.VIDEO_ONLY
+    assert config.data.sample_construction.target_alignment == SampleTargetAlignment.NEXT_AFTER_CONTEXT
+    assert config.data.sample_construction.condition_source_frame_offset == -1
+
+
+def test_parallel_sequence_contract_legacy_prefix_restores_target_only_sampling(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_video_then_action_heng_compatible.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw["policy_variant"]["parallel_sequence_contract"] = "legacy_prefix_single_frame_perchunk_proprio"
+    for key in (
+        "proprio_context_mode",
+        "context_condition_latent_source",
+        "history_stream_visibility",
+    ):
+        raw["policy_variant"].pop(key, None)
+    for key in (
+        "target_alignment",
+        "rollout_context_policy",
+        "start_padding_frames",
+        "context_prefix_policy",
+        "context_prefix_frames",
+    ):
+        raw["data"]["sample_construction"].pop(key, None)
+
+    config_path = tmp_path / "parallel_legacy_prefix_contract.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    assert config.policy_variant.parallel_sequence_contract == (
+        ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
+    )
+    assert config.policy_variant.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
+    assert (
+        config.policy_variant.context_condition_latent_source
+        == ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+    )
+    assert config.policy_variant.history_stream_visibility == ParallelHistoryStreamVisibility.VIDEO_ONLY
+    assert config.policy_variant.use_condition_latents is True
+    assert config.policy_variant.require_condition_latents is True
+    assert config.data.sample_construction.target_alignment == SampleTargetAlignment.LEGACY
+    assert config.data.sample_construction.condition_source_frame_offset == -1
+    assert config.data.sample_construction.start_padding_frames == 0
+
+
+def test_parallel_sequence_contract_expands_mot_legacy_prefix_defaults(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_video_then_action_heng_compatible.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw["policy_variant"]["parallel_sequence_contract"] = "legacy_prefix_single_frame_perchunk_proprio"
+    raw["policy_variant"]["joint_timestep_coupling"] = "shared_video_schedule"
+    for key in (
+        "proprio_context_mode",
+        "context_condition_latent_source",
+        "history_stream_visibility",
+    ):
+        raw["policy_variant"].pop(key, None)
+    for key in (
+        "target_alignment",
+        "rollout_context_policy",
+        "start_padding_frames",
+        "context_prefix_policy",
+        "context_prefix_frames",
+    ):
+        raw["data"]["sample_construction"].pop(key, None)
+
+    config_path = tmp_path / "mot_legacy_prefix_contract.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    assert isinstance(config.policy_variant, MoTPolicyConfig)
+    assert config.policy_variant.parallel_sequence_contract == (
+        ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
+    )
+    assert config.policy_variant.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
+    assert (
+        config.policy_variant.context_condition_latent_source
+        == ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+    )
+    assert config.policy_variant.history_stream_visibility == ParallelHistoryStreamVisibility.VIDEO_ONLY
+    assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.SHARED_VIDEO_SCHEDULE
+    assert config.policy_variant.noisy_video_condition_prob == pytest.approx(0.5)
+    assert config.policy_variant.use_condition_latents is True
+    assert config.policy_variant.require_condition_latents is True
+    assert config.data.sample_construction.target_alignment == SampleTargetAlignment.LEGACY
+    assert config.data.sample_construction.condition_source_frame_offset == -1
+    assert config.data.sample_construction.start_padding_frames == 0
+
+
+def test_parallel_sequence_contract_legacy_prefix_rejects_fastwam_runtime(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_fastwam_first_frame_heng_compatible.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw["policy_variant"]["parallel_sequence_contract"] = "legacy_prefix_single_frame_perchunk_proprio"
+
+    config_path = tmp_path / "fastwam_legacy_prefix_contract.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    with pytest.raises(ValueError, match="legacy_prefix_single_frame_perchunk_proprio.*runtime_mode"):
+        load_experiment_config(config_path)
+
+
+def test_parallel_sequence_contract_legacy_prefix_preserves_explicit_noisy_condition_prob(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_video_then_action_heng_compatible.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw["policy_variant"]["parallel_sequence_contract"] = "legacy_prefix_single_frame_perchunk_proprio"
+    raw["policy_variant"]["noisy_video_condition_prob"] = 0.0
+    for key in (
+        "target_alignment",
+        "rollout_context_policy",
+        "start_padding_frames",
+        "context_prefix_policy",
+        "context_prefix_frames",
+    ):
+        raw["data"]["sample_construction"].pop(key, None)
+
+    config_path = tmp_path / "mot_legacy_prefix_explicit_noisy_prob.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    assert isinstance(config.policy_variant, MoTPolicyConfig)
+    assert config.policy_variant.noisy_video_condition_prob == 0.0
+
+
+def test_parallel_sequence_contract_legacy_prefix_preserves_explicit_joint_coupling(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_joint_heng_compatible.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw["policy_variant"]["parallel_sequence_contract"] = "legacy_prefix_single_frame_perchunk_proprio"
+    raw["policy_variant"]["joint_timestep_coupling"] = "shared_video_schedule"
+    for key in (
+        "target_alignment",
+        "rollout_context_policy",
+        "start_padding_frames",
+        "context_prefix_policy",
+        "context_prefix_frames",
+    ):
+        raw["data"]["sample_construction"].pop(key, None)
+
+    config_path = tmp_path / "mot_legacy_prefix_explicit_joint_coupling.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    assert isinstance(config.policy_variant, MoTPolicyConfig)
+    assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.SHARED_VIDEO_SCHEDULE
+
+
+def test_parallel_sequence_contract_legacy_prefix_preserves_explicit_match_sigma_joint_coupling(
+    tmp_path: Path,
+) -> None:
+    source_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_joint_heng_compatible.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw["policy_variant"]["parallel_sequence_contract"] = "legacy_prefix_single_frame_perchunk_proprio"
+    raw["policy_variant"]["joint_timestep_coupling"] = "match_sigma"
+    for key in (
+        "target_alignment",
+        "rollout_context_policy",
+        "start_padding_frames",
+        "context_prefix_policy",
+        "context_prefix_frames",
+    ):
+        raw["data"]["sample_construction"].pop(key, None)
+
+    config_path = tmp_path / "mot_legacy_prefix_explicit_match_sigma_joint_coupling.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    assert isinstance(config.policy_variant, MoTPolicyConfig)
+    assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA
+
+
+def test_parallel_sequence_contract_rejects_conflicting_explicit_values(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_decoupled_same_step_heng_compatible.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw["policy_variant"]["parallel_sequence_contract"] = "rollout_parity_single_frame_perchunk_proprio"
+    raw["policy_variant"]["history_stream_visibility"] = "full"
+
+    config_path = tmp_path / "parallel_contract_conflict.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    with pytest.raises(ValueError, match="parallel_sequence_contract=.*history_stream_visibility=video_only"):
+        load_experiment_config(config_path)
+
+
 def test_parallel_stream_generalist_rejects_single_frame_context_source(tmp_path: Path) -> None:
     source_path = (
         REPO_ROOT
@@ -1491,6 +1941,7 @@ def test_sample_construction_yaml_strings_are_coerced_to_enum_members(tmp_path: 
         "context_prefix_policy": "fixed",
         "context_prefix_frames": 5,
         "sample_weight_mode": "valid_action_steps_x_inverse_task_demo_count",
+        "sample_order_mode": "replacement",
         "sample_weight_length_power": 0.5,
         "sample_weight_min": 0.25,
         "sample_weight_max": 4.0,
@@ -1518,6 +1969,7 @@ def test_sample_construction_yaml_strings_are_coerced_to_enum_members(tmp_path: 
     assert config.data.sample_construction.context_prefix_policy == SegmentContextPolicy.FIXED
     assert config.data.sample_construction.context_prefix_frames == 5
     assert config.data.sample_construction.sample_weight_mode == SampleWeightMode.VALID_ACTION_STEPS_X_INVERSE_TASK_DEMO_COUNT
+    assert config.data.sample_construction.sample_order_mode == SampleOrderMode.REPLACEMENT
     assert config.data.sample_construction.sample_weight_length_power == pytest.approx(0.5)
     assert config.data.sample_construction.sample_weight_min == pytest.approx(0.25)
     assert config.data.sample_construction.sample_weight_max == pytest.approx(4.0)
@@ -1556,6 +2008,26 @@ def test_hierarchical_fixed_segment_sample_construction_loads_explicit_sampler_f
     assert config.data.sample_construction.task_start_power == pytest.approx(0.5)
     assert config.data.sample_construction.demo_count_power == pytest.approx(0.0)
     assert config.data.sample_construction.trajectory_start_power == pytest.approx(1.0)
+
+
+def test_hierarchical_fixed_segment_rejects_replacement_sample_order_typed_path(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/register_attached_libero_latent_local.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw.setdefault("data", {})
+    raw["data"]["sample_construction"] = {
+        "mode": "hierarchical_fixed_segment",
+        "segment_frames": 128,
+        "sample_order_mode": "replacement",
+    }
+
+    config_path = tmp_path / "register_attached_bad_hierarchical_replacement_order.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    with pytest.raises(ValueError, match="does not support replacement `sample_order_mode`"):
+        load_experiment_config(config_path)
 
 
 def test_hierarchical_fixed_segment_loads_strict_rollout_parity_fields(tmp_path: Path) -> None:

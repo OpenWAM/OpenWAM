@@ -226,6 +226,13 @@ class SampleWeightMode(StrEnum):
     TASK_VIRTUAL_START_COUNT_POWER = "task_virtual_start_count_power"
 
 
+class SampleOrderMode(StrEnum):
+    """How local latent train samplers order candidate examples."""
+
+    EPOCH_ORDER = "epoch_order"
+    REPLACEMENT = "replacement"
+
+
 class ConsortiumChannelSelectionMode(StrEnum):
     """How a consortium dataset selects visual channels from each member repo."""
 
@@ -752,6 +759,20 @@ class ParallelHistoryStreamVisibility(StrEnum):
     VIDEO_QUERIES_VIDEO_ONLY = "video_queries_video_only"
     # Strict history filter: all queries see video history only.
     VIDEO_ONLY = "video_only"
+
+
+class ParallelSequenceContract(StrEnum):
+    """Shared sequence semantics layered on top of video/action coupling modes."""
+
+    DEFAULT = "default"
+    # Rollout-parity contract: data samples include one pre-target context frame,
+    # use a single-frame condition latent before the target segment, inject
+    # proprio per chunk, and restrict clean history attention to video tokens.
+    ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO = "rollout_parity_single_frame_perchunk_proprio"
+    # Legacy exact-prefix contract used by the original parallel-proprio M1
+    # modes: data samples contain target frames only, and runtime prepends one
+    # clean condition latent before the target video stream.
+    LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO = "legacy_prefix_single_frame_perchunk_proprio"
 
 
 class CurrentBlockCoupling(StrEnum):

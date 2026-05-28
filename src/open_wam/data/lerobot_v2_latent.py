@@ -25,6 +25,7 @@ from open_wam.configs import (
     PaddedTargetPolicy,
     ReplayStatusPolicy,
     RolloutContextPolicy,
+    SampleOrderMode,
     SampleWeightMode,
     SampleStateAnchorMode,
     SampleTargetAlignment,
@@ -167,7 +168,11 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
         return len(self.windows)
 
     def build_train_sampler(self, *, world_size: int = 1, rank: int = 0) -> Sampler[int] | None:
-        if self.data_config.sample_construction.sample_weight_mode == SampleWeightMode.UNIFORM:
+        sample_cfg = self.data_config.sample_construction
+        if (
+            sample_cfg.sample_weight_mode == SampleWeightMode.UNIFORM
+            and sample_cfg.sample_order_mode == SampleOrderMode.EPOCH_ORDER
+        ):
             return None
         return LocalLatentWeightedTrainSampler(self, world_size=world_size, rank=rank)
 
@@ -1023,6 +1028,37 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             masks.append(state_mask)
         return torch.stack(states, dim=0), torch.stack(masks, dim=0)
 
+    def _extract_proprio_context_frames(
+        self,
+        *,
+        rows: list[dict[str, Any]],
+        observed_frame_ids: list[int],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        state_dim = int(self.data_config.action_schema.state_dim)
+        if state_dim <= 0:
+            raise ValueError("Per-frame proprio context requires positive data.action_schema.state_dim.")
+        if not observed_frame_ids:
+            return (
+                torch.zeros(0, state_dim, dtype=torch.float32),
+                torch.zeros(0, state_dim, dtype=torch.float32),
+            )
+        if not rows:
+            return (
+                torch.zeros(len(observed_frame_ids), state_dim, dtype=torch.float32),
+                torch.zeros(len(observed_frame_ids), state_dim, dtype=torch.float32),
+            )
+        states: list[torch.Tensor] = []
+        masks: list[torch.Tensor] = []
+        for frame_index in observed_frame_ids:
+            state, state_mask = self._extract_state_history_at_frame(
+                rows=rows,
+                anchor_frame_index=int(frame_index),
+                state_horizon=1,
+            )
+            states.append(state[-1])
+            masks.append(state_mask[-1])
+        return torch.stack(states, dim=0), torch.stack(masks, dim=0)
+
     def _pack_sequence(
         self,
         *,
@@ -1238,6 +1274,8 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
         return len(self._virtual_index)
 
     def build_train_sampler(self, *, world_size: int = 1, rank: int = 0) -> Sampler[int]:
+        if self.data_config.sample_construction.sample_order_mode == SampleOrderMode.REPLACEMENT:
+            return LocalLatentWeightedTrainSampler(self, world_size=world_size, rank=rank)
         return LocalLatentEpochOrderSampler(self, world_size=world_size, rank=rank)
 
     def build_epoch_index_order(self, *, epoch: int) -> list[int]:
@@ -1512,6 +1550,8 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
             condition_latents=subwindow["condition_latents"],
             proprio_context_state=subwindow["proprio_context_state"],
             proprio_context_state_mask=subwindow["proprio_context_state_mask"],
+            proprio_context_frames=subwindow["proprio_context_frames"],
+            proprio_context_frames_mask=subwindow["proprio_context_frames_mask"],
             metadata={
                 "repo_root": str(window.repo_root),
                 "dataset_id": str(window.repo_root),
@@ -1530,6 +1570,7 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
                 "proprio_context_frame_index": subwindow["proprio_context_frame_index"],
                 "proprio_context_local_frame": subwindow["proprio_context_local_frame"],
                 "proprio_context_chunk_count": int(subwindow["proprio_context_state"].shape[0]),
+                "proprio_context_frame_count": int(subwindow["proprio_context_frames"].shape[0]),
                 "observed_frame_ids": subwindow["observed_frame_ids"],
                 "latent_temporal_layout": subwindow["latent_temporal_layout"],
                 "task_index": task_index,
@@ -1841,6 +1882,10 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
             ),
             loss_frame_start=loss_frame_start,
         )
+        proprio_context_frames, proprio_context_frames_mask = self._extract_proprio_context_frames(
+            rows=rows,
+            observed_frame_ids=observed_frame_ids,
+        )
         return {
             "video_latents": self._slice_video_latents_with_zero_hold(
                 video_latents=video_latents,
@@ -1863,6 +1908,8 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
             "state_mask": state_mask,
             "proprio_context_state": proprio_context_state,
             "proprio_context_state_mask": proprio_context_state_mask,
+            "proprio_context_frames": proprio_context_frames,
+            "proprio_context_frames_mask": proprio_context_frames_mask,
             "sample_start_frame": sample_start_frame,
             "sample_end_frame": sample_end_frame,
             "anchor_frame_index": anchor_frame_index,
@@ -2592,6 +2639,8 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
             condition_latents=subwindow["condition_latents"],
             proprio_context_state=subwindow["proprio_context_state"],
             proprio_context_state_mask=subwindow["proprio_context_state_mask"],
+            proprio_context_frames=subwindow["proprio_context_frames"],
+            proprio_context_frames_mask=subwindow["proprio_context_frames_mask"],
             metadata={
                 "repo_root": str(window.repo_root),
                 "dataset_id": str(window.repo_root),
@@ -2610,6 +2659,7 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
                 "proprio_context_frame_index": subwindow["proprio_context_frame_index"],
                 "proprio_context_local_frame": subwindow["proprio_context_local_frame"],
                 "proprio_context_chunk_count": int(subwindow["proprio_context_state"].shape[0]),
+                "proprio_context_frame_count": int(subwindow["proprio_context_frames"].shape[0]),
                 "observed_frame_ids": subwindow["observed_frame_ids"],
                 "latent_temporal_layout": subwindow["latent_temporal_layout"],
                 "task_index": task_index,

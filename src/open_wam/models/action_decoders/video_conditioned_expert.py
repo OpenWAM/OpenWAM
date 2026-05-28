@@ -164,6 +164,7 @@ class VideoConditionedActionExpert(nn.Module):
         freq_dim: int,
         context_dim: int | None = None,
         text_dim: int | None = None,
+        hidden_context_dim: int | None = None,
         cross_attn_norm: bool = True,
         eps: float = 1e-6,
     ) -> None:
@@ -179,6 +180,7 @@ class VideoConditionedActionExpert(nn.Module):
         self.ffn_dim = int(ffn_dim)
         self.context_dim = int(resolved_context_dim)
         self.text_dim = self.context_dim
+        self.hidden_context_dim = int(hidden_context_dim) if hidden_context_dim is not None else self.hidden_size
         self.freq_dim = int(freq_dim)
         self.cross_attn_norm = bool(cross_attn_norm)
         self.eps = float(eps)
@@ -186,6 +188,11 @@ class VideoConditionedActionExpert(nn.Module):
         self.action_embedder = nn.Linear(self.action_dim, self.hidden_size)
         self.time_conditioner = SharedTransformerTimeEmbedding(self.hidden_size, self.freq_dim)
         self.context_proj = nn.Linear(self.context_dim, self.hidden_size)
+        self.hidden_context_proj = (
+            nn.Identity()
+            if self.hidden_context_dim == self.hidden_size
+            else nn.Linear(self.hidden_context_dim, self.hidden_size)
+        )
         self.rope = SharedTransformerRotaryPositionalEmbedding(self.attn_head_dim)
         self.blocks = nn.ModuleList(
             [
@@ -213,6 +220,7 @@ class VideoConditionedActionExpert(nn.Module):
         context_mask: torch.Tensor | None = None,
         cross_attention_mask: torch.Tensor | None = None,
         action_grid_ids: torch.Tensor | None = None,
+        hidden_context: torch.Tensor | None = None,
     ) -> ActionExpertPreprocessOutput:
         if action_tokens.ndim != 3:
             raise ValueError(
@@ -266,6 +274,18 @@ class VideoConditionedActionExpert(nn.Module):
             )
 
         tokens = self.action_embedder(action_tokens)
+        if hidden_context is not None:
+            expected_hidden_shape = (batch_size, seq_len, self.hidden_context_dim)
+            if tuple(hidden_context.shape) != expected_hidden_shape:
+                raise ValueError(
+                    "VideoConditionedActionExpert expects hidden_context to match action token sequence and configured "
+                    "hidden_context_dim, "
+                    f"got hidden_context={tuple(hidden_context.shape)}, expected={expected_hidden_shape}."
+                )
+            projected_hidden_context = self.hidden_context_proj(
+                hidden_context.to(device=tokens.device, dtype=tokens.dtype)
+            )
+            tokens = tokens + projected_hidden_context.to(device=tokens.device, dtype=tokens.dtype)
         _, t_mod = self.time_conditioner(timestep.to(device=tokens.device, dtype=torch.float32), dtype=tokens.dtype)
         projected_context = self.context_proj(context.to(device=tokens.device, dtype=tokens.dtype))
         if action_grid_ids is not None:

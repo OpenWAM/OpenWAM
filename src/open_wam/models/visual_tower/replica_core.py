@@ -1478,6 +1478,7 @@ class SharedVideoTransformerCore(nn.Module):
                     ),
                     proprio_context_token_count=int(metadata.get("proprio_context_token_count", 0)),
                     chunk_origin_frame=int(metadata.get("chunk_origin_frame", 0)),
+                    prefix_condition_frames=int(metadata.get("prefix_condition_frames", 0)),
                     action_context_mask=(
                         torch.tensor(
                             metadata["action_context_valid_tokens"],

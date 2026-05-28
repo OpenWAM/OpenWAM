@@ -22,6 +22,8 @@ class LatentWAMSample:
     condition_latents: torch.Tensor | None = None
     proprio_context_state: torch.Tensor | None = None
     proprio_context_state_mask: torch.Tensor | None = None
+    proprio_context_frames: torch.Tensor | None = None
+    proprio_context_frames_mask: torch.Tensor | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -41,6 +43,8 @@ class LatentWAMBatch:
     condition_latents: torch.Tensor | None = None
     proprio_context_state: torch.Tensor | None = None
     proprio_context_state_mask: torch.Tensor | None = None
+    proprio_context_frames: torch.Tensor | None = None
+    proprio_context_frames_mask: torch.Tensor | None = None
     metadata: tuple[dict[str, Any], ...] = field(default_factory=tuple)
 
 
@@ -61,6 +65,8 @@ def collate_latent_wam_samples(samples: list[LatentWAMSample]) -> LatentWAMBatch
     condition_latents = _stack_optional_tensor(samples, "condition_latents")
     proprio_context_state = _stack_optional_tensor(samples, "proprio_context_state")
     proprio_context_state_mask = _stack_optional_tensor(samples, "proprio_context_state_mask")
+    proprio_context_frames = _stack_optional_tensor(samples, "proprio_context_frames")
+    proprio_context_frames_mask = _stack_optional_tensor(samples, "proprio_context_frames_mask")
     task_text = tuple(sample.task_text for sample in samples)
     metadata = tuple(_metadata_with_action_stats(sample) for sample in samples)
     return LatentWAMBatch(
@@ -76,6 +82,8 @@ def collate_latent_wam_samples(samples: list[LatentWAMSample]) -> LatentWAMBatch
         condition_latents=condition_latents,
         proprio_context_state=proprio_context_state,
         proprio_context_state_mask=proprio_context_state_mask,
+        proprio_context_frames=proprio_context_frames,
+        proprio_context_frames_mask=proprio_context_frames_mask,
         metadata=metadata,
     )
 
@@ -104,6 +112,12 @@ def move_latent_wam_batch_to_device(
         ),
         proprio_context_state_mask=(
             batch.proprio_context_state_mask.to(device) if batch.proprio_context_state_mask is not None else None
+        ),
+        proprio_context_frames=(
+            batch.proprio_context_frames.to(device) if batch.proprio_context_frames is not None else None
+        ),
+        proprio_context_frames_mask=(
+            batch.proprio_context_frames_mask.to(device) if batch.proprio_context_frames_mask is not None else None
         ),
         metadata=batch.metadata,
     )

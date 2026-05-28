@@ -51,6 +51,8 @@ def build_policy_train_batch(
     condition_latents: torch.Tensor | None = None,
     proprio_context_state: torch.Tensor | None = None,
     proprio_context_state_mask: torch.Tensor | None = None,
+    proprio_context_frames: torch.Tensor | None = None,
+    proprio_context_frames_mask: torch.Tensor | None = None,
 ) -> PolicyTrainBatch:
     extra = {
         "task_text": task_text,
@@ -65,6 +67,10 @@ def build_policy_train_batch(
         extra["proprio_context_state"] = proprio_context_state
     if proprio_context_state_mask is not None:
         extra["proprio_context_state_mask"] = proprio_context_state_mask
+    if proprio_context_frames is not None:
+        extra["proprio_context_frames"] = proprio_context_frames
+    if proprio_context_frames_mask is not None:
+        extra["proprio_context_frames_mask"] = proprio_context_frames_mask
     return PolicyTrainBatch(
         actions=actions,
         action_mask=action_mask,
@@ -168,6 +174,8 @@ class LatentBatchAdapter:
                 condition_latents=batch.condition_latents,
                 proprio_context_state=batch.proprio_context_state,
                 proprio_context_state_mask=batch.proprio_context_state_mask,
+                proprio_context_frames=batch.proprio_context_frames,
+                proprio_context_frames_mask=batch.proprio_context_frames_mask,
             ),
         )
 

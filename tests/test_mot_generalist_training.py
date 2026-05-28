@@ -28,6 +28,10 @@ from open_wam.configs.enums import (
     JointTimestepCoupling,
     MoTGeneralistTrainingMode,
     MoTRuntimeMode,
+    ParallelContextConditionLatentSource,
+    ParallelHistoryStreamVisibility,
+    ParallelSequenceContract,
+    ProprioContextMode,
     PolicyVariantName,
 )
 from open_wam.configs.variant_semantics import GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY
@@ -89,6 +93,13 @@ def test_generalist_sigma_coupling_is_explicitly_configurable() -> None:
     cfg = _make_mot_policy_config(
         current_block_coupling=CurrentBlockCoupling.JOINT,
         mot_generalist_training_mode_probs={"joint": 1.0},
+    )
+    assert _should_couple_mot_action_to_video_sigmas(cfg, CurrentBlockCoupling.JOINT) is True
+
+    cfg = _make_mot_policy_config(
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        mot_generalist_training_mode_probs={"joint": 1.0},
+        joint_timestep_coupling=JointTimestepCoupling.SHARED_VIDEO_SCHEDULE,
     )
     assert _should_couple_mot_action_to_video_sigmas(cfg, CurrentBlockCoupling.JOINT) is True
 
@@ -410,6 +421,7 @@ def _build_tiny_generalist_pipeline(
     forced_mode: MoTGeneralistTrainingMode,
     *,
     joint_timestep_coupling: JointTimestepCoupling = JointTimestepCoupling.MATCH_SIGMA,
+    action_hidden_size: int | None = None,
 ):
     """Construct a tiny CPU pipeline pinned to one generalist mode."""
 
@@ -418,6 +430,7 @@ def _build_tiny_generalist_pipeline(
         ExperimentConfig,
         InferenceConfig,
         MoTActionDecoderConfig,
+        MoTActionExpertInitMode,
         MoTPolicyConfig as TopLevelMoTPolicyConfig,
         MoTRuntimeMode,
         RobotWinDataConfig,
@@ -454,6 +467,12 @@ def _build_tiny_generalist_pipeline(
             current_block_coupling=CurrentBlockCoupling.JOINT,
             video_prefix_frames=1,
             num_action_layers=1,
+            action_hidden_size=action_hidden_size,
+            action_expert_init_mode=(
+                MoTActionExpertInitMode.VIDEO_WEIGHT_INTERPOLATE
+                if action_hidden_size is not None
+                else MoTActionExpertInitMode.VIDEO_WEIGHT_COPY
+            ),
             mot_generalist_training_mode_probs=forced_probs,
             joint_timestep_coupling=joint_timestep_coupling,
         ),
@@ -480,13 +499,14 @@ def test_forced_joint_training_respects_timestep_coupling_mode(
     import open_wam.models.policy_variants.mot.variant as mot_variant_module
 
     original_build_action_artifacts = mot_variant_module.build_frame_aligned_action_flow_match_train_artifacts
-    saw_action_coupling_inputs: list[tuple[bool, bool]] = []
+    saw_action_coupling_inputs: list[tuple[bool, bool, bool]] = []
 
     def spy_build_action_artifacts(*args, **kwargs):
         saw_action_coupling_inputs.append(
             (
                 kwargs.get("frame_sigma_values") is not None,
                 kwargs.get("frame_timestep_ids") is not None,
+                kwargs.get("scheduler_override") is not None,
             )
         )
         return original_build_action_artifacts(*args, **kwargs)
@@ -511,11 +531,22 @@ def test_forced_joint_training_respects_timestep_coupling_mode(
 
     pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
         MoTGeneralistTrainingMode.JOINT,
+        joint_timestep_coupling=JointTimestepCoupling.SHARED_VIDEO_SCHEDULE,
+    )
+    pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        MoTGeneralistTrainingMode.JOINT,
         joint_timestep_coupling=JointTimestepCoupling.INDEPENDENT,
     )
     pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
 
-    assert saw_action_coupling_inputs == [(True, False), (False, True), (False, False)]
+    assert saw_action_coupling_inputs == [
+        (True, False, False),
+        (False, True, False),
+        (False, True, True),
+        (False, False, False),
+    ]
 
 
 def test_generalist_match_sigma_uses_video_clock_for_all_modes(
@@ -655,6 +686,166 @@ def test_forced_action_conditioned_video_threads_resolved_text_to_m5_runtime(
     assert len(packed_runtime_contexts) == 1
     assert torch.equal(action_pre_dit_contexts[0], expected_text)
     assert torch.equal(packed_runtime_contexts[0], expected_text)
+
+
+def test_m5_per_chunk_additive_proprio_threads_hidden_context_to_packed_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import open_wam.models.policy_variants.mot.variant as mot_variant_module
+    from open_wam.models.policy_variants.mot.modules import MoTActionExpert
+
+    pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        MoTGeneralistTrainingMode.JOINT,
+        action_hidden_size=16,
+    )
+    object.__setattr__(
+        pipeline.policy_variant.config,
+        "proprio_context_mode",
+        ProprioContextMode.PER_CHUNK_ADDITIVE,
+    )
+    pipeline.policy_variant.attach_visual_tower(pipeline.visual_tower)
+    batch.extra["proprio_context_state"] = torch.randn(1, 4, 4)
+    batch.extra["proprio_context_state_mask"] = torch.ones(1, 4, 4)
+
+    action_hidden_contexts: list[torch.Tensor | None] = []
+    video_hidden_contexts: list[torch.Tensor | None] = []
+    original_pre_dit = MoTActionExpert.pre_dit
+
+    def spy_pre_dit(self, *args, **kwargs):
+        hidden_context = kwargs.get("hidden_context")
+        action_hidden_contexts.append(None if hidden_context is None else hidden_context.detach().clone())
+        return original_pre_dit(self, *args, **kwargs)
+
+    def fake_forward_mot_packed_coupling_denoise(**kwargs):
+        video_hidden_context = kwargs.get("video_hidden_context")
+        video_hidden_contexts.append(
+            None if video_hidden_context is None else video_hidden_context.detach().clone()
+        )
+        return torch.zeros_like(kwargs["noisy_video_latents"]), torch.zeros_like(kwargs["packed_action_pre"].tokens)
+
+    monkeypatch.setattr(MoTActionExpert, "pre_dit", spy_pre_dit)
+    monkeypatch.setattr(
+        mot_variant_module,
+        "forward_mot_packed_coupling_denoise",
+        fake_forward_mot_packed_coupling_denoise,
+    )
+
+    pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    assert len(action_hidden_contexts) == 1
+    assert action_hidden_contexts[0] is not None
+    assert action_hidden_contexts[0].shape == (1, 8, 32)
+    assert pipeline.policy_variant.action_expert.hidden_context_dim == 32
+    assert pipeline.policy_variant.action_expert.hidden_size == 16
+    assert len(video_hidden_contexts) == 1
+    assert video_hidden_contexts[0] is not None
+    assert video_hidden_contexts[0].shape == (1, 128, 32)
+
+
+def test_m5_legacy_prefix_contract_prepends_video_only_condition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import open_wam.models.policy_variants.mot.variant as mot_variant_module
+
+    from open_wam.configs import (
+        ActionSchemaConfig,
+        ExperimentConfig,
+        InferenceConfig,
+        MoTActionDecoderConfig,
+        MoTPolicyConfig as TopLevelMoTPolicyConfig,
+        RobotWinDataConfig,
+    )
+    from open_wam.models.policy_variants.contracts import PolicyTrainBatch
+    from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
+    from open_wam.pipelines import build_variant_pipeline_from_config
+
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=TopLevelMoTPolicyConfig(
+            hidden_size=32,
+            runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.VIDEO_THEN_ACTION,
+            video_prefix_frames=1,
+            num_action_layers=1,
+            parallel_sequence_contract=ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
+            proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
+            context_condition_latent_source=ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
+            history_stream_visibility=ParallelHistoryStreamVisibility.VIDEO_ONLY,
+            use_condition_latents=True,
+            require_condition_latents=True,
+            noisy_video_condition_prob=0.0,
+            joint_timestep_coupling=JointTimestepCoupling.INDEPENDENT,
+        ),
+        action_decoder=MoTActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(
+            chunk_size=2,
+            window_size=8,
+            enabled_objectives=("action", "latent"),
+            action_loss_weight=1.0,
+            latent_loss_weight=1.0,
+        ),
+        inference=InferenceConfig(frame_chunk_size=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    video_latents = torch.randn(1, 48, 4, 8, 8)
+    condition_latents = torch.full_like(video_latents, 3.0)
+    batch = PolicyTrainBatch(
+        actions=torch.randn(1, 4, 4),
+        state=torch.randn(1, 4),
+        extra={
+            "condition_latents": condition_latents,
+            "proprio_context_frames": torch.randn(1, 4, 4),
+            "proprio_context_frames_mask": torch.ones(1, 4, 4),
+        },
+    )
+    observed: dict[str, object] = {}
+
+    def fake_forward_mot_packed_coupling_denoise(**kwargs):
+        observed["noisy_video_shape"] = tuple(kwargs["noisy_video_latents"].shape)
+        observed["clean_video_shape"] = tuple(kwargs["clean_video_latents"].shape)
+        observed["packed_action_shape"] = tuple(kwargs["packed_action_pre"].tokens.shape)
+        observed["prefix_condition_frames"] = kwargs["attention_profile"].metadata["prefix_condition_frames"]
+        observed["video_hidden_context"] = kwargs["video_hidden_context"]
+        observed["frame_start"] = kwargs["frame_start"]
+        return torch.zeros_like(kwargs["noisy_video_latents"]), torch.zeros_like(kwargs["packed_action_pre"].tokens)
+
+    monkeypatch.setattr(
+        mot_variant_module,
+        "forward_mot_packed_coupling_denoise",
+        fake_forward_mot_packed_coupling_denoise,
+    )
+
+    output = pipeline.forward_train_from_latents(
+        video_latents,
+        batch,
+        text_context=torch.randn(1, 5, 16),
+    )
+
+    assert torch.isfinite(output.decoder_output.loss)
+    assert observed["noisy_video_shape"] == (1, 48, 5, 8, 8)
+    assert observed["clean_video_shape"] == (1, 48, 5, 8, 8)
+    assert observed["packed_action_shape"] == (1, 8, 32)
+    assert observed["prefix_condition_frames"] == 1
+    assert observed["video_hidden_context"] is None
+    assert observed["frame_start"] == -1
+    assert output.policy_output.aux["video_condition_source"] == "condition_latents_prefix"
+    assert output.decoder_output.aux["predicted_latents"].shape == (1, 48, 5, 8, 8)
 
 
 def test_forced_video_conditioned_action_zeros_video_loss() -> None:

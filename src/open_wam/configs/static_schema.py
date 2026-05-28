@@ -19,6 +19,7 @@ from open_wam.configs.enums import (
     AttachSite,
     AttentionMode,
     AuxiliaryValidationSource,
+    BatchAdapterName,
     BackboneImplementation,
     CurrentBlockCoupling,
     DataSplit,
@@ -34,14 +35,17 @@ from open_wam.configs.enums import (
     ParallelContextConditionLatentSource,
     ParallelHistoryStreamVisibility,
     ParallelRuntimeMode,
+    ParallelSequenceContract,
     ParallelStreamVariantProfile,
     PaddedTargetPolicy,
     PolicyVariantName,
     ProprioContextMode,
     ReplayStatusPolicy,
     RolloutContextPolicy,
+    SampleOrderMode,
     SampleStateAnchorMode,
     SampleTargetAlignment,
+    SampleWeightMode,
     SegmentContextPolicy,
     StrEnum,
     TailPaddingPolicy,
@@ -182,6 +186,7 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
         _validate_enum(backbone, "infer_attn_mode", AttentionMode, issues, "backbone")
         _validate_positive_ints(backbone, issues, "backbone", ("hidden_size", "num_layers", "num_heads"))
 
+    trainer = _mapping(raw.get("trainer"))
     policy_variant = _mapping(raw.get("policy_variant"))
     action_decoder = _mapping(raw.get("action_decoder"))
     action_head = _mapping(raw.get("action_head"))
@@ -198,6 +203,7 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
             _validate_enum(policy_variant, "variant_profile", ParallelStreamVariantProfile, issues, "policy_variant")
             _validate_enum(policy_variant, "current_block_coupling", CurrentBlockCoupling, issues, "policy_variant")
             _validate_enum(policy_variant, "joint_timestep_coupling", JointTimestepCoupling, issues, "policy_variant")
+            _validate_enum(policy_variant, "parallel_sequence_contract", ParallelSequenceContract, issues, "policy_variant")
             _validate_enum(
                 policy_variant,
                 "generalist_training_paradigm",
@@ -220,22 +226,8 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
                 issues,
                 "policy_variant",
             )
-            if (
-                policy_variant.get("context_condition_latent_source")
-                == ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT.value
-            ):
-                offset = (
-                    None
-                    if sample_construction is None
-                    else _optional_int(sample_construction.get("condition_source_frame_offset"))
-                )
-                if offset != -1:
-                    issues.error(
-                        "data.sample_construction.condition_source_frame_offset",
-                        "Expected -1 when "
-                        "`policy_variant.context_condition_latent_source=single_frame_condition_latent`; "
-                        "offset 0 can expose the first target raw frame.",
-                    )
+            _validate_single_frame_condition_offset(policy_variant, sample_construction, issues)
+            _validate_parallel_sequence_contract_static(policy_variant, sample_construction, issues)
             _validate_joint_denoise_training_mode_probs(policy_variant, issues)
         if policy_variant.get("name") == PolicyVariantName.MOT.value:
             _validate_enum(policy_variant, "runtime_mode", MoTRuntimeMode, issues, "policy_variant")
@@ -243,13 +235,22 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
             _validate_enum(policy_variant, "action_expert_init_mode", MoTActionExpertInitMode, issues, "policy_variant")
             _validate_enum(policy_variant, "current_block_coupling", CurrentBlockCoupling, issues, "policy_variant")
             _validate_enum(policy_variant, "joint_timestep_coupling", JointTimestepCoupling, issues, "policy_variant")
-            if policy_variant.get("joint_timestep_coupling") == JointTimestepCoupling.SHARED_VIDEO_SCHEDULE.value:
-                issues.error(
-                    "policy_variant.joint_timestep_coupling",
-                    "`shared_video_schedule` is not implemented for MoT/M5 in this PR; use `match_sigma`, "
-                    "`match_index`, or `independent` until the follow-up M5 implementation lands.",
-                )
+            _validate_enum(policy_variant, "parallel_sequence_contract", ParallelSequenceContract, issues, "policy_variant")
             _validate_enum(policy_variant, "proprio_context_mode", ProprioContextMode, issues, "policy_variant")
+            _validate_enum(
+                policy_variant,
+                "context_condition_latent_source",
+                ParallelContextConditionLatentSource,
+                issues,
+                "policy_variant",
+            )
+            _validate_enum(
+                policy_variant,
+                "history_stream_visibility",
+                ParallelHistoryStreamVisibility,
+                issues,
+                "policy_variant",
+            )
             _validate_enum(
                 policy_variant,
                 "generalist_training_paradigm",
@@ -257,7 +258,30 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
                 issues,
                 "policy_variant",
             )
+            _validate_single_frame_condition_offset(policy_variant, sample_construction, issues)
+            _validate_parallel_sequence_contract_static(policy_variant, sample_construction, issues)
             _validate_mot_generalist_training_mode_probs(policy_variant, issues)
+        if policy_variant.get("generalist_training_paradigm") == GeneralistTrainingParadigm.MIXED_DYNAMICS.value:
+            if trainer is None or trainer.get("batch_adapter") != BatchAdapterName.LATENTS.value:
+                issues.error(
+                    "trainer.batch_adapter",
+                    "`generalist_training_paradigm=mixed_dynamics` requires `trainer.batch_adapter=latents`.",
+                )
+            if sample_construction is not None and sample_construction.get("sample_order_mode") == SampleOrderMode.REPLACEMENT.value:
+                issues.error(
+                    "data.sample_construction.sample_order_mode",
+                    "`sample_order_mode=replacement` is not supported with "
+                    "`generalist_training_paradigm=mixed_dynamics` because the mixed-dynamics wrapper owns sampling.",
+                )
+            if (
+                sample_construction is not None
+                and sample_construction.get("sample_weight_mode") not in (None, SampleWeightMode.UNIFORM.value)
+            ):
+                issues.error(
+                    "data.sample_construction.sample_weight_mode",
+                    "`sample_weight_mode` must be `uniform` with `generalist_training_paradigm=mixed_dynamics` "
+                    "because the mixed-dynamics wrapper owns sampling.",
+                )
         _validate_positive_ints(policy_variant, issues, "policy_variant", ("hidden_size",))
     if action_decoder is not None:
         _validate_enum(action_decoder, "name", ActionDecoderName, issues, "action_decoder")
@@ -265,9 +289,9 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
     _validate_action_horizons(action_schema, policy_variant, action_decoder, issues)
     _validate_action_schema_compatibility(action_schema, action_decoder, action_head, issues)
 
-    trainer = _mapping(raw.get("trainer"))
     if trainer is not None:
         _validate_enum(trainer, "accelerator", TrainerAccelerator, issues, "trainer")
+        _validate_enum(trainer, "batch_adapter", BatchAdapterName, issues, "trainer")
         _validate_enum(trainer, "precision", TrainerPrecision, issues, "trainer")
         _validate_positive_ints(
             trainer,
@@ -441,6 +465,7 @@ def _validate_sample_construction(
     _validate_enum(sample_construction, "tail_padding_policy", TailPaddingPolicy, issues, "data.sample_construction")
     _validate_enum(sample_construction, "padded_target_policy", PaddedTargetPolicy, issues, "data.sample_construction")
     _validate_enum(sample_construction, "state_anchor_mode", SampleStateAnchorMode, issues, "data.sample_construction")
+    _validate_enum(sample_construction, "sample_order_mode", SampleOrderMode, issues, "data.sample_construction")
     _validate_positive_ints(
         sample_construction,
         issues,
@@ -495,11 +520,20 @@ def _validate_sample_construction(
                 "`hierarchical_fixed_segment` uses fixed segment and hierarchical power fields; "
                 f"do not set `{legacy_key}`.",
             )
+    if sample_construction.get("sample_order_mode") == SampleOrderMode.REPLACEMENT.value:
+        issues.error(
+            "data.sample_construction.sample_order_mode",
+            "`hierarchical_fixed_segment` does not support replacement `sample_order_mode`.",
+        )
     if sample_construction.get("target_alignment") == SampleTargetAlignment.NEXT_AFTER_CONTEXT.value:
-        if sample_construction.get("randomize_geometry", True):
+        if sample_construction.get("randomize_geometry", True) and not sample_construction.get(
+            "allow_next_after_context_random_geometry",
+            False,
+        ):
             issues.error(
                 "data.sample_construction.randomize_geometry",
-                "`target_alignment=next_after_context` requires fixed rollout chunking; set this to false.",
+                "`target_alignment=next_after_context` requires fixed rollout chunking; set this to false "
+                "unless allow_next_after_context_random_geometry is true.",
             )
         if sample_construction.get("start_padding_frames", 0) not in (0, None):
             issues.error(
@@ -588,6 +622,115 @@ def _validate_generalist_dynamics_mixture(
                     "data.generalist_dynamics_mixture.conditional_history_frames",
                     "Expected a positive integer or null.",
                 )
+
+
+def _validate_single_frame_condition_offset(
+    policy_variant: Mapping[str, Any],
+    sample_construction: Mapping[str, Any] | None,
+    issues: "_IssueBuilder",
+) -> None:
+    if (
+        policy_variant.get("context_condition_latent_source")
+        != ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT.value
+    ):
+        return
+    offset = None if sample_construction is None else _optional_int(sample_construction.get("condition_source_frame_offset"))
+    if offset != -1:
+        issues.error(
+            "data.sample_construction.condition_source_frame_offset",
+            "Expected -1 when "
+            "`policy_variant.context_condition_latent_source=single_frame_condition_latent`; "
+            "offset 0 can expose the first target raw frame.",
+        )
+
+
+def _validate_parallel_sequence_contract_static(
+    policy_variant: Mapping[str, Any],
+    sample_construction: Mapping[str, Any] | None,
+    issues: "_IssueBuilder",
+) -> None:
+    raw_contract = policy_variant.get("parallel_sequence_contract")
+    if raw_contract in (None, ParallelSequenceContract.DEFAULT.value):
+        return
+    try:
+        contract = ParallelSequenceContract(str(raw_contract))
+    except ValueError:
+        return
+    if contract not in {
+        ParallelSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO,
+        ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
+    }:
+        return
+
+    policy_name = policy_variant.get("name")
+    if policy_name not in {PolicyVariantName.PARALLEL_STREAM.value, PolicyVariantName.MOT.value}:
+        issues.error(
+            "policy_variant.parallel_sequence_contract",
+            f"`{contract.value}` is only supported for policy_variant.name parallel_stream or mot.",
+        )
+        return
+
+    if contract == ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO:
+        runtime_mode = policy_variant.get("runtime_mode")
+        if policy_name == PolicyVariantName.PARALLEL_STREAM.value and runtime_mode not in (
+            None,
+            ParallelRuntimeMode.LINGBOT_EXACT.value,
+            ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED.value,
+        ):
+            issues.error(
+                "policy_variant.runtime_mode",
+                "legacy_prefix_single_frame_perchunk_proprio requires runtime_mode "
+                "lingbot_exact or lingbot_exact_action_conditioned for parallel_stream.",
+            )
+        if policy_name == PolicyVariantName.MOT.value and runtime_mode not in (
+            None,
+            MoTRuntimeMode.NON_JOINT_TWO_STREAM.value,
+        ):
+            issues.error(
+                "policy_variant.runtime_mode",
+                "legacy_prefix_single_frame_perchunk_proprio requires runtime_mode=non_joint_two_stream for mot.",
+            )
+
+    expected_policy = {
+        "proprio_context_mode": ProprioContextMode.PER_CHUNK_ADDITIVE.value,
+        "context_condition_latent_source": ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT.value,
+        "history_stream_visibility": ParallelHistoryStreamVisibility.VIDEO_ONLY.value,
+        "use_condition_latents": True,
+        "require_condition_latents": True,
+    }
+    for key, expected_value in expected_policy.items():
+        if key in policy_variant and policy_variant[key] != expected_value:
+            issues.error(
+                f"policy_variant.{key}",
+                f"`parallel_sequence_contract={contract.value}` owns `{key}`; expected {expected_value!r}.",
+            )
+
+    if sample_construction is None:
+        return
+    expected_sample: dict[str, Any] = {
+        "condition_source_frame_offset": -1,
+        "start_padding_frames": 0,
+    }
+    if contract == ParallelSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO:
+        expected_sample.update(
+            {
+                "target_alignment": SampleTargetAlignment.NEXT_AFTER_CONTEXT.value,
+                "rollout_context_policy": RolloutContextPolicy.ONE_FRAME.value,
+            }
+        )
+    else:
+        expected_sample["target_alignment"] = SampleTargetAlignment.LEGACY.value
+    for key, expected_value in expected_sample.items():
+        if key not in sample_construction:
+            continue
+        actual_value = sample_construction[key]
+        if key in {"condition_source_frame_offset", "start_padding_frames"}:
+            actual_value = _optional_int(actual_value)
+        if actual_value != expected_value:
+            issues.error(
+                f"data.sample_construction.{key}",
+                f"`parallel_sequence_contract={contract.value}` owns `{key}`; expected {expected_value!r}.",
+            )
 
 
 def _validate_action_horizons(

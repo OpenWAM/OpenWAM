@@ -66,14 +66,15 @@ class LingbotParallelActionDecoder(ActionDecoder):
             batch_size=latent_pred.shape[0],
         )
 
-        batch_frames, num_frames = input_dict["latent_dict"]["timesteps"].shape
+        latent_batch_frames, latent_num_frames = input_dict["latent_dict"]["timesteps"].shape
+        action_batch_frames, action_num_frames = input_dict["action_dict"]["timesteps"].shape
         latent_scheduler_weight = latent_scheduler.training_weight(input_dict["latent_dict"]["timesteps"].flatten()).reshape(
-            batch_frames,
-            num_frames,
+            latent_batch_frames,
+            latent_num_frames,
         )
         action_scheduler_weight = action_scheduler.training_weight(input_dict["action_dict"]["timesteps"].flatten()).reshape(
-            batch_frames,
-            num_frames,
+            action_batch_frames,
+            action_num_frames,
         )
 
         latent_loss = F.mse_loss(
