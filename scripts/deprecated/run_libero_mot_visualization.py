@@ -98,6 +98,17 @@ def main() -> None:
     parser.add_argument("--max-chunks", type=int, default=None)
     parser.add_argument("--raw-window-frames", type=int, default=None)
     parser.add_argument(
+        "--frontend-encode-mode",
+        choices=("rolling_offline", "lingbot_streaming_vae"),
+        default="rolling_offline",
+        help=(
+            "RGB-to-latent frontend mode. `rolling_offline` preserves the existing behavior: "
+            "chunk 0 uses the streaming frontend and later chunks re-encode the rolling raw window offline. "
+            "`lingbot_streaming_vae` keeps the Wan VAE stream cache alive and encodes only newly "
+            "executed env observations between chunks, matching the LingBot-VA client lifecycle."
+        ),
+    )
+    parser.add_argument(
         "--startup-model-obs-frames",
         type=int,
         default=1,
@@ -214,6 +225,17 @@ def main() -> None:
         raise ValueError(
             f"Expected --startup-env-init-steps to be positive, got {startup_env_init_steps}."
         )
+    use_lingbot_streaming_vae = args.frontend_encode_mode == "lingbot_streaming_vae"
+    if use_lingbot_streaming_vae and startup_model_obs_frames != 1:
+        raise ValueError(
+            "`--frontend-encode-mode lingbot_streaming_vae` expects "
+            "`--startup-model-obs-frames 1` to match LingBot-VA's first-frame bootstrap."
+        )
+    if use_lingbot_streaming_vae and args.reset_policy_state_each_chunk:
+        raise ValueError(
+            "`--frontend-encode-mode lingbot_streaming_vae` requires persistent policy/frontend state; "
+            "drop `--reset-policy-state-each-chunk`."
+        )
 
     pipeline = build_variant_pipeline_from_config(config)
     video_viz._load_pipeline_checkpoint(pipeline, checkpoint_path)
@@ -243,6 +265,7 @@ def main() -> None:
     )
     component_report["checkpoint_runtime_config_merged"] = checkpoint_runtime_config_path is not None
     component_report["pipeline_training_mode"] = bool(pipeline.training)
+    component_report["frontend_encode_mode"] = str(args.frontend_encode_mode)
     _print_log("load_report", component_report)
 
     task_spec, prompt = _resolve_task_spec(args.benchmark, args.task_id)
@@ -283,6 +306,10 @@ def main() -> None:
         done = False
         chunk_count = 0
         session = runner.reset(task_text=(prompt,))
+        streaming_next_visual_outputs = None
+        streaming_next_obs_window: list[dict[str, np.ndarray]] | None = None
+        if use_lingbot_streaming_vae:
+            pipeline.visual_tower.reset_runtime_state()
 
         while env.env.timestep < args.max_timestep and not done:
             if args.max_chunks is not None and chunk_count >= args.max_chunks:
@@ -300,20 +327,38 @@ def main() -> None:
                         "env_timestep": int(env.env.timestep),
                     },
                 )
-                model_obs_window = _select_model_obs_window(
-                    list(frame_window),
-                    chunk_index=chunk_count,
-                    startup_model_obs_frames=startup_model_obs_frames,
-                )
-                views = _obs_list_to_views(model_obs_window, device=frontend_device)
-                visual_outputs = _prepare_mot_visual_outputs(
-                    pipeline,
-                    views=views,
-                    task_text=(prompt,),
-                    frontend_device=frontend_device,
-                    runtime_device=runtime_device,
-                    use_streaming_frontend=chunk_count == 0,
-                )
+                if use_lingbot_streaming_vae and chunk_count > 0:
+                    if streaming_next_visual_outputs is None or streaming_next_obs_window is None:
+                        raise RuntimeError(
+                            "LingBot streaming VAE rollout expected encoded observations from the previous "
+                            f"environment chunk before chunk_index={chunk_count}."
+                        )
+                    model_obs_window = streaming_next_obs_window
+                    visual_outputs = streaming_next_visual_outputs
+                    streaming_next_visual_outputs = None
+                    streaming_next_obs_window = None
+                    frontend_path = "lingbot_streaming_vae"
+                else:
+                    model_obs_window = _select_model_obs_window(
+                        list(frame_window),
+                        chunk_index=chunk_count,
+                        startup_model_obs_frames=startup_model_obs_frames,
+                    )
+                    views = _obs_list_to_views(model_obs_window, device=frontend_device)
+                    visual_outputs = _prepare_mot_visual_outputs(
+                        pipeline,
+                        views=views,
+                        task_text=(prompt,),
+                        frontend_device=frontend_device,
+                        runtime_device=runtime_device,
+                        use_streaming_frontend=chunk_count == 0 or use_lingbot_streaming_vae,
+                        preserve_stream_cache=False,
+                        text_context=session.text_context,
+                        negative_text_context=session.negative_text_context,
+                    )
+                    frontend_path = "lingbot_streaming_vae_init" if use_lingbot_streaming_vae else (
+                        "streaming" if chunk_count == 0 else "offline"
+                    )
                 _print_log(
                     "stage",
                     {
@@ -322,7 +367,7 @@ def main() -> None:
                         "env_timestep": int(env.env.timestep),
                         "model_obs_frames": int(len(model_obs_window)),
                         "video_latent_frames": int(visual_outputs.frontend.video_latents.shape[2]),
-                        "frontend_path": "streaming" if chunk_count == 0 else "offline",
+                        "frontend_path": frontend_path,
                     },
                 )
                 infer_output = pipeline._forward_infer_with_visual_outputs(
@@ -379,7 +424,7 @@ def main() -> None:
                 "window_size": len(frame_window),
                 "model_obs_frames": len(model_obs_window),
                 "video_latent_frames": int(visual_outputs.frontend.video_latents.shape[2]),
-                "frontend_path": "streaming" if chunk_count == 0 else "offline",
+                "frontend_path": frontend_path,
                 "action_shape": list(actions.shape),
                 "predicted_latents_shape": None if not isinstance(predicted_latents, torch.Tensor) else list(predicted_latents.shape),
                 "first_action_preview": [float(v) for v in actions[0].tolist()],
@@ -391,6 +436,7 @@ def main() -> None:
             real_future_frames: list[dict[str, np.ndarray]] = []
             executed_actions = 0
             executed_control_actions: list[np.ndarray] = []
+            executed_obs_frames: list[dict[str, np.ndarray]] = []
             policy_debug = _summarize_policy_debug(infer_output.policy_output.aux)
             generation_frame_start = int(
                 policy_debug.get("generation_frame_start", 0)
@@ -407,12 +453,14 @@ def main() -> None:
                     obs, _, done, _ = env.step(control_action)
                     executed_actions += 1
                     extracted = _extract_obs(obs)
-                    rollout_frames.append({key: np.array(value, copy=True) for key, value in extracted.items()})
-                    frame_window.append({key: np.array(value, copy=True) for key, value in extracted.items()})
+                    extracted_record = {key: np.array(value, copy=True) for key, value in extracted.items()}
+                    rollout_frames.append({key: np.array(value, copy=True) for key, value in extracted_record.items()})
+                    frame_window.append({key: np.array(value, copy=True) for key, value in extracted_record.items()})
+                    executed_obs_frames.append({key: np.array(value, copy=True) for key, value in extracted_record.items()})
                     # Packed M5 history warmup must encode the dense executed
                     # segment. Sparse keyframes collapse a 4-latent chunk to a
                     # single VAE latent and shift all subsequent history ids.
-                    real_future_frames.append({key: np.array(value, copy=True) for key, value in extracted.items()})
+                    real_future_frames.append({key: np.array(value, copy=True) for key, value in extracted_record.items()})
                     if done or env.env.timestep >= args.max_timestep:
                         break
                 if done or env.env.timestep >= args.max_timestep:
@@ -437,22 +485,66 @@ def main() -> None:
                 action_dim=actions.shape[-1],
             )
             if (
-                real_future_frames
+                use_lingbot_streaming_vae
+                and executed_obs_frames
+                and not done
+                and env.env.timestep < args.max_timestep
+            ):
+                streaming_views = _obs_list_to_views(executed_obs_frames, device=frontend_device)
+                streaming_next_visual_outputs = _prepare_mot_visual_outputs(
+                    pipeline,
+                    views=streaming_views,
+                    task_text=(prompt,),
+                    frontend_device=frontend_device,
+                    runtime_device=runtime_device,
+                    use_streaming_frontend=True,
+                    preserve_stream_cache=True,
+                    text_context=session.text_context,
+                    negative_text_context=session.negative_text_context,
+                )
+                streaming_next_obs_window = [
+                    {key: np.array(value, copy=True) for key, value in obs.items()}
+                    for obs in executed_obs_frames
+                ]
+                streaming_update_log = {
+                    "chunk_index": chunk_count,
+                    "phase": "lingbot_streaming_vae_update",
+                    "real_obs_frames": int(len(streaming_next_obs_window)),
+                    "real_latent_frames": int(streaming_next_visual_outputs.frontend.video_latents.shape[2]),
+                }
+                _print_log(f"chunk_{chunk_count}", streaming_update_log)
+                chunk_logs.append(streaming_update_log)
+
+            if (
+                (executed_obs_frames if use_lingbot_streaming_vae else real_future_frames)
                 and warmup_action_history is not None
                 and not done
                 and env.env.timestep < args.max_timestep
                 and "mot_packed_history_debug" in infer_output.policy_output.aux
             ):
-                warmup_debug = _warmup_mot_packed_history_from_observations(
-                    pipeline,
-                    config=config,
-                    session=session,
-                    obs_list=real_future_frames,
-                    action_history=warmup_action_history,
-                    task_text=(prompt,),
-                    frontend_device=frontend_device,
-                    runtime_device=runtime_device,
-                )
+                if use_lingbot_streaming_vae:
+                    if streaming_next_visual_outputs is None or streaming_next_obs_window is None:
+                        raise RuntimeError("Streaming VAE packed warmup expected pre-encoded next observations.")
+                    warmup_debug = _warmup_mot_packed_history_from_visual_outputs(
+                        pipeline,
+                        config=config,
+                        session=session,
+                        warmup_outputs=streaming_next_visual_outputs,
+                        obs_frame_count=len(streaming_next_obs_window),
+                        action_history=warmup_action_history,
+                        runtime_device=runtime_device,
+                    )
+                else:
+                    warmup_debug = _warmup_mot_packed_history_from_observations(
+                        pipeline,
+                        config=config,
+                        session=session,
+                        obs_list=real_future_frames,
+                        action_history=warmup_action_history,
+                        task_text=(prompt,),
+                        frontend_device=frontend_device,
+                        runtime_device=runtime_device,
+                    )
                 warmup_log = {
                     "chunk_index": chunk_count,
                     "phase": "packed_history_warmup",
@@ -721,6 +813,7 @@ def _prepare_mot_visual_outputs(
     frontend_device: torch.device,
     runtime_device: torch.device,
     use_streaming_frontend: bool,
+    preserve_stream_cache: bool = False,
     text_context: torch.Tensor | None = None,
     negative_text_context: torch.Tensor | None = None,
 ):
@@ -733,7 +826,7 @@ def _prepare_mot_visual_outputs(
             task_text=task_text,
             text_context=text_context,
             negative_text_context=negative_text_context,
-            preserve_stream_cache=False,
+            preserve_stream_cache=preserve_stream_cache,
         )
         runtime_dtype = pipeline.visual_tower.core.patch_embedding_mlp.weight.dtype
         return pipeline.prepare_visual_outputs_from_latents(
@@ -869,6 +962,32 @@ def _warmup_mot_packed_history_from_observations(
         text_context=session.text_context,
         negative_text_context=session.negative_text_context,
     )
+    return _warmup_mot_packed_history_from_visual_outputs(
+        pipeline,
+        config=config,
+        session=session,
+        warmup_outputs=warmup_outputs,
+        obs_frame_count=len(obs_list),
+        action_history=action_history,
+        runtime_device=runtime_device,
+    )
+
+
+def _warmup_mot_packed_history_from_visual_outputs(
+    pipeline,
+    *,
+    config,
+    session,
+    warmup_outputs,
+    obs_frame_count: int,
+    action_history: torch.Tensor | None,
+    runtime_device: torch.device,
+) -> dict[str, object]:
+    policy_state = session.policy_state
+    runtime_state = getattr(policy_state, "variant_state", None) if policy_state is not None else None
+    if runtime_state is None or not hasattr(runtime_state, "past_clean_latents"):
+        return {"warmup_skipped": True, "reason": "no_mot_runtime_state"}
+
     runtime_dtype = pipeline.visual_tower.core.patch_embedding_mlp.weight.dtype
     real_latents = warmup_outputs.frontend.video_latents.to(device=runtime_device, dtype=runtime_dtype)
     past_latents = runtime_state.past_clean_latents
@@ -935,7 +1054,7 @@ def _warmup_mot_packed_history_from_observations(
         session.negative_text_context = warmup_outputs.frontend.conditioning.negative_text_context
     return {
         "warmup_skipped": False,
-        "real_obs_frames": int(len(obs_list)),
+        "real_obs_frames": int(obs_frame_count),
         "real_latent_frames": int(real_latents.shape[2]),
         "past_clean_latent_frames_after": int(runtime_state.past_clean_latents.shape[2]),
         "past_clean_action_frames_after": (
