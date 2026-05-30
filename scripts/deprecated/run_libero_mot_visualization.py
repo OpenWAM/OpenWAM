@@ -98,6 +98,16 @@ def main() -> None:
     parser.add_argument("--max-chunks", type=int, default=None)
     parser.add_argument("--raw-window-frames", type=int, default=None)
     parser.add_argument(
+        "--mot-inference-window-size",
+        type=int,
+        default=None,
+        help=(
+            "Optional MoT rollout attention/cache window override in latent-frame block units. "
+            "For legacy split-cache modes this overrides the LingBot slot-pool attn_window; "
+            "for packed coupling modes it overrides the training_config.window_size used at inference."
+        ),
+    )
+    parser.add_argument(
         "--frontend-encode-mode",
         choices=("rolling_offline", "lingbot_streaming_vae"),
         default="rolling_offline",
@@ -225,6 +235,11 @@ def main() -> None:
         raise ValueError(
             f"Expected --startup-env-init-steps to be positive, got {startup_env_init_steps}."
         )
+    if args.mot_inference_window_size is not None and int(args.mot_inference_window_size) <= 0:
+        raise ValueError(
+            "Expected --mot-inference-window-size to be positive when provided, "
+            f"got {args.mot_inference_window_size}."
+        )
     use_lingbot_streaming_vae = args.frontend_encode_mode == "lingbot_streaming_vae"
     if use_lingbot_streaming_vae and startup_model_obs_frames != 1:
         raise ValueError(
@@ -257,6 +272,7 @@ def main() -> None:
         frontend_device=frontend_device,
         decode_device=decode_device,
         raw_window_frames=raw_window_frames,
+        mot_inference_window_size=args.mot_inference_window_size,
     )
     component_report["mot_inference_backend"] = mot_inference_backend
     component_report["checkpoint_file"] = str(checkpoint_path.resolve())
@@ -378,6 +394,7 @@ def main() -> None:
                         model_obs_window=model_obs_window,
                         config=config,
                         runtime_device=runtime_device,
+                        mot_inference_window_size=args.mot_inference_window_size,
                     ),
                     infer_state=None if args.reset_policy_state_each_chunk else session.policy_state,
                 )
@@ -684,7 +701,11 @@ def _build_infer_context(
     model_obs_window: list[dict[str, np.ndarray]],
     config,
     runtime_device: torch.device,
+    mot_inference_window_size: int | None,
 ):
+    extra: dict[str, object] = {"task_text": (prompt,), "action_device": str(action_device)}
+    if mot_inference_window_size is not None:
+        extra["mot_inference_window_size"] = int(mot_inference_window_size)
     return PolicyInferContext(
         state=video_viz._build_state_inputs_from_obs_window(
             model_obs_window,
@@ -693,7 +714,7 @@ def _build_infer_context(
         )
         .unsqueeze(0)
         .to(device=runtime_device),
-        extra={"task_text": (prompt,), "action_device": str(action_device)},
+        extra=extra,
     )
 
 
@@ -1355,6 +1376,7 @@ def _build_component_report(
     frontend_device: torch.device,
     decode_device: torch.device,
     raw_window_frames: int,
+    mot_inference_window_size: int | None,
 ) -> dict[str, object]:
     backbone = config.backbone
     policy_variant = pipeline.policy_variant
@@ -1366,6 +1388,9 @@ def _build_component_report(
         "frontend_device": str(frontend_device),
         "decode_device": str(decode_device),
         "raw_window_frames": int(raw_window_frames),
+        "mot_inference_window_size": (
+            None if mot_inference_window_size is None else int(mot_inference_window_size)
+        ),
         "config_name": config.name,
         "policy_variant_class": policy_variant.__class__.__name__,
         "runtime_mode": str(policy_variant.config.runtime_mode),

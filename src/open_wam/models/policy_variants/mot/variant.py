@@ -95,11 +95,30 @@ from .runtime_routing import (
     resolve_mot_rollout_cache_window_frames,
 )
 
-# LingBot-reference slot-pool window used by both `_initialize_reference_cache`
-# and the Method-1-aligned video-cache trim. Method 1's per-stream effective
-# lookback is `(attn_window // 2) * frame_chunk_size` integer frames (60 at
-# attn_window=30, frame_chunk_size=4).
+# Default LingBot-reference slot-pool window used by both `_initialize_reference_cache`
+# and the Method-1-aligned video-cache trim. Rollout callers may override this
+# through `PolicyInferContext.extra["mot_inference_window_size"]`. Method 1's
+# per-stream effective lookback is `(attn_window // 2) * frame_chunk_size`
+# integer frames (60 at attn_window=30, frame_chunk_size=4).
 _MOT_SLOT_POOL_ATTN_WINDOW = 30
+
+
+def _resolve_mot_inference_window_size(
+    context: PolicyInferContext,
+    *,
+    default_window_size: int,
+) -> int:
+    raw_override = context.extra.get("mot_inference_window_size")
+    if raw_override is None:
+        resolved = int(default_window_size)
+    else:
+        resolved = int(raw_override)
+    if resolved <= 0:
+        raise ValueError(
+            "MoT inference window size must be positive, "
+            f"got {resolved}."
+        )
+    return resolved
 
 
 def resolve_mot_current_block_coupling(config: MoTPolicyConfig) -> CurrentBlockCoupling:
@@ -2192,8 +2211,11 @@ class MoTPolicyVariant(PolicyVariant):
         infer_state: PolicyInferState,
         runtime_state: MoTRuntimeState,
     ) -> PolicyInferOutput:
-        del context
         current_block_coupling = resolve_mot_current_block_coupling(self.config)
+        inference_window_size = _resolve_mot_inference_window_size(
+            context,
+            default_window_size=int(self.training_config.window_size),
+        )
         device = next(visual_tower.core.parameters()).device
         action_device = next(self.action_expert.parameters()).device
         if action_device != device:
@@ -2289,7 +2311,7 @@ class MoTPolicyVariant(PolicyVariant):
         current_action_sequence_tokens = startup_plan.current_action_sequence_tokens
 
         history_window_frames = resolve_mot_rollout_cache_window_frames(
-            window_size=int(self.training_config.window_size),
+            window_size=inference_window_size,
             frame_chunk_size=frame_chunk_size,
         )
         history_video_frames = 0 if past_clean_latents is None else int(past_clean_latents.shape[2])
@@ -2421,7 +2443,7 @@ class MoTPolicyVariant(PolicyVariant):
             action_tokens_per_frame=action_tokens_per_frame,
             chunk_size_frames=frame_chunk_size,
             device=device,
-            attention_window_size=max(1, int(self.training_config.window_size)),
+            attention_window_size=inference_window_size,
             current_block_coupling=current_block_coupling,
             chunk_origin_frame=packed_chunk_origin_frame,
             action_context_mask=packed_action_context_mask,
@@ -2785,6 +2807,7 @@ class MoTPolicyVariant(PolicyVariant):
                     "current_action_flow_start": int(history_action_tokens + current_action_prefix_tokens),
                     "current_action_flow_end": int(history_action_tokens + current_action_prefix_tokens + self.action_horizon),
                     "history_window_frames": int(history_window_frames),
+                    "inference_window_size": int(inference_window_size),
                     "max_history_frames": int(max_history_frames),
                     "next_past_clean_latent_frames": int(runtime_state.past_clean_latents.shape[2]),
                     "next_past_clean_action_frames": int(runtime_state.past_clean_actions.shape[1] // action_tokens_per_frame),
@@ -3232,6 +3255,10 @@ class MoTPolicyVariant(PolicyVariant):
         condition_frame_start_override_raw = context.extra.get("mot_condition_frame_start")
         if skip_observation_update and condition_frame_start_override_raw is not None:
             raise ValueError("MoT condition-frame rewind is only valid for observation-conditioned replans.")
+        inference_window_size = _resolve_mot_inference_window_size(
+            context,
+            default_window_size=_MOT_SLOT_POOL_ATTN_WINDOW,
+        )
         # Method-1-aligned per-chunk warmup. On chunk 0 we allocate the
         # slot-pool backend via `initialize_reference_cache` and write the
         # bootstrap obs latents at frame_start=0. On subsequent chunks the
@@ -3252,7 +3279,7 @@ class MoTPolicyVariant(PolicyVariant):
             _initialize_reference_cache(
                 visual_tower.core,
                 cache_name=cache_name,
-                attn_window=_MOT_SLOT_POOL_ATTN_WINDOW,
+                attn_window=inference_window_size,
                 batch_size=batch_size,
                 frame_chunk_size=chunk_frames,
                 latent_height=latent_height,
@@ -3414,14 +3441,13 @@ class MoTPolicyVariant(PolicyVariant):
         def prepare_action_video_cache(cache: MoTVideoCache) -> MoTVideoCache:
             # Method-1 alignment: Method 1's slot pool stores both video and
             # action so video occupies `(attn_window // 2) * latent_token_per_chunk`
-            # tokens (= 60 frames at attn_window=30, chunk_frames=4, tokens/frame=32),
-            # which is integer-frame-aligned. Method 5 only writes video so the
+            # tokens, which is integer-frame-aligned. Method 5 only writes video so the
             # slot pool fills with `(attn_window // 2) * (latent + action)` tokens
             # (= 67.5 frames here), leaving a partial leading frame after eviction.
             # Trim to Method 1's per-stream cap so the action expert sees the
             # same frame-aligned video lookback Method 1 does.
             method1_video_lookback_frames = (
-                (_MOT_SLOT_POOL_ATTN_WINDOW // 2) * int(chunk_frames)
+                (inference_window_size // 2) * int(chunk_frames)
             )
             max_video_tokens_for_action = int(method1_video_lookback_frames) * int(
                 runtime_state.video_tokens_per_frame
@@ -3729,6 +3755,7 @@ class MoTPolicyVariant(PolicyVariant):
                     "current_block_coupling": current_block_coupling.value,
                     "video_commit_before_action": bool(video_commit_before_action),
                     "action_visible_video_end_frame": int(action_visible_video_end_frame),
+                    "inference_window_size": int(inference_window_size),
                     "action_cache_rewind_frame_start": (
                         None
                         if action_cache_rewind_frame_start_raw is None
