@@ -4,14 +4,25 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from torch import nn
 
-from open_wam.configs.enums import TrainingComponentSelector
+from open_wam.configs import MoTPolicyConfig, ParallelStreamPolicyConfig, TrainingConfig
+from open_wam.configs.enums import (
+    CurrentBlockCoupling,
+    AttachSite,
+    MoTGeneralistTrainingMode,
+    MoTRuntimeMode,
+    ParallelRuntimeMode,
+    TrainingComponentSelector,
+)
 from open_wam.data import build_synthetic_latent_batch
 from open_wam.models.policy_variants.mot.packed_block import MoTPackedBlockStack
 from open_wam.models.policy_variants import PolicyTrainBatch
 from open_wam.pipelines import build_variant_pipeline_from_config
 from open_wam.training import apply_training_component_controls
 from open_wam.utils.config_loader import load_experiment_config
+from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
+from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -110,7 +121,7 @@ def _build_mot_packed_smoke_pipeline():
         config.policy_variant,
         current_block_coupling=CurrentBlockCoupling.VIDEO_THEN_ACTION,
         runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
-        proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,
+        proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
     )
     config = _replace(config, policy_variant=policy_variant_config)
     pipeline = build_variant_pipeline_from_config(config)
@@ -122,6 +133,7 @@ def _non_proprio_core_parameters(pipeline):
         parameter
         for name, parameter in pipeline.visual_tower.core.named_parameters()
         if not name.startswith("proprio_context_encoder.")
+        and not name.startswith("proprio_hidden_context_encoder.")
     ]
 
 
@@ -151,7 +163,10 @@ def test_packed_coupling_action_expert_selector_only_trains_action_side() -> Non
     # Visual tower core (non-block parts) is NOT trainable except the zero-init
     # proprio adapter, which must learn even in action-only runs.
     assert all(not parameter.requires_grad for parameter in _non_proprio_core_parameters(pipeline))
-    assert all(parameter.requires_grad for parameter in pipeline.visual_tower.core.proprio_context_encoder.parameters())
+    assert all(
+        parameter.requires_grad
+        for parameter in pipeline.visual_tower.core.proprio_hidden_context_encoder.parameters()
+    )
 
 
 def test_packed_coupling_runtime_backbone_selector_only_trains_video_side() -> None:
@@ -231,7 +246,10 @@ def test_packed_coupling_freeze_video_train_action() -> None:
         assert all(not parameter.requires_grad for parameter in packed_block.video_block.parameters())
         assert all(parameter.requires_grad for parameter in packed_block.action_block.parameters())
     assert all(not parameter.requires_grad for parameter in _non_proprio_core_parameters(pipeline))
-    assert all(parameter.requires_grad for parameter in pipeline.visual_tower.core.proprio_context_encoder.parameters())
+    assert all(
+        parameter.requires_grad
+        for parameter in pipeline.visual_tower.core.proprio_hidden_context_encoder.parameters()
+    )
     assert all(
         parameter.requires_grad
         for parameter in pipeline.policy_variant.action_expert.action_embedder.parameters()
@@ -281,9 +299,9 @@ def test_apply_training_component_controls_supports_action_decoder_adapter_selec
     assert all(parameter.requires_grad for parameter in pipeline.action_decoder.action_expert.action_proj_out.parameters())
 
 
-def test_proprio_context_encoder_trains_with_action_only_selector() -> None:
+def test_additive_proprio_context_encoder_trains_with_action_only_selector() -> None:
     config, pipeline = _build_mot_packed_smoke_pipeline()
-    encoder = pipeline.visual_tower.core.proprio_context_encoder
+    encoder = pipeline.visual_tower.core.proprio_hidden_context_encoder
     assert encoder is not None
     config = replace(
         config,
@@ -299,9 +317,9 @@ def test_proprio_context_encoder_trains_with_action_only_selector() -> None:
     assert all(not parameter.requires_grad for parameter in pipeline.visual_tower.core.patch_embedding_mlp.parameters())
 
 
-def test_proprio_context_encoder_can_be_explicitly_frozen() -> None:
+def test_additive_proprio_context_encoder_can_be_explicitly_frozen() -> None:
     config, pipeline = _build_mot_packed_smoke_pipeline()
-    encoder = pipeline.visual_tower.core.proprio_context_encoder
+    encoder = pipeline.visual_tower.core.proprio_hidden_context_encoder
     assert encoder is not None
     config = replace(
         config,
@@ -317,9 +335,9 @@ def test_proprio_context_encoder_can_be_explicitly_frozen() -> None:
     assert all(not parameter.requires_grad for parameter in encoder.parameters())
 
 
-def test_proprio_context_encoder_respects_broad_visual_core_freeze() -> None:
+def test_additive_proprio_context_encoder_respects_broad_visual_core_freeze() -> None:
     config, pipeline = _build_mot_packed_smoke_pipeline()
-    encoder = pipeline.visual_tower.core.proprio_context_encoder
+    encoder = pipeline.visual_tower.core.proprio_hidden_context_encoder
     assert encoder is not None
     config = replace(
         config,
@@ -333,4 +351,92 @@ def test_proprio_context_encoder_respects_broad_visual_core_freeze() -> None:
     report = apply_training_component_controls(pipeline, config.training)
 
     assert TrainingComponentSelector.VISUAL_TOWER_PROPRIO_CONTEXT_ENCODER not in report.trainable_components
+    assert all(not parameter.requires_grad for parameter in encoder.parameters())
+
+
+class _TinyGeneralistModePipeline(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        core = SharedVideoTransformerCore(
+            SharedVideoTransformerConfig(
+                hidden_size=16,
+                num_layers=1,
+                num_heads=2,
+                attention_head_dim=8,
+                text_dim=8,
+                freq_dim=4,
+                patch_size_t=1,
+                patch_size_h=1,
+                patch_size_w=1,
+            ),
+            action_dim=2,
+        )
+        core.configure_generalist_mode_context_encoder(enabled=True)
+        self.visual_tower = nn.Module()
+        self.visual_tower.core = core
+        self.policy_variant = nn.Module()
+        self.policy_variant.config = ParallelStreamPolicyConfig(
+            hidden_size=16,
+            runtime_mode=ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
+            variant_profile="generalist_joint_denoising",
+            current_block_coupling=CurrentBlockCoupling.JOINT,
+            video_condition_on_action=True,
+            generalist_mode_text_token=True,
+        )
+        self.policy_variant.proj = nn.Linear(1, 1)
+        self.action_decoder = nn.Linear(1, 1)
+
+
+def test_generalist_mode_context_encoder_trains_with_frozen_backbone_selector() -> None:
+    pipeline = _TinyGeneralistModePipeline()
+    encoder = pipeline.visual_tower.core.generalist_mode_context_encoder
+    assert encoder is not None
+
+    report = apply_training_component_controls(
+        pipeline,
+        TrainingConfig(trainable_components=("policy_variant",)),
+    )
+
+    assert TrainingComponentSelector.VISUAL_TOWER_GENERALIST_MODE_CONTEXT_ENCODER in report.trainable_components
+    assert all(parameter.requires_grad for parameter in encoder.parameters())
+    assert all(not parameter.requires_grad for parameter in pipeline.visual_tower.core.patch_embedding_mlp.parameters())
+
+
+def test_mot_generalist_mode_context_encoder_trains_with_frozen_backbone_selector() -> None:
+    pipeline = _TinyGeneralistModePipeline()
+    pipeline.policy_variant.config = MoTPolicyConfig(
+        hidden_size=16,
+        attach_site=AttachSite.POST_VISUAL_CORE,
+        runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        mot_generalist_training_mode_probs={MoTGeneralistTrainingMode.JOINT: 1.0},
+        generalist_mode_text_token=True,
+    )
+    encoder = pipeline.visual_tower.core.generalist_mode_context_encoder
+    assert encoder is not None
+
+    report = apply_training_component_controls(
+        pipeline,
+        TrainingConfig(trainable_components=("policy_variant",)),
+    )
+
+    assert TrainingComponentSelector.VISUAL_TOWER_GENERALIST_MODE_CONTEXT_ENCODER in report.trainable_components
+    assert all(parameter.requires_grad for parameter in encoder.parameters())
+    assert all(not parameter.requires_grad for parameter in pipeline.visual_tower.core.patch_embedding_mlp.parameters())
+
+
+def test_generalist_mode_context_encoder_can_be_explicitly_frozen() -> None:
+    pipeline = _TinyGeneralistModePipeline()
+    encoder = pipeline.visual_tower.core.generalist_mode_context_encoder
+    assert encoder is not None
+
+    report = apply_training_component_controls(
+        pipeline,
+        TrainingConfig(
+            trainable_components=("policy_variant",),
+            frozen_components=("visual_tower.generalist_mode_context_encoder",),
+        ),
+    )
+
+    assert TrainingComponentSelector.VISUAL_TOWER_GENERALIST_MODE_CONTEXT_ENCODER not in report.trainable_components
     assert all(not parameter.requires_grad for parameter in encoder.parameters())

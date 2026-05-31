@@ -154,6 +154,7 @@ class LingbotExactRunner:
         negative_text_context: torch.Tensor | None = None,
         action_space: ActionSpace | str = ActionSpace.AUTO,
         frame_start_override: int | None = None,
+        action_conditioning_mode: object = "vanilla_joint_rollout",
         proprio_state: torch.Tensor | None = None,
     ) -> LingbotExactWarmupOutput:
         # Warmup uses the same shared frontend/runtime owner as the normal
@@ -175,6 +176,7 @@ class LingbotExactRunner:
             infer_state=session.policy_state,
             action_space=action_space,
             frame_start_override=frame_start_override,
+            action_conditioning_mode=str(getattr(action_conditioning_mode, "value", action_conditioning_mode)),
             proprio_state=proprio_state,
         )
         return LingbotExactWarmupOutput(
@@ -200,6 +202,7 @@ class LingbotExactRunner:
         proprio_state: torch.Tensor | None = None,
         advance_frame_start: bool = False,
         skip_video_prediction: bool = False,
+        action_conditioning_mode: object = "vanilla_joint_rollout",
     ) -> LingbotExactChunkOutput:
         visual_outputs = None
         if views is not None or video_latents is not None:
@@ -231,6 +234,7 @@ class LingbotExactRunner:
             proprio_state=proprio_state,
             advance_frame_start=advance_frame_start,
             skip_video_prediction=skip_video_prediction,
+            action_conditioning_mode=str(getattr(action_conditioning_mode, "value", action_conditioning_mode)),
         )
         decoder_output = self.pipeline.resolve_infer_decoder_output(
             policy_output,

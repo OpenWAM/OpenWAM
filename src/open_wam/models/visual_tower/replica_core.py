@@ -14,6 +14,7 @@ from torch import nn
 from open_wam.models.common import (
     PreparedAttentionProfile,
     SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS,
+    SLOT_POOL_DEFER_EVICTION_UNTIL_AFTER_WRITE_ATTENTION,
     apply_attention_backend,
     build_chunked_temporal_exact_attention_profile,
     cache_backend_uses_slot_pool,
@@ -429,6 +430,8 @@ def _retained_slot_pool_indices_for_current_write(
         return valid
     if layer_state.slot_mask is None or layer_state.slot_ids is None:
         raise ValueError("Slot-pool backend requires initialized `slot_mask` and `slot_ids` tensors.")
+    if bool(layer_state.metadata.get(SLOT_POOL_DEFER_EVICTION_UNTIL_AFTER_WRITE_ATTENTION, False)):
+        return valid
     free_count = int(layer_state.slot_mask.numel()) - int(valid.numel())
     evict_count = max(0, int(current_token_count) - free_count)
     if evict_count <= 0:
@@ -1139,7 +1142,7 @@ def _feed_forward_with_materialized_params(
 
 
 class ProprioContextEncoder(nn.Module):
-    """Project proprio state into one text-context token."""
+    """Deprecated adapter that projects proprio state into text-context space."""
 
     def __init__(self, state_dim: int, text_dim: int) -> None:
         super().__init__()
@@ -1200,6 +1203,71 @@ class ProprioHiddenContextEncoder(nn.Module):
         return self.proj(proprio_state)
 
 
+class GeneralistModeContextEncoder(nn.Module):
+    """Learned text-space control token for GJD conditioning mode."""
+
+    MODE_TO_INDEX = {
+        "joint": 0,
+        "action_conditioned_video": 1,
+        "video_conditioned_action": 2,
+    }
+
+    def __init__(self, text_dim: int) -> None:
+        super().__init__()
+        text_dim = int(text_dim)
+        if text_dim <= 0:
+            raise ValueError(f"Expected positive text_dim, got {text_dim}.")
+        self.text_dim = text_dim
+        self.embedding = nn.Embedding(len(self.MODE_TO_INDEX), text_dim)
+        nn.init.normal_(self.embedding.weight, mean=0.0, std=0.02)
+
+    @classmethod
+    def _index_for_mode(cls, mode: object) -> int:
+        key = str(getattr(mode, "value", mode))
+        try:
+            return cls.MODE_TO_INDEX[key]
+        except KeyError as exc:
+            supported = ", ".join(sorted(cls.MODE_TO_INDEX))
+            raise ValueError(f"Unsupported generalist mode {key!r}. Supported modes: {supported}.") from exc
+
+    def _indices_for_modes(self, modes: object, *, batch_size: int, device: torch.device) -> torch.Tensor:
+        if isinstance(modes, torch.Tensor):
+            indices = modes.to(device=device, dtype=torch.long).reshape(-1)
+            if int(indices.numel()) > 0:
+                min_index = int(indices.min().item())
+                max_index = int(indices.max().item())
+                if min_index < 0 or max_index >= len(self.MODE_TO_INDEX):
+                    raise ValueError(
+                        "Generalist mode tensor indices must be in "
+                        f"[0, {len(self.MODE_TO_INDEX) - 1}], got min={min_index}, max={max_index}."
+                    )
+        elif isinstance(modes, str):
+            index = self._index_for_mode(modes)
+            indices = torch.full((batch_size,), index, device=device, dtype=torch.long)
+        elif isinstance(modes, (list, tuple)):
+            resolved = [self._index_for_mode(mode) for mode in modes]
+            indices = torch.tensor(resolved, device=device, dtype=torch.long)
+        else:
+            index = self._index_for_mode(modes)
+            indices = torch.full((batch_size,), index, device=device, dtype=torch.long)
+        if int(indices.numel()) == 1 and batch_size != 1:
+            indices = indices.expand(batch_size)
+        if int(indices.numel()) != int(batch_size):
+            raise ValueError(
+                "Generalist mode token count must match text batch size, "
+                f"got modes={int(indices.numel())} and batch={batch_size}."
+            )
+        return indices
+
+    def forward(self, modes: object, *, batch_size: int) -> torch.Tensor:
+        indices = self._indices_for_modes(
+            modes,
+            batch_size=int(batch_size),
+            device=self.embedding.weight.device,
+        )
+        return self.embedding(indices)
+
+
 class SharedVideoTransformerCore(nn.Module):
     """Shared Wan-style transformer core for all policy variants."""
 
@@ -1232,6 +1300,7 @@ class SharedVideoTransformerCore(nn.Module):
         self.action_text_proj = PixArtAlphaTextProjection(self.config.text_dim, self.config.hidden_size, act_fn="gelu_tanh")
         self.proprio_context_encoder: ProprioContextEncoder | None = None
         self.proprio_hidden_context_encoder: ProprioHiddenContextEncoder | None = None
+        self.generalist_mode_context_encoder: GeneralistModeContextEncoder | None = None
         self.patch_embedding_mlp = nn.Linear(
             self.config.latent_channels * self.config.patch_size_t * self.config.patch_size_h * self.config.patch_size_w,
             self.config.hidden_size,
@@ -1288,6 +1357,7 @@ class SharedVideoTransformerCore(nn.Module):
             self.action_text_proj,
             self.proprio_context_encoder,
             self.proprio_hidden_context_encoder,
+            self.generalist_mode_context_encoder,
             self.runtime_stream_adapters,
             self.rope,
         ):
@@ -1339,11 +1409,48 @@ class SharedVideoTransformerCore(nn.Module):
             hidden_size=self.config.hidden_size,
         )
 
+    def configure_generalist_mode_context_encoder(self, *, enabled: bool) -> None:
+        if not enabled:
+            self.generalist_mode_context_encoder = None
+            return
+        if (
+            self.generalist_mode_context_encoder is not None
+            and self.generalist_mode_context_encoder.text_dim == self.config.text_dim
+        ):
+            return
+        self.generalist_mode_context_encoder = GeneralistModeContextEncoder(text_dim=self.config.text_dim)
+
+    def append_generalist_mode_context_token(
+        self,
+        text_emb: torch.Tensor,
+        mode: object | None,
+    ) -> torch.Tensor:
+        if mode is None or self.generalist_mode_context_encoder is None:
+            return text_emb
+        if text_emb.ndim != 3:
+            raise ValueError(
+                "Generalist mode token appending expects text embeddings with shape [B, tokens, dim], "
+                f"got {tuple(text_emb.shape)}."
+            )
+        if int(text_emb.shape[-1]) != int(self.config.text_dim):
+            raise ValueError(
+                "Text embedding dim mismatch for generalist mode appending, "
+                f"got {text_emb.shape[-1]} and expected {self.config.text_dim}."
+            )
+        encoder = self.generalist_mode_context_encoder
+        mode_tokens = encoder(mode, batch_size=int(text_emb.shape[0])).to(
+            device=text_emb.device,
+            dtype=text_emb.dtype,
+        )
+        return torch.cat([text_emb, mode_tokens[:, None, :]], dim=1)
+
     def append_proprio_context_tokens(
         self,
         text_emb: torch.Tensor,
         proprio_state: torch.Tensor | None,
     ) -> torch.Tensor:
+        """Deprecated text-space proprio token path; use hidden additive context for new runs."""
+
         if proprio_state is None or self.proprio_context_encoder is None:
             return text_emb
         if text_emb.ndim != 3:

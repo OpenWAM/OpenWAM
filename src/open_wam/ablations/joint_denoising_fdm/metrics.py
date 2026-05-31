@@ -21,6 +21,33 @@ def latent_mse_per_frame(predicted: torch.Tensor, target: torch.Tensor) -> list[
     return [float(value) for value in error.detach().cpu()]
 
 
+def action_mse_per_frame(
+    predicted: torch.Tensor,
+    target: torch.Tensor,
+    *,
+    action_per_frame: int,
+) -> list[float]:
+    """Compute action MSE per latent frame from `[B, F * A, D]` tensors."""
+
+    if predicted.shape != target.shape:
+        raise ValueError(f"Action tensors must have identical shapes, got {tuple(predicted.shape)} and {tuple(target.shape)}.")
+    if predicted.ndim != 3:
+        raise ValueError(f"Expected action tensors shaped [B, T, D], got {tuple(predicted.shape)}.")
+    action_per_frame = int(action_per_frame)
+    if action_per_frame <= 0:
+        raise ValueError(f"action_per_frame must be positive, got {action_per_frame}.")
+    if predicted.shape[1] % action_per_frame != 0:
+        raise ValueError(
+            "Action horizon must be divisible by action_per_frame, "
+            f"got horizon={predicted.shape[1]}, action_per_frame={action_per_frame}."
+        )
+    frame_count = int(predicted.shape[1] // action_per_frame)
+    pred = predicted.float().reshape(predicted.shape[0], frame_count, action_per_frame, predicted.shape[2])
+    tgt = target.float().reshape(target.shape[0], frame_count, action_per_frame, target.shape[2])
+    error = (pred - tgt).square().mean(dim=(0, 2, 3))
+    return [float(value) for value in error.detach().cpu()]
+
+
 def rgb_mse_per_frame(predicted: np.ndarray, target: np.ndarray) -> list[float]:
     """Compute RGB MSE for `[F, H, W, C]` arrays in uint8 or `[0, 1]` float."""
 
@@ -67,22 +94,35 @@ def build_metric_rows(
     *,
     selection: FdmWindowSelection,
     mode: FdmAblationMode,
-    latent_mse: list[float],
+    latent_mse: list[float] | None = None,
     rgb_mse: list[float] | None = None,
     rgb_ssim: list[float] | None = None,
+    action_mse: list[float] | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for horizon_index, latent_value in enumerate(latent_mse):
+    lengths = [
+        len(values)
+        for values in (latent_mse, rgb_mse, rgb_ssim, action_mse)
+        if values is not None
+    ]
+    if not lengths:
+        raise ValueError("At least one metric sequence is required.")
+    if len(set(lengths)) != 1:
+        raise ValueError(f"Metric sequences must have equal lengths, got {lengths}.")
+    for horizon_index in range(lengths[0]):
+        latent_value = None if latent_mse is None else latent_mse[horizon_index]
         rgb_value = None if rgb_mse is None else rgb_mse[horizon_index]
+        action_value = None if action_mse is None else action_mse[horizon_index]
         row = {
             **asdict(selection),
             "mode": mode.value,
             "horizon_index": horizon_index,
             "future_frame": selection.t0_frame + horizon_index,
-            "latent_mse": float(latent_value),
+            "latent_mse": None if latent_value is None else float(latent_value),
             "rgb_mse": rgb_value,
             "rgb_psnr": None if rgb_value is None else psnr_from_mse(float(rgb_value)),
             "rgb_ssim": None if rgb_ssim is None else float(rgb_ssim[horizon_index]),
+            "action_mse": None if action_value is None else float(action_value),
         }
         rows.append(row)
     return rows
@@ -94,22 +134,31 @@ def summarize_metric_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         groups.setdefault((str(row["mode"]), int(row["horizon_index"])), []).append(row)
     summaries: list[dict[str, Any]] = []
     for (mode, horizon_index), group_rows in sorted(groups.items()):
-        latent_values = np.asarray([float(row["latent_mse"]) for row in group_rows], dtype=np.float64)
+        latent_values = np.asarray(
+            [float(row["latent_mse"]) for row in group_rows if row.get("latent_mse") is not None],
+            dtype=np.float64,
+        )
         rgb_values = np.asarray(
             [float(row["rgb_mse"]) for row in group_rows if row.get("rgb_mse") is not None],
             dtype=np.float64,
         )
-        summaries.append(
-            {
-                "mode": mode,
-                "horizon_index": horizon_index,
-                "count": len(group_rows),
-                "latent_mse_mean": float(latent_values.mean()),
-                "latent_mse_std": float(latent_values.std(ddof=0)),
-                "rgb_mse_mean": None if rgb_values.size == 0 else float(rgb_values.mean()),
-                "rgb_mse_std": None if rgb_values.size == 0 else float(rgb_values.std(ddof=0)),
-            }
+        action_values = np.asarray(
+            [float(row["action_mse"]) for row in group_rows if row.get("action_mse") is not None],
+            dtype=np.float64,
         )
+        summary = {
+            "mode": mode,
+            "horizon_index": horizon_index,
+            "count": len(group_rows),
+            "latent_mse_mean": None if latent_values.size == 0 else float(latent_values.mean()),
+            "latent_mse_std": None if latent_values.size == 0 else float(latent_values.std(ddof=0)),
+            "rgb_mse_mean": None if rgb_values.size == 0 else float(rgb_values.mean()),
+            "rgb_mse_std": None if rgb_values.size == 0 else float(rgb_values.std(ddof=0)),
+        }
+        if action_values.size > 0:
+            summary["action_mse_mean"] = float(action_values.mean())
+            summary["action_mse_std"] = float(action_values.std(ddof=0))
+        summaries.append(summary)
     return summaries
 
 

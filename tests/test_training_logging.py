@@ -189,6 +189,11 @@ def test_method1_coupling_and_segment_sampling_are_tracked(tmp_path: Path) -> No
     assert "segment_frames:128" in tags
     assert "target_alignment:next_after_context" in tags
     assert "rollout_context:one_frame" in tags
+    assert metadata["gjd_ablation"] is None
+    assert metadata["m1_generalist_ablation"] is None
+    assert build_wandb_group(metadata) == "libero/m1/parallel_stream"
+    assert "gjd:" not in build_run_title(metadata)
+    assert not any(tag.startswith("gjd:") or tag.startswith("m1_gjd:") for tag in tags)
 
 
 def test_non_default_sample_order_is_tracked(tmp_path: Path) -> None:
@@ -215,17 +220,56 @@ def test_method1_generalist_joint_denoising_tracking_metadata(tmp_path: Path) ->
         REPO_ROOT
         / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
     )
+    config = replace(
+        config,
+        policy_variant=replace(config.policy_variant, generalist_mode_text_token=True),
+    )
     metadata = build_run_tracking_metadata(config, run_name=config.name, output_dir=tmp_path / config.name)
 
     assert metadata["method_family"] == "method_1"
     assert metadata["variant_profile"] == "generalist_joint_denoising"
+    assert metadata["gjd_ablation"] == "mode_token"
+    assert metadata["m1_generalist_ablation"] == "mode_token"
+    assert metadata["generalist_mode_text_token"] is True
     assert metadata["joint_denoise_training_mode_probs"] == {
         "joint": 0.6,
         "action_conditioned_video": 0.2,
         "video_conditioned_action": 0.2,
     }
+    assert build_wandb_group(metadata) == "libero/m1/parallel_stream/mode_token"
+    assert "gjd:mode_token" in build_run_title(metadata)
     tags = build_wandb_tags(metadata)
     assert "variant_profile:generalist_joint_denoising" in tags
+    assert "gjd:m1:mode_token" in tags
+    assert "m1_gjd:mode_token" in tags
+    assert "generalist_mode_text_token" in tags
+
+
+def test_method5_generalist_joint_denoising_tracking_metadata(tmp_path: Path) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml"
+    )
+    config = replace(
+        config,
+        policy_variant=replace(config.policy_variant, generalist_mode_text_token=True),
+    )
+    metadata = build_run_tracking_metadata(config, run_name=config.name, output_dir=tmp_path / config.name)
+
+    assert metadata["method_family"] == "method_5"
+    assert metadata["gjd_ablation"] == "mode_token"
+    assert metadata["mot_generalist_ablation"] == "mode_token"
+    assert metadata["generalist_mode_text_token"] is True
+    assert metadata["mot_generalist_training_mode_probs"] == {
+        "joint": 0.6,
+        "action_conditioned_video": 0.2,
+        "video_conditioned_action": 0.2,
+    }
+    assert build_wandb_group(metadata) == "libero/m5/mot/mode_token"
+    assert "gjd:mode_token" in build_run_title(metadata)
+    tags = build_wandb_tags(metadata)
+    assert "gjd:m5:mode_token" in tags
+    assert "mot_gjd:mode_token" in tags
+    assert "generalist_mode_text_token" in tags
 
 
 def test_wandb_project_defaults_to_dataset_and_workload_bin(tmp_path: Path) -> None:

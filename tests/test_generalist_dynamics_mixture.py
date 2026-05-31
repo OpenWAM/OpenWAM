@@ -164,6 +164,11 @@ def test_generalist_dynamics_mixture_trims_conditional_history(tmp_path: Path) -
         video_latents=torch.arange(2 * 8 * 2 * 2, dtype=torch.float32).reshape(2, 8, 2, 2),
         actions=torch.arange(16 * 7, dtype=torch.float32).reshape(16, 7),
         action_mask=torch.ones(16, 7),
+        condition_latents=torch.arange(1000, 1000 + 2 * 8 * 2 * 2, dtype=torch.float32).reshape(2, 8, 2, 2),
+        proprio_context_state=torch.arange(8 * 5, dtype=torch.float32).reshape(8, 5),
+        proprio_context_state_mask=torch.ones(8, 5),
+        proprio_context_frames=torch.arange(2000, 2000 + 8 * 3, dtype=torch.float32).reshape(8, 3),
+        proprio_context_frames_mask=torch.ones(8, 3),
         task_text="real task",
         text_context=torch.ones(3, 4),
         negative_text_context=torch.zeros(3, 4),
@@ -222,6 +227,19 @@ def test_generalist_dynamics_mixture_trims_conditional_history(tmp_path: Path) -
 
     assert sample.video_latents.shape == (2, 4, 2, 2)
     assert sample.actions.shape == (8, 7)
+    assert sample.condition_latents is not None
+    assert sample.proprio_context_state is not None
+    assert sample.proprio_context_state_mask is not None
+    assert sample.proprio_context_frames is not None
+    assert sample.proprio_context_frames_mask is not None
+    assert sample.condition_latents.shape == (2, 4, 2, 2)
+    assert sample.proprio_context_state.shape == (4, 5)
+    assert sample.proprio_context_frames.shape == (4, 3)
+    torch.testing.assert_close(sample.condition_latents, real_sample.condition_latents[:, 4:])
+    torch.testing.assert_close(sample.proprio_context_state, real_sample.proprio_context_state[4:])
+    torch.testing.assert_close(sample.proprio_context_state_mask, real_sample.proprio_context_state_mask[4:])
+    torch.testing.assert_close(sample.proprio_context_frames, real_sample.proprio_context_frames[4:])
+    torch.testing.assert_close(sample.proprio_context_frames_mask, real_sample.proprio_context_frames_mask[4:])
     assert sample.metadata["history_frames"] == 2
     assert sample.metadata["loss_frame_start"] == 2
     assert sample.metadata["loss_frame_end"] == 4

@@ -117,7 +117,7 @@ policy_variant:
   cache_mode: metadata_only
   preserve_video_pretrain_history: false
   require_condition_latents: true
-  proprio_context_mode: text_context_token
+  proprio_context_mode: per_chunk_additive
   temporal_position_mode: local_zero_based
 
 action_decoder:

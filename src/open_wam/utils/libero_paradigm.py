@@ -5,10 +5,14 @@ from pathlib import Path
 from typing import Any
 
 from open_wam.configs.enums import (
+    ParallelStreamVariantProfile,
     PolicyVariantName,
     ProprioContextMode,
     RolloutContextPolicy,
+    SampleLossWeightMode,
+    SampleOrderMode,
     SampleTargetAlignment,
+    SampleWeightMode,
     WindowSamplingMode,
 )
 
@@ -115,39 +119,90 @@ def collect_current_libero_policy_paradigm_issues(
 
     issues: list[str] = []
     sample = getattr(data, "sample_construction", None)
-    expectations = (
-        ("data.sample_construction.mode", getattr(sample, "mode", None), WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT.value),
-        ("data.sample_construction.segment_frames", getattr(sample, "segment_frames", None), 128),
-        ("data.sample_construction.chunk_size", getattr(sample, "chunk_size", None), 4),
-        ("data.sample_construction.window_size", getattr(sample, "window_size", None), 30),
-        ("data.sample_construction.randomize_geometry", getattr(sample, "randomize_geometry", None), False),
-        ("data.sample_construction.start_padding_frames", getattr(sample, "start_padding_frames", None), 0),
-        (
-            "data.sample_construction.target_alignment",
-            getattr(sample, "target_alignment", None),
-            SampleTargetAlignment.NEXT_AFTER_CONTEXT.value,
-        ),
-        (
-            "data.sample_construction.rollout_context_policy",
-            getattr(sample, "rollout_context_policy", None),
-            RolloutContextPolicy.ONE_FRAME.value,
-        ),
-    )
+    if _is_generalist_joint_denoising_config(config, config_path=config_path):
+        training = getattr(config, "training", None)
+        expectations = (
+            (
+                "data.sample_construction.mode",
+                getattr(sample, "mode", None),
+                WindowSamplingMode.UNIFORM_SEGMENT.value,
+            ),
+            (
+                "data.sample_construction.sample_order_mode",
+                getattr(sample, "sample_order_mode", None),
+                SampleOrderMode.REPLACEMENT.value,
+            ),
+            ("data.sample_construction.chunk_size", getattr(sample, "chunk_size", None), 4),
+            ("data.sample_construction.window_size", getattr(sample, "window_size", None), 64),
+            ("data.sample_construction.randomize_geometry", getattr(sample, "randomize_geometry", None), True),
+            ("data.sample_construction.segment_min_frames", getattr(sample, "segment_min_frames", None), 1000),
+            ("data.sample_construction.segment_max_frames", getattr(sample, "segment_max_frames", None), 1000),
+            ("data.sample_construction.segment_length_stride", getattr(sample, "segment_length_stride", None), 1),
+            (
+                "data.sample_construction.segment_locality_block_size",
+                getattr(sample, "segment_locality_block_size", None),
+                1,
+            ),
+            (
+                "data.sample_construction.randomize_segment_length",
+                getattr(sample, "randomize_segment_length", None),
+                False,
+            ),
+            (
+                "data.sample_construction.randomize_segment_start",
+                getattr(sample, "randomize_segment_start", None),
+                False,
+            ),
+            ("data.sample_construction.require_full_segment", getattr(sample, "require_full_segment", None), True),
+            ("data.sample_construction.task_start_power", getattr(sample, "task_start_power", None), 0.0),
+            ("data.sample_construction.demo_count_power", getattr(sample, "demo_count_power", None), 0.0),
+            ("data.sample_construction.trajectory_start_power", getattr(sample, "trajectory_start_power", None), 0.0),
+            (
+                "data.sample_construction.sample_weight_mode",
+                getattr(sample, "sample_weight_mode", None),
+                SampleWeightMode.UNIFORM.value,
+            ),
+            ("training.window_size", getattr(training, "window_size", None), 64),
+            (
+                "training.sample_loss_weight_mode",
+                getattr(training, "sample_loss_weight_mode", None),
+                SampleLossWeightMode.NONE.value,
+            ),
+        )
+    else:
+        expectations = (
+            (
+                "data.sample_construction.mode",
+                getattr(sample, "mode", None),
+                WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT.value,
+            ),
+            ("data.sample_construction.segment_frames", getattr(sample, "segment_frames", None), 128),
+            ("data.sample_construction.chunk_size", getattr(sample, "chunk_size", None), 4),
+            ("data.sample_construction.window_size", getattr(sample, "window_size", None), 30),
+            ("data.sample_construction.randomize_geometry", getattr(sample, "randomize_geometry", None), False),
+            ("data.sample_construction.start_padding_frames", getattr(sample, "start_padding_frames", None), 0),
+            (
+                "data.sample_construction.target_alignment",
+                getattr(sample, "target_alignment", None),
+                SampleTargetAlignment.NEXT_AFTER_CONTEXT.value,
+            ),
+            (
+                "data.sample_construction.rollout_context_policy",
+                getattr(sample, "rollout_context_policy", None),
+                RolloutContextPolicy.ONE_FRAME.value,
+            ),
+        )
     for field_name, actual, expected in expectations:
         if _normalized_value(actual) != _normalized_value(expected):
             issues.append(f"{field_name}={_display_value(actual)!r}, expected {_display_value(expected)!r}")
 
     if require_proprio:
         proprio_mode = getattr(policy_variant, "proprio_context_mode", ProprioContextMode.NONE)
-        supported_proprio_modes = {
-            ProprioContextMode.TEXT_CONTEXT_TOKEN.value,
-            ProprioContextMode.PER_CHUNK_ADDITIVE.value,
-        }
-        if _normalized_value(proprio_mode) not in supported_proprio_modes:
-            expected = " or ".join(repr(value) for value in sorted(supported_proprio_modes))
+        expected_proprio_mode = ProprioContextMode.PER_CHUNK_ADDITIVE.value
+        if _normalized_value(proprio_mode) != expected_proprio_mode:
             issues.append(
                 "policy_variant.proprio_context_mode="
-                f"{_display_value(proprio_mode)!r}, expected {expected}"
+                f"{_display_value(proprio_mode)!r}, expected {expected_proprio_mode!r}"
             )
 
     if deprecated_reason is not None and issues:
@@ -176,8 +231,8 @@ def require_current_libero_policy_paradigm(
     config_label = str(config_path) if config_path is not None else str(getattr(config, "name", "<unknown>"))
     raise ValueError(
         f"{source} refuses deprecated LIBERO M1/M5 config {config_label!r}.\n"
-        "The current training/eval paradigm requires strict fixed-128 samples, one-frame rollout "
-        "conditioning, fixed 4-frame chunks, no head padding, and a supported proprio context mode.\n"
+        "The current training/eval paradigm requires strict fixed-128 samples for non-GJD configs, "
+        "full-segment W64 sampling for GJD configs, and a supported proprio context mode.\n"
         f"Issues:\n{issue_lines}\n"
         f"Use a current *_heng_compatible config with proprio enabled, or set "
         f"{ALLOW_DEPRECATED_LIBERO_CONFIG_ENV}=1 / pass --allow-deprecated-libero-config "
@@ -187,6 +242,19 @@ def require_current_libero_policy_paradigm(
 
 def _env_allows_deprecated_libero_config() -> bool:
     return os.environ.get(ALLOW_DEPRECATED_LIBERO_CONFIG_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def _is_generalist_joint_denoising_config(config: Any, *, config_path: str | Path | None) -> bool:
+    policy_variant = getattr(config, "policy_variant", None)
+    if (
+        _enum_value(getattr(policy_variant, "variant_profile", None))
+        == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING.value
+    ):
+        return True
+    if getattr(policy_variant, "mot_generalist_training_mode_probs", None) is not None:
+        return True
+    config_name = _enum_value(getattr(config, "name", ""))
+    return "generalist_joint_denoising" in f"{config_name} {config_path or ''}".lower()
 
 
 def _enum_value(value: Any) -> Any:

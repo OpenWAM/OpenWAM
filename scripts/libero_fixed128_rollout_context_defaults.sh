@@ -17,7 +17,7 @@ OPEN_WAM_FIXED128_ROLLOUT_CONTEXT_DEFAULT_ARGS=(
   --set data.sample_construction.task_start_power=0.5
   --set data.sample_construction.demo_count_power=0.0
   --set data.sample_construction.trajectory_start_power=1.0
-  --set policy_variant.proprio_context_mode=text_context_token
+  --set policy_variant.proprio_context_mode=per_chunk_additive
 )
 
 open_wam_normalize_config_name() {
@@ -47,6 +47,7 @@ open_wam_should_apply_fixed128_rollout_context() {
     return 1
   fi
   case "${config_name}" in
+    *generalist_joint_denoising*) return 1 ;;
     parallel_stream_libero_lingbot_exact_heng_compatible) return 0 ;;
     parallel_stream_libero_lingbot_joint_denoise_heng_compatible) return 0 ;;
     parallel_stream_libero_lingbot_m1_*_heng_compatible) return 0 ;;
@@ -54,7 +55,6 @@ open_wam_should_apply_fixed128_rollout_context() {
     mot_libero_latent_local_action_noisy_to_video_heng_compatible) return 0 ;;
     mot_libero_latent_local_action_then_video_heng_compatible) return 0 ;;
     mot_libero_latent_local_decoupled_same_step_heng_compatible) return 0 ;;
-    mot_libero_latent_local_generalist_joint_denoising_heng_compatible) return 0 ;;
     mot_libero_latent_local_joint_heng_compatible) return 0 ;;
     mot_libero_latent_local_video_noisy_to_action_heng_compatible) return 0 ;;
     mot_libero_latent_local_video_then_action_heng_compatible) return 0 ;;
@@ -140,7 +140,7 @@ open_wam_reject_deprecated_libero_policy_config() {
   fi
   if reason="$(open_wam_deprecated_libero_policy_config_reason "${config_name}")"; then
     echo "Refusing deprecated LIBERO M1/M5 config '${config_name}': ${reason}." >&2
-    echo "Current launchers require strict fixed-128, one-frame rollout conditioning, fixed 4-frame chunks, no head padding, and proprio text-context tokens." >&2
+    echo "Current non-GJD launchers require strict fixed-128 rollout parity; current GJD launchers require full-segment W64 sampling." >&2
     echo "Use a current *_heng_compatible config, or set OPEN_WAM_ALLOW_DEPRECATED_LIBERO_CONFIG=1 only for historical debugging." >&2
     return 2
   fi

@@ -32,7 +32,9 @@ from open_wam.data.replay_status import (  # noqa: E402
     load_replay_status_records,
     normalize_replay_status_policy,
 )
+from open_wam.configs.enums import ParallelStreamVariantProfile  # noqa: E402
 from open_wam.launch.preflight import has_transformer_weights  # noqa: E402
+from open_wam.utils import load_experiment_config  # noqa: E402
 
 DEFAULT_CONFIG = "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
 DEFAULT_BASE_CHECKPOINT = (
@@ -47,10 +49,63 @@ DEFAULT_LIBERO_REPO_ROOT = "/data/lingbot_data_exp/LIBERO"
 DEFAULT_LOCAL_PATHS = "configs/local_paths.yaml"
 SAMPLE_MODE_ALIASES = {"uniform_task_distribution": "dataset_distribution"}
 SAMPLE_MODE_CHOICES = ("dataset_distribution", "uniform_task_distribution", "task_episode_axis", "full")
+GJD_CONFIG_MARKERS = ("generalist_joint_denoising",)
 
 
 def normalize_sample_mode(mode: str) -> str:
     return SAMPLE_MODE_ALIASES.get(mode, mode)
+
+
+def _enum_value(value: Any) -> Any:
+    return getattr(value, "value", value)
+
+
+def _resolve_config_path(config_path: str | Path) -> Path:
+    path = Path(str(config_path))
+    if path.is_absolute():
+        return path
+    return (REPO_ROOT / path).resolve()
+
+
+def _config_has_gjd_semantics(config: Any) -> bool:
+    policy_variant = getattr(config, "policy_variant", None)
+    if (
+        _enum_value(getattr(policy_variant, "variant_profile", None))
+        == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING.value
+    ):
+        return True
+    if getattr(policy_variant, "mot_generalist_training_mode_probs", None) is not None:
+        return True
+    return False
+
+
+def is_gjd_config_path(config_path: str | Path | None) -> bool:
+    if config_path is None:
+        return False
+    try:
+        config = load_experiment_config(_resolve_config_path(config_path))
+    except Exception:
+        normalized = str(config_path).lower()
+        return any(marker in normalized for marker in GJD_CONFIG_MARKERS)
+    return _config_has_gjd_semantics(config)
+
+
+def reject_gjd_checkpoint_specs(
+    checkpoint_specs: list["CheckpointSpec"],
+    *,
+    source: str = "run_libero_sampled_eval.py",
+) -> None:
+    offenders = [f"{spec.key} ({spec.config})" for spec in checkpoint_specs if is_gjd_config_path(spec.config)]
+    if not offenders:
+        return
+    offender_text = ", ".join(offenders)
+    raise ValueError(
+        f"{source} does not implement the current GJD rollout contract for: {offender_text}. "
+        "Use scripts/run_gjd_libero.sh rollout --method <m1|m5> --ablation "
+        "<vanilla|pure_joint|mode_token>, or a GJD-aware batch wrapper that delegates to it. "
+        "Generic sampled eval may silently change frontend, startup, inference-window, ablation, "
+        "or config-override semantics for GJD."
+    )
 
 
 @dataclass(frozen=True)
@@ -510,6 +565,7 @@ def main() -> None:
         selected_methods=selected_methods,
         target_requests=target_requests,
     )
+    reject_gjd_checkpoint_specs(checkpoint_specs)
 
     sample_count_label = "full" if args.sample_mode == "full" else f"n{args.num_episodes}"
     run_id = args.run_id or (

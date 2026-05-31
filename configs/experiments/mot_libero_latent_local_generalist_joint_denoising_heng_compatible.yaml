@@ -7,8 +7,9 @@ name: mot_libero_latent_local_generalist_joint_denoising_heng_compatible
 #     Clean condition slots are preserved so the train path matches M5
 #     chunk-by-chunk rollout history.
 #   - action_conditioned_video (0.2): clean action overrides A_noisy slot,
-#     A_clean slot zeroed, action timesteps=0, action loss masked. Model
-#     learns to predict video given clean action condition.
+#     action timesteps=0, action loss masked, and clean history slots remain
+#     visible through the local-history attention window. Model learns to
+#     predict video given clean action condition.
 #   - video_conditioned_action (0.2): clean video overrides V_noisy slot,
 #     V_clean/A_clean history slots preserved, video timesteps=0, video loss
 #     masked. Model learns to predict action given clean video condition.
@@ -21,10 +22,10 @@ data:
   dataset_type: lerobot_v2_latent_local
   local_root: "${paths.datasets.libero_heng_root}"
   replay_status_path: "${paths.datasets.libero_replay_status_path}"
-  replay_status_policy: successful_only
-  val_replay_status_policy: failure_only
-  require_replay_status: true
-  val_require_replay_status: true
+  replay_status_policy: include_all
+  val_replay_status_policy: null
+  require_replay_status: false
+  val_require_replay_status: false
   empty_text_embedding_path: "${paths.datasets.empty_text_embedding}"
   split: train
   camera_names: [observation.images.agentview_rgb, observation.images.eye_in_hand_rgb]
@@ -35,19 +36,22 @@ data:
   frame_stride: 1
   sample_stride: 1
   sample_construction:
-    mode: hierarchical_fixed_segment
-    segment_frames: 128
+    mode: uniform_segment
+    sample_order_mode: replacement
     chunk_size: 4
-    window_size: 30
-    randomize_geometry: false
-    start_padding_frames: 0
-    target_alignment: next_after_context
-    rollout_context_policy: one_frame
-    tail_padding_policy: zero_order_hold
-    padded_target_policy: mask_loss
-    task_start_power: 0.5
+    window_size: 64
+    randomize_geometry: true
+    segment_min_frames: 1000
+    segment_max_frames: 1000
+    segment_length_stride: 1
+    segment_locality_block_size: 1
+    randomize_segment_length: false
+    randomize_segment_start: false
+    require_full_segment: true
+    task_start_power: 0.0
     demo_count_power: 0.0
-    trajectory_start_power: 1.0
+    trajectory_start_power: 0.0
+    sample_weight_mode: uniform
   episode_cache_size: 2
   train_fraction: 1.0
   split_seed: 0
@@ -107,7 +111,8 @@ backbone:
   attention_head_dim: 128
   ffn_dim: 14336
   pretrained_model_name_or_path: "${paths.models.lingbot_va_base}"
-  transformer_subdir: transformer
+  transformer_subdir: "${paths.checkpoints.libero_videoonly_all_subsets_step_3500}"
+  exported_runtime_action_init_mode: random
   max_text_tokens: 512
   load_wan_vae_frontend: true
   load_text_conditioning: true
@@ -127,6 +132,7 @@ policy_variant:
   current_block_coupling: joint
   condition_mode: teacher_forcing_cond_video
   video_prefix_frames: 1
+  parallel_sequence_contract: legacy_prefix_single_frame_perchunk_proprio
   action_expert_init_mode: video_weight_interpolate
   num_action_layers: 30
   action_hidden_size: 2048
@@ -135,6 +141,7 @@ policy_variant:
   use_text_conditioning: true
   use_state_conditioning: false
   use_activation_checkpointing: true
+  noisy_video_condition_prob: 0.5
   # Canonical GJD uses the video scheduler as the single sigma clock for joint,
   # FDM, and IDM modes. Use `match_index`/`independent` only for ablations.
   joint_timestep_coupling: match_sigma
@@ -144,6 +151,9 @@ policy_variant:
     joint: 0.6
     action_conditioned_video: 0.2
     video_conditioned_action: 0.2
+  # Ablation knob. Leave false for vanilla/pure-joint; set true for the
+  # explicit mode-token M5 GJD ablation.
+  generalist_mode_text_token: false
 
 action_decoder:
   name: mot_decoder
@@ -158,7 +168,7 @@ training:
   action_sigma_shift: 1.0
   use_teacher_forcing: false
   chunk_size: 4
-  window_size: 30
+  window_size: 64
   optimizer_name: adamw
   scheduler_name: constant_with_warmup
   learning_rate: 1.0e-5
@@ -173,6 +183,7 @@ training:
   enabled_objectives: [action, latent]
   latent_loss_weight: 1.0
   action_loss_weight: 1.0
+  sample_loss_weight_mode: none
   trainable_components: [policy_variant.action_expert, visual_tower.runtime_backbone]
 
 inference:

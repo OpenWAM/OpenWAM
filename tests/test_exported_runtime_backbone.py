@@ -133,3 +133,7 @@ def test_exported_runtime_action_missing_key_policy_matches_skip_predicate() -> 
         allow_random_action=True,
     )
     assert is_allowed_runtime_missing_key("proprio_context_encoder.input_proj.weight", allow_random_action=False)
+    assert is_allowed_runtime_missing_key(
+        "generalist_mode_context_encoder.embedding.weight",
+        allow_random_action=False,
+    )

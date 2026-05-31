@@ -21,8 +21,8 @@ from open_wam.models.common.flow_matching import (
 from open_wam.models.common.flow_noise_plan import frame_sigmas_for_timesteps
 from open_wam.models.common.attention_profiles import build_chunked_text_context_cross_attention_mask
 from open_wam.models.common.joint_conditioning import (
+    resolve_generalist_joint_conditioning_semantics,
     sample_conditioning_mode,
-    should_drop_text_for_conditioning_mode,
 )
 from open_wam.models.common.modality_slots import clean_noisy_slot_tensor, zero_loss_mask_like
 from open_wam.models.common.rollout_startup import (
@@ -293,21 +293,26 @@ def _apply_mot_generalist_training_mode(
     """Apply M5 generalist denoising mode semantics to packed train tensors.
 
     Realizes the conditional sub-modes by placing the clean modality into its
-    noisy slot, zeroing the corresponding condition slot, forcing per-frame
-    timesteps to 0 on the conditioned side, and masking that side's loss. The
-    ``JOINT`` bucket intentionally preserves the clean condition slots so its
-    training contract matches plain M5 packed-joint training and rollout:
-    noisy current tokens can use past clean video/action context through the
-    same Method-1-style packed mask.
+    noisy slot, preserving real clean condition slots for history/context,
+    forcing per-frame timesteps to 0 on the conditioned side, and masking that
+    side's loss. The ``JOINT`` bucket intentionally preserves the clean
+    condition slots so its training contract matches plain M5 packed-joint
+    training and rollout: noisy current tokens can use past clean video/action
+    context through the same Method-1-style packed mask.
 
     ``effective_action_mask`` is the supervised action-loss mask. It may be
     narrower than the raw valid-action mask under fixed-segment sampling, so it
     must not be reused to hide clean action conditions from FDM/IDM context.
     """
 
-    zero_clean_actions = torch.zeros_like(clean_actions)
+    semantics = resolve_generalist_joint_conditioning_semantics(
+        sampled_mode,
+        joint_mode=MoTGeneralistTrainingMode.JOINT,
+        action_conditioned_video_mode=MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
+        video_conditioned_action_mode=MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
+    )
 
-    if sampled_mode == MoTGeneralistTrainingMode.JOINT:
+    if semantics.is_joint:
         return (
             video_artifacts,
             noisy_actions,
@@ -317,27 +322,26 @@ def _apply_mot_generalist_training_mode(
             effective_action_mask,
         )
 
-    if sampled_mode == MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO:
+    if semantics.clean_action_noisy_slot:
         # Clean action overwrites the A_noisy slot at timestep 0; A_clean
-        # condition slot is zeroed; action loss is masked out so video-only
-        # gradients drive this segment.
+        # remains real clean action history/context; action loss is masked out
+        # so video-only gradients drive this segment.
         new_noisy_actions = clean_noisy_slot_tensor(
             clean_actions.clone(),
             action_mask=clean_action_condition_mask,
         )
-        new_clean_actions = zero_clean_actions
         new_noisy_slot_timesteps = torch.zeros_like(noisy_slot_timesteps)
         new_action_mask = zero_loss_mask_like(effective_action_mask, fallback_like=noisy_actions)
         return (
             video_artifacts,
             new_noisy_actions,
-            new_clean_actions,
+            clean_actions,
             new_noisy_slot_timesteps,
             future_loss_mask,
             new_action_mask,
         )
 
-    if sampled_mode == MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION:
+    if semantics.clean_video_noisy_slot:
         # Clean video overwrites the V_noisy slot at timestep 0; V_clean
         # remains available as past clean context under the packed attention
         # mask; video loss is masked out so action-only gradients drive this
@@ -358,6 +362,20 @@ def _apply_mot_generalist_training_mode(
         )
 
     raise ValueError(f"Unsupported MoTGeneralistTrainingMode {sampled_mode!r}.")
+
+
+def _mot_generalist_forces_clean_video_condition(
+    sampled_mode: MoTGeneralistTrainingMode | None,
+) -> bool:
+    if sampled_mode is None:
+        return False
+    semantics = resolve_generalist_joint_conditioning_semantics(
+        sampled_mode,
+        joint_mode=MoTGeneralistTrainingMode.JOINT,
+        action_conditioned_video_mode=MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
+        video_conditioned_action_mode=MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
+    )
+    return semantics.force_clean_video_condition
 
 
 def _rewind_runtime_action_cache_to_frame(
@@ -458,6 +476,7 @@ class MoTPolicyVariant(PolicyVariant):
         return ProprioContextMode(self.config.proprio_context_mode) != ProprioContextMode.NONE
 
     def _uses_text_proprio_context(self) -> bool:
+        # Deprecated compatibility path; new proprio runs use per-chunk additive context.
         return ProprioContextMode(self.config.proprio_context_mode) == ProprioContextMode.TEXT_CONTEXT_TOKEN
 
     def _uses_per_chunk_proprio_context(self) -> bool:
@@ -595,7 +614,10 @@ class MoTPolicyVariant(PolicyVariant):
             return text_context
         append = getattr(visual_tower.core, "append_proprio_context_tokens", None)
         if not callable(append):
-            raise ValueError("Proprio context mode requires the visual tower core to support proprio appending.")
+            raise ValueError(
+                "Deprecated text-space proprio token mode requires the visual tower core "
+                "to support proprio appending."
+            )
         return append(text_context, proprio_state)
 
     def _encode_hidden_proprio_context(
@@ -721,10 +743,13 @@ class MoTPolicyVariant(PolicyVariant):
         chunk_size_frames: int,
         chunk_origin_frame: int = 0,
         repeat_copies: int = 1,
+        global_suffix_token_count: int = 0,
     ) -> torch.Tensor | None:
         proprio_token_count = self._proprio_context_token_count(proprio_state)
-        if proprio_token_count <= 1:
+        suffix_token_count = int(global_suffix_token_count)
+        if proprio_token_count <= 1 and suffix_token_count <= 0:
             return None
+        gated_proprio_token_count = int(proprio_token_count) if proprio_token_count > 1 else 0
         if query_frames_per_copy <= 0 or tokens_per_frame <= 0:
             raise ValueError(
                 "Proprio cross-attention masking requires positive query geometry, "
@@ -741,15 +766,37 @@ class MoTPolicyVariant(PolicyVariant):
             chunk_size,
             rounding_mode="floor",
         ).repeat(int(repeat_copies))
-        base_text_token_count = int(resolved_text_context.shape[1]) - int(proprio_token_count)
+        base_text_token_count = int(resolved_text_context.shape[1]) - gated_proprio_token_count - suffix_token_count
         return build_chunked_text_context_cross_attention_mask(
             query_chunk_ids=query_chunk_ids,
             batch_size=int(resolved_text_context.shape[0]),
             text_token_count=int(resolved_text_context.shape[1]),
             base_text_token_count=base_text_token_count,
-            proprio_context_token_count=proprio_token_count,
+            proprio_context_token_count=gated_proprio_token_count,
+            global_suffix_token_count=suffix_token_count,
             device=resolved_text_context.device,
         )
+
+    def _append_generalist_mode_text_token(
+        self,
+        visual_tower: VisualTower,
+        text_context: torch.Tensor,
+        mode: MoTGeneralistTrainingMode,
+    ) -> tuple[torch.Tensor, int]:
+        if not bool(getattr(self.config, "generalist_mode_text_token", False)):
+            return text_context, 0
+        append = getattr(visual_tower.core, "append_generalist_mode_context_token", None)
+        if not callable(append):
+            raise ValueError("MoT `generalist_mode_text_token=true` requires a visual core mode-token hook.")
+        before_tokens = int(text_context.shape[1])
+        resolved = append(text_context, mode.value)
+        token_count = int(resolved.shape[1]) - before_tokens
+        if token_count != 1:
+            raise ValueError(
+                "MoT generalist mode token appending must add exactly one token, "
+                f"got token_count={token_count}."
+            )
+        return resolved, token_count
 
     def attach_visual_tower(self, visual_tower: VisualTower) -> None:
         """Pipeline-time hook: build the packed-coupling block stack.
@@ -768,7 +815,9 @@ class MoTPolicyVariant(PolicyVariant):
         if self._uses_text_proprio_context():
             configure = getattr(visual_tower.core, "configure_proprio_context_encoder", None)
             if not callable(configure):
-                raise ValueError("proprio_context_mode=text_context_token requires a core proprio encoder hook.")
+                raise ValueError(
+                    "Deprecated proprio_context_mode=text_context_token requires a core proprio encoder hook."
+                )
             configure(enabled=True, state_dim=int(self.state_dim))
         elif self._uses_per_chunk_proprio_context():
             configure = getattr(visual_tower.core, "configure_proprio_hidden_context_encoder", None)
@@ -1863,6 +1912,12 @@ class MoTPolicyVariant(PolicyVariant):
                 generalist_probs,
                 device=video_latents.device,
             )
+        if sampled_generalist_mode is not None and int(video_latents.shape[0]) != 1:
+            raise ValueError(
+                "M5 generalist joint denoising currently requires rank-local train_batch_size=1 because "
+                "one GJD mode is sampled/applied per segment forward and per-sample forced modes are only "
+                f"unambiguous for batch size 1; got batch_size={int(video_latents.shape[0])}."
+            )
 
         joint_timestep_coupling = _resolve_mot_joint_timestep_coupling(
             self.config,
@@ -1902,7 +1957,7 @@ class MoTPolicyVariant(PolicyVariant):
             condition_latents=clean_video_condition_latents,
             timestep_ids=shared_timestep_ids,
             noisy_condition_prob=0.0
-            if sampled_generalist_mode is not None
+            if _mot_generalist_forces_clean_video_condition(sampled_generalist_mode)
             else float(self.config.noisy_video_condition_prob),
         )
         if prefix_condition_frames > 0:
@@ -1967,6 +2022,13 @@ class MoTPolicyVariant(PolicyVariant):
         # NOT be re-sampled at block granularity (would break attention
         # profile cache + cause same-step layers to disagree).
         if sampled_generalist_mode is not None:
+            generalist_semantics = resolve_generalist_joint_conditioning_semantics(
+                sampled_generalist_mode,
+                joint_mode=MoTGeneralistTrainingMode.JOINT,
+                action_conditioned_video_mode=MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
+                video_conditioned_action_mode=MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
+                drop_text_conditioning=metadata_drop_text,
+            )
             (
                 video_artifacts,
                 noisy_actions,
@@ -1984,6 +2046,14 @@ class MoTPolicyVariant(PolicyVariant):
                 effective_action_mask=effective_action_mask,
                 clean_action_condition_mask=clean_action_condition_mask,
             )
+            if generalist_semantics.is_conditional:
+                # Match the M1 GJD conditional contract: FDM/IDM are local
+                # dynamics probes. Keep real tokens intact, but restrict K/V
+                # visibility to one immediate history chunk through the packed
+                # attention window.
+                sampled_window_size = generalist_semantics.attention_window_size(
+                    fallback_window_size=sampled_window_size,
+                )
 
         packed_action_tokens = torch.cat([noisy_actions, clean_actions], dim=1)
         action_hidden_proprio_state = self._legacy_prefix_action_hidden_proprio_state(
@@ -2007,11 +2077,13 @@ class MoTPolicyVariant(PolicyVariant):
 
         text_dropped = False
         if sampled_generalist_mode is not None:
-            text_dropped = should_drop_text_for_conditioning_mode(
+            text_dropped = resolve_generalist_joint_conditioning_semantics(
                 sampled_generalist_mode,
                 joint_mode=MoTGeneralistTrainingMode.JOINT,
+                action_conditioned_video_mode=MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
+                video_conditioned_action_mode=MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
                 drop_text_conditioning=metadata_drop_text,
-            )
+            ).drop_text_conditioning
         resolved_text = text_context
         if resolved_text is None:
             resolved_text = video_latents.new_zeros(
@@ -2032,6 +2104,17 @@ class MoTPolicyVariant(PolicyVariant):
         )
         if resolved_text is None:  # pragma: no cover - materialized above
             raise RuntimeError("M5 packed text context unexpectedly resolved to None.")
+        generalist_mode_text_token_count = 0
+        if bool(getattr(self.config, "generalist_mode_text_token", False)):
+            if sampled_generalist_mode is None:
+                raise ValueError(
+                    "MoT `generalist_mode_text_token=true` requires an active sampled or forced GJD mode."
+                )
+            resolved_text, generalist_mode_text_token_count = self._append_generalist_mode_text_token(
+                visual_tower,
+                resolved_text,
+                sampled_generalist_mode,
+            )
         packed_video_cross_attention_mask = self._build_proprio_cross_attention_mask(
             resolved_text_context=resolved_text,
             proprio_state=proprio_state,
@@ -2040,6 +2123,7 @@ class MoTPolicyVariant(PolicyVariant):
             chunk_size_frames=sampled_chunk_size,
             chunk_origin_frame=chunk_origin_frame,
             repeat_copies=2,
+            global_suffix_token_count=generalist_mode_text_token_count,
         )
 
         single_action_grid = self._build_action_grid_ids_for_sequence(
@@ -2058,6 +2142,7 @@ class MoTPolicyVariant(PolicyVariant):
             chunk_size_frames=sampled_chunk_size,
             chunk_origin_frame=chunk_origin_frame,
             repeat_copies=2,
+            global_suffix_token_count=generalist_mode_text_token_count,
         )
 
         packed_action_pre = self.action_expert.pre_dit(
@@ -2163,6 +2248,12 @@ class MoTPolicyVariant(PolicyVariant):
                 "mot_generalist_training_mode": (
                     sampled_generalist_mode.value if sampled_generalist_mode is not None else None
                 ),
+                "mot_generalist_mode_text_token": (
+                    sampled_generalist_mode.value
+                    if generalist_mode_text_token_count > 0 and sampled_generalist_mode is not None
+                    else None
+                ),
+                "mot_generalist_mode_text_token_count": int(generalist_mode_text_token_count),
                 "mot_train_artifacts": MoTTrainArtifacts(
                     action=MoTActionTrainArtifacts(
                         flow_pred=action_flow_pred,
@@ -2397,6 +2488,17 @@ class MoTPolicyVariant(PolicyVariant):
             )
         else:
             text_context = text_context.to(device=device, dtype=dtype)
+        if (
+            bool(getattr(self.config, "generalist_mode_text_token", False))
+            and int(getattr(runtime_state, "generalist_mode_text_token_count", 0)) <= 0
+        ):
+            text_context, token_count = self._append_generalist_mode_text_token(
+                visual_tower,
+                text_context,
+                MoTGeneralistTrainingMode.JOINT,
+            )
+            runtime_state.text_context = text_context
+            runtime_state.generalist_mode_text_token_count = int(token_count)
 
         video_scheduler = build_video_flow_match_inference_scheduler(
             training_config=self.training_config,
@@ -2795,6 +2897,14 @@ class MoTPolicyVariant(PolicyVariant):
                 "mot_action_context_invalid_tokens": int(
                     attention_profile.metadata.get("invalid_action_context_tokens", 0)
                 ),
+                "mot_generalist_mode_text_token": (
+                    MoTGeneralistTrainingMode.JOINT.value
+                    if int(getattr(runtime_state, "generalist_mode_text_token_count", 0)) > 0
+                    else None
+                ),
+                "mot_generalist_mode_text_token_count": int(
+                    getattr(runtime_state, "generalist_mode_text_token_count", 0)
+                ),
                 "mot_history_anchor_frames": int(shared_history_frames),
                 "mot_packed_history_debug": {
                     "past_clean_latent_frames": 0 if past_clean_latents is None else int(past_clean_latents.shape[2]),
@@ -2865,8 +2975,21 @@ class MoTPolicyVariant(PolicyVariant):
             batch_size=int(visual_outputs.frontend.video_latents.shape[0]),
             device=action_device,
             dtype=action_dtype,
-            materialize_if_missing=self._uses_proprio_context(),
+            materialize_if_missing=(
+                self._uses_proprio_context()
+                or bool(getattr(self.config, "generalist_mode_text_token", False))
+            ),
         )
+        generalist_mode_text_token_count = 0
+        if bool(getattr(self.config, "generalist_mode_text_token", False)):
+            if resolved_text_context is None:  # pragma: no cover - materialized above
+                raise RuntimeError("M5 mode-token rollout expected materialized text context.")
+            resolved_text_context, generalist_mode_text_token_count = self._append_generalist_mode_text_token(
+                visual_tower,
+                resolved_text_context,
+                MoTGeneralistTrainingMode.JOINT,
+            )
+        runtime_state.generalist_mode_text_token_count = int(generalist_mode_text_token_count)
         # Only `joint_denoise` stays on the simultaneous video+action denoise
         # path. `non_joint_two_stream` falls through to the method-1-aligned
         # default path below (video fully denoised first, then action attends
@@ -3159,6 +3282,14 @@ class MoTPolicyVariant(PolicyVariant):
                     ),
                     "joint_timestep_coupling": joint_timestep_coupling.value,
                     "coupled_action_video_sigmas": bool(couple_action_video_sigmas),
+                    "mot_generalist_mode_text_token": (
+                        MoTGeneralistTrainingMode.JOINT.value
+                        if int(getattr(runtime_state, "generalist_mode_text_token_count", 0)) > 0
+                        else None
+                    ),
+                    "mot_generalist_mode_text_token_count": int(
+                        getattr(runtime_state, "generalist_mode_text_token_count", 0)
+                    ),
                 },
             )
         # True Method-1-aligned NON_JOINT_TWO_STREAM rollout with persistent
@@ -3223,6 +3354,17 @@ class MoTPolicyVariant(PolicyVariant):
             text_context_for_video = text_context_for_video.to(
                 device=video_device, dtype=video_dtype
             )
+        if (
+            bool(getattr(self.config, "generalist_mode_text_token", False))
+            and int(getattr(runtime_state, "generalist_mode_text_token_count", 0)) <= 0
+        ):
+            text_context_for_video, token_count = self._append_generalist_mode_text_token(
+                visual_tower,
+                text_context_for_video,
+                MoTGeneralistTrainingMode.JOINT,
+            )
+            runtime_state.text_context = text_context_for_video
+            runtime_state.generalist_mode_text_token_count = int(token_count)
         # Full Method-1 alignment: cache at 2B with CFG throughout the
         # video path. Bootstrap uses `force_cfg_batch=True` so every
         # subsequent denoise step (with `guidance_scale>1` and
@@ -3239,6 +3381,12 @@ class MoTPolicyVariant(PolicyVariant):
             dtype=video_dtype,
             materialize_if_missing=False,
         )
+        if bool(getattr(self.config, "generalist_mode_text_token", False)) and negative_text_context is not None:
+            negative_text_context, _ = self._append_generalist_mode_text_token(
+                visual_tower,
+                negative_text_context,
+                MoTGeneralistTrainingMode.JOINT,
+            )
         use_cfg = (
             negative_text_context is not None
             and bool(self.inference_config.use_cache)
@@ -3730,6 +3878,14 @@ class MoTPolicyVariant(PolicyVariant):
                 "condition_mode": str(self.config.condition_mode),
                 "current_block_coupling": current_block_coupling.value,
                 "generation_frame_start": int(current_action_frame_start),
+                "mot_generalist_mode_text_token": (
+                    MoTGeneralistTrainingMode.JOINT.value
+                    if int(getattr(runtime_state, "generalist_mode_text_token_count", 0)) > 0
+                    else None
+                ),
+                "mot_generalist_mode_text_token_count": int(
+                    getattr(runtime_state, "generalist_mode_text_token_count", 0)
+                ),
                 "mot_cache_debug": {
                     "video_cache_seq_len": int(runtime_state.video_cache.video_seq_len) if runtime_state.video_cache is not None else 0,
                     "action_video_cache_seq_len": int(action_video_cache.video_seq_len),

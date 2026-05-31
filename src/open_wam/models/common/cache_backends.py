@@ -9,6 +9,7 @@ from open_wam.models.video_backbone.contracts import AttentionCacheEntry
 
 
 SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS = "allow_video_query_to_action_prefix_tail_tokens"
+SLOT_POOL_DEFER_EVICTION_UNTIL_AFTER_WRITE_ATTENTION = "defer_eviction_until_after_write_attention"
 
 
 @dataclass(frozen=True)

@@ -10,6 +10,7 @@ class FdmAblationMode(StrEnum):
     """Forward-dynamics ablation mode for maintained M1.2 joint denoising."""
 
     FORCED_ACTION_JOINT_FDM = "forced_action_joint_fdm"
+    VIDEO_CONDITIONED_ACTION = "video_conditioned_action"
     VANILLA_JOINT_ROLLOUT = "vanilla_joint_rollout"
     CLEAN_ACTION_FEEDBACK = "clean_action_feedback"
 
@@ -34,6 +35,7 @@ class FdmRunConfig:
     video_fps: float
     modes: tuple[FdmAblationMode, ...] = (
         FdmAblationMode.FORCED_ACTION_JOINT_FDM,
+        FdmAblationMode.VIDEO_CONDITIONED_ACTION,
         FdmAblationMode.VANILLA_JOINT_ROLLOUT,
         FdmAblationMode.CLEAN_ACTION_FEEDBACK,
     )

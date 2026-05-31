@@ -54,8 +54,10 @@ from open_wam.models.policy_variants.mot.runtime_routing import (  # noqa: E402
 )
 from open_wam.pipelines import LingbotExactRunner, VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
 from open_wam.utils import (  # noqa: E402
+    apply_config_overrides,
     load_experiment_config,
     merge_runtime_config_from_checkpoint,
+    parse_override_assignments,
     resolve_transformer_dir_override,
     seed_everywhere,
     validate_positive_step_override,
@@ -280,6 +282,14 @@ def main() -> None:
             "Optional reference asset root override for VAE/text/tokenizer assets. "
             "Use this with --transformer-dir when comparing against an external full-model export."
         ),
+    )
+    parser.add_argument(
+        "--set",
+        dest="set_overrides",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Apply training-style config overrides after checkpoint runtime-config merging.",
     )
     parser.add_argument(
         "--merge-checkpoint-runtime-config",
@@ -535,6 +545,11 @@ def main() -> None:
         else:
             checkpoint_runtime_config_path = None
         _apply_checkpoint_backbone_override(config, checkpoint_path=checkpoint_path)
+    if args.set_overrides:
+        config = apply_config_overrides(
+            config,
+            parse_override_assignments(tuple(args.set_overrides)),
+        )
     if args.pretrained_model_root is not None:
         pretrained_model_root = Path(args.pretrained_model_root).expanduser().resolve()
         if not pretrained_model_root.is_dir():

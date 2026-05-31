@@ -763,6 +763,31 @@ def _trim_conditional_history(
     actions = sample.actions[action_crop:].contiguous()
     action_mask = sample.action_mask[action_crop:].contiguous() if sample.action_mask is not None else None
     canonical_video = _trim_optional_video(sample.canonical_video, crop_frames=crop_frames, total_frames=total_frames)
+    condition_latents = _trim_optional_video(
+        sample.condition_latents,
+        crop_frames=crop_frames,
+        total_frames=total_frames,
+    )
+    proprio_context_state = _trim_optional_frame_tensor(
+        sample.proprio_context_state,
+        crop_frames=crop_frames,
+        total_frames=total_frames,
+    )
+    proprio_context_state_mask = _trim_optional_frame_tensor(
+        sample.proprio_context_state_mask,
+        crop_frames=crop_frames,
+        total_frames=total_frames,
+    )
+    proprio_context_frames = _trim_optional_frame_tensor(
+        sample.proprio_context_frames,
+        crop_frames=crop_frames,
+        total_frames=total_frames,
+    )
+    proprio_context_frames_mask = _trim_optional_frame_tensor(
+        sample.proprio_context_frames_mask,
+        crop_frames=crop_frames,
+        total_frames=total_frames,
+    )
     metadata = _trim_conditional_history_metadata(
         sample.metadata,
         crop_frames=crop_frames,
@@ -779,6 +804,11 @@ def _trim_conditional_history(
         actions=actions,
         action_mask=action_mask,
         canonical_video=canonical_video,
+        condition_latents=condition_latents,
+        proprio_context_state=proprio_context_state,
+        proprio_context_state_mask=proprio_context_state_mask,
+        proprio_context_frames=proprio_context_frames,
+        proprio_context_frames_mask=proprio_context_frames_mask,
         metadata=metadata,
     )
 
@@ -804,6 +834,21 @@ def _trim_optional_video(
     if canonical_video.ndim >= 2 and int(canonical_video.shape[1]) == total_frames:
         return canonical_video[:, crop_frames:].contiguous()
     return canonical_video
+
+
+def _trim_optional_frame_tensor(
+    tensor: torch.Tensor | None,
+    *,
+    crop_frames: int,
+    total_frames: int,
+) -> torch.Tensor | None:
+    if tensor is None:
+        return None
+    if tensor.ndim >= 1 and int(tensor.shape[0]) == total_frames:
+        return tensor[crop_frames:].contiguous()
+    if tensor.ndim >= 2 and int(tensor.shape[1]) == total_frames:
+        return tensor[:, crop_frames:].contiguous()
+    return tensor
 
 
 def _trim_conditional_history_metadata(

@@ -23,7 +23,11 @@ _REFERENCE_PREFIXES = (
     "condition_embedder.",
     "condition_embedder_action.",
 )
-_OPTIONAL_RUNTIME_TARGET_PREFIXES = ("proprio_context_encoder.", "proprio_hidden_context_encoder.")
+_OPTIONAL_RUNTIME_TARGET_PREFIXES = (
+    "proprio_context_encoder.",
+    "proprio_hidden_context_encoder.",
+    "generalist_mode_context_encoder.",
+)
 _ACTION_RUNTIME_TARGET_PREFIXES = (
     "action_time_conditioner.",
     "action_text_proj.",

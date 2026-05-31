@@ -27,22 +27,24 @@ def test_libero_paradigm_guard_flags_no_proprio_strict_m1_config() -> None:
 
     assert issues == [
         "policy_variant.proprio_context_mode='none', "
-        "expected 'per_chunk_additive' or 'text_context_token'"
+        "expected 'per_chunk_additive'"
     ]
 
 
-def test_libero_paradigm_guard_accepts_strict_m1_config_with_proprio() -> None:
+def test_libero_paradigm_guard_rejects_deprecated_text_token_proprio() -> None:
     config_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
     config = load_experiment_config(config_path)
     config = replace(
         config,
         policy_variant=replace(
             config.policy_variant,
-            proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,
+            proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,  # deprecated compatibility
         ),
     )
 
-    assert collect_current_libero_policy_paradigm_issues(config, config_path=config_path) == []
+    assert collect_current_libero_policy_paradigm_issues(config, config_path=config_path) == [
+        "policy_variant.proprio_context_mode='text_context_token', expected 'per_chunk_additive'"
+    ]
 
 
 def test_libero_paradigm_guard_accepts_strict_m1_config_with_per_chunk_proprio() -> None:
@@ -59,6 +61,52 @@ def test_libero_paradigm_guard_accepts_strict_m1_config_with_per_chunk_proprio()
     assert collect_current_libero_policy_paradigm_issues(config, config_path=config_path) == []
 
 
+def test_libero_paradigm_guard_accepts_fullseg_w64_gjd_configs() -> None:
+    for config_path in (
+        REPO_ROOT
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml",
+        REPO_ROOT / "configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml",
+    ):
+        config = load_experiment_config(config_path)
+
+        assert collect_current_libero_policy_paradigm_issues(config, config_path=config_path) == []
+
+
+def test_libero_paradigm_guard_flags_fixed128_gjd_config() -> None:
+    config_path = (
+        REPO_ROOT
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
+    )
+    config = load_experiment_config(config_path)
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode="hierarchical_fixed_segment",
+                segment_frames=128,
+                segment_min_frames=None,
+                segment_max_frames=None,
+                window_size=30,
+                randomize_geometry=False,
+                randomize_segment_length=False,
+                randomize_segment_start=False,
+                require_full_segment=False,
+                sample_order_mode="epoch_order",
+                target_alignment="next_after_context",
+                rollout_context_policy="one_frame",
+                start_padding_frames=0,
+            ),
+        ),
+    )
+
+    issues = collect_current_libero_policy_paradigm_issues(config, config_path=config_path)
+
+    assert "data.sample_construction.mode='hierarchical_fixed_segment', expected 'uniform_segment'" in issues
+    assert "data.sample_construction.window_size=30, expected 64" in issues
+
+
 def test_libero_paradigm_guard_prefers_resolved_config_over_legacy_wrapper_path() -> None:
     config_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
     legacy_wrapper_path = REPO_ROOT / "configs/experiments/deprecated/parallel_stream_libero_lingbot_exact_local.yaml"
@@ -67,7 +115,7 @@ def test_libero_paradigm_guard_prefers_resolved_config_over_legacy_wrapper_path(
         config,
         policy_variant=replace(
             config.policy_variant,
-            proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,
+            proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
         ),
     )
 

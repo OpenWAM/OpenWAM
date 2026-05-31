@@ -6,10 +6,10 @@ data:
   dataset_type: lerobot_v2_latent_local
   local_root: "${paths.datasets.libero_heng_root}"
   replay_status_path: "${paths.datasets.libero_replay_status_path}"
-  replay_status_policy: successful_only
-  val_replay_status_policy: failure_only
-  require_replay_status: true
-  val_require_replay_status: true
+  replay_status_policy: include_all
+  val_replay_status_policy: null
+  require_replay_status: false
+  val_require_replay_status: false
   empty_text_embedding_path: "${paths.datasets.empty_text_embedding}"
   split: train
   # View + latent layout knobs
@@ -23,23 +23,25 @@ data:
   episode_cache_size: 2
   train_fraction: 1.0
   split_seed: 0
-  # Strict fixed-128 rollout-parity segments. One real context frame is
-  # materialized before the 128 supervised targets. Tail overflow remains
-  # metadata-only, unavailable targets are masked, and chunk geometry is fixed at 4.
+  # Current GJD sampler. Fixed-128 GJD training is deprecated; the maintained
+  # setup follows the #150-style full-segment W64 contract.
   sample_construction:
-    mode: hierarchical_fixed_segment
-    segment_frames: 128
+    mode: uniform_segment
+    sample_order_mode: replacement
     chunk_size: 4
-    window_size: 30
-    randomize_geometry: false
-    start_padding_frames: 0
-    target_alignment: next_after_context
-    rollout_context_policy: one_frame
-    tail_padding_policy: zero_order_hold
-    padded_target_policy: mask_loss
-    task_start_power: 0.5
+    window_size: 64
+    randomize_geometry: true
+    segment_min_frames: 1000
+    segment_max_frames: 1000
+    segment_length_stride: 1
+    segment_locality_block_size: 1
+    randomize_segment_length: false
+    randomize_segment_start: false
+    require_full_segment: true
+    task_start_power: 0.0
     demo_count_power: 0.0
-    trajectory_start_power: 1.0
+    trajectory_start_power: 0.0
+    sample_weight_mode: uniform
   train_batch_size: 1
   val_batch_size: 1
   num_workers: 8
@@ -96,7 +98,8 @@ backbone:
   attention_head_dim: 128
   ffn_dim: 14336
   pretrained_model_name_or_path: "${paths.models.lingbot_va_base}"
-  transformer_subdir: "${paths.checkpoints.parallel_stream_joint_libero_step_600_0402}/transformer"
+  transformer_subdir: "${paths.checkpoints.libero_videoonly_all_subsets_step_3500}"
+  exported_runtime_action_init_mode: random
   max_text_tokens: 512
   load_wan_vae_frontend: true
   load_text_conditioning: true
@@ -123,6 +126,7 @@ policy_variant:
   video_condition_on_action: true
   video_action_condition_source: noisy_action
   video_action_attention_scope: block_local
+  proprio_context_mode: per_chunk_additive
   # Canonical GJD uses the video scheduler as the single sigma clock for joint,
   # FDM, and IDM modes. Use `match_index`/`independent` only for ablations.
   joint_timestep_coupling: match_sigma
@@ -131,6 +135,9 @@ policy_variant:
     joint: 0.6
     action_conditioned_video: 0.2
     video_conditioned_action: 0.2
+  # Ablation knob. Leave false for vanilla/pure-joint; set true for the
+  # explicit mode-token M1 GJD ablation.
+  generalist_mode_text_token: false
 
 action_decoder:
   name: lingbot_parallel_decoder
@@ -161,10 +168,7 @@ training:
   latent_loss_weight: 1.0
   action_loss_weight: 1.0
   trainable_components: [visual_tower.runtime_backbone]
-  sample_loss_weight_mode: valid_action_steps
-  sample_loss_weight_reference_steps: null
-  sample_loss_weight_min: 0.25
-  sample_loss_weight_max: 4.0
+  sample_loss_weight_mode: none
 
 inference:
   # Online rollout controls for conditional generation are intentionally later.

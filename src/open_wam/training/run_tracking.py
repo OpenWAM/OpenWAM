@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 import subprocess
-from typing import Any
+from typing import Any, Mapping
 
-from open_wam.configs import ExperimentConfig, PolicyVariantName, SampleOrderMode, SampleWeightMode
+from open_wam.configs import (
+    ExperimentConfig,
+    ParallelStreamVariantProfile,
+    PolicyVariantName,
+    SampleOrderMode,
+    SampleWeightMode,
+)
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -84,6 +90,19 @@ def build_run_tracking_metadata(
     joint_denoise_training_mode_probs = getattr(config.policy_variant, "joint_denoise_training_mode_probs", None)
     mot_generalist_training_mode_probs = getattr(config.policy_variant, "mot_generalist_training_mode_probs", None)
     generalist_training_paradigm = getattr(config.policy_variant, "generalist_training_paradigm", None)
+    generalist_mode_text_token = bool(getattr(config.policy_variant, "generalist_mode_text_token", False))
+    if _is_m1_generalist_joint_denoising_profile(variant_profile):
+        m1_generalist_ablation = _resolve_generalist_ablation(
+            joint_denoise_training_mode_probs,
+            generalist_mode_text_token=generalist_mode_text_token,
+        )
+    else:
+        m1_generalist_ablation = None
+    mot_generalist_ablation = _resolve_generalist_ablation(
+        mot_generalist_training_mode_probs,
+        generalist_mode_text_token=generalist_mode_text_token,
+    )
+    gjd_ablation = m1_generalist_ablation or mot_generalist_ablation
     preserve_video_pretrain_history = getattr(config.policy_variant, "preserve_video_pretrain_history", None)
     train_video_condition_source = getattr(config.policy_variant, "train_video_condition_source", None)
     sample_construction = getattr(config.data, "sample_construction", None)
@@ -113,9 +132,13 @@ def build_run_tracking_metadata(
             if mot_generalist_training_mode_probs is not None
             else None
         ),
+        "gjd_ablation": gjd_ablation,
+        "m1_generalist_ablation": m1_generalist_ablation,
+        "mot_generalist_ablation": mot_generalist_ablation,
         "generalist_training_paradigm": (
             str(generalist_training_paradigm) if generalist_training_paradigm is not None else None
         ),
+        "generalist_mode_text_token": generalist_mode_text_token,
         "generalist_dynamics_train_latent_root": (
             dynamics_mixture.train_latent_root if dynamics_mixture is not None else None
         ),
@@ -229,11 +252,14 @@ def resolve_wandb_project(config: ExperimentConfig, tracking_metadata: dict[str,
 
 
 def build_wandb_group(tracking_metadata: dict[str, Any]) -> str:
-    return (
+    group = (
         f"{tracking_metadata['dataset_name']}/"
         f"{tracking_metadata['method_label']}/"
         f"{tracking_metadata['policy_variant']}"
     )
+    if tracking_metadata.get("gjd_ablation"):
+        group = f"{group}/{tracking_metadata['gjd_ablation']}"
+    return group
 
 
 def build_wandb_job_type(tracking_metadata: dict[str, Any]) -> str:
@@ -241,12 +267,15 @@ def build_wandb_job_type(tracking_metadata: dict[str, Any]) -> str:
 
 
 def build_run_title(tracking_metadata: dict[str, Any]) -> str:
-    return (
-        f"{tracking_metadata['dataset_name']} · "
-        f"{tracking_metadata['method_label']} · "
-        f"{tracking_metadata['policy_variant']} · "
-        f"{tracking_metadata['run_slug']}"
-    )
+    parts = [
+        str(tracking_metadata["dataset_name"]),
+        str(tracking_metadata["method_label"]),
+        str(tracking_metadata["policy_variant"]),
+    ]
+    if tracking_metadata.get("gjd_ablation"):
+        parts.append(f"gjd:{tracking_metadata['gjd_ablation']}")
+    parts.append(str(tracking_metadata["run_slug"]))
+    return " · ".join(parts)
 
 
 def build_wandb_tags(tracking_metadata: dict[str, Any]) -> tuple[str, ...]:
@@ -302,8 +331,59 @@ def build_wandb_tags(tracking_metadata: dict[str, Any]) -> tuple[str, ...]:
         ordered_tags.append("video_pretrain_history:preserved")
     if tracking_metadata.get("generalist_training_paradigm"):
         ordered_tags.append(f"generalist_paradigm:{tracking_metadata['generalist_training_paradigm']}")
+    if tracking_metadata.get("gjd_ablation"):
+        ordered_tags.append(f"gjd:{tracking_metadata['method_label']}:{tracking_metadata['gjd_ablation']}")
+    if tracking_metadata.get("m1_generalist_ablation"):
+        ordered_tags.append(f"m1_gjd:{tracking_metadata['m1_generalist_ablation']}")
+    if tracking_metadata.get("mot_generalist_ablation"):
+        ordered_tags.append(f"mot_gjd:{tracking_metadata['mot_generalist_ablation']}")
+    if tracking_metadata.get("generalist_mode_text_token") is True:
+        ordered_tags.append("generalist_mode_text_token")
     deduped: list[str] = []
     for tag in ordered_tags:
         if tag not in deduped:
             deduped.append(tag)
     return tuple(deduped)
+
+
+def _is_m1_generalist_joint_denoising_profile(variant_profile: Any) -> bool:
+    return (
+        variant_profile == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING
+        or str(getattr(variant_profile, "value", variant_profile)) == "generalist_joint_denoising"
+    )
+
+
+def _resolve_generalist_ablation(
+    probs: Mapping[Any, float] | None,
+    *,
+    generalist_mode_text_token: bool,
+) -> str | None:
+    if probs is None:
+        return None
+
+    def _mode_value(mode: Any) -> str:
+        return str(getattr(mode, "value", mode))
+
+    normalized = {_mode_value(mode): float(prob) for mode, prob in probs.items()}
+
+    def _close(key: str, value: float) -> bool:
+        return abs(float(normalized.get(key, 0.0)) - float(value)) <= 1e-6
+
+    if (
+        _close("joint", 1.0)
+        and _close("action_conditioned_video", 0.0)
+        and _close("video_conditioned_action", 0.0)
+    ):
+        base = "pure_joint"
+    elif (
+        _close("joint", 0.6)
+        and _close("action_conditioned_video", 0.2)
+        and _close("video_conditioned_action", 0.2)
+    ):
+        base = "vanilla"
+    else:
+        base = "custom"
+
+    if not generalist_mode_text_token:
+        return base
+    return "mode_token" if base == "vanilla" else f"{base}_mode_token"

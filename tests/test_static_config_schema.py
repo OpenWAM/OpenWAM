@@ -130,6 +130,42 @@ trainer:
 
 
 @pytest.mark.unit
+def test_static_validator_warns_on_deprecated_text_token_proprio(tmp_path: Path) -> None:
+    config_path = tmp_path / "deprecated_text_token_proprio.yaml"
+    config_path.write_text(
+        """
+name: deprecated_text_token_proprio
+data:
+  dataset_name: libero
+  dataset_type: synthetic_multiview
+  action_schema:
+    action_dim: 7
+    action_horizon: 8
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: parallel_stream
+  runtime_mode: lingbot_exact
+  proprio_context_mode: text_context_token  # deprecated
+action_decoder:
+  name: lingbot_parallel_decoder
+  action_dim: 7
+  action_horizon: 8
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert report.ok
+    assert any("Deprecated text-space proprio token path" in issue.message for issue in report.warnings)
+
+
+@pytest.mark.unit
 def test_static_validator_accepts_parallel_stream_context_and_history_flags(tmp_path: Path) -> None:
     config_path = tmp_path / "parallel_context_flags.yaml"
     config_path.write_text(
@@ -1109,6 +1145,89 @@ trainer:
     assert any("Invalid MoTGeneralistTrainingMode" in issue.message for issue in report.errors)
     assert any(issue.path.endswith("action_conditioned_video") for issue in report.errors)
     assert any(issue.path.endswith("video_conditioned_action") and "finite" in issue.message for issue in report.errors)
+    assert any(issue.path == "data.train_batch_size" for issue in report.errors)
+    assert any(issue.path == "data.val_batch_size" for issue in report.errors)
+
+
+@pytest.mark.unit
+def test_static_validator_checks_mot_generalist_batch_size(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_mot_gjd_batch_size.yaml"
+    config_path.write_text(
+        """
+name: bad_mot_gjd_batch_size
+data:
+  dataset_name: libero
+  dataset_type: lerobot_v2_latent_local
+  train_batch_size: 2
+  val_batch_size: 1
+  action_schema:
+    action_dim: 7
+    action_horizon: 16
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: mot
+  attach_site: post_visual_core
+  runtime_mode: non_joint_two_stream
+  current_block_coupling: joint
+  mot_generalist_training_mode_probs:
+    joint: 1.0
+action_decoder:
+  name: mot_decoder
+  action_dim: 7
+  action_horizon: 16
+trainer:
+  accelerator: gpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any(issue.path == "data.train_batch_size" for issue in report.errors)
+
+
+@pytest.mark.unit
+def test_static_validator_checks_mot_mode_token_requires_gjd(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_mot_mode_token.yaml"
+    config_path.write_text(
+        """
+name: bad_mot_mode_token
+data:
+  dataset_name: libero
+  dataset_type: lerobot_v2_latent_local
+  train_batch_size: 1
+  val_batch_size: 1
+  action_schema:
+    action_dim: 7
+    action_horizon: 16
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: mot
+  attach_site: post_visual_core
+  runtime_mode: non_joint_two_stream
+  current_block_coupling: joint
+  generalist_mode_text_token: true
+action_decoder:
+  name: mot_decoder
+  action_dim: 7
+  action_horizon: 16
+trainer:
+  accelerator: gpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any(issue.path == "policy_variant.generalist_mode_text_token" for issue in report.errors)
 
 
 @pytest.mark.unit

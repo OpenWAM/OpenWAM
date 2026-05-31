@@ -75,8 +75,12 @@ def main() -> None:
     parser.add_argument("--mot-inference-window-size", type=int, default=None)
     parser.add_argument(
         "--frontend-encode-mode",
-        choices=("rolling_offline", "lingbot_streaming_vae"),
-        default="rolling_offline",
+        choices=(mot_viz.DEPRECATED_FRONTEND_ENCODE_MODE, mot_viz.CURRENT_FRONTEND_ENCODE_MODE),
+        default=mot_viz.CURRENT_FRONTEND_ENCODE_MODE,
+        help=(
+            "Current rollout contract is lingbot_streaming_vae. rolling_offline is deprecated "
+            "and requires --allow-deprecated-frontend-encode-mode."
+        ),
     )
     parser.add_argument("--startup-model-obs-frames", type=int, default=1)
     parser.add_argument("--startup-env-init-steps", type=int, default=5)
@@ -97,6 +101,7 @@ def main() -> None:
     parser.add_argument("--decode-device", type=str, default=None)
     parser.add_argument("--reset-policy-state-each-chunk", action="store_true")
     parser.add_argument("--allow-deprecated-libero-config", action="store_true")
+    parser.add_argument("--allow-deprecated-frontend-encode-mode", action="store_true")
     args = parser.parse_args()
 
     resources = _load_batch_resources(args)
@@ -190,7 +195,12 @@ def _load_batch_resources(args: argparse.Namespace) -> SimpleNamespace:
             "Expected --mot-inference-window-size to be positive when provided, "
             f"got {args.mot_inference_window_size}."
         )
-    use_lingbot_streaming_vae = args.frontend_encode_mode == "lingbot_streaming_vae"
+    mot_viz._require_current_frontend_encode_mode(
+        args.frontend_encode_mode,
+        allow_deprecated=bool(args.allow_deprecated_frontend_encode_mode),
+        source="run_libero_mot_batch_visualization.py",
+    )
+    use_lingbot_streaming_vae = args.frontend_encode_mode == mot_viz.CURRENT_FRONTEND_ENCODE_MODE
     if use_lingbot_streaming_vae and startup_model_obs_frames != 1:
         raise ValueError(
             "`--frontend-encode-mode lingbot_streaming_vae` expects `--startup-model-obs-frames 1`."

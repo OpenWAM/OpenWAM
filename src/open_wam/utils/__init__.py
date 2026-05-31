@@ -12,6 +12,7 @@ from typing import Any
 
 _EXPORTS: dict[str, str] = {
     "ArtifactManifestEntry": "open_wam.utils.artifacts",
+    "apply_config_overrides": "open_wam.utils.config_overrides",
     "load_artifact_manifest": "open_wam.utils.artifacts",
     "validate_artifact_layout": "open_wam.utils.artifacts",
     "find_checkpoint_resolved_config": "open_wam.utils.checkpoint_runtime",
@@ -20,6 +21,7 @@ _EXPORTS: dict[str, str] = {
     "merge_checkpoint_runtime_config": "open_wam.utils.checkpoint_runtime",
     "merge_runtime_config_from_checkpoint": "open_wam.utils.checkpoint_runtime",
     "read_yaml_with_local_paths": "open_wam.utils.local_paths",
+    "parse_override_assignments": "open_wam.utils.config_overrides",
     "resolve_transformer_dir_override": "open_wam.utils.cli",
     "resolve_checkpoint_file": "open_wam.utils.checkpoint_runtime",
     "validate_positive_step_override": "open_wam.utils.cli",
@@ -28,12 +30,14 @@ _EXPORTS: dict[str, str] = {
 
 __all__ = [
     "ArtifactManifestEntry",
+    "apply_config_overrides",
     "find_checkpoint_resolved_config",
     "load_experiment_config",
     "load_artifact_manifest",
     "load_local_path_registry",
     "merge_checkpoint_runtime_config",
     "merge_runtime_config_from_checkpoint",
+    "parse_override_assignments",
     "read_yaml_with_local_paths",
     "resolve_checkpoint_file",
     "resolve_transformer_dir_override",

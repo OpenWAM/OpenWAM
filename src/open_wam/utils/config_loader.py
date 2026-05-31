@@ -277,6 +277,18 @@ def _coerce_enum_tuple(enum_cls: type[EnumT], values: tuple[EnumT | str, ...] | 
     return tuple(_coerce_enum(enum_cls, value) for value in values)
 
 
+def _coerce_bool(value: Any, *, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    raise ValueError(f"`{field_name}` must be boolean, got {value!r}.")
+
+
 def _coerce_strict_chunk_size(name: str, value: Any) -> int:
     """Coerce strict rollout chunk-size fields with a clear config error."""
 
@@ -904,6 +916,10 @@ def _load_policy_variant_config(
                 ),
             ),
             mot_generalist_training_mode_probs=resolved_raw.get("mot_generalist_training_mode_probs"),
+            generalist_mode_text_token=_coerce_bool(
+                resolved_raw.get("generalist_mode_text_token", False),
+                field_name="policy_variant.generalist_mode_text_token",
+            ),
             joint_timestep_coupling=_coerce_enum(
                 config_enums.JointTimestepCoupling,
                 resolved_raw.get(
@@ -1036,18 +1052,23 @@ def _load_policy_variant_config(
             resolved_raw.get("proprio_context_mode", config_enums.ProprioContextMode.NONE),
         )
         if proprio_context_mode == config_enums.ProprioContextMode.PER_CHUNK_ADDITIVE:
-            if current_block_coupling is None:
+            exact_runtime_mode = runtime_mode in {
+                config_enums.ParallelRuntimeMode.LINGBOT_EXACT,
+                config_enums.ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
+            }
+            compact_runtime_mode = runtime_mode in {
+                config_enums.ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK,
+                config_enums.ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
+            }
+            if exact_runtime_mode and current_block_coupling is None:
                 raise ValueError(
                     "proprio_context_mode=per_chunk_additive requires "
                     "`policy_variant.current_block_coupling` for Method-1 chunk semantics."
                 )
-            if runtime_mode not in {
-                config_enums.ParallelRuntimeMode.LINGBOT_EXACT,
-                config_enums.ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
-            }:
+            if not exact_runtime_mode and not compact_runtime_mode:
                 raise ValueError(
                     "proprio_context_mode=per_chunk_additive is only supported for "
-                    "LingBot exact Method-1 runtime modes."
+                    "LingBot exact and compact current-frame Method-1 runtime modes."
                 )
         use_condition_latents = (
             True
@@ -1123,6 +1144,10 @@ def _load_policy_variant_config(
                     "generalist_training_paradigm",
                     config_enums.GeneralistTrainingParadigm.DEMO_ONLY,
                 ),
+            ),
+            generalist_mode_text_token=_coerce_bool(
+                resolved_raw.get("generalist_mode_text_token", False),
+                field_name="policy_variant.generalist_mode_text_token",
             ),
             current_block_coupling=current_block_coupling,
             preserve_video_pretrain_history=preserve_video_pretrain_history,
@@ -1410,6 +1435,17 @@ def _validate_cross_config_contracts(
 
 def validate_experiment_config_runtime_contract(config: ExperimentConfig) -> ExperimentConfig:
     """Validate cross-section runtime contracts after YAML and CLI overrides."""
+
+    if (
+        isinstance(config.policy_variant, MoTPolicyConfig)
+        and config.policy_variant.mot_generalist_training_mode_probs is not None
+        and (int(config.data.train_batch_size) != 1 or int(config.data.val_batch_size) != 1)
+    ):
+        raise ValueError(
+            "`policy_variant.mot_generalist_training_mode_probs` currently requires "
+            "`data.train_batch_size = data.val_batch_size = 1` because M5 GJD samples one mode per "
+            "segment/forward pass and forced per-sample metadata is only unambiguous for rank-local batch size 1."
+        )
 
     if getattr(config.policy_variant, "generalist_training_paradigm", None) == config_enums.GeneralistTrainingParadigm.MIXED_DYNAMICS:
         if config.trainer.batch_adapter != config_enums.BatchAdapterName.LATENTS:

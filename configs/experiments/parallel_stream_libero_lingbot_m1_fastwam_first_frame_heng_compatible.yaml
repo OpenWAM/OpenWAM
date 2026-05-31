@@ -122,7 +122,7 @@ policy_variant:
   preserve_video_pretrain_history: false
   # Require explicit single-frame condition_latents exported by the augment script.
   require_condition_latents: true
-  proprio_context_mode: text_context_token
+  proprio_context_mode: per_chunk_additive
   temporal_position_mode: local_zero_based
 
 action_decoder:

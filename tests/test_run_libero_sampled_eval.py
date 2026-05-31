@@ -642,6 +642,57 @@ def test_parse_target_requests_accepts_method_key_label_and_checkpoint() -> None
     ]
 
 
+def test_sampled_eval_rejects_gjd_configs() -> None:
+    spec = sampled_eval.CheckpointSpec(
+        key="m5_mode_token",
+        label="M5 GJD mode token",
+        checkpoint="/tmp/checkpoint_step_100",
+        method_key="m5",
+        config="configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml",
+    )
+
+    with pytest.raises(ValueError, match="does not implement the current GJD rollout contract"):
+        sampled_eval.reject_gjd_checkpoint_specs([spec])
+
+
+def test_sampled_eval_rejects_renamed_semantic_gjd_config(tmp_path: Path) -> None:
+    source_path = (
+        Path(__file__).resolve().parents[1]
+        / "configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml"
+    )
+    renamed_config = tmp_path / "custom_m5_eval.yaml"
+    renamed_config.write_text(
+        source_path.read_text(encoding="utf-8").replace(
+            "name: mot_libero_latent_local_generalist_joint_denoising_heng_compatible",
+            "name: custom_m5_eval",
+        ),
+        encoding="utf-8",
+    )
+    spec = sampled_eval.CheckpointSpec(
+        key="m5_custom",
+        label="M5 custom",
+        checkpoint="/tmp/checkpoint_step_100",
+        method_key="m5",
+        config=str(renamed_config),
+    )
+
+    assert sampled_eval.is_gjd_config_path(renamed_config)
+    with pytest.raises(ValueError, match="does not implement the current GJD rollout contract"):
+        sampled_eval.reject_gjd_checkpoint_specs([spec])
+
+
+def test_sampled_eval_allows_non_gjd_m5_configs() -> None:
+    spec = sampled_eval.CheckpointSpec(
+        key="m5_posttrained",
+        label="M5 posttrained",
+        checkpoint="/tmp/checkpoint_step_100",
+        method_key="m5",
+        config="configs/evals/mot_libero_full_segment_non_joint_action_only_eval.yaml",
+    )
+
+    sampled_eval.reject_gjd_checkpoint_specs([spec])
+
+
 def test_resolve_checkpoint_input_accepts_run_root_and_resolved_config_transformer(tmp_path: Path) -> None:
     run_root = tmp_path / "run"
     checkpoint_100 = run_root / "checkpoints" / "checkpoint_step_100"

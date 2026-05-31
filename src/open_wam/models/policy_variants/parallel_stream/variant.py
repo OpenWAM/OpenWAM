@@ -6,6 +6,7 @@ from open_wam.configs import (
     ActionSpace,
     CurrentBlockCoupling,
     InferenceConfig,
+    JointDenoiseTrainingMode,
     ParallelExactCacheWriteMode,
     ParallelRuntimeMode,
     ParallelSequenceContract,
@@ -100,10 +101,14 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         return ProprioContextMode(self.config.proprio_context_mode) != ProprioContextMode.NONE
 
     def _uses_text_proprio_context(self) -> bool:
+        # Deprecated compatibility path; new proprio runs use per-chunk additive context.
         return ProprioContextMode(self.config.proprio_context_mode) == ProprioContextMode.TEXT_CONTEXT_TOKEN
 
     def _uses_per_chunk_proprio_context(self) -> bool:
         return ProprioContextMode(self.config.proprio_context_mode) == ProprioContextMode.PER_CHUNK_ADDITIVE
+
+    def _uses_generalist_mode_text_token(self) -> bool:
+        return bool(self.config.generalist_mode_text_token)
 
     def _require_proprio_state(self, state: torch.Tensor | None, *, label: str) -> torch.Tensor | None:
         if not self._uses_text_proprio_context():
@@ -146,15 +151,28 @@ class ParallelStreamPolicyVariant(PolicyVariant):
     ) -> tuple[torch.Tensor, str] | None:
         if not self._uses_per_chunk_proprio_context():
             return None
-        value = batch.extra.get("proprio_context_frames")
-        mask = batch.extra.get("proprio_context_frames_mask")
-        granularity = _PER_CHUNK_PROPRIO_GRANULARITY_FRAME
-        if not isinstance(value, torch.Tensor):
+        prefer_chunk_state = self.config.runtime_mode in {
+            ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK,
+            ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
+        }
+        if prefer_chunk_state:
             value = batch.extra.get("proprio_context_state")
             mask = batch.extra.get("proprio_context_state_mask")
             granularity = _PER_CHUNK_PROPRIO_GRANULARITY_CHUNK
+            if not isinstance(value, torch.Tensor):
+                value = batch.extra.get("proprio_context_frames")
+                mask = batch.extra.get("proprio_context_frames_mask")
+                granularity = _PER_CHUNK_PROPRIO_GRANULARITY_FRAME
+        else:
+            value = batch.extra.get("proprio_context_frames")
+            mask = batch.extra.get("proprio_context_frames_mask")
+            granularity = _PER_CHUNK_PROPRIO_GRANULARITY_FRAME
+            if not isinstance(value, torch.Tensor):
+                value = batch.extra.get("proprio_context_state")
+                mask = batch.extra.get("proprio_context_state_mask")
+                granularity = _PER_CHUNK_PROPRIO_GRANULARITY_CHUNK
         if not isinstance(value, torch.Tensor):
-            raise ValueError(f"proprio_context_mode=per_chunk_additive requires per-frame proprio context for {label}.")
+            raise ValueError(f"proprio_context_mode=per_chunk_additive requires proprio additive context for {label}.")
         if value.ndim != 3:
             raise ValueError(
                 "Per-chunk proprio context expects state with shape [B, frames, state_dim], "
@@ -210,19 +228,23 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             cache["last_proprio_state"] = state.detach().clone()
 
     def attach_visual_tower(self, visual_tower: VisualTower) -> None:
-        if not self._uses_proprio_context():
-            return
-        configure = (
-            getattr(visual_tower.core, "configure_proprio_context_encoder", None)
-            if self._uses_text_proprio_context()
-            else getattr(visual_tower.core, "configure_proprio_hidden_context_encoder", None)
-        )
-        if not callable(configure):
-            raise ValueError("Proprio context mode requires a shared transformer core.")
-        state_dim = int(visual_tower.state_dim or 0)
-        if state_dim <= 0:
-            raise ValueError("Proprio context mode requires positive data.action_schema.state_dim.")
-        configure(enabled=True, state_dim=state_dim)
+        if self._uses_generalist_mode_text_token():
+            configure_mode = getattr(visual_tower.core, "configure_generalist_mode_context_encoder", None)
+            if not callable(configure_mode):
+                raise ValueError("Generalist mode text-token ablation requires a shared transformer core.")
+            configure_mode(enabled=True)
+        if self._uses_proprio_context():
+            configure = (
+                getattr(visual_tower.core, "configure_proprio_context_encoder", None)
+                if self._uses_text_proprio_context()
+                else getattr(visual_tower.core, "configure_proprio_hidden_context_encoder", None)
+            )
+            if not callable(configure):
+                raise ValueError("Proprio context mode requires a shared transformer core.")
+            state_dim = int(visual_tower.state_dim or 0)
+            if state_dim <= 0:
+                raise ValueError("Proprio context mode requires positive data.action_schema.state_dim.")
+            configure(enabled=True, state_dim=state_dim)
 
     def attach_site(self) -> str:
         return self.config.attach_site
@@ -331,6 +353,9 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 chunk_size_override=sampled_geometry["chunk_size"],
                 window_size_override=sampled_geometry["window_size"],
                 frame_shift=sampled_geometry["frame_shift"],
+                generalist_training_mode_override=generalist_metadata["mode_override"],
+                generalist_drop_text_conditioning=generalist_metadata["drop_text"],
+                generalist_training_source=generalist_metadata["source"],
             )
         elif self.config.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
             train_artifacts = prepare_parallel_action_conditioned_train_artifacts(
@@ -583,6 +608,44 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         )
         return model_actions, model_action_mask
 
+    def _append_generalist_mode_text_token(self, reference_transformer: torch.nn.Module, train_artifacts) -> int:
+        if not self._uses_generalist_mode_text_token():
+            return 0
+        raw_mode = train_artifacts.input_dict.get("joint_denoise_training_mode")
+        if raw_mode is None:
+            raise ValueError(
+                "`generalist_mode_text_token = true` requires `joint_denoise_training_mode` "
+                "in parallel-stream train artifacts."
+            )
+        mode = JointDenoiseTrainingMode(raw_mode).value
+        latent_dict = train_artifacts.input_dict["latent_dict"]
+        action_dict = train_artifacts.input_dict["action_dict"]
+        text_emb = latent_dict["text_emb"]
+        if action_dict["text_emb"].shape != text_emb.shape:
+            raise ValueError(
+                "Generalist mode text-token appending expects latent/action text embeddings "
+                f"to share shape, got latent={tuple(text_emb.shape)} "
+                f"and action={tuple(action_dict['text_emb'].shape)}."
+            )
+        append = getattr(reference_transformer, "append_generalist_mode_context_token", None)
+        if not callable(append):
+            raise ValueError(
+                "Generalist mode text-token ablation requires the runtime transformer "
+                "to support mode-token appending."
+            )
+        appended_text = append(text_emb, mode)
+        token_count = int(appended_text.shape[1] - text_emb.shape[1])
+        if token_count != 1:
+            raise ValueError(
+                "Generalist mode text-token ablation expects exactly one appended token, "
+                f"got {token_count}."
+            )
+        latent_dict["text_emb"] = appended_text
+        action_dict["text_emb"] = appended_text
+        train_artifacts.input_dict["generalist_mode_text_token"] = mode
+        train_artifacts.input_dict["generalist_mode_text_token_count"] = token_count
+        return token_count
+
     def _reference_action_channel_mask(
         self,
         *,
@@ -612,6 +675,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             device=prepared_inputs.batch.actions.device,
         )
         train_artifacts = prepared_inputs.variant_inputs["lingbot_train_artifacts"]
+        self._append_generalist_mode_text_token(reference_transformer, train_artifacts)
         proprio_state = train_artifacts.input_dict.get("proprio_state")
         if proprio_state is not None:
             latent_dict = train_artifacts.input_dict["latent_dict"]
@@ -619,7 +683,10 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             text_emb = latent_dict["text_emb"]
             append = getattr(reference_transformer, "append_proprio_context_tokens", None)
             if not callable(append):
-                raise ValueError("Proprio context mode requires the runtime transformer to support proprio appending.")
+                raise ValueError(
+                    "Deprecated text-space proprio token mode requires the runtime transformer "
+                    "to support proprio appending."
+                )
             base_text_token_count = int(text_emb.shape[1])
             appended_text = append(text_emb, proprio_state)
             latent_dict["text_emb"] = appended_text
@@ -665,6 +732,10 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 "debug": {
                     "sampled_chunk_size": train_artifacts.input_dict["chunk_size"],
                     "sampled_window_size": train_artifacts.input_dict["window_size"],
+                    "generalist_mode_text_token_count": train_artifacts.input_dict.get(
+                        "generalist_mode_text_token_count",
+                        0,
+                    ),
                 },
             },
         )
@@ -731,6 +802,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         infer_state: PolicyInferState,
         action_space: ActionSpace | str = ActionSpace.AUTO,
         frame_start_override: int | None = None,
+        action_conditioning_mode: object = "vanilla_joint_rollout",
         proprio_state: torch.Tensor | None = None,
     ) -> PolicyInferState:
         if self.config.runtime_mode in {
@@ -779,6 +851,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             infer_cache=infer_state.cache,
             cache_write_mode=self.exact_cache_write_mode(),
             frame_start_override=frame_start_override,
+            action_conditioning_mode=str(getattr(action_conditioning_mode, "value", action_conditioning_mode)),
             proprio_state=resolved_proprio_state,
             hidden_proprio_state=resolved_hidden_proprio_state,
         )
@@ -814,6 +887,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         proprio_state: torch.Tensor | None = None,
         advance_frame_start: bool = False,
         skip_video_prediction: bool = False,
+        action_conditioning_mode: object = "vanilla_joint_rollout",
     ) -> PolicyInferOutput:
         # Chunk generation stays exact-runtime-native as well. This keeps the
         # canonical method-1 policy variant small: the variant owns rollout
@@ -865,6 +939,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 infer_cache=infer_state.cache,
                 advance_frame_start=True,
                 proprio_state=resolved_proprio_state,
+                hidden_proprio_state=resolved_hidden_proprio_state,
             )
         elif self.config.runtime_mode == ParallelRuntimeMode.FASTWAM_FIRST_FRAME:
             if visual_outputs is None:
@@ -886,6 +961,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 infer_cache=infer_state.cache,
                 advance_frame_start=True,
                 proprio_state=resolved_proprio_state,
+                hidden_proprio_state=resolved_hidden_proprio_state,
             )
         elif resolve_parallel_current_block_coupling(self.config) in {
             CurrentBlockCoupling.JOINT,
@@ -910,6 +986,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 ),
                 infer_cache=infer_state.cache,
                 advance_frame_start=advance_frame_start,
+                action_conditioning_mode=action_conditioning_mode,
                 proprio_state=resolved_proprio_state,
                 hidden_proprio_state=resolved_hidden_proprio_state,
             )
@@ -982,6 +1059,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
     ) -> PolicyInferOutput:
         warmed_state = infer_state
         condition_outputs: VisualStageOutputs | None = visual_outputs
+        action_conditioning_mode = context.extra.get("action_conditioning_mode", "vanilla_joint_rollout")
         if (
             context.previous_action is not None
             and self.config.runtime_mode
@@ -1006,6 +1084,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 action_history=previous_actions,
                 infer_state=infer_state,
                 action_space=ActionSpace.MODEL,
+                action_conditioning_mode=str(getattr(action_conditioning_mode, "value", action_conditioning_mode)),
                 proprio_state=self._select_proprio_state(context.state),
             )
             condition_outputs = None
@@ -1014,6 +1093,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             visual_outputs=condition_outputs,
             infer_state=warmed_state,
             proprio_state=self._select_proprio_state(context.state),
+            action_conditioning_mode=str(getattr(action_conditioning_mode, "value", action_conditioning_mode)),
         )
 
     def _validate_reference_profile(self) -> None:

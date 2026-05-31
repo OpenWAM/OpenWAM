@@ -12,6 +12,11 @@ from open_wam.configs.variant_semantics import (
 )
 from open_wam.models.common.flow_matching import FlowMatchScheduler
 from open_wam.models.common.flow_noise_plan import sample_coupled_timestep_values, sample_timestep_values
+from open_wam.models.common.joint_conditioning import (
+    generalist_joint_conditioning_window_size,
+    resolve_generalist_joint_conditioning_semantics,
+    sample_conditioning_mode,
+)
 from open_wam.models.common.modality_slots import force_clean_noisy_slot, zero_condition_slot, zero_loss_mask_like
 from open_wam.models.common.rollout_startup import (
     build_strict_action_context_mask,
@@ -56,6 +61,93 @@ def test_shared_probability_helpers_cover_m1_and_m5_mode_enums() -> None:
             enum_cls=MoTGeneralistTrainingMode,
             field_name="mot_generalist_training_mode_probs",
         )
+
+
+@pytest.mark.unit
+def test_shared_conditioning_mode_sampling_broadcasts_rank_zero_choice(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(torch.distributed, "is_available", lambda: True)
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+    monkeypatch.setattr(torch.distributed, "get_rank", lambda: 1)
+
+    def fail_if_rank_one_samples(*args, **kwargs):
+        raise AssertionError("nonzero ranks must not independently sample GJD mode")
+
+    def fake_broadcast(tensor: torch.Tensor, *, src: int) -> None:
+        assert src == 0
+        tensor.fill_(2)
+
+    monkeypatch.setattr(torch, "multinomial", fail_if_rank_one_samples)
+    monkeypatch.setattr(torch.distributed, "broadcast", fake_broadcast)
+
+    mode = sample_conditioning_mode(
+        {mode: 1.0 for mode in MoTGeneralistTrainingMode},
+        enum_cls=MoTGeneralistTrainingMode,
+        device=torch.device("cpu"),
+        error_label="test mode",
+    )
+
+    assert mode == tuple(MoTGeneralistTrainingMode)[2]
+
+
+@pytest.mark.unit
+def test_shared_generalist_joint_conditioning_semantics_cover_m1_and_m5() -> None:
+    m1_joint = resolve_generalist_joint_conditioning_semantics(
+        JointDenoiseTrainingMode.JOINT,
+        joint_mode=JointDenoiseTrainingMode.JOINT,
+        action_conditioned_video_mode=JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+        video_conditioned_action_mode=JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
+    )
+    m5_joint = resolve_generalist_joint_conditioning_semantics(
+        MoTGeneralistTrainingMode.JOINT,
+        joint_mode=MoTGeneralistTrainingMode.JOINT,
+        action_conditioned_video_mode=MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
+        video_conditioned_action_mode=MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
+    )
+    assert m1_joint == m5_joint
+    assert m1_joint.force_clean_video_condition is False
+    assert m1_joint.action_loss_active is True
+    assert m1_joint.video_loss_active is True
+    assert m1_joint.drop_text_conditioning is False
+
+    m1_fdm = resolve_generalist_joint_conditioning_semantics(
+        JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+        joint_mode=JointDenoiseTrainingMode.JOINT,
+        action_conditioned_video_mode=JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+        video_conditioned_action_mode=JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
+    )
+    m5_fdm = resolve_generalist_joint_conditioning_semantics(
+        MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
+        joint_mode=MoTGeneralistTrainingMode.JOINT,
+        action_conditioned_video_mode=MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
+        video_conditioned_action_mode=MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
+    )
+    assert m1_fdm == m5_fdm
+    assert m1_fdm.clean_action_noisy_slot is True
+    assert m1_fdm.action_loss_active is False
+    assert m1_fdm.video_loss_active is True
+    assert m1_fdm.drop_text_conditioning is True
+    assert m1_fdm.force_clean_video_condition is True
+    assert m1_fdm.attention_window_size(fallback_window_size=30) == 3
+
+    m1_idm = resolve_generalist_joint_conditioning_semantics(
+        JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
+        joint_mode=JointDenoiseTrainingMode.JOINT,
+        action_conditioned_video_mode=JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+        video_conditioned_action_mode=JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
+    )
+    assert m1_idm.clean_video_noisy_slot is True
+    assert m1_idm.action_loss_active is True
+    assert m1_idm.video_loss_active is False
+    assert (
+        generalist_joint_conditioning_window_size(
+            JointDenoiseTrainingMode.JOINT,
+            joint_mode=JointDenoiseTrainingMode.JOINT,
+            action_conditioned_video_mode=JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+            video_conditioned_action_mode=JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
+            fallback_window_size=30,
+        )
+        == 30
+    )
 
 
 @pytest.mark.unit

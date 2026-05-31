@@ -39,6 +39,11 @@ from .runtime_programs import (
 )
 
 _MAX_CACHED_FRAMES_UNSET = object()
+_ALLOWED_RUNTIME_MISSING_PREFIXES = (
+    "proprio_context_encoder.",
+    "proprio_hidden_context_encoder.",
+    "generalist_mode_context_encoder.",
+)
 
 
 class VisualTower(nn.Module):
@@ -52,6 +57,7 @@ class VisualTower(nn.Module):
         state_dim: int | None = None,
         proprio_context_state_dim: int | None = None,
         proprio_hidden_context_state_dim: int | None = None,
+        generalist_mode_context_enabled: bool = False,
     ) -> None:
         super().__init__()
         self.config = config or SharedVideoTransformerConfig()
@@ -61,6 +67,11 @@ class VisualTower(nn.Module):
         self.frontend = SharedVideoFrontend(self.config)
         if implementation == BackboneImplementation.SHARED_TRANSFORMER:
             self.core = SharedVideoTransformerCore(self.config, action_dim=action_dim, state_dim=state_dim)
+            if generalist_mode_context_enabled:
+                configure_mode = getattr(self.core, "configure_generalist_mode_context_encoder", None)
+                if not callable(configure_mode):
+                    raise ValueError("Generalist mode text-token ablation requires a shared transformer core.")
+                configure_mode(enabled=True)
             if proprio_context_state_dim is not None:
                 configure_proprio = getattr(self.core, "configure_proprio_context_encoder", None)
                 if not callable(configure_proprio):

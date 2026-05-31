@@ -17,7 +17,11 @@ class BackboneLoadReport:
 
 
 ReferenceCoreLoadReport = BackboneLoadReport
-_OPTIONAL_RUNTIME_TARGET_PREFIXES = ("proprio_context_encoder.", "proprio_hidden_context_encoder.")
+_OPTIONAL_RUNTIME_TARGET_PREFIXES = (
+    "proprio_context_encoder.",
+    "proprio_hidden_context_encoder.",
+    "generalist_mode_context_encoder.",
+)
 
 
 def _copy_if_present(

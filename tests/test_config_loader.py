@@ -121,7 +121,7 @@ def test_abs_eef6d_training_config_is_the_explicit_absolute_action_opt_in() -> N
     assert config.data.action_target.representation == ActionTargetRepresentation.RAW
     assert config.data.action_target.source_key == "integrated_eef6d_action"
     assert config.data.action_target.normalization.mode == ActionNormalizationMode.GAUSSIAN
-    assert config.policy_variant.proprio_context_mode == ProprioContextMode.TEXT_CONTEXT_TOKEN
+    assert config.policy_variant.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
     assert config.action_decoder.recovered_osc_loss_weight > 0.0
 
 
@@ -1044,7 +1044,7 @@ def test_mot_policy_yaml_config_loads(tmp_path: Path) -> None:
     raw["policy_variant"]["action_hidden_size"] = 768
     raw["policy_variant"]["action_ffn_dim"] = 1024
     raw["policy_variant"]["use_state_conditioning"] = True
-    raw["policy_variant"]["proprio_context_mode"] = "text_context_token"
+    raw["policy_variant"]["proprio_context_mode"] = "per_chunk_additive"
     raw["action_decoder"]["name"] = "mlp_decoder"
 
     config_path = tmp_path / "mot_robotwin.yaml"
@@ -1061,7 +1061,7 @@ def test_mot_policy_yaml_config_loads(tmp_path: Path) -> None:
     assert config.policy_variant.action_hidden_size == 768
     assert config.policy_variant.action_ffn_dim == 1024
     assert config.policy_variant.use_state_conditioning is True
-    assert config.policy_variant.proprio_context_mode == ProprioContextMode.TEXT_CONTEXT_TOKEN
+    assert config.policy_variant.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
     assert config.action_decoder.name == ActionDecoderName.MOT
 
 
@@ -1217,7 +1217,7 @@ def test_current_frame_action_chunk_libero_yaml_config_loads() -> None:
 
     assert isinstance(config.policy_variant, ParallelStreamPolicyConfig)
     assert config.policy_variant.runtime_mode == ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK
-    assert config.policy_variant.proprio_context_mode == "text_context_token"
+    assert config.policy_variant.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
     assert config.policy_variant.temporal_position_mode == TemporalPositionMode.LOCAL_ZERO_BASED
     assert config.policy_variant.use_condition_latents is True
     assert config.policy_variant.require_condition_latents is True
@@ -1242,7 +1242,7 @@ def test_fastwam_first_frame_libero_yaml_config_loads() -> None:
 
     assert isinstance(config.policy_variant, ParallelStreamPolicyConfig)
     assert config.policy_variant.runtime_mode == ParallelRuntimeMode.FASTWAM_FIRST_FRAME
-    assert config.policy_variant.proprio_context_mode == "text_context_token"
+    assert config.policy_variant.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
     assert config.policy_variant.temporal_position_mode == TemporalPositionMode.LOCAL_ZERO_BASED
     assert config.policy_variant.use_condition_latents is True
     assert config.policy_variant.require_condition_latents is True
@@ -1296,11 +1296,120 @@ def test_m1_generalist_joint_denoising_yaml_config_loads() -> None:
     assert config.policy_variant.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED
     assert config.policy_variant.variant_profile == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING
     assert config.policy_variant.current_block_coupling == "joint"
+    assert config.policy_variant.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
+    assert config.policy_variant.attn_window == 30
+    assert config.policy_variant.parallel_sequence_contract == ParallelSequenceContract.DEFAULT
+    assert config.data.sample_construction.mode == WindowSamplingMode.UNIFORM_SEGMENT
+    assert config.data.sample_construction.sample_order_mode == SampleOrderMode.REPLACEMENT
+    assert config.data.sample_construction.window_size == 64
+    assert config.data.sample_construction.segment_min_frames == 1000
+    assert config.data.sample_construction.segment_max_frames == 1000
+    assert config.data.sample_construction.require_full_segment is True
+    assert config.training.window_size == 64
+    assert config.training.sample_loss_weight_mode == SampleLossWeightMode.NONE
     probs = config.policy_variant.joint_denoise_training_mode_probs
     assert probs[JointDenoiseTrainingMode.JOINT] == pytest.approx(0.6)
     assert probs[JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO] == pytest.approx(0.2)
     assert probs[JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION] == pytest.approx(0.2)
     assert config.action_decoder.name == ActionDecoderName.LINGBOT_PARALLEL
+
+
+def test_m5_generalist_joint_denoising_rejects_multi_sample_batches(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    raw["data"]["train_batch_size"] = 2
+
+    config_path = tmp_path / "m5_generalist_bad_batch.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    with pytest.raises(ValueError, match="mot_generalist_training_mode_probs.*train_batch_size"):
+        load_experiment_config(config_path)
+
+
+def test_m5_generalist_joint_denoising_mode_text_token_flag_loads(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    raw["policy_variant"]["generalist_mode_text_token"] = True
+
+    config_path = tmp_path / "m5_generalist_mode_text_token.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    assert config.policy_variant.generalist_mode_text_token is True
+
+
+def test_m5_generalist_mode_text_token_rejects_non_gjd_config(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_joint_heng_compatible.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    raw["policy_variant"]["generalist_mode_text_token"] = True
+
+    config_path = tmp_path / "m5_non_gjd_mode_text_token.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    with pytest.raises(ValueError, match="generalist_mode_text_token"):
+        load_experiment_config(config_path)
+
+
+def test_m1_generalist_joint_denoising_mode_text_token_flag_loads(tmp_path: Path) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
+    )
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    raw["policy_variant"]["generalist_mode_text_token"] = True
+
+    config_path = tmp_path / "generalist_joint_mode_text_token.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    assert config.policy_variant.generalist_mode_text_token is True
+
+
+def test_m1_generalist_joint_denoising_mode_text_token_string_false_loads_false(
+    tmp_path: Path,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
+    )
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    raw["policy_variant"]["generalist_mode_text_token"] = "false"
+
+    config_path = tmp_path / "generalist_joint_mode_text_token_string_false.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    assert config.policy_variant.generalist_mode_text_token is False
+
+
+def test_m1_generalist_mode_text_token_rejects_non_generalist_profile(tmp_path: Path) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_video_then_action_heng_compatible.yaml"
+    )
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    raw["policy_variant"]["generalist_mode_text_token"] = True
+
+    config_path = tmp_path / "non_generalist_mode_text_token.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    with pytest.raises(ValueError, match="generalist_mode_text_token"):
+        load_experiment_config(config_path)
 
 
 def test_m1_step3500_variant_yaml_configs_preserve_video_pretrain_history() -> None:

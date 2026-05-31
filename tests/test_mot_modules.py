@@ -957,7 +957,7 @@ def test_mot_condition_latents_can_be_disabled() -> None:
     assert torch.isfinite(output.decoder_output.loss)
 
 
-def test_mot_proprio_context_uses_shared_batch_context_for_train() -> None:
+def test_mot_deprecated_text_token_proprio_context_uses_shared_batch_context_for_train() -> None:
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
@@ -982,7 +982,7 @@ def test_mot_proprio_context_uses_shared_batch_context_for_train() -> None:
             video_prefix_frames=1,
             teacher_forcing_video_noise_prob=0.0,
             num_action_layers=1,
-            proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,
+            proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,  # deprecated compatibility
         ),
         action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
@@ -1100,7 +1100,7 @@ def test_mot_per_chunk_additive_does_not_build_text_proprio_mask() -> None:
     assert mask is None
 
 
-def test_mot_proprio_context_mask_exposes_matching_chunk_token_only() -> None:
+def test_mot_deprecated_text_token_proprio_mask_exposes_matching_chunk_token_only() -> None:
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=6,
@@ -1125,7 +1125,7 @@ def test_mot_proprio_context_mask_exposes_matching_chunk_token_only() -> None:
             video_prefix_frames=1,
             teacher_forcing_video_noise_prob=0.0,
             num_action_layers=1,
-            proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,
+            proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,  # deprecated compatibility
         ),
         action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=6),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
@@ -1200,7 +1200,7 @@ def test_mot_chunk_origin_aligns_one_frame_context_with_first_target_chunk() -> 
             video_prefix_frames=1,
             teacher_forcing_video_noise_prob=0.0,
             num_action_layers=1,
-            proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,
+            proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,  # deprecated compatibility
         ),
         action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=5),
         training=TrainingConfig(chunk_size=4, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
@@ -1279,7 +1279,7 @@ def test_mot_packed_block_accepts_query_dependent_cross_attention_masks() -> Non
     assert torch.isfinite(action_out).all()
 
 
-def test_mot_prepare_infer_state_appends_proprio_context_token() -> None:
+def test_mot_prepare_infer_state_appends_deprecated_proprio_context_token() -> None:
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
@@ -1304,7 +1304,7 @@ def test_mot_prepare_infer_state_appends_proprio_context_token() -> None:
             video_prefix_frames=1,
             teacher_forcing_video_noise_prob=0.0,
             num_action_layers=1,
-            proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,
+            proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,  # deprecated compatibility
         ),
         action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),

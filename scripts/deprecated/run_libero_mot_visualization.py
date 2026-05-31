@@ -46,8 +46,10 @@ from open_wam.models.policy_variants.mot.runtime_routing import (  # noqa: E402
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
 from open_wam.utils.local_paths import read_yaml_with_local_paths  # noqa: E402
 from open_wam.utils import (  # noqa: E402
+    apply_config_overrides,
     load_experiment_config,
     merge_runtime_config_from_checkpoint,
+    parse_override_assignments,
     seed_everywhere,
 )
 from open_wam.utils.libero_paradigm import (  # noqa: E402
@@ -59,6 +61,8 @@ LIBERO_OBS_KEYS = (
     "observation.images.agentview_rgb",
     "observation.images.eye_in_hand_rgb",
 )
+CURRENT_FRONTEND_ENCODE_MODE = "lingbot_streaming_vae"
+DEPRECATED_FRONTEND_ENCODE_MODE = "rolling_offline"
 
 
 def main() -> None:
@@ -92,6 +96,13 @@ def main() -> None:
             "old checkpoints with stale resolved_config.yaml files usable."
         ),
     )
+    parser.add_argument(
+        "--set",
+        dest="set_overrides",
+        action="append",
+        default=[],
+        help="Apply a config override such as `--set policy_variant.generalist_mode_text_token=true`.",
+    )
     parser.add_argument("--task-id", type=int, default=1)
     parser.add_argument("--episode-idx", type=int, default=0)
     parser.add_argument("--max-timestep", type=int, default=800)
@@ -109,13 +120,14 @@ def main() -> None:
     )
     parser.add_argument(
         "--frontend-encode-mode",
-        choices=("rolling_offline", "lingbot_streaming_vae"),
-        default="rolling_offline",
+        choices=(DEPRECATED_FRONTEND_ENCODE_MODE, CURRENT_FRONTEND_ENCODE_MODE),
+        default=CURRENT_FRONTEND_ENCODE_MODE,
         help=(
-            "RGB-to-latent frontend mode. `rolling_offline` preserves the existing behavior: "
-            "chunk 0 uses the streaming frontend and later chunks re-encode the rolling raw window offline. "
-            "`lingbot_streaming_vae` keeps the Wan VAE stream cache alive and encodes only newly "
-            "executed env observations between chunks, matching the LingBot-VA client lifecycle."
+            "RGB-to-latent frontend mode. The current supported rollout contract is "
+            "`lingbot_streaming_vae`, which keeps the Wan VAE stream cache alive and "
+            "encodes only newly executed env observations between chunks. `rolling_offline` "
+            "is deprecated historical compatibility and requires "
+            "`--allow-deprecated-frontend-encode-mode`."
         ),
     )
     parser.add_argument(
@@ -173,6 +185,14 @@ def main() -> None:
             "one-frame, proprio-conditioned training/eval paradigm."
         ),
     )
+    parser.add_argument(
+        "--allow-deprecated-frontend-encode-mode",
+        action="store_true",
+        help=(
+            "Allow non-lingbot_streaming_vae frontend encode modes only for historical debugging. "
+            "Current M5 rollout comparisons should not use this."
+        ),
+    )
     args = parser.parse_args()
     require_current_libero_script(
         "scripts/deprecated/run_libero_mot_visualization.py",
@@ -199,6 +219,11 @@ def main() -> None:
         checkpoint_path,
         merge_enabled=bool(args.merge_checkpoint_runtime_config),
     )
+    if args.set_overrides:
+        config = apply_config_overrides(
+            config,
+            parse_override_assignments(tuple(args.set_overrides)),
+        )
     _validate_mot_config(config)
     require_current_libero_policy_paradigm(
         config,
@@ -240,7 +265,12 @@ def main() -> None:
             "Expected --mot-inference-window-size to be positive when provided, "
             f"got {args.mot_inference_window_size}."
         )
-    use_lingbot_streaming_vae = args.frontend_encode_mode == "lingbot_streaming_vae"
+    _require_current_frontend_encode_mode(
+        args.frontend_encode_mode,
+        allow_deprecated=bool(args.allow_deprecated_frontend_encode_mode),
+        source="run_libero_mot_visualization.py",
+    )
+    use_lingbot_streaming_vae = args.frontend_encode_mode == CURRENT_FRONTEND_ENCODE_MODE
     if use_lingbot_streaming_vae and startup_model_obs_frames != 1:
         raise ValueError(
             "`--frontend-encode-mode lingbot_streaming_vae` expects "
@@ -660,6 +690,23 @@ def _validate_mot_config(config) -> None:
             "run_libero_mot_visualization.py requires a `mot` policy variant, "
             f"got policy_variant.name={config.policy_variant.name!r}."
         )
+
+
+def _require_current_frontend_encode_mode(
+    frontend_encode_mode: str,
+    *,
+    allow_deprecated: bool,
+    source: str,
+) -> None:
+    if frontend_encode_mode == CURRENT_FRONTEND_ENCODE_MODE:
+        return
+    if allow_deprecated:
+        return
+    raise ValueError(
+        f"{source} frontend encode mode {frontend_encode_mode!r} is deprecated. "
+        f"Use `--frontend-encode-mode {CURRENT_FRONTEND_ENCODE_MODE}`. Pass "
+        "`--allow-deprecated-frontend-encode-mode` only for historical debugging."
+    )
 
 
 def _maybe_merge_checkpoint_runtime_config(

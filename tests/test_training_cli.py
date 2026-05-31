@@ -250,3 +250,19 @@ def test_cli_contract_override_rejects_managed_field_override() -> None:
 
     with pytest.raises(ValueError, match="parallel_sequence_contract=.*proprio_context_mode"):
         load_training_cli_config(overrides, env={})
+
+
+def test_cli_overrides_coerce_quoted_bool_strings() -> None:
+    config = load_training_cli_config(
+        TrainCliOverrides(
+            config_name="parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible",
+            overrides=(
+                'policy_variant.generalist_mode_text_token="false"',
+                'trainer.enable_wandb="false"',
+            ),
+        ),
+        env={},
+    )
+
+    assert config.policy_variant.generalist_mode_text_token is False
+    assert config.trainer.enable_wandb is False

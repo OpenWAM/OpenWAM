@@ -44,11 +44,13 @@ from open_wam.models.common.flow_matching import (
     build_frame_aligned_action_flow_match_train_artifacts,
     build_video_flow_match_train_artifacts,
 )
+from open_wam.models.common.attention_profiles import build_chunked_text_context_cross_attention_mask
 from open_wam.models.policy_variants.mot.variant import (
     _apply_mot_generalist_training_mode,
     _sample_mot_generalist_training_mode,
     _should_couple_mot_action_to_video_sigmas,
 )
+from open_wam.models.policy_variants.mot.runtime import build_mot_packed_coupling_attention_profile
 
 
 def _make_mot_policy_config(**overrides) -> MoTPolicyConfig:
@@ -169,6 +171,21 @@ def test_existing_six_mode_yamls_are_not_disturbed() -> None:
         assert cfg.current_block_coupling == coupling
 
 
+def test_m5_generalist_mode_text_token_requires_gjd_probs() -> None:
+    cfg = _make_mot_policy_config(
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        mot_generalist_training_mode_probs={"joint": 1.0},
+        generalist_mode_text_token=True,
+    )
+    assert cfg.generalist_mode_text_token is True
+
+    with pytest.raises(ValueError, match="generalist_mode_text_token"):
+        _make_mot_policy_config(
+            current_block_coupling=CurrentBlockCoupling.JOINT,
+            generalist_mode_text_token=True,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Sampling
 # ---------------------------------------------------------------------------
@@ -209,6 +226,25 @@ def test_sample_degenerate_to_single_mode() -> None:
             _sample_mot_generalist_training_mode(probs, device=torch.device("cpu"))
             == MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO
         )
+
+
+def test_chunked_text_mask_keeps_mode_suffix_global() -> None:
+    # Legacy text-mask layout: 3 task-text tokens, 2 deprecated chunk-local
+    # proprio text tokens, 1 global mode token.
+    mask = build_chunked_text_context_cross_attention_mask(
+        query_chunk_ids=torch.tensor([0, 0, 1, 1]),
+        batch_size=1,
+        text_token_count=6,
+        base_text_token_count=3,
+        proprio_context_token_count=2,
+        global_suffix_token_count=1,
+        device=torch.device("cpu"),
+    )[0]
+
+    assert torch.all(mask[:, :3])
+    assert torch.equal(mask[:, 3], torch.tensor([True, True, False, False]))
+    assert torch.equal(mask[:, 4], torch.tensor([False, False, True, True]))
+    assert torch.all(mask[:, 5])
 
 
 def test_joint_generalist_can_share_video_action_sigma_values() -> None:
@@ -307,8 +343,8 @@ def test_action_conditioned_video_replaces_action_slots() -> None:
     assert out_future_mask is future_loss_mask
     # A_noisy slot now holds the clean values.
     assert torch.equal(out_noisy_actions, clean_actions)
-    # A_clean condition slot zeroed.
-    assert torch.all(out_clean_actions == 0)
+    # A_clean remains real clean context; visibility is controlled by masks.
+    assert out_clean_actions is clean_actions
     # Action timesteps forced to 0.
     assert torch.all(out_noisy_ts == 0)
     # Action loss masked off.
@@ -341,8 +377,10 @@ def test_action_conditioned_video_uses_valid_mask_not_loss_mask_for_clean_action
     )
 
     out_noisy_actions = out[1]
+    out_clean_actions = out[2]
     out_action_mask = out[5]
     assert torch.equal(out_noisy_actions, clean_actions * clean_action_condition_mask)
+    assert out_clean_actions is clean_actions
     assert out_action_mask is not None
     assert torch.all(out_action_mask == 0)
 
@@ -422,6 +460,8 @@ def _build_tiny_generalist_pipeline(
     *,
     joint_timestep_coupling: JointTimestepCoupling = JointTimestepCoupling.MATCH_SIGMA,
     action_hidden_size: int | None = None,
+    generalist_mode_text_token: bool = False,
+    proprio_context_mode: ProprioContextMode = ProprioContextMode.NONE,
 ):
     """Construct a tiny CPU pipeline pinned to one generalist mode."""
 
@@ -474,6 +514,8 @@ def _build_tiny_generalist_pipeline(
                 else MoTActionExpertInitMode.VIDEO_WEIGHT_COPY
             ),
             mot_generalist_training_mode_probs=forced_probs,
+            generalist_mode_text_token=generalist_mode_text_token,
+            proprio_context_mode=proprio_context_mode,
             joint_timestep_coupling=joint_timestep_coupling,
         ),
         action_decoder=MoTActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
@@ -549,6 +591,21 @@ def test_forced_joint_training_respects_timestep_coupling_mode(
     ]
 
 
+def test_m5_generalist_mode_token_is_appended_in_train_path() -> None:
+    torch.manual_seed(0)
+    pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        MoTGeneralistTrainingMode.JOINT,
+        generalist_mode_text_token=True,
+    )
+
+    assert pipeline.visual_tower.core.generalist_mode_context_encoder is not None
+    output = pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    assert output.policy_output.aux["mot_generalist_training_mode"] == MoTGeneralistTrainingMode.JOINT.value
+    assert output.policy_output.aux["mot_generalist_mode_text_token"] == MoTGeneralistTrainingMode.JOINT.value
+    assert output.policy_output.aux["mot_generalist_mode_text_token_count"] == 1
+
+
 def test_generalist_match_sigma_uses_video_clock_for_all_modes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -586,6 +643,60 @@ def test_generalist_match_sigma_uses_video_clock_for_all_modes(
     assert saw_action_coupling_inputs == [(True, False), (True, False), (True, False)]
 
 
+def test_forced_joint_preserves_configured_noisy_video_condition_prob(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import open_wam.models.policy_variants.mot.variant as mot_variant_module
+
+    original_build_video_artifacts = mot_variant_module.build_video_flow_match_train_artifacts
+    observed_probs: list[float] = []
+
+    def spy_build_video_artifacts(*args, **kwargs):
+        observed_probs.append(float(kwargs.get("noisy_condition_prob", 0.0)))
+        return original_build_video_artifacts(*args, **kwargs)
+
+    monkeypatch.setattr(
+        mot_variant_module,
+        "build_video_flow_match_train_artifacts",
+        spy_build_video_artifacts,
+    )
+
+    pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        MoTGeneralistTrainingMode.JOINT,
+    )
+    pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    assert observed_probs == [pytest.approx(0.5)]
+
+
+def test_conditional_generalist_modes_force_clean_video_condition_prob(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import open_wam.models.policy_variants.mot.variant as mot_variant_module
+
+    original_build_video_artifacts = mot_variant_module.build_video_flow_match_train_artifacts
+    observed_probs: list[float] = []
+
+    def spy_build_video_artifacts(*args, **kwargs):
+        observed_probs.append(float(kwargs.get("noisy_condition_prob", 0.0)))
+        return original_build_video_artifacts(*args, **kwargs)
+
+    monkeypatch.setattr(
+        mot_variant_module,
+        "build_video_flow_match_train_artifacts",
+        spy_build_video_artifacts,
+    )
+
+    for mode in (
+        MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
+        MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
+    ):
+        pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(mode)
+        pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    assert observed_probs == [pytest.approx(0.0), pytest.approx(0.0)]
+
+
 def test_forced_joint_keeps_both_losses_active() -> None:
     pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
         MoTGeneralistTrainingMode.JOINT
@@ -607,6 +718,50 @@ def test_forced_joint_keeps_both_losses_active() -> None:
     )
     assert metrics["weighted_action_diffusion_loss"].item() > 0.0
     assert metrics["weighted_video_diffusion_loss"].item() > 0.0
+    assert output.policy_output.aux["sampled_window_size"] >= 4
+
+
+def test_generalist_training_rejects_multi_sample_batches() -> None:
+    pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        MoTGeneralistTrainingMode.JOINT
+    )
+    multi_batch = _dataclass_replace(batch, actions=batch.actions.repeat(2, 1, 1))
+
+    with pytest.raises(ValueError, match="rank-local train_batch_size=1"):
+        pipeline.forward_train_from_latents(
+            video_latents.repeat(2, 1, 1, 1, 1),
+            multi_batch,
+            text_context=text_context.repeat(2, 1, 1),
+        )
+
+
+def test_m5_generalist_conditional_local_window_covers_full_previous_video_action_chunk() -> None:
+    profile = build_mot_packed_coupling_attention_profile(
+        num_video_frames=8,
+        video_tokens_per_frame=1,
+        num_action_frames=8,
+        action_tokens_per_frame=1,
+        chunk_size_frames=4,
+        attention_window_size=3,
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        device=torch.device("cpu"),
+        build_dense_masks=True,
+    )
+    assert profile.self_attention_mask is not None
+    mask = profile.self_attention_mask
+    latent_tokens = 8
+    action_tokens = 8
+    current_video_noisy_frame4 = 4
+    current_video_clean_frame4 = latent_tokens + 4
+    current_action_noisy_frame4 = 2 * latent_tokens + 4
+    previous_video_clean_frame0 = latent_tokens + 0
+    previous_action_clean_frame0 = 2 * latent_tokens + action_tokens + 0
+    current_action_clean_frame4 = 2 * latent_tokens + action_tokens + 4
+
+    assert mask[current_action_noisy_frame4, previous_video_clean_frame0]
+    assert mask[current_action_noisy_frame4, previous_action_clean_frame0]
+    assert not mask[current_video_noisy_frame4, current_video_clean_frame4]
+    assert not mask[current_action_noisy_frame4, current_action_clean_frame4]
 
 
 def test_forced_action_conditioned_video_zeros_action_loss() -> None:
@@ -623,25 +778,26 @@ def test_forced_action_conditioned_video_zeros_action_loss() -> None:
     assert metrics["mot_generalist/action_loss_active"].item() == 0.0
     assert metrics["mot_generalist/latent_loss_active"].item() == 1.0
     assert output.policy_output.aux["mot_generalist_text_dropped"] is True
+    assert output.policy_output.aux["sampled_window_size"] == 3
     assert metrics["weighted_action_diffusion_loss"].item() == pytest.approx(0.0, abs=1e-6)
     assert metrics["weighted_video_diffusion_loss"].item() > 0.0
 
 
-def test_forced_action_conditioned_video_respects_explicit_drop_text_false() -> None:
+def test_forced_action_conditioned_video_drops_text_even_with_false_override() -> None:
     pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
         MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO
     )
     batch.extra["metadata"] = {GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY: False}
     output = pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
 
-    assert output.policy_output.aux["mot_generalist_text_dropped"] is False
+    assert output.policy_output.aux["mot_generalist_text_dropped"] is True
 
 
 @pytest.mark.parametrize(
     ("metadata", "expected_text_dropped"),
     [
         (None, True),
-        ({GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY: False}, False),
+        ({GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY: False}, True),
     ],
 )
 def test_forced_action_conditioned_video_threads_resolved_text_to_m5_runtime(
@@ -862,6 +1018,7 @@ def test_forced_video_conditioned_action_zeros_video_loss() -> None:
     assert metrics["mot_generalist/latent_loss_active"].item() == 0.0
     assert metrics["mot_generalist/action_loss_active"].item() == 1.0
     assert output.policy_output.aux["mot_generalist_text_dropped"] is True
+    assert output.policy_output.aux["sampled_window_size"] == 3
     assert metrics["weighted_video_diffusion_loss"].item() == pytest.approx(0.0, abs=1e-6)
     assert metrics["weighted_action_diffusion_loss"].item() > 0.0
 

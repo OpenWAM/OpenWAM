@@ -338,6 +338,12 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             rows=rows,
             anchor_frame_index=anchor_frame_index,
         )
+        proprio_context_state, proprio_context_state_mask = self._extract_proprio_context_state_sequence(
+            rows=rows,
+            observed_frame_ids=observed_frame_ids,
+            chunk_size=1,
+            loss_frame_start=0,
+        )
 
         text_context = primary_payload.get("text_emb")
         if isinstance(text_context, torch.Tensor):
@@ -358,6 +364,8 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             action_mask=action_mask,
             state=state,
             state_mask=state_mask,
+            proprio_context_state=proprio_context_state,
+            proprio_context_state_mask=proprio_context_state_mask,
             task_text=task_text,
             text_context=text_context,
             negative_text_context=negative_text_context,
@@ -381,6 +389,7 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
                 "latent_layout": latent_layout_metadata,
                 "state_source_key": self.data_config.action_target.pose_source_key,
                 "action_representation": self.data_config.action_target.representation,
+                "proprio_context_chunk_count": int(proprio_context_state.shape[0]),
                 **action_target_metadata,
                 **self._action_loss_metadata(action_mask),
                 **self._sample_weight_metadata(index),

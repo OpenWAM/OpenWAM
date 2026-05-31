@@ -708,7 +708,7 @@ class ParallelRuntimeMode(StrEnum):
 
     LINGBOT_EXACT = "lingbot_exact"
     LINGBOT_EXACT_ACTION_CONDITIONED = "lingbot_exact_action_conditioned"
-    # Current observation + text/proprio -> action chunk, without exact history cache.
+    # Current observation + text plus hidden-state proprio -> action chunk, without exact history cache.
     CURRENT_FRAME_ACTION_CHUNK = "current_frame_action_chunk"
     # FastWAM-style first-frame video/action training with action-only rollout.
     FASTWAM_FIRST_FRAME = "fastwam_first_frame"
@@ -808,6 +808,8 @@ class ProprioContextMode(StrEnum):
     """How policy variants inject proprio state into transformer conditioning."""
 
     NONE = "none"
+    # Deprecated compatibility only. Current LIBERO proprio context uses
+    # PER_CHUNK_ADDITIVE hidden-state conditioning, not text-space tokens.
     TEXT_CONTEXT_TOKEN = "text_context_token"
     PER_CHUNK_ADDITIVE = "per_chunk_additive"
 
@@ -819,7 +821,9 @@ class MoTGeneralistTrainingMode(StrEnum):
     ``joint`` denoises both modalities with the same packed clean-history
     condition slots used by plain M5 joint rollout. The conditional modes place
     the clean modality into its noisy slot, force its per-frame timesteps to 0,
-    and mask its loss; only the unused clean-action slot is zeroed for FDM.
+    and mask its loss. Clean history slots remain real context; attention
+    windowing and loss masks, not zeroed context slots, define the local
+    conditional objective.
     """
 
     JOINT = "joint"
@@ -992,6 +996,7 @@ class TrainingComponentSelector(StrEnum):
     VISUAL_TOWER_CORE = "visual_tower.core"
     VISUAL_TOWER_RUNTIME_BACKBONE = "visual_tower.runtime_backbone"
     VISUAL_TOWER_PROPRIO_CONTEXT_ENCODER = "visual_tower.proprio_context_encoder"
+    VISUAL_TOWER_GENERALIST_MODE_CONTEXT_ENCODER = "visual_tower.generalist_mode_context_encoder"
     VISUAL_TOWER_SHARED_VIDEO_BACKBONE = "visual_tower.shared_video_backbone"
     VISUAL_TOWER_SHARED_ACTION_RUNTIME = "visual_tower.shared_action_runtime"
     VISUAL_TOWER_SHARED_RUNTIME_ADAPTERS = "visual_tower.shared_runtime_adapters"

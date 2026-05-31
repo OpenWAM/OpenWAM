@@ -76,7 +76,9 @@ def _resolve_proprio_context_state_dim(config: ExperimentConfig) -> int | None:
         return None
     state_dim = int(config.data.action_schema.state_dim)
     if state_dim <= 0:
-        raise ValueError("proprio_context_mode=text_context_token requires positive data.action_schema.state_dim.")
+        raise ValueError(
+            "Deprecated proprio_context_mode=text_context_token requires positive data.action_schema.state_dim."
+        )
     return state_dim
 
 
@@ -615,6 +617,9 @@ def build_variant_pipeline_from_config(config: ExperimentConfig) -> VariantPipel
         state_dim=config.data.action_schema.state_dim,
         proprio_context_state_dim=proprio_context_state_dim,
         proprio_hidden_context_state_dim=proprio_hidden_context_state_dim,
+        generalist_mode_context_enabled=bool(
+            getattr(config.policy_variant, "generalist_mode_text_token", False)
+        ),
     )
     policy_variant = build_policy_variant(config)
     # Pipeline-time hook for variants that need cross-module surgery (e.g. MoT

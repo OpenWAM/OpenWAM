@@ -212,6 +212,7 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
                 "policy_variant",
             )
             _validate_enum(policy_variant, "proprio_context_mode", ProprioContextMode, issues, "policy_variant")
+            _warn_deprecated_text_proprio_context(policy_variant, issues)
             _validate_enum(
                 policy_variant,
                 "context_condition_latent_source",
@@ -237,6 +238,7 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
             _validate_enum(policy_variant, "joint_timestep_coupling", JointTimestepCoupling, issues, "policy_variant")
             _validate_enum(policy_variant, "parallel_sequence_contract", ParallelSequenceContract, issues, "policy_variant")
             _validate_enum(policy_variant, "proprio_context_mode", ProprioContextMode, issues, "policy_variant")
+            _warn_deprecated_text_proprio_context(policy_variant, issues)
             _validate_enum(
                 policy_variant,
                 "context_condition_latent_source",
@@ -260,7 +262,7 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
             )
             _validate_single_frame_condition_offset(policy_variant, sample_construction, issues)
             _validate_parallel_sequence_contract_static(policy_variant, sample_construction, issues)
-            _validate_mot_generalist_training_mode_probs(policy_variant, issues)
+            _validate_mot_generalist_training_mode_probs(policy_variant, data, issues)
         if policy_variant.get("generalist_training_paradigm") == GeneralistTrainingParadigm.MIXED_DYNAMICS.value:
             if trainer is None or trainer.get("batch_adapter") != BatchAdapterName.LATENTS.value:
                 issues.error(
@@ -644,6 +646,16 @@ def _validate_single_frame_condition_offset(
         )
 
 
+def _warn_deprecated_text_proprio_context(policy_variant: Mapping[str, Any], issues: "_IssueBuilder") -> None:
+    if policy_variant.get("proprio_context_mode") != ProprioContextMode.TEXT_CONTEXT_TOKEN.value:
+        return
+    issues.warning(
+        "policy_variant.proprio_context_mode",
+        "Deprecated text-space proprio token path; current proprio context is "
+        "`per_chunk_additive` hidden-state conditioning.",
+    )
+
+
 def _validate_parallel_sequence_contract_static(
     policy_variant: Mapping[str, Any],
     sample_construction: Mapping[str, Any] | None,
@@ -777,9 +789,16 @@ def _validate_joint_denoise_training_mode_probs(
 
 def _validate_mot_generalist_training_mode_probs(
     policy_variant: Mapping[str, Any],
+    data: Mapping[str, Any],
     issues: "_IssueBuilder",
 ) -> None:
     raw_probs = policy_variant.get("mot_generalist_training_mode_probs")
+    if bool(policy_variant.get("generalist_mode_text_token", False)) and raw_probs is None:
+        issues.error(
+            "policy_variant.generalist_mode_text_token",
+            "`generalist_mode_text_token: true` for MoT requires "
+            "`policy_variant.mot_generalist_training_mode_probs`.",
+        )
     if raw_probs is None:
         return
     if policy_variant.get("current_block_coupling") != CurrentBlockCoupling.JOINT.value:
@@ -787,6 +806,18 @@ def _validate_mot_generalist_training_mode_probs(
             "policy_variant.mot_generalist_training_mode_probs",
             "Expected `current_block_coupling: joint` when MoT generalist sampling is enabled.",
         )
+    for key in ("train_batch_size", "val_batch_size"):
+        raw_batch_size = data.get(key, 2)
+        try:
+            batch_size = int(raw_batch_size)
+        except (TypeError, ValueError):
+            continue
+        if batch_size != 1:
+            issues.error(
+                f"data.{key}",
+                "`mot_generalist_training_mode_probs` requires `data.train_batch_size: 1` and "
+                "`data.val_batch_size: 1` because M5 GJD samples one mode per segment/forward pass.",
+            )
     _validate_probability_map(
         policy_variant,
         issues,

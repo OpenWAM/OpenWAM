@@ -244,12 +244,15 @@ def build_chunked_text_context_cross_attention_mask(
     text_token_count: int,
     base_text_token_count: int,
     proprio_context_token_count: int,
+    global_suffix_token_count: int = 0,
     device: torch.device,
 ) -> torch.Tensor:
-    """Build a query-dependent text/proprio context mask.
+    """Build a query-dependent mask for deprecated text-space proprio tokens.
 
-    Text tokens are visible to every query. Appended proprio context tokens are
-    visible only to queries from the matching local chunk.
+    Text tokens are visible to every query. Deprecated appended proprio tokens
+    are visible only to queries from the matching local chunk. Optional suffix
+    tokens, such as learned mode tokens in legacy packed text layouts, are
+    visible to every query.
     """
 
     if query_chunk_ids.ndim != 1:
@@ -261,17 +264,29 @@ def build_chunked_text_context_cross_attention_mask(
     resolved_text_token_count = int(text_token_count)
     resolved_base_text_token_count = int(base_text_token_count)
     resolved_proprio_context_token_count = int(proprio_context_token_count)
+    resolved_global_suffix_token_count = int(global_suffix_token_count)
     if resolved_batch_size <= 0:
         raise ValueError(f"Expected positive batch_size, got {batch_size}.")
-    if resolved_base_text_token_count < 0 or resolved_proprio_context_token_count < 0:
+    if (
+        resolved_base_text_token_count < 0
+        or resolved_proprio_context_token_count < 0
+        or resolved_global_suffix_token_count < 0
+    ):
         raise ValueError(
             "Context token counts must be non-negative, "
-            f"got base={base_text_token_count}, proprio={proprio_context_token_count}."
+            f"got base={base_text_token_count}, proprio={proprio_context_token_count}, "
+            f"global_suffix={global_suffix_token_count}."
         )
-    if resolved_base_text_token_count + resolved_proprio_context_token_count != resolved_text_token_count:
+    if (
+        resolved_base_text_token_count
+        + resolved_proprio_context_token_count
+        + resolved_global_suffix_token_count
+        != resolved_text_token_count
+    ):
         raise ValueError(
             "Context token counts must sum to text_token_count, "
             f"got base={base_text_token_count}, proprio={proprio_context_token_count}, "
+            f"global_suffix={global_suffix_token_count}, "
             f"text={text_token_count}."
         )
     query_chunk_ids = query_chunk_ids.to(device=device, dtype=torch.long)
@@ -283,7 +298,9 @@ def build_chunked_text_context_cross_attention_mask(
         & (proprio_index[None, :] < resolved_proprio_context_token_count)
         & (proprio_index[None, :] == query_chunk_ids[:, None])
     )
-    mask = base_text_visible[None, :] | proprio_visible
+    global_suffix_start = resolved_base_text_token_count + resolved_proprio_context_token_count
+    global_suffix_visible = text_position >= global_suffix_start
+    mask = base_text_visible[None, :] | proprio_visible | global_suffix_visible[None, :]
     return mask[None, :, :].expand(resolved_batch_size, -1, -1).contiguous()
 
 

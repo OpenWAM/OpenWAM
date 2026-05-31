@@ -106,7 +106,7 @@ policy_variant:
   mask_mode: lingbot_chunked
   cache_mode: metadata_only
   preserve_video_pretrain_history: true
-  proprio_context_mode: text_context_token
+  proprio_context_mode: per_chunk_additive
   used_action_channel_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 29]
   inverse_used_action_channel_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 9]
   action_norm_method: none

@@ -155,8 +155,8 @@ def test_chunked_temporal_exact_chunk_origin_keeps_context_frame_out_of_first_ta
 
     assert profile.cross_attention_mask is not None
     mask = profile.cross_attention_mask
-    # Frame 0 is a prefix-context chunk (-1): it sees text, but no per-target
-    # proprio token. Frames 1 and 4 are both in generated chunk 0.
+    # Frame 0 is a prefix-context chunk (-1): it sees text, but no deprecated
+    # per-target proprio text token. Frames 1 and 4 are both in generated chunk 0.
     assert mask[0, :3].tolist() == [True, False, False]
     assert mask[1, :3].tolist() == [True, True, False]
     assert mask[4, :3].tolist() == [True, True, False]
@@ -528,7 +528,7 @@ def test_replica_core_exact_forward_train_supports_flex_profile_cpu_fallback() -
     assert action_pred.shape == (1, 2, 3)
 
 
-def test_replica_core_appends_per_chunk_proprio_context_tokens() -> None:
+def test_replica_core_appends_deprecated_text_token_proprio_context_tokens() -> None:
     config = SharedVideoTransformerConfig(
         implementation="shared_transformer",
         hidden_size=32,
@@ -543,7 +543,7 @@ def test_replica_core_appends_per_chunk_proprio_context_tokens() -> None:
     text_emb = torch.randn(2, 4, 8)
     proprio = torch.randn(2, 3, 5)
 
-    appended = core.append_proprio_context_tokens(text_emb, proprio)
+    appended = core.append_proprio_context_tokens(text_emb, proprio)  # deprecated helper
 
     assert appended.shape == (2, 7, 8)
     assert torch.allclose(appended[:, :4], text_emb)

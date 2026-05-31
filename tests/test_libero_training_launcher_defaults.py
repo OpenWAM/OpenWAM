@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 from pathlib import Path
 import json
 import subprocess
+
+import pytest
+import yaml
+
+from open_wam.configs.enums import JointDenoiseTrainingMode, MoTGeneralistTrainingMode
+from open_wam.utils.config_loader import load_experiment_config
+from open_wam.utils.config_overrides import apply_config_overrides, parse_override_assignments
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -40,7 +48,7 @@ FIXED_128_VALUES = (
     "data.sample_construction.task_start_power=0.5",
     "data.sample_construction.demo_count_power=0.0",
     "data.sample_construction.trajectory_start_power=1.0",
-    "policy_variant.proprio_context_mode=text_context_token",
+    "policy_variant.proprio_context_mode=per_chunk_additive",
 )
 
 
@@ -78,7 +86,11 @@ open_wam_reject_cli_config_override_args "$@"
     )
 
 
-def _launcher_train_argv(relative_path: str, *, env_overrides: dict[str, str] | None = None) -> list[str]:
+def _launcher_train_argv(
+    relative_path: str,
+    *script_args: str,
+    env_overrides: dict[str, str] | None = None,
+) -> list[str]:
     env = os.environ.copy()
     env.update(
         {
@@ -89,7 +101,7 @@ def _launcher_train_argv(relative_path: str, *, env_overrides: dict[str, str] | 
     if env_overrides:
         env.update(env_overrides)
     result = subprocess.run(
-        ["bash", str(REPO_ROOT / relative_path)],
+        ["bash", str(REPO_ROOT / relative_path), *script_args],
         cwd=REPO_ROOT,
         env=env,
         text=True,
@@ -97,6 +109,179 @@ def _launcher_train_argv(relative_path: str, *, env_overrides: dict[str, str] | 
         check=True,
     )
     return json.loads(result.stdout)
+
+
+def _launcher_realtime_argv(
+    relative_path: str,
+    *script_args: str,
+    env_overrides: dict[str, str] | None = None,
+) -> list[str]:
+    env = os.environ.copy()
+    env["OPEN_WAM_PRINT_REALTIME_ARGV"] = "1"
+    if env_overrides:
+        env.update(env_overrides)
+    result = subprocess.run(
+        ["bash", str(REPO_ROOT / relative_path), *script_args],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return json.loads(result.stdout)
+
+
+def _launcher_realtime_result(
+    relative_path: str,
+    *script_args: str,
+    env_overrides: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["OPEN_WAM_PRINT_REALTIME_ARGV"] = "1"
+    if env_overrides:
+        env.update(env_overrides)
+    return subprocess.run(
+        ["bash", str(REPO_ROOT / relative_path), *script_args],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _load_mot_visualization_module():
+    module_path = REPO_ROOT / "scripts/deprecated/run_libero_mot_visualization.py"
+    spec = importlib.util.spec_from_file_location("open_wam_test_mot_visualization", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Failed to import {module_path}.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _set_override_tokens(argv: list[str]) -> list[str]:
+    tokens: list[str] = []
+    index = 0
+    while index < len(argv):
+        if argv[index] == "--set":
+            tokens.append(argv[index + 1])
+            index += 2
+        else:
+            index += 1
+    return tokens
+
+
+def _arg_value(argv: list[str], flag: str) -> str:
+    return argv[argv.index(flag) + 1]
+
+
+def _config_path_from_train_argv(argv: list[str]) -> Path:
+    config_name = argv[argv.index("--config-name") + 1]
+    config_path = Path(config_name)
+    if not config_path.is_absolute():
+        if config_path.suffix:
+            config_path = REPO_ROOT / config_path
+        else:
+            config_path = REPO_ROOT / "configs/experiments" / f"{config_name}.yaml"
+    return config_path
+
+
+def _config_path_from_realtime_argv(argv: list[str]) -> Path:
+    config_path = Path(argv[argv.index("--cfg") + 1])
+    if not config_path.is_absolute():
+        config_path = REPO_ROOT / config_path
+    return config_path
+
+
+def _resolved_config_from_train_argv(argv: list[str]):
+    config = load_experiment_config(_config_path_from_train_argv(argv))
+    return apply_config_overrides(
+        config,
+        parse_override_assignments(_set_override_tokens(argv)),
+    )
+
+
+def _resolved_config_from_realtime_argv(argv: list[str]):
+    config = load_experiment_config(_config_path_from_realtime_argv(argv))
+    return apply_config_overrides(
+        config,
+        parse_override_assignments(_set_override_tokens(argv)),
+    )
+
+
+def _assert_gjd_ablation_config(config, *, method: str, ablation: str) -> None:
+    if method == "m1":
+        probs = config.policy_variant.joint_denoise_training_mode_probs
+        joint = JointDenoiseTrainingMode.JOINT
+        fdm = JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO
+        idm = JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION
+    elif method == "m5":
+        probs = config.policy_variant.mot_generalist_training_mode_probs
+        joint = MoTGeneralistTrainingMode.JOINT
+        fdm = MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO
+        idm = MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION
+    else:
+        raise AssertionError(f"Unexpected method {method!r}")
+
+    if ablation == "pure_joint":
+        assert probs[joint] == 1.0
+        assert probs[fdm] == 0.0
+        assert probs[idm] == 0.0
+    else:
+        assert probs[joint] == 0.6
+        assert probs[fdm] == 0.2
+        assert probs[idm] == 0.2
+    assert config.policy_variant.generalist_mode_text_token is (ablation == "mode_token")
+
+
+def _gjd_raw_config(*, method: str) -> dict:
+    if method == "m1":
+        config_path = (
+            REPO_ROOT
+            / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
+        )
+    elif method == "m5":
+        config_path = (
+            REPO_ROOT / "configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml"
+        )
+    else:
+        raise AssertionError(f"Unexpected method {method!r}")
+    with config_path.open("r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle)
+
+
+def _assert_gjd_fullseg_w64_raw_config(raw: dict) -> None:
+    sample = raw["data"]["sample_construction"]
+
+    assert raw["data"]["replay_status_policy"] == "include_all"
+    assert raw["data"]["val_replay_status_policy"] is None
+    assert raw["data"]["require_replay_status"] is False
+    assert raw["data"]["val_require_replay_status"] is False
+    assert sample["mode"] == "uniform_segment"
+    assert sample["sample_order_mode"] == "replacement"
+    assert sample["chunk_size"] == 4
+    assert sample["window_size"] == 64
+    assert sample["randomize_geometry"] is True
+    assert sample["segment_min_frames"] == 1000
+    assert sample["segment_max_frames"] == 1000
+    assert sample["segment_length_stride"] == 1
+    assert sample["segment_locality_block_size"] == 1
+    assert sample["randomize_segment_length"] is False
+    assert sample["randomize_segment_start"] is False
+    assert sample["require_full_segment"] is True
+    assert sample["task_start_power"] == 0.0
+    assert sample["demo_count_power"] == 0.0
+    assert sample["trajectory_start_power"] == 0.0
+    assert sample["sample_weight_mode"] == "uniform"
+    assert "segment_frames" not in sample
+    assert "target_alignment" not in sample
+    assert "condition_source_frame_offset" not in sample
+    assert "start_padding_frames" not in sample
+    assert raw["training"]["window_size"] == 64
+    assert raw["training"]["sample_loss_weight_mode"] == "none"
+    assert raw["policy_variant"]["joint_timestep_coupling"] == "match_sigma"
+    assert raw["policy_variant"]["generalist_mode_text_token"] is False
 
 
 def _deprecated_launcher_result(relative_path: str) -> subprocess.CompletedProcess[str]:
@@ -120,12 +305,73 @@ def test_fixed128_rollout_context_defaults_apply_to_supported_policy_training_co
         "mot_libero_latent_local_full_segment_non_joint_action_only",
         "mot_libero_latent_local_video_then_action_heng_compatible",
         "mot_libero_latent_local_joint_heng_compatible",
-        "mot_libero_latent_local_generalist_joint_denoising_heng_compatible",
     ):
         args = _default_args_for(config_name)
 
         for value in FIXED_128_VALUES:
             assert value in args
+
+
+def test_m1_gjd_config_deprecates_fixed128_for_fullseg_w64() -> None:
+    argv = _launcher_train_argv("scripts/run_gjd_libero.sh", "train", "--method=m1", "--ablation=vanilla")
+
+    assert argv[:4] == [
+        "--config-name",
+        "parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible",
+        "--devices",
+        "1",
+    ]
+    for value in FIXED_128_VALUES:
+        assert value not in argv
+
+    raw = _gjd_raw_config(method="m1")
+    _assert_gjd_fullseg_w64_raw_config(raw)
+    assert raw["policy_variant"]["proprio_context_mode"] == "per_chunk_additive"
+    assert "parallel_sequence_contract" not in raw["policy_variant"]
+    assert raw["policy_variant"]["attn_window"] == 30
+    assert raw["policy_variant"]["preserve_video_pretrain_history"] is True
+
+
+def test_m5_gjd_config_deprecates_fixed128_for_legacy_prefix_fullseg_w64() -> None:
+    argv = _launcher_train_argv("scripts/run_m5_gjd_posttrain_libero.sh")
+
+    assert argv[:4] == [
+        "--config-name",
+        "mot_libero_latent_local_generalist_joint_denoising_heng_compatible",
+        "--devices",
+        "1",
+    ]
+    for value in FIXED_128_VALUES:
+        assert value not in argv
+
+    raw = _gjd_raw_config(method="m5")
+    _assert_gjd_fullseg_w64_raw_config(raw)
+    assert raw["policy_variant"]["parallel_sequence_contract"] == "legacy_prefix_single_frame_perchunk_proprio"
+    assert "proprio_context_mode" not in raw["policy_variant"]
+    assert raw["policy_variant"]["noisy_video_condition_prob"] == 0.5
+
+
+def test_m5_gjd_pure_joint_launcher_keeps_fullseg_w64_sampler() -> None:
+    argv = _launcher_train_argv(
+        "scripts/run_m5_gjd_posttrain_libero.sh",
+        env_overrides={"M5_GJD_VARIANT": "pure_joint"},
+    )
+
+    for value in FIXED_128_VALUES:
+        assert value not in argv
+    _assert_gjd_ablation_config(_resolved_config_from_train_argv(argv), method="m5", ablation="pure_joint")
+
+
+def test_m5_gjd_mode_token_launcher_keeps_fullseg_w64_sampler() -> None:
+    argv = _launcher_train_argv(
+        "scripts/run_m5_gjd_posttrain_libero.sh",
+        env_overrides={"M5_GJD_VARIANT": "mode_token"},
+    )
+
+    for value in FIXED_128_VALUES:
+        assert value not in argv
+    assert "policy_variant.generalist_mode_text_token=true" in argv
+    _assert_gjd_ablation_config(_resolved_config_from_train_argv(argv), method="m5", ablation="mode_token")
 
 
 def test_fixed128_rollout_context_defaults_normalize_config_paths() -> None:
@@ -142,7 +388,9 @@ def test_fixed128_rollout_context_defaults_normalize_config_paths() -> None:
 
 def test_fixed128_rollout_context_defaults_are_gated_and_disableable() -> None:
     assert _default_args_for("causal_video_prediction_libero_latent_local") == []
+    assert _default_args_for("parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible") == []
     assert _default_args_for("mot_libero_latent_local_joint") == []
+    assert _default_args_for("mot_libero_latent_local_generalist_joint_denoising_heng_compatible") == []
     assert _default_args_for("mot_libero_latent_local_full_segment") == []
     assert _default_args_for("mot_libero_latent_local_full_segment_non_joint_aligned") == []
     assert _default_args_for("parallel_stream_libero_lingbot_exact_local") == []
@@ -202,6 +450,358 @@ def test_mot_nonjoint_launcher_defaults_to_strict_fixed128_video_then_action_con
     ]
     for value in FIXED_128_VALUES:
         assert value in argv
+
+
+def test_mot_gjd_posttrain_launcher_exposes_named_ablation_overrides() -> None:
+    vanilla = _launcher_train_argv("scripts/run_mot_gjd_posttrain_libero.sh")
+    assert vanilla[:4] == [
+        "--config-name",
+        "mot_libero_latent_local_generalist_joint_denoising_heng_compatible",
+        "--devices",
+        "1",
+    ]
+    assert "policy_variant.generalist_mode_text_token=false" in vanilla
+    for value in FIXED_128_VALUES:
+        assert value not in vanilla
+
+    pure_joint = _launcher_train_argv(
+        "scripts/run_mot_gjd_posttrain_libero.sh",
+        env_overrides={"M5_GJD_ABLATION": "pure_joint"},
+    )
+    assert any(token.startswith("policy_variant.mot_generalist_training_mode_probs=") for token in pure_joint)
+    pure_joint_config = _resolved_config_from_train_argv(pure_joint)
+    _assert_gjd_ablation_config(pure_joint_config, method="m5", ablation="pure_joint")
+
+    mode_token = _launcher_train_argv(
+        "scripts/run_mot_gjd_posttrain_libero.sh",
+        env_overrides={"M5_GJD_ABLATION": "mode_token"},
+    )
+    assert any(token.startswith("policy_variant.mot_generalist_training_mode_probs=") for token in mode_token)
+    assert "policy_variant.generalist_mode_text_token=true" in mode_token
+    _assert_gjd_ablation_config(_resolved_config_from_train_argv(mode_token), method="m5", ablation="mode_token")
+
+
+def test_unified_gjd_train_launcher_covers_m1_and_m5_ablation_surfaces() -> None:
+    expected_configs = {
+        "m1": "parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible",
+        "m5": "mot_libero_latent_local_generalist_joint_denoising_heng_compatible",
+    }
+    expected_prob_prefixes = {
+        "m1": "policy_variant.joint_denoise_training_mode_probs=",
+        "m5": "policy_variant.mot_generalist_training_mode_probs=",
+    }
+    for method in ("m1", "m5"):
+        for ablation in ("vanilla", "pure_joint", "mode_token"):
+            argv = _launcher_train_argv(
+                "scripts/run_gjd_libero.sh",
+                "train",
+                f"--method={method}",
+                f"--ablation={ablation}",
+            )
+            assert argv[:4] == [
+                "--config-name",
+                expected_configs[method],
+                "--devices",
+                "1",
+            ]
+            assert any(token.startswith(expected_prob_prefixes[method]) for token in argv)
+            assert f"policy_variant.generalist_mode_text_token={str(ablation == 'mode_token').lower()}" in argv
+            _assert_gjd_ablation_config(_resolved_config_from_train_argv(argv), method=method, ablation=ablation)
+            for value in FIXED_128_VALUES:
+                assert value not in argv
+
+
+def test_unified_gjd_train_launcher_assigns_safe_default_run_identity() -> None:
+    vanilla = _launcher_train_argv(
+        "scripts/run_gjd_libero.sh",
+        "train",
+        "--method=m5",
+        "--ablation=vanilla",
+    )
+    pure_joint = _launcher_train_argv(
+        "scripts/run_gjd_libero.sh",
+        "train",
+        "--method=m5",
+        "--ablation=pure_joint",
+    )
+
+    vanilla_save_root = vanilla[vanilla.index("--save-root") + 1]
+    pure_joint_save_root = pure_joint[pure_joint.index("--save-root") + 1]
+    assert vanilla_save_root.startswith("runs/gjd_libero_m5_vanilla_")
+    assert pure_joint_save_root.startswith("runs/gjd_libero_m5_pure_joint_")
+    assert vanilla_save_root != pure_joint_save_root
+
+
+def test_unified_gjd_train_launcher_assigns_comparison_wandb_project() -> None:
+    default_argv = _launcher_train_argv(
+        "scripts/run_gjd_libero.sh",
+        "train",
+        "--method=m1",
+        "--ablation=vanilla",
+    )
+    assert default_argv[default_argv.index("--wandb-project") + 1] == "openwam-gjd-libero"
+
+    explicit_argv = _launcher_train_argv(
+        "scripts/run_gjd_libero.sh",
+        "train",
+        "--method=m1",
+        "--ablation=vanilla",
+        "--wandb-project",
+        "custom-project",
+    )
+    assert explicit_argv.count("--wandb-project") == 1
+    assert explicit_argv[explicit_argv.index("--wandb-project") + 1] == "custom-project"
+
+    env_argv = _launcher_train_argv(
+        "scripts/run_gjd_libero.sh",
+        "train",
+        "--method=m5",
+        "--ablation=mode_token",
+        env_overrides={"WANDB_PROJECT": "env-project"},
+    )
+    assert "--wandb-project" not in env_argv
+
+
+def test_unified_gjd_train_launcher_preserves_explicit_output_identity() -> None:
+    save_root_argv = _launcher_train_argv(
+        "scripts/run_gjd_libero.sh",
+        "train",
+        "--method=m1",
+        "--ablation=vanilla",
+        "--save-root",
+        "/tmp/openwam-gjd-explicit",
+    )
+    assert save_root_argv.count("--save-root") == 1
+    assert save_root_argv[save_root_argv.index("--save-root") + 1] == "/tmp/openwam-gjd-explicit"
+
+    run_name_argv = _launcher_train_argv(
+        "scripts/run_gjd_libero.sh",
+        "train",
+        "--method=m1",
+        "--ablation=vanilla",
+        "--run-name",
+        "explicit-gjd-run",
+    )
+    assert "--save-root" not in run_name_argv
+    assert run_name_argv[run_name_argv.index("--run-name") + 1] == "explicit-gjd-run"
+
+    default_root_argv = _launcher_train_argv(
+        "scripts/run_gjd_libero.sh",
+        "train",
+        "--method=m1",
+        "--ablation=vanilla",
+        "--set",
+        "trainer.default_root_dir=/tmp/openwam-gjd-runs",
+    )
+    assert "--save-root" not in default_root_argv
+    assert default_root_argv[default_root_argv.index("--run-name") + 1].startswith("gjd_libero_m1_vanilla_")
+    assert "trainer.default_root_dir=/tmp/openwam-gjd-runs" in default_root_argv
+
+    checkpoint_dir_argv = _launcher_train_argv(
+        "scripts/run_gjd_libero.sh",
+        "train",
+        "--method=m5",
+        "--ablation=mode_token",
+        "--checkpoint-dir",
+        "/tmp/openwam-gjd-checkpoints",
+    )
+    assert "--save-root" not in checkpoint_dir_argv
+    assert checkpoint_dir_argv[checkpoint_dir_argv.index("--run-name") + 1].startswith("gjd_libero_m5_mode_token_")
+    assert checkpoint_dir_argv[checkpoint_dir_argv.index("--checkpoint-dir") + 1] == "/tmp/openwam-gjd-checkpoints"
+
+
+def test_unified_gjd_configs_default_to_step3500_video_only_initialization() -> None:
+    m1_config = _resolved_config_from_train_argv(
+        _launcher_train_argv(
+            "scripts/run_gjd_libero.sh",
+            "train",
+            "--method=m1",
+            "--ablation=vanilla",
+        )
+    )
+    m5_config = _resolved_config_from_train_argv(
+        _launcher_train_argv(
+            "scripts/run_gjd_libero.sh",
+            "train",
+            "--method=m5",
+            "--ablation=vanilla",
+        )
+    )
+
+    assert "checkpoint_step_3500/transformer" in str(m1_config.backbone.transformer_subdir)
+    assert "checkpoint_step_3500/transformer" in str(m5_config.backbone.transformer_subdir)
+    assert str(m1_config.backbone.exported_runtime_action_init_mode) == "random"
+    assert str(m5_config.backbone.exported_runtime_action_init_mode) == "random"
+
+
+def test_mot_gjd_realtime_launcher_exposes_named_ablation_overrides() -> None:
+    argv = _launcher_realtime_argv(
+        "scripts/run_libero_mot_gjd_realtime_sandbox.sh",
+        env_overrides={"M5_GJD_ABLATION": "mode_token"},
+    )
+
+    assert argv[:3] == [
+        str(REPO_ROOT / "scripts/run_libero_mot_visualization.py"),
+        "--cfg",
+        "configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml",
+    ]
+    assert _arg_value(argv, "--frontend-encode-mode") == "lingbot_streaming_vae"
+    assert _arg_value(argv, "--mot-inference-window-size") == "30"
+    assert _arg_value(argv, "--startup-model-obs-frames") == "1"
+    assert _arg_value(argv, "--startup-env-init-steps") == "5"
+    assert _arg_value(argv, "--max-timestep") == "800"
+    assert _arg_value(argv, "--max-chunks") == "50"
+    assert "--allow-deprecated-libero-config" in argv
+    assert "policy_variant.generalist_mode_text_token=true" in argv
+    for value in FIXED_128_VALUES:
+        assert value not in argv
+
+
+def test_unified_gjd_realtime_launcher_assigns_safe_default_artifact_identity() -> None:
+    suffixes: set[str] = set()
+    for method in ("m1", "m5"):
+        for ablation in ("vanilla", "pure_joint", "mode_token"):
+            argv = _launcher_realtime_argv(
+                "scripts/run_gjd_libero.sh",
+                "rollout",
+                f"--method={method}",
+                f"--ablation={ablation}",
+            )
+            suffix = argv[argv.index("--suffix") + 1]
+            assert suffix == f"gjd_libero_{method}_{ablation}"
+            suffixes.add(suffix)
+
+    assert len(suffixes) == 6
+
+    explicit_suffix = _launcher_realtime_argv(
+        "scripts/run_gjd_libero.sh",
+        "rollout",
+        "--method=m5",
+        "--ablation=vanilla",
+        "--suffix",
+        "manual_suffix",
+    )
+    assert explicit_suffix.count("--suffix") == 1
+    assert explicit_suffix[explicit_suffix.index("--suffix") + 1] == "manual_suffix"
+
+
+def test_unified_gjd_realtime_launcher_covers_m1_and_m5_ablation_surfaces() -> None:
+    expected_cfgs = {
+        "m1": "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml",
+        "m5": "configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml",
+    }
+    expected_prob_prefixes = {
+        "m1": "policy_variant.joint_denoise_training_mode_probs=",
+        "m5": "policy_variant.mot_generalist_training_mode_probs=",
+    }
+    for method in ("m1", "m5"):
+        for ablation in ("vanilla", "pure_joint", "mode_token"):
+            argv = _launcher_realtime_argv(
+                "scripts/run_gjd_libero.sh",
+                "rollout",
+                f"--method={method}",
+                f"--ablation={ablation}",
+            )
+            expected_script = (
+                str(REPO_ROOT / "scripts/run_libero_realtime_sandbox.py")
+                if method == "m1"
+                else str(REPO_ROOT / "scripts/run_libero_mot_visualization.py")
+            )
+            assert argv[:3] == [
+                expected_script,
+                "--cfg",
+                expected_cfgs[method],
+            ]
+            if method == "m5":
+                assert _arg_value(argv, "--frontend-encode-mode") == "lingbot_streaming_vae"
+                assert _arg_value(argv, "--mot-inference-window-size") == "30"
+                assert _arg_value(argv, "--startup-model-obs-frames") == "1"
+                assert _arg_value(argv, "--startup-env-init-steps") == "5"
+                assert _arg_value(argv, "--max-timestep") == "800"
+                assert _arg_value(argv, "--max-chunks") == "50"
+                assert "--allow-deprecated-libero-config" in argv
+            assert any(token.startswith(expected_prob_prefixes[method]) for token in argv)
+            assert f"policy_variant.generalist_mode_text_token={str(ablation == 'mode_token').lower()}" in argv
+            _assert_gjd_ablation_config(_resolved_config_from_realtime_argv(argv), method=method, ablation=ablation)
+            for value in FIXED_128_VALUES:
+                assert value not in argv
+
+
+def test_m5_gjd_realtime_launcher_rejects_deprecated_frontend_encode_mode() -> None:
+    result = _launcher_realtime_result(
+        "scripts/run_gjd_libero.sh",
+        "rollout",
+        "--method=m5",
+        "--ablation=pure_joint",
+        "--frontend-encode-mode",
+        "rolling_offline",
+        "--mot-inference-window-size=64",
+        "--max-chunks",
+        "7",
+    )
+
+    assert result.returncode == 2
+    assert "requires --frontend-encode-mode lingbot_streaming_vae" in result.stderr
+    assert "rolling_offline" in result.stderr
+
+
+def test_m5_gjd_realtime_launcher_rejects_deprecated_frontend_encode_mode_env() -> None:
+    result = _launcher_realtime_result(
+        "scripts/run_gjd_libero.sh",
+        "rollout",
+        "--method=m5",
+        "--ablation=vanilla",
+        env_overrides={"GJD_M5_FRONTEND_ENCODE_MODE": "rolling_offline"},
+    )
+
+    assert result.returncode == 2
+    assert "requires --frontend-encode-mode lingbot_streaming_vae" in result.stderr
+
+
+def test_mot_visualization_deprecates_non_streaming_frontend_encode_modes() -> None:
+    mot_viz = _load_mot_visualization_module()
+
+    mot_viz._require_current_frontend_encode_mode(
+        "lingbot_streaming_vae",
+        allow_deprecated=False,
+        source="test",
+    )
+    with pytest.raises(ValueError, match="rolling_offline.*deprecated"):
+        mot_viz._require_current_frontend_encode_mode(
+            "rolling_offline",
+            allow_deprecated=False,
+            source="test",
+        )
+    mot_viz._require_current_frontend_encode_mode(
+        "rolling_offline",
+        allow_deprecated=True,
+        source="test",
+    )
+
+
+def test_m5_gjd_sampled_eval_wrapper_fails_closed() -> None:
+    result = subprocess.run(
+        ["bash", str(REPO_ROOT / "scripts/run_m5_gjd_libero_eval.sh")],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "deprecated and now fails closed" in result.stderr
+    assert "run_gjd_libero.sh rollout --method m5" in result.stderr
+
+    help_result = subprocess.run(
+        ["bash", str(REPO_ROOT / "scripts/run_m5_gjd_libero_eval.sh"), "--help"],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert help_result.returncode == 0
+    assert "Do not use" in help_result.stdout
+    assert "run_libero_sampled_eval.py for GJD" in help_result.stdout
 
 
 def test_mot_launchers_reject_legacy_configs_by_default() -> None:

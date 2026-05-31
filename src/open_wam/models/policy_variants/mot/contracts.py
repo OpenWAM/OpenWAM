@@ -67,6 +67,8 @@ class MoTRuntimeState:
     # rollout masks. Strict one-frame startup uses origin 1 so frames 1..4
     # form the first generated chunk, matching packed/train profiles.
     chunk_origin_frame: int = 0
+    # Number of learned GJD mode-context tokens appended to `text_context`.
+    generalist_mode_text_token_count: int = 0
 
 
 @dataclass(frozen=True)

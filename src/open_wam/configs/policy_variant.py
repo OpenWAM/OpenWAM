@@ -317,6 +317,10 @@ class MoTPolicyConfig(PolicyVariantConfig):
     # preserves the fixed six-mode path; a dict samples one of joint /
     # action_conditioned_video / video_conditioned_action per segment.
     mot_generalist_training_mode_probs: dict[MoTGeneralistTrainingMode, float] | None = None
+    # Append a learned GJD mode token to text conditioning for M5 GJD ablations.
+    # Proprio remains hidden-state per-chunk additive context, not a text token.
+    # Only meaningful when `mot_generalist_training_mode_probs` is set.
+    generalist_mode_text_token: bool = False
     # Canonical joint denoising synchronizes action/video noise levels by
     # sigma; index matching and independent clocks are explicit ablations.
     joint_timestep_coupling: JointTimestepCoupling = JointTimestepCoupling.MATCH_SIGMA
@@ -399,6 +403,11 @@ class MoTPolicyConfig(PolicyVariantConfig):
                     "`mot_generalist_training_mode_probs` requires `current_block_coupling = joint`, "
                     f"got current_block_coupling={self.current_block_coupling!r}."
                 )
+        if bool(self.generalist_mode_text_token) and self.mot_generalist_training_mode_probs is None:
+            raise ValueError(
+                "`generalist_mode_text_token = true` for MoT/M5 requires "
+                "`mot_generalist_training_mode_probs` so the runtime has a sampled/forced GJD mode token."
+            )
         if (
             self.generalist_training_paradigm == GeneralistTrainingParadigm.MIXED_DYNAMICS
             and self.mot_generalist_training_mode_probs is None
@@ -488,6 +497,9 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
     couple_action_to_video_timesteps: bool | None = None
     joint_denoise_training_mode_probs: dict[JointDenoiseTrainingMode, float] | None = None
     generalist_training_paradigm: GeneralistTrainingParadigm = GeneralistTrainingParadigm.DEMO_ONLY
+    # Ablation: append one learned text-space token identifying the sampled
+    # generalist mode (joint / action_conditioned_video / video_conditioned_action).
+    generalist_mode_text_token: bool = False
     # When true, restrict PAST-chunk attention (both clean_to_clean and
     # noise_to_clean) so that any video-stream query (V_clean or V_noisy)
     # only sees same-stream history (V_clean), never history A_*. Action
@@ -557,15 +569,29 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
                 "Parallel-stream `require_condition_latents` cannot be true when `use_condition_latents` is false."
             )
         if self.variant_profile == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING:
+            conditional_generalist_modes_enabled = any(
+                self.joint_denoise_training_mode_probs[mode] > 0.0
+                for mode in (
+                    JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+                    JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
+                )
+            )
             if (
                 self.context_condition_latent_source
                 == ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
             ):
-                raise ValueError(
-                    "`context_condition_latent_source = single_frame_condition_latent` is not supported with "
-                    "`variant_profile = generalist_joint_denoising`; the generalist rewrite expects full clean "
-                    "video condition latents."
-                )
+                if self.parallel_sequence_contract != ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO:
+                    raise ValueError(
+                        "`context_condition_latent_source = single_frame_condition_latent` is not supported with "
+                        "`variant_profile = generalist_joint_denoising`; the generalist rewrite expects full clean "
+                        "video condition latents."
+                    )
+                if conditional_generalist_modes_enabled:
+                    raise ValueError(
+                        "`parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio` supports "
+                        "`variant_profile=generalist_joint_denoising` only when "
+                        "`joint_denoise_training_mode_probs` is pure `joint`."
+                    )
             if self.runtime_mode != ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
                 raise ValueError(
                     "`variant_profile = generalist_joint_denoising` requires "
@@ -580,6 +606,11 @@ class ParallelStreamPolicyConfig(PolicyVariantConfig):
                 raise ValueError(
                     "`variant_profile = generalist_joint_denoising` requires `video_condition_on_action = true`."
                 )
+        elif bool(self.generalist_mode_text_token):
+            raise ValueError(
+                "`generalist_mode_text_token = true` requires "
+                "`variant_profile = generalist_joint_denoising`."
+            )
         elif any(
             self.joint_denoise_training_mode_probs[mode] > 0.0
             for mode in (

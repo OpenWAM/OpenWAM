@@ -22,6 +22,8 @@ COMPONENT_ALIASES = {
     "visual_tower.runtime_backbone": TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE,
     "proprio_context_encoder": TrainingComponentSelector.VISUAL_TOWER_PROPRIO_CONTEXT_ENCODER,
     "visual_tower.proprio_context_encoder": TrainingComponentSelector.VISUAL_TOWER_PROPRIO_CONTEXT_ENCODER,
+    "generalist_mode_context_encoder": TrainingComponentSelector.VISUAL_TOWER_GENERALIST_MODE_CONTEXT_ENCODER,
+    "visual_tower.generalist_mode_context_encoder": TrainingComponentSelector.VISUAL_TOWER_GENERALIST_MODE_CONTEXT_ENCODER,
     "decoder": TrainingComponentSelector.VISUAL_TOWER_DECODER,
     "visual_tower.decoder": TrainingComponentSelector.VISUAL_TOWER_DECODER,
     "policy": TrainingComponentSelector.POLICY_VARIANT,
@@ -90,6 +92,10 @@ def apply_training_component_controls(
         pipeline,
         component_frozen=component_frozen,
     )
+    generalist_mode_context_encoder_auto_enabled = _enable_generalist_mode_context_encoder_when_used(
+        pipeline,
+        component_frozen=component_frozen,
+    )
     reported_trainable_components = component_trainable
     if (
         proprio_context_encoder_auto_enabled
@@ -99,6 +105,15 @@ def apply_training_component_controls(
         reported_trainable_components = (
             *reported_trainable_components,
             TrainingComponentSelector.VISUAL_TOWER_PROPRIO_CONTEXT_ENCODER,
+        )
+    if (
+        generalist_mode_context_encoder_auto_enabled
+        and TrainingComponentSelector.ALL not in reported_trainable_components
+        and TrainingComponentSelector.VISUAL_TOWER_GENERALIST_MODE_CONTEXT_ENCODER not in reported_trainable_components
+    ):
+        reported_trainable_components = (
+            *reported_trainable_components,
+            TrainingComponentSelector.VISUAL_TOWER_GENERALIST_MODE_CONTEXT_ENCODER,
         )
 
     total_parameters = sum(parameter.numel() for parameter in pipeline.parameters())
@@ -167,6 +182,15 @@ def _resolve_component_modules(pipeline: nn.Module, selector: TrainingComponentS
             )
         return encoders
 
+    def _resolve_generalist_mode_context_encoder(module: nn.Module) -> list[nn.Module]:
+        encoder = getattr(module.visual_tower.core, "generalist_mode_context_encoder", None)
+        if encoder is None:
+            raise ValueError(
+                "Training component selector `visual_tower.generalist_mode_context_encoder` requires "
+                "`pipeline.visual_tower.core.generalist_mode_context_encoder`."
+            )
+        return [encoder]
+
     def _resolve_policy_action_expert(module: nn.Module) -> list[nn.Module]:
         action_expert = getattr(module.policy_variant, "action_expert", None)
         if action_expert is None:
@@ -220,6 +244,7 @@ def _resolve_component_modules(pipeline: nn.Module, selector: TrainingComponentS
         TrainingComponentSelector.VISUAL_TOWER_CORE: lambda module: [module.visual_tower.core],
         TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE: _resolve_visual_tower_runtime_backbone,
         TrainingComponentSelector.VISUAL_TOWER_PROPRIO_CONTEXT_ENCODER: _resolve_proprio_context_encoder,
+        TrainingComponentSelector.VISUAL_TOWER_GENERALIST_MODE_CONTEXT_ENCODER: _resolve_generalist_mode_context_encoder,
         TrainingComponentSelector.VISUAL_TOWER_DECODER: lambda module: [module.visual_tower.decoder],
         TrainingComponentSelector.POLICY_VARIANT: lambda module: [module.policy_variant],
         TrainingComponentSelector.POLICY_VARIANT_ACTION_EXPERT: _resolve_policy_action_expert,
@@ -249,7 +274,9 @@ def _enable_proprio_context_encoder_when_used(
     The proprio encoder is owned by the shared visual core but semantically
     belongs to the proprio-conditioning adapter. If a run trains only an action
     expert while freezing the main backbone, leaving this zero-init adapter
-    frozen makes proprio conditioning a permanent zero token.
+    frozen makes proprio conditioning a permanent zero path. The text-token
+    branch below is deprecated compatibility; current runs use hidden additive
+    context.
     """
 
     if any(
@@ -275,6 +302,37 @@ def _enable_proprio_context_encoder_when_used(
         else "proprio_hidden_context_encoder"
     )
     encoder = getattr(getattr(pipeline.visual_tower, "core", None), encoder_name, None)
+    if encoder is None:
+        return False
+    for parameter in encoder.parameters():
+        parameter.requires_grad = True
+    return True
+
+
+def _enable_generalist_mode_context_encoder_when_used(
+    pipeline: nn.Module,
+    *,
+    component_frozen: tuple[TrainingComponentSelector, ...],
+) -> bool:
+    """Keep GJD mode control tokens trainable when the main backbone is frozen."""
+
+    if any(
+        selector in component_frozen
+        for selector in (
+            TrainingComponentSelector.ALL,
+            TrainingComponentSelector.VISUAL_TOWER,
+            TrainingComponentSelector.VISUAL_TOWER_CORE,
+            TrainingComponentSelector.VISUAL_TOWER_GENERALIST_MODE_CONTEXT_ENCODER,
+        )
+    ):
+        return False
+    policy_variant = getattr(pipeline, "policy_variant", None)
+    policy_config = getattr(policy_variant, "config", policy_variant)
+    if not isinstance(policy_config, (ParallelStreamPolicyConfig, MoTPolicyConfig)):
+        return False
+    if not bool(getattr(policy_config, "generalist_mode_text_token", False)):
+        return False
+    encoder = getattr(getattr(pipeline.visual_tower, "core", None), "generalist_mode_context_encoder", None)
     if encoder is None:
         return False
     for parameter in encoder.parameters():
