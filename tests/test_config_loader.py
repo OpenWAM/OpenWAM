@@ -236,7 +236,7 @@ trainer:
     config = load_experiment_config(config_path)
 
     assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.MIXED_DYNAMICS
-    assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA
+    assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.INDEPENDENT
     assert config.data.generalist_dynamics_mixture.train_latent_root == "/tmp/counterfactual_train/encoded_latents"
     assert config.data.generalist_dynamics_mixture.allow_train_latent_root_for_val is False
     assert config.data.generalist_dynamics_mixture.real_joint_weight == 0.6
@@ -1297,6 +1297,7 @@ def test_m1_generalist_joint_denoising_yaml_config_loads() -> None:
     assert config.policy_variant.variant_profile == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING
     assert config.policy_variant.current_block_coupling == "joint"
     assert config.policy_variant.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
+    assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.INDEPENDENT
     assert config.policy_variant.attn_window == 30
     assert config.policy_variant.parallel_sequence_contract == ParallelSequenceContract.DEFAULT
     assert config.data.sample_construction.mode == WindowSamplingMode.UNIFORM_SEGMENT
@@ -1312,6 +1313,22 @@ def test_m1_generalist_joint_denoising_yaml_config_loads() -> None:
     assert probs[JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO] == pytest.approx(0.2)
     assert probs[JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION] == pytest.approx(0.2)
     assert config.action_decoder.name == ActionDecoderName.LINGBOT_PARALLEL
+
+
+def test_m5_generalist_joint_denoising_defaults_independent_joint_coupling(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    raw["policy_variant"].pop("joint_timestep_coupling", None)
+
+    config_path = tmp_path / "m5_generalist_default_coupling.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    config = load_experiment_config(config_path)
+
+    assert isinstance(config.policy_variant, MoTPolicyConfig)
+    assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.INDEPENDENT
 
 
 def test_m5_generalist_joint_denoising_rejects_multi_sample_batches(tmp_path: Path) -> None:

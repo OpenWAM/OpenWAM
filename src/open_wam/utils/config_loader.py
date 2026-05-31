@@ -799,6 +799,12 @@ def _load_policy_variant_config(
             config_enums.MoTPreset,
             resolved_raw.get("preset"),
         )
+        mot_generalist_training_mode_probs = resolved_raw.get("mot_generalist_training_mode_probs")
+        mot_joint_timestep_coupling_default = (
+            config_enums.JointTimestepCoupling.INDEPENDENT
+            if mot_generalist_training_mode_probs is not None
+            else config_enums.JointTimestepCoupling.MATCH_SIGMA
+        )
         mot_defaults: dict[str, Any] = {}
         if preset == config_enums.MoTPreset.FASTWAM:
             mot_defaults = {
@@ -915,7 +921,7 @@ def _load_policy_variant_config(
                     config_enums.ParallelSequenceContract.DEFAULT,
                 ),
             ),
-            mot_generalist_training_mode_probs=resolved_raw.get("mot_generalist_training_mode_probs"),
+            mot_generalist_training_mode_probs=mot_generalist_training_mode_probs,
             generalist_mode_text_token=_coerce_bool(
                 resolved_raw.get("generalist_mode_text_token", False),
                 field_name="policy_variant.generalist_mode_text_token",
@@ -924,7 +930,7 @@ def _load_policy_variant_config(
                 config_enums.JointTimestepCoupling,
                 resolved_raw.get(
                     "joint_timestep_coupling",
-                    config_enums.JointTimestepCoupling.MATCH_SIGMA,
+                    mot_joint_timestep_coupling_default,
                 ),
             ),
             couple_action_to_video_timesteps=resolved_raw.get("couple_action_to_video_timesteps"),
@@ -1093,13 +1099,19 @@ def _load_policy_variant_config(
                 ),
             )
         )
+        variant_profile = _coerce_enum(
+            config_enums.ParallelStreamVariantProfile,
+            resolved_raw.get("variant_profile", config_enums.ParallelStreamVariantProfile.STANDARD),
+        )
+        parallel_joint_timestep_coupling_default = (
+            config_enums.JointTimestepCoupling.INDEPENDENT
+            if variant_profile == config_enums.ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING
+            else config_enums.JointTimestepCoupling.MATCH_SIGMA
+        )
         return ParallelStreamPolicyConfig(
             hidden_size=hidden_size,
             runtime_mode=runtime_mode,
-            variant_profile=_coerce_enum(
-                config_enums.ParallelStreamVariantProfile,
-                resolved_raw.get("variant_profile", config_enums.ParallelStreamVariantProfile.STANDARD),
-            ),
+            variant_profile=variant_profile,
             reference_profile=resolved_raw.get("reference_profile"),
             frame_chunk_size=resolved_raw.get("frame_chunk_size", inference_config.frame_chunk_size),
             action_per_frame=resolved_raw.get("action_per_frame", default_action_per_frame),
@@ -1133,7 +1145,7 @@ def _load_policy_variant_config(
                 config_enums.JointTimestepCoupling,
                 resolved_raw.get(
                     "joint_timestep_coupling",
-                    config_enums.JointTimestepCoupling.MATCH_SIGMA,
+                    parallel_joint_timestep_coupling_default,
                 ),
             ),
             couple_action_to_video_timesteps=resolved_raw.get("couple_action_to_video_timesteps"),

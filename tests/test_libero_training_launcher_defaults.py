@@ -9,7 +9,7 @@ import subprocess
 import pytest
 import yaml
 
-from open_wam.configs.enums import JointDenoiseTrainingMode, MoTGeneralistTrainingMode
+from open_wam.configs.enums import JointDenoiseTrainingMode, JointTimestepCoupling, MoTGeneralistTrainingMode
 from open_wam.utils.config_loader import load_experiment_config
 from open_wam.utils.config_overrides import apply_config_overrides, parse_override_assignments
 
@@ -280,7 +280,7 @@ def _assert_gjd_fullseg_w64_raw_config(raw: dict) -> None:
     assert "start_padding_frames" not in sample
     assert raw["training"]["window_size"] == 64
     assert raw["training"]["sample_loss_weight_mode"] == "none"
-    assert raw["policy_variant"]["joint_timestep_coupling"] == "match_sigma"
+    assert raw["policy_variant"]["joint_timestep_coupling"] == "independent"
     assert raw["policy_variant"]["generalist_mode_text_token"] is False
 
 
@@ -632,6 +632,8 @@ def test_unified_gjd_configs_default_to_step3500_video_only_initialization() -> 
     assert "checkpoint_step_3500/transformer" in str(m5_config.backbone.transformer_subdir)
     assert str(m1_config.backbone.exported_runtime_action_init_mode) == "random"
     assert str(m5_config.backbone.exported_runtime_action_init_mode) == "random"
+    assert m1_config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.INDEPENDENT
+    assert m5_config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.INDEPENDENT
 
 
 def test_mot_gjd_realtime_launcher_exposes_named_ablation_overrides() -> None:

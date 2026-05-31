@@ -142,9 +142,10 @@ policy_variant:
   use_state_conditioning: false
   use_activation_checkpointing: true
   noisy_video_condition_prob: 0.5
-  # Canonical GJD uses the video scheduler as the single sigma clock for joint,
-  # FDM, and IDM modes. Use `match_index`/`independent` only for ablations.
-  joint_timestep_coupling: match_sigma
+  # Current GJD uses independent video/action noise clocks for parity with the
+  # standard M5 legacy-prefix W64 joint baseline. Use `match_sigma` only for a
+  # sigma-matched ablation.
+  joint_timestep_coupling: independent
   # A1 generalist mixing — per-segment categorical over the three regimes.
   # Probabilities mirror the M1 PR #95 default (0.6 / 0.2 / 0.2).
   mot_generalist_training_mode_probs:
