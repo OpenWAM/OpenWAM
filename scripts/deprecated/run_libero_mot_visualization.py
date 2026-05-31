@@ -550,6 +550,7 @@ def main() -> None:
                         obs_frame_count=len(streaming_next_obs_window),
                         action_history=warmup_action_history,
                         runtime_device=runtime_device,
+                        mot_inference_window_size=args.mot_inference_window_size,
                     )
                 else:
                     warmup_debug = _warmup_mot_packed_history_from_observations(
@@ -561,6 +562,7 @@ def main() -> None:
                         task_text=(prompt,),
                         frontend_device=frontend_device,
                         runtime_device=runtime_device,
+                        mot_inference_window_size=args.mot_inference_window_size,
                     )
                 warmup_log = {
                     "chunk_index": chunk_count,
@@ -964,6 +966,7 @@ def _warmup_mot_packed_history_from_observations(
     task_text: tuple[str | None, ...] | None,
     frontend_device: torch.device,
     runtime_device: torch.device,
+    mot_inference_window_size: int | None,
 ) -> dict[str, object]:
     if not obs_list:
         return {"warmup_skipped": True, "reason": "empty_obs_list"}
@@ -991,6 +994,7 @@ def _warmup_mot_packed_history_from_observations(
         obs_frame_count=len(obs_list),
         action_history=action_history,
         runtime_device=runtime_device,
+        mot_inference_window_size=mot_inference_window_size,
     )
 
 
@@ -1003,6 +1007,7 @@ def _warmup_mot_packed_history_from_visual_outputs(
     obs_frame_count: int,
     action_history: torch.Tensor | None,
     runtime_device: torch.device,
+    mot_inference_window_size: int | None,
 ) -> dict[str, object]:
     policy_state = session.policy_state
     runtime_state = getattr(policy_state, "variant_state", None) if policy_state is not None else None
@@ -1013,10 +1018,17 @@ def _warmup_mot_packed_history_from_visual_outputs(
     real_latents = warmup_outputs.frontend.video_latents.to(device=runtime_device, dtype=runtime_dtype)
     past_latents = runtime_state.past_clean_latents
     frame_chunk_size = _frame_chunk_size(config)
+    history_window_size = (
+        int(mot_inference_window_size)
+        if mot_inference_window_size is not None
+        else int(getattr(pipeline.policy_variant.training_config, "window_size", real_latents.shape[2]))
+    )
+    if history_window_size <= 0:
+        raise ValueError(f"MoT packed warmup window size must be positive, got {history_window_size}.")
     history_window_frames = max(
         int(real_latents.shape[2]),
         resolve_mot_rollout_cache_window_frames(
-            window_size=int(getattr(pipeline.policy_variant.training_config, "window_size", real_latents.shape[2])),
+            window_size=history_window_size,
             frame_chunk_size=frame_chunk_size,
         ),
     )
@@ -1086,6 +1098,7 @@ def _warmup_mot_packed_history_from_visual_outputs(
         "appended_action_tokens": int(appended_action_tokens),
         "dropped_pred_latent_frames": int(dropped_pred_latent_frames),
         "dropped_pred_action_tokens": int(dropped_pred_action_tokens),
+        "inference_window_size": int(history_window_size),
         "history_window_frames": int(history_window_frames),
     }
 

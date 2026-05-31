@@ -540,6 +540,7 @@ def _run_one_loaded_rollout(
                         obs_frame_count=len(streaming_next_obs_window),
                         action_history=warmup_action_history,
                         runtime_device=resources.runtime_device,
+                        mot_inference_window_size=args.mot_inference_window_size,
                     )
                 else:
                     warmup_debug = mot_viz._warmup_mot_packed_history_from_observations(
@@ -551,6 +552,7 @@ def _run_one_loaded_rollout(
                         task_text=(prompt,),
                         frontend_device=resources.frontend_device,
                         runtime_device=resources.runtime_device,
+                        mot_inference_window_size=args.mot_inference_window_size,
                     )
                 warmup_log = {
                     "task_id": int(task_id),
