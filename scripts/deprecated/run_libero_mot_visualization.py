@@ -588,6 +588,7 @@ def main() -> None:
                         session=session,
                         warmup_outputs=streaming_next_visual_outputs,
                         obs_frame_count=len(streaming_next_obs_window),
+                        obs_list=streaming_next_obs_window,
                         action_history=warmup_action_history,
                         runtime_device=runtime_device,
                         mot_inference_window_size=args.mot_inference_window_size,
@@ -1052,6 +1053,7 @@ def _warmup_mot_packed_history_from_observations(
         session=session,
         warmup_outputs=warmup_outputs,
         obs_frame_count=len(obs_list),
+        obs_list=obs_list,
         action_history=action_history,
         runtime_device=runtime_device,
         mot_inference_window_size=mot_inference_window_size,
@@ -1065,6 +1067,7 @@ def _warmup_mot_packed_history_from_visual_outputs(
     session,
     warmup_outputs,
     obs_frame_count: int,
+    obs_list: list[dict[str, np.ndarray]] | None,
     action_history: torch.Tensor | None,
     runtime_device: torch.device,
     mot_inference_window_size: int | None,
@@ -1077,6 +1080,7 @@ def _warmup_mot_packed_history_from_visual_outputs(
     runtime_dtype = pipeline.visual_tower.core.patch_embedding_mlp.weight.dtype
     real_latents = warmup_outputs.frontend.video_latents.to(device=runtime_device, dtype=runtime_dtype)
     past_latents = runtime_state.past_clean_latents
+    past_hidden_proprio = getattr(runtime_state, "past_hidden_proprio_states", None)
     frame_chunk_size = _frame_chunk_size(config)
     history_window_size = (
         int(mot_inference_window_size)
@@ -1121,6 +1125,47 @@ def _warmup_mot_packed_history_from_visual_outputs(
     runtime_state.past_clean_latents = combined[:, :, -history_window_frames:].detach()
     runtime_state.pending_predicted_video_frames = 0
 
+    appended_hidden_proprio_frames = 0
+    if (
+        obs_list is not None
+        and hasattr(runtime_state, "past_hidden_proprio_states")
+        and getattr(runtime_state, "past_hidden_proprio_states", None) is not None
+    ):
+        state_encoding = str(config.data.action_target.state_encoding)
+        raw_state = video_viz._build_state_inputs_from_obs_window(
+            obs_list,
+            state_horizon=len(obs_list),
+            state_encoding=state_encoding,
+        ).to(device=runtime_device, dtype=runtime_dtype)
+        if raw_state.ndim == 2 and int(raw_state.shape[0]) > 0 and int(real_latents.shape[2]) > 0:
+            if int(raw_state.shape[0]) >= int(real_latents.shape[2]):
+                latent_state = raw_state[-int(real_latents.shape[2]) :, :]
+            else:
+                pad_count = int(real_latents.shape[2]) - int(raw_state.shape[0])
+                latent_state = torch.cat(
+                    [
+                        raw_state,
+                        raw_state[-1:, :].expand(pad_count, -1),
+                    ],
+                    dim=0,
+                )
+            latent_state = latent_state.unsqueeze(0)
+            if past_hidden_proprio is None:
+                base_hidden = None
+            else:
+                past_hidden_proprio = past_hidden_proprio.to(device=runtime_device, dtype=runtime_dtype)
+                base_hidden = (
+                    past_hidden_proprio[:, :-dropped_pred_latent_frames]
+                    if dropped_pred_latent_frames > 0
+                    else past_hidden_proprio
+                )
+            if base_hidden is None or int(base_hidden.shape[1]) == 0:
+                combined_hidden = latent_state
+            else:
+                combined_hidden = torch.cat([base_hidden, latent_state], dim=1)
+            runtime_state.past_hidden_proprio_states = combined_hidden[:, -history_window_frames:].detach()
+            appended_hidden_proprio_frames = int(latent_state.shape[1])
+
     appended_action_tokens = 0
     dropped_pred_action_tokens = 0
     if action_history is not None and hasattr(runtime_state, "past_clean_actions"):
@@ -1163,6 +1208,7 @@ def _warmup_mot_packed_history_from_visual_outputs(
             else int(runtime_state.past_clean_actions.shape[1] // _action_per_frame(config))
         ),
         "appended_action_tokens": int(appended_action_tokens),
+        "appended_hidden_proprio_frames": int(appended_hidden_proprio_frames),
         "pending_pred_latent_frames_before": int(pending_pred_latent_frames),
         "dropped_pred_latent_frames": int(dropped_pred_latent_frames),
         "dropped_pred_action_tokens": int(dropped_pred_action_tokens),

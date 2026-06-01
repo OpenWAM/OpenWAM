@@ -1922,6 +1922,97 @@ def test_mot_action_then_video_action_only_rollout_skips_predicted_video() -> No
     assert packed_state.past_clean_actions.shape[1] == 4
 
 
+def test_mot_action_then_video_action_only_rollout_preserves_hidden_proprio_alignment() -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=MoTPolicyConfig(
+            hidden_size=32,
+            runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.ACTION_THEN_VIDEO,
+            video_prefix_frames=1,
+            num_action_layers=1,
+            proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
+        ),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
+        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    first = pipeline.forward_infer_step_from_latents(
+        torch.randn(1, 48, 1, 8, 8),
+        context=PolicyInferContext(
+            state=torch.ones(1, 1, 4),
+            extra={"mot_action_only_rollout": True},
+        ),
+        text_context=torch.randn(1, 5, 16),
+    )
+    first_state = first.policy_output.next_state.variant_state
+    assert isinstance(first_state, MoTRuntimeState)
+    assert first_state.past_hidden_proprio_states is not None
+    assert first_state.past_clean_latents is not None
+    assert first_state.past_hidden_proprio_states.shape[1] == first_state.past_clean_latents.shape[2]
+
+    warmed_state = first_state
+    warmed_state.past_clean_latents = torch.cat(
+        [
+            warmed_state.past_clean_latents,
+            torch.randn(1, 48, 4, 8, 8),
+        ],
+        dim=2,
+    )
+    warmed_state.past_clean_actions = torch.cat(
+        [
+            warmed_state.past_clean_actions,
+            torch.randn(1, 4, 4),
+        ],
+        dim=1,
+    )
+    warmed_state.past_hidden_proprio_states = torch.cat(
+        [
+            warmed_state.past_hidden_proprio_states,
+            torch.full((1, 4, 4), 2.0),
+        ],
+        dim=1,
+    )
+    warmed_infer_state = first.policy_output.next_state
+    warmed_infer_state.variant_state = warmed_state
+    warmed_infer_state.step_index = 2
+    warmed_infer_state.cursor.current_start_frame = 5
+
+    second = pipeline.forward_infer_step_from_latents(
+        torch.randn(1, 48, 4, 8, 8),
+        context=PolicyInferContext(
+            state=torch.full((1, 1, 4), 3.0),
+            extra={"mot_action_only_rollout": True},
+        ),
+        infer_state=warmed_infer_state,
+        text_context=torch.randn(1, 5, 16),
+    )
+
+    second_state = second.policy_output.next_state.variant_state
+    assert isinstance(second_state, MoTRuntimeState)
+    assert second_state.past_clean_latents is not None
+    assert second_state.past_hidden_proprio_states is not None
+    assert second_state.past_hidden_proprio_states.shape[1] == second_state.past_clean_latents.shape[2]
+    assert second.policy_output.aux["predicted_latents"].shape[2] == 0
+
+
 def test_mot_action_only_rollout_rejects_video_then_action() -> None:
     config = ExperimentConfig(
         data=RobotWinDataConfig(

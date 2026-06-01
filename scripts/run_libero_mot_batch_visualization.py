@@ -558,6 +558,7 @@ def _run_one_loaded_rollout(
                         session=session,
                         warmup_outputs=streaming_next_visual_outputs,
                         obs_frame_count=len(streaming_next_obs_window),
+                        obs_list=streaming_next_obs_window,
                         action_history=warmup_action_history,
                         runtime_device=resources.runtime_device,
                         mot_inference_window_size=args.mot_inference_window_size,
