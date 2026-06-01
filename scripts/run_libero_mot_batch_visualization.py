@@ -74,6 +74,14 @@ def main() -> None:
     parser.add_argument("--raw-window-frames", type=int, default=None)
     parser.add_argument("--mot-inference-window-size", type=int, default=None)
     parser.add_argument(
+        "--mot-action-only-rollout",
+        action="store_true",
+        help=(
+            "Skip imagined-video denoising during MoT rollout and produce actions only. "
+            "Supported only for action_then_video and decoupled_same_step couplings."
+        ),
+    )
+    parser.add_argument(
         "--frontend-encode-mode",
         choices=(mot_viz.DEPRECATED_FRONTEND_ENCODE_MODE, mot_viz.CURRENT_FRONTEND_ENCODE_MODE),
         default=mot_viz.CURRENT_FRONTEND_ENCODE_MODE,
@@ -232,6 +240,7 @@ def _load_batch_resources(args: argparse.Namespace) -> SimpleNamespace:
         decode_device=decode_device,
         raw_window_frames=raw_window_frames,
         mot_inference_window_size=args.mot_inference_window_size,
+        mot_action_only_rollout=bool(args.mot_action_only_rollout),
     )
     component_report["mot_inference_backend"] = mot_inference_backend
     component_report["checkpoint_file"] = str(checkpoint_path.resolve())
@@ -390,6 +399,7 @@ def _run_one_loaded_rollout(
                         config=config,
                         runtime_device=resources.runtime_device,
                         mot_inference_window_size=args.mot_inference_window_size,
+                        mot_action_only_rollout=bool(args.mot_action_only_rollout),
                     ),
                     infer_state=None if args.reset_policy_state_each_chunk else session.policy_state,
                 )

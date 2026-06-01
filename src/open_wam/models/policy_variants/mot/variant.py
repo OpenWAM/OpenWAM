@@ -101,6 +101,12 @@ from .runtime_routing import (
 # per-stream effective lookback is `(attn_window // 2) * frame_chunk_size`
 # integer frames (60 at attn_window=30, frame_chunk_size=4).
 _MOT_SLOT_POOL_ATTN_WINDOW = 30
+_MOT_ACTION_ONLY_ROLLOUT_COUPLINGS = frozenset(
+    {
+        CurrentBlockCoupling.ACTION_THEN_VIDEO,
+        CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+    }
+)
 
 
 def _resolve_mot_inference_window_size(
@@ -119,6 +125,26 @@ def _resolve_mot_inference_window_size(
             f"got {resolved}."
         )
     return resolved
+
+
+def _resolve_mot_action_only_rollout(
+    context: PolicyInferContext,
+    *,
+    current_block_coupling: CurrentBlockCoupling,
+) -> bool:
+    requested = bool(context.extra.get("mot_action_only_rollout", False))
+    if requested and current_block_coupling not in _MOT_ACTION_ONLY_ROLLOUT_COUPLINGS:
+        supported = ", ".join(
+            (
+                CurrentBlockCoupling.ACTION_THEN_VIDEO.value,
+                CurrentBlockCoupling.DECOUPLED_SAME_STEP.value,
+            )
+        )
+        raise ValueError(
+            "`mot_action_only_rollout` is only supported for M5 action-only-safe "
+            f"couplings ({supported}); got current_block_coupling={current_block_coupling.value!r}."
+        )
+    return requested
 
 
 def resolve_mot_current_block_coupling(config: MoTPolicyConfig) -> CurrentBlockCoupling:
@@ -2303,6 +2329,18 @@ class MoTPolicyVariant(PolicyVariant):
         runtime_state: MoTRuntimeState,
     ) -> PolicyInferOutput:
         current_block_coupling = resolve_mot_current_block_coupling(self.config)
+        action_only_rollout = _resolve_mot_action_only_rollout(
+            context,
+            current_block_coupling=current_block_coupling,
+        )
+        if (
+            action_only_rollout
+            and current_block_coupling != CurrentBlockCoupling.ACTION_THEN_VIDEO
+        ):
+            raise ValueError(
+                "M5 packed action-only rollout is only used for action_then_video; "
+                "decoupled_same_step action-only rollout uses the legacy split-cache route."
+            )
         inference_window_size = _resolve_mot_inference_window_size(
             context,
             default_window_size=int(self.training_config.window_size),
@@ -2800,16 +2838,17 @@ class MoTPolicyVariant(PolicyVariant):
                     current_clean_action_for_step=zero_current_action_condition,
                 )
                 _update_action(packed_action_hidden, packed_action_pre, current_action_timestep)
-            current_clean_action = _compose_current_action_sequence(action_sample)
-            for video_timestep in video_scheduler.timesteps:
-                current_video_timestep = _video_timestep(video_timestep)
-                video_flow_pred, _, _ = _run_packed_step(
-                    video_timestep=current_video_timestep,
-                    action_timestep=zero_current_action_timestep,
-                    current_clean_video_for_step=current_clean_video,
-                    current_clean_action_for_step=current_clean_action,
-                )
-                _update_video(video_flow_pred, video_timestep)
+            if not action_only_rollout:
+                current_clean_action = _compose_current_action_sequence(action_sample)
+                for video_timestep in video_scheduler.timesteps:
+                    current_video_timestep = _video_timestep(video_timestep)
+                    video_flow_pred, _, _ = _run_packed_step(
+                        video_timestep=current_video_timestep,
+                        action_timestep=zero_current_action_timestep,
+                        current_clean_video_for_step=current_clean_video,
+                        current_clean_action_for_step=current_clean_action,
+                    )
+                    _update_video(video_flow_pred, video_timestep)
         else:
             for step_index, video_timestep in enumerate(video_scheduler.timesteps):
                 action_timestep = action_scheduler.timesteps[step_index]
@@ -2854,17 +2893,29 @@ class MoTPolicyVariant(PolicyVariant):
                     sigma_next=shared_sigma_next,
                 )
 
-        predicted_chunk_latents = predicted_video_sequence[:, :, -frame_chunk_size:].contiguous()
         clean_video_prefix_frames = shared_history_frames + current_video_prefix_frames
-        next_clean_context = torch.cat(
-            [clean_video_sequence[:, :, :clean_video_prefix_frames], predicted_chunk_latents],
-            dim=2,
-        )
+        if action_only_rollout:
+            predicted_chunk_latents = predicted_video_sequence.new_empty(
+                batch_size,
+                predicted_video_sequence.shape[1],
+                0,
+                latent_height,
+                latent_width,
+            )
+            next_clean_context = clean_video_sequence[:, :, :clean_video_prefix_frames].contiguous()
+            pending_predicted_video_frames = 0
+        else:
+            predicted_chunk_latents = predicted_video_sequence[:, :, -frame_chunk_size:].contiguous()
+            next_clean_context = torch.cat(
+                [clean_video_sequence[:, :, :clean_video_prefix_frames], predicted_chunk_latents],
+                dim=2,
+            )
+            pending_predicted_video_frames = frame_chunk_size
         runtime_state.past_clean_latents = next_clean_context[:, :, -history_window_frames:].detach()
         if video_hidden_proprio_sequence is not None:
             next_hidden_context = video_hidden_proprio_sequence[
                 :,
-                : clean_video_prefix_frames + frame_chunk_size,
+                : clean_video_prefix_frames + pending_predicted_video_frames,
             ].contiguous()
             runtime_state.past_hidden_proprio_states = next_hidden_context[:, -history_window_frames:].detach()
         else:
@@ -2876,6 +2927,7 @@ class MoTPolicyVariant(PolicyVariant):
         max_action_history_tokens = history_window_frames * action_tokens_per_frame
         runtime_state.past_clean_actions = next_clean_actions[:, -max_action_history_tokens:].detach()
         runtime_state.next_condition_frame_start = int(generation_frame_start + frame_chunk_size)
+        runtime_state.pending_predicted_video_frames = int(pending_predicted_video_frames)
         next_state = infer_state
         next_state.step_index += 1
         next_state.cursor.current_start_frame = int(generation_frame_start + frame_chunk_size)
@@ -2889,6 +2941,7 @@ class MoTPolicyVariant(PolicyVariant):
                 "condition_mode": str(self.config.condition_mode),
                 "current_block_coupling": current_block_coupling.value,
                 "generation_frame_start": int(generation_frame_start),
+                "mot_action_only_rollout": bool(action_only_rollout),
                 "predicted_latents": predicted_chunk_latents.detach(),
                 "predicted_video_latents": predicted_chunk_latents.detach(),
                 "mot_first_step_bootstrap": first_step_bootstrap,
@@ -2921,6 +2974,7 @@ class MoTPolicyVariant(PolicyVariant):
                     "max_history_frames": int(max_history_frames),
                     "next_past_clean_latent_frames": int(runtime_state.past_clean_latents.shape[2]),
                     "next_past_clean_action_frames": int(runtime_state.past_clean_actions.shape[1] // action_tokens_per_frame),
+                    "pending_predicted_video_frames": int(runtime_state.pending_predicted_video_frames),
                     "sequence_frame_start": int(sequence_frame_start),
                     "current_frame_start": int(current_start_frame),
                     "current_video_prefix_frames": int(current_video_prefix_frames),
@@ -3332,6 +3386,10 @@ class MoTPolicyVariant(PolicyVariant):
             )
         action_tokens_per_frame = self.action_horizon // chunk_frames
         current_block_coupling = resolve_mot_current_block_coupling(self.config)
+        action_only_rollout = _resolve_mot_action_only_rollout(
+            context,
+            current_block_coupling=current_block_coupling,
+        )
         if current_block_coupling not in MOT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS:
             raise NotImplementedError(
                 "M5 legacy split-cache inference only supports staged video_then_action and decoupled_same_step; "
@@ -3478,60 +3536,69 @@ class MoTPolicyVariant(PolicyVariant):
             generation_frame_start + chunk_frames if skip_observation_update else generation_frame_start
         )
 
-        # Cache-aware video denoise on the current noisy chunk only.
-        latents = torch.randn(
-            batch_size,
-            latent_channels,
-            chunk_frames,
-            latent_height,
-            latent_width,
-            device=video_device,
-            dtype=video_dtype,
-        )
-        video_scheduler = _VideoFlowMatchScheduler(
-            shift=self.training_config.video_sigma_shift,
-            sigma_min=0.0,
-            extra_one_step=True,
-            num_train_timesteps=self.training_config.video_num_train_timesteps,
-        )
-        video_scheduler.set_timesteps(self.inference_config.video_num_inference_steps)
-        video_timesteps = F.pad(
-            video_scheduler.timesteps.to(device=video_device),
-            (0, 1),
-            mode="constant",
-            value=0,
-        )
-        for index, timestep in enumerate(video_timesteps):
-            last_step = index == len(video_timesteps) - 1
-            video_input = _prepare_single_stream_input(
-                latents=latents,
-                timestep=timestep,
-                text_emb=text_context_for_video,
-                frame_st_id=generation_frame_start,
-                backbone_config=visual_tower.config,
-                action_mode=False,
+        if action_only_rollout:
+            predicted_latents = observed_prefix.new_empty(
+                batch_size,
+                latent_channels,
+                0,
+                latent_height,
+                latent_width,
             )
-            video_noise_pred = _run_single_stream_forward(
-                visual_tower.core,
-                input_dict=video_input,
-                update_cache=1 if (last_step and video_commit_before_action and self.inference_config.use_cache) else 0,
-                cache_name=cache_name,
-                action_mode=False,
-                guidance_scale=self.inference_config.guidance_scale,
-                negative_text_emb=negative_text_context,
-                force_cfg_batch=use_cfg,
+        else:
+            # Cache-aware video denoise on the current noisy chunk only.
+            latents = torch.randn(
+                batch_size,
+                latent_channels,
+                chunk_frames,
+                latent_height,
+                latent_width,
+                device=video_device,
+                dtype=video_dtype,
             )
-            if not last_step:
-                video_noise_pred = _data_seq_to_patch(
-                    visual_tower.core.patch_size,
-                    video_noise_pred,
-                    chunk_frames,
-                    latent_height,
-                    latent_width,
-                    batch_size=batch_size,
-                ).to(dtype=video_dtype)
-                latents = video_scheduler.step(video_noise_pred, timestep, latents)
-        predicted_latents = latents
+            video_scheduler = _VideoFlowMatchScheduler(
+                shift=self.training_config.video_sigma_shift,
+                sigma_min=0.0,
+                extra_one_step=True,
+                num_train_timesteps=self.training_config.video_num_train_timesteps,
+            )
+            video_scheduler.set_timesteps(self.inference_config.video_num_inference_steps)
+            video_timesteps = F.pad(
+                video_scheduler.timesteps.to(device=video_device),
+                (0, 1),
+                mode="constant",
+                value=0,
+            )
+            for index, timestep in enumerate(video_timesteps):
+                last_step = index == len(video_timesteps) - 1
+                video_input = _prepare_single_stream_input(
+                    latents=latents,
+                    timestep=timestep,
+                    text_emb=text_context_for_video,
+                    frame_st_id=generation_frame_start,
+                    backbone_config=visual_tower.config,
+                    action_mode=False,
+                )
+                video_noise_pred = _run_single_stream_forward(
+                    visual_tower.core,
+                    input_dict=video_input,
+                    update_cache=1 if (last_step and video_commit_before_action and self.inference_config.use_cache) else 0,
+                    cache_name=cache_name,
+                    action_mode=False,
+                    guidance_scale=self.inference_config.guidance_scale,
+                    negative_text_emb=negative_text_context,
+                    force_cfg_batch=use_cfg,
+                )
+                if not last_step:
+                    video_noise_pred = _data_seq_to_patch(
+                        visual_tower.core.patch_size,
+                        video_noise_pred,
+                        chunk_frames,
+                        latent_height,
+                        latent_width,
+                        batch_size=batch_size,
+                    ).to(dtype=video_dtype)
+                    latents = video_scheduler.step(video_noise_pred, timestep, latents)
+            predicted_latents = latents
 
         # Don't advance `next_condition_frame_start` past the observation
         # write position. Method 1 with `advance_frame_start=False` keeps
@@ -3545,7 +3612,7 @@ class MoTPolicyVariant(PolicyVariant):
         # update_cache=2)`. The TOTAL number of clean video frames the
         # action expert sees this chunk is observation frames +
         # current-chunk pred frames.
-        total_clean_video_frames = generation_frame_start + chunk_frames
+        total_clean_video_frames = generation_frame_start + (0 if action_only_rollout else chunk_frames)
         action_visible_video_end_frame = (
             total_clean_video_frames
             if video_commit_before_action
@@ -3814,7 +3881,11 @@ class MoTPolicyVariant(PolicyVariant):
             runtime_state.action_cache = append_mot_action_cache(
                 past_action_cache, fresh_action_kv_moved
             )
-        if current_block_coupling == CurrentBlockCoupling.DECOUPLED_SAME_STEP and self.inference_config.use_cache:
+        if (
+            current_block_coupling == CurrentBlockCoupling.DECOUPLED_SAME_STEP
+            and self.inference_config.use_cache
+            and not action_only_rollout
+        ):
             deferred_video_input = _prepare_single_stream_input(
                 latents=predicted_latents.to(device=video_device, dtype=video_dtype),
                 timestep=0.0,
@@ -3878,6 +3949,7 @@ class MoTPolicyVariant(PolicyVariant):
                 "condition_mode": str(self.config.condition_mode),
                 "current_block_coupling": current_block_coupling.value,
                 "generation_frame_start": int(current_action_frame_start),
+                "mot_action_only_rollout": bool(action_only_rollout),
                 "mot_generalist_mode_text_token": (
                     MoTGeneralistTrainingMode.JOINT.value
                     if int(getattr(runtime_state, "generalist_mode_text_token_count", 0)) > 0
@@ -3909,6 +3981,7 @@ class MoTPolicyVariant(PolicyVariant):
                         else int(condition_frame_start_override_raw)
                     ),
                     "current_block_coupling": current_block_coupling.value,
+                    "mot_action_only_rollout": bool(action_only_rollout),
                     "video_commit_before_action": bool(video_commit_before_action),
                     "action_visible_video_end_frame": int(action_visible_video_end_frame),
                     "inference_window_size": int(inference_window_size),

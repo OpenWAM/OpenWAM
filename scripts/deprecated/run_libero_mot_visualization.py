@@ -119,6 +119,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--mot-action-only-rollout",
+        action="store_true",
+        help=(
+            "Skip imagined-video denoising during MoT rollout and produce actions only. "
+            "Supported only for action_then_video and decoupled_same_step couplings."
+        ),
+    )
+    parser.add_argument(
         "--frontend-encode-mode",
         choices=(DEPRECATED_FRONTEND_ENCODE_MODE, CURRENT_FRONTEND_ENCODE_MODE),
         default=CURRENT_FRONTEND_ENCODE_MODE,
@@ -303,6 +311,7 @@ def main() -> None:
         decode_device=decode_device,
         raw_window_frames=raw_window_frames,
         mot_inference_window_size=args.mot_inference_window_size,
+        mot_action_only_rollout=bool(args.mot_action_only_rollout),
     )
     component_report["mot_inference_backend"] = mot_inference_backend
     component_report["checkpoint_file"] = str(checkpoint_path.resolve())
@@ -425,6 +434,7 @@ def main() -> None:
                         config=config,
                         runtime_device=runtime_device,
                         mot_inference_window_size=args.mot_inference_window_size,
+                        mot_action_only_rollout=bool(args.mot_action_only_rollout),
                     ),
                     infer_state=None if args.reset_policy_state_each_chunk else session.policy_state,
                 )
@@ -751,10 +761,13 @@ def _build_infer_context(
     config,
     runtime_device: torch.device,
     mot_inference_window_size: int | None,
+    mot_action_only_rollout: bool,
 ):
     extra: dict[str, object] = {"task_text": (prompt,), "action_device": str(action_device)}
     if mot_inference_window_size is not None:
         extra["mot_inference_window_size"] = int(mot_inference_window_size)
+    if mot_action_only_rollout:
+        extra["mot_action_only_rollout"] = True
     return PolicyInferContext(
         state=video_viz._build_state_inputs_from_obs_window(
             model_obs_window,
@@ -1080,11 +1093,17 @@ def _warmup_mot_packed_history_from_visual_outputs(
         ),
     )
     dropped_pred_latent_frames = 0
+    pending_pred_latent_frames = int(
+        getattr(runtime_state, "pending_predicted_video_frames", frame_chunk_size)
+    )
     if past_latents is None:
         base_latents = None
     else:
         past_latents = past_latents.to(device=runtime_device, dtype=runtime_dtype)
-        dropped_pred_latent_frames = min(int(frame_chunk_size), int(past_latents.shape[2]))
+        dropped_pred_latent_frames = min(
+            max(0, pending_pred_latent_frames),
+            int(past_latents.shape[2]),
+        )
         if dropped_pred_latent_frames <= 0:
             base_latents = past_latents
         elif int(getattr(policy_state, "step_index", 0)) <= 1 and dropped_pred_latent_frames >= int(past_latents.shape[2]):
@@ -1100,6 +1119,7 @@ def _warmup_mot_packed_history_from_visual_outputs(
     else:
         combined = torch.cat([base_latents, real_latents], dim=2)
     runtime_state.past_clean_latents = combined[:, :, -history_window_frames:].detach()
+    runtime_state.pending_predicted_video_frames = 0
 
     appended_action_tokens = 0
     dropped_pred_action_tokens = 0
@@ -1143,6 +1163,7 @@ def _warmup_mot_packed_history_from_visual_outputs(
             else int(runtime_state.past_clean_actions.shape[1] // _action_per_frame(config))
         ),
         "appended_action_tokens": int(appended_action_tokens),
+        "pending_pred_latent_frames_before": int(pending_pred_latent_frames),
         "dropped_pred_latent_frames": int(dropped_pred_latent_frames),
         "dropped_pred_action_tokens": int(dropped_pred_action_tokens),
         "inference_window_size": int(history_window_size),
@@ -1437,6 +1458,7 @@ def _build_component_report(
     decode_device: torch.device,
     raw_window_frames: int,
     mot_inference_window_size: int | None,
+    mot_action_only_rollout: bool,
 ) -> dict[str, object]:
     backbone = config.backbone
     policy_variant = pipeline.policy_variant
@@ -1451,6 +1473,7 @@ def _build_component_report(
         "mot_inference_window_size": (
             None if mot_inference_window_size is None else int(mot_inference_window_size)
         ),
+        "mot_action_only_rollout": bool(mot_action_only_rollout),
         "config_name": config.name,
         "policy_variant_class": policy_variant.__class__.__name__,
         "runtime_mode": str(policy_variant.config.runtime_mode),
