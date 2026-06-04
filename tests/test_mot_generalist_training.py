@@ -735,17 +735,18 @@ def test_generalist_training_rejects_multi_sample_batches() -> None:
         )
 
 
-def test_m5_generalist_conditional_local_window_covers_full_previous_video_action_chunk() -> None:
+def test_m5_generalist_conditional_local_window_sees_one_previous_video_frame_only() -> None:
     profile = build_mot_packed_coupling_attention_profile(
         num_video_frames=8,
         video_tokens_per_frame=1,
         num_action_frames=8,
         action_tokens_per_frame=1,
-        chunk_size_frames=4,
+        chunk_size_frames=1,
         attention_window_size=3,
         current_block_coupling=CurrentBlockCoupling.JOINT,
         device=torch.device("cpu"),
         build_dense_masks=True,
+        history_stream_visibility=ParallelHistoryStreamVisibility.VIDEO_ONLY,
     )
     assert profile.self_attention_mask is not None
     mask = profile.self_attention_mask
@@ -754,12 +755,17 @@ def test_m5_generalist_conditional_local_window_covers_full_previous_video_actio
     current_video_noisy_frame4 = 4
     current_video_clean_frame4 = latent_tokens + 4
     current_action_noisy_frame4 = 2 * latent_tokens + 4
-    previous_video_clean_frame0 = latent_tokens + 0
-    previous_action_clean_frame0 = 2 * latent_tokens + action_tokens + 0
+    previous_video_clean_frame3 = latent_tokens + 3
+    older_video_clean_frame2 = latent_tokens + 2
+    previous_action_clean_frame3 = 2 * latent_tokens + action_tokens + 3
     current_action_clean_frame4 = 2 * latent_tokens + action_tokens + 4
 
-    assert mask[current_action_noisy_frame4, previous_video_clean_frame0]
-    assert mask[current_action_noisy_frame4, previous_action_clean_frame0]
+    assert mask[current_video_noisy_frame4, previous_video_clean_frame3]
+    assert not mask[current_video_noisy_frame4, older_video_clean_frame2]
+    assert not mask[current_video_noisy_frame4, previous_action_clean_frame3]
+    assert mask[current_action_noisy_frame4, previous_video_clean_frame3]
+    assert not mask[current_action_noisy_frame4, older_video_clean_frame2]
+    assert not mask[current_action_noisy_frame4, previous_action_clean_frame3]
     assert not mask[current_video_noisy_frame4, current_video_clean_frame4]
     assert not mask[current_action_noisy_frame4, current_action_clean_frame4]
 
@@ -778,6 +784,7 @@ def test_forced_action_conditioned_video_zeros_action_loss() -> None:
     assert metrics["mot_generalist/action_loss_active"].item() == 0.0
     assert metrics["mot_generalist/latent_loss_active"].item() == 1.0
     assert output.policy_output.aux["mot_generalist_text_dropped"] is True
+    assert 1 <= output.policy_output.aux["sampled_chunk_size"] <= 2
     assert output.policy_output.aux["sampled_window_size"] == 3
     assert metrics["weighted_action_diffusion_loss"].item() == pytest.approx(0.0, abs=1e-6)
     assert metrics["weighted_video_diffusion_loss"].item() > 0.0
@@ -1004,6 +1011,114 @@ def test_m5_legacy_prefix_contract_prepends_video_only_condition(
     assert output.decoder_output.aux["predicted_latents"].shape == (1, 48, 5, 8, 8)
 
 
+def test_m5_legacy_prefix_fdm_shifts_explicit_video_loss_range(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import open_wam.models.policy_variants.mot.variant as mot_variant_module
+
+    from open_wam.configs import (
+        ActionSchemaConfig,
+        ExperimentConfig,
+        InferenceConfig,
+        MoTActionDecoderConfig,
+        MoTActionExpertInitMode,
+        MoTPolicyConfig as TopLevelMoTPolicyConfig,
+        RobotWinDataConfig,
+    )
+    from open_wam.models.policy_variants.contracts import PolicyTrainBatch
+    from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
+    from open_wam.pipelines import build_variant_pipeline_from_config
+
+    forced_probs = {mode: 0.0 for mode in MoTGeneralistTrainingMode}
+    forced_probs[MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO] = 1.0
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=6,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=6, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=TopLevelMoTPolicyConfig(
+            hidden_size=32,
+            runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.JOINT,
+            video_prefix_frames=1,
+            num_action_layers=1,
+            action_expert_init_mode=MoTActionExpertInitMode.VIDEO_WEIGHT_COPY,
+            mot_generalist_training_mode_probs=forced_probs,
+            parallel_sequence_contract=ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
+            proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
+            context_condition_latent_source=ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
+            history_stream_visibility=ParallelHistoryStreamVisibility.VIDEO_ONLY,
+            use_condition_latents=True,
+            require_condition_latents=True,
+            noisy_video_condition_prob=0.0,
+            joint_timestep_coupling=JointTimestepCoupling.INDEPENDENT,
+        ),
+        action_decoder=MoTActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=6),
+        training=TrainingConfig(
+            chunk_size=2,
+            window_size=8,
+            enabled_objectives=("action", "latent"),
+            action_loss_weight=1.0,
+            latent_loss_weight=1.0,
+        ),
+        inference=InferenceConfig(frame_chunk_size=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    video_latents = torch.randn(1, 48, 6, 4, 4)
+    condition_latents = torch.full_like(video_latents, 3.0)
+    batch = PolicyTrainBatch(
+        actions=torch.randn(1, 6, 4),
+        state=torch.randn(1, 4),
+        extra={
+            "condition_latents": condition_latents,
+            "metadata": {
+                "latent_loss_frame_start": 2,
+                "latent_loss_frame_end": 5,
+                "action_loss_frame_start": 2,
+                "action_loss_frame_end": 5,
+            },
+            "proprio_context_frames": torch.randn(1, 6, 4),
+            "proprio_context_frames_mask": torch.ones(1, 6, 4),
+        },
+    )
+
+    def fake_forward_mot_packed_coupling_denoise(**kwargs):
+        return torch.zeros_like(kwargs["noisy_video_latents"]), torch.zeros_like(kwargs["packed_action_pre"].tokens)
+
+    monkeypatch.setattr(
+        mot_variant_module,
+        "forward_mot_packed_coupling_denoise",
+        fake_forward_mot_packed_coupling_denoise,
+    )
+
+    output = pipeline.forward_train_from_latents(
+        video_latents,
+        batch,
+        text_context=torch.randn(1, 5, 16),
+    )
+
+    train_artifacts = output.policy_output.aux["mot_train_artifacts"]
+    mask = train_artifacts.video.future_loss_mask.flatten()
+    expected = torch.tensor([0, 0, 0, 1, 1, 1, 0], device=mask.device, dtype=mask.dtype)
+
+    torch.testing.assert_close(mask, expected)
+    assert output.policy_output.aux["mot_generalist_training_mode"] == "action_conditioned_video"
+    assert output.decoder_output.metrics["mot_generalist/action_loss_active"].item() == 0.0
+
+
 def test_forced_video_conditioned_action_zeros_video_loss() -> None:
     pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
         MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION
@@ -1018,6 +1133,7 @@ def test_forced_video_conditioned_action_zeros_video_loss() -> None:
     assert metrics["mot_generalist/latent_loss_active"].item() == 0.0
     assert metrics["mot_generalist/action_loss_active"].item() == 1.0
     assert output.policy_output.aux["mot_generalist_text_dropped"] is True
+    assert 1 <= output.policy_output.aux["sampled_chunk_size"] <= 2
     assert output.policy_output.aux["sampled_window_size"] == 3
     assert metrics["weighted_video_diffusion_loss"].item() == pytest.approx(0.0, abs=1e-6)
     assert metrics["weighted_action_diffusion_loss"].item() > 0.0

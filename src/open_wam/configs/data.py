@@ -725,7 +725,7 @@ class GeneralistDynamicsMixtureConfig:
     real_video_conditioned_action_weight: float = 0.1
     counterfactual_action_conditioned_video_weight: float = 0.1
     counterfactual_video_conditioned_action_weight: float = 0.1
-    conditional_history_frames: int | None = 16
+    conditional_history_frames: int | None = None
     seed: int = 0
     length_multiplier: float = 1.0
 

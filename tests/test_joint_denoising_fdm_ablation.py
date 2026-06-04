@@ -49,6 +49,55 @@ def _load_repo_script(relative_path: str):
     return module
 
 
+class _FakeCounterfactualSim:
+    def __init__(self, env: _FakeCounterfactualEnv) -> None:
+        self.env = env
+
+    def get_state(self) -> SimpleNamespace:
+        return SimpleNamespace(flatten=lambda: np.asarray([float(self.env.state_index)], dtype=np.float64))
+
+    def set_state_from_flattened(self, value: np.ndarray) -> None:
+        self.env.set_state_from_flattened_calls += 1
+        self.env.state_index = int(np.asarray(value).reshape(-1)[0])
+
+    def forward(self) -> None:
+        pass
+
+
+class _FakeCounterfactualEnv:
+    def __init__(self) -> None:
+        self.state_index = 0
+        self.sim = _FakeCounterfactualSim(self)
+        self.reset_calls = 0
+        self.set_init_state_calls = 0
+        self.set_state_from_flattened_calls = 0
+
+    def reset(self) -> dict[str, np.ndarray]:
+        self.reset_calls += 1
+        self.state_index = 0
+        return self._get_observations()
+
+    def set_init_state(self, init_state: np.ndarray) -> dict[str, np.ndarray]:
+        self.set_init_state_calls += 1
+        self.state_index = int(np.asarray(init_state).reshape(-1)[0])
+        return self._get_observations()
+
+    def step(self, action: np.ndarray) -> tuple[dict[str, np.ndarray], float, bool, dict[str, object]]:
+        del action
+        self.state_index += 1
+        return self._get_observations(), 0.0, False, {}
+
+    def _get_observations(self) -> dict[str, np.ndarray]:
+        value = int(self.state_index)
+        return {
+            "agentview_image": np.full((4, 4, 3), value, dtype=np.uint8),
+            "robot0_eye_in_hand_image": np.full((4, 4, 3), value + 100, dtype=np.uint8),
+            "robot0_eef_pos": np.asarray([float(value), 0.0, 0.0], dtype=np.float32),
+            "robot0_eef_quat": np.asarray([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+            "robot0_gripper_qpos": np.asarray([float(value), -float(value)], dtype=np.float32),
+        }
+
+
 @dataclass(frozen=True)
 class DummyWindow:
     repo_root: str
@@ -185,6 +234,7 @@ def test_counterfactual_wan_temporal_window_formulas() -> None:
     assert _raw_window_frames_for_latents(16, action_per_frame=4) == 61
     assert _decoded_raw_frames_for_latents(4, action_per_frame=4) == 13
     assert _decoded_raw_frames_for_latents(16, action_per_frame=4) == 61
+    assert _decoded_raw_frames_for_latents(32, action_per_frame=4) == 125
 
 
 def test_counterfactual_dataset_builder_excludes_manifest_source_episodes(tmp_path: Path) -> None:
@@ -226,6 +276,196 @@ def test_counterfactual_dataset_builder_excludes_manifest_source_episodes(tmp_pa
 
     assert excluded == {1, 3}
     assert [episode.dataset_episode_index for episode in selected] == [2, 4]
+
+
+def test_counterfactual_dataset_builder_samples_random_t0_with_partial_context() -> None:
+    builder = _load_repo_script("scripts/build_libero_fdm_counterfactual_demo_dataset.py")
+
+    first = builder._select_t0_frames(
+        total_video_frames=24,
+        horizon_frames=8,
+        context_window_frames=16,
+        t0_fractions=(0.2, 0.4, 0.6, 0.8),
+        sampling_mode=builder.T0SamplingMode.UNIFORM_RANDOM,
+        samples_per_episode=5,
+        min_context_frames=1,
+        min_separation_frames=2,
+        seed=17,
+        episode_index=3,
+    )
+    second = builder._select_t0_frames(
+        total_video_frames=24,
+        horizon_frames=8,
+        context_window_frames=16,
+        t0_fractions=(0.2, 0.4, 0.6, 0.8),
+        sampling_mode=builder.T0SamplingMode.UNIFORM_RANDOM,
+        samples_per_episode=5,
+        min_context_frames=1,
+        min_separation_frames=2,
+        seed=17,
+        episode_index=3,
+    )
+
+    assert first == second
+    assert len(first) == 5
+    frames = [frame for requested, frame in first]
+    assert all(requested is None for requested, _ in first)
+    assert frames == sorted(frames)
+    assert min(frames) >= 1
+    assert max(frames) <= 15
+    assert min(abs(left - right) for left, right in zip(frames, frames[1:])) >= 2
+    assert any(frame < 16 for frame in frames)
+
+
+def test_counterfactual_dataset_builder_relaxes_random_t0_separation_for_short_episodes() -> None:
+    builder = _load_repo_script("scripts/build_libero_fdm_counterfactual_demo_dataset.py")
+
+    selected = builder._select_t0_frames(
+        total_video_frames=50,
+        horizon_frames=32,
+        context_window_frames=16,
+        t0_fractions=(0.2, 0.4, 0.6, 0.8),
+        sampling_mode=builder.T0SamplingMode.UNIFORM_RANDOM,
+        samples_per_episode=4,
+        min_context_frames=1,
+        min_separation_frames=8,
+        seed=0,
+        episode_index=12,
+    )
+
+    frames = [frame for requested, frame in selected]
+    assert all(requested is None for requested, _ in selected)
+    assert len(frames) == 4
+    assert len(set(frames)) == 4
+    assert frames == sorted(frames)
+    assert min(frames) >= 1
+    assert max(frames) <= 17
+    assert min(abs(left - right) for left, right in zip(frames, frames[1:])) < 8
+
+
+def test_counterfactual_dataset_builder_random_t0_count_and_defaults() -> None:
+    builder = _load_repo_script("scripts/build_libero_fdm_counterfactual_demo_dataset.py")
+    args = builder._parse_args(
+        [
+            "--t0-sampling-mode",
+            "uniform_random",
+            "--t0-samples-per-episode",
+            "7",
+            "--context-window-frames",
+            "16",
+        ]
+    )
+
+    assert builder._resolve_t0_count(
+        args,
+        t0_fractions=(0.2, 0.4, 0.6, 0.8),
+        mode=builder.T0SamplingMode.UNIFORM_RANDOM,
+    ) == 7
+    assert builder._resolve_t0_min_context_frames(args, mode=builder.T0SamplingMode.UNIFORM_RANDOM) == 1
+
+
+def test_counterfactual_dataset_builder_defaults_to_16_context_32_future() -> None:
+    builder = _load_repo_script("scripts/build_libero_fdm_counterfactual_demo_dataset.py")
+
+    args = builder._parse_args([])
+
+    assert args.context_window_frames == 16
+    assert args.horizon_frames == 32
+    assert args.segment_frames == 48
+
+
+def test_counterfactual_dataset_builder_writes_canonical_view_and_state_payload(tmp_path: Path) -> None:
+    builder = _load_repo_script("scripts/build_libero_fdm_counterfactual_demo_dataset.py")
+    obs = {
+        "agentview_image": np.full((4, 4, 3), 10, dtype=np.uint8),
+        "robot0_eye_in_hand_image": np.full((4, 4, 3), 20, dtype=np.uint8),
+        "robot0_eef_pos": np.asarray([1.0, 2.0, 3.0], dtype=np.float32),
+        "robot0_eef_quat": np.asarray([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        "robot0_gripper_qpos": np.asarray([0.1, 0.2], dtype=np.float32),
+    }
+    extracted = builder._extract_obs(obs)
+    sequence = builder._obs_sequence_to_payload(
+        [extracted],
+        frame_index=np.asarray([7], dtype=np.int64),
+        source_timestamps=np.arange(10, dtype=np.float64) / 60.0,
+        output_fps=60.0,
+    )
+    path = tmp_path / "sample.npz"
+
+    builder._write_counterfactual_npz(
+        path,
+        sequence=sequence,
+        extra={"future_actions": np.ones((4, 7), dtype=np.float32)},
+    )
+    payload = np.load(path)
+
+    assert set(payload.files) == {
+        "observation.images.agentview_rgb",
+        "observation.images.eye_in_hand_rgb",
+        "observation.state",
+        "frame_index",
+        "timestamp",
+        "future_actions",
+    }
+    assert payload["observation.images.agentview_rgb"].shape == (1, 4, 4, 3)
+    assert payload["observation.images.eye_in_hand_rgb"].shape == (1, 4, 4, 3)
+    np.testing.assert_allclose(payload["observation.state"][0], [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 0.1, 0.2])
+    np.testing.assert_array_equal(payload["frame_index"], [7])
+    assert payload["timestamp"].dtype == np.float32
+    np.testing.assert_allclose(payload["timestamp"], [7.0 / 60.0])
+
+
+def test_counterfactual_dataset_builder_renders_pre_action_observation_frames(tmp_path: Path) -> None:
+    builder = _load_repo_script("scripts/build_libero_fdm_counterfactual_demo_dataset.py")
+    env = _FakeCounterfactualEnv()
+    actions = np.zeros((20, 7), dtype=np.float32)
+    source_timestamps = np.arange(20, dtype=np.float32) / 60.0
+    episode = builder.SourceEpisode(
+        dataset_episode_index=0,
+        task_id=0,
+        task_text="task",
+        init_state_index=0,
+        parquet_path=tmp_path / "episode.parquet",
+    )
+
+    context = builder._render_context_at_t0(
+        env=env,
+        init_state=np.asarray([0.0], dtype=np.float32),
+        episode=episode,
+        actions=actions,
+        t0_frame=2,
+        requested_t0_fraction=None,
+        total_video_frames=5,
+        context_window_frames=2,
+        action_per_frame=4,
+        output_fps=60.0,
+        source_timestamps=source_timestamps,
+        output_root=tmp_path,
+        context_id=0,
+    )
+    context_payload = np.load(context.context_path)
+
+    np.testing.assert_array_equal(context_payload["frame_index"], np.arange(5))
+    np.testing.assert_array_equal(context_payload["observation.state"][:, 0], np.arange(5, dtype=np.float32))
+    assert context.simulator_state.tolist() == [8.0]
+    assert env.state_index == 8
+    set_init_state_calls_after_context = env.set_init_state_calls
+
+    target = builder._render_future_from_state(
+        env=env,
+        flattened_state=np.asarray([8.0], dtype=np.float64),
+        future_actions=actions[:8],
+        target_raw_frames=5,
+        start_action_index=8,
+        output_fps=60.0,
+        source_timestamps=source_timestamps,
+    )
+
+    np.testing.assert_array_equal(target.frame_index, np.arange(8, 13))
+    np.testing.assert_array_equal(target.state[:, 0], np.arange(8, 13, dtype=np.float32))
+    assert env.state_index == 12
+    assert env.set_init_state_calls == set_init_state_calls_after_context
+    assert env.set_state_from_flattened_calls == 1
 
 
 def test_counterfactual_dataset_builder_plan_only_overwrite_does_not_delete_before_validation(tmp_path: Path) -> None:
@@ -341,6 +581,64 @@ def test_counterfactual_encoder_uses_reference_asset_streaming_encode() -> None:
     _, placements, reset_cache = assets.calls[0]
     assert reset_cache is True
     assert tuple(placement.canonical_name for placement in placements) == ("image", "wrist_image")
+
+
+def test_counterfactual_encoder_loads_canonical_separate_views(tmp_path: Path) -> None:
+    encoder = _load_repo_script("scripts/encode_libero_fdm_counterfactual_dataset.py")
+    path = tmp_path / "payload.npz"
+    np.savez(
+        path,
+        **{
+            "observation.images.agentview_rgb": np.zeros((2, 128, 128, 3), dtype=np.uint8),
+            "observation.images.eye_in_hand_rgb": np.ones((2, 128, 128, 3), dtype=np.uint8),
+        },
+    )
+
+    rgb = encoder._load_counterfactual_rgb(np.load(path), legacy_key="target_rgb")
+
+    assert rgb.shape == (2, 128, 256, 3)
+    assert np.all(rgb[:, :, :128] == 0)
+    assert np.all(rgb[:, :, 128:] == 1)
+
+
+def test_counterfactual_encoder_builds_single_frame_condition_latents() -> None:
+    encoder = _load_repo_script("scripts/encode_libero_fdm_counterfactual_dataset.py")
+
+    assert encoder._condition_source_frame_indices(
+        raw_frame_count=17,
+        latent_frames=5,
+        source_frame_offset=-1,
+    ) == [0, 4, 8, 12, 15]
+
+    class FakeAssets:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def encode_video(self, video, *, placements=None, reset_cache=True):
+            self.calls.append((video.detach().clone(), placements, reset_cache))
+            values = video[:, :, 0].mean(dim=(1, 2, 3))
+            return values[:, None, None, None, None].expand(video.shape[0], 2, 1, 2, 4)
+
+    rgb = np.zeros((17, 128, 256, 3), dtype=np.uint8)
+    rgb[:, :, :, 0] = np.arange(17, dtype=np.uint8)[:, None, None]
+    assets = FakeAssets()
+
+    latents = encoder._encode_condition_latents_for_rgb(
+        assets,
+        rgb,
+        latent_frames=5,
+        source_frame_offset=-1,
+        condition_batch_size=2,
+        device=torch.device("cpu"),
+        output_dtype=torch.float32,
+    )
+
+    assert latents.shape == (2, 5, 2, 4)
+    assert len(assets.calls) == 3
+    torch.testing.assert_close(
+        latents[0, :, 0, 0],
+        torch.tensor([0, 4, 8, 12, 15], dtype=torch.float32) / (3.0 * 255.0),
+    )
 
 
 def test_counterfactual_drops_text_for_fdm_mode_even_without_flag() -> None:

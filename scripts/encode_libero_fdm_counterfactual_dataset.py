@@ -15,6 +15,10 @@ from open_wam.ablations.joint_denoising_fdm.cli import (
     DEFAULT_CHECKPOINT,
     _repair_runtime_config_for_local_eval,
 )
+from open_wam.data.latent_temporal import (
+    CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET,
+    latent_raw_boundaries,
+)
 from open_wam.data.raw_video import ViewPlacement
 from open_wam.models.visual_tower.reference_assets import LingbotReferenceAssets
 from open_wam.utils import (
@@ -27,8 +31,13 @@ from open_wam.utils import (
 
 DEFAULT_DATASET_ROOT = (
     "/path/to/private-resource"
-    "libero10_fdm_counterfactual_coverage_10000_h16_ctx16_seed0_sharded"
+    "libero10_fdm_counterfactual_coverage_10000_h32_ctx16_random_t0_seed0_sharded"
 )
+LIBERO_OBS_KEYS = (
+    "observation.images.agentview_rgb",
+    "observation.images.eye_in_hand_rgb",
+)
+CONDITION_SOURCE_FRAME_POLICY = CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -67,6 +76,10 @@ def main(argv: list[str] | None = None) -> None:
         "device": str(device),
         "output_dtype": str(output_dtype).replace("torch.", ""),
         "batch_size": int(args.batch_size),
+        "condition_latents": not bool(args.skip_condition_latents),
+        "condition_source_frame_offset": int(args.condition_source_frame_offset),
+        "condition_source_frame_policy": CONDITION_SOURCE_FRAME_POLICY,
+        "condition_batch_size": int(args.condition_batch_size),
         "shards": [shard.name for shard in shard_roots],
         "source_summary": _read_optional_json(dataset_root / "aggregate_summary.json")
         or _read_optional_json(dataset_root / "summary.json"),
@@ -85,6 +98,8 @@ def main(argv: list[str] | None = None) -> None:
             device=device,
             output_dtype=output_dtype,
             batch_size=args.batch_size,
+            condition_source_frame_offset=None if args.skip_condition_latents else int(args.condition_source_frame_offset),
+            condition_batch_size=int(args.condition_batch_size),
             overwrite=bool(args.overwrite),
             max_contexts=args.max_contexts,
         )
@@ -97,6 +112,8 @@ def main(argv: list[str] | None = None) -> None:
             device=device,
             output_dtype=output_dtype,
             batch_size=args.batch_size,
+            condition_source_frame_offset=None if args.skip_condition_latents else int(args.condition_source_frame_offset),
+            condition_batch_size=int(args.condition_batch_size),
             overwrite=bool(args.overwrite),
             max_samples=args.max_samples,
         )
@@ -205,6 +222,8 @@ def _encode_shard_contexts(
     device: torch.device,
     output_dtype: torch.dtype,
     batch_size: int,
+    condition_source_frame_offset: int | None,
+    condition_batch_size: int,
     overwrite: bool,
     max_contexts: int | None,
 ) -> list[dict[str, Any]]:
@@ -220,7 +239,7 @@ def _encode_shard_contexts(
         for row in batch:
             context_path = shard_root / str(row["context_path"])
             payload = np.load(context_path)
-            rgb_batch.append(payload["context_rgb"])
+            rgb_batch.append(_load_counterfactual_rgb(payload, legacy_key="context_rgb"))
             out_paths.append(output_dir / f"context_{int(row['context_id']):06d}_latents.pt")
         latents = _encode_rgb_batch(
             assets,
@@ -228,16 +247,37 @@ def _encode_shard_contexts(
             device=device,
             output_dtype=output_dtype,
         )
-        for row, out_path, latent in zip(batch, out_paths, latents, strict=True):
-            if overwrite or not out_path.exists():
-                torch.save(
-                    {
-                        "context_id": int(row["context_id"]),
-                        "video_latents": latent.contiguous(),
-                        "source_context_path": str(shard_root / str(row["context_path"])),
-                    },
-                    out_path,
+        for batch_index, (row, out_path, latent) in enumerate(zip(batch, out_paths, latents, strict=True)):
+            rgb = rgb_batch[batch_index]
+            condition_latents = (
+                _encode_condition_latents_for_rgb(
+                    assets,
+                    rgb,
+                    latent_frames=int(latent.shape[1]),
+                    source_frame_offset=int(condition_source_frame_offset),
+                    condition_batch_size=int(condition_batch_size),
+                    device=device,
+                    output_dtype=output_dtype,
                 )
+                if condition_source_frame_offset is not None
+                else None
+            )
+            if overwrite or not out_path.exists():
+                payload = {
+                    "context_id": int(row["context_id"]),
+                    "video_latents": latent.contiguous(),
+                    "source_context_path": str(shard_root / str(row["context_path"])),
+                }
+                if condition_latents is not None:
+                    payload.update(
+                        {
+                            "condition_video_latents": condition_latents.contiguous(),
+                            "condition_source_frame_offset": int(condition_source_frame_offset),
+                            "condition_source_frame_policy": CONDITION_SOURCE_FRAME_POLICY,
+                        }
+                    )
+                torch.save(payload, out_path)
+            condition_shape = None if condition_latents is None else list(condition_latents.shape)
             encoded_rows.append(
                 {
                     **row,
@@ -245,6 +285,7 @@ def _encode_shard_contexts(
                     "context_latent_path": str(out_path.relative_to(shard_output)),
                     "context_video_latent_shape": list(latent.shape),
                     "context_video_latent_dtype": str(latent.dtype).replace("torch.", ""),
+                    "condition_video_latent_shape": condition_shape,
                 }
             )
     return encoded_rows
@@ -258,6 +299,8 @@ def _encode_shard_samples(
     device: torch.device,
     output_dtype: torch.dtype,
     batch_size: int,
+    condition_source_frame_offset: int | None,
+    condition_batch_size: int,
     overwrite: bool,
     max_samples: int | None,
 ) -> list[dict[str, Any]]:
@@ -273,7 +316,7 @@ def _encode_shard_samples(
         for row in batch:
             sample_path = shard_root / str(row["sample_path"])
             payload = np.load(sample_path)
-            rgb_batch.append(payload["target_rgb"])
+            rgb_batch.append(_load_counterfactual_rgb(payload, legacy_key="target_rgb"))
             out_paths.append(output_dir / f"sample_{int(row['sample_id']):06d}_latents.pt")
         latents = _encode_rgb_batch(
             assets,
@@ -281,17 +324,38 @@ def _encode_shard_samples(
             device=device,
             output_dtype=output_dtype,
         )
-        for row, out_path, latent in zip(batch, out_paths, latents, strict=True):
-            if overwrite or not out_path.exists():
-                torch.save(
-                    {
-                        "sample_id": int(row["sample_id"]),
-                        "context_id": int(row["context_id"]),
-                        "target_video_latents": latent.contiguous(),
-                        "source_sample_path": str(shard_root / str(row["sample_path"])),
-                    },
-                    out_path,
+        for batch_index, (row, out_path, latent) in enumerate(zip(batch, out_paths, latents, strict=True)):
+            rgb = rgb_batch[batch_index]
+            condition_latents = (
+                _encode_condition_latents_for_rgb(
+                    assets,
+                    rgb,
+                    latent_frames=int(latent.shape[1]),
+                    source_frame_offset=int(condition_source_frame_offset),
+                    condition_batch_size=int(condition_batch_size),
+                    device=device,
+                    output_dtype=output_dtype,
                 )
+                if condition_source_frame_offset is not None
+                else None
+            )
+            if overwrite or not out_path.exists():
+                payload = {
+                    "sample_id": int(row["sample_id"]),
+                    "context_id": int(row["context_id"]),
+                    "target_video_latents": latent.contiguous(),
+                    "source_sample_path": str(shard_root / str(row["sample_path"])),
+                }
+                if condition_latents is not None:
+                    payload.update(
+                        {
+                            "target_condition_video_latents": condition_latents.contiguous(),
+                            "condition_source_frame_offset": int(condition_source_frame_offset),
+                            "condition_source_frame_policy": CONDITION_SOURCE_FRAME_POLICY,
+                        }
+                    )
+                torch.save(payload, out_path)
+            condition_shape = None if condition_latents is None else list(condition_latents.shape)
             encoded_rows.append(
                 {
                     **row,
@@ -299,6 +363,7 @@ def _encode_shard_samples(
                     "target_latent_path": str(out_path.relative_to(shard_output)),
                     "target_video_latent_shape": list(latent.shape),
                     "target_video_latent_dtype": str(latent.dtype).replace("torch.", ""),
+                    "target_condition_video_latent_shape": condition_shape,
                 }
             )
     return encoded_rows
@@ -319,6 +384,67 @@ def _encode_rgb_batch(
     return [latents[index] for index in range(latents.shape[0])]
 
 
+def _encode_condition_latents_for_rgb(
+    assets: LingbotReferenceAssets,
+    rgb: np.ndarray,
+    *,
+    latent_frames: int,
+    source_frame_offset: int,
+    condition_batch_size: int,
+    device: torch.device,
+    output_dtype: torch.dtype,
+) -> torch.Tensor:
+    array = _as_uint8(np.asarray(rgb))
+    if array.ndim != 4 or array.shape[1] != 128 or array.shape[2] != 256 or array.shape[-1] != 3:
+        raise ValueError(f"Expected LIBERO side-by-side RGB shape [T,128,256,3], got {array.shape}.")
+    source_indices = _condition_source_frame_indices(
+        raw_frame_count=int(array.shape[0]),
+        latent_frames=int(latent_frames),
+        source_frame_offset=int(source_frame_offset),
+    )
+    encoded_chunks: list[torch.Tensor] = []
+    step = max(1, int(condition_batch_size))
+    for start in range(0, len(source_indices), step):
+        frames = array[np.asarray(source_indices[start : start + step], dtype=np.int64)]
+        video = (
+            torch.from_numpy(frames)
+            .permute(0, 3, 1, 2)
+            .unsqueeze(2)
+            .to(device=device, dtype=torch.float32)
+            / 255.0
+        )
+        latents = _encode_libero_side_by_side_video(assets, video, device=device)
+        encoded_chunks.append(latents[:, :, 0].detach().to(device="cpu", dtype=output_dtype))
+    return torch.cat(encoded_chunks, dim=0).permute(1, 0, 2, 3).contiguous()
+
+
+def _condition_source_frame_indices(
+    *,
+    raw_frame_count: int,
+    latent_frames: int,
+    source_frame_offset: int,
+) -> list[int]:
+    raw_frame_count = int(raw_frame_count)
+    latent_frames = int(latent_frames)
+    if raw_frame_count <= 0 or latent_frames <= 0:
+        raise ValueError(
+            "Expected positive raw and latent frame counts, "
+            f"got raw_frame_count={raw_frame_count}, latent_frames={latent_frames}."
+        )
+    boundaries = latent_raw_boundaries(
+        raw_frame_count=raw_frame_count,
+        latent_num_frames=latent_frames,
+        layout="wan_causal_stride4",
+    )
+    indices: list[int] = []
+    for latent_index in range(latent_frames):
+        boundary_index = min(int(latent_index) + 1, len(boundaries) - 1)
+        raw_position = min(int(boundaries[boundary_index]), raw_frame_count - 1)
+        raw_position = max(0, min(raw_position + int(source_frame_offset), raw_frame_count - 1))
+        indices.append(raw_position)
+    return indices
+
+
 def _stack_libero_side_by_side_rgb(rgb_batch: list[np.ndarray], *, device: torch.device) -> torch.Tensor:
     arrays = []
     for rgb in rgb_batch:
@@ -332,6 +458,24 @@ def _stack_libero_side_by_side_rgb(rgb_batch: list[np.ndarray], *, device: torch
         arrays.append(array)
     stacked = np.stack(arrays, axis=0)
     return torch.from_numpy(stacked).permute(0, 4, 1, 2, 3).to(device=device, dtype=torch.float32) / 255.0
+
+
+def _load_counterfactual_rgb(payload: np.lib.npyio.NpzFile, *, legacy_key: str) -> np.ndarray:
+    if legacy_key in payload.files:
+        return np.asarray(payload[legacy_key])
+    missing = [key for key in LIBERO_OBS_KEYS if key not in payload.files]
+    if missing:
+        raise KeyError(
+            f"Counterfactual RGB payload has neither legacy key {legacy_key!r} nor canonical view keys; "
+            f"missing={missing}."
+        )
+    left = _as_uint8(np.asarray(payload[LIBERO_OBS_KEYS[0]]))
+    right = _as_uint8(np.asarray(payload[LIBERO_OBS_KEYS[1]]))
+    if left.ndim != 4 or right.ndim != 4:
+        raise ValueError(f"Expected canonical camera videos [T,H,W,3], got {left.shape} and {right.shape}.")
+    if left.shape[0] != right.shape[0] or left.shape[1:3] != right.shape[1:3]:
+        raise ValueError(f"Expected matching canonical camera videos, got {left.shape} and {right.shape}.")
+    return np.concatenate([left, right], axis=2)
 
 
 def _encode_libero_side_by_side_video(
@@ -458,6 +602,26 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--reference-assets-device-policy", default="runtime")
     parser.add_argument("--output-dtype", default="float16", choices=("float32", "float16", "bfloat16"))
     parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument(
+        "--condition-source-frame-offset",
+        type=int,
+        default=-1,
+        help="Source-frame offset used for explicit single-frame condition latents.",
+    )
+    parser.add_argument(
+        "--condition-batch-size",
+        type=int,
+        default=16,
+        help="Single-frame condition videos per VAE encode call.",
+    )
+    parser.add_argument(
+        "--skip-condition-latents",
+        action="store_true",
+        help=(
+            "Only encode context/target video latents. This is not valid for current "
+            "M5 legacy-prefix GJD configs that use condition_source_frame_offset=-1."
+        ),
+    )
     parser.add_argument("--shards", default=None, help="Comma-separated shard directory names. Defaults to all shards.")
     parser.add_argument("--max-contexts", type=int, default=None)
     parser.add_argument("--max-samples", type=int, default=None)
@@ -465,6 +629,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.batch_size <= 0:
         parser.error("--batch-size must be positive.")
+    if args.condition_batch_size <= 0:
+        parser.error("--condition-batch-size must be positive.")
     return args
 
 

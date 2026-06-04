@@ -1925,6 +1925,7 @@ class MoTPolicyVariant(PolicyVariant):
                 "MoT non_joint_two_stream packed training requires "
                 "`sampled_chunk_size` resolvable from the batch metadata or full-segment fallback, got None."
             )
+        history_stream_visibility = self._resolve_history_stream_visibility()
 
         sampled_generalist_mode: MoTGeneralistTrainingMode | None = None
         forced_generalist_mode, metadata_drop_text, generalist_source = _resolve_mot_generalist_training_metadata(
@@ -2010,7 +2011,19 @@ class MoTPolicyVariant(PolicyVariant):
         )
         if prefix_condition_frames > 0:
             future_loss_mask.zero_()
-            future_loss_mask[:, :, prefix_condition_frames:] = 1.0
+            explicit_video_loss_range = self._resolve_train_loss_frame_range(
+                batch=prepared_inputs.batch,
+                observed_num_frames=target_num_video_frames,
+                start_key="latent_loss_frame_start",
+                end_key="latent_loss_frame_end",
+            )
+            if explicit_video_loss_range is None:
+                future_loss_mask[:, :, prefix_condition_frames:] = 1.0
+            else:
+                loss_frame_start, loss_frame_end = explicit_video_loss_range
+                shifted_start = int(prefix_condition_frames) + int(loss_frame_start)
+                shifted_end = int(prefix_condition_frames) + int(loss_frame_end)
+                future_loss_mask[:, :, shifted_start:shifted_end] = 1.0
         action_artifacts = build_frame_aligned_action_flow_match_train_artifacts(
             prepared_inputs.batch.actions,
             effective_action_mask,
@@ -2073,13 +2086,12 @@ class MoTPolicyVariant(PolicyVariant):
                 clean_action_condition_mask=clean_action_condition_mask,
             )
             if generalist_semantics.is_conditional:
-                # Match the M1 GJD conditional contract: FDM/IDM are local
-                # dynamics probes. Keep real tokens intact, but restrict K/V
-                # visibility to one immediate history chunk through the packed
-                # attention window.
+                # FDM/IDM keep the sampled GJD chunk geometry, but restrict
+                # clean history to the immediately previous video chunk.
                 sampled_window_size = generalist_semantics.attention_window_size(
                     fallback_window_size=sampled_window_size,
                 )
+                history_stream_visibility = ParallelHistoryStreamVisibility.VIDEO_ONLY
 
         packed_action_tokens = torch.cat([noisy_actions, clean_actions], dim=1)
         action_hidden_proprio_state = self._legacy_prefix_action_hidden_proprio_state(
@@ -2190,7 +2202,7 @@ class MoTPolicyVariant(PolicyVariant):
             current_block_coupling=current_block_coupling,
             chunk_origin_frame=chunk_origin_frame,
             action_context_mask=clean_action_condition_mask,
-            history_stream_visibility=self._resolve_history_stream_visibility().value,
+            history_stream_visibility=history_stream_visibility.value,
             prefix_condition_frames=prefix_condition_frames,
         )
         packed_video_hidden_context = (

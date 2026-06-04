@@ -42,6 +42,7 @@ from open_wam.models.common.flow_noise_plan import (
     sample_timestep_values as sample_shared_timestep_values,
 )
 from open_wam.models.common.joint_conditioning import (
+    generalist_joint_conditioning_chunk_size,
     generalist_joint_conditioning_window_size,
     is_conditional_joint_conditioning_mode,
     resolve_generalist_joint_conditioning_semantics,
@@ -746,12 +747,13 @@ def _apply_generalist_joint_denoise_training_mode(
 
     artifacts.input_dict["latent_dict"] = latent_dict
     artifacts.input_dict["action_dict"] = action_dict
-    # FDM/IDM should be local dynamics probes, not trajectory memorization
-    # tasks. Restrict K/V visibility to one immediate history chunk through the
-    # existing attention window instead of zeroing real tokens.
+    # Conditional FDM/IDM keep the sampled GJD chunk geometry while restricting
+    # clean history to the immediately previous video chunk.
     artifacts.input_dict["window_size"] = semantics.attention_window_size(
         fallback_window_size=int(artifacts.input_dict["window_size"]),
     )
+    if semantics.is_conditional:
+        artifacts.input_dict["history_stream_visibility"] = ParallelHistoryStreamVisibility.VIDEO_ONLY.value
     artifacts.input_dict["generalist_conditional_history_chunks"] = int(semantics.conditional_history_chunks)
     artifacts.input_dict["variant_profile"] = policy_config.variant_profile.value
     artifacts.input_dict["generalist_training_paradigm"] = policy_config.generalist_training_paradigm.value
@@ -1906,6 +1908,38 @@ def _window_size_for_generalist_conditioning(
     )
 
 
+def _chunk_size_for_generalist_conditioning(
+    mode: JointDenoiseTrainingMode | str,
+    *,
+    fallback_chunk_size: int,
+) -> int:
+    return generalist_joint_conditioning_chunk_size(
+        mode,
+        joint_mode=JointDenoiseTrainingMode.JOINT,
+        action_conditioned_video_mode=JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+        video_conditioned_action_mode=JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
+        fallback_chunk_size=fallback_chunk_size,
+    )
+
+
+def _history_stream_visibility_for_generalist_conditioning(
+    mode: JointDenoiseTrainingMode | str,
+    policy_config: ParallelStreamPolicyConfig,
+) -> ParallelHistoryStreamVisibility:
+    if _is_conditional_joint_denoise_mode(mode):
+        return ParallelHistoryStreamVisibility.VIDEO_ONLY
+    return resolve_parallel_history_stream_visibility(policy_config)
+
+
+def _prefix_visibility_mode_for_generalist_conditioning(
+    mode: JointDenoiseTrainingMode | str,
+    policy_config: ParallelStreamPolicyConfig,
+) -> str:
+    if _is_conditional_joint_denoise_mode(mode):
+        return "video_history_only"
+    return _prefix_visibility_mode_for_policy(policy_config)
+
+
 def _select_conditional_warmup_history_suffix(
     *,
     video_latents: torch.Tensor,
@@ -1916,21 +1950,40 @@ def _select_conditional_warmup_history_suffix(
 ) -> tuple[torch.Tensor, torch.Tensor, int, int]:
     if not _is_conditional_joint_denoise_mode(mode):
         return video_latents, action_latents, int(frame_start), 0
-    retained_frames = max(1, int(frame_chunk_size))
-    video_frames = int(video_latents.shape[2])
-    action_frames = int(action_latents.shape[2])
-    observed_frames = max(video_frames, action_frames)
-    if observed_frames <= retained_frames:
-        return video_latents, action_latents, int(frame_start), 0
-    dropped_frames = int(observed_frames - retained_frames)
-    video_drop = max(0, video_frames - retained_frames)
-    action_drop = max(0, action_frames - retained_frames)
+    available_frames = min(int(video_latents.shape[2]), int(action_latents.shape[2]))
+    retained_frames = min(max(1, int(frame_chunk_size)), available_frames)
+    if retained_frames <= 0:
+        return (
+            video_latents[:, :, :0],
+            action_latents[:, :, :0],
+            int(frame_start),
+            0,
+        )
+    dropped_frames = available_frames - retained_frames
     return (
-        video_latents[:, :, video_drop:].contiguous(),
-        action_latents[:, :, action_drop:].contiguous(),
-        int(frame_start) + dropped_frames,
-        dropped_frames,
+        video_latents[:, :, -retained_frames:].contiguous(),
+        action_latents[:, :, -retained_frames:].contiguous(),
+        int(frame_start) + int(dropped_frames),
+        int(dropped_frames),
     )
+
+
+def _slice_conditioning_chunk(
+    value: torch.Tensor | None,
+    *,
+    target_frames: int,
+    source: str,
+) -> torch.Tensor | None:
+    if value is None:
+        return None
+    observed_frames = int(value.shape[2])
+    if observed_frames == target_frames:
+        return value
+    if observed_frames < target_frames:
+        raise ValueError(
+            f"{source} provides {observed_frames} frames but conditional GJD rollout needs {target_frames}."
+        )
+    return value[:, :, :target_frames].contiguous()
 
 
 def _uses_generalist_mode_text_token(policy_config: ParallelStreamPolicyConfig) -> bool:
@@ -2025,6 +2078,7 @@ def _ensure_exact_cache_initialized(
     cache_context: ExactCacheContext,
     cache_spec: ExactCacheInterfaceSpec,
     attn_window: int | None = None,
+    frame_chunk_size: int | None = None,
 ) -> ExactCacheContext:
     if not inference_config.use_cache:
         return cache_context
@@ -2043,7 +2097,10 @@ def _ensure_exact_cache_initialized(
         cache_name=cache_context.cache_name,
         attn_window=resolved_attn_window,
         batch_size=cache_context.batch_size,
-        frame_chunk_size=inference_config.frame_chunk_size,
+        frame_chunk_size=max(
+            1,
+            int(inference_config.frame_chunk_size if frame_chunk_size is None else frame_chunk_size),
+        ),
         latent_height=cache_context.latent_height,
         latent_width=cache_context.latent_width,
         device=cache_context.device,
@@ -2431,6 +2488,14 @@ def run_parallel_exact_cache_warmup(
         rollout_mode,
         fallback_window_size=int(policy_config.attn_window),
     )
+    rollout_frame_chunk_size = _chunk_size_for_generalist_conditioning(
+        rollout_mode,
+        fallback_chunk_size=int(inference_config.frame_chunk_size),
+    )
+    rollout_history_stream_visibility = _history_stream_visibility_for_generalist_conditioning(
+        rollout_mode,
+        policy_config,
+    )
     generalist_mode = None
     if _uses_generalist_mode_text_token(policy_config):
         generalist_mode = rollout_mode
@@ -2451,7 +2516,7 @@ def run_parallel_exact_cache_warmup(
         write_mode=cache_write_mode,
         batch_size=batch_size,
         use_cfg=cache_context.use_cfg,
-        prefix_visibility_mode=_prefix_visibility_mode_for_policy(policy_config),
+        prefix_visibility_mode=_prefix_visibility_mode_for_generalist_conditioning(rollout_mode, policy_config),
     )
     current_frame_start = (
         int(infer_cache.get("frame_start", 0))
@@ -2481,6 +2546,7 @@ def run_parallel_exact_cache_warmup(
             cache_context=cache_context,
             cache_spec=cache_spec,
             attn_window=rollout_window_size,
+            frame_chunk_size=rollout_frame_chunk_size,
         )
         if frame_start_override is None:
             current_frame_start = 0
@@ -2494,7 +2560,7 @@ def run_parallel_exact_cache_warmup(
         video_latents=observed_video_latents,
         action_latents=observed_action_latents,
         frame_start=current_frame_start,
-        frame_chunk_size=inference_config.frame_chunk_size,
+        frame_chunk_size=rollout_frame_chunk_size,
         mode=rollout_mode,
     )
     video_hidden_context = _single_stream_hidden_proprio_context(
@@ -2530,13 +2596,13 @@ def run_parallel_exact_cache_warmup(
         use_cfg=cache_context.use_cfg and inference_config.use_cache,
         action_channel_mask=action_channel_mask,
         update_cache=2 if inference_config.use_cache else 0,
-        chunk_size=inference_config.frame_chunk_size,
+        chunk_size=rollout_frame_chunk_size,
         window_size=rollout_window_size,
         current_block_coupling=resolve_parallel_current_block_coupling(policy_config),
         preserve_video_pretrain_history=bool(
             getattr(policy_config, "preserve_video_pretrain_history", False)
         ),
-        history_stream_visibility=resolve_parallel_history_stream_visibility(policy_config),
+        history_stream_visibility=rollout_history_stream_visibility,
         video_hidden_context=video_hidden_context,
         action_hidden_context=action_hidden_context,
         allow_cache_prefix_during_update_write=_is_conditional_joint_denoise_mode(rollout_mode),
@@ -2558,7 +2624,9 @@ def run_parallel_exact_cache_warmup(
         "generalist_mode_text_token": None if generalist_mode is None else generalist_mode.value,
         "generalist_mode_text_token_count": int(generalist_mode is not None),
         "rollout_window_size": int(rollout_window_size),
-        "generalist_conditional_history_chunks": int(_is_conditional_joint_denoise_mode(rollout_mode)),
+        "rollout_frame_chunk_size": int(rollout_frame_chunk_size),
+        "history_stream_visibility": rollout_history_stream_visibility.value,
+        "generalist_conditional_history_chunks": 1 if _is_conditional_joint_denoise_mode(rollout_mode) else 0,
     }
     return {
         "runtime_mode": "lingbot_exact",
@@ -2571,6 +2639,7 @@ def run_parallel_exact_cache_warmup(
         "batch_size": cache_context.batch_size,
         "step_index": int(infer_cache.get("step_index", 0)),
         "use_cfg": cache_context.use_cfg,
+        "frame_chunk_size": int(rollout_frame_chunk_size),
         "debug_last_warmup": debug,
     }
 
@@ -2594,6 +2663,8 @@ def _maybe_commit_initial_observed_video_context(
     step_index: int,
     current_block_coupling: CurrentBlockCoupling,
     window_size: int,
+    frame_chunk_size: int | None = None,
+    history_stream_visibility: ParallelHistoryStreamVisibility | None = None,
     hidden_proprio_state: torch.Tensor | None = None,
 ) -> tuple[int, bool]:
     """Commit frame 0 as pure prefix context before generating frame 1.
@@ -2603,12 +2674,21 @@ def _maybe_commit_initial_observed_video_context(
     video frame into the exact cache without materializing dummy action tokens.
     """
 
+    resolved_frame_chunk_size = max(
+        1,
+        int(inference_config.frame_chunk_size if frame_chunk_size is None else frame_chunk_size),
+    )
+    resolved_history_stream_visibility = (
+        resolve_parallel_history_stream_visibility(policy_config)
+        if history_stream_visibility is None
+        else history_stream_visibility
+    )
     startup_plan = resolve_strict_startup_plan(
         step_index=step_index,
         current_start_frame=current_frame_start,
-        frame_chunk_size=inference_config.frame_chunk_size,
+        frame_chunk_size=resolved_frame_chunk_size,
         action_tokens_per_frame=policy_config.action_per_frame,
-        action_horizon=inference_config.frame_chunk_size * policy_config.action_per_frame,
+        action_horizon=resolved_frame_chunk_size * policy_config.action_per_frame,
     )
     if not inference_config.use_cache or not startup_plan.is_startup or condition_latents is None:
         return int(current_frame_start), False
@@ -2662,13 +2742,13 @@ def _maybe_commit_initial_observed_video_context(
         use_cfg=bool(use_cfg),
         action_channel_mask=action_channel_mask,
         update_cache=2,
-        chunk_size=inference_config.frame_chunk_size,
+        chunk_size=resolved_frame_chunk_size,
         window_size=window_size,
         current_block_coupling=prefix_coupling,
         preserve_video_pretrain_history=bool(
             getattr(policy_config, "preserve_video_pretrain_history", False)
         ),
-        history_stream_visibility=resolve_parallel_history_stream_visibility(policy_config),
+        history_stream_visibility=resolved_history_stream_visibility,
         video_hidden_context=video_hidden_context,
     )
     return startup_plan.generation_frame_start, True
@@ -4366,6 +4446,19 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
         rollout_mode,
         fallback_window_size=int(policy_config.attn_window),
     )
+    rollout_frame_chunk_size = _chunk_size_for_generalist_conditioning(
+        rollout_mode,
+        fallback_chunk_size=int(inference_config.frame_chunk_size),
+    )
+    rollout_history_stream_visibility = _history_stream_visibility_for_generalist_conditioning(
+        rollout_mode,
+        policy_config,
+    )
+    condition_latents = _slice_conditioning_chunk(
+        condition_latents,
+        target_frames=rollout_frame_chunk_size,
+        source="condition latents",
+    )
     generalist_mode = None
     if _uses_generalist_mode_text_token(policy_config):
         generalist_mode = rollout_mode
@@ -4391,7 +4484,7 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
         write_mode=ParallelExactCacheWriteMode.JOINT_PACKED,
         batch_size=batch_size,
         use_cfg=cache_context.use_cfg,
-        prefix_visibility_mode=_prefix_visibility_mode_for_policy(policy_config),
+        prefix_visibility_mode=_prefix_visibility_mode_for_generalist_conditioning(rollout_mode, policy_config),
     )
     if inference_config.use_cache and not cache_context.cache_initialized:
         if condition_latents is None:
@@ -4405,6 +4498,7 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             cache_context=cache_context,
             cache_spec=cache_spec,
             attn_window=rollout_window_size,
+            frame_chunk_size=rollout_frame_chunk_size,
         )
     elif inference_config.use_cache and cache_context.cache_initialized:
         _validate_existing_exact_cache_attn_window(
@@ -4432,12 +4526,14 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             step_index=int(infer_cache.get("step_index", 0)),
             current_block_coupling=current_block_coupling,
             window_size=rollout_window_size,
+            frame_chunk_size=rollout_frame_chunk_size,
+            history_stream_visibility=rollout_history_stream_visibility,
             hidden_proprio_state=hidden_proprio_state,
         )
     latents = torch.randn(
         batch_size,
         backbone_config.latent_channels,
-        inference_config.frame_chunk_size,
+        rollout_frame_chunk_size,
         latent_height,
         latent_width,
         device=device,
@@ -4446,7 +4542,7 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
     actions = torch.randn(
         batch_size,
         action_dim,
-        inference_config.frame_chunk_size,
+        rollout_frame_chunk_size,
         policy_config.action_per_frame,
         1,
         device=device,
@@ -4457,6 +4553,11 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
         action_denoise_mask = action_channel_mask.to(device=device, dtype=model_dtype)
         actions = actions * action_denoise_mask
     if forced_action_latents is not None:
+        forced_action_latents = _slice_conditioning_chunk(
+            forced_action_latents,
+            target_frames=rollout_frame_chunk_size,
+            source="forced action latents",
+        )
         forced_action_latents = forced_action_latents.to(device=device, dtype=model_dtype)
         if tuple(forced_action_latents.shape) != tuple(actions.shape):
             raise ValueError(
@@ -4468,6 +4569,11 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
         if forced_action_noise is None:
             forced_action_noise = torch.randn_like(forced_action_latents)
         else:
+            forced_action_noise = _slice_conditioning_chunk(
+                forced_action_noise,
+                target_frames=rollout_frame_chunk_size,
+                source="forced action noise",
+            )
             forced_action_noise = forced_action_noise.to(device=device, dtype=model_dtype)
             if tuple(forced_action_noise.shape) != tuple(actions.shape):
                 raise ValueError(
@@ -4477,6 +4583,11 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
         if action_denoise_mask is not None:
             forced_action_noise = forced_action_noise * action_denoise_mask
     if commit_action_latents is not None:
+        commit_action_latents = _slice_conditioning_chunk(
+            commit_action_latents,
+            target_frames=rollout_frame_chunk_size,
+            source="committed action latents",
+        )
         commit_action_latents = commit_action_latents.to(device=device, dtype=model_dtype)
         if tuple(commit_action_latents.shape) != tuple(actions.shape):
             raise ValueError(
@@ -4512,7 +4623,7 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
     condition_action_latents = torch.zeros(
         batch_size,
         action_dim,
-        inference_config.frame_chunk_size,
+        rollout_frame_chunk_size,
         policy_config.action_per_frame,
         1,
         device=device,
@@ -4567,7 +4678,7 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
     for index, (video_timestep, action_timestep) in enumerate(
         zip(video_timestep_values_list, action_timestep_values_list)
     ):
-        video_timestep_values = video_timestep.expand(batch_size, inference_config.frame_chunk_size)
+        video_timestep_values = video_timestep.expand(batch_size, rollout_frame_chunk_size)
         if forced_video_latents is not None:
             latents = forced_video_latents.clone()
             video_timestep_values = torch.zeros_like(video_timestep_values)
@@ -4590,11 +4701,11 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
                 )
             else:
                 action_timestep = video_timestep.to(device=device, dtype=torch.float32)
-            action_timestep_values = action_timestep.expand(batch_size, inference_config.frame_chunk_size)
+            action_timestep_values = action_timestep.expand(batch_size, rollout_frame_chunk_size)
         else:
             shared_sigma = None
             shared_sigma_next = None
-            action_timestep_values = action_timestep.expand(batch_size, inference_config.frame_chunk_size)
+            action_timestep_values = action_timestep.expand(batch_size, rollout_frame_chunk_size)
         if forced_action_latents is not None:
             if forced_clean_action_conditioning:
                 actions = forced_action_latents
@@ -4620,7 +4731,7 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             else torch.ones_like(actions)
         )
         latent_grid_id = get_mesh_id(
-            inference_config.frame_chunk_size // backbone_config.patch_size_t,
+            rollout_frame_chunk_size // backbone_config.patch_size_t,
             latent_height // backbone_config.patch_size_h,
             latent_width // backbone_config.patch_size_w,
             t=0,
@@ -4630,7 +4741,7 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             device=device,
         )[None].repeat(batch_size, 1, 1)
         action_grid_id = get_mesh_id(
-            inference_config.frame_chunk_size,
+            rollout_frame_chunk_size,
             policy_config.action_per_frame,
             1,
             t=1,
@@ -4657,13 +4768,13 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
                 "cond_timesteps": torch.zeros_like(action_timestep_values),
                 "actions_mask": action_mask_latents,
             },
-            "chunk_size": max(1, int(inference_config.frame_chunk_size)),
+            "chunk_size": rollout_frame_chunk_size,
             "window_size": rollout_window_size,
             "attention_profile_name": attention_profile_name,
             "preserve_video_pretrain_history": bool(
                 getattr(policy_config, "preserve_video_pretrain_history", False)
             ),
-            "history_stream_visibility": resolve_parallel_history_stream_visibility(policy_config),
+            "history_stream_visibility": rollout_history_stream_visibility,
         }
         if hidden_proprio_state is not None:
             input_dict["per_chunk_proprio_state"] = hidden_proprio_state[:, None, :].to(
@@ -4684,7 +4795,7 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
         video_noise_pred = data_seq_to_patch(
             transformer.patch_size,
             video_noise_pred,
-            inference_config.frame_chunk_size,
+            rollout_frame_chunk_size,
             latent_height,
             latent_width,
             batch_size=batch_size,
@@ -4708,7 +4819,7 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
         action_noise_pred = rearrange(
             action_noise_pred,
             "b (f n) c -> b c f n 1",
-            f=inference_config.frame_chunk_size,
+            f=rollout_frame_chunk_size,
         )
         if forced_action_latents is None:
             if joint_timestep_coupling in {
@@ -4759,13 +4870,13 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             use_cfg=cache_context.use_cfg,
             action_channel_mask=action_channel_mask,
             update_cache=1,
-            chunk_size=inference_config.frame_chunk_size,
+            chunk_size=rollout_frame_chunk_size,
             window_size=rollout_window_size,
             current_block_coupling=current_block_coupling,
             preserve_video_pretrain_history=bool(
                 getattr(policy_config, "preserve_video_pretrain_history", False)
             ),
-            history_stream_visibility=resolve_parallel_history_stream_visibility(policy_config),
+            history_stream_visibility=rollout_history_stream_visibility,
             video_hidden_context=video_hidden_context,
             action_hidden_context=action_hidden_context,
             allow_cache_prefix_during_update_write=_is_conditional_joint_denoise_mode(rollout_mode),
@@ -4777,13 +4888,14 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
         "cache_backend_name": cache_backend_name,
         "cache_initialized": cache_context.cache_initialized and inference_config.use_cache,
         "frame_start": int(
-            generation_frame_start + inference_config.frame_chunk_size if advance_frame_start else generation_frame_start
+            generation_frame_start + rollout_frame_chunk_size if advance_frame_start else generation_frame_start
         ),
         "latent_height": latent_height,
         "latent_width": latent_width,
         "batch_size": batch_size,
         "step_index": int(infer_cache.get("step_index", 0) + 1),
         "use_cfg": cache_context.use_cfg,
+        "frame_chunk_size": int(rollout_frame_chunk_size),
     }
     debug = {
         "runtime_mode": "lingbot_exact_action_conditioned",
@@ -4823,7 +4935,9 @@ def _run_parallel_action_conditioned_inference_rollout_impl(
             else ("forced" if forced_action_latents is not None else "predicted")
         ),
         "rollout_window_size": int(rollout_window_size),
-        "generalist_conditional_history_chunks": int(_is_conditional_joint_denoise_mode(rollout_mode)),
+        "rollout_frame_chunk_size": int(rollout_frame_chunk_size),
+        "history_stream_visibility": rollout_history_stream_visibility.value,
+        "generalist_conditional_history_chunks": 1 if _is_conditional_joint_denoise_mode(rollout_mode) else 0,
     }
     cache_summary = _summarize_slot_pool_cache_state(transformer, cache_name)
     if cache_summary is not None:

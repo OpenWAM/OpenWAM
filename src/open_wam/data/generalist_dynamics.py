@@ -30,6 +30,7 @@ from open_wam.configs.variant_semantics import (
 )
 
 from .latent_contracts import LatentWAMSample
+from .latent_temporal import latent_anchor_positions
 
 
 REAL_DEMO_SOURCE = "real_demo"
@@ -37,6 +38,8 @@ COUNTERFACTUAL_DYNAMICS_SOURCE = "counterfactual_dynamics"
 JOINT_MODE = "joint"
 ACTION_CONDITIONED_VIDEO_MODE = "action_conditioned_video"
 VIDEO_CONDITIONED_ACTION_MODE = "video_conditioned_action"
+COUNTERFACTUAL_STATE_KEY = "observation.state"
+COUNTERFACTUAL_CONDITION_SOURCE_FRAME_POLICY = "next_latent_source_offset"
 
 
 @dataclass(frozen=True)
@@ -84,7 +87,12 @@ class EncodedCounterfactualDynamicsLatentDataset(Dataset[LatentWAMSample]):
         self.encoded_root = Path(encoded_root).expanduser().resolve()
         self.split = str(split)
         self.manifest = _read_json(self.encoded_root / "manifest.json")
-        self.raw_root = Path(self.manifest["dataset_root"]).expanduser().resolve()
+        self.raw_root = _counterfactual_raw_root_from_manifest(self.manifest, encoded_root=self.encoded_root)
+        _validate_counterfactual_condition_latent_manifest(
+            self.manifest,
+            encoded_root=self.encoded_root,
+            source_frame_offset=int(data_config.sample_construction.condition_source_frame_offset),
+        )
         self.transition_rows = _read_jsonl(self.encoded_root / "metadata" / "encoded_transitions.jsonl")
         context_rows = _read_jsonl(self.encoded_root / "metadata" / "encoded_contexts.jsonl")
         self.context_rows = {
@@ -131,14 +139,10 @@ class EncodedCounterfactualDynamicsLatentDataset(Dataset[LatentWAMSample]):
                 f"shard={row.get('shard')!r}, context_id={row.get('context_id')!r}."
             )
 
-        context_latents = _load_latents(
-            self._resolve_encoded_path(context_row, "context_latent_path"),
-            key="video_latents",
-        )
-        target_latents = _load_latents(
-            self._resolve_encoded_path(row, "target_latent_path"),
-            key="target_video_latents",
-        )
+        context_payload = _load_latent_payload(self._resolve_encoded_path(context_row, "context_latent_path"))
+        target_payload = _load_latent_payload(self._resolve_encoded_path(row, "target_latent_path"))
+        context_latents = _payload_latents(context_payload, key="video_latents")
+        target_latents = _payload_latents(target_payload, key="target_video_latents")
         if context_latents.shape[0] != target_latents.shape[0] or context_latents.shape[2:] != target_latents.shape[2:]:
             raise ValueError(
                 "Counterfactual context/target latent geometry mismatch, "
@@ -146,10 +150,17 @@ class EncodedCounterfactualDynamicsLatentDataset(Dataset[LatentWAMSample]):
             )
         source_video_latents = torch.cat([context_latents, target_latents], dim=1).contiguous()
         context_frames = int(context_latents.shape[1])
+        target_frames = int(target_latents.shape[1])
         source_frames = int(source_video_latents.shape[1])
         if segment_length is None:
             segment_length = source_frames
 
+        source_condition_latents, condition_latents_source = _counterfactual_condition_latents_from_payloads(
+            context_payload=context_payload,
+            target_payload=target_payload,
+            fallback_video_latents=source_video_latents,
+            source_frame_offset=int(self.data_config.sample_construction.condition_source_frame_offset),
+        )
         context_npz = np.load(self._resolve_raw_path(context_row, "context_path"))
         sample_npz = np.load(self._resolve_raw_path(row, "sample_path"))
         source_actions = _pack_actions(
@@ -162,9 +173,23 @@ class EncodedCounterfactualDynamicsLatentDataset(Dataset[LatentWAMSample]):
             ),
             target_dim=int(self.data_config.action_schema.action_dim),
         )
+        state_dim = int(self.data_config.action_schema.state_dim)
+        source_proprio_frames, source_proprio_frames_mask = _counterfactual_source_proprio_frames(
+            context_npz=context_npz,
+            sample_npz=sample_npz,
+            context_latent_frames=context_frames,
+            target_latent_frames=target_frames,
+            state_dim=state_dim,
+            data_config=self.data_config,
+        )
         action_per_frame = _action_steps_per_frame(source_actions, total_frames=source_frames)
+        sampled_chunk_size, sampled_window_size = _sample_counterfactual_attention_geometry(
+            data_config=self.data_config,
+            segment_length=int(segment_length),
+        )
         segment = _build_counterfactual_fixed_segment(
             video_latents=source_video_latents,
+            condition_latents=source_condition_latents,
             actions=source_actions,
             context_frames=context_frames,
             latent_start=int(latent_start),
@@ -175,16 +200,34 @@ class EncodedCounterfactualDynamicsLatentDataset(Dataset[LatentWAMSample]):
             ),
         )
         video_latents = segment["video_latents"]
+        condition_latents = segment["condition_latents"]
         actions = segment["actions"]
         action_mask = segment["action_mask"]
         total_frames = int(video_latents.shape[1])
-
-        state = torch.zeros(
-            int(self.data_config.action_schema.state_horizon),
-            int(self.data_config.action_schema.state_dim),
-            dtype=torch.float32,
+        proprio_context_frames = _slice_counterfactual_frame_tensor_with_edge_hold(
+            source_proprio_frames,
+            latent_start=int(latent_start),
+            segment_length=int(segment_length),
         )
-        state_mask = torch.zeros_like(state)
+        proprio_context_frames_mask = _slice_counterfactual_frame_tensor_with_edge_hold(
+            source_proprio_frames_mask,
+            latent_start=int(latent_start),
+            segment_length=int(segment_length),
+        )
+        proprio_context_state = proprio_context_frames.clone()
+        proprio_context_state_mask = proprio_context_frames_mask.clone()
+        state, state_mask = _counterfactual_state_history_from_frames(
+            proprio_context_frames=proprio_context_frames,
+            proprio_context_frames_mask=proprio_context_frames_mask,
+            anchor_frame=max(0, min(total_frames - 1, int(segment["loss_frame_start"]) - 1)),
+            state_horizon=int(self.data_config.action_schema.state_horizon),
+            state_dim=state_dim,
+        )
+        proprio_context_source = (
+            COUNTERFACTUAL_STATE_KEY
+            if float(proprio_context_frames_mask.sum().item()) > 0.0
+            else "unavailable_zero_mask"
+        )
         text_context = self.empty_text_embedding.clone() if self.empty_text_embedding is not None else None
 
         metadata = {
@@ -227,8 +270,15 @@ class EncodedCounterfactualDynamicsLatentDataset(Dataset[LatentWAMSample]):
             "latent_loss_frame_end": int(segment["loss_frame_end"]),
             "action_loss_frame_start": int(segment["loss_frame_start"]),
             "action_loss_frame_end": int(segment["loss_frame_end"]),
-            "sampled_chunk_size": max(1, int(self.data_config.sample_construction.chunk_size)),
-            "sampled_window_size": max(1, int(self.data_config.sample_construction.window_size)),
+            "sampled_chunk_size": int(sampled_chunk_size),
+            "sampled_window_size": int(sampled_window_size),
+            "has_condition_latents": condition_latents is not None,
+            "condition_source_frame_offset": int(self.data_config.sample_construction.condition_source_frame_offset),
+            "condition_latents_source": condition_latents_source,
+            "proprio_context_source": proprio_context_source,
+            "proprio_context_chunk_count": int(proprio_context_state.shape[0]),
+            "proprio_context_frame_count": int(proprio_context_frames.shape[0]),
+            "state_source_key": COUNTERFACTUAL_STATE_KEY if proprio_context_source == COUNTERFACTUAL_STATE_KEY else None,
             "latent_frame_start": int(latent_start),
             "frame_shift": int(latent_start),
             "start_padding_frames": max(0, int(self.data_config.sample_construction.start_padding_frames)),
@@ -268,9 +318,14 @@ class EncodedCounterfactualDynamicsLatentDataset(Dataset[LatentWAMSample]):
             action_mask=action_mask,
             state=state,
             state_mask=state_mask,
+            proprio_context_state=proprio_context_state,
+            proprio_context_state_mask=proprio_context_state_mask,
+            proprio_context_frames=proprio_context_frames,
+            proprio_context_frames_mask=proprio_context_frames_mask,
             task_text=None,
             text_context=text_context,
             negative_text_context=text_context.clone() if text_context is not None else None,
+            condition_latents=condition_latents,
             metadata=metadata,
         )
 
@@ -460,6 +515,8 @@ class GeneralistDynamicsMixtureDataset(Dataset[LatentWAMSample]):
         self.mixture_config = mixture_config
         self.split = str(split)
         self.buckets = _build_mixture_buckets(mixture_config)
+        self._distributed_draw_group_size = 1
+        self._distributed_epoch_size = 0
         base_length = max(len(real_dataset), len(counterfactual_dataset))
         self._length = max(1, int(round(base_length * float(mixture_config.length_multiplier))))
 
@@ -468,6 +525,16 @@ class GeneralistDynamicsMixtureDataset(Dataset[LatentWAMSample]):
 
     def build_train_sampler(self, *, world_size: int = 1, rank: int = 0) -> Sampler[int]:
         return GeneralistDynamicsMixtureTrainSampler(self, world_size=world_size, rank=rank)
+
+    def set_distributed_draw_group_size(self, world_size: int) -> None:
+        self.set_distributed_draw_geometry(world_size=world_size)
+
+    def set_distributed_draw_geometry(self, *, world_size: int, epoch_size: int | None = None) -> None:
+        group_size = max(1, int(world_size))
+        self._distributed_draw_group_size = group_size
+        if epoch_size is None:
+            epoch_size = int(math.ceil(len(self) / float(group_size))) * group_size
+        self._distributed_epoch_size = max(len(self), int(epoch_size))
 
     def build_source_view(
         self,
@@ -488,14 +555,32 @@ class GeneralistDynamicsMixtureDataset(Dataset[LatentWAMSample]):
 
     def __getitem__(self, index: int) -> LatentWAMSample:
         index = int(index)
-        epoch = index // len(self)
-        rng = random.Random(int(self.mixture_config.seed) + index * 1_000_003)
-        bucket = _sample_bucket(self.buckets, rng)
+        group_size = max(1, int(getattr(self, "_distributed_draw_group_size", 1)))
+        epoch_size = int(getattr(self, "_distributed_epoch_size", 0) or len(self))
+        epoch = index // max(1, epoch_size)
+        epoch_index = index % max(1, epoch_size)
+        if group_size == 1:
+            rng = random.Random(int(self.mixture_config.seed) + index * 1_000_003)
+            bucket = _sample_bucket(self.buckets, rng)
+            source_rng = rng
+        else:
+            # FSDP requires every rank to enter the same sharded module path in
+            # the same order. Coordinate the source/mode bucket per distributed
+            # step, then vary the source-row draw by rank for data diversity.
+            draw_group = index // group_size
+            rank_offset = epoch_index % group_size
+            bucket_rng = random.Random(int(self.mixture_config.seed) + draw_group * 1_000_003)
+            bucket = _sample_bucket(self.buckets, bucket_rng)
+            source_rng = random.Random(
+                int(self.mixture_config.seed)
+                + draw_group * 1_000_003
+                + (rank_offset + 1) * 9176
+            )
         if bucket.source == REAL_DEMO_SOURCE:
-            sample_index = _draw_source_index(self.real_dataset, rng=rng, epoch=epoch)
+            sample_index = _draw_source_index(self.real_dataset, rng=source_rng, epoch=epoch)
             sample = self.real_dataset[sample_index]
         elif bucket.source == COUNTERFACTUAL_DYNAMICS_SOURCE:
-            sample_index = _draw_source_index(self.counterfactual_dataset, rng=rng, epoch=epoch)
+            sample_index = _draw_source_index(self.counterfactual_dataset, rng=source_rng, epoch=epoch)
             sample = self.counterfactual_dataset[sample_index]
         else:
             raise ValueError(f"Unsupported generalist source bucket {bucket.source!r}.")
@@ -560,6 +645,10 @@ class GeneralistDynamicsMixtureTrainSampler(Sampler[int]):
         self.epoch = 0
         self._num_samples = int(math.ceil(len(dataset) / float(self.world_size)))
         self._total_size = self._num_samples * self.world_size
+        self.dataset.set_distributed_draw_geometry(
+            world_size=self.world_size,
+            epoch_size=self._total_size,
+        )
 
     def __len__(self) -> int:
         return self._num_samples
@@ -568,7 +657,7 @@ class GeneralistDynamicsMixtureTrainSampler(Sampler[int]):
         self.epoch = int(epoch)
 
     def __iter__(self) -> Iterator[int]:
-        epoch_offset = int(self.epoch) * len(self.dataset)
+        epoch_offset = int(self.epoch) * self._total_size
         return iter(epoch_offset + global_index for global_index in range(self.rank, self._total_size, self.world_size))
 
 
@@ -1018,14 +1107,92 @@ def _context_key(row: dict[str, Any]) -> tuple[str | None, int]:
     return (None if shard is None else str(shard), int(row["context_id"]))
 
 
-def _load_latents(path: Path, *, key: str) -> torch.Tensor:
+def _load_latent_payload(path: Path) -> dict[str, Any]:
     payload = torch.load(path, map_location="cpu", weights_only=False)
-    if not isinstance(payload, dict) or key not in payload:
-        raise ValueError(f"Expected key {key!r} in latent payload at {path}.")
+    if not isinstance(payload, dict):
+        raise ValueError(f"Expected latent payload dict at {path}, got {type(payload).__name__}.")
+    return payload
+
+
+def _payload_latents(payload: dict[str, Any], *, key: str) -> torch.Tensor:
+    if key not in payload:
+        raise ValueError(f"Expected key {key!r} in latent payload.")
     tensor = payload[key]
     if not isinstance(tensor, torch.Tensor) or tensor.ndim != 4:
-        raise ValueError(f"Expected {key!r} tensor [C,T,H,W] at {path}, got {type(tensor)!r}.")
+        raise ValueError(f"Expected {key!r} tensor [C,T,H,W], got {type(tensor)!r}.")
     return tensor.to(dtype=torch.float32).contiguous()
+
+
+def _counterfactual_source_proprio_frames(
+    *,
+    context_npz: np.lib.npyio.NpzFile,
+    sample_npz: np.lib.npyio.NpzFile,
+    context_latent_frames: int,
+    target_latent_frames: int,
+    state_dim: int,
+    data_config: DataConfig,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    context = _counterfactual_latent_state_frames(
+        context_npz,
+        latent_frames=int(context_latent_frames),
+        state_dim=int(state_dim),
+        data_config=data_config,
+    )
+    target = _counterfactual_latent_state_frames(
+        sample_npz,
+        latent_frames=int(target_latent_frames),
+        state_dim=int(state_dim),
+        data_config=data_config,
+    )
+    states = torch.cat([context[0], target[0]], dim=0).contiguous()
+    masks = torch.cat([context[1], target[1]], dim=0).contiguous()
+    return states, masks
+
+
+def _counterfactual_latent_state_frames(
+    payload: np.lib.npyio.NpzFile,
+    *,
+    latent_frames: int,
+    state_dim: int,
+    data_config: DataConfig,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    latent_frames = int(latent_frames)
+    state_dim = int(state_dim)
+    if state_dim <= 0:
+        empty = torch.zeros(latent_frames, 0, dtype=torch.float32)
+        return empty, empty.clone()
+    if COUNTERFACTUAL_STATE_KEY not in payload.files:
+        state = torch.zeros(latent_frames, state_dim, dtype=torch.float32)
+        return state, torch.zeros_like(state)
+    raw_state = np.asarray(payload[COUNTERFACTUAL_STATE_KEY], dtype=np.float32)
+    if raw_state.ndim != 2:
+        raise ValueError(f"Expected {COUNTERFACTUAL_STATE_KEY!r} with shape [T,D], got {raw_state.shape}.")
+    if raw_state.shape[0] <= 0:
+        state = torch.zeros(latent_frames, state_dim, dtype=torch.float32)
+        return state, torch.zeros_like(state)
+    anchors = latent_anchor_positions(
+        raw_frame_count=int(raw_state.shape[0]),
+        latent_num_frames=latent_frames,
+        layout=data_config.latent_temporal_layout,
+    )
+    selected = raw_state[np.asarray(anchors, dtype=np.int64)]
+    state = _pack_state(selected, target_dim=state_dim)
+    return state, torch.ones_like(state)
+
+
+def _pack_state(state: np.ndarray, *, target_dim: int) -> torch.Tensor:
+    tensor = torch.as_tensor(state, dtype=torch.float32)
+    if tensor.ndim != 2:
+        raise ValueError(f"Expected state array [T,D], got {tuple(tensor.shape)}.")
+    if tensor.shape[1] > target_dim:
+        raise ValueError(
+            f"Counterfactual state dim {tensor.shape[1]} exceeds configured state_dim={target_dim}."
+        )
+    if tensor.shape[1] == target_dim:
+        return tensor.contiguous()
+    padded = torch.zeros(tensor.shape[0], target_dim, dtype=torch.float32)
+    padded[:, : tensor.shape[1]] = tensor
+    return padded
 
 
 def _pack_actions(actions: np.ndarray, *, target_dim: int) -> torch.Tensor:
@@ -1043,6 +1210,58 @@ def _pack_actions(actions: np.ndarray, *, target_dim: int) -> torch.Tensor:
     return padded
 
 
+def _slice_counterfactual_frame_tensor_with_edge_hold(
+    tensor: torch.Tensor,
+    *,
+    latent_start: int,
+    segment_length: int,
+) -> torch.Tensor:
+    source_frames = int(tensor.shape[0])
+    if source_frames <= 0:
+        raise ValueError("Counterfactual frame tensor requires at least one source frame.")
+    source_start = max(0, int(latent_start))
+    source_end = min(source_frames, int(latent_start) + int(segment_length))
+    if source_end <= source_start:
+        source_end = min(source_frames, source_start + 1)
+    valid_slice = tensor[source_start:source_end]
+
+    parts: list[torch.Tensor] = []
+    if int(latent_start) < 0:
+        parts.append(tensor[:1].expand(min(-int(latent_start), segment_length), -1))
+    parts.append(valid_slice)
+    current_frames = sum(int(part.shape[0]) for part in parts)
+    if current_frames < segment_length:
+        parts.append(tensor[-1:].expand(segment_length - current_frames, -1))
+    return torch.cat(parts, dim=0)[:segment_length].contiguous()
+
+
+def _counterfactual_state_history_from_frames(
+    *,
+    proprio_context_frames: torch.Tensor,
+    proprio_context_frames_mask: torch.Tensor,
+    anchor_frame: int,
+    state_horizon: int,
+    state_dim: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    state_horizon = int(state_horizon)
+    state_dim = int(state_dim)
+    if state_horizon <= 0 or state_dim <= 0:
+        empty = torch.zeros(max(0, state_horizon), max(0, state_dim), dtype=torch.float32)
+        return empty, empty.clone()
+    if proprio_context_frames.shape[0] <= 0:
+        state = torch.zeros(state_horizon, state_dim, dtype=torch.float32)
+        return state, torch.zeros_like(state)
+    anchor = max(0, min(int(anchor_frame), int(proprio_context_frames.shape[0]) - 1))
+    start = max(0, anchor - state_horizon + 1)
+    state = proprio_context_frames[start : anchor + 1]
+    mask = proprio_context_frames_mask[start : anchor + 1]
+    if state.shape[0] < state_horizon:
+        pad_count = state_horizon - int(state.shape[0])
+        state = torch.cat([state[:1].expand(pad_count, -1), state], dim=0)
+        mask = torch.cat([mask[:1].expand(pad_count, -1), mask], dim=0)
+    return state[-state_horizon:].contiguous(), mask[-state_horizon:].contiguous()
+
+
 def _action_steps_per_frame(actions: torch.Tensor, *, total_frames: int) -> int:
     if total_frames <= 0:
         raise ValueError("Counterfactual sample must contain at least one latent frame.")
@@ -1057,9 +1276,132 @@ def _action_steps_per_frame(actions: torch.Tensor, *, total_frames: int) -> int:
     return action_per_frame
 
 
+def _counterfactual_condition_latents_from_source(
+    video_latents: torch.Tensor,
+    *,
+    source_frame_offset: int,
+) -> torch.Tensor | None:
+    if int(source_frame_offset) == 0:
+        return None
+    source_frames = int(video_latents.shape[1])
+    if source_frames <= 0:
+        raise ValueError("Counterfactual condition latent synthesis requires at least one source latent frame.")
+    source_indices = torch.arange(source_frames, dtype=torch.long, device=video_latents.device)
+    source_indices = (source_indices + int(source_frame_offset)).clamp_(0, source_frames - 1)
+    return video_latents.index_select(dim=1, index=source_indices).contiguous()
+
+
+def _validate_counterfactual_condition_latent_manifest(
+    manifest: dict[str, Any],
+    *,
+    encoded_root: Path,
+    source_frame_offset: int,
+) -> None:
+    if int(source_frame_offset) == 0:
+        return
+    if manifest.get("condition_latents") is True:
+        return
+    raise ValueError(
+        "Counterfactual encoded latents are missing explicit condition latents. "
+        f"{encoded_root} has manifest condition_latents={manifest.get('condition_latents')!r}, "
+        f"but this config uses condition_source_frame_offset={int(source_frame_offset)}. "
+        "Re-encode with scripts/encode_libero_fdm_counterfactual_dataset.py without "
+        "`--skip-condition-latents`."
+    )
+
+
+def _counterfactual_condition_latents_from_payloads(
+    *,
+    context_payload: dict[str, Any],
+    target_payload: dict[str, Any],
+    fallback_video_latents: torch.Tensor,
+    source_frame_offset: int,
+) -> tuple[torch.Tensor | None, str]:
+    if int(source_frame_offset) == 0:
+        return None, "disabled_zero_offset"
+    context_condition = _optional_counterfactual_condition_latents(
+        context_payload,
+        key="condition_video_latents",
+        source_frame_offset=source_frame_offset,
+    )
+    target_condition = _optional_counterfactual_condition_latents(
+        target_payload,
+        key="target_condition_video_latents",
+        source_frame_offset=source_frame_offset,
+    )
+    saw_explicit = context_condition is not None or target_condition is not None
+    if saw_explicit:
+        if context_condition is None or target_condition is None:
+            raise ValueError(
+                "Encoded counterfactual condition latents are incomplete: "
+                "expected both context `condition_video_latents` and sample "
+                "`target_condition_video_latents`."
+            )
+        condition = torch.cat([context_condition, target_condition], dim=1).contiguous()
+        if tuple(condition.shape) != tuple(fallback_video_latents.shape):
+            raise ValueError(
+                "Encoded counterfactual condition_latents must match source video latents, "
+                f"got condition={tuple(condition.shape)}, video={tuple(fallback_video_latents.shape)}."
+            )
+        return condition, "encoded_single_frame"
+
+    fallback = _counterfactual_condition_latents_from_source(
+        fallback_video_latents,
+        source_frame_offset=source_frame_offset,
+    )
+    return fallback, "synthesized_shift"
+
+
+def _optional_counterfactual_condition_latents(
+    payload: dict[str, Any],
+    *,
+    key: str,
+    source_frame_offset: int,
+) -> torch.Tensor | None:
+    if key not in payload:
+        return None
+    payload_offset = payload.get("condition_source_frame_offset")
+    if payload_offset is None or int(payload_offset) != int(source_frame_offset):
+        raise ValueError(
+            "Encoded counterfactual condition_source_frame_offset mismatch: "
+            f"payload={payload_offset!r}, expected={int(source_frame_offset)}."
+        )
+    payload_policy = payload.get("condition_source_frame_policy")
+    if payload_policy != COUNTERFACTUAL_CONDITION_SOURCE_FRAME_POLICY:
+        raise ValueError(
+            "Encoded counterfactual condition_source_frame_policy mismatch: "
+            f"payload={payload_policy!r}, expected={COUNTERFACTUAL_CONDITION_SOURCE_FRAME_POLICY!r}."
+        )
+    return _payload_latents(payload, key=key)
+
+
+def _slice_counterfactual_latents_with_edge_hold(
+    video_latents: torch.Tensor,
+    *,
+    latent_start: int,
+    segment_length: int,
+) -> torch.Tensor:
+    source_frames = int(video_latents.shape[1])
+    source_start = max(0, int(latent_start))
+    source_end = min(source_frames, int(latent_start) + int(segment_length))
+    if source_end <= source_start:
+        source_end = min(source_frames, source_start + 1)
+    valid_slice = video_latents[:, source_start:source_end]
+
+    parts: list[torch.Tensor] = []
+    if int(latent_start) < 0:
+        parts.append(video_latents[:, :1].expand(-1, min(-int(latent_start), segment_length), -1, -1))
+    parts.append(valid_slice)
+    current_frames = sum(int(part.shape[1]) for part in parts)
+    if current_frames < segment_length:
+        parts.append(video_latents[:, -1:].expand(-1, segment_length - current_frames, -1, -1))
+    return torch.cat(parts, dim=1)[:, :segment_length].contiguous()
+
+
 def _build_counterfactual_fixed_segment(
     *,
     video_latents: torch.Tensor,
+    condition_latents: torch.Tensor | None = None,
     actions: torch.Tensor,
     context_frames: int,
     latent_start: int,
@@ -1072,23 +1414,33 @@ def _build_counterfactual_fixed_segment(
         raise ValueError("Counterfactual segment sampling requires at least one source latent frame.")
     if segment_length <= 0:
         raise ValueError(f"Counterfactual segment_length must be positive, got {segment_length}.")
+    if condition_latents is not None and tuple(condition_latents.shape) != tuple(video_latents.shape):
+        raise ValueError(
+            "Counterfactual condition_latents must match video_latents exactly, "
+            f"got condition={tuple(condition_latents.shape)}, video={tuple(video_latents.shape)}."
+        )
     source_start = max(0, int(latent_start))
     source_end = min(source_frames, int(latent_start) + int(segment_length))
     if source_end <= source_start:
         source_end = min(source_frames, source_start + 1)
-    valid_slice = video_latents[:, source_start:source_end]
     pre_start_frames = max(0, min(segment_length, -int(latent_start))) if int(latent_start) < 0 else 0
     valid_latent_frames = max(0, min(segment_length, source_frames - int(latent_start)))
     padded_latent_frames = max(0, segment_length - valid_latent_frames)
 
-    parts: list[torch.Tensor] = []
-    if int(latent_start) < 0:
-        parts.append(video_latents[:, :1].expand(-1, min(-int(latent_start), segment_length), -1, -1))
-    parts.append(valid_slice)
-    current_frames = sum(int(part.shape[1]) for part in parts)
-    if current_frames < segment_length:
-        parts.append(video_latents[:, -1:].expand(-1, segment_length - current_frames, -1, -1))
-    segment_video = torch.cat(parts, dim=1)[:, :segment_length].contiguous()
+    segment_video = _slice_counterfactual_latents_with_edge_hold(
+        video_latents,
+        latent_start=int(latent_start),
+        segment_length=int(segment_length),
+    )
+    segment_condition = (
+        _slice_counterfactual_latents_with_edge_hold(
+            condition_latents,
+            latent_start=int(latent_start),
+            segment_length=int(segment_length),
+        )
+        if condition_latents is not None
+        else None
+    )
 
     segment_actions = torch.zeros(
         segment_length * action_per_frame,
@@ -1119,6 +1471,7 @@ def _build_counterfactual_fixed_segment(
         loss_frame_end = loss_frame_start
     return {
         "video_latents": segment_video,
+        "condition_latents": segment_condition,
         "actions": segment_actions.contiguous(),
         "action_mask": action_mask.contiguous(),
         "pre_start_frames": int(pre_start_frames),
@@ -1130,6 +1483,35 @@ def _build_counterfactual_fixed_segment(
         "leading_zero_action_frames": int(leading_zero_action_frames),
         "leading_zero_action_mask": float(leading_zero_action_mask),
     }
+
+
+def _sample_counterfactual_attention_geometry(
+    *,
+    data_config: DataConfig,
+    segment_length: int,
+) -> tuple[int, int]:
+    """Mirror real uniform-segment chunk/window randomization for counterfactual rows."""
+
+    sample_cfg = data_config.sample_construction
+    if sample_cfg.mode != WindowSamplingMode.UNIFORM_SEGMENT:
+        return (
+            max(1, int(sample_cfg.chunk_size)),
+            max(1, int(sample_cfg.window_size)),
+        )
+
+    max_chunk_size = max(1, min(int(sample_cfg.chunk_size), int(segment_length)))
+    if bool(sample_cfg.randomize_geometry) and max_chunk_size > 1:
+        sampled_chunk_size = int(random.randint(1, max_chunk_size))
+    else:
+        sampled_chunk_size = max_chunk_size
+
+    max_window_size = max(1, int(sample_cfg.window_size))
+    if bool(sample_cfg.randomize_geometry) and max_window_size >= 4:
+        sampled_window_size = int(random.randint(4, max_window_size))
+    else:
+        sampled_window_size = max_window_size
+
+    return sampled_chunk_size, sampled_window_size
 
 
 def _counterfactual_observed_frame_ids(
@@ -1156,7 +1538,7 @@ def _latent_frame_count_from_row_or_payload(
     shape = row.get(shape_key)
     if isinstance(shape, (list, tuple)) and len(shape) >= 2:
         return int(shape[1])
-    return int(_load_latents(path, key=payload_key).shape[1])
+    return int(_payload_latents(_load_latent_payload(path), key=payload_key).shape[1])
 
 
 def _stable_int_seed(*values: int) -> int:
@@ -1197,6 +1579,30 @@ def _load_empty_text_embedding(path: str | None) -> torch.Tensor | None:
 
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _counterfactual_raw_root_from_manifest(manifest: dict[str, Any], *, encoded_root: Path) -> Path:
+    for key in ("dataset_root", "source_dataset_root"):
+        value = manifest.get(key)
+        if value is not None:
+            return Path(str(value)).expanduser().resolve()
+
+    for summary_key in ("source_summary", "source_aggregate_summary"):
+        summary = manifest.get(summary_key)
+        if not isinstance(summary, dict):
+            continue
+        for key in ("root", "dataset_root", "output_root"):
+            value = summary.get(key)
+            if value is not None:
+                return Path(str(value)).expanduser().resolve()
+
+    available = ", ".join(sorted(str(key) for key in manifest.keys()))
+    raise KeyError(
+        "Counterfactual latent manifest must include a raw dataset root via "
+        "`dataset_root`, `source_dataset_root`, `source_summary.root`, "
+        "`source_summary.output_root`, or `source_aggregate_summary.root`; "
+        f"encoded_root={encoded_root}, available_keys=[{available}]"
+    )
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:

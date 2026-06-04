@@ -21,6 +21,7 @@ from open_wam.configs import (
     JointTimestepCoupling,
     ParallelContextConditionLatentSource,
     ParallelExactCacheWriteMode,
+    ParallelHistoryStreamVisibility,
     ParallelRuntimeMode,
     ParallelSequenceContract,
     ParallelStreamPolicyConfig,
@@ -409,12 +410,12 @@ def test_generalist_mode_context_rejects_unknown_rollout_mode() -> None:
         reference_runtime_module._generalist_mode_for_action_conditioning("unknown_rollout_mode")
 
 
-def test_generalist_conditional_local_window_covers_full_previous_video_action_chunk() -> None:
+def test_generalist_conditional_local_window_sees_one_previous_video_frame_only() -> None:
     profile = build_chunked_temporal_exact_attention_profile(
         latent_shape=(1, 1, 8, 1, 1),
         action_shape=(1, 1, 8, 1, 1),
         padded_length=0,
-        chunk_size=4,
+        chunk_size=1,
         window_size=3,
         patch_size=(1, 1, 1),
         text_token_count=0,
@@ -422,6 +423,7 @@ def test_generalist_conditional_local_window_covers_full_previous_video_action_c
         device=torch.device("cpu"),
         build_dense_masks=True,
         current_block_coupling=CurrentBlockCoupling.JOINT,
+        history_stream_visibility=ParallelHistoryStreamVisibility.VIDEO_ONLY,
     )
     assert profile.self_attention_mask is not None
     mask = profile.self_attention_mask
@@ -430,12 +432,17 @@ def test_generalist_conditional_local_window_covers_full_previous_video_action_c
     current_video_noisy_frame4 = 4
     current_video_clean_frame4 = latent_tokens + 4
     current_action_noisy_frame4 = 2 * latent_tokens + 4
-    previous_video_clean_frame0 = latent_tokens + 0
-    previous_action_clean_frame0 = 2 * latent_tokens + action_tokens + 0
+    previous_video_clean_frame3 = latent_tokens + 3
+    older_video_clean_frame2 = latent_tokens + 2
+    previous_action_clean_frame3 = 2 * latent_tokens + action_tokens + 3
     current_action_clean_frame4 = 2 * latent_tokens + action_tokens + 4
 
-    assert mask[current_action_noisy_frame4, previous_video_clean_frame0]
-    assert mask[current_action_noisy_frame4, previous_action_clean_frame0]
+    assert mask[current_video_noisy_frame4, previous_video_clean_frame3]
+    assert not mask[current_video_noisy_frame4, older_video_clean_frame2]
+    assert not mask[current_video_noisy_frame4, previous_action_clean_frame3]
+    assert mask[current_action_noisy_frame4, previous_video_clean_frame3]
+    assert not mask[current_action_noisy_frame4, older_video_clean_frame2]
+    assert not mask[current_action_noisy_frame4, previous_action_clean_frame3]
     assert not mask[current_video_noisy_frame4, current_video_clean_frame4]
     assert not mask[current_action_noisy_frame4, current_action_clean_frame4]
 
@@ -443,7 +450,7 @@ def test_generalist_conditional_local_window_covers_full_previous_video_action_c
         latent_shape=(1, 1, 8, 1, 1),
         action_shape=(1, 1, 8, 1, 1),
         padded_length=0,
-        chunk_size=4,
+        chunk_size=1,
         window_size=2,
         patch_size=(1, 1, 1),
         text_token_count=0,
@@ -451,12 +458,13 @@ def test_generalist_conditional_local_window_covers_full_previous_video_action_c
         device=torch.device("cpu"),
         build_dense_masks=True,
         current_block_coupling=CurrentBlockCoupling.JOINT,
+        history_stream_visibility=ParallelHistoryStreamVisibility.VIDEO_ONLY,
     )
     assert too_narrow_profile.self_attention_mask is not None
-    assert not too_narrow_profile.self_attention_mask[current_action_noisy_frame4, previous_video_clean_frame0]
+    assert not too_narrow_profile.self_attention_mask[current_action_noisy_frame4, previous_video_clean_frame3]
 
 
-def test_generalist_conditional_rollout_modes_use_local_history_window() -> None:
+def test_generalist_conditional_rollout_modes_use_one_frame_history_window() -> None:
     policy_config = ParallelStreamPolicyConfig(
         hidden_size=32,
         runtime_mode=ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
@@ -478,6 +486,13 @@ def test_generalist_conditional_rollout_modes_use_local_history_window() -> None
             fallback_window_size=policy_config.attn_window,
         )
         == 3
+    )
+    assert (
+        reference_runtime_module._chunk_size_for_generalist_conditioning(
+            JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+            fallback_chunk_size=4,
+        )
+        == 1
     )
     assert (
         reference_runtime_module._window_size_for_generalist_conditioning(
@@ -3903,15 +3918,21 @@ def test_action_conditioned_override_after_warmup_uses_local_startup_window(monk
     )
 
     assert cache["debug_last_warmup"]["rollout_window_size"] == 3
+    assert cache["debug_last_warmup"]["rollout_frame_chunk_size"] == 1
+    assert cache["debug_last_warmup"]["history_stream_visibility"] == "video_only"
     assert transformer.cache_attn_windows[cache["cache_name"]] == 3
     assert output.debug["rollout_window_size"] == 3
+    assert output.debug["rollout_frame_chunk_size"] == 1
+    assert output.debug["history_stream_visibility"] == "video_only"
     assert output.debug["forced_clean_action_conditioning"] is True
+    assert output.action_pred.shape == (1, 2, 4)
     assert captured_forwards == [3]
     assert captured_writes
     assert all(int(write["window_size"]) == 3 for write in captured_writes)
+    assert all(int(write["chunk_size"]) == 1 for write in captured_writes)
 
 
-def test_conditional_exact_cache_warmup_retains_only_one_history_chunk() -> None:
+def test_conditional_exact_cache_warmup_keeps_one_recent_history_frame() -> None:
     torch.manual_seed(0)
     backbone_config = SharedVideoTransformerConfig(
         implementation="shared_transformer",
@@ -3963,10 +3984,14 @@ def test_conditional_exact_cache_warmup_retains_only_one_history_chunk() -> None
 
     cache_state = transformer._resolve_exact_cache_state(warm_cache["cache_name"])
     assert cache_state is not None
+    assert warm_cache["debug_last_warmup"]["warmup_retained_frames"] == 1
+    assert warm_cache["debug_last_warmup"]["warmup_dropped_frames"] == 5
+    assert warm_cache["debug_last_warmup"]["warmup_frame_start"] == 5
+    assert warm_cache["debug_last_warmup"]["rollout_window_size"] == 3
     assert cache_state.payload["attn_window"] == 3
     layer_state = cache_state.backend_payload.layer_states[0]
     assert layer_state.slot_mask is not None
-    assert int(layer_state.slot_mask.sum().item()) == 4
+    assert int(layer_state.slot_mask.sum().item()) == 2
 
 
 def test_slot_pool_deferred_eviction_keeps_prefix_visible_during_update_attention() -> None:
@@ -4238,7 +4263,8 @@ def test_video_conditioned_action_returns_prediction_but_commits_clean_action_hi
 
     assert captured_writes
     cached_action_latents = captured_writes[-1]["action_latents"]
-    torch.testing.assert_close(cached_action_latents, clean_commit.to(dtype=cached_action_latents.dtype))
+    assert output.debug["rollout_frame_chunk_size"] == 1
+    torch.testing.assert_close(cached_action_latents, clean_commit[:, :, :1].to(dtype=cached_action_latents.dtype))
     assert output.debug["returned_action_source"] == "predicted"
     assert output.debug["cache_action_source"] == "commit_override"
     assert not torch.allclose(output.action_pred, torch.full_like(output.action_pred, 123.0))
@@ -4833,7 +4859,9 @@ def test_generalist_joint_denoising_action_conditioned_video_uses_clean_action_s
     assert torch.all(input_dict["latent_dict"]["loss_mask"] == 1)
     assert torch.equal(input_dict["latent_dict"]["latent"], video_latents)
     assert torch.equal(input_dict["action_dict"]["latent"], action_latents)
+    assert input_dict["chunk_size"] == 2
     assert input_dict["window_size"] == 3
+    assert input_dict["history_stream_visibility"] == ParallelHistoryStreamVisibility.VIDEO_ONLY.value
     assert input_dict["generalist_conditional_history_chunks"] == 1
     shared_sigmas = input_dict["joint_denoise_shared_sigmas"]
     latent_sigmas = artifacts.latent_scheduler.sigma_for_timesteps(input_dict["latent_dict"]["timesteps"][0])
@@ -4854,7 +4882,9 @@ def test_generalist_joint_denoising_video_conditioned_action_uses_clean_video_sl
     assert torch.all(input_dict["action_dict"]["loss_mask"] == 1)
     assert torch.equal(input_dict["latent_dict"]["latent"], video_latents)
     assert torch.count_nonzero(input_dict["action_dict"]["latent"]) > 0
+    assert input_dict["chunk_size"] == 2
     assert input_dict["window_size"] == 3
+    assert input_dict["history_stream_visibility"] == ParallelHistoryStreamVisibility.VIDEO_ONLY.value
     assert input_dict["generalist_conditional_history_chunks"] == 1
     shared_sigmas = input_dict["joint_denoise_shared_sigmas"]
     expected_action_timesteps = artifacts.action_scheduler.timestep_matching_sigma(shared_sigmas)

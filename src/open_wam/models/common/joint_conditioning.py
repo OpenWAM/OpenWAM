@@ -9,6 +9,9 @@ from open_wam.configs.enums import StrEnum
 
 ModeEnumT = TypeVar("ModeEnumT", bound=StrEnum)
 
+CONDITIONAL_SINGLE_HISTORY_CHUNK_SIZE_FRAMES = 1
+CONDITIONAL_SINGLE_HISTORY_VIDEO_FRAME_BLOCK_WINDOW = 3
+
 
 @dataclass(frozen=True)
 class JointConditioningModeSemantics:
@@ -36,9 +39,14 @@ class JointConditioningModeSemantics:
     def is_conditional(self) -> bool:
         return not self.is_joint
 
+    def chunk_size_frames(self, *, fallback_chunk_size: int) -> int:
+        if self.conditional_history_chunks > 0:
+            return CONDITIONAL_SINGLE_HISTORY_CHUNK_SIZE_FRAMES
+        return max(1, int(fallback_chunk_size))
+
     def attention_window_size(self, *, fallback_window_size: int) -> int:
         if self.conditional_history_chunks > 0:
-            return one_history_chunk_block_window()
+            return CONDITIONAL_SINGLE_HISTORY_VIDEO_FRAME_BLOCK_WINDOW
         return max(1, int(fallback_window_size))
 
 
@@ -96,8 +104,12 @@ def resolve_generalist_joint_conditioning_semantics(
       slot, video loss is masked, action loss remains active, and task text is
       dropped by default.
 
-    Conditional modes also force clean video condition slots and use one local
-    history chunk.
+    Conditional modes use one local clean video-history chunk. Training callers
+    keep their sampled GJD chunk size; rollout helpers can use
+    `chunk_size_frames` to force a one-frame conditional chunk. In the packed
+    video/action block layout, a block window of three reaches exactly the
+    previous clean video chunk and excludes older chunks when history stream
+    visibility is video-only.
     """
 
     resolved_mode = mode_value(mode)
@@ -182,6 +194,23 @@ def generalist_joint_conditioning_window_size(
     return semantics.attention_window_size(fallback_window_size=fallback_window_size)
 
 
+def generalist_joint_conditioning_chunk_size(
+    mode: ModeEnumT | str,
+    *,
+    joint_mode: ModeEnumT,
+    action_conditioned_video_mode: ModeEnumT,
+    video_conditioned_action_mode: ModeEnumT,
+    fallback_chunk_size: int,
+) -> int:
+    semantics = resolve_generalist_joint_conditioning_semantics(
+        mode,
+        joint_mode=joint_mode,
+        action_conditioned_video_mode=action_conditioned_video_mode,
+        video_conditioned_action_mode=video_conditioned_action_mode,
+    )
+    return semantics.chunk_size_frames(fallback_chunk_size=fallback_chunk_size)
+
+
 def should_drop_text_for_conditioning_mode(
     mode: ModeEnumT,
     *,
@@ -195,14 +224,3 @@ def should_drop_text_for_conditioning_mode(
     if drop_text_conditioning is not None:
         return bool(drop_text_conditioning)
     return False
-
-
-def one_history_chunk_block_window() -> int:
-    """Return the block-local window that covers one full previous V/A chunk.
-
-    Packed M1/M5 joint layouts assign video and action chunks to adjacent block
-    ids. The farthest immediate-history edge is current action -> previous
-    video, which is three block ids away.
-    """
-
-    return 3

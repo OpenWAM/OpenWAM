@@ -73,20 +73,19 @@ data:
     include_gripper: true
     gripper_representation: action_command
     gripper_action_index: -1
-  # Opt-in dynamics mixture for GJD training. Leave roots null for the legacy
-  # demo-only sampler; set `policy_variant.generalist_training_paradigm:
-  # mixed_dynamics` and point these roots at encoded counterfactual latents to
-  # activate the 60/10/10/10/10 real/counterfactual bucket mixer.
+  # Default GJD mixed-dynamics sampler. Keep this in parity with the maintained
+  # M5 legacy-prefix full-segment W64 joint command: replacement source draws,
+  # uniform weights, no extra conditional-history cap.
   generalist_dynamics_mixture:
-    train_latent_root: null
-    val_latent_root: null
+    train_latent_root: "${paths.datasets.libero_gjd_counterfactual_train_latent_root}"
+    val_latent_root: "${paths.datasets.libero_gjd_counterfactual_val_latent_root}"
     allow_train_latent_root_for_val: false
     real_joint_weight: 0.6
     real_action_conditioned_video_weight: 0.1
     real_video_conditioned_action_weight: 0.1
     counterfactual_action_conditioned_video_weight: 0.1
     counterfactual_video_conditioned_action_weight: 0.1
-    conditional_history_frames: 16
+    conditional_history_frames: null
 
 backbone:
   implementation: shared_transformer
@@ -113,7 +112,7 @@ policy_variant:
   name: parallel_stream
   runtime_mode: lingbot_exact_action_conditioned
   variant_profile: generalist_joint_denoising
-  generalist_training_paradigm: demo_only
+  generalist_training_paradigm: mixed_dynamics
   current_block_coupling: joint
   reference_profile: libero_joint
   hidden_size: 3072
@@ -127,6 +126,12 @@ policy_variant:
   video_action_condition_source: noisy_action
   video_action_attention_scope: block_local
   proprio_context_mode: per_chunk_additive
+  # Known M1 GJD issue: M5 is the standard GJD contract and uses
+  # legacy-prefix single-frame condition latents. M1 keeps full clean modality
+  # slots for conditional FDM/IDM; forcing the M5 single-frame condition source
+  # onto current M1 legacy full-segment samples would require a pre-target
+  # context/loss boundary, while this legacy uniform segment path has
+  # loss_frame_start=0.
   # Current GJD uses independent video/action noise clocks for parity with the
   # standard M5 legacy-prefix W64 joint baseline. Use `match_sigma` only for a
   # sigma-matched ablation.
@@ -163,7 +168,7 @@ training:
   warmup_steps: 10
   gradient_accumulation_steps: 10
   max_grad_norm: 2.0
-  num_steps: 5000
+  num_steps: 20000
   text_condition_dropout_prob: 0.1
   enabled_objectives: [latent, action]
   latent_loss_weight: 1.0
@@ -215,7 +220,10 @@ trainer:
   loop_policy: steps
   strategy: fsdp
   save_interval: 100
+  # GJD defaults to exact-resumable checkpoints. The checkpoint manager still
+  # exports model_state.pt alongside full_training_state.pt for rollout/eval.
   checkpoint_mode: full_training_state
+  max_checkpoints_to_keep: 3
   export_runtime_backbone: true
   enable_jsonl_logging: true
   enable_wandb: true

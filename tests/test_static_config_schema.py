@@ -489,7 +489,7 @@ trainer:
 
 
 @pytest.mark.unit
-def test_static_validator_rejects_replacement_order_with_mixed_dynamics(tmp_path: Path) -> None:
+def test_static_validator_accepts_replacement_order_with_mixed_dynamics(tmp_path: Path) -> None:
     config_path = tmp_path / "mixed_dynamics_replacement_order.yaml"
     config_path.write_text(
         """
@@ -526,8 +526,7 @@ trainer:
 
     report = validate_config_file(config_path, repo_root=tmp_path)
 
-    assert not report.ok
-    assert any(issue.path == "data.sample_construction.sample_order_mode" for issue in report.errors)
+    assert report.ok
 
 
 @pytest.mark.unit

@@ -852,17 +852,11 @@ def _validate_mixed_dynamics_source_sampling(config: ExperimentConfig) -> None:
             "`trainer.batch_adapter=latents` because the mixed-dynamics source mixture wraps latent datasets."
         )
     sample_construction = config.data.sample_construction
-    if sample_construction.sample_order_mode == SampleOrderMode.REPLACEMENT:
-        raise ValueError(
-            "`data.sample_construction.sample_order_mode=replacement` is not supported with "
-            "`policy_variant.generalist_training_paradigm=mixed_dynamics` because the mixed-dynamics "
-            "wrapper owns source sampling."
-        )
     if sample_construction.sample_weight_mode != SampleWeightMode.UNIFORM:
         raise ValueError(
             "`data.sample_construction.sample_weight_mode` must be `uniform` with "
             "`policy_variant.generalist_training_paradigm=mixed_dynamics` because the mixed-dynamics "
-            "wrapper owns source sampling."
+            "wrapper owns source sampling and only preserves parity for uniform replacement draws."
         )
 
 

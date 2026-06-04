@@ -243,7 +243,7 @@ trainer:
     assert config.data.generalist_dynamics_mixture.conditional_history_frames == 8
 
 
-def test_generalist_mixed_dynamics_rejects_replacement_sample_order(tmp_path: Path) -> None:
+def test_generalist_mixed_dynamics_accepts_replacement_sample_order(tmp_path: Path) -> None:
     config_path = tmp_path / "mixed_dynamics_replacement_order.yaml"
     config_path.write_text(
         """
@@ -252,7 +252,12 @@ data:
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
   sample_construction:
+    mode: uniform_segment
     sample_order_mode: replacement
+    chunk_size: 4
+    window_size: 64
+    randomize_geometry: true
+    sample_weight_mode: uniform
   action_schema:
     action_dim: 7
     action_horizon: 16
@@ -282,8 +287,17 @@ trainer:
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="sample_order_mode=replacement"):
-        load_experiment_config(config_path)
+    config = load_experiment_config(config_path)
+
+    assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.MIXED_DYNAMICS
+    assert config.data.sample_construction.sample_order_mode == SampleOrderMode.REPLACEMENT
+    assert config.data.sample_construction.chunk_size == 4
+    assert config.data.sample_construction.window_size == 64
+    assert config.data.sample_construction.randomize_geometry is True
+    assert config.data.sample_construction.sample_weight_mode == SampleWeightMode.UNIFORM
+    assert config.data.generalist_dynamics_mixture.train_latent_root == "/tmp/counterfactual_train/encoded_latents"
+    assert config.data.generalist_dynamics_mixture.val_latent_root == "/tmp/counterfactual_val/encoded_latents"
+    assert config.data.generalist_dynamics_mixture.conditional_history_frames is None
 
 
 def test_generalist_mixed_dynamics_rejects_views_batch_adapter(tmp_path: Path) -> None:
@@ -1300,12 +1314,15 @@ def test_m1_generalist_joint_denoising_yaml_config_loads() -> None:
     assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.INDEPENDENT
     assert config.policy_variant.attn_window == 30
     assert config.policy_variant.parallel_sequence_contract == ParallelSequenceContract.DEFAULT
+    assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.MIXED_DYNAMICS
     assert config.data.sample_construction.mode == WindowSamplingMode.UNIFORM_SEGMENT
     assert config.data.sample_construction.sample_order_mode == SampleOrderMode.REPLACEMENT
     assert config.data.sample_construction.window_size == 64
     assert config.data.sample_construction.segment_min_frames == 1000
     assert config.data.sample_construction.segment_max_frames == 1000
     assert config.data.sample_construction.require_full_segment is True
+    assert config.data.generalist_dynamics_mixture.train_latent_root is not None
+    assert config.data.generalist_dynamics_mixture.val_latent_root is not None
     assert config.training.window_size == 64
     assert config.training.sample_loss_weight_mode == SampleLossWeightMode.NONE
     probs = config.policy_variant.joint_denoise_training_mode_probs

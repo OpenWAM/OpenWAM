@@ -9,6 +9,7 @@ import pytest
 import torch
 from torch.utils.data import Dataset
 
+import open_wam.data.generalist_dynamics as generalist_dynamics_module
 from open_wam.configs import (
     ActionSchemaConfig,
     GeneralistDynamicsMixtureConfig,
@@ -19,6 +20,7 @@ from open_wam.configs import (
     WindowSamplingMode,
 )
 from open_wam.configs.variant_semantics import (
+    GENERALIST_TRAINING_BUCKET_METADATA_KEY,
     GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY,
     GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY,
     GENERALIST_TRAINING_SOURCE_METADATA_KEY,
@@ -75,6 +77,11 @@ def test_encoded_counterfactual_dataset_concatenates_context_and_future(tmp_path
     assert torch.equal(sample.actions[:2], torch.zeros(2, 7))
     assert torch.equal(sample.actions[2:6], torch.ones(4, 7))
     assert torch.equal(sample.actions[6:], torch.full((2, 7), 2.0))
+    assert sample.proprio_context_frames is not None
+    assert sample.proprio_context_frames_mask is not None
+    assert sample.proprio_context_frames.shape == (4, 8)
+    assert sample.proprio_context_frames_mask.sum().item() == 0
+    assert sample.metadata["proprio_context_source"] == "unavailable_zero_mask"
     assert sample.task_text is None
     assert sample.text_context is not None
     assert torch.equal(sample.text_context, torch.zeros(3, 4))
@@ -86,6 +93,130 @@ def test_encoded_counterfactual_dataset_concatenates_context_and_future(tmp_path
     assert sample.metadata["start_padding_mode"] == "none"
     assert sample.metadata["lingbot_window_action_alignment"]["leading_zero_action_frames"] == 1
     assert sample.metadata["lingbot_window_action_alignment"]["leading_zero_action_mask"] == 1.0
+
+
+def test_encoded_counterfactual_dataset_uses_saved_observation_state(tmp_path: Path) -> None:
+    encoded_root, empty_text_path = _write_encoded_counterfactual_fixture(tmp_path, include_state=True)
+    data_config = _data_config(empty_text_path)
+
+    dataset = EncodedCounterfactualDynamicsLatentDataset(data_config, encoded_root, split="train")
+    sample = dataset[0]
+
+    assert sample.proprio_context_frames is not None
+    assert sample.proprio_context_frames_mask is not None
+    assert sample.proprio_context_state is not None
+    assert sample.proprio_context_state_mask is not None
+    torch.testing.assert_close(sample.proprio_context_frames[:, 0], torch.tensor([10.0, 14.0, 20.0, 24.0]))
+    torch.testing.assert_close(sample.proprio_context_frames_mask, torch.ones(4, 8))
+    torch.testing.assert_close(sample.proprio_context_state, sample.proprio_context_frames)
+    torch.testing.assert_close(sample.proprio_context_state_mask, sample.proprio_context_frames_mask)
+    torch.testing.assert_close(sample.state[:, 0], torch.tensor([14.0]))
+    torch.testing.assert_close(sample.state_mask, torch.ones(1, 8))
+    assert sample.metadata["proprio_context_source"] == "observation.state"
+    assert sample.metadata["state_source_key"] == "observation.state"
+
+
+def test_encoded_counterfactual_dataset_accepts_source_dataset_root_manifest(tmp_path: Path) -> None:
+    encoded_root, empty_text_path = _write_encoded_counterfactual_fixture(tmp_path)
+    manifest_path = encoded_root / "manifest.json"
+    raw_root = json.loads(manifest_path.read_text(encoding="utf-8"))["dataset_root"]
+    manifest_path.write_text(json.dumps({"source_dataset_root": raw_root}), encoding="utf-8")
+    data_config = _data_config(empty_text_path)
+
+    dataset = EncodedCounterfactualDynamicsLatentDataset(data_config, encoded_root, split="train")
+    sample = dataset[0]
+
+    assert sample.metadata["dataset_kind"] == "encoded_counterfactual_dynamics"
+    assert sample.metadata["counterfactual_sample_id"] == 0
+
+
+def test_encoded_counterfactual_dataset_rejects_missing_condition_latents_for_offset(tmp_path: Path) -> None:
+    encoded_root, empty_text_path = _write_encoded_counterfactual_fixture(tmp_path)
+    data_config = replace(
+        _data_config(empty_text_path),
+        sample_construction=SampleConstructionConfig(
+            chunk_size=2,
+            window_size=4,
+            condition_source_frame_offset=-1,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="missing explicit condition latents"):
+        EncodedCounterfactualDynamicsLatentDataset(data_config, encoded_root, split="train")
+
+
+def test_encoded_counterfactual_dataset_prefers_encoded_single_frame_condition_latents(tmp_path: Path) -> None:
+    encoded_root, empty_text_path = _write_encoded_counterfactual_fixture(
+        tmp_path,
+        include_condition_latents=True,
+    )
+    data_config = replace(
+        _data_config(empty_text_path),
+        sample_construction=SampleConstructionConfig(
+            chunk_size=2,
+            window_size=4,
+            condition_source_frame_offset=-1,
+        ),
+    )
+
+    dataset = EncodedCounterfactualDynamicsLatentDataset(data_config, encoded_root, split="train")
+    sample = dataset[0]
+
+    assert sample.condition_latents is not None
+    torch.testing.assert_close(sample.condition_latents[:, :2], torch.full((2, 2, 2, 2), 7.0))
+    torch.testing.assert_close(sample.condition_latents[:, 2:], torch.full((2, 2, 2, 2), 9.0))
+    assert sample.metadata["has_condition_latents"] is True
+    assert sample.metadata["condition_source_frame_offset"] == -1
+    assert sample.metadata["condition_latents_source"] == "encoded_single_frame"
+
+
+def test_encoded_counterfactual_dataset_randomizes_uniform_segment_geometry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    encoded_root, empty_text_path = _write_encoded_counterfactual_fixture(tmp_path)
+    data_config = replace(
+        _data_config(empty_text_path),
+        sample_construction=SampleConstructionConfig(
+            mode=WindowSamplingMode.UNIFORM_SEGMENT,
+            chunk_size=4,
+            window_size=8,
+            randomize_geometry=True,
+        ),
+    )
+    draws = iter((1, 7))
+
+    def fake_randint(low: int, high: int) -> int:
+        value = next(draws)
+        assert low <= value <= high
+        return value
+
+    monkeypatch.setattr(generalist_dynamics_module.random, "randint", fake_randint)
+
+    dataset = EncodedCounterfactualDynamicsLatentDataset(data_config, encoded_root, split="train")
+    sample = dataset[0]
+
+    assert sample.metadata["sampled_chunk_size"] == 1
+    assert sample.metadata["sampled_window_size"] == 7
+
+
+def test_encoded_counterfactual_dataset_keeps_fixed_geometry_when_disabled(tmp_path: Path) -> None:
+    encoded_root, empty_text_path = _write_encoded_counterfactual_fixture(tmp_path)
+    data_config = replace(
+        _data_config(empty_text_path),
+        sample_construction=SampleConstructionConfig(
+            mode=WindowSamplingMode.UNIFORM_SEGMENT,
+            chunk_size=4,
+            window_size=8,
+            randomize_geometry=False,
+        ),
+    )
+
+    dataset = EncodedCounterfactualDynamicsLatentDataset(data_config, encoded_root, split="train")
+    sample = dataset[0]
+
+    assert sample.metadata["sampled_chunk_size"] == 4
+    assert sample.metadata["sampled_window_size"] == 8
 
 
 def test_encoded_counterfactual_dataset_uses_hierarchical_fixed_segment_semantics(tmp_path: Path) -> None:
@@ -116,6 +247,39 @@ def test_encoded_counterfactual_dataset_uses_hierarchical_fixed_segment_semantic
     assert sample.metadata["loss_frame_end"] <= sample.metadata["segment_valid_latent_frames"]
     assert sample.metadata["segment_padded_latent_frames"] >= 1
     assert sample.metadata["hierarchical_epoch_sample_count"] == 3
+
+
+def test_encoded_counterfactual_dataset_short_context_uses_actual_history_boundary(tmp_path: Path) -> None:
+    encoded_root, empty_text_path = _write_encoded_counterfactual_fixture(
+        tmp_path,
+        context_latent_frames=1,
+        target_latent_frames=4,
+    )
+    data_config = replace(
+        _data_config(empty_text_path),
+        sample_construction=SampleConstructionConfig(
+            mode=WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
+            segment_frames=6,
+            chunk_size=2,
+            window_size=4,
+            start_padding_frames=0,
+            tail_padding_policy=TailPaddingPolicy.ZERO_ORDER_HOLD,
+            padded_target_policy=PaddedTargetPolicy.MASK_LOSS,
+        ),
+    )
+
+    dataset = EncodedCounterfactualDynamicsLatentDataset(data_config, encoded_root, split="train")
+    sample = dataset[0]
+
+    assert sample.video_latents.shape == (2, 6, 2, 2)
+    assert torch.equal(sample.video_latents[:, :1], torch.ones(2, 1, 2, 2))
+    assert torch.equal(sample.video_latents[:, 1:5], torch.full((2, 4, 2, 2), 2.0))
+    assert sample.metadata["history_frames"] == 1
+    assert sample.metadata["loss_frame_start"] == 1
+    assert sample.metadata["action_loss_frame_start"] == 1
+    assert sample.metadata["segment_valid_latent_frames"] == 5
+    assert sample.metadata["segment_padded_latent_frames"] == 1
+    assert sample.metadata["lingbot_window_action_alignment"]["leading_zero_action_frames"] == 1
 
 
 def test_generalist_dynamics_mixture_stamps_forced_mode_and_drops_text(tmp_path: Path) -> None:
@@ -402,6 +566,65 @@ def test_generalist_dynamics_mixture_preserves_epoch_offset_sampler(tmp_path: Pa
     assert sample.metadata["seen_draw_key"] == sample.metadata["generalist_source_index"]
 
 
+def test_generalist_dynamics_train_sampler_coordinates_bucket_across_ranks() -> None:
+    real_dataset = _RecordingDrawKeyDataset(length=10_000)
+    counterfactual_dataset = _RecordingDrawKeyDataset(length=10_000)
+    mixture = GeneralistDynamicsMixtureDataset(
+        real_dataset=real_dataset,
+        counterfactual_dataset=counterfactual_dataset,
+        mixture_config=GeneralistDynamicsMixtureConfig(
+            real_joint_weight=0.6,
+            real_action_conditioned_video_weight=0.0,
+            real_video_conditioned_action_weight=0.0,
+            counterfactual_action_conditioned_video_weight=0.2,
+            counterfactual_video_conditioned_action_weight=0.2,
+        ),
+        split="train",
+    )
+
+    indices = [
+        next(iter(mixture.build_train_sampler(world_size=4, rank=rank)))
+        for rank in range(4)
+    ]
+    samples = [mixture[index] for index in indices]
+
+    assert indices == [0, 1, 2, 3]
+    assert len({sample.metadata[GENERALIST_TRAINING_BUCKET_METADATA_KEY] for sample in samples}) == 1
+    assert len({sample.metadata[GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY] for sample in samples}) == 1
+    assert len({sample.metadata[GENERALIST_TRAINING_SOURCE_METADATA_KEY] for sample in samples}) == 1
+    assert len({sample.metadata["seen_draw_key"] for sample in samples}) > 1
+
+
+def test_generalist_dynamics_train_sampler_coordinates_padded_epoch_tail() -> None:
+    real_dataset = _RecordingDrawKeyDataset(length=5)
+    counterfactual_dataset = _RecordingDrawKeyDataset(length=5)
+    mixture = GeneralistDynamicsMixtureDataset(
+        real_dataset=real_dataset,
+        counterfactual_dataset=counterfactual_dataset,
+        mixture_config=GeneralistDynamicsMixtureConfig(
+            real_joint_weight=0.6,
+            real_action_conditioned_video_weight=0.0,
+            real_video_conditioned_action_weight=0.0,
+            counterfactual_action_conditioned_video_weight=0.2,
+            counterfactual_video_conditioned_action_weight=0.2,
+        ),
+        split="train",
+    )
+
+    samplers = [mixture.build_train_sampler(world_size=4, rank=rank) for rank in range(4)]
+    for sampler in samplers:
+        sampler.set_epoch(1)
+    indices = [next(iter(sampler)) for sampler in samplers]
+    samples = [mixture[index] for index in indices]
+
+    assert indices == [8, 9, 10, 11]
+    assert len({sample.metadata[GENERALIST_TRAINING_BUCKET_METADATA_KEY] for sample in samples}) == 1
+    assert len({sample.metadata[GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY] for sample in samples}) == 1
+    assert len({sample.metadata[GENERALIST_TRAINING_SOURCE_METADATA_KEY] for sample in samples}) == 1
+    assert all(sample.metadata["generalist_source_index"] >= 5 for sample in samples)
+    assert len({sample.metadata["seen_draw_key"] for sample in samples}) > 1
+
+
 def test_generalist_dynamics_mixture_trim_start_padding_keeps_action_source_start(tmp_path: Path) -> None:
     encoded_root, empty_text_path = _write_encoded_counterfactual_fixture(tmp_path)
     data_config = _data_config(empty_text_path)
@@ -538,7 +761,14 @@ def _replace_data_mixture_root(data_config: GenericDataConfig, root: str) -> Gen
     )
 
 
-def _write_encoded_counterfactual_fixture(tmp_path: Path) -> tuple[Path, Path]:
+def _write_encoded_counterfactual_fixture(
+    tmp_path: Path,
+    *,
+    include_state: bool = False,
+    include_condition_latents: bool = False,
+    context_latent_frames: int = 2,
+    target_latent_frames: int = 2,
+) -> tuple[Path, Path]:
     raw_root = tmp_path / "raw"
     encoded_root = tmp_path / "encoded"
     (raw_root / "metadata").mkdir(parents=True)
@@ -582,25 +812,51 @@ def _write_encoded_counterfactual_fixture(tmp_path: Path) -> tuple[Path, Path]:
     _write_jsonl(encoded_root / "metadata" / "encoded_contexts.jsonl", [context_row])
     _write_jsonl(encoded_root / "metadata" / "encoded_transitions.jsonl", [transition_row])
     (encoded_root / "manifest.json").write_text(
-        json.dumps({"dataset_root": str(raw_root)}),
+        json.dumps(
+            {
+                "dataset_root": str(raw_root),
+                "condition_latents": bool(include_condition_latents),
+                "condition_source_frame_offset": -1 if include_condition_latents else 0,
+                "condition_source_frame_policy": "next_latent_source_offset" if include_condition_latents else None,
+            }
+        ),
         encoding="utf-8",
     )
-    np.savez(
-        raw_root / "contexts" / "context_000000.npz",
-        action_context=np.ones((4, 7), dtype=np.float32),
-    )
-    np.savez(
-        raw_root / "samples" / "sample_000000.npz",
-        future_actions=np.full((4, 7), 2.0, dtype=np.float32),
-    )
-    torch.save(
-        {"video_latents": torch.ones(2, 2, 2, 2)},
-        encoded_root / "contexts" / "context_000000_latents.pt",
-    )
-    torch.save(
-        {"target_video_latents": torch.full((2, 2, 2, 2), 2.0)},
-        encoded_root / "samples" / "sample_000000_latents.pt",
-    )
+    action_per_frame = 2
+    context_payload = {
+        "action_context": np.ones((context_latent_frames * action_per_frame, 7), dtype=np.float32)
+    }
+    sample_payload = {
+        "future_actions": np.full((target_latent_frames * action_per_frame, 7), 2.0, dtype=np.float32)
+    }
+    if include_state:
+        context_payload["observation.state"] = (
+            np.arange(10, 15, dtype=np.float32).reshape(5, 1).repeat(8, axis=1)
+        )
+        sample_payload["observation.state"] = (
+            np.arange(20, 25, dtype=np.float32).reshape(5, 1).repeat(8, axis=1)
+        )
+    np.savez(raw_root / "contexts" / "context_000000.npz", **context_payload)
+    np.savez(raw_root / "samples" / "sample_000000.npz", **sample_payload)
+    context_latent_payload = {"video_latents": torch.ones(2, context_latent_frames, 2, 2)}
+    sample_latent_payload = {"target_video_latents": torch.full((2, target_latent_frames, 2, 2), 2.0)}
+    if include_condition_latents:
+        context_latent_payload.update(
+            {
+                "condition_video_latents": torch.full((2, context_latent_frames, 2, 2), 7.0),
+                "condition_source_frame_offset": -1,
+                "condition_source_frame_policy": "next_latent_source_offset",
+            }
+        )
+        sample_latent_payload.update(
+            {
+                "target_condition_video_latents": torch.full((2, target_latent_frames, 2, 2), 9.0),
+                "condition_source_frame_offset": -1,
+                "condition_source_frame_policy": "next_latent_source_offset",
+            }
+        )
+    torch.save(context_latent_payload, encoded_root / "contexts" / "context_000000_latents.pt")
+    torch.save(sample_latent_payload, encoded_root / "samples" / "sample_000000_latents.pt")
     return encoded_root, empty_text_path
 
 

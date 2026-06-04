@@ -269,12 +269,6 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
                     "trainer.batch_adapter",
                     "`generalist_training_paradigm=mixed_dynamics` requires `trainer.batch_adapter=latents`.",
                 )
-            if sample_construction is not None and sample_construction.get("sample_order_mode") == SampleOrderMode.REPLACEMENT.value:
-                issues.error(
-                    "data.sample_construction.sample_order_mode",
-                    "`sample_order_mode=replacement` is not supported with "
-                    "`generalist_training_paradigm=mixed_dynamics` because the mixed-dynamics wrapper owns sampling.",
-                )
             if (
                 sample_construction is not None
                 and sample_construction.get("sample_weight_mode") not in (None, SampleWeightMode.UNIFORM.value)
@@ -282,7 +276,7 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
                 issues.error(
                     "data.sample_construction.sample_weight_mode",
                     "`sample_weight_mode` must be `uniform` with `generalist_training_paradigm=mixed_dynamics` "
-                    "because the mixed-dynamics wrapper owns sampling.",
+                    "because the mixed-dynamics wrapper only preserves parity for uniform replacement draws.",
                 )
         _validate_positive_ints(policy_variant, issues, "policy_variant", ("hidden_size",))
     if action_decoder is not None:

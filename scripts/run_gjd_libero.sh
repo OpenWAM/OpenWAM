@@ -62,14 +62,40 @@ Examples:
   bash scripts/run_gjd_libero.sh rollout --method m5 --ablation pure_joint --checkpoint /path/to/checkpoint_step_N
 
 Contracts:
-  - M1 and M5 GJD use the current full-segment W64 training setup.
+  - M5 is the maintained standard GJD contract. Treat M1 GJD as a
+    compatibility/diagnostic path until its known context contract issue is
+    resolved.
+  - M1 and M5 GJD both use the current full-segment W64 training setup.
+  - Vanilla and mode-token training default to the mixed real/counterfactual
+    dynamics source mixer; configure the counterfactual latent roots through
+    configs/local_paths.yaml or explicit --set overrides.
+  - pure_joint disables the mixed source mixer and stays demo-only.
   - Fixed-128 GJD training is deprecated; use this launcher for GJD comparisons.
-  - M5 GJD uses the legacy-prefix per-chunk proprio contract. M1 GJD keeps
-    full clean modality slots for conditional modes while sharing the W64 sampler.
+  - M5 GJD uses the legacy-prefix per-chunk proprio contract and requires
+    single-frame condition latents:
+      policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio
+      policy_variant.context_condition_latent_source=single_frame_condition_latent
+      policy_variant.use_condition_latents=true
+      policy_variant.require_condition_latents=true
+      data.sample_construction.condition_source_frame_offset=-1
+      data.sample_construction.start_padding_frames=0
+      data.sample_construction.target_alignment=legacy
+  - Known M1 GJD issue: M1 does not use the M5 legacy-prefix/single-frame
+    condition-latent default. It keeps full clean modality slots so conditional
+    FDM/IDM modes are representable. Forcing the M5 single-frame condition
+    source on current M1 legacy full-segment samples would require a pre-target
+    context/loss frame; the current legacy uniform segment path has
+    loss_frame_start=0, and M1's legacy-prefix path supports only pure joint.
+    Current M1 differences from M5:
+      policy_variant.parallel_sequence_contract=default
+      policy_variant.context_condition_latent_source=video_latents
+      policy_variant.require_condition_latents=false
+      data.sample_construction.condition_source_frame_offset=0
+      rollout uses run_libero_realtime_sandbox.py, not the M5 MoT visualization path
   - M5 GJD rollout uses the standard MoT visualization path with the same
     compatibility opt-in as maintained M5 joint rollout: LingBot streaming VAE,
     MoT inference window 30, one startup model frame, five env init steps, max
-    timestep 800, and max chunks 50 unless explicitly overridden.
+    timestep 1500, and max chunks 100 unless explicitly overridden.
   - Defaults to the maintained video-only LIBERO step-3500 transformer in the config.
   - Auto-creates a method+ablation-specific save root unless --save-root/--run-name is supplied.
   - Auto-creates a method+ablation-specific rollout suffix unless --suffix is supplied.
@@ -138,6 +164,28 @@ GJD_VANILLA_PROB_MAP='{"joint": 0.6, "action_conditioned_video": 0.2, "video_con
 GJD_PURE_JOINT_PROB_MAP='{"joint": 1.0, "action_conditioned_video": 0.0, "video_conditioned_action": 0.0}'
 GJD_CFG_PATH="configs/experiments/${GJD_CONFIG_NAME}.yaml"
 GJD_M5_CURRENT_FRONTEND_ENCODE_MODE="lingbot_streaming_vae"
+
+print_gjd_method_contract_notice() {
+  if [[ "${GJD_METHOD}" != "m1" ]]; then
+    return 0
+  fi
+  cat >&2 <<'EOF'
+[run_gjd_libero] known M1 GJD issue:
+[run_gjd_libero]   M5 is the maintained standard GJD contract. M5 uses legacy-prefix
+[run_gjd_libero]   single-frame condition latents with condition_source_frame_offset=-1,
+[run_gjd_libero]   start_padding_frames=0, and target_alignment=legacy.
+[run_gjd_libero]   M1 GJD is a compatibility/diagnostic path. It does not default to
+[run_gjd_libero]   M5's single-frame condition-latent contract because current M1
+[run_gjd_libero]   conditional FDM/IDM needs full clean modality slots, while M1
+[run_gjd_libero]   legacy-prefix only supports pure joint and the current legacy
+[run_gjd_libero]   full-segment samples have loss_frame_start=0.
+[run_gjd_libero]   Current M1 differences: parallel_sequence_contract=default,
+[run_gjd_libero]   context_condition_latent_source=video_latents,
+[run_gjd_libero]   require_condition_latents=false, condition_source_frame_offset=0,
+[run_gjd_libero]   and rollout uses run_libero_realtime_sandbox.py instead of the
+[run_gjd_libero]   M5 MoT visualization path.
+EOF
+}
 
 gjd_has_explicit_train_output_identity() {
   local previous_was_set=0
@@ -317,8 +365,8 @@ build_default_m5_rollout_semantic_args() {
   gjd_append_default_arg rollout_semantic_args_ref --mot-inference-window-size "${GJD_M5_MOT_INFERENCE_WINDOW_SIZE:-30}"
   gjd_append_default_arg rollout_semantic_args_ref --startup-model-obs-frames "${GJD_M5_STARTUP_MODEL_OBS_FRAMES:-1}"
   gjd_append_default_arg rollout_semantic_args_ref --startup-env-init-steps "${GJD_M5_STARTUP_ENV_INIT_STEPS:-5}"
-  gjd_append_default_arg rollout_semantic_args_ref --max-timestep "${GJD_M5_MAX_TIMESTEP:-800}"
-  gjd_append_default_arg rollout_semantic_args_ref --max-chunks "${GJD_M5_MAX_CHUNKS:-50}"
+  gjd_append_default_arg rollout_semantic_args_ref --max-timestep "${GJD_M5_MAX_TIMESTEP:-1500}"
+  gjd_append_default_arg rollout_semantic_args_ref --max-chunks "${GJD_M5_MAX_CHUNKS:-100}"
   gjd_append_default_flag rollout_semantic_args_ref --allow-deprecated-libero-config
 }
 
@@ -335,6 +383,10 @@ build_ablation_args() {
       target_args+=(
         --set "${GJD_PROB_PREFIX}=${GJD_PURE_JOINT_PROB_MAP}"
         --set policy_variant.generalist_mode_text_token=false
+        --set policy_variant.generalist_training_paradigm=demo_only
+        --set data.sample_construction.sample_order_mode=replacement
+        --set data.generalist_dynamics_mixture.train_latent_root=null
+        --set data.generalist_dynamics_mixture.val_latent_root=null
       )
       ;;
     mode_token)
@@ -364,6 +416,7 @@ if [[ "${GJD_STAGE}" == "train" ]]; then
   GJD_DEFAULT_TRAIN_TRACKING_ARGS=()
   build_default_train_tracking_args GJD_DEFAULT_TRAIN_TRACKING_ARGS
   echo "[run_gjd_libero] stage=train method=${GJD_METHOD} ablation=${GJD_ABLATION} config=${GJD_CONFIG_NAME}" >&2
+  print_gjd_method_contract_notice
   exec bash "${GJD_TRAIN_LAUNCHER}" \
     "${GJD_DEFAULT_TRAIN_IDENTITY_ARGS[@]}" \
     "${GJD_DEFAULT_TRAIN_TRACKING_ARGS[@]}" \
@@ -408,6 +461,7 @@ else
 fi
 
 echo "[run_gjd_libero] stage=rollout method=${GJD_METHOD} ablation=${GJD_ABLATION} cfg=${GJD_CFG_PATH}" >&2
+print_gjd_method_contract_notice
 if [[ "${OPEN_WAM_PRINT_REALTIME_ARGV:-0}" == "1" ]]; then
   open_wam_print_train_argv_json "${GJD_REALTIME_ARGS[@]}"
   exit 0

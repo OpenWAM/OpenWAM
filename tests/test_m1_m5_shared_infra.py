@@ -13,6 +13,7 @@ from open_wam.configs.variant_semantics import (
 from open_wam.models.common.flow_matching import FlowMatchScheduler
 from open_wam.models.common.flow_noise_plan import sample_coupled_timestep_values, sample_timestep_values
 from open_wam.models.common.joint_conditioning import (
+    generalist_joint_conditioning_chunk_size,
     generalist_joint_conditioning_window_size,
     resolve_generalist_joint_conditioning_semantics,
     sample_conditioning_mode,
@@ -127,6 +128,8 @@ def test_shared_generalist_joint_conditioning_semantics_cover_m1_and_m5() -> Non
     assert m1_fdm.video_loss_active is True
     assert m1_fdm.drop_text_conditioning is True
     assert m1_fdm.force_clean_video_condition is True
+    assert m1_fdm.conditional_history_chunks == 1
+    assert m1_fdm.chunk_size_frames(fallback_chunk_size=4) == 1
     assert m1_fdm.attention_window_size(fallback_window_size=30) == 3
 
     m1_idm = resolve_generalist_joint_conditioning_semantics(
@@ -138,6 +141,16 @@ def test_shared_generalist_joint_conditioning_semantics_cover_m1_and_m5() -> Non
     assert m1_idm.clean_video_noisy_slot is True
     assert m1_idm.action_loss_active is True
     assert m1_idm.video_loss_active is False
+    assert (
+        generalist_joint_conditioning_chunk_size(
+            JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
+            joint_mode=JointDenoiseTrainingMode.JOINT,
+            action_conditioned_video_mode=JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+            video_conditioned_action_mode=JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
+            fallback_chunk_size=4,
+        )
+        == 1
+    )
     assert (
         generalist_joint_conditioning_window_size(
             JointDenoiseTrainingMode.JOINT,

@@ -871,7 +871,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             cursor=RolloutCursor(
                 current_start_frame=frame_start,
                 block_index=int(next_cache.get("step_index", infer_state.step_index)),
-                chunk_size=self.inference_config.frame_chunk_size,
+                chunk_size=int(next_cache.get("frame_chunk_size", self.inference_config.frame_chunk_size)),
             ),
             cache=next_cache,
         )
@@ -1020,7 +1020,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 infer_artifacts.next_cache.get("frame_start", infer_state.cursor.current_start_frame)
             ),
             block_index=int(infer_artifacts.next_cache.get("step_index", infer_state.step_index)),
-            chunk_size=self.inference_config.frame_chunk_size,
+            chunk_size=int(infer_artifacts.next_cache.get("frame_chunk_size", self.inference_config.frame_chunk_size)),
         )
         infer_artifacts.next_cache["backbone_cache"] = visual_tower.advance_runtime_cache_state(
             visual_tower.resolve_runtime_cache_state(

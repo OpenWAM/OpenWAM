@@ -9,7 +9,13 @@ import subprocess
 import pytest
 import yaml
 
-from open_wam.configs.enums import JointDenoiseTrainingMode, JointTimestepCoupling, MoTGeneralistTrainingMode
+from open_wam.configs.enums import (
+    GeneralistTrainingParadigm,
+    JointDenoiseTrainingMode,
+    JointTimestepCoupling,
+    MoTGeneralistTrainingMode,
+    SampleOrderMode,
+)
 from open_wam.utils.config_loader import load_experiment_config
 from open_wam.utils.config_overrides import apply_config_overrides, parse_override_assignments
 
@@ -228,10 +234,18 @@ def _assert_gjd_ablation_config(config, *, method: str, ablation: str) -> None:
         assert probs[joint] == 1.0
         assert probs[fdm] == 0.0
         assert probs[idm] == 0.0
+        assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.DEMO_ONLY
+        assert config.data.sample_construction.sample_order_mode == SampleOrderMode.REPLACEMENT
+        assert config.data.generalist_dynamics_mixture.train_latent_root is None
+        assert config.data.generalist_dynamics_mixture.val_latent_root is None
     else:
         assert probs[joint] == 0.6
         assert probs[fdm] == 0.2
         assert probs[idm] == 0.2
+        assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.MIXED_DYNAMICS
+        assert config.data.sample_construction.sample_order_mode == SampleOrderMode.REPLACEMENT
+        assert config.data.generalist_dynamics_mixture.train_latent_root is not None
+        assert config.data.generalist_dynamics_mixture.val_latent_root is not None
     assert config.policy_variant.generalist_mode_text_token is (ablation == "mode_token")
 
 
@@ -280,8 +294,17 @@ def _assert_gjd_fullseg_w64_raw_config(raw: dict) -> None:
     assert "start_padding_frames" not in sample
     assert raw["training"]["window_size"] == 64
     assert raw["training"]["sample_loss_weight_mode"] == "none"
+    assert raw["training"]["num_steps"] == 20000
     assert raw["policy_variant"]["joint_timestep_coupling"] == "independent"
+    assert raw["policy_variant"]["generalist_training_paradigm"] == "mixed_dynamics"
     assert raw["policy_variant"]["generalist_mode_text_token"] is False
+    assert raw["trainer"]["checkpoint_mode"] == "full_training_state"
+    assert raw["trainer"]["save_interval"] == 100
+    assert raw["trainer"]["max_checkpoints_to_keep"] == 3
+    mixture = raw["data"]["generalist_dynamics_mixture"]
+    assert mixture["train_latent_root"] == "${paths.datasets.libero_gjd_counterfactual_train_latent_root}"
+    assert mixture["val_latent_root"] == "${paths.datasets.libero_gjd_counterfactual_val_latent_root}"
+    assert mixture["conditional_history_frames"] is None
 
 
 def _deprecated_launcher_result(relative_path: str) -> subprocess.CompletedProcess[str]:
@@ -330,6 +353,55 @@ def test_m1_gjd_config_deprecates_fixed128_for_fullseg_w64() -> None:
     assert "parallel_sequence_contract" not in raw["policy_variant"]
     assert raw["policy_variant"]["attn_window"] == 30
     assert raw["policy_variant"]["preserve_video_pretrain_history"] is True
+
+
+def test_gjd_launcher_help_labels_m5_standard_and_m1_known_issue() -> None:
+    result = subprocess.run(
+        ["bash", str(REPO_ROOT / "scripts/run_gjd_libero.sh"), "--help"],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert "M5 is the maintained standard GJD contract" in result.stdout
+    assert "Known M1 GJD issue" in result.stdout
+    assert "context_condition_latent_source=single_frame_condition_latent" in result.stdout
+    assert "M1's legacy-prefix path supports only pure joint" in result.stdout
+    assert "policy_variant.context_condition_latent_source=video_latents" in result.stdout
+    assert "data.sample_construction.condition_source_frame_offset=0" in result.stdout
+    assert "rollout uses run_libero_realtime_sandbox.py" in result.stdout
+
+
+def test_m1_gjd_launcher_prints_known_issue_notice() -> None:
+    env = os.environ.copy()
+    env.update({"OPEN_WAM_PRINT_TRAIN_ARGV": "1", "NGPU": "1"})
+    result = subprocess.run(
+        [
+            "bash",
+            str(REPO_ROOT / "scripts/run_gjd_libero.sh"),
+            "train",
+            "--method=m1",
+            "--ablation=vanilla",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    argv = json.loads(result.stdout)
+    assert argv[:2] == [
+        "--config-name",
+        "parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible",
+    ]
+    assert "known M1 GJD issue" in result.stderr
+    assert "M5 is the maintained standard GJD contract" in result.stderr
+    assert "conditional FDM/IDM needs full clean modality slots" in result.stderr
+    assert "loss_frame_start=0" in result.stderr
+    assert "context_condition_latent_source=video_latents" in result.stderr
+    assert "condition_source_frame_offset=0" in result.stderr
 
 
 def test_m5_gjd_config_deprecates_fixed128_for_legacy_prefix_fullseg_w64() -> None:
@@ -651,8 +723,8 @@ def test_mot_gjd_realtime_launcher_exposes_named_ablation_overrides() -> None:
     assert _arg_value(argv, "--mot-inference-window-size") == "30"
     assert _arg_value(argv, "--startup-model-obs-frames") == "1"
     assert _arg_value(argv, "--startup-env-init-steps") == "5"
-    assert _arg_value(argv, "--max-timestep") == "800"
-    assert _arg_value(argv, "--max-chunks") == "50"
+    assert _arg_value(argv, "--max-timestep") == "1500"
+    assert _arg_value(argv, "--max-chunks") == "100"
     assert "--allow-deprecated-libero-config" in argv
     assert "policy_variant.generalist_mode_text_token=true" in argv
     for value in FIXED_128_VALUES:
@@ -719,8 +791,8 @@ def test_unified_gjd_realtime_launcher_covers_m1_and_m5_ablation_surfaces() -> N
                 assert _arg_value(argv, "--mot-inference-window-size") == "30"
                 assert _arg_value(argv, "--startup-model-obs-frames") == "1"
                 assert _arg_value(argv, "--startup-env-init-steps") == "5"
-                assert _arg_value(argv, "--max-timestep") == "800"
-                assert _arg_value(argv, "--max-chunks") == "50"
+                assert _arg_value(argv, "--max-timestep") == "1500"
+                assert _arg_value(argv, "--max-chunks") == "100"
                 assert "--allow-deprecated-libero-config" in argv
             assert any(token.startswith(expected_prob_prefixes[method]) for token in argv)
             assert f"policy_variant.generalist_mode_text_token={str(ablation == 'mode_token').lower()}" in argv
