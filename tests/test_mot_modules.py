@@ -538,6 +538,70 @@ def test_mot_packed_coupling_action_context_mask_hides_startup_action_tokens() -
     assert profile.metadata["invalid_action_context_tokens"] == 4
 
 
+def test_mot_packed_coupling_singleton_chunk_frame_isolates_t0_history() -> None:
+    profile = build_mot_packed_coupling_attention_profile(
+        num_video_frames=5,
+        video_tokens_per_frame=1,
+        num_action_frames=4,
+        action_tokens_per_frame=1,
+        chunk_size_frames=4,
+        attention_window_size=64,
+        device=torch.device("cpu"),
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        chunk_origin_frame=3,
+        singleton_chunk_frame=2,
+        history_stream_visibility="video_only",
+        prefix_condition_frames=1,
+    )
+
+    assert profile.self_attention_mask is not None
+    mask = profile.self_attention_mask
+    video_clean_start = 5
+    query_first_future = 4
+    kv_prefix = video_clean_start
+    kv_previous_context = video_clean_start + 2
+    kv_t0 = video_clean_start + 3
+
+    assert bool(mask[query_first_future, kv_t0].item()) is True
+    assert bool(mask[query_first_future, kv_previous_context].item()) is False
+    assert bool(mask[query_first_future, kv_prefix].item()) is False
+    assert bool(mask[kv_t0, kv_previous_context].item()) is False
+    assert bool(mask[kv_t0, kv_prefix].item()) is False
+    assert profile.metadata["chunk_origin_frame"] == 3
+    assert profile.metadata["singleton_chunk_frame"] == 2
+
+
+def test_mot_packed_coupling_target_only_singleton_zero_hides_prefix() -> None:
+    profile = build_mot_packed_coupling_attention_profile(
+        num_video_frames=3,
+        video_tokens_per_frame=1,
+        num_action_frames=2,
+        action_tokens_per_frame=1,
+        chunk_size_frames=4,
+        attention_window_size=64,
+        device=torch.device("cpu"),
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        chunk_origin_frame=1,
+        singleton_chunk_frame=0,
+        history_stream_visibility="video_only",
+        prefix_condition_frames=1,
+    )
+
+    assert profile.self_attention_mask is not None
+    mask = profile.self_attention_mask
+    video_clean_start = 3
+    query_t0 = 1
+    query_first_future = 2
+    kv_prefix = video_clean_start
+    kv_t0 = video_clean_start + 1
+
+    assert bool(mask[query_t0, kv_prefix].item()) is False
+    assert bool(mask[query_first_future, kv_prefix].item()) is False
+    assert bool(mask[query_first_future, kv_t0].item()) is True
+    assert profile.metadata["chunk_origin_frame"] == 1
+    assert profile.metadata["singleton_chunk_frame"] == 0
+
+
 def test_mot_joint_strict_startup_action_prefix_is_not_kv_context() -> None:
     action_tokens_per_frame = 4
     action_horizon = 16
@@ -2234,6 +2298,21 @@ def test_mot_legacy_prefix_action_hidden_proprio_uses_causal_chunk_boundaries() 
 
     assert resolved is not None
     assert resolved.squeeze(-1).tolist() == [[9.0, 9.0, 9.0, 9.0, 4.0, 4.0, 4.0, 4.0]]
+
+
+def test_mot_legacy_prefix_action_hidden_proprio_honors_shifted_chunk_origin() -> None:
+    states = torch.tensor([[[9.0], [1.0], [2.0], [3.0], [4.0], [5.0], [6.0]]])
+
+    resolved = MoTPolicyVariant._legacy_prefix_action_hidden_proprio_state(
+        states,
+        prefix_condition_frames=1,
+        target_num_frames=6,
+        chunk_size_frames=2,
+        chunk_origin_frame=3,
+    )
+
+    assert resolved is not None
+    assert resolved.squeeze(-1).tolist() == [[9.0, 1.0, 1.0, 3.0, 3.0, 5.0]]
 
 
 def test_mot_legacy_prefix_requires_frame_level_hidden_proprio() -> None:

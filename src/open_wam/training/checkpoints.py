@@ -4,10 +4,12 @@ from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
 import gc
 import json
+import os
 from pathlib import Path
 import shutil
 import time
 from typing import Any
+import warnings
 
 import torch
 import torch.distributed as dist
@@ -52,6 +54,18 @@ def _wait_for_file(path: Path, *, timeout_seconds: float = 7200.0, poll_seconds:
         if time.monotonic() >= deadline:
             raise TimeoutError(f"Timed out waiting for checkpoint completion marker: {path}")
         time.sleep(float(poll_seconds))
+
+
+def _atomic_torch_save(payload: object, path: Path) -> None:
+    tmp_path = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    if tmp_path.exists():
+        tmp_path.unlink()
+    try:
+        torch.save(payload, tmp_path)
+        tmp_path.replace(path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
 
 
 def _save_state_dict_options() -> StateDictOptions:
@@ -271,7 +285,7 @@ class CheckpointManager:
             if resolved_mode == CheckpointMode.MODEL_ONLY:
                 self._write_model_state_checkpoint(checkpoint_dir, payload["model_state_dict"])
             elif resolved_mode == CheckpointMode.FULL_TRAINING_STATE:
-                torch.save(payload, checkpoint_dir / "full_training_state.pt")
+                _atomic_torch_save(payload, checkpoint_dir / "full_training_state.pt")
                 # Always write a lightweight model-only checkpoint alongside the
                 # resumable training checkpoint so eval / visualization paths
                 # can skip optimizer-state deserialization.
@@ -342,6 +356,20 @@ class CheckpointManager:
     def resolve_checkpoint_path(self, path: str | Path) -> Path:
         candidate = Path(path)
         if candidate.is_file():
+            if (
+                CheckpointMode(self.checkpoint_mode) == CheckpointMode.FULL_TRAINING_STATE
+                and candidate.name == "model_state.pt"
+            ):
+                full_state = candidate.parent / "full_training_state.pt"
+                if full_state.is_file():
+                    warnings.warn(
+                        "Promoting model_state.pt resume path to sibling full_training_state.pt "
+                        "because trainer.checkpoint_mode=full_training_state. Pass a checkpoint "
+                        "directory or full_training_state.pt for exact GJD resumes.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    return full_state
             return candidate
         if (candidate / "full_training_state.pt").exists():
             return candidate / "full_training_state.pt"
@@ -360,7 +388,7 @@ class CheckpointManager:
 
     def _complete_checkpoint_dirs(self, root: Path | None = None) -> list[Path]:
         root_path = self.root_dir if root is None else Path(root)
-        checkpoint_dirs: list[Path] = []
+        candidate_dirs: list[Path] = []
         for path in root_path.glob("checkpoint_step_*"):
             if not path.is_dir():
                 continue
@@ -368,8 +396,26 @@ class CheckpointManager:
                 int(path.name.split("_")[-1])
             except ValueError:
                 continue
-            if (path / "full_training_state.pt").exists() or (path / "model_state.pt").exists():
-                checkpoint_dirs.append(path)
+            candidate_dirs.append(path)
+        # New checkpoints write a completion marker after payload, optional
+        # exports, and pruning finish. Once a run root has marker-aware
+        # checkpoints, ignore later unmarked dirs without touching their
+        # payload files because interrupted full-state writes on network
+        # filesystems can make those stat calls block. Older tests/checkpoints
+        # did not have markers, so preserve the legacy behavior when no markers
+        # are present under the queried root.
+        marked_checkpoint_dirs = [
+            checkpoint_dir
+            for checkpoint_dir in candidate_dirs
+            if (checkpoint_dir / ".checkpoint_complete").exists()
+        ]
+        scan_dirs = marked_checkpoint_dirs if marked_checkpoint_dirs else candidate_dirs
+        checkpoint_dirs = [
+            checkpoint_dir
+            for checkpoint_dir in scan_dirs
+            if (checkpoint_dir / "full_training_state.pt").exists()
+            or (checkpoint_dir / "model_state.pt").exists()
+        ]
         return sorted(checkpoint_dirs, key=lambda path: int(path.name.split("_")[-1]))
 
     def _prune_old_checkpoints(self, *, keep: int | None, preserve: Path) -> list[Path]:
@@ -396,7 +442,7 @@ class CheckpointManager:
         checkpoint_dir: Path,
         model_state_dict: dict[str, torch.Tensor],
     ) -> None:
-        torch.save({"model_state_dict": model_state_dict}, checkpoint_dir / "model_state.pt")
+        _atomic_torch_save({"model_state_dict": model_state_dict}, checkpoint_dir / "model_state.pt")
 
     def _export_runtime_backbone(self, checkpoint_dir: Path, model: nn.Module) -> None:
         pipeline = getattr(model, "pipeline", model)

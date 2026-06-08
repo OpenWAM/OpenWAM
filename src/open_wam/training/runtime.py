@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
+import inspect
 import os
 from pathlib import Path
 
@@ -792,12 +793,19 @@ def _resolve_named_auxiliary_validation_source(
 ) -> tuple[Dataset, str]:
     build_source_view = getattr(dataset, "build_source_view", None)
     if callable(build_source_view):
-        view = build_source_view(
-            source=source.value,
-            mode=task.mode_override.value if task.mode_override is not None else "joint",
-            bucket_name=task.name,
-            drop_text=task.should_drop_text,
-        )
+        source_view_kwargs = {
+            "source": source.value,
+            "mode": task.mode_override.value if task.mode_override is not None else "joint",
+            "bucket_name": task.name,
+            "drop_text": task.should_drop_text,
+        }
+        try:
+            source_view_parameters = inspect.signature(build_source_view).parameters
+        except (TypeError, ValueError):
+            source_view_parameters = {}
+        if "spread_indices" in source_view_parameters:
+            source_view_kwargs["spread_indices"] = True
+        view = build_source_view(**source_view_kwargs)
         if isinstance(view, Dataset):
             return view, source.value
     attribute_by_source = {

@@ -175,6 +175,7 @@ def test_chunked_temporal_exact_action_context_mask_hides_startup_action_tokens(
         patch_size=(1, 1, 1),
         text_token_count=1,
         chunk_origin_frame=1,
+        singleton_chunk_frame=0,
         action_context_mask=action_context_mask,
         device=torch.device("cpu"),
         build_dense_masks=True,
@@ -205,6 +206,7 @@ def test_chunked_temporal_exact_action_context_mask_hides_startup_action_tokens(
     assert profile.cross_attention_mask is not None
     assert bool(profile.cross_attention_mask[kv_action_noisy_frame0].any().item()) is True
     assert profile.metadata["invalid_action_context_tokens"] == 4
+    assert profile.metadata["singleton_chunk_frame"] == 0
 
 
 def test_history_stream_visibility_video_only_filters_all_action_history() -> None:
@@ -239,6 +241,73 @@ def test_history_stream_visibility_video_only_filters_all_action_history() -> No
     assert bool(mask[query_action_frame1, kv_video_clean_frame0].item()) is True
     assert bool(mask[query_action_frame1, kv_action_clean_frame0].item()) is False
     assert profile.metadata["history_stream_visibility"] == "video_only"
+
+
+def test_conditional_history_policy_uses_previous_boundary_video_only() -> None:
+    profile = build_chunked_temporal_exact_attention_profile(
+        latent_shape=(1, 1, 9, 1, 1),
+        action_shape=(1, 1, 9, 1, 1),
+        padded_length=0,
+        chunk_size=4,
+        window_size=16,
+        patch_size=(1, 1, 1),
+        text_token_count=1,
+        device=torch.device("cpu"),
+        build_dense_masks=True,
+        build_flex_masks=False,
+        current_block_coupling="joint",
+        history_stream_visibility="video_only",
+        chunk_origin_frame=1,
+        singleton_chunk_frame=0,
+        conditional_history_policy="previous_boundary_video_only",
+    )
+
+    assert profile.self_attention_mask is not None
+    mask = profile.self_attention_mask
+    latent_token_count = 9
+    action_token_count = 9
+    video_clean_start = latent_token_count
+    action_clean_start = 2 * latent_token_count + action_token_count
+    query_v5 = 5
+    query_v1 = 1
+
+    for frame in range(4):
+        assert bool(mask[query_v5, video_clean_start + frame].item()) is False
+    assert bool(mask[query_v5, video_clean_start + 4].item()) is True
+    assert bool(mask[query_v5, action_clean_start + 4].item()) is False
+    assert bool(mask[query_v1, video_clean_start].item()) is True
+    assert bool(mask[query_v1, action_clean_start].item()) is False
+    assert profile.metadata["conditional_history_policy"] == "previous_boundary_video_only"
+
+
+def test_conditional_history_policy_handles_m5_legacy_prefix_frame_shift() -> None:
+    profile = build_chunked_temporal_exact_attention_profile(
+        latent_shape=(1, 1, 10, 1, 1),
+        action_shape=(1, 1, 9, 1, 1),
+        padded_length=0,
+        chunk_size=4,
+        window_size=16,
+        patch_size=(1, 1, 1),
+        text_token_count=1,
+        device=torch.device("cpu"),
+        build_dense_masks=True,
+        build_flex_masks=False,
+        current_block_coupling="joint",
+        history_stream_visibility="video_only",
+        chunk_origin_frame=1,
+        prefix_condition_frames=1,
+        singleton_chunk_frame=0,
+        conditional_history_policy="previous_boundary_video_only",
+    )
+
+    assert profile.self_attention_mask is not None
+    mask = profile.self_attention_mask
+    video_clean_start = 10
+    query_target_v5 = 6
+
+    assert bool(mask[query_target_v5, video_clean_start + 5].item()) is True
+    assert bool(mask[query_target_v5, video_clean_start + 1].item()) is False
+    assert bool(mask[query_target_v5, video_clean_start].item()) is False
 
 
 def test_chunked_temporal_exact_coupling_accepts_profile_aliases() -> None:

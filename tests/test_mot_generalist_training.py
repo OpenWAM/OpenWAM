@@ -984,6 +984,7 @@ def test_m5_legacy_prefix_contract_prepends_video_only_condition(
         observed["clean_video_shape"] = tuple(kwargs["clean_video_latents"].shape)
         observed["packed_action_shape"] = tuple(kwargs["packed_action_pre"].tokens.shape)
         observed["prefix_condition_frames"] = kwargs["attention_profile"].metadata["prefix_condition_frames"]
+        observed["conditional_history_policy"] = kwargs["attention_profile"].metadata["conditional_history_policy"]
         observed["video_hidden_context"] = kwargs["video_hidden_context"]
         observed["frame_start"] = kwargs["frame_start"]
         return torch.zeros_like(kwargs["noisy_video_latents"]), torch.zeros_like(kwargs["packed_action_pre"].tokens)
@@ -1005,6 +1006,7 @@ def test_m5_legacy_prefix_contract_prepends_video_only_condition(
     assert observed["clean_video_shape"] == (1, 48, 5, 8, 8)
     assert observed["packed_action_shape"] == (1, 8, 32)
     assert observed["prefix_condition_frames"] == 1
+    assert observed["conditional_history_policy"] == "none"
     assert observed["video_hidden_context"] is None
     assert observed["frame_start"] == -1
     assert output.policy_output.aux["video_condition_source"] == "condition_latents_prefix"
@@ -1116,6 +1118,7 @@ def test_m5_legacy_prefix_fdm_shifts_explicit_video_loss_range(
 
     torch.testing.assert_close(mask, expected)
     assert output.policy_output.aux["mot_generalist_training_mode"] == "action_conditioned_video"
+    assert output.policy_output.aux["conditional_history_policy"] == "previous_boundary_video_only"
     assert output.decoder_output.metrics["mot_generalist/action_loss_active"].item() == 0.0
 
 
@@ -1133,6 +1136,7 @@ def test_forced_video_conditioned_action_zeros_video_loss() -> None:
     assert metrics["mot_generalist/latent_loss_active"].item() == 0.0
     assert metrics["mot_generalist/action_loss_active"].item() == 1.0
     assert output.policy_output.aux["mot_generalist_text_dropped"] is True
+    assert output.policy_output.aux["conditional_history_policy"] == "previous_boundary_video_only"
     assert 1 <= output.policy_output.aux["sampled_chunk_size"] <= 2
     assert output.policy_output.aux["sampled_window_size"] == 3
     assert metrics["weighted_video_diffusion_loss"].item() == pytest.approx(0.0, abs=1e-6)

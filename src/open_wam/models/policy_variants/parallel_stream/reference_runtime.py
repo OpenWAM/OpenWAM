@@ -34,6 +34,9 @@ from open_wam.models.common import (
     chunked_temporal_exact_profile_name_for_coupling,
     materialize_cache_backend_entries,
 )
+from open_wam.models.common.attention_profiles import (
+    CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
+)
 from open_wam.models.common.flow_matching import FlowMatchScheduler
 from open_wam.models.common.flow_noise_plan import (
     clean_timestep_values,
@@ -754,6 +757,10 @@ def _apply_generalist_joint_denoise_training_mode(
     )
     if semantics.is_conditional:
         artifacts.input_dict["history_stream_visibility"] = ParallelHistoryStreamVisibility.VIDEO_ONLY.value
+        artifacts.input_dict["conditional_history_policy"] = (
+            artifacts.input_dict.get("conditional_history_policy")
+            or CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY
+        )
     artifacts.input_dict["generalist_conditional_history_chunks"] = int(semantics.conditional_history_chunks)
     artifacts.input_dict["variant_profile"] = policy_config.variant_profile.value
     artifacts.input_dict["generalist_training_paradigm"] = policy_config.generalist_training_paradigm.value
@@ -887,6 +894,8 @@ def prepare_parallel_exact_train_artifacts(
     action_loss_frame_end: int | None = None,
     frame_shift: int = 0,
     chunk_origin_frame: int = 0,
+    singleton_chunk_frame: int | None = None,
+    conditional_history_policy: str | None = None,
     force_clean_video_condition: bool = False,
 ) -> LingbotParallelTrainArtifacts:
     batch_size, _, num_frames, _, _ = video_latents.shape
@@ -1115,6 +1124,8 @@ def prepare_parallel_exact_train_artifacts(
             "action_loss_frame_end": resolved_action_loss_frame_end,
             "frame_shift": int(frame_shift),
             "chunk_origin_frame": int(chunk_origin_frame),
+            "singleton_chunk_frame": None if singleton_chunk_frame is None else int(singleton_chunk_frame),
+            "conditional_history_policy": conditional_history_policy,
             "attention_profile_name": attention_profile_name,
             "preserve_video_pretrain_history": bool(
                 getattr(policy_config, "preserve_video_pretrain_history", False)
@@ -1146,6 +1157,9 @@ def prepare_parallel_prefix_condition_exact_train_artifacts(
     chunk_size_override: int | None = None,
     window_size_override: int | None = None,
     frame_shift: int = 0,
+    chunk_origin_frame: int = 0,
+    singleton_chunk_frame: int | None = None,
+    conditional_history_policy: str | None = None,
     generalist_training_mode_override: JointDenoiseTrainingMode | str | None = None,
     generalist_drop_text_conditioning: bool | None = None,
     generalist_training_source: str | None = None,
@@ -1318,6 +1332,9 @@ def prepare_parallel_prefix_condition_exact_train_artifacts(
             "action_loss_frame_start": 0,
             "action_loss_frame_end": target_frames,
             "frame_shift": int(frame_shift),
+            "chunk_origin_frame": int(chunk_origin_frame),
+            "singleton_chunk_frame": None if singleton_chunk_frame is None else int(singleton_chunk_frame),
+            "conditional_history_policy": conditional_history_policy,
             "attention_profile_name": attention_profile_name,
             "preserve_video_pretrain_history": bool(
                 getattr(policy_config, "preserve_video_pretrain_history", False)
@@ -1673,6 +1690,8 @@ def prepare_parallel_action_conditioned_train_artifacts(
     action_loss_frame_end: int | None = None,
     frame_shift: int = 0,
     chunk_origin_frame: int = 0,
+    singleton_chunk_frame: int | None = None,
+    conditional_history_policy: str | None = None,
     force_clean_video_condition: bool = False,
     generalist_training_mode_override: JointDenoiseTrainingMode | str | None = None,
     generalist_drop_text_conditioning: bool | None = None,
@@ -1711,6 +1730,8 @@ def prepare_parallel_action_conditioned_train_artifacts(
         action_loss_frame_end=action_loss_frame_end,
         frame_shift=frame_shift,
         chunk_origin_frame=chunk_origin_frame,
+        singleton_chunk_frame=singleton_chunk_frame,
+        conditional_history_policy=conditional_history_policy,
         force_clean_video_condition=force_clean_video_condition,
     )
     if policy_config.variant_profile == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING:
@@ -3203,6 +3224,11 @@ def _run_parallel_exact_joint_forward_manual(
             proprio_context_token_count=int(input_dict.get("proprio_context_token_count", 0) or 0),
             chunk_origin_frame=int(input_dict.get("chunk_origin_frame", 0) or 0),
             prefix_condition_frames=int(input_dict.get("prefix_condition_frames", 0) or 0),
+            singleton_chunk_frame=(
+                None
+                if input_dict.get("singleton_chunk_frame") is None
+                else int(input_dict["singleton_chunk_frame"])
+            ),
             action_context_mask=(
                 action_dict.get("actions_mask")
                 if torch.is_tensor(action_dict.get("actions_mask"))
@@ -3220,6 +3246,7 @@ def _run_parallel_exact_joint_forward_manual(
                 input_dict.get("preserve_video_pretrain_history", False)
             ),
             history_stream_visibility=input_dict.get("history_stream_visibility"),
+            conditional_history_policy=input_dict.get("conditional_history_policy"),
         )
         exact_attention_profile = PreparedAttentionProfile(
             spec=rebuilt_dense_profile.spec,

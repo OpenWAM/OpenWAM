@@ -40,6 +40,18 @@ def test_condition_source_frame_indices_support_previous_frame_offset() -> None:
     assert indices == [10, 14, 18, 22]
 
 
+def test_condition_source_frame_indices_apply_offset_before_final_clamp() -> None:
+    module = _load_script_module()
+
+    indices = module._condition_source_frame_indices(
+        frame_ids=list(range(17)),
+        latent_num_frames=5,
+        source_frame_offset=-1,
+    )
+
+    assert indices == [0, 4, 8, 12, 16]
+
+
 def test_condition_source_frame_indices_clamp_explicit_frame_ids() -> None:
     module = _load_script_module()
 

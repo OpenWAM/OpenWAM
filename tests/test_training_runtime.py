@@ -798,6 +798,66 @@ def test_model_only_checkpoint_loads_sibling_train_state(
     assert train_state.resume_source == str(checkpoint_dir / "model_state.pt")
 
 
+def test_full_state_checkpoint_resume_prefers_sibling_full_state(tmp_path: Path) -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
+    manager = CheckpointManager(
+        root_dir=tmp_path / "checkpoints",
+        config=config,
+        checkpoint_mode=CheckpointMode.FULL_TRAINING_STATE,
+    )
+    checkpoint_dir = manager.checkpoint_dir_for_step(500)
+    checkpoint_dir.mkdir(parents=True)
+    torch.save({"model_state_dict": {"weight": torch.ones(1)}}, checkpoint_dir / "model_state.pt")
+    torch.save(
+        {
+            "model_state_dict": {"weight": torch.ones(1)},
+            "train_state": TrainState(global_step=500, optimizer_step=500).state_dict(),
+            "optimizer_state_dict": None,
+            "scheduler_state_dict": None,
+            "strategy_state_dict": None,
+        },
+        checkpoint_dir / "full_training_state.pt",
+    )
+
+    with pytest.warns(RuntimeWarning, match="Promoting model_state.pt resume path"):
+        resolved = manager.resolve_checkpoint_path(checkpoint_dir / "model_state.pt")
+
+    assert resolved == checkpoint_dir / "full_training_state.pt"
+
+
+def test_checkpoint_latest_ignores_unmarked_partial_when_markers_exist(tmp_path: Path) -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
+    manager = CheckpointManager(
+        root_dir=tmp_path / "checkpoints",
+        config=config,
+        checkpoint_mode=CheckpointMode.MODEL_ONLY,
+    )
+    complete = manager.checkpoint_dir_for_step(100)
+    complete.mkdir(parents=True)
+    torch.save({"model_state_dict": {"weight": torch.ones(1)}}, complete / "model_state.pt")
+    (complete / ".checkpoint_complete").write_text("ok\n", encoding="utf-8")
+    partial = manager.checkpoint_dir_for_step(200)
+    partial.mkdir(parents=True)
+    torch.save({"model_state_dict": {"weight": torch.ones(1)}}, partial / "model_state.pt")
+
+    assert manager.find_latest_checkpoint(tmp_path / "checkpoints") == complete
+
+
+def test_checkpoint_latest_preserves_legacy_unmarked_dirs(tmp_path: Path) -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
+    manager = CheckpointManager(
+        root_dir=tmp_path / "checkpoints",
+        config=config,
+        checkpoint_mode=CheckpointMode.MODEL_ONLY,
+    )
+    for step in (100, 200):
+        checkpoint_dir = manager.checkpoint_dir_for_step(step)
+        checkpoint_dir.mkdir(parents=True)
+        torch.save({"model_state_dict": {"weight": torch.ones(1)}}, checkpoint_dir / "model_state.pt")
+
+    assert manager.find_latest_checkpoint(tmp_path / "checkpoints") == manager.checkpoint_dir_for_step(200)
+
+
 def test_final_checkpoint_skips_when_interval_checkpoint_already_saved(tmp_path: Path) -> None:
     config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
     config = replace(

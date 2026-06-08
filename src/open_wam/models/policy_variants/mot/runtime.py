@@ -475,6 +475,8 @@ def build_mot_packed_coupling_attention_profile(
     action_context_mask: torch.Tensor | None = None,
     history_stream_visibility: str | None = None,
     prefix_condition_frames: int = 0,
+    singleton_chunk_frame: int | None = None,
+    conditional_history_policy: str | None = None,
 ) -> PreparedAttentionProfile:
     """Build the Method-1 exact attention profile for M5 packed coupling.
 
@@ -512,6 +514,8 @@ def build_mot_packed_coupling_attention_profile(
         preserve_video_pretrain_history=True,
         history_stream_visibility=history_stream_visibility,
         prefix_condition_frames=int(prefix_condition_frames),
+        singleton_chunk_frame=singleton_chunk_frame,
+        conditional_history_policy=conditional_history_policy,
     )
 
 

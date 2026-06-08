@@ -432,6 +432,11 @@ def prepare_exact_dual_stream_train_sequence(
             proprio_context_token_count=proprio_context_token_count,
             chunk_origin_frame=int(input_dict.get("chunk_origin_frame", 0) or 0),
             prefix_condition_frames=int(input_dict.get("prefix_condition_frames", 0) or 0),
+            singleton_chunk_frame=(
+                None
+                if input_dict.get("singleton_chunk_frame") is None
+                else int(input_dict["singleton_chunk_frame"])
+            ),
             action_context_mask=(
                 action_dict.get("actions_mask")
                 if torch.is_tensor(action_dict.get("actions_mask"))
@@ -445,6 +450,7 @@ def prepare_exact_dual_stream_train_sequence(
                 input_dict.get("preserve_video_pretrain_history", False)
             ),
             history_stream_visibility=input_dict.get("history_stream_visibility"),
+            conditional_history_policy=input_dict.get("conditional_history_policy"),
         )
     elif attention_profile_name not in (None, "none"):
         raise ValueError(

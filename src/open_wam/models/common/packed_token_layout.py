@@ -198,6 +198,7 @@ def build_exact_video_action_token_layout(
     device: torch.device,
     action_context_mask: torch.Tensor | None = None,
     prefix_condition_frames: int = 0,
+    singleton_chunk_frame: int | None = None,
 ) -> PackedTokenLayout:
     """Build `[V_noisy, V_clean, A_noisy, A_clean]` packed-token metadata."""
 
@@ -265,28 +266,58 @@ def build_exact_video_action_token_layout(
     )
     if prefix_condition_frames > 0:
         latent_target_frame_id = (latent_frame_id - prefix_condition_frames).clamp_min(0)
-        target_latent_chunk_id = torch.div(
-            latent_target_frame_id - chunk_origin_frame,
-            chunk_size,
-            rounding_mode="floor",
+        target_latent_chunk_id = frame_chunk_ids_for_origin(
+            latent_target_frame_id,
+            chunk_origin_frame=chunk_origin_frame,
+            chunk_size=chunk_size,
+            singleton_chunk_frame=singleton_chunk_frame,
         )
+        if singleton_chunk_frame is None:
+            prefix_target_chunk_id = torch.full_like(target_latent_chunk_id, -1)
+        else:
+            prefix_reference_frame = max(0, int(singleton_chunk_frame) - 1)
+            prefix_target_chunk_id = frame_chunk_ids_for_origin(
+                torch.full_like(target_latent_chunk_id, int(prefix_reference_frame)),
+                chunk_origin_frame=chunk_origin_frame,
+                chunk_size=chunk_size,
+                singleton_chunk_frame=singleton_chunk_frame,
+            )
         latent_chunk_id = torch.where(
             latent_frame_id < prefix_condition_frames,
-            torch.zeros_like(target_latent_chunk_id),
+            prefix_target_chunk_id + 1,
             target_latent_chunk_id + 1,
         )
         action_chunk_id = (
-            torch.div(action_frame_id - chunk_origin_frame, chunk_size, rounding_mode="floor") + 1
+            frame_chunk_ids_for_origin(
+                action_frame_id,
+                chunk_origin_frame=chunk_origin_frame,
+                chunk_size=chunk_size,
+                singleton_chunk_frame=singleton_chunk_frame,
+            )
+            + 1
         )
     else:
-        latent_chunk_id = torch.div(latent_frame_id - chunk_origin_frame, chunk_size, rounding_mode="floor")
-        action_chunk_id = torch.div(action_frame_id - chunk_origin_frame, chunk_size, rounding_mode="floor")
-    if prefix_condition_frames > 0:
-        latent_block_id = torch.where(
-            latent_frame_id < prefix_condition_frames,
-            torch.zeros_like(latent_frame_id),
-            latent_chunk_id * 2,
+        latent_chunk_id = frame_chunk_ids_for_origin(
+            latent_frame_id,
+            chunk_origin_frame=chunk_origin_frame,
+            chunk_size=chunk_size,
+            singleton_chunk_frame=singleton_chunk_frame,
         )
+        action_chunk_id = frame_chunk_ids_for_origin(
+            action_frame_id,
+            chunk_origin_frame=chunk_origin_frame,
+            chunk_size=chunk_size,
+            singleton_chunk_frame=singleton_chunk_frame,
+        )
+    if prefix_condition_frames > 0:
+        if singleton_chunk_frame is None:
+            latent_block_id = torch.where(
+                latent_frame_id < prefix_condition_frames,
+                torch.zeros_like(latent_frame_id),
+                latent_chunk_id * 2,
+            )
+        else:
+            latent_block_id = latent_chunk_id * 2
         action_block_id = action_chunk_id * 2 + 1
     elif coupling in {CurrentBlockCoupling.ACTION_THEN_VIDEO, CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO}:
         latent_block_id = latent_chunk_id * 2 + 1
@@ -354,7 +385,31 @@ def build_exact_video_action_token_layout(
             "action_frames": action_frames,
             "chunk_size": chunk_size,
             "chunk_origin_frame": chunk_origin_frame,
+            "singleton_chunk_frame": None if singleton_chunk_frame is None else int(singleton_chunk_frame),
             "prefix_condition_frames": prefix_condition_frames,
             "current_block_coupling": coupling.value,
         },
+    )
+
+
+def frame_chunk_ids_for_origin(
+    frame_ids: torch.Tensor,
+    *,
+    chunk_origin_frame: int,
+    chunk_size: int,
+    singleton_chunk_frame: int | None = None,
+) -> torch.Tensor:
+    chunk_ids = torch.div(
+        frame_ids - int(chunk_origin_frame),
+        int(chunk_size),
+        rounding_mode="floor",
+    )
+    if singleton_chunk_frame is None:
+        return chunk_ids
+    singleton = int(singleton_chunk_frame)
+    singleton_chunk = int((singleton - int(chunk_origin_frame)) // int(chunk_size))
+    return torch.where(
+        (frame_ids < singleton) & (chunk_ids == singleton_chunk),
+        chunk_ids - 1,
+        chunk_ids,
     )

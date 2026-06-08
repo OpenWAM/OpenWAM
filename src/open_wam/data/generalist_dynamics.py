@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 import json
 import math
@@ -18,7 +18,6 @@ from open_wam.configs import (
     DataSplit,
     GeneralistDynamicsMixtureConfig,
     PaddedTargetPolicy,
-    SampleTargetAlignment,
     TailPaddingPolicy,
     WindowSamplingMode,
 )
@@ -40,6 +39,11 @@ ACTION_CONDITIONED_VIDEO_MODE = "action_conditioned_video"
 VIDEO_CONDITIONED_ACTION_MODE = "video_conditioned_action"
 COUNTERFACTUAL_STATE_KEY = "observation.state"
 COUNTERFACTUAL_CONDITION_SOURCE_FRAME_POLICY = "next_latent_source_offset"
+COUNTERFACTUAL_CONTRACT_T0_PLUS_FUTURE = "t0_observation_plus_future"
+COUNTERFACTUAL_CONTRACT_TARGET_ONLY_T0_PLUS_FUTURE = "target_only_t0_observation_plus_future"
+GENERALIST_CONDITIONAL_CONTRACT_TARGET_ONLY_T0_PLUS_FUTURE = "target_only_t0_observation_plus_future"
+GENERALIST_GJD_CHUNK_CONTRACT_T0_SINGLETON = "t0_singleton"
+GENERALIST_CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY = "previous_boundary_video_only"
 
 
 @dataclass(frozen=True)
@@ -76,10 +80,10 @@ class _CounterfactualTaskSpec:
 class EncodedCounterfactualDynamicsLatentDataset(Dataset[LatentWAMSample]):
     """Latent dataset for simulator-rendered counterfactual dynamics samples.
 
-    Each sample concatenates the clean context latents/actions and the
-    counterfactual future latents/actions. Loss metadata masks out the context
-    frames, so FDM/IDM objectives train only the counterfactual future while
-    still attending to the observed prefix.
+    Each sample uses the counterfactual target payload directly: target latent
+    0 is the observed t0 frame, and loss starts at target latent 1. The
+    pre-t0 context artifacts remain useful for data provenance but are not
+    included in the model-visible sequence.
     """
 
     def __init__(self, data_config: DataConfig, encoded_root: str | Path, *, split: str) -> None:
@@ -117,6 +121,11 @@ class EncodedCounterfactualDynamicsLatentDataset(Dataset[LatentWAMSample]):
     def __len__(self) -> int:
         return self._epoch_sample_count
 
+    def build_balanced_source_indices(self) -> tuple[int, ...]:
+        if self._uses_hierarchical_fixed_segment:
+            return tuple(range(len(self)))
+        return _balanced_counterfactual_source_indices(self.transition_rows)
+
     def __getitem__(self, index: int) -> LatentWAMSample:
         if self._uses_hierarchical_fixed_segment:
             task_spec, window_spec, latent_start = self._draw_hierarchical_sample(index)
@@ -132,57 +141,37 @@ class EncodedCounterfactualDynamicsLatentDataset(Dataset[LatentWAMSample]):
             latent_start = 0
             segment_length = None
             hierarchical_metadata = {}
-        context_row = self.context_rows.get(_context_key(row))
-        if context_row is None:
-            raise KeyError(
-                "Missing encoded context row for counterfactual transition, "
-                f"shard={row.get('shard')!r}, context_id={row.get('context_id')!r}."
-            )
-
-        context_payload = _load_latent_payload(self._resolve_encoded_path(context_row, "context_latent_path"))
         target_payload = _load_latent_payload(self._resolve_encoded_path(row, "target_latent_path"))
-        context_latents = _payload_latents(context_payload, key="video_latents")
         target_latents = _payload_latents(target_payload, key="target_video_latents")
-        if context_latents.shape[0] != target_latents.shape[0] or context_latents.shape[2:] != target_latents.shape[2:]:
-            raise ValueError(
-                "Counterfactual context/target latent geometry mismatch, "
-                f"context={tuple(context_latents.shape)}, target={tuple(target_latents.shape)}."
-            )
-        source_video_latents = torch.cat([context_latents, target_latents], dim=1).contiguous()
-        context_frames = int(context_latents.shape[1])
+        source_video_latents = target_latents.contiguous()
+        context_frames = 0
         target_frames = int(target_latents.shape[1])
         source_frames = int(source_video_latents.shape[1])
         if segment_length is None:
             segment_length = source_frames
 
-        source_condition_latents, condition_latents_source = _counterfactual_condition_latents_from_payloads(
-            context_payload=context_payload,
+        source_condition_latents, condition_latents_source = _counterfactual_target_only_condition_latents_from_payload(
             target_payload=target_payload,
             fallback_video_latents=source_video_latents,
             source_frame_offset=int(self.data_config.sample_construction.condition_source_frame_offset),
         )
-        context_npz = np.load(self._resolve_raw_path(context_row, "context_path"))
         sample_npz = np.load(self._resolve_raw_path(row, "sample_path"))
         source_actions = _pack_actions(
-            np.concatenate(
-                [
-                    np.asarray(context_npz["action_context"], dtype=np.float32),
-                    np.asarray(sample_npz["future_actions"], dtype=np.float32),
-                ],
-                axis=0,
-            ),
+            np.asarray(sample_npz["future_actions"], dtype=np.float32),
             target_dim=int(self.data_config.action_schema.action_dim),
         )
         state_dim = int(self.data_config.action_schema.state_dim)
-        source_proprio_frames, source_proprio_frames_mask = _counterfactual_source_proprio_frames(
-            context_npz=context_npz,
-            sample_npz=sample_npz,
-            context_latent_frames=context_frames,
-            target_latent_frames=target_frames,
+        source_proprio_frames, source_proprio_frames_mask = _counterfactual_latent_state_frames(
+            sample_npz,
+            latent_frames=target_frames,
             state_dim=state_dim,
             data_config=self.data_config,
         )
-        action_per_frame = _action_steps_per_frame(source_actions, total_frames=source_frames)
+        action_per_frame = _counterfactual_action_steps_per_frame(
+            source_actions,
+            total_frames=source_frames,
+            data_config=self.data_config,
+        )
         sampled_chunk_size, sampled_window_size = _sample_counterfactual_attention_geometry(
             data_config=self.data_config,
             segment_length=int(segment_length),
@@ -195,9 +184,8 @@ class EncodedCounterfactualDynamicsLatentDataset(Dataset[LatentWAMSample]):
             latent_start=int(latent_start),
             segment_length=int(segment_length),
             action_per_frame=action_per_frame,
-            mask_leading_zero_action_context=(
-                self.data_config.sample_construction.target_alignment == SampleTargetAlignment.NEXT_AFTER_CONTEXT
-            ),
+            condition_source_frame_offset=int(self.data_config.sample_construction.condition_source_frame_offset),
+            mask_leading_zero_action_context=True,
         )
         video_latents = segment["video_latents"]
         condition_latents = segment["condition_latents"]
@@ -217,9 +205,9 @@ class EncodedCounterfactualDynamicsLatentDataset(Dataset[LatentWAMSample]):
         proprio_context_state = proprio_context_frames.clone()
         proprio_context_state_mask = proprio_context_frames_mask.clone()
         state, state_mask = _counterfactual_state_history_from_frames(
-            proprio_context_frames=proprio_context_frames,
-            proprio_context_frames_mask=proprio_context_frames_mask,
-            anchor_frame=max(0, min(total_frames - 1, int(segment["loss_frame_start"]) - 1)),
+            proprio_context_frames=source_proprio_frames,
+            proprio_context_frames_mask=source_proprio_frames_mask,
+            anchor_frame=int(segment["prefix_state_source_frame"]),
             state_horizon=int(self.data_config.action_schema.state_horizon),
             state_dim=state_dim,
         )
@@ -230,9 +218,55 @@ class EncodedCounterfactualDynamicsLatentDataset(Dataset[LatentWAMSample]):
         )
         text_context = self.empty_text_embedding.clone() if self.empty_text_embedding is not None else None
 
+        observed_frame_ids = _counterfactual_observed_frame_ids(
+            context_start_frame=int(row.get("t0_frame", 0)),
+            latent_start=int(latent_start),
+            segment_length=int(segment_length),
+            source_frames=source_frames,
+            action_per_frame=action_per_frame,
+        )
+        valid_frame_ids = observed_frame_ids[: max(0, int(segment["valid_source_frames"]))]
+        sample_start_frame = int(valid_frame_ids[0]) if valid_frame_ids else 0
+        sample_end_frame = (
+            int(valid_frame_ids[-1]) + int(action_per_frame)
+            if valid_frame_ids
+            else sample_start_frame
+        )
+        loss_frame_start = int(segment["loss_frame_start"])
+        loss_frame_end = int(segment["loss_frame_end"])
+        first_loss_frame_id = (
+            int(observed_frame_ids[loss_frame_start])
+            if 0 <= loss_frame_start < len(observed_frame_ids)
+            else sample_end_frame
+        )
+        last_loss_frame_end = (
+            int(observed_frame_ids[loss_frame_end - 1]) + int(action_per_frame)
+            if loss_frame_end > loss_frame_start and loss_frame_end - 1 < len(observed_frame_ids)
+            else first_loss_frame_id
+        )
+        target_observation_frame = int(segment["target_observation_frame"])
+        target_observation_frame_id = (
+            int(observed_frame_ids[target_observation_frame])
+            if 0 <= target_observation_frame < len(observed_frame_ids)
+            else None
+        )
+        transition_action_steps_required = max(0, source_frames - 1) * action_per_frame
+        extra_source_action_steps = max(0, int(source_actions.shape[0]) - int(transition_action_steps_required))
+
         metadata = {
             "dataset_id": str(self.encoded_root),
             "dataset_kind": "encoded_counterfactual_dynamics",
+            "generalist_conditional_contract": GENERALIST_CONDITIONAL_CONTRACT_TARGET_ONLY_T0_PLUS_FUTURE,
+            "generalist_conditional_training_sequence": "target_only",
+            "generalist_conditional_context_used_for_training": False,
+            "generalist_gjd_chunk_contract": GENERALIST_GJD_CHUNK_CONTRACT_T0_SINGLETON,
+            "generalist_conditional_history_policy": (
+                GENERALIST_CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY
+            ),
+            "counterfactual_contract": COUNTERFACTUAL_CONTRACT_TARGET_ONLY_T0_PLUS_FUTURE,
+            "counterfactual_generation_contract": COUNTERFACTUAL_CONTRACT_T0_PLUS_FUTURE,
+            "counterfactual_training_sequence": "target_only",
+            "counterfactual_context_used_for_training": False,
             "split": self.split,
             "counterfactual_sample_id": int(row["sample_id"]),
             "counterfactual_context_id": int(row["context_id"]),
@@ -244,33 +278,41 @@ class EncodedCounterfactualDynamicsLatentDataset(Dataset[LatentWAMSample]):
             "task_index": int(row.get("task_id", -1)),
             "init_state_index": row.get("init_state_index"),
             "t0_frame": int(row.get("t0_frame", 0)),
+            "t0_action_frame": int(row.get("t0_frame", 0)) * action_per_frame,
             "context_start_frame": int(row.get("context_start_frame", 0)),
-            "sample_start_frame": int(row.get("context_start_frame", 0)) + max(0, int(latent_start)),
-            "sample_end_frame": int(row.get("context_start_frame", 0)) + max(0, int(latent_start)) + int(segment["valid_source_frames"]),
-            "observation_start": int(row.get("context_start_frame", 0)) + max(0, int(latent_start)),
-            "observation_frame_indices": _counterfactual_observed_frame_ids(
-                context_start_frame=int(row.get("context_start_frame", 0)),
-                latent_start=int(latent_start),
-                segment_length=int(segment_length),
-                source_frames=source_frames,
-            ),
+            "context_start_action_frame": int(row.get("context_start_frame", 0)) * action_per_frame,
+            "sample_start_frame": sample_start_frame,
+            "sample_end_frame": sample_end_frame,
+            "observation_start": sample_start_frame,
+            "observation_frame_indices": observed_frame_ids,
             "window_sampling_mode": self.data_config.sample_construction.mode,
-            "window_start_frame": int(row.get("context_start_frame", 0)) + max(0, int(latent_start)),
-            "window_end_frame": int(row.get("context_start_frame", 0)) + max(0, int(latent_start)) + int(segment["valid_source_frames"]),
-            "anchor_frame_index": int(row.get("context_start_frame", 0))
-            + min(source_frames - 1, max(0, int(latent_start) + int(segment["valid_source_frames"]) - 1)),
+            "window_start_frame": sample_start_frame,
+            "window_end_frame": sample_end_frame,
+            "anchor_frame_index": int(valid_frame_ids[-1]) if valid_frame_ids else sample_start_frame,
             "segment_length_frames": total_frames,
             "segment_valid_latent_frames": int(segment["valid_latent_frames"]),
             "segment_padded_latent_frames": int(segment["padded_latent_frames"]),
             "tail_padding_mode": "none" if int(segment["padded_latent_frames"]) == 0 else "zero_order_hold",
-            "history_frames": int(segment["loss_frame_start"]),
-            "loss_frame_start": int(segment["loss_frame_start"]),
-            "loss_frame_end": int(segment["loss_frame_end"]),
-            "latent_loss_frame_start": int(segment["loss_frame_start"]),
-            "latent_loss_frame_end": int(segment["loss_frame_end"]),
-            "action_loss_frame_start": int(segment["loss_frame_start"]),
-            "action_loss_frame_end": int(segment["loss_frame_end"]),
+            "history_frames": loss_frame_start,
+            "loss_frame_start": loss_frame_start,
+            "loss_frame_end": loss_frame_end,
+            "latent_loss_frame_start": loss_frame_start,
+            "latent_loss_frame_end": loss_frame_end,
+            "action_loss_frame_start": loss_frame_start,
+            "action_loss_frame_end": loss_frame_end,
+            "chunk_origin_frame": int(segment["chunk_origin_frame"]),
+            "target_observation_frame_in_sample": int(segment["target_observation_frame"]),
+            "target_observation_frame_index": target_observation_frame_id,
+            "first_supervised_future_frame_in_sample": loss_frame_start,
+            "first_supervised_future_frame_index": first_loss_frame_id,
+            "supervised_future_latent_frames": max(0, loss_frame_end - loss_frame_start),
+            "target_frame_start": first_loss_frame_id,
+            "target_frame_end": last_loss_frame_end,
             "sampled_chunk_size": int(sampled_chunk_size),
+            "counterfactual_gjd_chunk_contract": GENERALIST_GJD_CHUNK_CONTRACT_T0_SINGLETON,
+            "singleton_chunk_frame": int(segment["target_observation_frame"]),
+            "conditional_history_policy": GENERALIST_CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
+            "counterfactual_conditional_history_policy": GENERALIST_CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
             "sampled_window_size": int(sampled_window_size),
             "has_condition_latents": condition_latents is not None,
             "condition_source_frame_offset": int(self.data_config.sample_construction.condition_source_frame_offset),
@@ -279,6 +321,9 @@ class EncodedCounterfactualDynamicsLatentDataset(Dataset[LatentWAMSample]):
             "proprio_context_chunk_count": int(proprio_context_state.shape[0]),
             "proprio_context_frame_count": int(proprio_context_frames.shape[0]),
             "state_source_key": COUNTERFACTUAL_STATE_KEY if proprio_context_source == COUNTERFACTUAL_STATE_KEY else None,
+            "state_anchor_frame": int(segment["prefix_state_frame"]),
+            "state_anchor_source_frame": int(segment["prefix_state_source_frame"]),
+            "state_anchor_frame_in_sample": segment["prefix_state_frame_in_sample"],
             "latent_frame_start": int(latent_start),
             "frame_shift": int(latent_start),
             "start_padding_frames": max(0, int(self.data_config.sample_construction.start_padding_frames)),
@@ -288,6 +333,9 @@ class EncodedCounterfactualDynamicsLatentDataset(Dataset[LatentWAMSample]):
             "subwindow_latent_end": int(latent_start) + int(segment_length),
             "subwindow_action_start": max(0, int(latent_start)) * action_per_frame,
             "subwindow_action_end": max(0, int(latent_start)) * action_per_frame + int(actions.shape[0]),
+            "source_action_steps": int(source_actions.shape[0]),
+            "transition_action_steps_required": int(transition_action_steps_required),
+            "extra_source_action_steps": int(extra_source_action_steps),
             "lingbot_window_action_alignment": {
                 "latent_num_frames": total_frames,
                 "prefix_actions": action_per_frame,
@@ -295,6 +343,9 @@ class EncodedCounterfactualDynamicsLatentDataset(Dataset[LatentWAMSample]):
                 "leading_zero_action_frames": int(segment["leading_zero_action_frames"]),
                 "leading_zero_action_steps": int(segment["leading_zero_action_frames"]) * action_per_frame,
                 "leading_zero_action_mask": float(segment["leading_zero_action_mask"]),
+                "source_action_steps": int(source_actions.shape[0]),
+                "transition_action_steps_required": int(transition_action_steps_required),
+                "extra_source_action_steps": int(extra_source_action_steps),
             },
             "valid_action_steps": int(action_mask.float().sum(dim=-1).gt(0).sum().item()),
             "valid_action_values": int(action_mask.float().sum().item()),
@@ -344,29 +395,19 @@ class EncodedCounterfactualDynamicsLatentDataset(Dataset[LatentWAMSample]):
                 raise ValueError("Counterfactual hierarchical sampling requires `sample_construction.segment_frames`.")
 
         specs: list[_CounterfactualWindowSpec] = []
-        start_padding_frames = max(0, int(sample_cfg.start_padding_frames))
         for transition_index, row in enumerate(self.transition_rows):
-            context_row = self.context_rows.get(_context_key(row))
-            if context_row is None:
-                continue
-            context_frames = _latent_frame_count_from_row_or_payload(
-                self._resolve_encoded_path(context_row, "context_latent_path"),
-                row=context_row,
-                shape_key="context_video_latent_shape",
-                payload_key="video_latents",
-            )
             target_frames = _latent_frame_count_from_row_or_payload(
                 self._resolve_encoded_path(row, "target_latent_path"),
                 row=row,
                 shape_key="target_video_latent_shape",
                 payload_key="target_video_latents",
             )
-            source_frames = int(context_frames + target_frames)
-            start_min = -start_padding_frames if self._uses_hierarchical_fixed_segment else 0
-            # Counterfactual FDM/IDM samples must retain at least one pre-t0
-            # context frame. This is the objective-specific validity bound on
-            # top of the #101 hierarchical fixed-segment start sampler.
-            start_max = max(start_min, min(source_frames - 1, max(0, context_frames - 1)))
+            source_frames = int(target_frames)
+            # Target-only CF training must keep target latent 0 in the sample:
+            # that frame is the rollout-style t0 observation. Do not draw
+            # shifted subwindows that crop t0 out of the model-visible sequence.
+            start_min = 0
+            start_max = 0
             eligible_start_count = max(0, start_max - start_min + 1)
             if eligible_start_count <= 0:
                 continue
@@ -380,7 +421,7 @@ class EncodedCounterfactualDynamicsLatentDataset(Dataset[LatentWAMSample]):
                     eligible_start_count=int(eligible_start_count),
                     mass_within_task=float(eligible_start_count) ** float(sample_cfg.trajectory_start_power),
                     source_latent_frames=int(source_frames),
-                    context_frames=int(context_frames),
+                    context_frames=0,
                 )
             )
         return tuple(specs)
@@ -543,6 +584,7 @@ class GeneralistDynamicsMixtureDataset(Dataset[LatentWAMSample]):
         mode: str,
         bucket_name: str,
         drop_text: bool,
+        spread_indices: bool = False,
     ) -> Dataset[LatentWAMSample]:
         bucket = GeneralistMixtureBucket(
             name=str(bucket_name),
@@ -551,7 +593,11 @@ class GeneralistDynamicsMixtureDataset(Dataset[LatentWAMSample]):
             weight=1.0,
             drop_text=bool(drop_text),
         )
-        return GeneralistDynamicsSourceViewDataset(self, bucket=bucket)
+        return GeneralistDynamicsSourceViewDataset(
+            self,
+            bucket=bucket,
+            spread_indices=spread_indices,
+        )
 
     def __getitem__(self, index: int) -> LatentWAMSample:
         index = int(index)
@@ -584,11 +630,8 @@ class GeneralistDynamicsMixtureDataset(Dataset[LatentWAMSample]):
             sample = self.counterfactual_dataset[sample_index]
         else:
             raise ValueError(f"Unsupported generalist source bucket {bucket.source!r}.")
-        if bucket.drop_text:
-            sample = _trim_conditional_history(
-                sample,
-                max_history_frames=self.mixture_config.conditional_history_frames,
-            )
+        if _uses_real_target_only_conditional_layout(bucket):
+            sample = _project_real_conditional_sample_to_target_only(sample)
         return _with_generalist_metadata(
             sample,
             bucket=bucket,
@@ -600,33 +643,55 @@ class GeneralistDynamicsMixtureDataset(Dataset[LatentWAMSample]):
 class GeneralistDynamicsSourceViewDataset(Dataset[LatentWAMSample]):
     """Deterministic source projection that preserves mixture sample transforms."""
 
-    def __init__(self, mixture_dataset: GeneralistDynamicsMixtureDataset, *, bucket: GeneralistMixtureBucket) -> None:
+    def __init__(
+        self,
+        mixture_dataset: GeneralistDynamicsMixtureDataset,
+        *,
+        bucket: GeneralistMixtureBucket,
+        spread_indices: bool = False,
+    ) -> None:
         self.mixture_dataset = mixture_dataset
         self.bucket = bucket
+        self.spread_indices = bool(spread_indices)
         if bucket.source == REAL_DEMO_SOURCE:
             self.source_dataset = mixture_dataset.real_dataset
         elif bucket.source == COUNTERFACTUAL_DYNAMICS_SOURCE:
             self.source_dataset = mixture_dataset.counterfactual_dataset
         else:
             raise ValueError(f"Unsupported generalist source view {bucket.source!r}.")
+        self._spread_source_indices = _balanced_source_indices_for_dataset(self.source_dataset) if self.spread_indices else None
+        self._uses_balanced_source_indices = (
+            self._spread_source_indices is not None and len(self._spread_source_indices) > 0
+        )
+        self._source_spread_stride = _source_view_spread_stride(len(self.source_dataset))
 
     def __len__(self) -> int:
         return len(self.source_dataset)
 
     def __getitem__(self, index: int) -> LatentWAMSample:
         source_index = int(index)
+        if self._uses_balanced_source_indices:
+            source_index = int(self._spread_source_indices[source_index % len(self._spread_source_indices)])
+        elif self.spread_indices and len(self.source_dataset) > 1:
+            source_index = (source_index * self._source_spread_stride) % len(self.source_dataset)
         sample = self.source_dataset[source_index]
-        if self.bucket.drop_text:
-            sample = _trim_conditional_history(
-                sample,
-                max_history_frames=self.mixture_dataset.mixture_config.conditional_history_frames,
-            )
-        return _with_generalist_metadata(
+        if _uses_real_target_only_conditional_layout(self.bucket):
+            sample = _project_real_conditional_sample_to_target_only(sample)
+        sample = _with_generalist_metadata(
             sample,
             bucket=self.bucket,
             split=self.mixture_dataset.split,
             source_index=source_index,
         )
+        if self.spread_indices:
+            metadata = dict(sample.metadata)
+            metadata["generalist_source_view_index"] = int(index)
+            metadata["generalist_source_view_order"] = "balanced" if self._uses_balanced_source_indices else "stride"
+            metadata["generalist_source_view_stride"] = (
+                1 if self._uses_balanced_source_indices else int(self._source_spread_stride)
+            )
+            sample = replace(sample, metadata=metadata)
+        return sample
 
 
 class GeneralistDynamicsMixtureTrainSampler(Sampler[int]):
@@ -778,6 +843,86 @@ def _dataset_uses_epoch_offset_draw_keys(dataset: Dataset[LatentWAMSample]) -> b
     )
 
 
+def _source_view_spread_stride(length: int) -> int:
+    if length <= 1:
+        return 1
+    stride = max(1, int(length) // 10 + 1)
+    while math.gcd(stride, int(length)) != 1:
+        stride += 1
+        if stride >= int(length):
+            return 1
+    return stride
+
+
+def _balanced_counterfactual_source_indices(rows: Sequence[dict[str, Any]]) -> tuple[int, ...]:
+    indices_by_task_branch: dict[str, dict[str, list[int]]] = {}
+    branch_order: list[str] = []
+    seen_branches: set[str] = set()
+    for index, row in enumerate(rows):
+        task_key = _counterfactual_source_task_key(row)
+        branch_key = _counterfactual_source_branch_key(row)
+        if branch_key not in seen_branches:
+            seen_branches.add(branch_key)
+            branch_order.append(branch_key)
+        task_branches = indices_by_task_branch.setdefault(task_key, {})
+        task_branches.setdefault(branch_key, []).append(int(index))
+    if not indices_by_task_branch:
+        return tuple(range(len(rows)))
+
+    ordered_tasks = sorted(indices_by_task_branch, key=_source_view_label_sort_key)
+    ordered_branches = tuple(branch_order) if branch_order else ("unknown",)
+    max_depth = max(
+        len(indices)
+        for task_branches in indices_by_task_branch.values()
+        for indices in task_branches.values()
+    )
+    order: list[int] = []
+    for depth in range(max_depth):
+        for branch_offset in range(len(ordered_branches)):
+            for task_offset, task_key in enumerate(ordered_tasks):
+                branch_key = ordered_branches[(task_offset + branch_offset) % len(ordered_branches)]
+                indices = indices_by_task_branch.get(task_key, {}).get(branch_key, ())
+                if depth < len(indices):
+                    order.append(int(indices[depth]))
+    if len(order) < len(rows):
+        seen = set(order)
+        order.extend(index for index in range(len(rows)) if index not in seen)
+    return tuple(order)
+
+
+def _counterfactual_source_task_key(row: dict[str, Any]) -> str:
+    for key in ("task_id", "task_key", "task_name"):
+        value = row.get(key)
+        if value is not None:
+            return str(value)
+    return "unknown"
+
+
+def _counterfactual_source_branch_key(row: dict[str, Any]) -> str:
+    for key in ("branch", "counterfactual_branch", "branch_family"):
+        value = row.get(key)
+        if value is not None:
+            return str(value)
+    return "unknown"
+
+
+def _source_view_label_sort_key(label: str) -> tuple[int, int | str]:
+    try:
+        return (0, int(label))
+    except ValueError:
+        return (1, str(label))
+
+
+def _balanced_source_indices_for_dataset(dataset: Dataset[LatentWAMSample]) -> tuple[int, ...] | None:
+    build_indices = getattr(dataset, "build_balanced_source_indices", None)
+    if not callable(build_indices):
+        return None
+    indices = tuple(int(index) for index in build_indices())
+    if not indices:
+        return None
+    return indices
+
+
 def _with_generalist_metadata(
     sample: LatentWAMSample,
     *,
@@ -812,86 +957,105 @@ def _with_generalist_metadata(
     )
 
 
-def _trim_conditional_history(
-    sample: LatentWAMSample,
-    *,
-    max_history_frames: int | None,
-) -> LatentWAMSample:
-    """Physically crop excess clean prefix for conditional FDM/IDM samples."""
+def _uses_real_target_only_conditional_layout(bucket: GeneralistMixtureBucket) -> bool:
+    return bucket.source == REAL_DEMO_SOURCE and bucket.mode in {
+        ACTION_CONDITIONED_VIDEO_MODE,
+        VIDEO_CONDITIONED_ACTION_MODE,
+    }
 
-    if max_history_frames is None:
-        return sample
-    max_history_frames = int(max_history_frames)
-    if max_history_frames <= 0:
-        raise ValueError("Conditional generalist history cap must be positive or None.")
+
+def _project_real_conditional_sample_to_target_only(sample: LatentWAMSample) -> LatentWAMSample:
+    """Match real conditional FDM/IDM layout to the counterfactual target-only contract."""
+
     total_frames = int(sample.video_latents.shape[1])
-    loss_frame_start = _metadata_frame_boundary(
-        sample.metadata,
-        ("loss_frame_start", "latent_loss_frame_start", "action_loss_frame_start", "history_frames"),
-    )
-    if loss_frame_start is None or loss_frame_start <= max_history_frames:
-        return sample
-    if loss_frame_start >= total_frames:
+    if total_frames < 2:
         raise ValueError(
-            "Cannot trim conditional history when the future target is outside the sampled latent segment, "
-            f"loss_frame_start={loss_frame_start}, total_frames={total_frames}."
+            "Real conditional GJD target-only projection requires at least two latent frames, "
+            f"got {total_frames}."
         )
-    crop_frames = int(loss_frame_start - max_history_frames)
     if sample.actions.shape[0] % total_frames != 0:
         raise ValueError(
-            "Conditional history trimming requires frame-aligned action targets, "
+            "Real conditional GJD target-only projection requires frame-aligned actions, "
             f"actions={sample.actions.shape[0]}, latent_frames={total_frames}."
         )
-    action_steps_per_frame = int(sample.actions.shape[0] // total_frames)
-    action_crop = crop_frames * action_steps_per_frame
-    pre_start_frames = int(sample.metadata.get("segment_pre_start_frames", 0) or 0)
-    source_action_crop = max(0, crop_frames - pre_start_frames) * action_steps_per_frame
-    new_total_frames = total_frames - crop_frames
 
-    video_latents = sample.video_latents[:, crop_frames:].contiguous()
-    actions = sample.actions[action_crop:].contiguous()
-    action_mask = sample.action_mask[action_crop:].contiguous() if sample.action_mask is not None else None
-    canonical_video = _trim_optional_video(sample.canonical_video, crop_frames=crop_frames, total_frames=total_frames)
+    boundary, boundary_source = _real_conditional_target_boundary(sample.metadata)
+    if boundary is None:
+        source_start = 0
+        boundary_source = "default_first_frame"
+    else:
+        boundary = int(boundary)
+        if boundary <= 0:
+            source_start = 0
+        elif boundary >= total_frames:
+            raise ValueError(
+                "Real conditional GJD target-only projection requires at least one future frame after "
+                f"the target boundary, got boundary={boundary}, latent_frames={total_frames}."
+            )
+        else:
+            source_start = boundary - 1
+
+    target_frames = int(total_frames - source_start)
+    action_steps_per_frame = int(sample.actions.shape[0] // total_frames)
+    video_latents = sample.video_latents[:, source_start:].contiguous()
+    actions, action_mask = _target_only_shifted_actions(
+        sample.actions,
+        sample.action_mask,
+        source_start_frame=source_start,
+        target_frames=target_frames,
+        action_steps_per_frame=action_steps_per_frame,
+    )
     condition_latents = _trim_optional_video(
         sample.condition_latents,
-        crop_frames=crop_frames,
+        crop_frames=source_start,
+        total_frames=total_frames,
+    )
+    canonical_video = _trim_optional_video(
+        sample.canonical_video,
+        crop_frames=source_start,
         total_frames=total_frames,
     )
     proprio_context_state = _trim_optional_frame_tensor(
         sample.proprio_context_state,
-        crop_frames=crop_frames,
+        crop_frames=source_start,
         total_frames=total_frames,
     )
     proprio_context_state_mask = _trim_optional_frame_tensor(
         sample.proprio_context_state_mask,
-        crop_frames=crop_frames,
+        crop_frames=source_start,
         total_frames=total_frames,
     )
     proprio_context_frames = _trim_optional_frame_tensor(
         sample.proprio_context_frames,
-        crop_frames=crop_frames,
+        crop_frames=source_start,
         total_frames=total_frames,
     )
     proprio_context_frames_mask = _trim_optional_frame_tensor(
         sample.proprio_context_frames_mask,
-        crop_frames=crop_frames,
+        crop_frames=source_start,
         total_frames=total_frames,
     )
-    metadata = _trim_conditional_history_metadata(
+    state, state_mask, state_anchor_source_frame = _target_only_prefix_state(
+        sample,
+        source_start_frame=source_start,
+    )
+    metadata = _target_only_conditional_metadata(
         sample.metadata,
-        crop_frames=crop_frames,
-        source_action_crop=source_action_crop,
+        source_start_frame=source_start,
+        target_frames=target_frames,
         action_steps_per_frame=action_steps_per_frame,
-        new_total_frames=new_total_frames,
-        action_mask=action_mask,
         actions=actions,
-        max_history_frames=max_history_frames,
+        action_mask=action_mask,
+        boundary_source=boundary_source,
+        state_anchor_source_frame=state_anchor_source_frame,
     )
     return replace(
         sample,
         video_latents=video_latents,
         actions=actions,
         action_mask=action_mask,
+        state=state,
+        state_mask=state_mask,
         canonical_video=canonical_video,
         condition_latents=condition_latents,
         proprio_context_state=proprio_context_state,
@@ -902,12 +1066,224 @@ def _trim_conditional_history(
     )
 
 
+def _target_only_shifted_actions(
+    actions: torch.Tensor,
+    action_mask: torch.Tensor | None,
+    *,
+    source_start_frame: int,
+    target_frames: int,
+    action_steps_per_frame: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    projected_actions = torch.zeros(
+        int(target_frames) * int(action_steps_per_frame),
+        int(actions.shape[-1]),
+        dtype=actions.dtype,
+        device=actions.device,
+    )
+    projected_mask = torch.zeros_like(projected_actions, dtype=torch.float32)
+    projected_mask[:action_steps_per_frame] = 0.0
+    source_mask = (
+        action_mask.to(device=actions.device, dtype=torch.float32)
+        if action_mask is not None
+        else torch.ones_like(actions, dtype=torch.float32)
+    )
+    for target_frame in range(1, int(target_frames)):
+        source_frame = int(source_start_frame) + int(target_frame) - 1
+        src_start = source_frame * int(action_steps_per_frame)
+        src_end = src_start + int(action_steps_per_frame)
+        dst_start = int(target_frame) * int(action_steps_per_frame)
+        dst_end = dst_start + int(action_steps_per_frame)
+        if src_end > int(actions.shape[0]):
+            continue
+        projected_actions[dst_start:dst_end] = actions[src_start:src_end]
+        projected_mask[dst_start:dst_end] = source_mask[src_start:src_end]
+    return projected_actions.contiguous(), projected_mask.contiguous()
+
+
+def _target_only_prefix_state(
+    sample: LatentWAMSample,
+    *,
+    source_start_frame: int,
+) -> tuple[torch.Tensor | None, torch.Tensor | None, int]:
+    state_anchor_source_frame = max(0, int(source_start_frame) - 1)
+    if sample.condition_latents is None:
+        state_anchor_source_frame = max(0, int(source_start_frame))
+    if sample.proprio_context_frames is None:
+        return sample.state, sample.state_mask, state_anchor_source_frame
+    frames = sample.proprio_context_frames
+    if frames.ndim != 2:
+        return sample.state, sample.state_mask, state_anchor_source_frame
+    mask = sample.proprio_context_frames_mask
+    if mask is None:
+        mask = torch.ones_like(frames, dtype=torch.float32)
+    if mask.shape != frames.shape:
+        return sample.state, sample.state_mask, state_anchor_source_frame
+    state_horizon = int(sample.state.shape[0]) if sample.state is not None and sample.state.ndim == 2 else 1
+    anchor = max(0, min(int(state_anchor_source_frame), int(frames.shape[0]) - 1))
+    start = max(0, anchor - max(1, state_horizon) + 1)
+    state = frames[start : anchor + 1].contiguous()
+    state_mask = mask[start : anchor + 1].to(device=frames.device, dtype=torch.float32).contiguous()
+    if int(state.shape[0]) < state_horizon:
+        pad_count = state_horizon - int(state.shape[0])
+        state = torch.cat([state[:1].expand(pad_count, -1), state], dim=0).contiguous()
+        state_mask = torch.cat([state_mask[:1].expand(pad_count, -1), state_mask], dim=0).contiguous()
+    return state, state_mask, anchor
+
+
+def _target_only_conditional_metadata(
+    metadata: dict[str, Any],
+    *,
+    source_start_frame: int,
+    target_frames: int,
+    action_steps_per_frame: int,
+    actions: torch.Tensor,
+    action_mask: torch.Tensor | None,
+    boundary_source: str,
+    state_anchor_source_frame: int,
+) -> dict[str, Any]:
+    updated = dict(metadata)
+    original_observed = _metadata_sequence(updated.get("observation_frame_indices")) or _metadata_sequence(
+        updated.get("observed_frame_ids")
+    )
+    observed_frame_ids = None
+    if original_observed is not None and len(original_observed) >= int(source_start_frame) + int(target_frames):
+        observed_frame_ids = original_observed[int(source_start_frame) : int(source_start_frame) + int(target_frames)]
+        if "observation_frame_indices" in updated:
+            updated["observation_frame_indices"] = list(observed_frame_ids)
+        if "observed_frame_ids" in updated:
+            updated["observed_frame_ids"] = list(observed_frame_ids)
+
+    old_frame_start = _metadata_frame_boundary(
+        metadata,
+        ("sample_start_frame", "observation_start", "window_start_frame", "frame_shift", "latent_frame_start"),
+    )
+    if observed_frame_ids:
+        sample_start_frame = int(observed_frame_ids[0])
+        first_future_frame = int(observed_frame_ids[1]) if int(target_frames) > 1 else sample_start_frame
+        sample_end_frame = int(observed_frame_ids[-1]) + int(action_steps_per_frame)
+    else:
+        sample_start_frame = int(old_frame_start or 0) + int(source_start_frame)
+        first_future_frame = sample_start_frame + int(action_steps_per_frame)
+        sample_end_frame = sample_start_frame + int(target_frames) * int(action_steps_per_frame)
+
+    valid_action_steps, valid_action_values = _action_validity_stats(actions=actions, action_mask=action_mask)
+    old_valid_frames = metadata.get("segment_valid_latent_frames")
+    if old_valid_frames is None:
+        valid_latent_frames = int(target_frames)
+    else:
+        valid_latent_frames = max(0, min(int(target_frames), int(old_valid_frames) - int(source_start_frame)))
+    padded_latent_frames = max(0, int(target_frames) - int(valid_latent_frames))
+
+    updated.update(
+        {
+            "generalist_conditional_contract": GENERALIST_CONDITIONAL_CONTRACT_TARGET_ONLY_T0_PLUS_FUTURE,
+            "generalist_conditional_training_sequence": "target_only",
+            "generalist_conditional_context_used_for_training": False,
+            "generalist_conditional_boundary_source": str(boundary_source),
+            "generalist_conditional_source_t0_frame_in_sample": int(source_start_frame),
+            "generalist_conditional_source_future_start_frame_in_sample": int(source_start_frame) + 1,
+            "generalist_gjd_chunk_contract": GENERALIST_GJD_CHUNK_CONTRACT_T0_SINGLETON,
+            "history_frames": 1,
+            "loss_frame_start": 1,
+            "loss_frame_end": int(target_frames),
+            "latent_loss_frame_start": 1,
+            "latent_loss_frame_end": int(target_frames),
+            "action_loss_frame_start": 1,
+            "action_loss_frame_end": int(target_frames),
+            "current_start_frame_in_sample": 1,
+            "current_end_frame_in_sample": int(target_frames),
+            "supervised_start": 1,
+            "supervised_end": int(target_frames),
+            "chunk_origin_frame": 1,
+            "target_observation_frame_in_sample": 0,
+            "target_observation_frame_index": sample_start_frame,
+            "conditional_history_policy": GENERALIST_CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
+            "generalist_conditional_history_policy": GENERALIST_CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
+            "first_supervised_future_frame_in_sample": 1,
+            "first_supervised_future_frame_index": first_future_frame,
+            "supervised_future_latent_frames": max(0, int(target_frames) - 1),
+            "sample_start_frame": sample_start_frame,
+            "sample_end_frame": sample_end_frame,
+            "observation_start": sample_start_frame,
+            "window_start_frame": sample_start_frame,
+            "window_end_frame": sample_end_frame,
+            "anchor_frame_index": sample_start_frame,
+            "target_frame_start": first_future_frame,
+            "target_frame_end": sample_end_frame,
+            "segment_length_frames": int(target_frames),
+            "segment_valid_latent_frames": int(valid_latent_frames),
+            "segment_padded_latent_frames": int(padded_latent_frames),
+            "tail_padding_mode": "none" if padded_latent_frames == 0 else "zero_order_hold",
+            "segment_pre_start_frames": 0,
+            "start_padding_mode": "none",
+            "context_prefix_frames_in_sample": 1,
+            "context_prefix_real_frames": 1,
+            "context_prefix_truncated_frames": int(max(0, int(metadata.get("context_prefix_frames_requested", 0) or 0) - 1)),
+            "singleton_chunk_frame": 0,
+            "state_anchor_source_frame": int(state_anchor_source_frame),
+            "state_anchor_frame_in_sample": None if int(state_anchor_source_frame) < int(source_start_frame) else 0,
+            "valid_action_steps": int(valid_action_steps),
+            "valid_action_values": int(valid_action_values),
+        }
+    )
+    for key in ("latent_frame_start", "frame_shift", "effective_start", "effective_frame_start", "logical_frame_start"):
+        if key in metadata and metadata[key] is not None:
+            updated[key] = int(metadata[key]) + int(source_start_frame)
+    for start_key, end_key in (("effective_start", "effective_end"), ("effective_frame_start", "effective_frame_end")):
+        if start_key in updated and updated[start_key] is not None:
+            updated[end_key] = int(updated[start_key]) + int(target_frames)
+    if "logical_frame_start" in updated and updated["logical_frame_start"] is not None:
+        updated["logical_frame_end"] = int(updated["logical_frame_start"]) + int(target_frames)
+    for key in ("subwindow_latent_start", "virtual_latent_start"):
+        updated[key] = sample_start_frame
+    updated["subwindow_latent_end"] = sample_end_frame
+    original_action_start = metadata.get("subwindow_action_start")
+    updated["subwindow_action_start"] = (
+        int(original_action_start)
+        if original_action_start is not None
+        else 0
+    ) + int(source_start_frame) * int(action_steps_per_frame)
+    updated["subwindow_action_end"] = int(updated["subwindow_action_start"]) + int(actions.shape[0])
+
+    alignment = updated.get("lingbot_window_action_alignment")
+    if not isinstance(alignment, dict):
+        alignment = {}
+    else:
+        alignment = dict(alignment)
+    alignment.update(
+        {
+            "latent_num_frames": int(target_frames),
+            "prefix_actions": int(action_steps_per_frame),
+            "required_action_num": int(actions.shape[0]),
+            "leading_zero_action_frames": 1,
+            "leading_zero_action_steps": int(action_steps_per_frame),
+            "leading_zero_action_mask": 0.0,
+        }
+    )
+    updated["lingbot_window_action_alignment"] = alignment
+    return updated
+
+
 def _metadata_frame_boundary(metadata: dict[str, Any], keys: tuple[str, ...]) -> int | None:
     for key in keys:
         value = metadata.get(key)
         if value is not None:
             return int(value)
     return None
+
+
+def _real_conditional_target_boundary(metadata: dict[str, Any]) -> tuple[int | None, str]:
+    """Resolve the sampled current/history boundary for real-demo FDM/IDM."""
+
+    for key in ("current_start_frame_in_sample", "history_frames"):
+        value = metadata.get(key)
+        if value is not None and int(value) > 0:
+            return int(value), key
+    for key in ("loss_frame_start", "latent_loss_frame_start", "action_loss_frame_start"):
+        value = metadata.get(key)
+        if value is not None and int(value) > 0:
+            return int(value), key
+    return None, "default_first_frame"
 
 
 def _trim_optional_video(
@@ -938,151 +1314,6 @@ def _trim_optional_frame_tensor(
     if tensor.ndim >= 2 and int(tensor.shape[1]) == total_frames:
         return tensor[:, crop_frames:].contiguous()
     return tensor
-
-
-def _trim_conditional_history_metadata(
-    metadata: dict[str, Any],
-    *,
-    crop_frames: int,
-    source_action_crop: int,
-    action_steps_per_frame: int,
-    new_total_frames: int,
-    action_mask: torch.Tensor | None,
-    actions: torch.Tensor,
-    max_history_frames: int,
-) -> dict[str, Any]:
-    updated = dict(metadata)
-    original_observed = _metadata_sequence(updated.get("observation_frame_indices")) or _metadata_sequence(
-        updated.get("observed_frame_ids")
-    )
-    trimmed_observed = None
-    if original_observed is not None and len(original_observed) >= crop_frames:
-        trimmed_observed = original_observed[crop_frames : crop_frames + new_total_frames]
-        if "observation_frame_indices" in updated:
-            updated["observation_frame_indices"] = list(trimmed_observed)
-        if "observed_frame_ids" in updated:
-            updated["observed_frame_ids"] = list(trimmed_observed)
-    new_observation_start = int(trimmed_observed[0]) if trimmed_observed else None
-    original_context_prefix_in_sample = max(0, int(metadata.get("context_prefix_frames_in_sample", 0) or 0))
-    original_context_prefix_real = max(
-        0,
-        int(metadata.get("context_prefix_real_frames", original_context_prefix_in_sample) or 0),
-    )
-    # Cropping can consume real prefix context before it reaches chunk-alignment target frames.
-    cropped_context_prefix_frames = min(crop_frames, original_context_prefix_in_sample)
-    cropped_real_prefix_frames = min(crop_frames, original_context_prefix_real)
-
-    for key in (
-        "loss_frame_start",
-        "loss_frame_end",
-        "latent_loss_frame_start",
-        "latent_loss_frame_end",
-        "action_loss_frame_start",
-        "action_loss_frame_end",
-        "current_start_frame_in_sample",
-        "current_end_frame_in_sample",
-        "supervised_start",
-        "supervised_end",
-    ):
-        if key in updated and updated[key] is not None:
-            updated[key] = min(new_total_frames, max(0, int(updated[key]) - crop_frames))
-
-    loss_frame_start = _metadata_frame_boundary(
-        updated,
-        ("loss_frame_start", "latent_loss_frame_start", "action_loss_frame_start"),
-    )
-    if loss_frame_start is None:
-        loss_frame_start = min(max_history_frames, new_total_frames - 1)
-        updated["loss_frame_start"] = loss_frame_start
-    updated["history_frames"] = int(loss_frame_start)
-
-    if "segment_length_frames" in updated:
-        updated["segment_length_frames"] = int(new_total_frames)
-    if "segment_pre_start_frames" in updated:
-        updated["segment_pre_start_frames"] = max(0, int(updated["segment_pre_start_frames"]) - crop_frames)
-        updated["start_padding_mode"] = "repeat_first_latent" if int(updated["segment_pre_start_frames"]) > 0 else "none"
-    if "segment_valid_latent_frames" in updated:
-        pre_start = int(metadata.get("segment_pre_start_frames", 0) or 0)
-        valid_removed = max(0, crop_frames - pre_start)
-        updated["segment_valid_latent_frames"] = max(0, int(updated["segment_valid_latent_frames"]) - valid_removed)
-    if "segment_padded_latent_frames" in updated and "segment_valid_latent_frames" in updated:
-        updated["segment_padded_latent_frames"] = max(
-            0,
-            int(new_total_frames) - int(updated["segment_valid_latent_frames"]),
-        )
-        updated["tail_padding_mode"] = "none" if int(updated["segment_padded_latent_frames"]) == 0 else "zero_order_hold"
-    if "head_padded_frame_count" in updated and updated["head_padded_frame_count"] is not None:
-        updated["head_padded_frame_count"] = max(0, int(updated["head_padded_frame_count"]) - crop_frames)
-    if "context_prefix_frames_in_sample" in updated and updated["context_prefix_frames_in_sample"] is not None:
-        updated["context_prefix_frames_in_sample"] = max(
-            0,
-            int(updated["context_prefix_frames_in_sample"]) - cropped_context_prefix_frames,
-        )
-    if "context_prefix_real_frames" in updated and updated["context_prefix_real_frames"] is not None:
-        updated["context_prefix_real_frames"] = max(
-            0,
-            int(updated["context_prefix_real_frames"]) - cropped_real_prefix_frames,
-        )
-    if "context_prefix_truncated_frames" in updated and updated["context_prefix_truncated_frames"] is not None:
-        truncated_prefix = max(0, int(updated["context_prefix_truncated_frames"])) + cropped_context_prefix_frames
-        requested_prefix = updated.get("context_prefix_frames_requested")
-        if requested_prefix is not None:
-            truncated_prefix = min(max(0, int(requested_prefix)), truncated_prefix)
-        updated["context_prefix_truncated_frames"] = truncated_prefix
-
-    for key in ("sample_start_frame", "observation_start", "window_start_frame"):
-        if key in updated and updated[key] is not None:
-            updated[key] = int(new_observation_start) if new_observation_start is not None else int(updated[key]) + crop_frames
-    for key in ("latent_frame_start", "frame_shift", "effective_start", "effective_frame_start", "logical_frame_start"):
-        if key in updated and updated[key] is not None:
-            updated[key] = int(updated[key]) + crop_frames
-    for start_key, end_key in (("effective_start", "effective_end"), ("effective_frame_start", "effective_frame_end")):
-        if start_key in updated and end_key in updated and updated[start_key] is not None:
-            updated[end_key] = int(updated[start_key]) + int(new_total_frames)
-    target_start = updated.get("target_frame_start")
-    target_end = updated.get("target_frame_end")
-    if target_start is not None or target_end is not None:
-        adjusted_target_start = int(target_start) if target_start is not None else None
-        new_effective_start = _metadata_frame_boundary(
-            updated,
-            ("effective_frame_start", "effective_start", "frame_shift"),
-        )
-        if adjusted_target_start is not None and new_effective_start is not None:
-            adjusted_target_start = max(adjusted_target_start, int(new_effective_start))
-        if adjusted_target_start is not None and target_end is not None:
-            adjusted_target_start = min(adjusted_target_start, int(target_end))
-        if adjusted_target_start is not None:
-            updated["target_frame_start"] = int(adjusted_target_start)
-        if target_start is not None:
-            for key in ("subwindow_latent_start", "virtual_latent_start"):
-                if key in updated and updated[key] is not None:
-                    updated[key] = int(adjusted_target_start)
-        if target_end is not None and "subwindow_latent_end" in updated and updated["subwindow_latent_end"] is not None:
-            updated["subwindow_latent_end"] = int(target_end)
-    else:
-        for key in ("subwindow_latent_start", "virtual_latent_start"):
-            if key in updated and updated[key] is not None:
-                updated[key] = int(updated[key]) + crop_frames
-    if "subwindow_action_start" in updated and updated["subwindow_action_start"] is not None:
-        updated["subwindow_action_start"] = int(updated["subwindow_action_start"]) + int(source_action_crop)
-
-    alignment = updated.get("lingbot_window_action_alignment")
-    if isinstance(alignment, dict):
-        alignment = dict(alignment)
-        alignment["latent_num_frames"] = int(new_total_frames)
-        alignment["required_action_num"] = int(actions.shape[0])
-        if "leading_zero_action_frames" in alignment:
-            leading_frames = max(0, int(alignment["leading_zero_action_frames"]) - crop_frames)
-            alignment["leading_zero_action_frames"] = leading_frames
-            alignment["leading_zero_action_steps"] = leading_frames * action_steps_per_frame
-        updated["lingbot_window_action_alignment"] = alignment
-
-    valid_steps, valid_values = _action_validity_stats(actions=actions, action_mask=action_mask)
-    updated["valid_action_steps"] = valid_steps
-    updated["valid_action_values"] = valid_values
-    updated["generalist_conditional_history_frames"] = int(max_history_frames)
-    updated["generalist_history_trimmed_frames"] = int(crop_frames)
-    return updated
 
 
 def _metadata_sequence(value: Any) -> list[int] | None:
@@ -1121,32 +1352,6 @@ def _payload_latents(payload: dict[str, Any], *, key: str) -> torch.Tensor:
     if not isinstance(tensor, torch.Tensor) or tensor.ndim != 4:
         raise ValueError(f"Expected {key!r} tensor [C,T,H,W], got {type(tensor)!r}.")
     return tensor.to(dtype=torch.float32).contiguous()
-
-
-def _counterfactual_source_proprio_frames(
-    *,
-    context_npz: np.lib.npyio.NpzFile,
-    sample_npz: np.lib.npyio.NpzFile,
-    context_latent_frames: int,
-    target_latent_frames: int,
-    state_dim: int,
-    data_config: DataConfig,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    context = _counterfactual_latent_state_frames(
-        context_npz,
-        latent_frames=int(context_latent_frames),
-        state_dim=int(state_dim),
-        data_config=data_config,
-    )
-    target = _counterfactual_latent_state_frames(
-        sample_npz,
-        latent_frames=int(target_latent_frames),
-        state_dim=int(state_dim),
-        data_config=data_config,
-    )
-    states = torch.cat([context[0], target[0]], dim=0).contiguous()
-    masks = torch.cat([context[1], target[1]], dim=0).contiguous()
-    return states, masks
 
 
 def _counterfactual_latent_state_frames(
@@ -1262,18 +1467,46 @@ def _counterfactual_state_history_from_frames(
     return state[-state_horizon:].contiguous(), mask[-state_horizon:].contiguous()
 
 
-def _action_steps_per_frame(actions: torch.Tensor, *, total_frames: int) -> int:
+def _counterfactual_action_steps_per_frame(
+    actions: torch.Tensor,
+    *,
+    total_frames: int,
+    data_config: DataConfig,
+) -> int:
     if total_frames <= 0:
         raise ValueError("Counterfactual sample must contain at least one latent frame.")
-    if actions.shape[0] % total_frames != 0:
+    configured = _configured_action_steps_per_latent_frame(data_config)
+    if configured is not None:
+        min_required = max(0, int(total_frames) - 1) * int(configured)
+        max_legacy = int(total_frames) * int(configured)
+        action_steps = int(actions.shape[0])
+        if min_required <= action_steps <= max_legacy:
+            return int(configured)
+
+    transition_frames = max(1, int(total_frames) - 1)
+    if actions.shape[0] % transition_frames == 0:
+        action_per_frame = int(actions.shape[0] // transition_frames)
+    elif actions.shape[0] % total_frames == 0:
+        action_per_frame = int(actions.shape[0] // total_frames)
+    else:
         raise ValueError(
-            "Counterfactual action count must be frame-aligned, "
+            "Counterfactual action count must be transition- or legacy frame-aligned, "
             f"got actions={actions.shape[0]}, latent_frames={total_frames}."
         )
-    action_per_frame = int(actions.shape[0] // total_frames)
     if action_per_frame <= 0:
         raise ValueError("Counterfactual sample must contain at least one action per latent frame.")
     return action_per_frame
+
+
+def _configured_action_steps_per_latent_frame(data_config: DataConfig) -> int | None:
+    num_frames = int(getattr(data_config, "num_frames", 0) or 0)
+    action_horizon = int(getattr(data_config.action_schema, "action_horizon", 0) or 0)
+    if num_frames <= 0 or action_horizon <= 0:
+        return None
+    if action_horizon % num_frames != 0:
+        return None
+    action_per_frame = int(action_horizon // num_frames)
+    return action_per_frame if action_per_frame > 0 else None
 
 
 def _counterfactual_condition_latents_from_source(
@@ -1310,46 +1543,32 @@ def _validate_counterfactual_condition_latent_manifest(
     )
 
 
-def _counterfactual_condition_latents_from_payloads(
+def _counterfactual_target_only_condition_latents_from_payload(
     *,
-    context_payload: dict[str, Any],
     target_payload: dict[str, Any],
     fallback_video_latents: torch.Tensor,
     source_frame_offset: int,
 ) -> tuple[torch.Tensor | None, str]:
     if int(source_frame_offset) == 0:
         return None, "disabled_zero_offset"
-    context_condition = _optional_counterfactual_condition_latents(
-        context_payload,
-        key="condition_video_latents",
-        source_frame_offset=source_frame_offset,
-    )
     target_condition = _optional_counterfactual_condition_latents(
         target_payload,
         key="target_condition_video_latents",
         source_frame_offset=source_frame_offset,
     )
-    saw_explicit = context_condition is not None or target_condition is not None
-    if saw_explicit:
-        if context_condition is None or target_condition is None:
+    if target_condition is not None:
+        if tuple(target_condition.shape) != tuple(fallback_video_latents.shape):
             raise ValueError(
-                "Encoded counterfactual condition latents are incomplete: "
-                "expected both context `condition_video_latents` and sample "
-                "`target_condition_video_latents`."
+                "Encoded target-only counterfactual condition_latents must match target video latents, "
+                f"got condition={tuple(target_condition.shape)}, video={tuple(fallback_video_latents.shape)}."
             )
-        condition = torch.cat([context_condition, target_condition], dim=1).contiguous()
-        if tuple(condition.shape) != tuple(fallback_video_latents.shape):
-            raise ValueError(
-                "Encoded counterfactual condition_latents must match source video latents, "
-                f"got condition={tuple(condition.shape)}, video={tuple(fallback_video_latents.shape)}."
-            )
-        return condition, "encoded_single_frame"
+        return target_condition, "encoded_target_single_frame"
 
     fallback = _counterfactual_condition_latents_from_source(
         fallback_video_latents,
         source_frame_offset=source_frame_offset,
     )
-    return fallback, "synthesized_shift"
+    return fallback, "synthesized_target_shift"
 
 
 def _optional_counterfactual_condition_latents(
@@ -1407,6 +1626,7 @@ def _build_counterfactual_fixed_segment(
     latent_start: int,
     segment_length: int,
     action_per_frame: int,
+    condition_source_frame_offset: int = 0,
     mask_leading_zero_action_context: bool = False,
 ) -> dict[str, Any]:
     source_frames = int(video_latents.shape[1])
@@ -1461,14 +1681,29 @@ def _build_counterfactual_fixed_segment(
             continue
         src_start = source_frame * action_per_frame
         src_end = src_start + action_per_frame
+        if src_end > int(actions.shape[0]):
+            continue
         segment_actions[dst_start:dst_end] = actions[src_start:src_end]
         action_mask[dst_start:dst_end] = 1.0
 
-    future_start = int(context_frames) - int(latent_start)
-    loss_frame_start = max(0, int(pre_start_frames), int(future_start))
+    target_observation_frame = int(context_frames) - int(latent_start)
+    first_supervised_future_frame = int(target_observation_frame) + 1
+    loss_frame_start = max(0, int(pre_start_frames), int(first_supervised_future_frame))
     loss_frame_end = min(int(segment_length), int(valid_latent_frames))
     if loss_frame_end < loss_frame_start:
         loss_frame_end = loss_frame_start
+    prefix_state_source_frame = int(source_start)
+    if condition_latents is not None:
+        prefix_state_source_frame = int(source_start) + int(condition_source_frame_offset)
+    prefix_state_source_frame = max(0, min(source_frames - 1, int(prefix_state_source_frame)))
+    prefix_state_frame_in_sample: int | None = None
+    if int(source_start) <= prefix_state_source_frame < int(source_end):
+        prefix_state_frame_in_sample = int(prefix_state_source_frame) - int(source_start) + int(pre_start_frames)
+    prefix_state_frame = (
+        int(prefix_state_frame_in_sample)
+        if prefix_state_frame_in_sample is not None
+        else max(0, min(segment_length - 1, int(pre_start_frames)))
+    )
     return {
         "video_latents": segment_video,
         "condition_latents": segment_condition,
@@ -1480,6 +1715,12 @@ def _build_counterfactual_fixed_segment(
         "valid_source_frames": max(0, int(source_end) - int(source_start)),
         "loss_frame_start": int(loss_frame_start),
         "loss_frame_end": int(loss_frame_end),
+        "chunk_origin_frame": int(loss_frame_start),
+        "target_observation_frame": int(target_observation_frame),
+        "first_supervised_future_frame": int(first_supervised_future_frame),
+        "prefix_state_frame": int(prefix_state_frame),
+        "prefix_state_source_frame": int(prefix_state_source_frame),
+        "prefix_state_frame_in_sample": prefix_state_frame_in_sample,
         "leading_zero_action_frames": int(leading_zero_action_frames),
         "leading_zero_action_mask": float(leading_zero_action_mask),
     }
@@ -1520,11 +1761,12 @@ def _counterfactual_observed_frame_ids(
     latent_start: int,
     segment_length: int,
     source_frames: int,
+    action_per_frame: int,
 ) -> list[int]:
     ids: list[int] = []
     for offset in range(int(segment_length)):
         source_frame = min(max(0, int(latent_start) + offset), int(source_frames) - 1)
-        ids.append(int(context_start_frame) + source_frame)
+        ids.append((int(context_start_frame) + source_frame) * int(action_per_frame))
     return ids
 
 

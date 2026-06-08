@@ -19,7 +19,11 @@ from open_wam.models.common.flow_matching import (
     timesteps_matching_sigmas,
 )
 from open_wam.models.common.flow_noise_plan import frame_sigmas_for_timesteps
-from open_wam.models.common.attention_profiles import build_chunked_text_context_cross_attention_mask
+from open_wam.models.common.attention_profiles import (
+    CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
+    build_chunked_text_context_cross_attention_mask,
+)
+from open_wam.models.common.packed_token_layout import frame_chunk_ids_for_origin
 from open_wam.models.common.joint_conditioning import (
     resolve_generalist_joint_conditioning_semantics,
     sample_conditioning_mode,
@@ -768,6 +772,7 @@ class MoTPolicyVariant(PolicyVariant):
         tokens_per_frame: int,
         chunk_size_frames: int,
         chunk_origin_frame: int = 0,
+        singleton_chunk_frame: int | None = None,
         repeat_copies: int = 1,
         global_suffix_token_count: int = 0,
     ) -> torch.Tensor | None:
@@ -787,10 +792,11 @@ class MoTPolicyVariant(PolicyVariant):
             device=resolved_text_context.device,
             dtype=torch.long,
         ).repeat_interleave(int(tokens_per_frame))
-        query_chunk_ids = torch.div(
-            frame_ids - int(chunk_origin_frame),
-            chunk_size,
-            rounding_mode="floor",
+        query_chunk_ids = frame_chunk_ids_for_origin(
+            frame_ids,
+            chunk_origin_frame=int(chunk_origin_frame),
+            chunk_size=chunk_size,
+            singleton_chunk_frame=singleton_chunk_frame,
         ).repeat(int(repeat_copies))
         base_text_token_count = int(resolved_text_context.shape[1]) - gated_proprio_token_count - suffix_token_count
         return build_chunked_text_context_cross_attention_mask(
@@ -1055,6 +1061,9 @@ class MoTPolicyVariant(PolicyVariant):
         sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
         if sample_metadata is None:
             return 0
+        explicit_chunk_origin = sample_metadata.raw.get("chunk_origin_frame")
+        if explicit_chunk_origin is not None:
+            return int(explicit_chunk_origin)
         if str(sample_metadata.raw.get("target_alignment", "")) != "next_after_context":
             return 0
         loss_frame_start, _ = sample_metadata.frame_range_or_default(
@@ -1062,6 +1071,38 @@ class MoTPolicyVariant(PolicyVariant):
             error_label="M5 train chunk-origin metadata",
         )
         return int(loss_frame_start)
+
+    @staticmethod
+    def _resolve_train_singleton_chunk_frame(
+        *,
+        batch: PolicyTrainBatch,
+        observed_num_frames: int,
+    ) -> int | None:
+        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
+        if sample_metadata is None:
+            return None
+        raw = sample_metadata.raw
+        if raw.get("generalist_gjd_chunk_contract") != "t0_singleton":
+            return None
+        singleton_frame = raw.get("singleton_chunk_frame", raw.get("target_observation_frame_in_sample"))
+        if singleton_frame is None:
+            return None
+        resolved = int(singleton_frame)
+        if resolved < 0 or resolved >= int(observed_num_frames):
+            raise ValueError(
+                "Invalid GJD singleton chunk frame, "
+                f"got {resolved} for observed_num_frames={int(observed_num_frames)}."
+            )
+        return resolved
+
+    @staticmethod
+    def _resolve_train_conditional_history_policy(*, batch: PolicyTrainBatch) -> str | None:
+        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
+        if sample_metadata is None:
+            return None
+        raw = sample_metadata.raw
+        policy = raw.get("generalist_conditional_history_policy")
+        return None if policy is None else str(policy)
 
     def _sample_full_segment_train_geometry(
         self,
@@ -1351,6 +1392,7 @@ class MoTPolicyVariant(PolicyVariant):
         prefix_condition_frames: int,
         target_num_frames: int,
         chunk_size_frames: int,
+        chunk_origin_frame: int = 0,
     ) -> torch.Tensor | None:
         if hidden_proprio_state is None or int(prefix_condition_frames) <= 0:
             return hidden_proprio_state
@@ -1372,7 +1414,12 @@ class MoTPolicyVariant(PolicyVariant):
             device=hidden_proprio_state.device,
             dtype=torch.long,
         )
-        target_boundary_ids = torch.div(target_frame_ids, chunk_size, rounding_mode="floor") * chunk_size
+        chunk_origin = int(chunk_origin_frame)
+        target_boundary_ids = (
+            torch.div(target_frame_ids - chunk_origin, chunk_size, rounding_mode="floor") * chunk_size
+            + chunk_origin
+        )
+        target_boundary_ids = target_boundary_ids.clamp(0, required_frames - 1)
         target_boundary_state = hidden_proprio_state.index_select(dim=1, index=target_boundary_ids)
         return target_boundary_state
 
@@ -1914,6 +1961,10 @@ class MoTPolicyVariant(PolicyVariant):
             batch=prepared_inputs.batch,
             observed_num_frames=target_num_video_frames,
         )
+        singleton_chunk_frame = self._resolve_train_singleton_chunk_frame(
+            batch=prepared_inputs.batch,
+            observed_num_frames=target_num_video_frames,
+        )
 
         if action_tokens_per_frame is None:
             raise ValueError(
@@ -1926,6 +1977,7 @@ class MoTPolicyVariant(PolicyVariant):
                 "`sampled_chunk_size` resolvable from the batch metadata or full-segment fallback, got None."
             )
         history_stream_visibility = self._resolve_history_stream_visibility()
+        conditional_history_policy = None
 
         sampled_generalist_mode: MoTGeneralistTrainingMode | None = None
         forced_generalist_mode, metadata_drop_text, generalist_source = _resolve_mot_generalist_training_metadata(
@@ -2092,6 +2144,10 @@ class MoTPolicyVariant(PolicyVariant):
                     fallback_window_size=sampled_window_size,
                 )
                 history_stream_visibility = ParallelHistoryStreamVisibility.VIDEO_ONLY
+                conditional_history_policy = (
+                    self._resolve_train_conditional_history_policy(batch=prepared_inputs.batch)
+                    or CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY
+                )
 
         packed_action_tokens = torch.cat([noisy_actions, clean_actions], dim=1)
         action_hidden_proprio_state = self._legacy_prefix_action_hidden_proprio_state(
@@ -2099,6 +2155,7 @@ class MoTPolicyVariant(PolicyVariant):
             prefix_condition_frames=prefix_condition_frames,
             target_num_frames=target_num_video_frames,
             chunk_size_frames=sampled_chunk_size,
+            chunk_origin_frame=chunk_origin_frame,
         )
         packed_action_hidden_context = self._action_hidden_context_for_tokens(
             visual_tower,
@@ -2160,6 +2217,7 @@ class MoTPolicyVariant(PolicyVariant):
             tokens_per_frame=video_tokens_per_frame,
             chunk_size_frames=sampled_chunk_size,
             chunk_origin_frame=chunk_origin_frame,
+            singleton_chunk_frame=singleton_chunk_frame,
             repeat_copies=2,
             global_suffix_token_count=generalist_mode_text_token_count,
         )
@@ -2179,6 +2237,7 @@ class MoTPolicyVariant(PolicyVariant):
             tokens_per_frame=int(action_tokens_per_frame),
             chunk_size_frames=sampled_chunk_size,
             chunk_origin_frame=chunk_origin_frame,
+            singleton_chunk_frame=singleton_chunk_frame,
             repeat_copies=2,
             global_suffix_token_count=generalist_mode_text_token_count,
         )
@@ -2201,9 +2260,11 @@ class MoTPolicyVariant(PolicyVariant):
             attention_window_size=sampled_window_size,
             current_block_coupling=current_block_coupling,
             chunk_origin_frame=chunk_origin_frame,
+            singleton_chunk_frame=singleton_chunk_frame,
             action_context_mask=clean_action_condition_mask,
             history_stream_visibility=history_stream_visibility.value,
             prefix_condition_frames=prefix_condition_frames,
+            conditional_history_policy=conditional_history_policy,
         )
         packed_video_hidden_context = (
             None
@@ -2276,6 +2337,9 @@ class MoTPolicyVariant(PolicyVariant):
                 "current_block_coupling": current_block_coupling.value,
                 "sampled_chunk_size": sampled_chunk_size,
                 "sampled_window_size": sampled_window_size,
+                "chunk_origin_frame": chunk_origin_frame,
+                "singleton_chunk_frame": singleton_chunk_frame,
+                "conditional_history_policy": conditional_history_policy,
                 "generalist_training_paradigm": self.config.generalist_training_paradigm.value,
                 "generalist_training_source": generalist_source,
                 "video_condition_source": video_condition_source,

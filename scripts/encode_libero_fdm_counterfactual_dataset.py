@@ -439,8 +439,8 @@ def _condition_source_frame_indices(
     indices: list[int] = []
     for latent_index in range(latent_frames):
         boundary_index = min(int(latent_index) + 1, len(boundaries) - 1)
-        raw_position = min(int(boundaries[boundary_index]), raw_frame_count - 1)
-        raw_position = max(0, min(raw_position + int(source_frame_offset), raw_frame_count - 1))
+        raw_position = int(boundaries[boundary_index]) + int(source_frame_offset)
+        raw_position = max(0, min(raw_position, raw_frame_count - 1))
         indices.append(raw_position)
     return indices
 

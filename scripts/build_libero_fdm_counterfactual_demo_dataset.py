@@ -956,7 +956,9 @@ def _raw_window_frames_for_latents(latent_frames: int, *, action_per_frame: int)
 def _decoded_raw_frames_for_latents(latent_frames: int, *, action_per_frame: int) -> int:
     if latent_frames <= 0:
         raise ValueError(f"Expected positive latent frame count, got {latent_frames}.")
-    return int(action_per_frame) * (int(latent_frames) - 1) + 1
+    # Counterfactual targets include the cached pre-action t0 observation plus
+    # `latent_frames` supervised future latent anchors.
+    return int(action_per_frame) * int(latent_frames) + 1
 
 
 def _episode_to_row(episode: SourceEpisode) -> dict[str, Any]:

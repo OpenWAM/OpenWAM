@@ -19,7 +19,9 @@ from open_wam.ablations.joint_denoising_fdm.branches import (
     expand_branch_names,
 )
 from open_wam.ablations.joint_denoising_fdm.counterfactual import (
+    CounterfactualCase,
     _decoded_raw_frames_for_latents,
+    _render_counterfactual_branch,
     _raw_window_frames_for_latents,
     _should_drop_text_conditioning,
 )
@@ -232,9 +234,9 @@ def test_branch_presets_expand_and_record_metadata() -> None:
 def test_counterfactual_wan_temporal_window_formulas() -> None:
     assert _raw_window_frames_for_latents(4, action_per_frame=4) == 13
     assert _raw_window_frames_for_latents(16, action_per_frame=4) == 61
-    assert _decoded_raw_frames_for_latents(4, action_per_frame=4) == 13
-    assert _decoded_raw_frames_for_latents(16, action_per_frame=4) == 61
-    assert _decoded_raw_frames_for_latents(32, action_per_frame=4) == 125
+    assert _decoded_raw_frames_for_latents(4, action_per_frame=4) == 17
+    assert _decoded_raw_frames_for_latents(16, action_per_frame=4) == 65
+    assert _decoded_raw_frames_for_latents(32, action_per_frame=4) == 129
 
 
 def test_counterfactual_dataset_builder_excludes_manifest_source_episodes(tmp_path: Path) -> None:
@@ -468,6 +470,41 @@ def test_counterfactual_dataset_builder_renders_pre_action_observation_frames(tm
     assert env.set_state_from_flattened_calls == 1
 
 
+def test_counterfactual_ablation_render_includes_cached_t0_observation(tmp_path: Path) -> None:
+    env = _FakeCounterfactualEnv()
+    actions = np.zeros((32, 7), dtype=np.float32)
+    case = CounterfactualCase(
+        case_index=0,
+        episode_index=0,
+        task_text="task",
+        task_id=0,
+        init_state_index=0,
+        parquet_path=tmp_path / "episode.parquet",
+        t0_frame=2,
+        context_start_frame=1,
+        action_length=int(actions.shape[0]),
+    )
+
+    branch = _render_counterfactual_branch(
+        env=env,
+        init_state=np.asarray([0.0], dtype=np.float32),
+        case=case,
+        actions=actions,
+        branch_name="gt",
+        horizon_frames=1,
+        generated_frames=1,
+        action_per_frame=4,
+        seed=0,
+        output_root=tmp_path,
+        video_fps=60.0,
+    )
+
+    assert branch.target_rgb.shape[0] == 5
+    assert len(branch.future_obs) == 5
+    assert env.state_index == 12
+    np.testing.assert_allclose(branch.target_rgb[:, 0, 0, 0], np.arange(8, 13, dtype=np.float32) / 255.0)
+
+
 def test_counterfactual_dataset_builder_plan_only_overwrite_does_not_delete_before_validation(tmp_path: Path) -> None:
     builder = _load_repo_script("scripts/build_libero_fdm_counterfactual_demo_dataset.py")
     output_dir = tmp_path / "outputs"
@@ -608,7 +645,7 @@ def test_counterfactual_encoder_builds_single_frame_condition_latents() -> None:
         raw_frame_count=17,
         latent_frames=5,
         source_frame_offset=-1,
-    ) == [0, 4, 8, 12, 15]
+    ) == [0, 4, 8, 12, 16]
 
     class FakeAssets:
         def __init__(self) -> None:
@@ -637,7 +674,7 @@ def test_counterfactual_encoder_builds_single_frame_condition_latents() -> None:
     assert len(assets.calls) == 3
     torch.testing.assert_close(
         latents[0, :, 0, 0],
-        torch.tensor([0, 4, 8, 12, 15], dtype=torch.float32) / (3.0 * 255.0),
+        torch.tensor([0, 4, 8, 12, 16], dtype=torch.float32) / (3.0 * 255.0),
     )
 
 

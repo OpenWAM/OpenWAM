@@ -1586,6 +1586,11 @@ class SharedVideoTransformerCore(nn.Module):
                     proprio_context_token_count=int(metadata.get("proprio_context_token_count", 0)),
                     chunk_origin_frame=int(metadata.get("chunk_origin_frame", 0)),
                     prefix_condition_frames=int(metadata.get("prefix_condition_frames", 0)),
+                    singleton_chunk_frame=(
+                        None
+                        if metadata.get("singleton_chunk_frame") is None
+                        else int(metadata["singleton_chunk_frame"])
+                    ),
                     action_context_mask=(
                         torch.tensor(
                             metadata["action_context_valid_tokens"],
@@ -1606,6 +1611,7 @@ class SharedVideoTransformerCore(nn.Module):
                         metadata.get("preserve_video_pretrain_history", False)
                     ),
                     history_stream_visibility=metadata.get("history_stream_visibility"),
+                    conditional_history_policy=metadata.get("conditional_history_policy"),
                 )
             if profile.self_attention_mask is None and profile.cross_attention_mask is None:
                 return profile

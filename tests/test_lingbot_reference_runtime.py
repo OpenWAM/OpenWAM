@@ -3695,6 +3695,7 @@ def test_parallel_action_conditioned_train_artifacts_accept_contextual_overrides
         loss_frame_end=6,
         frame_shift=9,
         chunk_origin_frame=4,
+        singleton_chunk_frame=3,
     )
 
     assert artifacts.input_dict["chunk_size"] == 2
@@ -3703,6 +3704,7 @@ def test_parallel_action_conditioned_train_artifacts_accept_contextual_overrides
     assert artifacts.input_dict["loss_frame_end"] == 6
     assert artifacts.input_dict["frame_shift"] == 9
     assert artifacts.input_dict["chunk_origin_frame"] == 4
+    assert artifacts.input_dict["singleton_chunk_frame"] == 3
     assert artifacts.input_dict["attention_profile_name"] == "chunked_temporal_exact_joint"
 
 
@@ -4862,6 +4864,7 @@ def test_generalist_joint_denoising_action_conditioned_video_uses_clean_action_s
     assert input_dict["chunk_size"] == 2
     assert input_dict["window_size"] == 3
     assert input_dict["history_stream_visibility"] == ParallelHistoryStreamVisibility.VIDEO_ONLY.value
+    assert input_dict["conditional_history_policy"] == "previous_boundary_video_only"
     assert input_dict["generalist_conditional_history_chunks"] == 1
     shared_sigmas = input_dict["joint_denoise_shared_sigmas"]
     latent_sigmas = artifacts.latent_scheduler.sigma_for_timesteps(input_dict["latent_dict"]["timesteps"][0])
@@ -4885,6 +4888,7 @@ def test_generalist_joint_denoising_video_conditioned_action_uses_clean_video_sl
     assert input_dict["chunk_size"] == 2
     assert input_dict["window_size"] == 3
     assert input_dict["history_stream_visibility"] == ParallelHistoryStreamVisibility.VIDEO_ONLY.value
+    assert input_dict["conditional_history_policy"] == "previous_boundary_video_only"
     assert input_dict["generalist_conditional_history_chunks"] == 1
     shared_sigmas = input_dict["joint_denoise_shared_sigmas"]
     expected_action_timesteps = artifacts.action_scheduler.timestep_matching_sigma(shared_sigmas)

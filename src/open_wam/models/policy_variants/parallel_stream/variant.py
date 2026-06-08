@@ -54,6 +54,25 @@ _PER_CHUNK_PROPRIO_GRANULARITY_CHUNK = "chunk"
 _PER_CHUNK_PROPRIO_GRANULARITY_FRAME = "frame"
 
 
+def _resolve_generalist_singleton_chunk_frame(
+    metadata: dict,
+    *,
+    observed_num_frames: int,
+) -> int | None:
+    if metadata.get("generalist_gjd_chunk_contract") != "t0_singleton":
+        return None
+    singleton_frame = metadata.get("singleton_chunk_frame", metadata.get("target_observation_frame_in_sample"))
+    if singleton_frame is None:
+        return None
+    resolved = int(singleton_frame)
+    if resolved < 0 or resolved >= int(observed_num_frames):
+        raise ValueError(
+            "Invalid GJD singleton chunk frame for parallel-stream training, "
+            f"got {resolved} for observed_num_frames={int(observed_num_frames)}."
+        )
+    return resolved
+
+
 class ParallelStreamPolicyVariant(PolicyVariant):
     """LingBot-style parallel-stream policy variant.
 
@@ -353,6 +372,9 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 chunk_size_override=sampled_geometry["chunk_size"],
                 window_size_override=sampled_geometry["window_size"],
                 frame_shift=sampled_geometry["frame_shift"],
+                chunk_origin_frame=sampled_geometry["chunk_origin_frame"],
+                singleton_chunk_frame=sampled_geometry["singleton_chunk_frame"],
+                conditional_history_policy=sampled_geometry["conditional_history_policy"],
                 generalist_training_mode_override=generalist_metadata["mode_override"],
                 generalist_drop_text_conditioning=generalist_metadata["drop_text"],
                 generalist_training_source=generalist_metadata["source"],
@@ -377,6 +399,8 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 action_loss_frame_end=sampled_geometry["action_loss_frame_end"],
                 frame_shift=sampled_geometry["frame_shift"],
                 chunk_origin_frame=sampled_geometry["chunk_origin_frame"],
+                singleton_chunk_frame=sampled_geometry["singleton_chunk_frame"],
+                conditional_history_policy=sampled_geometry["conditional_history_policy"],
                 generalist_training_mode_override=generalist_metadata["mode_override"],
                 generalist_drop_text_conditioning=generalist_metadata["drop_text"],
                 generalist_training_source=generalist_metadata["source"],
@@ -401,6 +425,8 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 action_loss_frame_end=sampled_geometry["action_loss_frame_end"],
                 frame_shift=sampled_geometry["frame_shift"],
                 chunk_origin_frame=sampled_geometry["chunk_origin_frame"],
+                singleton_chunk_frame=sampled_geometry["singleton_chunk_frame"],
+                conditional_history_policy=sampled_geometry["conditional_history_policy"],
             )
         if proprio_state is not None:
             train_artifacts.input_dict["proprio_state"] = proprio_state
@@ -524,7 +550,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         batch: PolicyTrainBatch,
         *,
         observed_num_frames: int,
-    ) -> dict[str, int | None]:
+    ) -> dict[str, int | str | None]:
         sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
         if sample_metadata is None:
             sample_metadata = SampleConstructionMetadata(raw={})
@@ -554,9 +580,18 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             and sample_metadata.frame_shift is not None
             else 0
         )
-        chunk_origin_frame = 0
-        if str(sample_metadata.raw.get("target_alignment", "")) == "next_after_context":
+        explicit_chunk_origin = sample_metadata.raw.get("chunk_origin_frame")
+        if explicit_chunk_origin is not None:
+            chunk_origin_frame = int(explicit_chunk_origin)
+        elif str(sample_metadata.raw.get("target_alignment", "")) == "next_after_context":
             chunk_origin_frame = int(loss_frame_start)
+        else:
+            chunk_origin_frame = 0
+        singleton_chunk_frame = _resolve_generalist_singleton_chunk_frame(
+            sample_metadata.raw,
+            observed_num_frames=observed_num_frames,
+        )
+        conditional_history_policy = sample_metadata.raw.get("generalist_conditional_history_policy")
         return {
             "chunk_size": sample_metadata.sampled_chunk_size_for(observed_num_frames),
             "window_size": sample_metadata.sampled_window_size,
@@ -568,6 +603,10 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             "action_loss_frame_end": action_loss_frame_end,
             "frame_shift": frame_shift,
             "chunk_origin_frame": chunk_origin_frame,
+            "singleton_chunk_frame": singleton_chunk_frame,
+            "conditional_history_policy": (
+                None if conditional_history_policy is None else str(conditional_history_policy)
+            ),
         }
 
     def _prepare_exact_train_actions(

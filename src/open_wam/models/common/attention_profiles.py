@@ -5,7 +5,10 @@ from typing import Any
 
 import torch
 
-from open_wam.models.common.packed_token_layout import build_exact_video_action_token_layout
+from open_wam.models.common.packed_token_layout import (
+    PackedTokenStream,
+    build_exact_video_action_token_layout,
+)
 
 try:
     from torch.nn.attention.flex_attention import BlockMask, create_block_mask, flex_attention
@@ -71,11 +74,59 @@ ACTION_NOISY_TO_VIDEO_COUPLING = "action_noisy_to_video"
 HISTORY_STREAM_VISIBILITY_FULL = "full"
 HISTORY_STREAM_VISIBILITY_VIDEO_QUERIES_VIDEO_ONLY = "video_queries_video_only"
 HISTORY_STREAM_VISIBILITY_VIDEO_ONLY = "video_only"
+CONDITIONAL_HISTORY_POLICY_NONE = "none"
+CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY = "previous_boundary_video_only"
 _HISTORY_STREAM_VISIBILITY_VALUES = {
     HISTORY_STREAM_VISIBILITY_FULL,
     HISTORY_STREAM_VISIBILITY_VIDEO_QUERIES_VIDEO_ONLY,
     HISTORY_STREAM_VISIBILITY_VIDEO_ONLY,
 }
+_CONDITIONAL_HISTORY_POLICY_VALUES = {
+    CONDITIONAL_HISTORY_POLICY_NONE,
+    CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
+}
+
+
+def _effective_frame_ids_for_singleton_cutoff(
+    frame_ids: torch.Tensor,
+    stream_ids: torch.Tensor,
+    *,
+    prefix_condition_frames: int,
+    singleton_chunk_frame: int | None,
+) -> torch.Tensor:
+    """Return sample-frame ids used by the CF t0 singleton history cutoff."""
+
+    if singleton_chunk_frame is None:
+        return frame_ids
+    effective_frame_ids = frame_ids
+    if int(prefix_condition_frames) > 0:
+        video_tokens = stream_ids == int(PackedTokenStream.VIDEO)
+        prefix_video_tokens = video_tokens & (frame_ids < int(prefix_condition_frames))
+        shifted_video_frame_ids = (frame_ids - int(prefix_condition_frames)).clamp_min(0)
+        effective_frame_ids = torch.where(video_tokens, shifted_video_frame_ids, effective_frame_ids)
+        effective_frame_ids = torch.where(
+            prefix_video_tokens,
+            torch.full_like(effective_frame_ids, int(singleton_chunk_frame) - 1),
+            effective_frame_ids,
+        )
+    return effective_frame_ids
+
+
+def _previous_boundary_frame_ids(
+    frame_ids: torch.Tensor,
+    *,
+    chunk_origin_frame: int,
+    chunk_size: int,
+) -> torch.Tensor:
+    """Return the immediately previous chunk-boundary frame for each query frame."""
+
+    chunk_ids = torch.div(
+        frame_ids - int(chunk_origin_frame),
+        max(1, int(chunk_size)),
+        rounding_mode="floor",
+    )
+    return int(chunk_origin_frame) + chunk_ids * max(1, int(chunk_size)) - 1
+
 
 _CHUNKED_EXACT_PROFILE_BY_COUPLING: dict[str, str] = {
     VIDEO_THEN_ACTION_COUPLING: "chunked_temporal_exact",
@@ -155,6 +206,22 @@ def normalize_parallel_history_stream_visibility(
         f"Unsupported history stream visibility {visibility!r}. "
         f"Expected one of {tuple(sorted(_HISTORY_STREAM_VISIBILITY_VALUES))}."
     )
+
+
+def normalize_conditional_history_policy(policy: str | None) -> str:
+    """Normalize the optional conditional IDM/FDM historical K/V policy."""
+
+    if policy is None:
+        return CONDITIONAL_HISTORY_POLICY_NONE
+    value = str(getattr(policy, "value", policy))
+    if value in _CONDITIONAL_HISTORY_POLICY_VALUES:
+        return value
+    raise ValueError(
+        f"Unsupported conditional history policy {policy!r}. "
+        f"Expected one of {tuple(sorted(_CONDITIONAL_HISTORY_POLICY_VALUES))}."
+    )
+
+
 def chunked_temporal_exact_profile_name_for_coupling(coupling: str | None) -> str:
     """Return the attention-profile name for an exact method-1 coupling mode."""
 
@@ -325,6 +392,8 @@ def build_chunked_temporal_exact_attention_profile(
     preserve_video_pretrain_history: bool = False,
     history_stream_visibility: str | None = None,
     prefix_condition_frames: int = 0,
+    singleton_chunk_frame: int | None = None,
+    conditional_history_policy: str | None = None,
 ) -> PreparedAttentionProfile:
     # When preserve_video_pretrain_history=True, restrict the noise_to_clean
     # rule on PAST CHUNKS so that the video stream's K/V context matches the
@@ -347,6 +416,7 @@ def build_chunked_temporal_exact_attention_profile(
         history_stream_visibility,
         preserve_video_pretrain_history=preserve_video_pretrain_history,
     )
+    resolved_conditional_history_policy = normalize_conditional_history_policy(conditional_history_policy)
     chunk_origin_frame = int(chunk_origin_frame)
     prefix_condition_frames = max(0, int(prefix_condition_frames))
 
@@ -390,6 +460,7 @@ def build_chunked_temporal_exact_attention_profile(
         device=device,
         action_context_mask=action_context_mask,
         prefix_condition_frames=prefix_condition_frames,
+        singleton_chunk_frame=singleton_chunk_frame,
     )
     layout = layout.with_padding(padded_length)
     latent_token_count = int(batch_size) * int(latent_frames // patch_t) * int(latent_height // patch_h) * int(latent_width // patch_w)
@@ -430,6 +501,20 @@ def build_chunked_temporal_exact_attention_profile(
         kv_chunk = chunk_ids[None, :]
         q_valid = token_valid_as_query[:, None]
         kv_valid = token_valid_as_kv[None, :]
+        effective_frame_ids = _effective_frame_ids_for_singleton_cutoff(
+            layout.frame_id,
+            stream_ids,
+            prefix_condition_frames=prefix_condition_frames,
+            singleton_chunk_frame=singleton_chunk_frame,
+        )
+        q_effective_frame = effective_frame_ids[:, None]
+        kv_effective_frame = effective_frame_ids[None, :]
+        if singleton_chunk_frame is None:
+            singleton_history_ok = torch.ones_like(q_seq, dtype=torch.bool)
+        else:
+            singleton_history_ok = (q_effective_frame < int(singleton_chunk_frame)) | (
+                kv_effective_frame >= int(singleton_chunk_frame)
+            )
 
         same_seq = (q_seq == kv_seq) & (q_seq >= 0) & (kv_seq >= 0) & q_valid & kv_valid
         if resolved_history_stream_visibility == HISTORY_STREAM_VISIBILITY_FULL:
@@ -440,6 +525,19 @@ def build_chunked_temporal_exact_attention_profile(
             history_stream_ok = kv_stream == 0
         else:  # pragma: no cover - normalized above
             raise ValueError(f"Unsupported history stream visibility {resolved_history_stream_visibility!r}.")
+        if (
+            resolved_conditional_history_policy
+            == CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY
+        ):
+            boundary_frame = _previous_boundary_frame_ids(
+                q_effective_frame,
+                chunk_origin_frame=chunk_origin_frame,
+                chunk_size=chunk_size,
+            )
+            history_stream_ok = (
+                (kv_stream == int(PackedTokenStream.VIDEO))
+                & (kv_effective_frame == boundary_frame)
+            )
         if prefix_condition_frames > 0 or current_block_coupling == DECOUPLED_SAME_STEP_COUPLING:
             clean_to_clean = (
                 (q_noise == 1)
@@ -518,7 +616,9 @@ def build_chunked_temporal_exact_attention_profile(
             else:
                 noise_to_noise = (q_noise == 0) & (kv_noise == 0) & (kv_block_id == q_block_id)
         within_window = (q_block_id - kv_block_id).abs() <= int(window_size)
-        self_attention_mask = same_seq & within_window & (clean_to_clean | noise_to_clean | noise_to_noise)
+        self_attention_mask = (
+            same_seq & within_window & singleton_history_ok & (clean_to_clean | noise_to_clean | noise_to_noise)
+        )
         same_text_sample = (
             (seq_ids[:, None] == text_seq_ids[None, :])
             & (seq_ids[:, None] >= 0)
@@ -546,6 +646,12 @@ def build_chunked_temporal_exact_attention_profile(
         chunk_ids_flex = chunk_ids.to(device=device, dtype=torch.long)
         noise_ids_flex = noise_ids.to(device=device, dtype=torch.long)
         stream_ids_flex = stream_ids.to(device=device, dtype=torch.long)
+        effective_frame_ids_flex = _effective_frame_ids_for_singleton_cutoff(
+            layout.frame_id,
+            stream_ids,
+            prefix_condition_frames=prefix_condition_frames,
+            singleton_chunk_frame=singleton_chunk_frame,
+        ).to(device=device, dtype=torch.long)
         token_valid_as_query_flex = token_valid_as_query.to(device=device, dtype=torch.bool)
         token_valid_as_kv_flex = token_valid_as_kv.to(device=device, dtype=torch.bool)
         text_seq_ids_flex = text_seq_ids.to(device=device, dtype=torch.long)
@@ -569,6 +675,12 @@ def build_chunked_temporal_exact_attention_profile(
             kv_chunk = chunk_ids_flex[kv_idx]
             q_block_id = block_ids_flex[q_idx]
             kv_block_id = block_ids_flex[kv_idx]
+            if singleton_chunk_frame is None:
+                singleton_history_ok = torch.ones((), dtype=torch.bool, device=q_idx.device)
+            else:
+                singleton_history_ok = (effective_frame_ids_flex[q_idx] < int(singleton_chunk_frame)) | (
+                    effective_frame_ids_flex[kv_idx] >= int(singleton_chunk_frame)
+                )
             if resolved_history_stream_visibility == HISTORY_STREAM_VISIBILITY_FULL:
                 history_stream_ok = torch.ones((), dtype=torch.bool, device=q_idx.device)
             elif resolved_history_stream_visibility == HISTORY_STREAM_VISIBILITY_VIDEO_QUERIES_VIDEO_ONLY:
@@ -579,6 +691,19 @@ def build_chunked_temporal_exact_attention_profile(
                 history_stream_ok = stream_ids_flex[kv_idx] == 0
             else:  # pragma: no cover - normalized above
                 raise ValueError(f"Unsupported history stream visibility {resolved_history_stream_visibility!r}.")
+            if (
+                resolved_conditional_history_policy
+                == CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY
+            ):
+                boundary_frame = _previous_boundary_frame_ids(
+                    effective_frame_ids_flex[q_idx],
+                    chunk_origin_frame=chunk_origin_frame,
+                    chunk_size=chunk_size,
+                )
+                history_stream_ok = (
+                    (stream_ids_flex[kv_idx] == int(PackedTokenStream.VIDEO))
+                    & (effective_frame_ids_flex[kv_idx] == boundary_frame)
+                )
             if prefix_condition_frames > 0 or current_block_coupling == DECOUPLED_SAME_STEP_COUPLING:
                 clean_to_clean = (
                     (noise_ids_flex[q_idx] == 1)
@@ -667,7 +792,7 @@ def build_chunked_temporal_exact_attention_profile(
                         & (block_ids_flex[kv_idx] == block_ids_flex[q_idx])
                     )
             within_window = (q_block_id - kv_block_id).abs() <= int(window_size)
-            return same_seq & within_window & (clean_to_clean | noise_to_clean | noise_to_noise)
+            return same_seq & within_window & singleton_history_ok & (clean_to_clean | noise_to_clean | noise_to_noise)
 
         def cross_mask_mod(
             b: torch.Tensor,
@@ -738,6 +863,7 @@ def build_chunked_temporal_exact_attention_profile(
             "base_text_token_count": int(resolved_base_text_token_count),
             "proprio_context_token_count": int(resolved_proprio_context_token_count),
             "chunk_origin_frame": int(chunk_origin_frame),
+            "singleton_chunk_frame": None if singleton_chunk_frame is None else int(singleton_chunk_frame),
             "invalid_action_context_tokens": int(invalid_action_token_count),
             "action_context_valid_tokens": action_context_valid_tokens,
             "allow_joint_noisy_block_attention": current_block_coupling == JOINT_COUPLING,
@@ -745,6 +871,7 @@ def build_chunked_temporal_exact_attention_profile(
             "preserve_video_pretrain_history": bool(preserve_video_pretrain_history),
             "history_stream_visibility": resolved_history_stream_visibility,
             "prefix_condition_frames": int(prefix_condition_frames),
+            "conditional_history_policy": resolved_conditional_history_policy,
         },
     )
 
