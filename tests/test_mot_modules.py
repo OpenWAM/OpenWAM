@@ -973,6 +973,54 @@ def test_mot_prefers_condition_latents_by_default() -> None:
     assert torch.isfinite(output.decoder_output.loss)
 
 
+def test_mot_accepts_time_first_train_condition_latents() -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=2,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=MoTPolicyConfig(
+            hidden_size=32,
+            condition_mode=MoTConditionMode.FIRST_FRAME,
+            video_prefix_frames=1,
+            teacher_forcing_video_noise_prob=0.0,
+            num_action_layers=2,
+        ),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=0.0),
+        inference=InferenceConfig(frame_chunk_size=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    video_latents = torch.zeros(1, 48, 4, 8, 8)
+    condition_latents = torch.full((1, 4, 48, 8, 8), 3.0)
+    batch = PolicyTrainBatch(
+        actions=torch.randn(1, 4, 4),
+        extra={"condition_latents": condition_latents},
+    )
+
+    output = pipeline.forward_train_from_latents(
+        video_latents,
+        batch,
+        text_context=torch.randn(1, 5, 16),
+    )
+
+    assert output.policy_output.aux["video_condition_source"] == "condition_latents"
+    assert torch.isfinite(output.decoder_output.loss)
+
+
 def test_mot_condition_latents_can_be_disabled() -> None:
     config = ExperimentConfig(
         data=RobotWinDataConfig(

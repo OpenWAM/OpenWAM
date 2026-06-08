@@ -1292,6 +1292,16 @@ class MoTPolicyVariant(PolicyVariant):
                 "M5 `condition_latents` must be a tensor when provided, "
                 f"got {type(condition_latents).__name__}."
             )
+        if condition_latents.ndim == 5 and tuple(condition_latents.shape) != tuple(video_latents.shape):
+            time_first_shape = (
+                video_latents.shape[0],
+                video_latents.shape[2],
+                video_latents.shape[1],
+                video_latents.shape[3],
+                video_latents.shape[4],
+            )
+            if tuple(condition_latents.shape) == tuple(time_first_shape):
+                condition_latents = condition_latents.permute(0, 2, 1, 3, 4).contiguous()
         if condition_latents.ndim != 5 or tuple(condition_latents.shape) != tuple(video_latents.shape):
             raise ValueError(
                 "M5 `condition_latents` must match video_latents exactly for train-time video conditioning, "
