@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -97,6 +98,10 @@ class WandBLogSink:
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise ImportError("WandB logging was requested but the `wandb` package is not installed.") from exc
         self._wandb = wandb
+        self._use_contiguous_wandb_steps = os.environ.get(
+            "OPEN_WAM_WANDB_CONTIGUOUS_STEPS",
+            "",
+        ).lower() in {"1", "true", "yes", "on"}
         self._run = wandb.init(
             project=project,
             entity=entity,
@@ -107,9 +112,18 @@ class WandBLogSink:
             tags=list(tags),
             config=config_payload,
         )
+        if self._use_contiguous_wandb_steps:
+            self._wandb.define_metric("trainer/global_step")
+            self._wandb.define_metric("*", step_metric="trainer/global_step")
 
     def log_metrics(self, *, step: int, phase: str, metrics: dict[str, float]) -> None:
-        self._wandb.log({f"{phase}/{key}": value for key, value in metrics.items()}, step=step)
+        payload = {f"{phase}/{key}": value for key, value in metrics.items()}
+        if self._use_contiguous_wandb_steps:
+            payload["trainer/global_step"] = step
+            payload[f"{phase}/global_step"] = step
+            self._wandb.log(payload)
+            return
+        self._wandb.log(payload, step=step)
 
     def log_event(self, *, name: str, payload: dict[str, Any]) -> None:
         self._wandb.log({f"event/{name}": payload})

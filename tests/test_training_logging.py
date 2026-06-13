@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import sys
 
 import open_wam.training.runtime as runtime_module
+from open_wam.training.logging import WandBLogSink
 from open_wam.training.run_tracking import (
     build_default_wandb_project,
     build_run_title,
@@ -17,6 +19,54 @@ from open_wam.utils.config_loader import load_experiment_config
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_wandb_log_sink_can_use_contiguous_global_step(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
+
+    class _FakeWandB:
+        @staticmethod
+        def init(**kwargs):
+            calls.append(("init", (), kwargs))
+            return object()
+
+        @staticmethod
+        def define_metric(*args, **kwargs):
+            calls.append(("define_metric", args, kwargs))
+
+        @staticmethod
+        def log(payload, **kwargs):
+            calls.append(("log", (payload,), kwargs))
+
+    monkeypatch.setitem(sys.modules, "wandb", _FakeWandB)
+    monkeypatch.setenv("OPEN_WAM_WANDB_CONTIGUOUS_STEPS", "1")
+
+    sink = WandBLogSink(
+        project="project",
+        entity=None,
+        mode="offline",
+        run_name="run",
+        group="group",
+        job_type="train",
+        tags=("tag",),
+        config_payload={"config": True},
+    )
+    sink.log_metrics(step=7, phase="train", metrics={"loss": 1.5})
+
+    define_metric_calls = [call for call in calls if call[0] == "define_metric"]
+    assert define_metric_calls == [
+        ("define_metric", ("trainer/global_step",), {}),
+        ("define_metric", ("*",), {"step_metric": "trainer/global_step"}),
+    ]
+    log_calls = [call for call in calls if call[0] == "log"]
+    assert len(log_calls) == 1
+    payload = log_calls[0][1][0]
+    assert payload == {
+        "train/loss": 1.5,
+        "trainer/global_step": 7,
+        "train/global_step": 7,
+    }
+    assert log_calls[0][2] == {}
 
 
 def test_run_tracking_metadata_normalizes_method_families(tmp_path: Path) -> None:
