@@ -47,9 +47,12 @@ from open_wam.models.common.flow_matching import (
 from open_wam.models.common.attention_profiles import build_chunked_text_context_cross_attention_mask
 from open_wam.models.policy_variants.mot.variant import (
     _apply_mot_generalist_training_mode,
+    _mot_generalist_rollout_mode_from_value,
+    _resolve_mot_generalist_rollout_mode,
     _sample_mot_generalist_training_mode,
     _should_couple_mot_action_to_video_sigmas,
 )
+from open_wam.models.policy_variants.contracts import PolicyInferContext
 from open_wam.models.policy_variants.mot.runtime import build_mot_packed_coupling_attention_profile
 
 
@@ -641,6 +644,214 @@ def test_generalist_match_sigma_uses_video_clock_for_all_modes(
         pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
 
     assert saw_action_coupling_inputs == [(True, False), (True, False), (True, False)]
+
+
+@pytest.mark.parametrize(
+    ("raw_mode", "expected"),
+    [
+        ("joint", MoTGeneralistTrainingMode.JOINT),
+        ("vanilla_joint_rollout", MoTGeneralistTrainingMode.JOINT),
+        ("clean_action_feedback", MoTGeneralistTrainingMode.JOINT),
+        ("fdm", MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO),
+        ("forced_action_joint_fdm", MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO),
+        ("action_conditioned_video", MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO),
+        ("idm", MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION),
+        ("video_conditioned_action", MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION),
+    ],
+)
+def test_m5_gjd_rollout_mode_aliases_match_training_modes(
+    raw_mode: str,
+    expected: MoTGeneralistTrainingMode,
+) -> None:
+    assert _mot_generalist_rollout_mode_from_value(raw_mode) is expected
+    assert _resolve_mot_generalist_rollout_mode(
+        PolicyInferContext(extra={"action_conditioning_mode": raw_mode})
+    ) is expected
+
+
+def test_m5_gjd_rollout_mode_rejects_unknown_alias() -> None:
+    with pytest.raises(ValueError, match="Unsupported M5 GJD rollout mode"):
+        _mot_generalist_rollout_mode_from_value("not_a_mode")
+
+
+def test_m5_gjd_fdm_inference_matches_conditional_training_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import open_wam.models.policy_variants.mot.variant as mot_variant_module
+    from open_wam.models.common import RolloutCursor
+    from open_wam.models.policy_variants.contracts import PolicyInferState
+    from open_wam.models.policy_variants.mot.contracts import MoTRuntimeState
+    from open_wam.models.policy_variants.mot.modules import MoTActionExpert
+
+    pipeline, _, _, _ = _build_tiny_generalist_pipeline(MoTGeneralistTrainingMode.JOINT)
+    pipeline.policy_variant.inference_config = _dataclass_replace(
+        pipeline.policy_variant.inference_config,
+        action_num_inference_steps=pipeline.policy_variant.inference_config.video_num_inference_steps,
+    )
+    history_video = torch.randn(1, 48, 2, 8, 8)
+    history_actions = torch.randn(1, 4, 4)
+    forced_actions = torch.randn(1, 4, 4)
+    text_context = torch.randn(1, 5, 16)
+    infer_state = PolicyInferState(
+        step_index=1,
+        cursor=RolloutCursor(current_start_frame=2, block_index=0, chunk_size=2),
+        variant_state=MoTRuntimeState(
+            past_clean_latents=history_video,
+            past_clean_actions=history_actions,
+            next_condition_frame_start=2,
+            chunk_advance_frames=2,
+        ),
+    )
+    observed_pre: list[dict[str, torch.Tensor]] = []
+    observed_profiles: list[dict[str, object]] = []
+    original_pre_dit = MoTActionExpert.pre_dit
+
+    def spy_pre_dit(self, *args, **kwargs):
+        observed_pre.append(
+            {
+                "action_tokens": kwargs["action_tokens"].detach().clone(),
+                "timestep": kwargs["timestep"].detach().clone(),
+                "context": kwargs["context"].detach().clone(),
+            }
+        )
+        return original_pre_dit(self, *args, **kwargs)
+
+    def fake_forward_mot_packed_coupling_denoise(**kwargs):
+        observed_profiles.append(dict(kwargs["attention_profile"].metadata))
+        return torch.zeros_like(kwargs["noisy_video_latents"]), torch.zeros_like(kwargs["packed_action_pre"].tokens)
+
+    monkeypatch.setattr(MoTActionExpert, "pre_dit", spy_pre_dit)
+    monkeypatch.setattr(
+        mot_variant_module,
+        "forward_mot_packed_coupling_denoise",
+        fake_forward_mot_packed_coupling_denoise,
+    )
+
+    output = pipeline.forward_infer_step_from_latents(
+        torch.randn(1, 48, 2, 8, 8),
+        PolicyInferContext(
+            extra={
+                "action_conditioning_mode": "forced_action_joint_fdm",
+                "mot_forced_action_latents": forced_actions,
+            }
+        ),
+        infer_state=infer_state,
+        text_context=text_context,
+    )
+
+    assert observed_pre
+    first_pre = observed_pre[0]
+    # Packed action order is [A_noisy(history,current), A_clean(history,current)].
+    torch.testing.assert_close(first_pre["action_tokens"][:, :4], history_actions)
+    torch.testing.assert_close(first_pre["action_tokens"][:, 4:8], forced_actions)
+    torch.testing.assert_close(first_pre["action_tokens"][:, 8:12], history_actions)
+    torch.testing.assert_close(first_pre["action_tokens"][:, 12:16], forced_actions)
+    torch.testing.assert_close(first_pre["timestep"], torch.zeros_like(first_pre["timestep"]))
+    torch.testing.assert_close(first_pre["context"], torch.zeros_like(first_pre["context"]))
+    assert observed_profiles[0]["window_size"] == 3
+    assert observed_profiles[0]["history_stream_visibility"] == "video_only"
+    assert observed_profiles[0]["conditional_history_policy"] == "previous_boundary_video_only"
+    assert output.policy_output.aux["mot_generalist_rollout_mode"] == "action_conditioned_video"
+    assert output.policy_output.aux["cache_action_source"] == "commit_action_override"
+    torch.testing.assert_close(
+        output.policy_output.next_state.variant_state.past_clean_actions[:, -4:],
+        forced_actions,
+    )
+
+
+def test_m5_gjd_idm_inference_matches_conditional_training_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import open_wam.models.policy_variants.mot.variant as mot_variant_module
+    from open_wam.models.common import RolloutCursor
+    from open_wam.models.policy_variants.contracts import PolicyInferState
+    from open_wam.models.policy_variants.mot.contracts import MoTRuntimeState
+    from open_wam.models.policy_variants.mot.modules import MoTActionExpert
+
+    pipeline, _, _, _ = _build_tiny_generalist_pipeline(MoTGeneralistTrainingMode.JOINT)
+    pipeline.policy_variant.inference_config = _dataclass_replace(
+        pipeline.policy_variant.inference_config,
+        action_num_inference_steps=pipeline.policy_variant.inference_config.video_num_inference_steps,
+    )
+    history_video = torch.randn(1, 48, 2, 8, 8)
+    history_actions = torch.randn(1, 4, 4)
+    clean_video = torch.randn(1, 48, 2, 8, 8)
+    commit_actions = torch.randn(1, 4, 4)
+    text_context = torch.randn(1, 5, 16)
+    infer_state = PolicyInferState(
+        step_index=1,
+        cursor=RolloutCursor(current_start_frame=2, block_index=0, chunk_size=2),
+        variant_state=MoTRuntimeState(
+            past_clean_latents=history_video,
+            past_clean_actions=history_actions,
+            next_condition_frame_start=2,
+            chunk_advance_frames=2,
+        ),
+    )
+    observed_pre: list[dict[str, torch.Tensor]] = []
+    observed_runtime: list[dict[str, torch.Tensor | dict[str, object]]] = []
+    original_pre_dit = MoTActionExpert.pre_dit
+
+    def spy_pre_dit(self, *args, **kwargs):
+        observed_pre.append(
+            {
+                "context": kwargs["context"].detach().clone(),
+            }
+        )
+        return original_pre_dit(self, *args, **kwargs)
+
+    def fake_forward_mot_packed_coupling_denoise(**kwargs):
+        observed_runtime.append(
+            {
+                "noisy_video_latents": kwargs["noisy_video_latents"].detach().clone(),
+                "clean_video_latents": kwargs["clean_video_latents"].detach().clone(),
+                "noisy_video_timesteps": kwargs["noisy_video_timesteps"].detach().clone(),
+                "metadata": dict(kwargs["attention_profile"].metadata),
+            }
+        )
+        return torch.zeros_like(kwargs["noisy_video_latents"]), torch.zeros_like(kwargs["packed_action_pre"].tokens)
+
+    monkeypatch.setattr(MoTActionExpert, "pre_dit", spy_pre_dit)
+    monkeypatch.setattr(
+        mot_variant_module,
+        "forward_mot_packed_coupling_denoise",
+        fake_forward_mot_packed_coupling_denoise,
+    )
+
+    output = pipeline.forward_infer_step_from_latents(
+        clean_video,
+        PolicyInferContext(
+            extra={
+                "action_conditioning_mode": "video_conditioned_action",
+                "mot_video_condition_latents": clean_video,
+                "mot_commit_action_latents": commit_actions,
+            }
+        ),
+        infer_state=infer_state,
+        text_context=text_context,
+    )
+
+    assert observed_pre
+    torch.testing.assert_close(observed_pre[0]["context"], torch.zeros_like(observed_pre[0]["context"]))
+    first_runtime = observed_runtime[0]
+    torch.testing.assert_close(first_runtime["noisy_video_latents"][:, :, :2], history_video)
+    torch.testing.assert_close(first_runtime["noisy_video_latents"][:, :, 2:], clean_video)
+    torch.testing.assert_close(first_runtime["clean_video_latents"][:, :, :2], history_video)
+    torch.testing.assert_close(first_runtime["clean_video_latents"][:, :, 2:], clean_video)
+    torch.testing.assert_close(
+        first_runtime["noisy_video_timesteps"],
+        torch.zeros_like(first_runtime["noisy_video_timesteps"]),
+    )
+    metadata = first_runtime["metadata"]
+    assert metadata["window_size"] == 3
+    assert metadata["history_stream_visibility"] == "video_only"
+    assert metadata["conditional_history_policy"] == "previous_boundary_video_only"
+    assert output.policy_output.aux["mot_generalist_rollout_mode"] == "video_conditioned_action"
+    assert output.policy_output.aux["cache_action_source"] == "commit_action_override"
+    torch.testing.assert_close(
+        output.policy_output.next_state.variant_state.past_clean_actions[:, -4:],
+        commit_actions,
+    )
 
 
 def test_forced_joint_preserves_configured_noisy_video_condition_prob(

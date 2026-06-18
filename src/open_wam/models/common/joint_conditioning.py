@@ -104,12 +104,14 @@ def resolve_generalist_joint_conditioning_semantics(
       slot, video loss is masked, action loss remains active, and task text is
       dropped by default.
 
-    Conditional modes use one local clean video-history chunk. Training callers
-    keep their sampled GJD chunk size; rollout helpers can use
-    `chunk_size_frames` to force a one-frame conditional chunk. In the packed
-    video/action block layout, a block window of three reaches exactly the
-    previous clean video chunk and excludes older chunks when history stream
-    visibility is video-only.
+    Conditional modes use one local clean video-history anchor. Training callers
+    keep their sampled GJD chunk size. M1-style helper rollouts can use
+    `chunk_size_frames` to materialize one-frame conditional chunks; M5 packed
+    rollouts instead keep the generated chunk geometry and enforce the singleton
+    previous-boundary context through `conditional_history_policy`. In the
+    packed video/action block layout, a block window of three reaches exactly
+    the previous clean video anchor and excludes older chunks when history
+    stream visibility is video-only.
     """
 
     resolved_mode = mode_value(mode)

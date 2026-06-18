@@ -19,6 +19,7 @@ engineering notes are not published as part of this site.
 - [Cookbooks](cookbooks/new_method.md): concrete recipes for adding new research components.
 - [Artifacts](artifacts.md): checkpoint manifests, local path aliases, and artifact cards.
 - [Reproducibility](reproducibility.md): result envelopes, experiment cards, and tracking policy.
+- [M5 GJD vs UVA LIBERO-10](m5_gjd_uva_libero10_comparison.md): task-aligned rollout comparison and route smoke.
 
 ## Contributor Operations
 

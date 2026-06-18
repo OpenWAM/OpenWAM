@@ -63,6 +63,22 @@ LIBERO_OBS_KEYS = (
 )
 CURRENT_FRONTEND_ENCODE_MODE = "lingbot_streaming_vae"
 DEPRECATED_FRONTEND_ENCODE_MODE = "rolling_offline"
+LIVE_SIM_MOT_GENERALIST_ROLLOUT_MODES = frozenset(
+    {
+        "joint",
+        "vanilla_joint_rollout",
+    }
+)
+OFFLINE_DIAGNOSTIC_MOT_GENERALIST_ROLLOUT_MODES = frozenset(
+    {
+        "clean_action_feedback",
+        "forced_action_joint_fdm",
+        "action_conditioned_video",
+        "video_conditioned_action",
+        "fdm",
+        "idm",
+    }
+)
 
 
 def main() -> None:
@@ -124,6 +140,17 @@ def main() -> None:
         help=(
             "Skip imagined-video denoising during MoT rollout and produce actions only. "
             "Supported only for action_then_video and decoupled_same_step couplings."
+        ),
+    )
+    parser.add_argument(
+        "--mot-generalist-rollout-mode",
+        metavar="{joint,vanilla_joint_rollout}",
+        default=None,
+        help=(
+            "Optional M5 GJD rollout mode forwarded to PolicyInferContext. "
+            "Live sim rollout supports only joint/vanilla modes; FDM/IDM and "
+            "clean-action diagnostic modes require offline GT action/video tensors. "
+            "`--mot-action-only-rollout` is not an IDM substitute."
         ),
     )
     parser.add_argument(
@@ -202,6 +229,7 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+    _validate_live_sim_mot_generalist_rollout_mode(args.mot_generalist_rollout_mode)
     require_current_libero_script(
         "scripts/deprecated/run_libero_mot_visualization.py",
         allow_deprecated=bool(args.allow_deprecated_libero_config),
@@ -312,6 +340,7 @@ def main() -> None:
         raw_window_frames=raw_window_frames,
         mot_inference_window_size=args.mot_inference_window_size,
         mot_action_only_rollout=bool(args.mot_action_only_rollout),
+        mot_generalist_rollout_mode=args.mot_generalist_rollout_mode,
     )
     component_report["mot_inference_backend"] = mot_inference_backend
     component_report["checkpoint_file"] = str(checkpoint_path.resolve())
@@ -435,6 +464,7 @@ def main() -> None:
                         runtime_device=runtime_device,
                         mot_inference_window_size=args.mot_inference_window_size,
                         mot_action_only_rollout=bool(args.mot_action_only_rollout),
+                        mot_generalist_rollout_mode=args.mot_generalist_rollout_mode,
                     ),
                     infer_state=None if args.reset_policy_state_each_chunk else session.policy_state,
                 )
@@ -720,6 +750,20 @@ def _require_current_frontend_encode_mode(
     )
 
 
+def _validate_live_sim_mot_generalist_rollout_mode(mode: str | None) -> None:
+    if mode is None or mode in LIVE_SIM_MOT_GENERALIST_ROLLOUT_MODES:
+        return
+    if mode in OFFLINE_DIAGNOSTIC_MOT_GENERALIST_ROLLOUT_MODES:
+        supported = ", ".join(sorted(LIVE_SIM_MOT_GENERALIST_ROLLOUT_MODES))
+        raise ValueError(
+            f"--mot-generalist-rollout-mode={mode!r} is an offline diagnostic mode, not a live sim rollout mode. "
+            "It requires ground-truth clean action and/or video condition tensors that this LIBERO visualization "
+            f"script does not provide. Use one of [{supported}] here, or use "
+            "open_wam.ablations.joint_denoising_fdm.cli for offline FDM/IDM diagnostics."
+        )
+    raise ValueError(f"Unsupported --mot-generalist-rollout-mode={mode!r}.")
+
+
 def _maybe_merge_checkpoint_runtime_config(
     config,
     checkpoint_path: Path,
@@ -763,12 +807,17 @@ def _build_infer_context(
     runtime_device: torch.device,
     mot_inference_window_size: int | None,
     mot_action_only_rollout: bool,
+    mot_generalist_rollout_mode: str | None,
 ):
     extra: dict[str, object] = {"task_text": (prompt,), "action_device": str(action_device)}
     if mot_inference_window_size is not None:
         extra["mot_inference_window_size"] = int(mot_inference_window_size)
     if mot_action_only_rollout:
         extra["mot_action_only_rollout"] = True
+    if mot_generalist_rollout_mode is not None:
+        _validate_live_sim_mot_generalist_rollout_mode(mot_generalist_rollout_mode)
+        extra["action_conditioning_mode"] = str(mot_generalist_rollout_mode)
+        extra["mot_generalist_rollout_mode"] = str(mot_generalist_rollout_mode)
     return PolicyInferContext(
         state=video_viz._build_state_inputs_from_obs_window(
             model_obs_window,
@@ -1505,6 +1554,7 @@ def _build_component_report(
     raw_window_frames: int,
     mot_inference_window_size: int | None,
     mot_action_only_rollout: bool,
+    mot_generalist_rollout_mode: str | None,
 ) -> dict[str, object]:
     backbone = config.backbone
     policy_variant = pipeline.policy_variant
@@ -1520,6 +1570,7 @@ def _build_component_report(
             None if mot_inference_window_size is None else int(mot_inference_window_size)
         ),
         "mot_action_only_rollout": bool(mot_action_only_rollout),
+        "mot_generalist_rollout_mode": mot_generalist_rollout_mode,
         "config_name": config.name,
         "policy_variant_class": policy_variant.__class__.__name__,
         "runtime_mode": str(policy_variant.config.runtime_mode),

@@ -117,7 +117,7 @@ def build_metric_rows(
             **asdict(selection),
             "mode": mode.value,
             "horizon_index": horizon_index,
-            "future_frame": selection.t0_frame + horizon_index,
+            "future_frame": selection.target_start_frame + horizon_index,
             "latent_mse": None if latent_value is None else float(latent_value),
             "rgb_mse": rgb_value,
             "rgb_psnr": None if rgb_value is None else psnr_from_mse(float(rgb_value)),

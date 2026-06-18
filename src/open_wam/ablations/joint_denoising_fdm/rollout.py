@@ -6,7 +6,10 @@ from typing import Any
 
 import torch
 
-from open_wam.configs import ActionSpace, CurrentBlockCoupling, ParallelRuntimeMode
+from open_wam.configs import ActionSpace, CurrentBlockCoupling, ParallelRuntimeMode, ProprioContextMode
+from open_wam.models.common import RolloutCursor
+from open_wam.models.policy_variants import PolicyInferContext, PolicyInferState
+from open_wam.models.policy_variants.mot.contracts import MoTRuntimeState
 
 from .types import FdmAblationMode
 
@@ -62,7 +65,9 @@ class JointDenoisingFdmRollout:
         action_conditioning_mode: object = "vanilla_joint_rollout",
         drop_text_conditioning: bool = False,
         proprio_state: torch.Tensor | None = None,
+        hidden_proprio_history: torch.Tensor | None = None,
     ) -> LingbotExactSession:
+        del hidden_proprio_history
         text_context, negative_text_context = self._resolve_warmup_text_context(
             video_context=video_context,
             text_context=text_context,
@@ -294,6 +299,235 @@ class JointDenoisingFdmRollout:
             raw_action_sequence=raw_action_sequence,
             debug=dict(artifacts.debug),
         )
+
+
+class MotGeneralistDenoisingFdmRollout:
+    """Offline chunk rollout wrapper for M5 generalist joint denoising."""
+
+    def __init__(self, runner: Any) -> None:
+        self.runner = runner
+        policy_variant = runner.pipeline.policy_variant
+        if str(getattr(policy_variant.config, "name", "")) != "mot":
+            raise TypeError("MotGeneralistDenoisingFdmRollout requires an M5/MoT policy variant.")
+        if getattr(policy_variant.config, "mot_generalist_training_mode_probs", None) is None:
+            raise ValueError("MotGeneralistDenoisingFdmRollout requires an M5 GJD config with mode probabilities.")
+        coupling = CurrentBlockCoupling(getattr(policy_variant.config, "current_block_coupling", None))
+        if coupling != CurrentBlockCoupling.JOINT:
+            raise ValueError(
+                "MotGeneralistDenoisingFdmRollout requires packed joint coupling so FDM/IDM "
+                f"matches GJD training semantics, got current_block_coupling={coupling.value!r}."
+            )
+
+    @property
+    def action_per_frame(self) -> int:
+        return int(self.runner.pipeline.policy_variant.action_horizon) // self.frame_chunk_size
+
+    @property
+    def frame_chunk_size(self) -> int:
+        return int(self.runner.pipeline.policy_variant.inference_config.frame_chunk_size)
+
+    def reset_and_warmup(
+        self,
+        *,
+        task_text: tuple[str | None, ...],
+        video_context: torch.Tensor,
+        action_context: torch.Tensor,
+        text_context: torch.Tensor | None,
+        negative_text_context: torch.Tensor | None,
+        context_start_frame: int = 0,
+        action_space: ActionSpace | str = ActionSpace.RAW,
+        action_conditioning_mode: object = "vanilla_joint_rollout",
+        drop_text_conditioning: bool = False,
+        proprio_state: torch.Tensor | None = None,
+        hidden_proprio_history: torch.Tensor | None = None,
+    ):
+        del action_space
+        if video_context.ndim != 5:
+            raise ValueError(
+                "M5 GJD warmup video_context must have shape [B, C, T, H, W], "
+                f"got {tuple(video_context.shape)}."
+            )
+        if action_context.ndim != 3:
+            raise ValueError(
+                "M5 GJD warmup action_context must have shape [B, T, D], "
+                f"got {tuple(action_context.shape)}."
+            )
+        text_context, negative_text_context = self._resolve_warmup_text_context(
+            video_context=video_context,
+            text_context=text_context,
+            negative_text_context=negative_text_context,
+            drop_text_conditioning=drop_text_conditioning,
+        )
+        self.runner.pipeline.visual_tower.reset_runtime_state()
+        session = self.runner.reset(
+            task_text=task_text,
+            text_context=text_context,
+            negative_text_context=negative_text_context,
+        )
+        context_frames = int(video_context.shape[2])
+        action_tokens_per_frame = self.action_per_frame
+        expected_action_tokens = context_frames * action_tokens_per_frame
+        if int(action_context.shape[1]) != expected_action_tokens:
+            raise ValueError(
+                "M5 GJD warmup action history must align with video context frames, "
+                f"got action_tokens={action_context.shape[1]}, context_frames={context_frames}, "
+                f"action_per_frame={action_tokens_per_frame}."
+            )
+        policy_variant = self.runner.pipeline.policy_variant
+        uses_hidden_proprio = (
+            ProprioContextMode(getattr(policy_variant.config, "proprio_context_mode", ProprioContextMode.NONE))
+            == ProprioContextMode.PER_CHUNK_ADDITIVE
+        )
+        if hidden_proprio_history is not None:
+            if hidden_proprio_history.ndim != 3:
+                raise ValueError(
+                    "M5 GJD warmup hidden_proprio_history must have shape [B, T, state_dim], "
+                    f"got {tuple(hidden_proprio_history.shape)}."
+                )
+            if int(hidden_proprio_history.shape[0]) != int(video_context.shape[0]):
+                raise ValueError(
+                    "M5 GJD warmup hidden proprio history batch size must match video context, "
+                    f"got hidden={tuple(hidden_proprio_history.shape)}, video={tuple(video_context.shape)}."
+                )
+            if int(hidden_proprio_history.shape[1]) != context_frames:
+                raise ValueError(
+                    "M5 GJD warmup hidden proprio history must align with video context frames, "
+                    f"got hidden_frames={hidden_proprio_history.shape[1]}, context_frames={context_frames}."
+                )
+        elif uses_hidden_proprio and context_frames > 0:
+            raise ValueError(
+                "M5 GJD offline rollout with proprio_context_mode=per_chunk_additive requires "
+                "hidden_proprio_history aligned to the warmup video context."
+            )
+        current_start_frame = int(context_start_frame) + context_frames
+        state = PolicyInferState(
+            step_index=1,
+            cursor=RolloutCursor(
+                current_start_frame=current_start_frame,
+                block_index=0,
+                chunk_size=self.frame_chunk_size,
+            ),
+            variant_state=MoTRuntimeState(
+                text_context=text_context,
+                past_clean_latents=video_context.detach().clone(),
+                past_clean_actions=action_context.detach().clone(),
+                video_tokens_per_frame=None,
+                next_condition_frame_start=current_start_frame,
+                chunk_advance_frames=self.frame_chunk_size,
+            ),
+        )
+        if proprio_state is not None:
+            state.variant_state.proprio_state = proprio_state.detach().clone()
+        if uses_hidden_proprio and proprio_state is not None:
+            state.variant_state.hidden_proprio_state = proprio_state.detach().clone()
+        if uses_hidden_proprio and hidden_proprio_history is not None:
+            state.variant_state.past_hidden_proprio_states = hidden_proprio_history.detach().clone()
+        session.policy_state = state
+        return session
+
+    def infer_chunk(
+        self,
+        *,
+        session: Any,
+        mode: FdmAblationMode,
+        raw_action_chunk: torch.Tensor | None,
+        video_condition_latents: torch.Tensor | None = None,
+        seed: int | None = None,
+        drop_text_conditioning: bool = False,
+        proprio_state: torch.Tensor | None = None,
+    ) -> FdmChunkOutput:
+        del drop_text_conditioning
+        if seed is not None:
+            torch.manual_seed(int(seed))
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(int(seed))
+        extra: dict[str, Any] = {
+            "action_conditioning_mode": mode.value,
+            "mot_generalist_rollout_mode": mode.value,
+        }
+        if mode == FdmAblationMode.VIDEO_CONDITIONED_ACTION:
+            if video_condition_latents is None:
+                raise ValueError("Mode 'video_conditioned_action' requires a ground-truth video latent chunk.")
+            if raw_action_chunk is None:
+                raise ValueError("Mode 'video_conditioned_action' requires clean action history to commit.")
+            extra["mot_video_condition_latents"] = video_condition_latents
+            extra["mot_commit_action_latents"] = raw_action_chunk
+            video_latents = video_condition_latents
+        elif mode == FdmAblationMode.FORCED_ACTION_JOINT_FDM:
+            if raw_action_chunk is None:
+                raise ValueError("Mode 'forced_action_joint_fdm' requires a ground-truth raw action chunk.")
+            extra["mot_forced_action_latents"] = raw_action_chunk
+            extra["mot_commit_action_latents"] = raw_action_chunk
+            video_latents = self._history_video_template(session, video_condition_latents)
+        elif mode == FdmAblationMode.CLEAN_ACTION_FEEDBACK:
+            if raw_action_chunk is None:
+                raise ValueError("Mode 'clean_action_feedback' requires a ground-truth raw action chunk.")
+            extra["mot_commit_action_latents"] = raw_action_chunk
+            video_latents = self._history_video_template(session, video_condition_latents)
+        elif mode == FdmAblationMode.VANILLA_JOINT_ROLLOUT:
+            video_latents = self._history_video_template(session, video_condition_latents)
+        else:
+            raise ValueError(f"Unsupported FDM ablation mode: {mode!r}")
+
+        step = self.runner.infer_step(
+            session=session,
+            video_latents=video_latents,
+            context=PolicyInferContext(
+                state=proprio_state,
+                extra=extra,
+            ),
+        )
+        decoder_aux = step.infer_output.decoder_output.aux
+        policy_aux = step.infer_output.policy_output.aux
+        predicted_latents = decoder_aux.get("predicted_latents", policy_aux.get("predicted_latents"))
+        if not isinstance(predicted_latents, torch.Tensor):
+            raise RuntimeError("M5 GJD FDM rollout did not return predicted video latents.")
+        action_pred = step.infer_output.decoder_output.action_pred
+        return FdmChunkOutput(
+            session=step.session,
+            predicted_latents=predicted_latents,
+            model_action_latents=action_pred,
+            raw_action_sequence=action_pred,
+            debug=dict(policy_aux),
+        )
+
+    def _history_video_template(self, session: Any, fallback: torch.Tensor | None) -> torch.Tensor:
+        state = session.policy_state
+        runtime_state = state.variant_state if isinstance(state.variant_state, MoTRuntimeState) else None
+        past = None if runtime_state is None else runtime_state.past_clean_latents
+        if isinstance(past, torch.Tensor) and past.shape[2] > 0:
+            return past[:, :, -min(self.frame_chunk_size, int(past.shape[2])) :].contiguous()
+        if fallback is not None:
+            return fallback
+        raise ValueError("M5 GJD rollout requires warm video history before infer_chunk.")
+
+    def _resolve_warmup_text_context(
+        self,
+        *,
+        video_context: torch.Tensor,
+        text_context: torch.Tensor | None,
+        negative_text_context: torch.Tensor | None,
+        drop_text_conditioning: bool,
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        if not drop_text_conditioning:
+            return text_context, negative_text_context
+        if text_context is not None:
+            empty_text_context = torch.zeros_like(text_context)
+        else:
+            visual_config = self.runner.pipeline.visual_tower.config
+            empty_text_context = torch.zeros(
+                int(video_context.shape[0]),
+                int(visual_config.max_text_tokens),
+                int(visual_config.text_dim),
+                device=video_context.device,
+                dtype=video_context.dtype,
+            )
+        empty_negative_text_context = (
+            torch.zeros_like(negative_text_context)
+            if negative_text_context is not None
+            else None
+        )
+        return empty_text_context, empty_negative_text_context
 
 
 def _resolve_parallel_current_block_coupling(policy_config) -> CurrentBlockCoupling:

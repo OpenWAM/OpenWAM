@@ -408,6 +408,48 @@ def _mot_generalist_forces_clean_video_condition(
     return semantics.force_clean_video_condition
 
 
+def _mot_generalist_rollout_mode_from_value(
+    value: object = "vanilla_joint_rollout",
+) -> MoTGeneralistTrainingMode:
+    """Map rollout/ablation labels onto the M5 GJD training-mode enum."""
+
+    raw_value = str(getattr(value, "value", value))
+    aliases = {
+        "joint": MoTGeneralistTrainingMode.JOINT,
+        "vanilla_joint_rollout": MoTGeneralistTrainingMode.JOINT,
+        "clean_action_feedback": MoTGeneralistTrainingMode.JOINT,
+        "fdm": MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
+        "forced_action_joint_fdm": MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
+        "action_conditioned_video": MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
+        "idm": MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
+        "video_conditioned_action": MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
+    }
+    try:
+        return aliases[raw_value]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported M5 GJD rollout mode {raw_value!r}.") from exc
+
+
+def _resolve_mot_generalist_rollout_mode(context: PolicyInferContext) -> MoTGeneralistTrainingMode:
+    return _mot_generalist_rollout_mode_from_value(
+        context.extra.get(
+            "mot_generalist_rollout_mode",
+            context.extra.get("action_conditioning_mode", "vanilla_joint_rollout"),
+        )
+    )
+
+
+def _is_mot_generalist_conditional_rollout(mode: MoTGeneralistTrainingMode) -> bool:
+    return mode in {
+        MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
+        MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
+    }
+
+
+def _mot_generalist_rollout_enabled(policy_config: MoTPolicyConfig) -> bool:
+    return getattr(policy_config, "mot_generalist_training_mode_probs", None) is not None
+
+
 def _rewind_runtime_action_cache_to_frame(
     runtime_state: MoTRuntimeState,
     *,
@@ -2427,10 +2469,33 @@ class MoTPolicyVariant(PolicyVariant):
                 "M5 packed action-only rollout is only used for action_then_video; "
                 "decoupled_same_step action-only rollout uses the legacy split-cache route."
             )
+        generalist_rollout_mode = (
+            _resolve_mot_generalist_rollout_mode(context)
+            if _mot_generalist_rollout_enabled(self.config)
+            else MoTGeneralistTrainingMode.JOINT
+        )
+        if (
+            _is_mot_generalist_conditional_rollout(generalist_rollout_mode)
+            and current_block_coupling != CurrentBlockCoupling.JOINT
+        ):
+            raise ValueError(
+                "M5 GJD conditional FDM/IDM rollout requires packed joint coupling, "
+                f"got current_block_coupling={current_block_coupling.value!r}."
+            )
+        generalist_rollout_semantics = resolve_generalist_joint_conditioning_semantics(
+            generalist_rollout_mode,
+            joint_mode=MoTGeneralistTrainingMode.JOINT,
+            action_conditioned_video_mode=MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
+            video_conditioned_action_mode=MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
+        )
         inference_window_size = _resolve_mot_inference_window_size(
             context,
             default_window_size=int(self.training_config.window_size),
         )
+        if generalist_rollout_semantics.is_conditional:
+            inference_window_size = generalist_rollout_semantics.attention_window_size(
+                fallback_window_size=inference_window_size,
+            )
         device = next(visual_tower.core.parameters()).device
         action_device = next(self.action_expert.parameters()).device
         if action_device != device:
@@ -2524,6 +2589,96 @@ class MoTPolicyVariant(PolicyVariant):
         current_action_sample = torch.randn(batch_size, self.action_horizon, self.action_dim, device=device, dtype=dtype)
         current_action_prefix_tokens = startup_plan.action_prefix_tokens
         current_action_sequence_tokens = startup_plan.current_action_sequence_tokens
+
+        def _context_tensor(key: str) -> torch.Tensor | None:
+            value = context.extra.get(key)
+            if value is None:
+                return None
+            if not isinstance(value, torch.Tensor):
+                raise TypeError(f"M5 GJD rollout context {key!r} must be a torch.Tensor, got {type(value)!r}.")
+            return value.to(device=device, dtype=dtype)
+
+        def _coerce_current_action_tensor(key: str, *, required: bool) -> torch.Tensor | None:
+            value = _context_tensor(key)
+            if value is None:
+                if required:
+                    raise ValueError(f"M5 GJD rollout mode {generalist_rollout_mode.value!r} requires {key!r}.")
+                return None
+            if value.ndim != 3:
+                raise ValueError(f"M5 GJD rollout context {key!r} must have shape [B, H, D], got {tuple(value.shape)}.")
+            if int(value.shape[0]) != batch_size or int(value.shape[-1]) != self.action_dim:
+                raise ValueError(
+                    f"M5 GJD rollout context {key!r} shape does not match current action shape, "
+                    f"got {tuple(value.shape)}, expected batch={batch_size}, action_dim={self.action_dim}."
+                )
+            if int(value.shape[1]) == self.action_horizon:
+                return value.contiguous()
+            if int(value.shape[1]) == current_action_sequence_tokens:
+                return value[:, current_action_prefix_tokens:].contiguous()
+            raise ValueError(
+                f"M5 GJD rollout context {key!r} must contain either action_horizon={self.action_horizon} "
+                f"or current_action_sequence_tokens={current_action_sequence_tokens} tokens, got {value.shape[1]}."
+            )
+
+        def _coerce_current_video_tensor(key: str, *, required: bool) -> torch.Tensor | None:
+            value = _context_tensor(key)
+            if value is None:
+                if required:
+                    raise ValueError(f"M5 GJD rollout mode {generalist_rollout_mode.value!r} requires {key!r}.")
+                return None
+            if value.ndim != 5:
+                raise ValueError(
+                    f"M5 GJD rollout context {key!r} must have shape [B, C, T, H, W], got {tuple(value.shape)}."
+                )
+            expected_prefix = (
+                batch_size,
+                int(video_latents.shape[1]),
+                int(video_latents.shape[-2]),
+                int(video_latents.shape[-1]),
+            )
+            got_prefix = (int(value.shape[0]), int(value.shape[1]), int(value.shape[-2]), int(value.shape[-1]))
+            if got_prefix != expected_prefix:
+                raise ValueError(
+                    f"M5 GJD rollout context {key!r} shape does not match current video shape, "
+                    f"got {tuple(value.shape)}, expected batch/channels/spatial={expected_prefix}."
+                )
+            if int(value.shape[2]) == frame_chunk_size:
+                if current_video_prefix_frames <= 0:
+                    return value.contiguous()
+                return torch.cat([current_clean_video[:, :, :current_video_prefix_frames], value], dim=2).contiguous()
+            if int(value.shape[2]) == current_video_sequence_frames:
+                return value.contiguous()
+            raise ValueError(
+                f"M5 GJD rollout context {key!r} must contain either frame_chunk_size={frame_chunk_size} "
+                f"or current_video_sequence_frames={current_video_sequence_frames} frames, got {value.shape[2]}."
+            )
+
+        forced_action_latents = _coerce_current_action_tensor(
+            "mot_forced_action_latents",
+            required=generalist_rollout_mode == MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
+        )
+        commit_action_latents = _coerce_current_action_tensor("mot_commit_action_latents", required=False)
+        video_condition_latents = _coerce_current_video_tensor(
+            "mot_video_condition_latents",
+            required=generalist_rollout_mode == MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
+        )
+        if generalist_rollout_mode == MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO:
+            if forced_action_latents is None:  # pragma: no cover - guarded by required=True
+                raise RuntimeError("M5 FDM rollout missing forced action latents.")
+            current_action_sample = forced_action_latents.contiguous()
+            if commit_action_latents is None:
+                commit_action_latents = forced_action_latents
+        elif generalist_rollout_mode == MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION:
+            if video_condition_latents is None:  # pragma: no cover - guarded by required=True
+                raise RuntimeError("M5 IDM rollout missing video condition latents.")
+            current_noisy_video = video_condition_latents.contiguous()
+            current_clean_video = video_condition_latents.contiguous()
+            current_video_sequence_frames = int(current_noisy_video.shape[2])
+        if commit_action_latents is not None and int(commit_action_latents.shape[1]) != self.action_horizon:
+            raise ValueError(
+                "M5 GJD commit action latents must contain the generated action horizon only after coercion, "
+                f"got shape={tuple(commit_action_latents.shape)}, action_horizon={self.action_horizon}."
+            )
 
         history_window_frames = resolve_mot_rollout_cache_window_frames(
             window_size=inference_window_size,
@@ -2619,7 +2774,7 @@ class MoTPolicyVariant(PolicyVariant):
             text_context, token_count = self._append_generalist_mode_text_token(
                 visual_tower,
                 text_context,
-                MoTGeneralistTrainingMode.JOINT,
+                generalist_rollout_mode,
             )
             runtime_state.text_context = text_context
             runtime_state.generalist_mode_text_token_count = int(token_count)
@@ -2675,7 +2830,16 @@ class MoTPolicyVariant(PolicyVariant):
             action_context_mask=packed_action_context_mask,
             build_dense_masks=True,
             build_flex_masks=False,
-            history_stream_visibility=self._resolve_history_stream_visibility().value,
+            history_stream_visibility=(
+                ParallelHistoryStreamVisibility.VIDEO_ONLY.value
+                if generalist_rollout_semantics.is_conditional
+                else self._resolve_history_stream_visibility().value
+            ),
+            conditional_history_policy=(
+                CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY
+                if generalist_rollout_semantics.is_conditional
+                else None
+            ),
         )
         action_grid_ids = self._build_action_grid_ids_for_sequence(
             batch_size=batch_size,
@@ -2727,6 +2891,12 @@ class MoTPolicyVariant(PolicyVariant):
                 action_tokens.shape[-1],
             )
             return torch.cat([invalid_prefix, action_tokens], dim=1)
+
+        forced_clean_action_condition = (
+            None
+            if forced_action_latents is None
+            else _compose_current_action_sequence(forced_action_latents)
+        )
 
         def _build_packed_action_pre(
             *,
@@ -2894,7 +3064,67 @@ class MoTPolicyVariant(PolicyVariant):
                     sigma_next=sigma_next,
                 )
 
-        if current_block_coupling == CurrentBlockCoupling.VIDEO_THEN_ACTION:
+        def _coupled_action_timestep_for_video_step(
+            *,
+            step_index: int,
+            video_timestep: torch.Tensor,
+        ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+            action_timestep = action_scheduler.timesteps[int(step_index)]
+            shared_sigma = None
+            shared_sigma_next = None
+            if couple_action_video_sigmas:
+                shared_sigma = video_scheduler.sigmas[int(step_index)].to(device=device, dtype=torch.float32)
+                shared_sigma_next = _scheduler_next_sigma(video_scheduler, int(step_index)).to(
+                    device=device,
+                    dtype=torch.float32,
+                )
+                if joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA:
+                    if action_timestep_lookup_scheduler is None:  # pragma: no cover - defensive guard
+                        raise RuntimeError(
+                            "M5 match-sigma same-step inference requires an action timestep lookup scheduler."
+                        )
+                    action_timestep = timesteps_matching_sigmas(
+                        action_timestep_lookup_scheduler,
+                        shared_sigma.reshape(1),
+                    )[0].to(device=device, dtype=torch.float32)
+                elif joint_timestep_coupling == JointTimestepCoupling.SHARED_VIDEO_SCHEDULE:
+                    action_timestep = video_timestep.to(device=device, dtype=torch.float32)
+            return action_timestep, shared_sigma, shared_sigma_next
+
+        if generalist_rollout_mode == MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO:
+            if forced_clean_action_condition is None:  # pragma: no cover - guarded earlier
+                raise RuntimeError("M5 FDM rollout missing clean action condition.")
+            for video_timestep in video_scheduler.timesteps:
+                current_video_timestep = _video_timestep(video_timestep)
+                video_flow_pred, _, _ = _run_packed_step(
+                    video_timestep=current_video_timestep,
+                    action_timestep=zero_current_action_timestep,
+                    current_clean_video_for_step=current_clean_video,
+                    current_clean_action_for_step=forced_clean_action_condition,
+                )
+                _update_video(video_flow_pred, video_timestep)
+        elif generalist_rollout_mode == MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION:
+            current_clean_video = predicted_video_sequence[:, :, shared_history_frames:].contiguous()
+            for step_index, video_timestep in enumerate(video_scheduler.timesteps):
+                action_timestep, shared_sigma, shared_sigma_next = _coupled_action_timestep_for_video_step(
+                    step_index=step_index,
+                    video_timestep=video_timestep,
+                )
+                current_action_timestep = _action_timestep(action_timestep)
+                _, packed_action_hidden, packed_action_pre = _run_packed_step(
+                    video_timestep=zero_current_video_timestep,
+                    action_timestep=current_action_timestep,
+                    current_clean_video_for_step=current_clean_video,
+                    current_clean_action_for_step=zero_current_action_condition,
+                )
+                _update_action(
+                    packed_action_hidden,
+                    packed_action_pre,
+                    current_action_timestep,
+                    sigma=shared_sigma,
+                    sigma_next=shared_sigma_next,
+                )
+        elif current_block_coupling == CurrentBlockCoupling.VIDEO_THEN_ACTION:
             for video_timestep in video_scheduler.timesteps:
                 current_video_timestep = _video_timestep(video_timestep)
                 video_flow_pred, _, _ = _run_packed_step(
@@ -2937,26 +3167,10 @@ class MoTPolicyVariant(PolicyVariant):
                     _update_video(video_flow_pred, video_timestep)
         else:
             for step_index, video_timestep in enumerate(video_scheduler.timesteps):
-                action_timestep = action_scheduler.timesteps[step_index]
-                shared_sigma = None
-                shared_sigma_next = None
-                if couple_action_video_sigmas:
-                    shared_sigma = video_scheduler.sigmas[step_index].to(device=device, dtype=torch.float32)
-                    shared_sigma_next = _scheduler_next_sigma(video_scheduler, step_index).to(
-                        device=device,
-                        dtype=torch.float32,
-                    )
-                    if joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA:
-                        if action_timestep_lookup_scheduler is None:  # pragma: no cover - defensive guard
-                            raise RuntimeError(
-                                "M5 match-sigma same-step inference requires an action timestep lookup scheduler."
-                            )
-                        action_timestep = timesteps_matching_sigmas(
-                            action_timestep_lookup_scheduler,
-                            shared_sigma.reshape(1),
-                        )[0].to(device=device, dtype=torch.float32)
-                    elif joint_timestep_coupling == JointTimestepCoupling.SHARED_VIDEO_SCHEDULE:
-                        action_timestep = video_timestep.to(device=device, dtype=torch.float32)
+                action_timestep, shared_sigma, shared_sigma_next = _coupled_action_timestep_for_video_step(
+                    step_index=step_index,
+                    video_timestep=video_timestep,
+                )
                 current_video_timestep = _video_timestep(video_timestep)
                 current_action_timestep = _action_timestep(action_timestep)
                 video_flow_pred, packed_action_hidden, packed_action_pre = _run_packed_step(
@@ -3006,10 +3220,11 @@ class MoTPolicyVariant(PolicyVariant):
             runtime_state.past_hidden_proprio_states = next_hidden_context[:, -history_window_frames:].detach()
         else:
             runtime_state.past_hidden_proprio_states = None
+        action_history_commit = action_sample if commit_action_latents is None else commit_action_latents
         if history_actions is None:
-            next_clean_actions = action_sample
+            next_clean_actions = action_history_commit
         else:
-            next_clean_actions = torch.cat([history_actions, action_sample], dim=1)
+            next_clean_actions = torch.cat([history_actions, action_history_commit], dim=1)
         max_action_history_tokens = history_window_frames * action_tokens_per_frame
         runtime_state.past_clean_actions = next_clean_actions[:, -max_action_history_tokens:].detach()
         runtime_state.next_condition_frame_start = int(generation_frame_start + frame_chunk_size)
@@ -3026,6 +3241,8 @@ class MoTPolicyVariant(PolicyVariant):
                 "method_family": "mot",
                 "condition_mode": str(self.config.condition_mode),
                 "current_block_coupling": current_block_coupling.value,
+                "action_conditioning_mode": str(context.extra.get("action_conditioning_mode", "vanilla_joint_rollout")),
+                "mot_generalist_rollout_mode": generalist_rollout_mode.value,
                 "generation_frame_start": int(generation_frame_start),
                 "mot_action_only_rollout": bool(action_only_rollout),
                 "predicted_latents": predicted_chunk_latents.detach(),
@@ -3037,13 +3254,25 @@ class MoTPolicyVariant(PolicyVariant):
                     attention_profile.metadata.get("invalid_action_context_tokens", 0)
                 ),
                 "mot_generalist_mode_text_token": (
-                    MoTGeneralistTrainingMode.JOINT.value
+                    generalist_rollout_mode.value
                     if int(getattr(runtime_state, "generalist_mode_text_token_count", 0)) > 0
                     else None
                 ),
                 "mot_generalist_mode_text_token_count": int(
                     getattr(runtime_state, "generalist_mode_text_token_count", 0)
                 ),
+                "forced_action_denoise": generalist_rollout_mode
+                == MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
+                "forced_clean_action_conditioning": forced_action_latents is not None,
+                "forced_video_conditioning": generalist_rollout_mode
+                == MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
+                "commit_action_override": commit_action_latents is not None,
+                "returned_action_source": "predicted"
+                if generalist_rollout_mode != MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO
+                else "forced_action",
+                "cache_action_source": "commit_action_override"
+                if commit_action_latents is not None
+                else "predicted",
                 "mot_history_anchor_frames": int(shared_history_frames),
                 "mot_packed_history_debug": {
                     "past_clean_latent_frames": 0 if past_clean_latents is None else int(past_clean_latents.shape[2]),
@@ -3108,9 +3337,23 @@ class MoTPolicyVariant(PolicyVariant):
         )
         if hidden_proprio_state is not None:
             runtime_state.hidden_proprio_state = hidden_proprio_state.detach().clone()
+        generalist_rollout_mode = (
+            _resolve_mot_generalist_rollout_mode(context)
+            if _mot_generalist_rollout_enabled(self.config)
+            else MoTGeneralistTrainingMode.JOINT
+        )
+        generalist_rollout_semantics = resolve_generalist_joint_conditioning_semantics(
+            generalist_rollout_mode,
+            joint_mode=MoTGeneralistTrainingMode.JOINT,
+            action_conditioned_video_mode=MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
+            video_conditioned_action_mode=MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
+        )
+        infer_text_context = visual_outputs.frontend.conditioning.text_context
+        if generalist_rollout_semantics.drop_text_conditioning and infer_text_context is not None:
+            infer_text_context = torch.zeros_like(infer_text_context)
         resolved_text_context = self._resolve_text_context_with_proprio(
             visual_tower,
-            visual_outputs.frontend.conditioning.text_context,
+            infer_text_context,
             proprio_state,
             batch_size=int(visual_outputs.frontend.video_latents.shape[0]),
             device=action_device,
@@ -3127,7 +3370,7 @@ class MoTPolicyVariant(PolicyVariant):
             resolved_text_context, generalist_mode_text_token_count = self._append_generalist_mode_text_token(
                 visual_tower,
                 resolved_text_context,
-                MoTGeneralistTrainingMode.JOINT,
+                generalist_rollout_mode,
             )
         runtime_state.generalist_mode_text_token_count = int(generalist_mode_text_token_count)
         # Only `joint_denoise` stays on the simultaneous video+action denoise
@@ -3217,6 +3460,16 @@ class MoTPolicyVariant(PolicyVariant):
         # action expert against the resulting all-clean video K/V cache.
         if self.config.runtime_mode == MoTRuntimeMode.JOINT_DENOISE:
             current_block_coupling = resolve_mot_current_block_coupling(self.config)
+            generalist_rollout_mode = (
+                _resolve_mot_generalist_rollout_mode(context)
+                if _mot_generalist_rollout_enabled(self.config)
+                else MoTGeneralistTrainingMode.JOINT
+            )
+            if _is_mot_generalist_conditional_rollout(generalist_rollout_mode):
+                raise ValueError(
+                    "M5 GJD conditional FDM/IDM rollout is implemented for native packed joint coupling, "
+                    f"not legacy runtime_mode={self.config.runtime_mode!r}."
+                )
             if not _is_mot_same_step_coupling(current_block_coupling):
                 raise NotImplementedError(
                     "M5 joint_denoise inference supports same-step couplings only; "
@@ -3423,7 +3676,7 @@ class MoTPolicyVariant(PolicyVariant):
                     "joint_timestep_coupling": joint_timestep_coupling.value,
                     "coupled_action_video_sigmas": bool(couple_action_video_sigmas),
                     "mot_generalist_mode_text_token": (
-                        MoTGeneralistTrainingMode.JOINT.value
+                        generalist_rollout_mode.value
                         if int(getattr(runtime_state, "generalist_mode_text_token_count", 0)) > 0
                         else None
                     ),
@@ -3481,11 +3734,29 @@ class MoTPolicyVariant(PolicyVariant):
                 "M5 legacy split-cache inference only supports staged video_then_action and decoupled_same_step; "
                 f"got current_block_coupling={current_block_coupling.value!r}."
             )
+        generalist_rollout_mode = (
+            _resolve_mot_generalist_rollout_mode(context)
+            if _mot_generalist_rollout_enabled(self.config)
+            else MoTGeneralistTrainingMode.JOINT
+        )
+        if _is_mot_generalist_conditional_rollout(generalist_rollout_mode):
+            raise ValueError(
+                "M5 GJD conditional FDM/IDM rollout requires packed joint coupling. "
+                "Do not use split-cache action-only rollout as an IDM/FDM substitute."
+            )
+        generalist_rollout_semantics = resolve_generalist_joint_conditioning_semantics(
+            generalist_rollout_mode,
+            joint_mode=MoTGeneralistTrainingMode.JOINT,
+            action_conditioned_video_mode=MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
+            video_conditioned_action_mode=MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
+        )
         video_commit_before_action = current_block_coupling == CurrentBlockCoupling.VIDEO_THEN_ACTION
 
         text_context_for_video = runtime_state.text_context
         if text_context_for_video is None:
             text_context_for_video = visual_outputs.frontend.conditioning.text_context
+        if generalist_rollout_semantics.drop_text_conditioning and text_context_for_video is not None:
+            text_context_for_video = torch.zeros_like(text_context_for_video)
         if text_context_for_video is None:
             text_context_for_video = torch.zeros(
                 batch_size,
@@ -3505,7 +3776,7 @@ class MoTPolicyVariant(PolicyVariant):
             text_context_for_video, token_count = self._append_generalist_mode_text_token(
                 visual_tower,
                 text_context_for_video,
-                MoTGeneralistTrainingMode.JOINT,
+                generalist_rollout_mode,
             )
             runtime_state.text_context = text_context_for_video
             runtime_state.generalist_mode_text_token_count = int(token_count)
@@ -3529,7 +3800,7 @@ class MoTPolicyVariant(PolicyVariant):
             negative_text_context, _ = self._append_generalist_mode_text_token(
                 visual_tower,
                 negative_text_context,
-                MoTGeneralistTrainingMode.JOINT,
+                generalist_rollout_mode,
             )
         use_cfg = (
             negative_text_context is not None
@@ -4037,7 +4308,7 @@ class MoTPolicyVariant(PolicyVariant):
                 "generation_frame_start": int(current_action_frame_start),
                 "mot_action_only_rollout": bool(action_only_rollout),
                 "mot_generalist_mode_text_token": (
-                    MoTGeneralistTrainingMode.JOINT.value
+                    generalist_rollout_mode.value
                     if int(getattr(runtime_state, "generalist_mode_text_token_count", 0)) > 0
                     else None
                 ),

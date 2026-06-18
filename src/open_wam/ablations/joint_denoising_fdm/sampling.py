@@ -61,6 +61,96 @@ def build_fdm_eval_dataset(
     return FullSegmentLocalLeRobotLatentDataset(data_config=eval_data, windows=windows)
 
 
+def build_counterfactual_fdm_eval_dataset(
+    data_config: DataConfig,
+    *,
+    encoded_root: str | Path,
+    split: str = "val",
+) -> Dataset[LatentWAMSample]:
+    """Build the encoded counterfactual target-only latent dataset."""
+
+    from open_wam.data.generalist_dynamics import EncodedCounterfactualDynamicsLatentDataset
+
+    return EncodedCounterfactualDynamicsLatentDataset(
+        data_config=data_config,
+        encoded_root=encoded_root,
+        split=split,
+    )
+
+
+def select_counterfactual_target_only_windows(
+    dataset: Dataset[LatentWAMSample],
+    *,
+    horizon_frames: int,
+    frame_chunk_size: int,
+    target_start_offset_frames: int,
+) -> list[FdmWindowSelection]:
+    """Select deterministic target-only windows from encoded counterfactual samples.
+
+    Encoded CF samples are already materialized as `t0 + future`, so sample-frame
+    t0 is always zero and the first supervised target frame is normally one.
+    """
+
+    target_start_offset_frames = int(target_start_offset_frames)
+    if target_start_offset_frames < 0:
+        raise ValueError(
+            f"target_start_offset_frames must be non-negative, got {target_start_offset_frames}."
+        )
+    generated_frames = require_chunk_aligned_horizon(
+        horizon_frames=horizon_frames,
+        frame_chunk_size=frame_chunk_size,
+    )
+    rows = getattr(dataset, "transition_rows", None)
+    if rows is None:
+        raise TypeError(
+            "Counterfactual FDM sampling expects EncodedCounterfactualDynamicsLatentDataset "
+            "or a dataset exposing `transition_rows`."
+        )
+    source_order = _balanced_source_indices_for_dataset(dataset)
+    if source_order is None:
+        source_order = tuple(range(len(rows)))
+
+    encoded_root = str(getattr(dataset, "encoded_root", ""))
+    selections: list[FdmWindowSelection] = []
+    task_ranks: dict[str, int] = {}
+    for source_index in source_order:
+        row = rows[int(source_index) % len(rows)]
+        total_video_frames = _counterfactual_row_frame_count(row)
+        if total_video_frames < target_start_offset_frames + generated_frames:
+            continue
+        task_key = _counterfactual_selection_task_key(row)
+        task_rank = task_ranks.setdefault(task_key, len(task_ranks))
+        selections.append(
+            FdmWindowSelection(
+                sample_index=len(selections),
+                dataset_index=int(source_index),
+                task_key=task_key,
+                task_rank=int(task_rank),
+                episode_index=int(row.get("dataset_episode_index", row.get("episode_index", -1))),
+                t0_frame=0,
+                horizon_frames=int(horizon_frames),
+                generated_frames=int(generated_frames),
+                context_start_frame=0,
+                total_video_frames=int(total_video_frames),
+                repo_root=encoded_root,
+                target_start_offset_frames=target_start_offset_frames,
+                source_metadata={
+                    "source": "encoded_counterfactual_dynamics",
+                    "sample_id": row.get("sample_id"),
+                    "context_id": row.get("context_id"),
+                    "task_id": row.get("task_id"),
+                    "task_text": row.get("task_text"),
+                    "branch": row.get("branch"),
+                    "branch_family": row.get("branch_family"),
+                    "branch_strength": row.get("branch_strength"),
+                    "branch_is_ood": row.get("branch_is_ood"),
+                    "t0_frame": row.get("t0_frame"),
+                },
+            )
+        )
+    return selections
+
+
 def select_early_middle_windows(
     dataset: Dataset[LatentWAMSample],
     *,
@@ -74,11 +164,28 @@ def select_early_middle_windows(
     early_fraction: float = 0.30,
     middle_fraction: float = 0.55,
     start_policy: FdmStartPolicy = FdmStartPolicy.EARLY_MIDDLE,
+    target_start_offset_frames: int = 0,
+    fit_target_start_offset_frames: int | None = None,
 ) -> list[FdmWindowSelection]:
     """Select deterministic early-middle windows, grouped by task text."""
 
     if frame_chunk_size <= 0:
         raise ValueError(f"frame_chunk_size must be positive, got {frame_chunk_size}.")
+    target_start_offset_frames = int(target_start_offset_frames)
+    if target_start_offset_frames < 0:
+        raise ValueError(
+            f"target_start_offset_frames must be non-negative, got {target_start_offset_frames}."
+        )
+    fit_target_start_offset_frames = (
+        target_start_offset_frames
+        if fit_target_start_offset_frames is None
+        else int(fit_target_start_offset_frames)
+    )
+    if fit_target_start_offset_frames < target_start_offset_frames:
+        raise ValueError(
+            "fit_target_start_offset_frames must be at least target_start_offset_frames, "
+            f"got fit={fit_target_start_offset_frames}, target={target_start_offset_frames}."
+        )
     generated_frames = require_chunk_aligned_horizon(
         horizon_frames=horizon_frames,
         frame_chunk_size=frame_chunk_size,
@@ -92,7 +199,7 @@ def select_early_middle_windows(
     grouped: dict[str, list[tuple[int, Any]]] = defaultdict(list)
     for dataset_index, window in enumerate(windows):
         total_video_frames = _window_frame_count(window, action_per_frame=action_per_frame)
-        if total_video_frames < min_context_frames + generated_frames + 1:
+        if total_video_frames < min_context_frames + fit_target_start_offset_frames + generated_frames + 1:
             continue
         task_key = _window_task_key(dataset, window)
         grouped[task_key].append((dataset_index, window))
@@ -116,6 +223,7 @@ def select_early_middle_windows(
                 action_per_frame=action_per_frame,
                 generated_frames=generated_frames,
                 min_context_frames=min_context_frames,
+                target_start_offset_frames=fit_target_start_offset_frames,
                 early_fraction=early_fraction,
                 middle_fraction=middle_fraction,
             ),
@@ -146,6 +254,7 @@ def select_early_middle_windows(
                 total_video_frames=total_video_frames,
                 generated_frames=generated_frames,
                 min_context_frames=min_context_frames,
+                target_start_offset_frames=fit_target_start_offset_frames,
                 local_index=local_index,
                 count=max(trajectories_per_task, 1),
                 early_fraction=early_fraction,
@@ -168,6 +277,7 @@ def select_early_middle_windows(
                     ),
                     total_video_frames=total_video_frames,
                     repo_root=str(getattr(window, "repo_root", "")),
+                    target_start_offset_frames=target_start_offset_frames,
                 )
             )
 
@@ -188,8 +298,10 @@ def selection_to_manifest_row(selection: FdmWindowSelection) -> dict[str, Any]:
         "target_start_frame": selection.target_start_frame,
         "target_end_frame": selection.target_end_frame,
         "generation_end_frame": selection.generation_end_frame,
+        "target_start_offset_frames": selection.target_start_offset_frames,
         "total_video_frames": selection.total_video_frames,
         "repo_root": selection.repo_root,
+        "source_metadata": dict(selection.source_metadata),
     }
 
 
@@ -234,6 +346,32 @@ def _window_task_key(dataset: Dataset[LatentWAMSample], window: Any) -> str:
     return f"task:{int(getattr(window, 'episode_index', 0))}"
 
 
+def _counterfactual_row_frame_count(row: dict[str, Any]) -> int:
+    shape = row.get("target_video_latent_shape")
+    if isinstance(shape, (list, tuple)) and len(shape) >= 2:
+        return int(shape[1])
+    if row.get("horizon_frames") is not None:
+        return int(row["horizon_frames"])
+    raise ValueError(
+        "Encoded counterfactual transition row must include `target_video_latent_shape` "
+        "or `horizon_frames`."
+    )
+
+
+def _counterfactual_selection_task_key(row: dict[str, Any]) -> str:
+    task_id = row.get("task_id", "unknown")
+    branch = row.get("branch", row.get("branch_family", "unknown"))
+    return f"task:{task_id}:branch:{branch}"
+
+
+def _balanced_source_indices_for_dataset(dataset: Dataset[LatentWAMSample]) -> tuple[int, ...] | None:
+    build_indices = getattr(dataset, "build_balanced_source_indices", None)
+    if not callable(build_indices):
+        return None
+    indices = tuple(int(index) for index in build_indices())
+    return indices or None
+
+
 def require_chunk_aligned_horizon(*, horizon_frames: int, frame_chunk_size: int) -> int:
     if horizon_frames <= 0:
         raise ValueError(f"horizon_frames must be positive, got {horizon_frames}.")
@@ -254,13 +392,14 @@ def _window_horizon_quality(
     action_per_frame: int,
     generated_frames: int,
     min_context_frames: int,
+    target_start_offset_frames: int,
     early_fraction: float,
     middle_fraction: float,
 ) -> tuple[int, int, int, int]:
     """Prefer windows that keep long-horizon starts in the requested early-middle range."""
 
     total_video_frames = _window_frame_count(window, action_per_frame=action_per_frame)
-    max_t0 = total_video_frames - int(generated_frames)
+    max_t0 = total_video_frames - int(target_start_offset_frames) - int(generated_frames)
     ideal_early_t0 = max(int(min_context_frames), int(round(total_video_frames * early_fraction)))
     ideal_middle_t0 = max(int(min_context_frames), int(round(total_video_frames * middle_fraction)))
     return (
@@ -276,16 +415,17 @@ def _early_middle_t0(
     total_video_frames: int,
     generated_frames: int,
     min_context_frames: int,
+    target_start_offset_frames: int,
     local_index: int,
     count: int,
     early_fraction: float,
     middle_fraction: float,
 ) -> int:
-    max_t0 = int(total_video_frames) - int(generated_frames)
+    max_t0 = int(total_video_frames) - int(target_start_offset_frames) - int(generated_frames)
     if max_t0 < min_context_frames:
         raise ValueError(
             f"Cannot select t0: total_video_frames={total_video_frames}, generated_frames={generated_frames}, "
-            f"min_context_frames={min_context_frames}."
+            f"target_start_offset_frames={target_start_offset_frames}, min_context_frames={min_context_frames}."
         )
     fraction = early_fraction
     if count > 1:
@@ -300,6 +440,7 @@ def _select_t0_frame(
     total_video_frames: int,
     generated_frames: int,
     min_context_frames: int,
+    target_start_offset_frames: int,
     local_index: int,
     count: int,
     early_fraction: float,
@@ -310,17 +451,19 @@ def _select_t0_frame(
             total_video_frames=total_video_frames,
             generated_frames=generated_frames,
             min_context_frames=min_context_frames,
+            target_start_offset_frames=target_start_offset_frames,
             local_index=local_index,
             count=count,
             early_fraction=early_fraction,
             middle_fraction=middle_fraction,
         )
     if start_policy == FdmStartPolicy.LATEST_FIT:
-        latest_t0 = int(total_video_frames) - int(generated_frames)
+        latest_t0 = int(total_video_frames) - int(target_start_offset_frames) - int(generated_frames)
         if latest_t0 < int(min_context_frames):
             raise ValueError(
                 f"Cannot select latest_fit t0: total_video_frames={total_video_frames}, "
-                f"generated_frames={generated_frames}, min_context_frames={min_context_frames}."
+                f"generated_frames={generated_frames}, target_start_offset_frames={target_start_offset_frames}, "
+                f"min_context_frames={min_context_frames}."
             )
         return latest_t0
     raise ValueError(f"Unsupported FDM start policy: {start_policy}.")

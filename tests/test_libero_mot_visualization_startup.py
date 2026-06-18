@@ -81,6 +81,9 @@ class _FakeEnv:
         obs = {
             "agentview_image": image,
             "robot0_eye_in_hand_image": image + 1,
+            "robot0_eef_pos": np.asarray([float(self.step_calls), 0.0, 0.0], dtype=np.float32),
+            "robot0_eef_quat": np.asarray([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+            "robot0_gripper_qpos": np.asarray([0.0, 0.0], dtype=np.float32),
         }
         return obs, 0.0, False, {}
 
@@ -360,6 +363,64 @@ def test_prepare_mot_visual_outputs_streaming_path_uses_run_frontend() -> None:
 
     assert pipeline.calls == ["canonicalize", "run_frontend:False", "from_latents:(1, 48, 1, 2, 2)"]
     assert outputs.frontend.video_latents.shape[2] == 1
+
+
+def test_build_infer_context_threads_mot_generalist_rollout_mode() -> None:
+    obs = {
+        "robot0_eef_pos": np.zeros(3, dtype=np.float32),
+        "robot0_eef_quat": np.asarray([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        "robot0_gripper_qpos": np.zeros(2, dtype=np.float32),
+    }
+    config = SimpleNamespace(
+        data=SimpleNamespace(
+            action_schema=SimpleNamespace(state_horizon=1),
+            action_target=SimpleNamespace(state_encoding="eef_pos_axisangle_gripper_2d"),
+        )
+    )
+
+    context = mot_viz._build_infer_context(
+        "task",
+        action_device=torch.device("cpu"),
+        model_obs_window=[obs],
+        config=config,
+        runtime_device=torch.device("cpu"),
+        mot_inference_window_size=30,
+        mot_action_only_rollout=False,
+        mot_generalist_rollout_mode="joint",
+    )
+
+    assert context.extra["task_text"] == ("task",)
+    assert context.extra["mot_inference_window_size"] == 30
+    assert context.extra["action_conditioning_mode"] == "joint"
+    assert context.extra["mot_generalist_rollout_mode"] == "joint"
+    assert "mot_action_only_rollout" not in context.extra
+    assert context.state.shape == (1, 1, 8)
+
+
+def test_build_infer_context_rejects_offline_diagnostic_mot_generalist_modes() -> None:
+    obs = {
+        "robot0_eef_pos": np.zeros(3, dtype=np.float32),
+        "robot0_eef_quat": np.asarray([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        "robot0_gripper_qpos": np.zeros(2, dtype=np.float32),
+    }
+    config = SimpleNamespace(
+        data=SimpleNamespace(
+            action_schema=SimpleNamespace(state_horizon=1),
+            action_target=SimpleNamespace(state_encoding="eef_pos_axisangle_gripper_2d"),
+        )
+    )
+
+    with pytest.raises(ValueError, match="offline diagnostic mode"):
+        mot_viz._build_infer_context(
+            "task",
+            action_device=torch.device("cpu"),
+            model_obs_window=[obs],
+            config=config,
+            runtime_device=torch.device("cpu"),
+            mot_inference_window_size=30,
+            mot_action_only_rollout=False,
+            mot_generalist_rollout_mode="video_conditioned_action",
+        )
 
 
 def test_standalone_offline_visualization_encoding_uses_shared_reference_assets() -> None:

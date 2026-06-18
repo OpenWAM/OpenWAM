@@ -57,15 +57,17 @@ class FdmWindowSelection:
     context_start_frame: int
     total_video_frames: int
     repo_root: str
+    target_start_offset_frames: int = 0
+    source_metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def target_start_frame(self) -> int:
-        return self.t0_frame
+        return self.t0_frame + self.target_start_offset_frames
 
     @property
     def target_end_frame(self) -> int:
-        return self.t0_frame + self.horizon_frames
+        return self.target_start_frame + self.horizon_frames
 
     @property
     def generation_end_frame(self) -> int:
-        return self.t0_frame + self.generated_frames
+        return self.target_start_frame + self.generated_frames

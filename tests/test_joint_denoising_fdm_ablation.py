@@ -34,9 +34,13 @@ from open_wam.ablations.joint_denoising_fdm.metrics import (
 )
 from open_wam.ablations.joint_denoising_fdm.rollout import (
     JointDenoisingFdmRollout,
+    MotGeneralistDenoisingFdmRollout,
     should_drop_task_text_for_fdm_mode,
 )
-from open_wam.ablations.joint_denoising_fdm.sampling import select_early_middle_windows
+from open_wam.ablations.joint_denoising_fdm.sampling import (
+    select_counterfactual_target_only_windows,
+    select_early_middle_windows,
+)
 from open_wam.ablations.joint_denoising_fdm.types import FdmAblationMode, FdmStartPolicy, FdmWindowSelection
 
 
@@ -123,6 +127,65 @@ class DummyDataset:
         return window.task_text
 
 
+class _FakeMotVisualTower:
+    config = SimpleNamespace(max_text_tokens=4, text_dim=8)
+
+    def __init__(self) -> None:
+        self.reset_calls = 0
+
+    def reset_runtime_state(self) -> None:
+        self.reset_calls += 1
+
+
+class _FakeMotPolicyVariant:
+    action_horizon = 4
+    action_dim = 7
+    inference_config = SimpleNamespace(frame_chunk_size=2)
+    config = SimpleNamespace(
+        name="mot",
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        mot_generalist_training_mode_probs={"joint": 1.0},
+    )
+
+
+class _FakeMotPipeline:
+    def __init__(self) -> None:
+        self.visual_tower = _FakeMotVisualTower()
+        self.policy_variant = _FakeMotPolicyVariant()
+
+
+class _FakeMotRunner:
+    def __init__(self) -> None:
+        self.pipeline = _FakeMotPipeline()
+        self.seen_contexts = []
+        self.seen_video_latents = []
+
+    def reset(self, *, task_text=None, text_context=None, negative_text_context=None):
+        return SimpleNamespace(
+            policy_state=None,
+            task_text=task_text,
+            text_context=text_context,
+            negative_text_context=negative_text_context,
+        )
+
+    def infer_step(self, *, session, context, video_latents, canonical_video=None):
+        del canonical_video
+        self.seen_contexts.append(context)
+        self.seen_video_latents.append(video_latents)
+        predicted_latents = torch.zeros_like(video_latents)
+        action_pred = torch.zeros(1, 4, 7)
+        return SimpleNamespace(
+            session=session,
+            infer_output=SimpleNamespace(
+                decoder_output=SimpleNamespace(
+                    action_pred=action_pred,
+                    aux={"predicted_latents": predicted_latents},
+                ),
+                policy_output=SimpleNamespace(aux={"runtime_mode": "fake"}),
+            ),
+        )
+
+
 def test_select_early_middle_windows_is_deterministic_and_chunk_aligned() -> None:
     first = select_early_middle_windows(
         DummyDataset(),
@@ -159,6 +222,56 @@ def test_select_early_middle_windows_rejects_non_chunk_aligned_horizon() -> None
         )
 
 
+def test_mot_generalist_fdm_rollout_adapter_threads_conditional_mode_controls() -> None:
+    runner = _FakeMotRunner()
+    rollout = MotGeneralistDenoisingFdmRollout(runner)
+    video_context = torch.randn(1, 3, 3, 2, 2)
+    action_context = torch.randn(1, 6, 7)
+    session = rollout.reset_and_warmup(
+        task_text=("task",),
+        video_context=video_context,
+        action_context=action_context,
+        text_context=torch.randn(1, 4, 8),
+        negative_text_context=None,
+        context_start_frame=5,
+        action_conditioning_mode=FdmAblationMode.FORCED_ACTION_JOINT_FDM.value,
+    )
+
+    assert runner.pipeline.visual_tower.reset_calls == 1
+    assert session.policy_state.step_index == 1
+    assert session.policy_state.cursor.current_start_frame == 8
+    torch.testing.assert_close(session.policy_state.variant_state.past_clean_latents, video_context)
+    torch.testing.assert_close(session.policy_state.variant_state.past_clean_actions, action_context)
+
+    raw_action_chunk = torch.randn(1, 4, 7)
+    rollout.infer_chunk(
+        session=session,
+        mode=FdmAblationMode.FORCED_ACTION_JOINT_FDM,
+        raw_action_chunk=raw_action_chunk,
+    )
+    fdm_extra = runner.seen_contexts[-1].extra
+    assert fdm_extra["action_conditioning_mode"] == "forced_action_joint_fdm"
+    assert fdm_extra["mot_generalist_rollout_mode"] == "forced_action_joint_fdm"
+    assert fdm_extra["mot_forced_action_latents"] is raw_action_chunk
+    assert fdm_extra["mot_commit_action_latents"] is raw_action_chunk
+    assert "mot_video_condition_latents" not in fdm_extra
+
+    video_condition = torch.randn(1, 3, 2, 2, 2)
+    rollout.infer_chunk(
+        session=session,
+        mode=FdmAblationMode.VIDEO_CONDITIONED_ACTION,
+        raw_action_chunk=raw_action_chunk,
+        video_condition_latents=video_condition,
+    )
+    idm_extra = runner.seen_contexts[-1].extra
+    assert idm_extra["action_conditioning_mode"] == "video_conditioned_action"
+    assert idm_extra["mot_generalist_rollout_mode"] == "video_conditioned_action"
+    assert idm_extra["mot_video_condition_latents"] is video_condition
+    assert idm_extra["mot_commit_action_latents"] is raw_action_chunk
+    assert "mot_forced_action_latents" not in idm_extra
+    assert runner.seen_video_latents[-1] is video_condition
+
+
 def test_latest_fit_start_policy_uses_full_target_horizon() -> None:
     selections = select_early_middle_windows(
         DummyDataset(),
@@ -172,6 +285,40 @@ def test_latest_fit_start_policy_uses_full_target_horizon() -> None:
     for selection in selections:
         assert selection.t0_frame == selection.total_video_frames - selection.horizon_frames
         assert selection.target_end_frame == selection.total_video_frames
+
+
+def test_latest_fit_start_policy_respects_target_start_offset() -> None:
+    selections = select_early_middle_windows(
+        DummyDataset(),
+        horizon_frames=32,
+        frame_chunk_size=4,
+        trajectories_per_task=1,
+        seed=7,
+        start_policy=FdmStartPolicy.LATEST_FIT,
+        target_start_offset_frames=1,
+    )
+    assert len(selections) == 2
+    for selection in selections:
+        assert selection.t0_frame == selection.total_video_frames - selection.horizon_frames - 1
+        assert selection.target_start_frame == selection.t0_frame + 1
+        assert selection.target_end_frame == selection.total_video_frames
+
+
+def test_latest_fit_start_policy_can_reserve_tail_margin_without_mode_offset() -> None:
+    selections = select_early_middle_windows(
+        DummyDataset(),
+        horizon_frames=32,
+        frame_chunk_size=4,
+        trajectories_per_task=1,
+        seed=7,
+        start_policy=FdmStartPolicy.LATEST_FIT,
+        fit_target_start_offset_frames=1,
+    )
+    assert len(selections) == 2
+    for selection in selections:
+        assert selection.t0_frame == selection.total_video_frames - selection.horizon_frames - 1
+        assert selection.target_start_offset_frames == 0
+        assert selection.target_start_frame == selection.t0_frame
 
 
 def test_counterfactual_action_branches_preserve_gripper_and_clip() -> None:
@@ -756,10 +903,12 @@ def test_fdm_rollout_warmup_receives_rollout_mode() -> None:
 
 
 def test_fdm_cli_accepts_training_style_set_overrides() -> None:
-    from open_wam.ablations.joint_denoising_fdm.cli import _parse_args
+    from open_wam.ablations.joint_denoising_fdm.cli import _parse_args, _resolve_runtime_dtype
 
     args = _parse_args(
         [
+            "--runtime-dtype",
+            "bfloat16",
             "--set",
             "policy_variant.generalist_mode_text_token=true",
             "--set",
@@ -771,6 +920,112 @@ def test_fdm_cli_accepts_training_style_set_overrides() -> None:
         "policy_variant.generalist_mode_text_token=true",
         "policy_variant.proprio_context_mode=per_chunk_additive",
     ]
+    assert args.runtime_dtype == "bfloat16"
+    assert _resolve_runtime_dtype(args.runtime_dtype) is torch.bfloat16
+
+
+def test_fdm_cli_resolves_action_per_frame_for_m1_and_m5_configs() -> None:
+    from open_wam.ablations.joint_denoising_fdm.cli import _resolve_action_per_frame
+
+    m1_config = SimpleNamespace(
+        policy_variant=SimpleNamespace(action_per_frame=3),
+        action_decoder=SimpleNamespace(action_horizon=12),
+        inference=SimpleNamespace(frame_chunk_size=4),
+    )
+    assert _resolve_action_per_frame(m1_config) == 3
+
+    m5_config = SimpleNamespace(
+        policy_variant=SimpleNamespace(),
+        action_decoder=SimpleNamespace(action_horizon=16),
+        inference=SimpleNamespace(frame_chunk_size=4),
+    )
+    assert _resolve_action_per_frame(m5_config) == 4
+
+    invalid_config = SimpleNamespace(
+        policy_variant=SimpleNamespace(),
+        action_decoder=SimpleNamespace(action_horizon=10),
+        inference=SimpleNamespace(frame_chunk_size=4),
+    )
+    with pytest.raises(ValueError, match="Cannot infer action_per_frame"):
+        _resolve_action_per_frame(invalid_config)
+
+
+def test_fdm_cli_drops_latent_rows_when_rgb_temporal_resolution_differs() -> None:
+    from open_wam.ablations.joint_denoising_fdm.cli import _latent_mse_for_metric_rows
+
+    assert _latent_mse_for_metric_rows(
+        latent_mse=[0.1, 0.2],
+        rgb_mse=[0.3, 0.4, 0.5],
+        action_mse=None,
+    ) is None
+    assert _latent_mse_for_metric_rows(
+        latent_mse=[0.1, 0.2],
+        rgb_mse=[0.3, 0.4],
+        action_mse=None,
+    ) == [0.1, 0.2]
+
+
+def test_fdm_eval_selects_counterfactual_target_only_windows() -> None:
+    class FakeCounterfactualDataset:
+        encoded_root = Path("/encoded/cf")
+        transition_rows = [
+            {
+                "sample_id": 0,
+                "context_id": 10,
+                "task_id": 1,
+                "task_text": "task one",
+                "dataset_episode_index": 3,
+                "branch": "gt",
+                "branch_family": "demo",
+                "target_video_latent_shape": [48, 8, 8, 16],
+                "t0_frame": 20,
+            },
+            {
+                "sample_id": 1,
+                "context_id": 11,
+                "task_id": 0,
+                "task_text": "task zero",
+                "dataset_episode_index": 4,
+                "branch": "stop_motion",
+                "branch_family": "counterfactual",
+                "target_video_latent_shape": [48, 32, 8, 16],
+                "t0_frame": 8,
+            },
+        ]
+
+        def build_balanced_source_indices(self) -> tuple[int, ...]:
+            return (1, 0)
+
+    selections = select_counterfactual_target_only_windows(
+        FakeCounterfactualDataset(),
+        horizon_frames=16,
+        frame_chunk_size=4,
+        target_start_offset_frames=1,
+    )
+
+    assert len(selections) == 1
+    selection = selections[0]
+    assert selection.dataset_index == 1
+    assert selection.t0_frame == 0
+    assert selection.target_start_frame == 1
+    assert selection.context_start_frame == 0
+    assert selection.total_video_frames == 32
+    assert selection.task_key == "task:0:branch:stop_motion"
+    assert selection.source_metadata["sample_id"] == 1
+    assert selection.source_metadata["task_text"] == "task zero"
+
+
+def test_fdm_cli_rejects_unsupported_counterfactual_modes() -> None:
+    from open_wam.ablations.joint_denoising_fdm.cli import _validate_counterfactual_eval_modes
+
+    _validate_counterfactual_eval_modes(
+        (
+            FdmAblationMode.FORCED_ACTION_JOINT_FDM,
+            FdmAblationMode.VIDEO_CONDITIONED_ACTION,
+        )
+    )
+    with pytest.raises(ValueError, match="target-only"):
+        _validate_counterfactual_eval_modes((FdmAblationMode.VANILLA_JOINT_ROLLOUT,))
 
 
 def test_counterfactual_cli_accepts_training_style_set_overrides() -> None:
@@ -855,6 +1110,226 @@ def test_fdm_eval_threads_per_frame_proprio_to_warmup_and_chunks(tmp_path: Path)
     torch.testing.assert_close(captured_chunks[0], sample.proprio_context_state[2].unsqueeze(0))
     torch.testing.assert_close(captured_chunks[1], sample.proprio_context_state[4].unsqueeze(0))
     assert result["summary"]["metric_target"] == "action"
+
+
+def test_fdm_eval_target_only_offset_predicts_future_from_current_action(tmp_path: Path) -> None:
+    from open_wam.ablations.joint_denoising_fdm.cli import _run_one_selection_mode
+
+    captured_warmup: dict[str, object] = {}
+    captured_actions: list[torch.Tensor] = []
+    captured_videos: list[torch.Tensor] = []
+    captured_proprio: list[torch.Tensor | None] = []
+
+    class FakeRollout(MotGeneralistDenoisingFdmRollout):
+        action_per_frame = 2
+        frame_chunk_size = 2
+        runner = SimpleNamespace(pipeline=None)
+
+        def __init__(self) -> None:
+            pass
+
+        def reset_and_warmup(self, **kwargs):
+            captured_warmup.update(kwargs)
+            return "session0"
+
+        def infer_chunk(self, **kwargs):
+            captured_actions.append(kwargs["raw_action_chunk"].detach().clone())
+            captured_videos.append(kwargs["video_condition_latents"].detach().clone())
+            captured_proprio.append(kwargs.get("proprio_state"))
+            return SimpleNamespace(
+                session=f"session{len(captured_actions)}",
+                predicted_latents=kwargs["video_condition_latents"].detach().clone(),
+                raw_action_sequence=kwargs["raw_action_chunk"].detach().clone(),
+                debug={"rollout_window_size": 3},
+            )
+
+    video_latents = torch.arange(10, dtype=torch.float32).reshape(1, 10, 1, 1)
+    actions = torch.arange(60, dtype=torch.float32).reshape(20, 3)
+    sample = SimpleNamespace(
+        video_latents=video_latents,
+        actions=actions,
+        task_text="task",
+        text_context=None,
+        negative_text_context=None,
+        proprio_context_state=torch.arange(80, dtype=torch.float32).reshape(10, 8),
+        proprio_context_state_mask=torch.ones(10, 8),
+    )
+    selection = FdmWindowSelection(
+        sample_index=0,
+        dataset_index=0,
+        task_key="task",
+        task_rank=0,
+        episode_index=0,
+        t0_frame=2,
+        horizon_frames=4,
+        generated_frames=4,
+        context_start_frame=0,
+        total_video_frames=10,
+        repo_root="repo",
+        target_start_offset_frames=1,
+    )
+
+    result = _run_one_selection_mode(
+        fdm_rollout=FakeRollout(),
+        selection=selection,
+        sample=sample,
+        mode=FdmAblationMode.VIDEO_CONDITIONED_ACTION,
+        runtime_device=torch.device("cpu"),
+        decode_device=torch.device("cpu"),
+        seed=0,
+        write_video=False,
+        video_dir=tmp_path,
+        video_fps=8.0,
+    )
+
+    assert captured_warmup["video_context"].shape[2] == 3
+    assert torch.equal(captured_warmup["action_context"], torch.zeros_like(captured_warmup["action_context"]))
+    torch.testing.assert_close(captured_warmup["proprio_state"], sample.proprio_context_state[2].unsqueeze(0))
+    torch.testing.assert_close(
+        captured_warmup["hidden_proprio_history"],
+        sample.proprio_context_state[:3].unsqueeze(0),
+    )
+    torch.testing.assert_close(captured_videos[0], sample.video_latents[:, 3:5].unsqueeze(0))
+    torch.testing.assert_close(captured_videos[1], sample.video_latents[:, 5:7].unsqueeze(0))
+    torch.testing.assert_close(captured_actions[0], sample.actions[4:8].unsqueeze(0))
+    torch.testing.assert_close(captured_actions[1], sample.actions[8:12].unsqueeze(0))
+    torch.testing.assert_close(captured_proprio[0], sample.proprio_context_state[2].unsqueeze(0))
+    torch.testing.assert_close(captured_proprio[1], sample.proprio_context_state[4].unsqueeze(0))
+    assert result["summary"]["target_start_frame"] == 3
+    assert result["summary"]["action_source_start_frame"] == 2
+    assert result["metric_rows"][0]["future_frame"] == 3
+
+
+def test_fdm_eval_m5_vanilla_ignores_selection_fit_target_offset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import open_wam.ablations.joint_denoising_fdm.cli as cli_module
+    from open_wam.ablations.joint_denoising_fdm.cli import _run_one_selection_mode
+
+    captured_warmup: dict[str, object] = {}
+
+    class FakeRollout(MotGeneralistDenoisingFdmRollout):
+        action_per_frame = 2
+        frame_chunk_size = 2
+        runner = SimpleNamespace(pipeline=None)
+
+        def __init__(self) -> None:
+            pass
+
+        def reset_and_warmup(self, **kwargs):
+            captured_warmup.update(kwargs)
+            return "session0"
+
+        def infer_chunk(self, **kwargs):
+            return SimpleNamespace(
+                session="session",
+                predicted_latents=torch.zeros(1, 1, 2, 1, 1),
+                raw_action_sequence=kwargs["raw_action_chunk"].detach().clone(),
+                debug={"rollout_window_size": 3},
+            )
+
+    monkeypatch.setattr(
+        cli_module,
+        "decode_latent_video",
+        lambda pipeline, latents, *, decode_device: np.zeros((latents.shape[2], 2, 2, 3), dtype=np.float32),
+    )
+    sample = SimpleNamespace(
+        video_latents=torch.arange(10, dtype=torch.float32).reshape(1, 10, 1, 1),
+        actions=torch.arange(60, dtype=torch.float32).reshape(20, 3),
+        task_text="task",
+        text_context=None,
+        negative_text_context=None,
+        proprio_context_state=None,
+        proprio_context_state_mask=None,
+    )
+    selection = FdmWindowSelection(
+        sample_index=0,
+        dataset_index=0,
+        task_key="task",
+        task_rank=0,
+        episode_index=0,
+        t0_frame=2,
+        horizon_frames=4,
+        generated_frames=4,
+        context_start_frame=0,
+        total_video_frames=10,
+        repo_root="repo",
+        target_start_offset_frames=1,
+    )
+
+    result = _run_one_selection_mode(
+        fdm_rollout=FakeRollout(),
+        selection=selection,
+        sample=sample,
+        mode=FdmAblationMode.VANILLA_JOINT_ROLLOUT,
+        runtime_device=torch.device("cpu"),
+        decode_device=torch.device("cpu"),
+        seed=0,
+        write_video=False,
+        video_dir=tmp_path,
+        video_fps=8.0,
+    )
+
+    assert captured_warmup["video_context"].shape[2] == 2
+    torch.testing.assert_close(captured_warmup["action_context"], sample.actions[:4].unsqueeze(0))
+    assert result["summary"]["target_start_frame"] == 2
+    assert result["summary"]["target_start_offset_frames"] == 0
+    assert result["metric_rows"][0]["future_frame"] == 2
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        FdmAblationMode.FORCED_ACTION_JOINT_FDM,
+        FdmAblationMode.VIDEO_CONDITIONED_ACTION,
+    ],
+)
+def test_m5_gjd_offline_rollout_seeds_per_chunk_proprio_history(mode: FdmAblationMode) -> None:
+    from open_wam.configs import MoTGeneralistTrainingMode, ProprioContextMode
+    from open_wam.pipelines import VariantRolloutRunner
+    mot_training_tests = _load_repo_script("tests/test_mot_generalist_training.py")
+
+    pipeline, _, _, text_context = mot_training_tests._build_tiny_generalist_pipeline(
+        MoTGeneralistTrainingMode.JOINT,
+        proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
+    )
+    object.__setattr__(pipeline.policy_variant.inference_config, "action_num_inference_steps", 25)
+    rollout = MotGeneralistDenoisingFdmRollout(VariantRolloutRunner(pipeline))
+    video_context = torch.randn(1, 48, 2, 8, 8)
+    action_context = torch.randn(1, 4, 4)
+    hidden_proprio_history = torch.randn(1, 2, 4)
+    current_proprio = torch.randn(1, 4)
+    session = rollout.reset_and_warmup(
+        task_text=("task",),
+        video_context=video_context,
+        action_context=action_context,
+        text_context=text_context,
+        negative_text_context=None,
+        context_start_frame=0,
+        action_conditioning_mode=mode.value,
+        proprio_state=current_proprio,
+        hidden_proprio_history=hidden_proprio_history,
+    )
+
+    torch.testing.assert_close(
+        session.policy_state.variant_state.past_hidden_proprio_states,
+        hidden_proprio_history,
+    )
+    raw_action_chunk = torch.randn(1, 4, 4)
+    video_condition = torch.randn(1, 48, 2, 8, 8) if mode == FdmAblationMode.VIDEO_CONDITIONED_ACTION else None
+
+    output = rollout.infer_chunk(
+        session=session,
+        mode=mode,
+        raw_action_chunk=raw_action_chunk,
+        video_condition_latents=video_condition,
+        proprio_state=current_proprio,
+    )
+
+    assert output.predicted_latents.shape == (1, 48, 2, 8, 8)
+    assert output.session.policy_state.variant_state.past_hidden_proprio_states is not None
+    assert output.session.policy_state.variant_state.past_hidden_proprio_states.shape[1] >= 1
 
 
 def test_idm_rollout_threads_video_condition_and_drops_text(monkeypatch: pytest.MonkeyPatch) -> None:
