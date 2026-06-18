@@ -2211,6 +2211,109 @@ def test_mot_decoupled_action_only_rollout_skips_split_cache_video_denoise() -> 
     assert output.policy_output.aux["mot_infer_artifacts"].predicted_latents.shape[2] == 0
 
 
+def test_mot_action_then_video_rollout_frame_chunk_override_shortens_internal_action_horizon() -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=MoTPolicyConfig(
+            hidden_size=32,
+            runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.ACTION_THEN_VIDEO,
+            video_prefix_frames=1,
+            num_action_layers=1,
+        ),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
+        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+
+    output = pipeline.forward_infer_step_from_latents(
+        torch.randn(1, 48, 1, 8, 8),
+        context=PolicyInferContext(
+            extra={
+                "mot_action_only_rollout": True,
+                "mot_rollout_frame_chunk_size": 1,
+            }
+        ),
+        text_context=torch.randn(1, 5, 16),
+    )
+
+    assert output.decoder_output.action_pred.shape == (1, 2, 4)
+    assert output.policy_output.aux["mot_packed_history_debug"]["rollout_frame_chunk_size"] == 1
+    assert output.policy_output.aux["mot_packed_history_debug"]["rollout_action_horizon"] == 2
+    state = output.policy_output.next_state.variant_state
+    assert isinstance(state, MoTRuntimeState)
+    assert state.past_clean_actions is not None
+    assert state.past_clean_actions.shape[1] == 2
+    assert output.policy_output.next_state.cursor.current_start_frame == 2
+
+
+def test_mot_decoupled_rollout_frame_chunk_override_shortens_split_cache_action_horizon() -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=MoTPolicyConfig(
+            hidden_size=32,
+            runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+            video_prefix_frames=1,
+            num_action_layers=1,
+        ),
+        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(chunk_size=2, window_size=8, action_loss_weight=1.0, latent_loss_weight=1.0),
+        inference=InferenceConfig(frame_chunk_size=2, video_num_inference_steps=2, action_num_inference_steps=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+
+    output = pipeline.forward_infer_step_from_latents(
+        torch.randn(1, 48, 1, 8, 8),
+        context=PolicyInferContext(
+            extra={
+                "mot_action_only_rollout": True,
+                "mot_rollout_frame_chunk_size": 1,
+            }
+        ),
+        text_context=torch.randn(1, 5, 16),
+    )
+
+    assert output.decoder_output.action_pred.shape == (1, 2, 4)
+    assert output.policy_output.aux["mot_cache_debug"]["rollout_frame_chunk_size"] == 1
+    assert output.policy_output.aux["mot_cache_debug"]["rollout_action_horizon"] == 2
+    assert output.policy_output.aux["mot_cache_debug"]["chunk_advance_frames"] == 1
+    assert output.policy_output.aux["mot_infer_artifacts"].predicted_latents.shape[2] == 0
+
+
 def test_mot_rollout_history_window_matches_fixed128_context_contract() -> None:
     assert resolve_mot_rollout_history_frames(window_size=30, frame_chunk_size=4) == 60
     assert resolve_mot_rollout_cache_window_frames(window_size=30, frame_chunk_size=4) == 64

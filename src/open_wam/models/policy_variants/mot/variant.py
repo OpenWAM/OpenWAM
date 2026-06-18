@@ -131,6 +131,49 @@ def _resolve_mot_inference_window_size(
     return resolved
 
 
+def _resolve_mot_rollout_frame_chunk_size(
+    context: PolicyInferContext,
+    *,
+    default_frame_chunk_size: int,
+    base_action_horizon: int,
+) -> tuple[int, int, int]:
+    base_frame_chunk_size = int(default_frame_chunk_size)
+    if base_frame_chunk_size <= 0:
+        raise ValueError(
+            "MoT inference frame chunk size must be positive, "
+            f"got {base_frame_chunk_size}."
+        )
+    base_action_horizon = int(base_action_horizon)
+    if base_action_horizon <= 0:
+        raise ValueError(
+            "MoT inference action horizon must be positive, "
+            f"got {base_action_horizon}."
+        )
+    if base_action_horizon % base_frame_chunk_size != 0:
+        raise ValueError(
+            "MoT inference expects `action_horizon` to divide by `inference.frame_chunk_size`, "
+            f"got action_horizon={base_action_horizon}, frame_chunk_size={base_frame_chunk_size}."
+        )
+    action_tokens_per_frame = base_action_horizon // base_frame_chunk_size
+    raw_override = context.extra.get("mot_rollout_frame_chunk_size")
+    if raw_override is None:
+        frame_chunk_size = base_frame_chunk_size
+    else:
+        frame_chunk_size = int(raw_override)
+    if frame_chunk_size <= 0:
+        raise ValueError(
+            "MoT rollout frame chunk size must be positive, "
+            f"got {frame_chunk_size}."
+        )
+    if frame_chunk_size > base_frame_chunk_size:
+        raise ValueError(
+            "MoT rollout frame chunk size cannot exceed the configured inference frame chunk size, "
+            f"got override={frame_chunk_size}, configured={base_frame_chunk_size}."
+        )
+    action_horizon = frame_chunk_size * action_tokens_per_frame
+    return frame_chunk_size, action_horizon, action_tokens_per_frame
+
+
 def _resolve_mot_action_only_rollout(
     context: PolicyInferContext,
     *,
@@ -2505,13 +2548,11 @@ class MoTPolicyVariant(PolicyVariant):
             )
         dtype = next(self.action_expert.parameters()).dtype
         batch_size = int(visual_outputs.frontend.video_latents.shape[0])
-        frame_chunk_size = max(1, int(self.inference_config.frame_chunk_size))
-        if self.action_horizon % frame_chunk_size != 0:
-            raise ValueError(
-                "M5 packed coupling inference expects `action_horizon` to divide by `inference.frame_chunk_size`, "
-                f"got action_horizon={self.action_horizon}, frame_chunk_size={frame_chunk_size}."
-            )
-        action_tokens_per_frame = self.action_horizon // frame_chunk_size
+        frame_chunk_size, action_horizon, action_tokens_per_frame = _resolve_mot_rollout_frame_chunk_size(
+            context,
+            default_frame_chunk_size=int(self.inference_config.frame_chunk_size),
+            base_action_horizon=int(self.action_horizon),
+        )
         video_latents = visual_outputs.frontend.video_latents.to(device=device, dtype=dtype)
         latent_height = int(video_latents.shape[-2])
         latent_width = int(video_latents.shape[-1])
@@ -2522,7 +2563,7 @@ class MoTPolicyVariant(PolicyVariant):
             current_start_frame=current_start_frame,
             frame_chunk_size=frame_chunk_size,
             action_tokens_per_frame=action_tokens_per_frame,
-            action_horizon=self.action_horizon,
+            action_horizon=action_horizon,
         )
         first_step_bootstrap = startup_plan.is_startup
 
@@ -2586,7 +2627,7 @@ class MoTPolicyVariant(PolicyVariant):
             current_noisy_video = torch.randn_like(current_video_condition, device=device, dtype=dtype)
             current_clean_video = torch.zeros_like(current_noisy_video)
         current_video_sequence_frames = int(current_noisy_video.shape[2])
-        current_action_sample = torch.randn(batch_size, self.action_horizon, self.action_dim, device=device, dtype=dtype)
+        current_action_sample = torch.randn(batch_size, action_horizon, self.action_dim, device=device, dtype=dtype)
         current_action_prefix_tokens = startup_plan.action_prefix_tokens
         current_action_sequence_tokens = startup_plan.current_action_sequence_tokens
 
@@ -3051,7 +3092,7 @@ class MoTPolicyVariant(PolicyVariant):
             nonlocal action_sample
             packed_action_flow = self.action_expert.post_dit(packed_action_hidden, packed_action_pre)
             flow_start = history_action_tokens + current_action_prefix_tokens
-            action_flow_pred = packed_action_flow[:, flow_start : flow_start + self.action_horizon].contiguous()
+            action_flow_pred = packed_action_flow[:, flow_start : flow_start + action_horizon].contiguous()
             generated_action_timestep = action_timestep[:, current_action_prefix_tokens:].contiguous()
             scheduler_timestep = generated_action_timestep.reshape(-1)[0]
             if sigma is None or sigma_next is None:
@@ -3282,8 +3323,10 @@ class MoTPolicyVariant(PolicyVariant):
                     "current_clean_condition_frames": int(current_clean_video.shape[2]),
                     "packed_video_frames": int(shared_history_frames + current_video_sequence_frames),
                     "packed_action_frames": int(shared_history_frames + current_video_prefix_frames + frame_chunk_size),
+                    "rollout_frame_chunk_size": int(frame_chunk_size),
+                    "rollout_action_horizon": int(action_horizon),
                     "current_action_flow_start": int(history_action_tokens + current_action_prefix_tokens),
-                    "current_action_flow_end": int(history_action_tokens + current_action_prefix_tokens + self.action_horizon),
+                    "current_action_flow_end": int(history_action_tokens + current_action_prefix_tokens + action_horizon),
                     "history_window_frames": int(history_window_frames),
                     "inference_window_size": int(inference_window_size),
                     "max_history_frames": int(max_history_frames),
@@ -3500,14 +3543,24 @@ class MoTPolicyVariant(PolicyVariant):
                     f"action_num_inference_steps={self.inference_config.action_num_inference_steps}, "
                     f"runtime_mode={self.config.runtime_mode!r}."
                 )
-            frame_chunk_size = max(1, int(self.inference_config.frame_chunk_size))
-            if self.action_horizon % frame_chunk_size != 0:
-                raise ValueError(
-                    "MoT joint_denoise inference expects `action_horizon` to divide by `inference.frame_chunk_size`, "
-                    f"got action_horizon={self.action_horizon}, frame_chunk_size={frame_chunk_size}."
-                )
+            frame_chunk_size, action_horizon, action_tokens_per_frame = _resolve_mot_rollout_frame_chunk_size(
+                context,
+                default_frame_chunk_size=int(self.inference_config.frame_chunk_size),
+                base_action_horizon=int(self.action_horizon),
+            )
             observed_prefix = video_latents[:, :, :observed_prefix_frames]
             future_template = video_latents[:, :, observed_prefix_frames:]
+            if future_template.shape[2] > frame_chunk_size:
+                future_template = future_template[:, :, :frame_chunk_size].contiguous()
+            elif future_template.shape[2] < frame_chunk_size:
+                missing_frames = int(frame_chunk_size - future_template.shape[2])
+                future_template = torch.cat(
+                    [
+                        future_template,
+                        future_template[:, :, -1:].expand(-1, -1, missing_frames, -1, -1),
+                    ],
+                    dim=2,
+                ).contiguous()
             noisy_video_latents = torch.cat(
                 [
                     observed_prefix,
@@ -3540,7 +3593,7 @@ class MoTPolicyVariant(PolicyVariant):
                 )
             sample = torch.randn(
                 batch_size,
-                self.action_horizon,
+                action_horizon,
                 self.action_dim,
                 device=device,
                 dtype=dtype,
@@ -3564,10 +3617,9 @@ class MoTPolicyVariant(PolicyVariant):
                     int(video_latents.shape[2]),
                     -1,
                 )
-            action_tokens_per_frame = self.action_horizon // frame_chunk_size
             attention_mask = build_mot_attention_mask(
                 video_seq_len=visual_outputs.frontend.token_grid.tokens_per_frame * video_latents.shape[2],
-                action_seq_len=self.action_horizon,
+                action_seq_len=action_horizon,
                 device=device,
                 condition_mode=self.config.condition_mode,
                 video_tokens_per_frame=visual_outputs.frontend.token_grid.tokens_per_frame,
@@ -3604,7 +3656,7 @@ class MoTPolicyVariant(PolicyVariant):
                 dense_video_timestep[:, :observed_prefix_frames] = 0.0
                 dense_action_timestep = _expand_scalar_timestep(
                     action_timestep,
-                    shape=(batch_size, self.action_horizon),
+                    shape=(batch_size, action_horizon),
                     device=device,
                 )
                 action_pre = self.action_expert.pre_dit(
@@ -3665,6 +3717,8 @@ class MoTPolicyVariant(PolicyVariant):
                     "method_family": "mot",
                     "condition_mode": str(self.config.condition_mode),
                     "current_block_coupling": current_block_coupling.value,
+                    "rollout_frame_chunk_size": int(frame_chunk_size),
+                    "rollout_action_horizon": int(action_horizon),
                     "predicted_latents": predicted_latents,
                     "predicted_video_latents": predicted_latents,
                     "mot_infer_artifacts": MoTInferArtifacts(
@@ -3717,13 +3771,12 @@ class MoTPolicyVariant(PolicyVariant):
         video_device = next(visual_tower.core.parameters()).device
         video_dtype = _reference_runtime_dtype(visual_tower.core)
 
-        chunk_frames = max(1, int(self.inference_config.frame_chunk_size))
-        if self.action_horizon % chunk_frames != 0:
-            raise ValueError(
-                "MoT non-joint inference expects `action_horizon` to divide by `inference.frame_chunk_size`, "
-                f"got action_horizon={self.action_horizon}, frame_chunk_size={chunk_frames}."
-            )
-        action_tokens_per_frame = self.action_horizon // chunk_frames
+        chunk_frames, action_horizon, action_tokens_per_frame = _resolve_mot_rollout_frame_chunk_size(
+            context,
+            default_frame_chunk_size=int(self.inference_config.frame_chunk_size),
+            base_action_horizon=int(self.action_horizon),
+        )
+        runtime_state.chunk_advance_frames = int(chunk_frames)
         current_block_coupling = resolve_mot_current_block_coupling(self.config)
         action_only_rollout = _resolve_mot_action_only_rollout(
             context,
@@ -4043,19 +4096,13 @@ class MoTPolicyVariant(PolicyVariant):
                 "MoT cached-action inference requires the current observation batch to match the cached video batch, "
                 f"got current_batch_size={batch_size}, cached_batch_size={cached_batch_size}."
             )
-        if self.action_horizon % chunk_frames != 0:
-            raise ValueError(
-                "MoT non-joint inference expects `action_horizon` to divide by `inference.frame_chunk_size`, "
-                f"got action_horizon={self.action_horizon}, frame_chunk_size={chunk_frames}."
-            )
-        action_tokens_per_frame = self.action_horizon // chunk_frames
         scheduler = build_action_flow_match_inference_scheduler(
             training_config=self.training_config,
             inference_config=self.inference_config,
         )
         sample = torch.randn(
             batch_size,
-            self.action_horizon,
+            action_horizon,
             self.action_dim,
             device=device,
             dtype=dtype,
@@ -4100,7 +4147,7 @@ class MoTPolicyVariant(PolicyVariant):
                 f"got past_action_seq_len={past_action_seq_len}, action_tokens_per_frame={action_tokens_per_frame}."
             )
         past_action_frames = past_action_seq_len // action_tokens_per_frame
-        total_action_seq_len = past_action_seq_len + self.action_horizon
+        total_action_seq_len = past_action_seq_len + action_horizon
         # Method-1 byte-aligned mask: replicates
         # `build_chunked_temporal_exact_attention_profile` for the inference
         # `[video_cache; past_action_cache; current_action]` layout. Block
@@ -4134,7 +4181,7 @@ class MoTPolicyVariant(PolicyVariant):
         attention_mask = build_mot_inference_action_attention_mask(
             video_seq_len=action_video_cache.video_seq_len,
             past_action_seq_len=past_action_seq_len,
-            current_action_seq_len=self.action_horizon,
+            current_action_seq_len=action_horizon,
             video_tokens_per_frame=int(runtime_state.video_tokens_per_frame),
             action_tokens_per_frame=action_tokens_per_frame,
             chunk_size_frames=max(1, int(self.training_config.chunk_size)),
@@ -4157,7 +4204,7 @@ class MoTPolicyVariant(PolicyVariant):
         fresh_action_kv: MoTActionCache | None = None
         for timestep in scheduler.timesteps.to(device=device):
             dense_timestep = torch.full(
-                (batch_size, self.action_horizon),
+                (batch_size, action_horizon),
                 float(timestep),
                 device=device,
                 dtype=torch.float32,
@@ -4168,7 +4215,7 @@ class MoTPolicyVariant(PolicyVariant):
                 context=text_context.to(device=device, dtype=dtype),
                 action_grid_ids=self._build_action_grid_ids_for_sequence(
                     batch_size=batch_size,
-                    seq_len=self.action_horizon,
+                    seq_len=action_horizon,
                     action_tokens_per_frame=action_tokens_per_frame,
                     device=device,
                     frame_shift=int(current_action_frame_start),
@@ -4193,7 +4240,7 @@ class MoTPolicyVariant(PolicyVariant):
         # Separate cache-write forward at timestep=0 with the final denoised
         # sample. This is the Method-1 parity step.
         cache_write_timestep = torch.zeros(
-            (batch_size, self.action_horizon),
+            (batch_size, action_horizon),
             device=device,
             dtype=torch.float32,
         )
@@ -4203,7 +4250,7 @@ class MoTPolicyVariant(PolicyVariant):
             context=text_context.to(device=device, dtype=dtype),
             action_grid_ids=self._build_action_grid_ids_for_sequence(
                 batch_size=batch_size,
-                seq_len=self.action_horizon,
+                seq_len=action_horizon,
                 action_tokens_per_frame=action_tokens_per_frame,
                 device=device,
                 frame_shift=int(current_action_frame_start),
@@ -4342,6 +4389,8 @@ class MoTPolicyVariant(PolicyVariant):
                     "video_commit_before_action": bool(video_commit_before_action),
                     "action_visible_video_end_frame": int(action_visible_video_end_frame),
                     "inference_window_size": int(inference_window_size),
+                    "rollout_frame_chunk_size": int(chunk_frames),
+                    "rollout_action_horizon": int(action_horizon),
                     "action_cache_rewind_frame_start": (
                         None
                         if action_cache_rewind_frame_start_raw is None

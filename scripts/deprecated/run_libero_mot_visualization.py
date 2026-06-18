@@ -37,6 +37,7 @@ from open_wam.integrations import (  # noqa: E402
 )
 from open_wam.models.common.rollout_history import (  # noqa: E402
     build_executed_action_history_tensor as _build_shared_executed_action_history_tensor,
+    resolve_execute_action_steps as _resolve_shared_execute_action_steps,
 )
 from open_wam.models.policy_variants import PolicyInferContext  # noqa: E402
 from open_wam.models.policy_variants.mot.runtime_routing import (  # noqa: E402
@@ -124,6 +125,36 @@ def main() -> None:
     parser.add_argument("--max-timestep", type=int, default=800)
     parser.add_argument("--max-chunks", type=int, default=None)
     parser.add_argument("--raw-window-frames", type=int, default=None)
+    parser.add_argument(
+        "--execute-action-steps",
+        type=int,
+        default=None,
+        help=(
+            "Execute only the first N predicted actions from each MoT chunk before replanning. "
+            "Defaults to the full action horizon. N must be positive, <= action_horizon, "
+            "and aligned to action_per_frame."
+        ),
+    )
+    parser.add_argument(
+        "--execute-frame-chunk-size",
+        type=int,
+        default=None,
+        help=(
+            "Execute only the first N latent-frame groups from each MoT chunk before replanning. "
+            "This preserves the model's configured inference.frame_chunk_size and maps to "
+            "N * action_per_frame executed actions."
+        ),
+    )
+    parser.add_argument(
+        "--mot-rollout-frame-chunk-size",
+        type=int,
+        default=None,
+        help=(
+            "Override MoT's internal inference chunk to N latent frames. Unlike "
+            "--execute-frame-chunk-size, this reduces the generated video frames and action horizon "
+            "inside the policy while preserving the checkpoint's action_per_frame."
+        ),
+    )
     parser.add_argument(
         "--mot-inference-window-size",
         type=int,
@@ -301,6 +332,26 @@ def main() -> None:
             "Expected --mot-inference-window-size to be positive when provided, "
             f"got {args.mot_inference_window_size}."
         )
+    if args.mot_rollout_frame_chunk_size is not None:
+        rollout_frame_chunk_size = int(args.mot_rollout_frame_chunk_size)
+        configured_frame_chunk_size = _frame_chunk_size(config)
+        if rollout_frame_chunk_size <= 0:
+            raise ValueError(
+                "Expected --mot-rollout-frame-chunk-size to be positive when provided, "
+                f"got {args.mot_rollout_frame_chunk_size}."
+            )
+        if rollout_frame_chunk_size > configured_frame_chunk_size:
+            raise ValueError(
+                "--mot-rollout-frame-chunk-size cannot exceed configured inference.frame_chunk_size, "
+                f"got override={rollout_frame_chunk_size}, configured={configured_frame_chunk_size}."
+            )
+    if args.execute_action_steps is not None or args.execute_frame_chunk_size is not None:
+        _resolve_execute_action_steps(
+            args.execute_action_steps,
+            execute_frame_chunk_size=args.execute_frame_chunk_size,
+            action_horizon=int(config.data.action_schema.action_horizon),
+            action_per_frame=_action_per_frame(config),
+        )
     _require_current_frontend_encode_mode(
         args.frontend_encode_mode,
         allow_deprecated=bool(args.allow_deprecated_frontend_encode_mode),
@@ -339,6 +390,7 @@ def main() -> None:
         decode_device=decode_device,
         raw_window_frames=raw_window_frames,
         mot_inference_window_size=args.mot_inference_window_size,
+        mot_rollout_frame_chunk_size=args.mot_rollout_frame_chunk_size,
         mot_action_only_rollout=bool(args.mot_action_only_rollout),
         mot_generalist_rollout_mode=args.mot_generalist_rollout_mode,
     )
@@ -350,6 +402,15 @@ def main() -> None:
     component_report["checkpoint_runtime_config_merged"] = checkpoint_runtime_config_path is not None
     component_report["pipeline_training_mode"] = bool(pipeline.training)
     component_report["frontend_encode_mode"] = str(args.frontend_encode_mode)
+    component_report["mot_rollout_frame_chunk_size"] = (
+        None if args.mot_rollout_frame_chunk_size is None else int(args.mot_rollout_frame_chunk_size)
+    )
+    component_report["execute_action_steps"] = (
+        None if args.execute_action_steps is None else int(args.execute_action_steps)
+    )
+    component_report["execute_frame_chunk_size"] = (
+        None if args.execute_frame_chunk_size is None else int(args.execute_frame_chunk_size)
+    )
     _print_log("load_report", component_report)
 
     task_spec, prompt = _resolve_task_spec(args.benchmark, args.task_id)
@@ -463,6 +524,7 @@ def main() -> None:
                         config=config,
                         runtime_device=runtime_device,
                         mot_inference_window_size=args.mot_inference_window_size,
+                        mot_rollout_frame_chunk_size=args.mot_rollout_frame_chunk_size,
                         mot_action_only_rollout=bool(args.mot_action_only_rollout),
                         mot_generalist_rollout_mode=args.mot_generalist_rollout_mode,
                     ),
@@ -491,8 +553,21 @@ def main() -> None:
             )
             session.policy_state = infer_output.policy_output.next_state
             actions = infer_output.decoder_output.action_pred[0].detach().to(dtype=torch.float32).cpu().numpy()
-            frame_chunk_size = _frame_chunk_size(config)
-            action_per_frame = _action_per_frame(config)
+            configured_frame_chunk_size = _frame_chunk_size(config)
+            configured_action_per_frame = _action_per_frame(config)
+            action_per_frame = configured_action_per_frame
+            if int(actions.shape[0]) % int(action_per_frame) != 0:
+                raise ValueError(
+                    "MoT action output length must be divisible by configured action_per_frame, "
+                    f"got action_shape={actions.shape}, action_per_frame={action_per_frame}."
+                )
+            frame_chunk_size = int(actions.shape[0]) // int(action_per_frame)
+            execute_action_steps = _resolve_execute_action_steps(
+                args.execute_action_steps,
+                execute_frame_chunk_size=args.execute_frame_chunk_size,
+                action_horizon=int(actions.shape[0]),
+                action_per_frame=action_per_frame,
+            )
             frame_actions = actions.reshape(frame_chunk_size, action_per_frame, actions.shape[-1])
             predicted_latents = infer_output.decoder_output.aux.get("predicted_latents")
             if not isinstance(predicted_latents, torch.Tensor):
@@ -513,6 +588,10 @@ def main() -> None:
                 "video_latent_frames": int(visual_outputs.frontend.video_latents.shape[2]),
                 "frontend_path": frontend_path,
                 "action_shape": list(actions.shape),
+                "execute_action_steps": int(execute_action_steps),
+                "configured_frame_chunk_size": int(configured_frame_chunk_size),
+                "rollout_frame_chunk_size": int(frame_chunk_size),
+                "execute_frame_chunk_size": int(execute_action_steps // action_per_frame),
                 "predicted_latents_shape": None if not isinstance(predicted_latents, torch.Tensor) else list(predicted_latents.shape),
                 "first_action_preview": [float(v) for v in actions[0].tolist()],
                 "policy_debug": _summarize_policy_debug(infer_output.policy_output.aux),
@@ -531,9 +610,12 @@ def main() -> None:
                 else policy_debug.get("mot_cache_debug", {}).get("current_action_frame_start", 0)
             )
             start_frame_group = 1 if chunk_count == 0 and generation_frame_start <= 0 else 0
+            max_action_index = min(int(execute_action_steps), int(actions.shape[0]))
             for frame_group in range(start_frame_group, frame_actions.shape[0]):
                 for action_offset, action in enumerate(frame_actions[frame_group]):
                     absolute_action_index = frame_group * action_per_frame + action_offset
+                    if absolute_action_index >= max_action_index:
+                        break
                     control_action = np.clip(action.astype(np.float32, copy=False), -1.0, 1.0)
                     executed_control_actions.append(np.array(control_action, copy=True))
                     action_trace.append(np.array(control_action, copy=True))
@@ -552,12 +634,19 @@ def main() -> None:
                         break
                 if done or env.env.timestep >= args.max_timestep:
                     break
+                next_frame_group_first_action = (frame_group + 1) * action_per_frame
+                if next_frame_group_first_action >= max_action_index:
+                    break
 
             chunk_result_log = {
                 "chunk_index": chunk_count,
                 "phase": "env_rollout",
                 "env_timestep_after": int(env.env.timestep),
                 "executed_actions": int(executed_actions),
+                "execute_action_steps": int(execute_action_steps),
+                "configured_frame_chunk_size": int(configured_frame_chunk_size),
+                "rollout_frame_chunk_size": int(frame_chunk_size),
+                "execute_frame_chunk_size": int(execute_action_steps // action_per_frame),
                 "start_frame_group": int(start_frame_group),
                 "done_after_chunk": bool(done),
                 "success_after_chunk": bool(done),
@@ -622,6 +711,7 @@ def main() -> None:
                         action_history=warmup_action_history,
                         runtime_device=runtime_device,
                         mot_inference_window_size=args.mot_inference_window_size,
+                        mot_rollout_frame_chunk_size=args.mot_rollout_frame_chunk_size,
                     )
                 else:
                     warmup_debug = _warmup_mot_packed_history_from_observations(
@@ -634,6 +724,7 @@ def main() -> None:
                         frontend_device=frontend_device,
                         runtime_device=runtime_device,
                         mot_inference_window_size=args.mot_inference_window_size,
+                        mot_rollout_frame_chunk_size=args.mot_rollout_frame_chunk_size,
                     )
                 warmup_log = {
                     "chunk_index": chunk_count,
@@ -697,6 +788,10 @@ def main() -> None:
             "startup_model_obs_frames": int(startup_model_obs_frames),
             "startup_env_init_steps": int(startup_env_init_steps),
             "startup_env_steps_executed": int(max(startup_env_init_steps, startup_model_obs_frames)),
+            "execute_action_steps": None if args.execute_action_steps is None else int(args.execute_action_steps),
+            "execute_frame_chunk_size": (
+                None if args.execute_frame_chunk_size is None else int(args.execute_frame_chunk_size)
+            ),
             "action_count": len(action_trace),
             "checkpoint_file": str(checkpoint_path.resolve()),
         }
@@ -806,12 +901,15 @@ def _build_infer_context(
     config,
     runtime_device: torch.device,
     mot_inference_window_size: int | None,
+    mot_rollout_frame_chunk_size: int | None,
     mot_action_only_rollout: bool,
     mot_generalist_rollout_mode: str | None,
 ):
     extra: dict[str, object] = {"task_text": (prompt,), "action_device": str(action_device)}
     if mot_inference_window_size is not None:
         extra["mot_inference_window_size"] = int(mot_inference_window_size)
+    if mot_rollout_frame_chunk_size is not None:
+        extra["mot_rollout_frame_chunk_size"] = int(mot_rollout_frame_chunk_size)
     if mot_action_only_rollout:
         extra["mot_action_only_rollout"] = True
     if mot_generalist_rollout_mode is not None:
@@ -1077,6 +1175,7 @@ def _warmup_mot_packed_history_from_observations(
     frontend_device: torch.device,
     runtime_device: torch.device,
     mot_inference_window_size: int | None,
+    mot_rollout_frame_chunk_size: int | None,
 ) -> dict[str, object]:
     if not obs_list:
         return {"warmup_skipped": True, "reason": "empty_obs_list"}
@@ -1106,6 +1205,7 @@ def _warmup_mot_packed_history_from_observations(
         action_history=action_history,
         runtime_device=runtime_device,
         mot_inference_window_size=mot_inference_window_size,
+        mot_rollout_frame_chunk_size=mot_rollout_frame_chunk_size,
     )
 
 
@@ -1120,6 +1220,7 @@ def _warmup_mot_packed_history_from_visual_outputs(
     action_history: torch.Tensor | None,
     runtime_device: torch.device,
     mot_inference_window_size: int | None,
+    mot_rollout_frame_chunk_size: int | None,
 ) -> dict[str, object]:
     policy_state = session.policy_state
     runtime_state = getattr(policy_state, "variant_state", None) if policy_state is not None else None
@@ -1130,7 +1231,11 @@ def _warmup_mot_packed_history_from_visual_outputs(
     real_latents = warmup_outputs.frontend.video_latents.to(device=runtime_device, dtype=runtime_dtype)
     past_latents = runtime_state.past_clean_latents
     past_hidden_proprio = getattr(runtime_state, "past_hidden_proprio_states", None)
-    frame_chunk_size = _frame_chunk_size(config)
+    frame_chunk_size = (
+        int(mot_rollout_frame_chunk_size)
+        if mot_rollout_frame_chunk_size is not None
+        else _frame_chunk_size(config)
+    )
     history_window_size = (
         int(mot_inference_window_size)
         if mot_inference_window_size is not None
@@ -1308,6 +1413,21 @@ def _frame_chunk_size(config) -> int:
 
 def _action_per_frame(config) -> int:
     return max(1, int(config.data.action_schema.action_horizon) // _frame_chunk_size(config))
+
+
+def _resolve_execute_action_steps(
+    execute_action_steps: int | None,
+    *,
+    execute_frame_chunk_size: int | None = None,
+    action_horizon: int,
+    action_per_frame: int,
+) -> int:
+    return _resolve_shared_execute_action_steps(
+        execute_action_steps,
+        execute_frame_chunk_size=execute_frame_chunk_size,
+        action_horizon=action_horizon,
+        action_per_frame=action_per_frame,
+    )
 
 
 def _append_predicted_latent_chunk(
@@ -1553,6 +1673,7 @@ def _build_component_report(
     decode_device: torch.device,
     raw_window_frames: int,
     mot_inference_window_size: int | None,
+    mot_rollout_frame_chunk_size: int | None,
     mot_action_only_rollout: bool,
     mot_generalist_rollout_mode: str | None,
 ) -> dict[str, object]:
@@ -1568,6 +1689,9 @@ def _build_component_report(
         "raw_window_frames": int(raw_window_frames),
         "mot_inference_window_size": (
             None if mot_inference_window_size is None else int(mot_inference_window_size)
+        ),
+        "mot_rollout_frame_chunk_size": (
+            None if mot_rollout_frame_chunk_size is None else int(mot_rollout_frame_chunk_size)
         ),
         "mot_action_only_rollout": bool(mot_action_only_rollout),
         "mot_generalist_rollout_mode": mot_generalist_rollout_mode,
