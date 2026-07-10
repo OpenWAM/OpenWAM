@@ -1,6 +1,7 @@
 previous_works/
 external/
 outputs/
+runs/
 wandb/
 configs/local_paths.yaml
 configs/artifacts.yaml

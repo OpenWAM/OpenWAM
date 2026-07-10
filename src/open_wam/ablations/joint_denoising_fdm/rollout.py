@@ -110,7 +110,10 @@ class JointDenoisingFdmRollout:
         seed: int | None = None,
         drop_text_conditioning: bool = False,
         proprio_state: torch.Tensor | None = None,
+        allow_generated_action_commit: bool = False,
+        extra_overrides: dict[str, Any] | None = None,
     ) -> FdmChunkOutput:
+        del allow_generated_action_commit, extra_overrides
         if seed is not None:
             torch.manual_seed(int(seed))
             if torch.cuda.is_available():
@@ -435,6 +438,8 @@ class MotGeneralistDenoisingFdmRollout:
         seed: int | None = None,
         drop_text_conditioning: bool = False,
         proprio_state: torch.Tensor | None = None,
+        allow_generated_action_commit: bool = False,
+        extra_overrides: dict[str, Any] | None = None,
     ) -> FdmChunkOutput:
         del drop_text_conditioning
         if seed is not None:
@@ -448,10 +453,11 @@ class MotGeneralistDenoisingFdmRollout:
         if mode == FdmAblationMode.VIDEO_CONDITIONED_ACTION:
             if video_condition_latents is None:
                 raise ValueError("Mode 'video_conditioned_action' requires a ground-truth video latent chunk.")
-            if raw_action_chunk is None:
+            if raw_action_chunk is None and not allow_generated_action_commit:
                 raise ValueError("Mode 'video_conditioned_action' requires clean action history to commit.")
             extra["mot_video_condition_latents"] = video_condition_latents
-            extra["mot_commit_action_latents"] = raw_action_chunk
+            if raw_action_chunk is not None:
+                extra["mot_commit_action_latents"] = raw_action_chunk
             video_latents = video_condition_latents
         elif mode == FdmAblationMode.FORCED_ACTION_JOINT_FDM:
             if raw_action_chunk is None:
@@ -468,6 +474,8 @@ class MotGeneralistDenoisingFdmRollout:
             video_latents = self._history_video_template(session, video_condition_latents)
         else:
             raise ValueError(f"Unsupported FDM ablation mode: {mode!r}")
+        if extra_overrides:
+            extra.update(extra_overrides)
 
         step = self.runner.infer_step(
             session=session,

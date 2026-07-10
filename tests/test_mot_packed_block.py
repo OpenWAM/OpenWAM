@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
+import pytest
 
 import open_wam.configs  # ensure typed-config + backbone modules import order
 from open_wam.models.policy_variants.mot.modules import MoTActionExpert
@@ -206,6 +207,42 @@ def test_packed_block_forward_parity_with_inline_step() -> None:
     assert wrapped_action.shape == ref_action.shape
     assert torch.allclose(wrapped_video, ref_video, atol=1e-6, rtol=1e-5)
     assert torch.allclose(wrapped_action, ref_action, atol=1e-6, rtol=1e-5)
+
+
+def test_packed_block_collects_attention_focus_records() -> None:
+    """Diagnostic attention collection reports compact slot-to-slot masses."""
+
+    torch.manual_seed(0)
+    video_core = _make_video_core()
+    action_expert = _make_action_expert()
+    inputs = _build_inputs(video_seq_len=6, action_seq_len=4)
+    records: list[dict] = []
+
+    packed = MoTPackedBlock(video_core.blocks[0], action_expert.blocks[0]).eval()
+    with torch.no_grad():
+        packed(
+            **inputs,
+            attention_diagnostics=records,
+            attention_diagnostic_context={"phase": "unit"},
+            block_index=3,
+        )
+
+    assert {record["query_slot"] for record in records} == {
+        "video_noisy",
+        "video_clean",
+        "action_noisy",
+        "action_clean",
+    }
+    assert all(record["block_index"] == 3 for record in records)
+    assert all(record["phase"] == "unit" for record in records)
+    for record in records:
+        assert set(record["key_mass"]) == {
+            "video_noisy",
+            "video_clean",
+            "action_noisy",
+            "action_clean",
+        }
+        assert sum(record["key_mass"].values()) == pytest.approx(1.0, abs=1e-5)
 
 
 def test_packed_block_backward_produces_finite_gradients() -> None:

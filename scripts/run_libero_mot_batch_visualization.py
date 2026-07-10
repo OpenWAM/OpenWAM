@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import importlib.util
 import json
 import sys
@@ -23,7 +24,12 @@ from open_wam.configs import ReferenceCoreInitMode  # noqa: E402
 from open_wam.integrations import load_libero_task_init_states  # noqa: E402
 from open_wam.models.policy_variants.mot.runtime_routing import ensure_mot_inference_backend  # noqa: E402
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
-from open_wam.utils import load_experiment_config, seed_everywhere  # noqa: E402
+from open_wam.utils import (  # noqa: E402
+    apply_config_overrides,
+    load_experiment_config,
+    parse_override_assignments,
+    seed_everywhere,
+)
 from open_wam.utils.libero_paradigm import require_current_libero_policy_paradigm  # noqa: E402
 
 _MOT_VIZ_PATH = REPO_ROOT / "scripts" / "deprecated" / "run_libero_mot_visualization.py"
@@ -49,6 +55,13 @@ def main() -> None:
         required=True,
     )
     parser.add_argument("--checkpoint", type=str, required=True)
+    parser.add_argument(
+        "--set",
+        dest="set_overrides",
+        action="append",
+        default=[],
+        help="Apply a config override such as `--set policy_variant.generalist_mode_text_token=true`.",
+    )
     parser.add_argument("--benchmark", type=str, default="libero_10")
     parser.add_argument(
         "--task-ids",
@@ -116,6 +129,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--mot-gjd-action-route",
+        choices=sorted(mot_viz.MOT_GJD_ACTION_ROUTES),
+        default="joint",
+        help=(
+            "Diagnostic M5 GJD live-sim action route. `joint` is the normal rollout; "
+            "`joint_video_then_idm` generates video with joint denoising and executes "
+            "IDM actions conditioned on that generated video."
+        ),
+    )
+    parser.add_argument(
         "--frontend-encode-mode",
         choices=(mot_viz.DEPRECATED_FRONTEND_ENCODE_MODE, mot_viz.CURRENT_FRONTEND_ENCODE_MODE),
         default=mot_viz.CURRENT_FRONTEND_ENCODE_MODE,
@@ -130,6 +153,15 @@ def main() -> None:
     parser.add_argument("--output-dir", type=str, default="outputs/libero_mot_visualization_batch")
     parser.add_argument("--suffix", type=str, default="open_wam_mot")
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument(
+        "--seeds",
+        type=str,
+        default=None,
+        help=(
+            "Comma/range list of rollout seeds to evaluate with one loaded pipeline. "
+            "Each seed appends `_seedN` to the per-rollout suffix."
+        ),
+    )
     parser.add_argument(
         "--seed-by-episode",
         action="store_true",
@@ -161,40 +193,49 @@ def main() -> None:
     parser.add_argument("--allow-deprecated-libero-config", action="store_true")
     parser.add_argument("--allow-deprecated-frontend-encode-mode", action="store_true")
     args = parser.parse_args()
+    if args.seeds is not None and (args.seed is not None or args.seed_by_episode):
+        parser.error("--seeds is mutually exclusive with --seed and --seed-by-episode.")
 
     resources = _load_batch_resources(args)
     task_ids = _parse_int_ranges(args.task_ids, label="task-ids")
     episode_idxs = _parse_int_ranges(args.episode_idxs, label="episode-idxs")
     if args.reuse_env_per_task and args.loop_order != "task_episode":
         raise ValueError("--reuse-env-per-task requires --loop-order task_episode.")
-    pairs = _iter_pairs(task_ids, episode_idxs, loop_order=args.loop_order)
+    pairs = list(_iter_pairs(task_ids, episode_idxs, loop_order=args.loop_order))
+    rollout_seed_specs = _resolve_rollout_seed_specs(args)
 
     summaries: list[dict[str, object]] = []
+    base_suffix = str(args.suffix)
     try:
-        for task_id, episode_idx in pairs:
-            rollout_seed = _resolve_rollout_seed(args, episode_idx=episode_idx)
-            mot_viz._print_log(
-                "batch_rollout_start",
-                {"task_id": int(task_id), "episode_idx": int(episode_idx), "seed": rollout_seed},
-            )
-            summary = _run_one_loaded_rollout(
-                args,
-                resources,
-                task_id=task_id,
-                episode_idx=episode_idx,
-                seed=rollout_seed,
-            )
-            summaries.append(summary)
-            mot_viz._print_log(
-                "batch_rollout_done",
-                {
-                    "task_id": int(task_id),
-                    "episode_idx": int(episode_idx),
-                    "success": bool(summary.get("success", False)),
-                    "env_timestep": int(summary.get("env_timestep", 0)),
-                },
-            )
+        for suffix, explicit_seed in rollout_seed_specs:
+            args.suffix = suffix
+            for task_id, episode_idx in pairs:
+                rollout_seed = explicit_seed
+                if rollout_seed is None:
+                    rollout_seed = _resolve_rollout_seed(args, episode_idx=episode_idx)
+                mot_viz._print_log(
+                    "batch_rollout_start",
+                    {"task_id": int(task_id), "episode_idx": int(episode_idx), "seed": rollout_seed},
+                )
+                summary = _run_one_loaded_rollout(
+                    args,
+                    resources,
+                    task_id=task_id,
+                    episode_idx=episode_idx,
+                    seed=rollout_seed,
+                )
+                summaries.append(summary)
+                mot_viz._print_log(
+                    "batch_rollout_done",
+                    {
+                        "task_id": int(task_id),
+                        "episode_idx": int(episode_idx),
+                        "success": bool(summary.get("success", False)),
+                        "env_timestep": int(summary.get("env_timestep", 0)),
+                    },
+                )
     finally:
+        args.suffix = base_suffix
         _close_reused_env(resources)
 
     batch_summary_path = Path(args.output_dir) / f"{args.suffix}_batch_summary.json"
@@ -221,6 +262,11 @@ def _load_batch_resources(args: argparse.Namespace) -> SimpleNamespace:
         checkpoint_path,
         merge_enabled=bool(args.merge_checkpoint_runtime_config),
     )
+    if args.set_overrides:
+        config = apply_config_overrides(
+            config,
+            parse_override_assignments(tuple(args.set_overrides)),
+        )
     mot_viz._validate_mot_config(config)
     require_current_libero_policy_paradigm(
         config,
@@ -317,6 +363,8 @@ def _load_batch_resources(args: argparse.Namespace) -> SimpleNamespace:
         mot_inference_window_size=args.mot_inference_window_size,
         mot_rollout_frame_chunk_size=args.mot_rollout_frame_chunk_size,
         mot_action_only_rollout=bool(args.mot_action_only_rollout),
+        mot_generalist_rollout_mode=None,
+        mot_gjd_action_route=args.mot_gjd_action_route,
     )
     component_report["mot_inference_backend"] = mot_inference_backend
     component_report["checkpoint_file"] = str(checkpoint_path.resolve())
@@ -408,6 +456,7 @@ def _run_one_loaded_rollout(
         action_trace: list[np.ndarray] = []
         chunk_logs: list[dict[str, object]] = []
         done = False
+        terminal = False
         chunk_count = 0
         session = runner.reset(task_text=(prompt,))
         streaming_next_visual_outputs = None
@@ -415,7 +464,7 @@ def _run_one_loaded_rollout(
         if use_lingbot_streaming_vae:
             pipeline.visual_tower.reset_runtime_state()
 
-        while env.env.timestep < args.max_timestep and not done:
+        while env.env.timestep < args.max_timestep and not done and not terminal:
             if args.max_chunks is not None and chunk_count >= args.max_chunks:
                 break
             if seed is not None:
@@ -477,9 +526,33 @@ def _run_one_loaded_rollout(
                         "frontend_path": frontend_path,
                     },
                 )
+                infer_context = mot_viz._build_infer_context(
+                    prompt,
+                    action_device=resources.action_device,
+                    model_obs_window=model_obs_window,
+                    config=config,
+                    runtime_device=resources.runtime_device,
+                    mot_inference_window_size=args.mot_inference_window_size,
+                    mot_action_only_rollout=bool(args.mot_action_only_rollout),
+                    mot_generalist_rollout_mode=None,
+                )
+                pre_infer_policy_state = (
+                    None
+                    if session.policy_state is None
+                    else copy.deepcopy(session.policy_state)
+                )
                 infer_output = pipeline._forward_infer_with_visual_outputs(
                     visual_outputs,
-                    context=mot_viz._build_infer_context(
+                    context=infer_context,
+                    infer_state=None if args.reset_policy_state_each_chunk else session.policy_state,
+                )
+                route_predicted_latents = mot_viz._extract_predicted_latents(infer_output)
+                if args.mot_gjd_action_route == "joint_video_then_idm":
+                    if not isinstance(route_predicted_latents, torch.Tensor) or int(route_predicted_latents.shape[2]) <= 0:
+                        raise RuntimeError(
+                            "joint_video_then_idm route requires joint rollout to produce a non-empty predicted video chunk."
+                        )
+                    idm_context = mot_viz._build_infer_context(
                         prompt,
                         action_device=resources.action_device,
                         model_obs_window=model_obs_window,
@@ -487,10 +560,20 @@ def _run_one_loaded_rollout(
                         runtime_device=resources.runtime_device,
                         mot_inference_window_size=args.mot_inference_window_size,
                         mot_rollout_frame_chunk_size=args.mot_rollout_frame_chunk_size,
-                        mot_action_only_rollout=bool(args.mot_action_only_rollout),
-                    ),
-                    infer_state=None if args.reset_policy_state_each_chunk else session.policy_state,
-                )
+                        mot_action_only_rollout=False,
+                        mot_generalist_rollout_mode=None,
+                    )
+                    idm_context.extra["action_conditioning_mode"] = "video_conditioned_action"
+                    idm_context.extra["mot_generalist_rollout_mode"] = "video_conditioned_action"
+                    idm_context.extra["mot_video_condition_latents"] = route_predicted_latents.detach().to(
+                        device=resources.runtime_device,
+                        dtype=route_predicted_latents.dtype,
+                    )
+                    infer_output = pipeline._forward_infer_with_visual_outputs(
+                        visual_outputs,
+                        context=idm_context,
+                        infer_state=None if args.reset_policy_state_each_chunk else pre_infer_policy_state,
+                    )
                 mot_viz._print_log(
                     "stage",
                     {
@@ -499,6 +582,7 @@ def _run_one_loaded_rollout(
                         "episode_idx": int(episode_idx),
                         "chunk_index": int(chunk_count),
                         "env_timestep": int(env.env.timestep),
+                        "mot_gjd_action_route": str(args.mot_gjd_action_route),
                     },
                 )
             session = runner.reset(
@@ -532,9 +616,9 @@ def _run_one_loaded_rollout(
                 action_per_frame=action_per_frame,
             )
             frame_actions = actions.reshape(frame_chunk_size, action_per_frame, actions.shape[-1])
-            predicted_latents = infer_output.decoder_output.aux.get("predicted_latents")
-            if not isinstance(predicted_latents, torch.Tensor):
-                predicted_latents = infer_output.policy_output.aux.get("predicted_latents")
+            predicted_latents = mot_viz._extract_predicted_latents(infer_output)
+            if args.mot_gjd_action_route == "joint_video_then_idm" and isinstance(route_predicted_latents, torch.Tensor):
+                predicted_latents = route_predicted_latents
             if not args.skip_comparison_video and isinstance(predicted_latents, torch.Tensor):
                 mot_viz._append_predicted_latent_chunk(
                     predicted_latent_chunks,
@@ -558,6 +642,7 @@ def _run_one_loaded_rollout(
                 "rollout_frame_chunk_size": int(frame_chunk_size),
                 "execute_frame_chunk_size": int(execute_action_steps // action_per_frame),
                 "predicted_latents_shape": None if not isinstance(predicted_latents, torch.Tensor) else list(predicted_latents.shape),
+                "mot_gjd_action_route": str(args.mot_gjd_action_route),
                 "first_action_preview": [float(v) for v in actions[0].tolist()],
                 "policy_debug": mot_viz._summarize_policy_debug(infer_output.policy_output.aux),
             }
@@ -581,10 +666,14 @@ def _run_one_loaded_rollout(
                     absolute_action_index = frame_group * action_per_frame + action_offset
                     if absolute_action_index >= max_action_index:
                         break
+                    if _raw_env_done(env) or env.env.timestep >= args.max_timestep:
+                        terminal = True
+                        break
                     control_action = np.clip(action.astype(np.float32, copy=False), -1.0, 1.0)
                     executed_control_actions.append(np.array(control_action, copy=True))
                     action_trace.append(np.array(control_action, copy=True))
-                    obs, _, done, _ = env.step(control_action)
+                    obs, _, step_success, _ = env.step(control_action)
+                    done = bool(done or step_success)
                     executed_actions += 1
                     extracted = mot_viz._extract_obs(obs)
                     extracted_record = {key: np.array(value, copy=True) for key, value in extracted.items()}
@@ -592,13 +681,15 @@ def _run_one_loaded_rollout(
                     frame_window.append({key: np.array(value, copy=True) for key, value in extracted_record.items()})
                     executed_obs_frames.append({key: np.array(value, copy=True) for key, value in extracted_record.items()})
                     real_future_frames.append({key: np.array(value, copy=True) for key, value in extracted_record.items()})
-                    if done or env.env.timestep >= args.max_timestep:
+                    terminal = bool(done or _raw_env_done(env) or env.env.timestep >= args.max_timestep)
+                    if terminal:
                         break
-                if done or env.env.timestep >= args.max_timestep:
+                if terminal:
                     break
                 next_frame_group_first_action = (frame_group + 1) * action_per_frame
                 if next_frame_group_first_action >= max_action_index:
                     break
+            terminal = bool(done or _raw_env_done(env) or env.env.timestep >= args.max_timestep)
 
             chunk_result_log = {
                 "task_id": int(task_id),
@@ -612,7 +703,7 @@ def _run_one_loaded_rollout(
                 "rollout_frame_chunk_size": int(frame_chunk_size),
                 "execute_frame_chunk_size": int(execute_action_steps // action_per_frame),
                 "start_frame_group": int(start_frame_group),
-                "done_after_chunk": bool(done),
+                "done_after_chunk": bool(terminal),
                 "success_after_chunk": bool(done),
             }
             mot_viz._print_log(f"task_{task_id}_episode_{episode_idx}_chunk_{chunk_count}", chunk_result_log)
@@ -627,7 +718,7 @@ def _run_one_loaded_rollout(
             if (
                 use_lingbot_streaming_vae
                 and executed_obs_frames
-                and not done
+                and not terminal
                 and env.env.timestep < args.max_timestep
             ):
                 streaming_views = mot_viz._obs_list_to_views(executed_obs_frames, device=resources.frontend_device)
@@ -660,7 +751,7 @@ def _run_one_loaded_rollout(
             if (
                 (executed_obs_frames if use_lingbot_streaming_vae else real_future_frames)
                 and warmup_action_history is not None
-                and not done
+                and not terminal
                 and env.env.timestep < args.max_timestep
                 and "mot_packed_history_debug" in infer_output.policy_output.aux
             ):
@@ -729,6 +820,7 @@ def _run_one_loaded_rollout(
             "prompt": prompt,
             "episode_idx": episode_idx,
             "success": bool(done),
+            "terminal": bool(terminal),
             "chunk_count": chunk_count,
             "env_timestep": int(env.env.timestep),
             "seed": seed,
@@ -747,6 +839,7 @@ def _run_one_loaded_rollout(
             ),
             "action_count": len(action_trace),
             "checkpoint_file": str(resources.checkpoint_path.resolve()),
+            "mot_gjd_action_route": str(args.mot_gjd_action_route),
         }
         summary_path = output_path.with_suffix(".json")
         action_trace_path = output_path.with_name(f"{output_path.stem}_actions.jsonl")
@@ -772,6 +865,12 @@ def _run_one_loaded_rollout(
     finally:
         if close_env_after_rollout:
             env.close()
+
+
+def _raw_env_done(env: object) -> bool:
+    """Return robosuite's terminal flag behind LIBERO's success-only wrapper."""
+    raw_env = getattr(env, "env", env)
+    return bool(getattr(raw_env, "done", False))
 
 
 def _resolve_task(resources: SimpleNamespace, benchmark_name: str, task_id: int):
@@ -884,6 +983,16 @@ def _resolve_rollout_seed(args: argparse.Namespace, *, episode_idx: int) -> int 
     if args.seed is None:
         return None
     return int(args.seed)
+
+
+def _resolve_rollout_seed_specs(args: argparse.Namespace) -> list[tuple[str, int | None]]:
+    base_suffix = str(args.suffix)
+    if args.seeds is None:
+        return [(base_suffix, None)]
+    seeds = _parse_int_ranges(args.seeds, label="seeds")
+    if not seeds:
+        raise ValueError("--seeds must resolve to at least one seed.")
+    return [(f"{base_suffix}_seed{int(seed)}", int(seed)) for seed in seeds]
 
 
 if __name__ == "__main__":

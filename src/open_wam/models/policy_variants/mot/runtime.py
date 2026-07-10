@@ -1269,6 +1269,8 @@ def forward_mot_packed_coupling_denoise(
     prefer_flex_attention: bool = True,
     video_cross_attention_mask: torch.Tensor | None = None,
     video_hidden_context: torch.Tensor | None = None,
+    attention_diagnostics: list[dict[str, object]] | None = None,
+    attention_diagnostic_context: dict[str, object] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Run M5's native four-stream packed coupling forward.
 
@@ -1486,20 +1488,24 @@ def forward_mot_packed_coupling_denoise(
             action_cross_attention_mask=packed_action_pre.cross_attention_mask,
             block_mask=profile_block_mask,
             flex_kernel_options=flex_kernel_options,
+            attention_diagnostics=attention_diagnostics,
+            attention_diagnostic_context=attention_diagnostic_context,
         )
-        for packed_block in packed_block_stack.packed_blocks:
+        for block_index, packed_block in enumerate(packed_block_stack.packed_blocks):
             if checkpoint_active:
                 video_hidden_states, action_hidden_states = torch.utils.checkpoint.checkpoint(
                     packed_block,
                     video_hidden_states,
                     action_hidden_states,
                     use_reentrant=False,
+                    block_index=block_index,
                     **kwargs,
                 )
             else:
                 video_hidden_states, action_hidden_states = packed_block(
                     video_hidden_states,
                     action_hidden_states,
+                    block_index=block_index,
                     **kwargs,
                 )
     else:

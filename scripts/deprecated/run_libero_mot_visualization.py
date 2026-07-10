@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -70,6 +71,12 @@ LIVE_SIM_MOT_GENERALIST_ROLLOUT_MODES = frozenset(
         "vanilla_joint_rollout",
     }
 )
+MOT_GJD_ACTION_ROUTES = frozenset(
+    {
+        "joint",
+        "joint_video_then_idm",
+    }
+)
 OFFLINE_DIAGNOSTIC_MOT_GENERALIST_ROLLOUT_MODES = frozenset(
     {
         "clean_action_feedback",
@@ -80,6 +87,12 @@ OFFLINE_DIAGNOSTIC_MOT_GENERALIST_ROLLOUT_MODES = frozenset(
         "idm",
     }
 )
+
+
+def _raw_env_done(env: object) -> bool:
+    """Return robosuite's terminal flag behind LIBERO's success-only wrapper."""
+    raw_env = getattr(env, "env", env)
+    return bool(getattr(raw_env, "done", False))
 
 
 def main() -> None:
@@ -182,6 +195,18 @@ def main() -> None:
             "Live sim rollout supports only joint/vanilla modes; FDM/IDM and "
             "clean-action diagnostic modes require offline GT action/video tensors. "
             "`--mot-action-only-rollout` is not an IDM substitute."
+        ),
+    )
+    parser.add_argument(
+        "--mot-gjd-action-route",
+        choices=sorted(MOT_GJD_ACTION_ROUTES),
+        default="joint",
+        help=(
+            "Diagnostic M5 GJD live-sim action route. `joint` is the maintained "
+            "normal rollout. `joint_video_then_idm` first generates the current "
+            "video chunk with joint denoising, then reruns IDM from the same "
+            "pre-step state using only that generated video as clean condition "
+            "and executes the IDM action chunk."
         ),
     )
     parser.add_argument(
@@ -393,6 +418,7 @@ def main() -> None:
         mot_rollout_frame_chunk_size=args.mot_rollout_frame_chunk_size,
         mot_action_only_rollout=bool(args.mot_action_only_rollout),
         mot_generalist_rollout_mode=args.mot_generalist_rollout_mode,
+        mot_gjd_action_route=args.mot_gjd_action_route,
     )
     component_report["mot_inference_backend"] = mot_inference_backend
     component_report["checkpoint_file"] = str(checkpoint_path.resolve())
@@ -449,6 +475,7 @@ def main() -> None:
         action_trace: list[np.ndarray] = []
         chunk_logs: list[dict[str, object]] = []
         done = False
+        terminal = False
         chunk_count = 0
         session = runner.reset(task_text=(prompt,))
         streaming_next_visual_outputs = None
@@ -456,7 +483,7 @@ def main() -> None:
         if use_lingbot_streaming_vae:
             pipeline.visual_tower.reset_runtime_state()
 
-        while env.env.timestep < args.max_timestep and not done:
+        while env.env.timestep < args.max_timestep and not done and not terminal:
             if args.max_chunks is not None and chunk_count >= args.max_chunks:
                 break
 
@@ -515,9 +542,39 @@ def main() -> None:
                         "frontend_path": frontend_path,
                     },
                 )
+                infer_context = _build_infer_context(
+                    prompt,
+                    action_device=action_device,
+                    model_obs_window=model_obs_window,
+                    config=config,
+                    runtime_device=runtime_device,
+                    mot_inference_window_size=args.mot_inference_window_size,
+                    mot_rollout_frame_chunk_size=args.mot_rollout_frame_chunk_size,
+                    mot_action_only_rollout=bool(args.mot_action_only_rollout),
+                    mot_generalist_rollout_mode=args.mot_generalist_rollout_mode,
+                )
+                pre_infer_policy_state = (
+                    None
+                    if session.policy_state is None
+                    else copy.deepcopy(session.policy_state)
+                )
                 infer_output = pipeline._forward_infer_with_visual_outputs(
                     visual_outputs,
-                    context=_build_infer_context(
+                    context=infer_context,
+                    infer_state=None if args.reset_policy_state_each_chunk else session.policy_state,
+                )
+                route_predicted_latents = _extract_predicted_latents(infer_output)
+                if args.mot_gjd_action_route == "joint_video_then_idm":
+                    if args.mot_generalist_rollout_mode not in (None, "joint", "vanilla_joint_rollout"):
+                        raise ValueError(
+                            "`--mot-gjd-action-route joint_video_then_idm` must start from joint GJD rollout; "
+                            f"got --mot-generalist-rollout-mode={args.mot_generalist_rollout_mode!r}."
+                        )
+                    if not isinstance(route_predicted_latents, torch.Tensor) or int(route_predicted_latents.shape[2]) <= 0:
+                        raise RuntimeError(
+                            "joint_video_then_idm route requires joint rollout to produce a non-empty predicted video chunk."
+                        )
+                    idm_context = _build_infer_context(
                         prompt,
                         action_device=action_device,
                         model_obs_window=model_obs_window,
@@ -525,17 +582,27 @@ def main() -> None:
                         runtime_device=runtime_device,
                         mot_inference_window_size=args.mot_inference_window_size,
                         mot_rollout_frame_chunk_size=args.mot_rollout_frame_chunk_size,
-                        mot_action_only_rollout=bool(args.mot_action_only_rollout),
-                        mot_generalist_rollout_mode=args.mot_generalist_rollout_mode,
-                    ),
-                    infer_state=None if args.reset_policy_state_each_chunk else session.policy_state,
-                )
+                        mot_action_only_rollout=False,
+                        mot_generalist_rollout_mode=None,
+                    )
+                    idm_context.extra["action_conditioning_mode"] = "video_conditioned_action"
+                    idm_context.extra["mot_generalist_rollout_mode"] = "video_conditioned_action"
+                    idm_context.extra["mot_video_condition_latents"] = route_predicted_latents.detach().to(
+                        device=runtime_device,
+                        dtype=route_predicted_latents.dtype,
+                    )
+                    infer_output = pipeline._forward_infer_with_visual_outputs(
+                        visual_outputs,
+                        context=idm_context,
+                        infer_state=None if args.reset_policy_state_each_chunk else pre_infer_policy_state,
+                    )
                 _print_log(
                     "stage",
                     {
                         "name": "chunk_infer_done",
                         "chunk_index": int(chunk_count),
                         "env_timestep": int(env.env.timestep),
+                        "mot_gjd_action_route": str(args.mot_gjd_action_route),
                     },
                 )
             session = runner.reset(
@@ -569,9 +636,9 @@ def main() -> None:
                 action_per_frame=action_per_frame,
             )
             frame_actions = actions.reshape(frame_chunk_size, action_per_frame, actions.shape[-1])
-            predicted_latents = infer_output.decoder_output.aux.get("predicted_latents")
-            if not isinstance(predicted_latents, torch.Tensor):
-                predicted_latents = infer_output.policy_output.aux.get("predicted_latents")
+            predicted_latents = _extract_predicted_latents(infer_output)
+            if args.mot_gjd_action_route == "joint_video_then_idm" and isinstance(route_predicted_latents, torch.Tensor):
+                predicted_latents = route_predicted_latents
             if isinstance(predicted_latents, torch.Tensor):
                 _append_predicted_latent_chunk(
                     predicted_latent_chunks,
@@ -593,6 +660,7 @@ def main() -> None:
                 "rollout_frame_chunk_size": int(frame_chunk_size),
                 "execute_frame_chunk_size": int(execute_action_steps // action_per_frame),
                 "predicted_latents_shape": None if not isinstance(predicted_latents, torch.Tensor) else list(predicted_latents.shape),
+                "mot_gjd_action_route": str(args.mot_gjd_action_route),
                 "first_action_preview": [float(v) for v in actions[0].tolist()],
                 "policy_debug": _summarize_policy_debug(infer_output.policy_output.aux),
             }
@@ -616,10 +684,14 @@ def main() -> None:
                     absolute_action_index = frame_group * action_per_frame + action_offset
                     if absolute_action_index >= max_action_index:
                         break
+                    if _raw_env_done(env) or env.env.timestep >= args.max_timestep:
+                        terminal = True
+                        break
                     control_action = np.clip(action.astype(np.float32, copy=False), -1.0, 1.0)
                     executed_control_actions.append(np.array(control_action, copy=True))
                     action_trace.append(np.array(control_action, copy=True))
-                    obs, _, done, _ = env.step(control_action)
+                    obs, _, step_success, _ = env.step(control_action)
+                    done = bool(done or step_success)
                     executed_actions += 1
                     extracted = _extract_obs(obs)
                     extracted_record = {key: np.array(value, copy=True) for key, value in extracted.items()}
@@ -630,13 +702,15 @@ def main() -> None:
                     # segment. Sparse keyframes collapse a 4-latent chunk to a
                     # single VAE latent and shift all subsequent history ids.
                     real_future_frames.append({key: np.array(value, copy=True) for key, value in extracted_record.items()})
-                    if done or env.env.timestep >= args.max_timestep:
+                    terminal = bool(done or _raw_env_done(env) or env.env.timestep >= args.max_timestep)
+                    if terminal:
                         break
-                if done or env.env.timestep >= args.max_timestep:
+                if terminal:
                     break
                 next_frame_group_first_action = (frame_group + 1) * action_per_frame
                 if next_frame_group_first_action >= max_action_index:
                     break
+            terminal = bool(done or _raw_env_done(env) or env.env.timestep >= args.max_timestep)
 
             chunk_result_log = {
                 "chunk_index": chunk_count,
@@ -648,7 +722,7 @@ def main() -> None:
                 "rollout_frame_chunk_size": int(frame_chunk_size),
                 "execute_frame_chunk_size": int(execute_action_steps // action_per_frame),
                 "start_frame_group": int(start_frame_group),
-                "done_after_chunk": bool(done),
+                "done_after_chunk": bool(terminal),
                 "success_after_chunk": bool(done),
             }
             _print_log(f"chunk_{chunk_count}", chunk_result_log)
@@ -663,7 +737,7 @@ def main() -> None:
             if (
                 use_lingbot_streaming_vae
                 and executed_obs_frames
-                and not done
+                and not terminal
                 and env.env.timestep < args.max_timestep
             ):
                 streaming_views = _obs_list_to_views(executed_obs_frames, device=frontend_device)
@@ -694,7 +768,7 @@ def main() -> None:
             if (
                 (executed_obs_frames if use_lingbot_streaming_vae else real_future_frames)
                 and warmup_action_history is not None
-                and not done
+                and not terminal
                 and env.env.timestep < args.max_timestep
                 and "mot_packed_history_debug" in infer_output.policy_output.aux
             ):
@@ -776,6 +850,7 @@ def main() -> None:
             "prompt": prompt,
             "episode_idx": args.episode_idx,
             "success": bool(done),
+            "terminal": bool(terminal),
             "chunk_count": chunk_count,
             "env_timestep": int(env.env.timestep),
             "seed": args.seed,
@@ -794,6 +869,7 @@ def main() -> None:
             ),
             "action_count": len(action_trace),
             "checkpoint_file": str(checkpoint_path.resolve()),
+            "mot_gjd_action_route": str(args.mot_gjd_action_route),
         }
         summary_path = output_path.with_suffix(".json")
         action_trace_path = output_path.with_name(f"{output_path.stem}_actions.jsonl")
@@ -901,9 +977,9 @@ def _build_infer_context(
     config,
     runtime_device: torch.device,
     mot_inference_window_size: int | None,
-    mot_rollout_frame_chunk_size: int | None,
     mot_action_only_rollout: bool,
     mot_generalist_rollout_mode: str | None,
+    mot_rollout_frame_chunk_size: int | None = None,
 ):
     extra: dict[str, object] = {"task_text": (prompt,), "action_device": str(action_device)}
     if mot_inference_window_size is not None:
@@ -1620,6 +1696,13 @@ def _decode_latent_video_chunks(
     )
 
 
+def _extract_predicted_latents(infer_output) -> torch.Tensor | None:
+    predicted_latents = infer_output.decoder_output.aux.get("predicted_latents")
+    if not isinstance(predicted_latents, torch.Tensor):
+        predicted_latents = infer_output.policy_output.aux.get("predicted_latents")
+    return predicted_latents if isinstance(predicted_latents, torch.Tensor) else None
+
+
 def _decode_latent_video(
     pipeline,
     latents: torch.Tensor,
@@ -1676,6 +1759,7 @@ def _build_component_report(
     mot_rollout_frame_chunk_size: int | None,
     mot_action_only_rollout: bool,
     mot_generalist_rollout_mode: str | None,
+    mot_gjd_action_route: str,
 ) -> dict[str, object]:
     backbone = config.backbone
     policy_variant = pipeline.policy_variant
@@ -1695,6 +1779,7 @@ def _build_component_report(
         ),
         "mot_action_only_rollout": bool(mot_action_only_rollout),
         "mot_generalist_rollout_mode": mot_generalist_rollout_mode,
+        "mot_gjd_action_route": str(mot_gjd_action_route),
         "config_name": config.name,
         "policy_variant_class": policy_variant.__class__.__name__,
         "runtime_mode": str(policy_variant.config.runtime_mode),

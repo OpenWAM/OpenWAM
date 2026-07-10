@@ -162,6 +162,7 @@ class LingbotReferenceAssets:
     streaming_vae_by_key: dict[str, WanVAEStreamingWrapper] = field(default_factory=dict)
     text_encoder: Any | None = None
     tokenizer: Any | None = None
+    text_embedding_cache: dict[tuple[tuple[str, ...], str, str, int], torch.Tensor] = field(default_factory=dict)
 
     @classmethod
     def maybe_load(cls, config: LingbotCompatibleVideoBackboneConfig) -> "LingbotReferenceAssets":
@@ -271,9 +272,19 @@ class LingbotReferenceAssets:
             return None
         if not prompts:
             return None
+        normalized_prompts = tuple(str(prompt) for prompt in prompts)
+        cache_key = (
+            normalized_prompts,
+            str(torch.device(device)),
+            str(dtype),
+            int(self.config.max_text_tokens),
+        )
+        cached = self.text_embedding_cache.get(cache_key)
+        if cached is not None:
+            return cached
         self._ensure_text_encoder_runtime_device(device)
         text_inputs = self.tokenizer(
-            prompts,
+            normalized_prompts,
             padding="max_length",
             max_length=self.config.max_text_tokens,
             truncation=True,
@@ -291,7 +302,7 @@ class LingbotReferenceAssets:
                 attention_mask.to(encoder_device),
             ).last_hidden_state
         prompt_embeds = prompt_embeds.to(device=device, dtype=dtype)
-        return torch.stack(
+        encoded = torch.stack(
             [
                 torch.cat(
                     [embedding[:seq_len], embedding.new_zeros(self.config.max_text_tokens - seq_len, embedding.shape[1])],
@@ -301,6 +312,8 @@ class LingbotReferenceAssets:
             ],
             dim=0,
         )
+        self.text_embedding_cache[cache_key] = encoded
+        return encoded
 
     def encode_video(
         self,
