@@ -19,6 +19,18 @@ from open_wam.utils.config_loader import (
 EXPERIMENT_CONFIG_ROOT = Path(__file__).resolve().parents[3] / "configs" / "experiments"
 
 
+def _default_resume_path(checkpoint_root: Path) -> Path:
+    """Prefer exact training-state resumes, with model-only as a fallback for legacy checkpoints."""
+
+    full_state = checkpoint_root / "full_training_state.pt"
+    if full_state.is_file():
+        return full_state
+    model_state = checkpoint_root / "model_state.pt"
+    if model_state.is_file():
+        return model_state
+    return full_state
+
+
 @dataclass(frozen=True)
 class TrainCliOverrides:
     """Resolved CLI-level overrides for one training launch."""
@@ -57,7 +69,10 @@ def build_train_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--checkpoint-root",
         type=str,
-        help="Warm-start checkpoint_step_* directory; infers model_state.pt and transformer/ when not overridden.",
+        help=(
+            "Warm-start checkpoint_step_* directory; infers full_training_state.pt "
+            "when available, falling back to model_state.pt only when no full state exists."
+        ),
     )
     parser.add_argument("--resume-from", type=str)
     parser.add_argument("--run-name", type=str)
@@ -158,7 +173,7 @@ def apply_train_cli_overrides(
     if overrides.checkpoint_root is not None:
         checkpoint_root = Path(overrides.checkpoint_root).expanduser()
         if overrides.resume_from is None:
-            update_map["trainer.resume_from"] = str(checkpoint_root / "model_state.pt")
+            update_map["trainer.resume_from"] = str(_default_resume_path(checkpoint_root))
         if overrides.transformer_subdir is None:
             update_map["backbone.transformer_subdir"] = str(checkpoint_root / "transformer")
     if overrides.resume_from is not None:

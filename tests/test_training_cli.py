@@ -79,7 +79,7 @@ def test_cli_overrides_map_save_root_and_env_defaults(tmp_path: Path) -> None:
     assert config.trainer.checkpoint_dir == str(tmp_path / "heng_style_run" / "checkpoints")
     assert config.data.local_root == "/datasets/local_libero"
     assert config.data.latent_root == "/datasets/local_libero/latents"
-    assert config.trainer.resume_from == "/checkpoints/checkpoint_step_400/model_state.pt"
+    assert config.trainer.resume_from == "/checkpoints/checkpoint_step_400/full_training_state.pt"
     assert config.backbone.transformer_subdir == "/checkpoints/checkpoint_step_400/transformer"
     assert config.trainer.devices == 6
     assert config.trainer.runtime == TrainerRuntimeName.COMPOSABLE
@@ -94,6 +94,39 @@ def test_cli_overrides_map_save_root_and_env_defaults(tmp_path: Path) -> None:
     assert config.trainer.wandb_project == "lingbot-va-posttrain-libero"
     assert config.trainer.wandb_entity == "codefishy-stanford-university"
     assert config.trainer.wandb_mode == WandBMode.OFFLINE
+
+
+def test_checkpoint_root_prefers_full_training_state(tmp_path: Path) -> None:
+    checkpoint_root = tmp_path / "checkpoint_step_400"
+    checkpoint_root.mkdir()
+    (checkpoint_root / "model_state.pt").write_bytes(b"model")
+    (checkpoint_root / "full_training_state.pt").write_bytes(b"full")
+
+    config = load_training_cli_config(
+        TrainCliOverrides(
+            config_name="parallel_stream_robotwin_smoke",
+            checkpoint_root=str(checkpoint_root),
+        ),
+        env={},
+    )
+
+    assert config.trainer.resume_from == str(checkpoint_root / "full_training_state.pt")
+
+
+def test_checkpoint_root_falls_back_to_model_state_for_legacy_checkpoint(tmp_path: Path) -> None:
+    checkpoint_root = tmp_path / "checkpoint_step_400"
+    checkpoint_root.mkdir()
+    (checkpoint_root / "model_state.pt").write_bytes(b"model")
+
+    config = load_training_cli_config(
+        TrainCliOverrides(
+            config_name="parallel_stream_robotwin_smoke",
+            checkpoint_root=str(checkpoint_root),
+        ),
+        env={},
+    )
+
+    assert config.trainer.resume_from == str(checkpoint_root / "model_state.pt")
 
 
 def test_cli_overrides_apply_dependent_sample_construction_fields_together() -> None:

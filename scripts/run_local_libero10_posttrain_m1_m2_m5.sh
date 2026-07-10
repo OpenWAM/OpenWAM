@@ -28,6 +28,20 @@ CHECKPOINT_PRUNE_MIN_AGE_SECONDS="${CHECKPOINT_PRUNE_MIN_AGE_SECONDS:-900}"
 DATA_ROOT="${DATA_ROOT:-/data/lingbot_data_exp/libero_heng/libero_10}"
 EMPTY_TEXT_EMB="${EMPTY_TEXT_EMB:-/data/lingbot_data_exp/robotwin-clean-and-aug-lerobot/empty_emb.pt}"
 LINGBOT_BASE="${LINGBOT_BASE:-/data/lingbot_data_exp/pretrain_models/lingbot-va-base}"
+
+default_resume_from() {
+  local checkpoint_root="$1"
+  if [[ -s "${checkpoint_root}/full_training_state.pt" ]]; then
+    printf '%s\n' "${checkpoint_root}/full_training_state.pt"
+    return 0
+  fi
+  if [[ -s "${checkpoint_root}/model_state.pt" ]]; then
+    printf '%s\n' "${checkpoint_root}/model_state.pt"
+    return 0
+  fi
+  printf '%s\n' "${checkpoint_root}/full_training_state.pt"
+}
+
 M1_CKPT="${M1_CKPT:-/data/openwam_exp/runs/parallel_stream_libero_lingbot_exact_heng_compatible/checkpoints/checkpoint_step_400}"
 M2_CKPT="${M2_CKPT:-/data/openwam_exp/runs/parallel_stream_libero_lingbot_joint_denoise_heng_compatible/checkpoints/checkpoint_step_600}"
 M5_CKPT="${M5_CKPT:-/data/openwam_exp/runs/method5_mot_full_segment_non_joint_action_only_libero/checkpoints/checkpoint_step_2800}"
@@ -37,11 +51,11 @@ M2_RESUME_FROM_EXPLICIT="${M2_RESUME_FROM+x}"
 M2_TRANSFORMER_SUBDIR_EXPLICIT="${M2_TRANSFORMER_SUBDIR+x}"
 M5_RESUME_FROM_EXPLICIT="${M5_RESUME_FROM+x}"
 M5_TRANSFORMER_SUBDIR_EXPLICIT="${M5_TRANSFORMER_SUBDIR+x}"
-M1_RESUME_FROM="${M1_RESUME_FROM:-${M1_CKPT}/model_state.pt}"
+M1_RESUME_FROM="${M1_RESUME_FROM:-$(default_resume_from "${M1_CKPT}")}"
 M1_TRANSFORMER_SUBDIR="${M1_TRANSFORMER_SUBDIR:-${M1_CKPT}/transformer}"
-M2_RESUME_FROM="${M2_RESUME_FROM:-${M2_CKPT}/model_state.pt}"
+M2_RESUME_FROM="${M2_RESUME_FROM:-$(default_resume_from "${M2_CKPT}")}"
 M2_TRANSFORMER_SUBDIR="${M2_TRANSFORMER_SUBDIR:-${M2_CKPT}/transformer}"
-M5_RESUME_FROM="${M5_RESUME_FROM:-${M5_CKPT}/model_state.pt}"
+M5_RESUME_FROM="${M5_RESUME_FROM:-$(default_resume_from "${M5_CKPT}")}"
 M5_TRANSFORMER_SUBDIR="${M5_TRANSFORMER_SUBDIR:-${M5_CKPT}/transformer}"
 
 M1_SAVE_ROOT="${M1_SAVE_ROOT:-${RUN_ROOT}/m1_exact_libero10_from_all_subsets_step400}"
@@ -373,7 +387,6 @@ preflight_case() {
   case "${case_key}" in
     m1)
       require_dir "${M1_CKPT}" "M1 checkpoint root" || ok=1
-      require_file "${M1_CKPT}/model_state.pt" "M1 model_state.pt" || ok=1
       require_dir "${M1_CKPT}/transformer" "M1 transformer export" || ok=1
       require_file "${M1_CKPT}/transformer/config.json" "M1 transformer config" || ok=1
       require_file "${M1_RESUME_FROM}" "M1 resume checkpoint" || ok=1
@@ -390,7 +403,6 @@ preflight_case() {
       ;;
     m2)
       require_dir "${M2_CKPT}" "M2 checkpoint root" || ok=1
-      require_file "${M2_CKPT}/model_state.pt" "M2 model_state.pt" || ok=1
       require_dir "${M2_CKPT}/transformer" "M2 transformer export" || ok=1
       require_file "${M2_CKPT}/transformer/config.json" "M2 transformer config" || ok=1
       require_file "${M2_RESUME_FROM}" "M2 resume checkpoint" || ok=1
@@ -407,7 +419,6 @@ preflight_case() {
       ;;
     m5)
       require_dir "${M5_CKPT}" "M5 checkpoint root" || ok=1
-      require_file "${M5_CKPT}/model_state.pt" "M5 model_state.pt" || ok=1
       require_dir "${M5_CKPT}/transformer" "M5 transformer export" || ok=1
       require_file "${M5_CKPT}/transformer/config.json" "M5 transformer config" || ok=1
       require_file "${M5_RESUME_FROM}" "M5 resume checkpoint" || ok=1
