@@ -26,6 +26,12 @@ from .action_mapping import (
     validate_action_mapping_preflight,
 )
 from .contracts import WAMBatch, WAMSample, collate_wam_samples, move_wam_batch_to_device
+from .conditional_dynamics_layout import (
+    GENERALIST_CONDITIONAL_CONTRACT_TARGET_ONLY_T0_PLUS_FUTURE,
+    GENERALIST_CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
+    GENERALIST_GJD_CHUNK_CONTRACT_T0_SINGLETON,
+    project_real_conditional_sample_to_target_only,
+)
 from .counterfactual_actions import (
     ACTION_BRANCH_SPECS,
     BRANCH_PRESETS,
@@ -173,6 +179,9 @@ __all__ = [
     "EpochOrderDistributedSampler",
     "GeneralistDynamicsMixtureDataset",
     "GeneralistTrainingSampleMetadata",
+    "GENERALIST_CONDITIONAL_CONTRACT_TARGET_ONLY_T0_PLUS_FUTURE",
+    "GENERALIST_CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY",
+    "GENERALIST_GJD_CHUNK_CONTRACT_T0_SINGLETON",
     "ActionMappingResult",
     "build_absolute_joint_position_targets",
     "denormalize_joint_positions",
@@ -257,6 +266,7 @@ __all__ = [
     "normalize_replay_status_policy",
     "normalize_action_targets",
     "normalize_joint_positions",
+    "project_real_conditional_sample_to_target_only",
     "move_latent_wam_batch_to_device",
     "move_wam_batch_to_device",
     "register_latent_dataset_builder",

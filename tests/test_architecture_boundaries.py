@@ -183,6 +183,24 @@ def test_row_action_target_transform_has_one_owner() -> None:
         assert call.func.id == "build_row_action_targets"
 
 
+def test_conditional_dynamics_layout_has_one_owner() -> None:
+    layout_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "data" / "conditional_dynamics_layout.py"
+    )
+    mixture_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "data" / "generalist_dynamics.py"
+    )
+
+    assert "project_real_conditional_sample_to_target_only" in layout_definitions
+    assert {
+        "_project_real_conditional_sample_to_target_only",
+        "_target_only_shifted_actions",
+        "_target_only_prefix_state",
+        "_target_only_conditional_metadata",
+        "_real_conditional_target_boundary",
+    }.isdisjoint(mixture_definitions)
+
+
 def test_sequence_contract_semantics_have_one_config_owner() -> None:
     contract_functions = {
         "apply_parallel_sequence_contract",
