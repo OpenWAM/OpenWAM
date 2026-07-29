@@ -71,6 +71,7 @@ def main() -> None:
     parser.add_argument("--calvin-dataset-root", type=str, default=None)
     parser.add_argument("--calvin-task-text", type=str, default=None)
     parser.add_argument("--show-gui", action="store_true")
+    parser.add_argument("--extension", action="append", default=[])
     args = parser.parse_args()
 
     if args.max_steps <= 0:
@@ -80,6 +81,9 @@ def main() -> None:
     if args.video_fps <= 0:
         raise SystemExit("--video-fps must be positive.")
 
+    from open_wam.extensions import load_extension_modules
+
+    load_extension_modules(args.extension)
     seed_everywhere(args.seed)
     config_path = _resolve_repo_path(args.config)
     config = load_experiment_config(config_path)

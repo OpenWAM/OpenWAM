@@ -16,6 +16,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--extension", action="append", default=[])
     return parser
 
 

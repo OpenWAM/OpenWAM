@@ -29,6 +29,7 @@ from open_wam.data import (  # noqa: E402
     move_wam_batch_to_device,
     validate_action_mapping_preflight,
 )
+from open_wam.extensions import load_extension_modules  # noqa: E402
 from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch  # noqa: E402
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
 from open_wam.runtime import build_result_envelope  # noqa: E402
@@ -59,6 +60,7 @@ def main() -> None:
     )
     parser.add_argument("--output-json", type=str, default=None)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--extension", action="append", default=[])
     args = parser.parse_args()
 
     if args.max_batches <= 0:
@@ -73,6 +75,7 @@ def main() -> None:
     if device.type == "cuda" and not torch.cuda.is_available():
         raise SystemExit(f"Requested CUDA device {device}, but CUDA is not available.")
 
+    load_extension_modules(args.extension)
     config_path = Path(args.config)
     if not config_path.is_absolute():
         config_path = (REPO_ROOT / config_path).resolve()

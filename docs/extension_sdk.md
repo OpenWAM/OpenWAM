@@ -1,10 +1,45 @@
 # Extension SDK
 
-Open-WAM extension points should be role-based, not method-name-based.
+Open-WAM extensions are ordinary installed Python modules. They register
+role-based components without modifying the Open-WAM source tree.
+
+## Loading Extensions
+
+Every maintained runtime command accepts repeatable extension specs:
+
+```bash
+open-wam-train \
+  --extension acme_open_wam \
+  --extension research_runtime.install:register \
+  --cfg experiment.yaml
+```
+
+An extension spec is `module[:hook]`; the default hook is
+`register_open_wam`. Hooks run once per process and in command-line order.
+Import or registration failures stop startup before configuration is
+constructed.
+
+```python
+from open_wam.data import register_dataset_adapter
+
+from .dataset import build_train_val
+
+
+def register_open_wam() -> None:
+    register_dataset_adapter(
+        "acme_robot",
+        raw_builder=build_train_val,
+        description="ACME robot demonstrations.",
+    )
+```
+
+The same `--extension` contract is available on `open-wam-eval`,
+`open-wam-sanity`, and `open-wam-sim-rollout`. The module must be installed in
+the active environment or otherwise importable on `PYTHONPATH`.
 
 ## Current Registries
 
-- dataset builders: `open_wam.data.register_dataset_builder`
+- dataset adapters: `open_wam.data.register_dataset_adapter`
 - policy variant builders: `open_wam.pipelines.POLICY_VARIANT_BUILDERS`
 - action decoder builders: `open_wam.pipelines.ACTION_DECODER_BUILDERS`
 
@@ -19,8 +54,22 @@ ExperimentConfig -> VariantPipeline -> VisualTower -> PolicyVariant -> ActionDec
 1. Implement a dataset adapter that returns `WAMSample`.
 2. Keep source-specific parsing inside the adapter.
 3. Build canonical RGB layout in the data layer.
-4. Register the builder with `register_dataset_builder(dataset_type, builder)`.
+4. Register raw and/or latent builders under one stable `dataset_type`.
 5. Add a focused adapter test and one config-loader smoke.
+
+Use `data.adapter_options` for source-specific, open-ended settings. Keep
+camera layout, action/state schema, sampling, and other shared semantics in
+their typed `data` fields.
+
+An adapter may expose:
+
+- `raw_builder`: returns raw-RGB `WAMSample` datasets
+- `latent_builder`: returns pre-encoded `LatentWAMSample` datasets
+- both builders under one key when a source supports both paths
+
+Registration rejects accidental replacement. Use a globally unique
+`dataset_type`; `replace=True` is reserved for intentional process-local
+overrides.
 
 ## Adding A Policy Variant
 
@@ -40,11 +89,16 @@ ExperimentConfig -> VariantPipeline -> VisualTower -> PolicyVariant -> ActionDec
 4. Add loss/output shape tests.
 5. Keep result schemas backward compatible when adding new outputs.
 
-## Compatibility Rule
+## Contract Rules
 
-New registry paths can become the default immediately, but old central factory
-branches, config names, and script commands should remain as compatibility
-shims until a later legacy-removal PR.
+- Registration hooks configure contracts; they must not start jobs or mutate
+  global training state.
+- Dataset parsing remains in data adapters.
+- Policy semantics remain in `PolicyVariant`.
+- Shared visual execution remains in `VisualTower`.
+- Final supervised outputs and losses remain in `ActionDecoder`.
+- Public finite choices are enum-backed; dataset names, row keys, paths, and
+  extension labels remain open strings.
 
 ## Cookbooks
 

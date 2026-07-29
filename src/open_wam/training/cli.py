@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 import open_wam.configs.enums as config_enums
 from open_wam.configs import ExperimentConfig
+from open_wam.extensions import load_extension_modules
 from open_wam.utils import load_experiment_config
 from open_wam.utils.config_overrides import apply_config_overrides, parse_override_assignments
 from open_wam.utils.config_loader import (
@@ -52,6 +53,7 @@ class TrainCliOverrides:
     wandb_project: str | None = None
     wandb_entity: str | None = None
     wandb_mode: str | None = None
+    extensions: tuple[str, ...] = ()
     overrides: tuple[str, ...] = ()
 
 
@@ -87,6 +89,12 @@ def build_train_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wandb-entity", type=str)
     parser.add_argument("--wandb-mode", type=str)
     parser.add_argument(
+        "--extension",
+        action="append",
+        default=[],
+        help="Load `package.module[:hook]` before parsing and constructing the experiment.",
+    )
+    parser.add_argument(
         "--set",
         dest="set_overrides",
         action="append",
@@ -117,6 +125,7 @@ def parse_train_cli(argv: list[str] | None = None) -> TrainCliOverrides:
         wandb_project=args.wandb_project,
         wandb_entity=args.wandb_entity,
         wandb_mode=args.wandb_mode,
+        extensions=tuple(args.extension),
         overrides=tuple(_normalize_override_tokens([*args.set_overrides, *extras])),
     )
 
@@ -140,6 +149,7 @@ def load_training_cli_config(
     *,
     env: Mapping[str, str] | None = None,
 ) -> ExperimentConfig:
+    load_extension_modules(overrides.extensions)
     config = load_experiment_config(resolve_experiment_config_path(overrides))
     return apply_train_cli_overrides(config, overrides=overrides, env=env)
 

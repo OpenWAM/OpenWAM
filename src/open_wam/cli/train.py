@@ -22,6 +22,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wandb-project", type=str)
     parser.add_argument("--wandb-entity", type=str)
     parser.add_argument("--wandb-mode", type=str)
+    parser.add_argument("--extension", action="append", default=[])
     parser.add_argument("--set", dest="set_overrides", action="append", default=[])
     return parser
 

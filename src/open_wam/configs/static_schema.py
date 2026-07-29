@@ -136,6 +136,8 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
         return
     if not data.get("dataset_type") and not data.get("dataset_name"):
         issues.error("data", "Expected `dataset_type` or `dataset_name`.")
+    if "adapter_options" in data and not isinstance(data["adapter_options"], Mapping):
+        issues.error("data.adapter_options", "Expected a mapping of dataset-adapter options.")
     _validate_enum(data, "latent_temporal_layout", LatentTemporalLayout, issues, "data")
     if data.get("latent_temporal_layout") == LatentTemporalLayout.EQUAL_BUCKET_LEGACY.value:
         issues.error(

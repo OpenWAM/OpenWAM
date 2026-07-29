@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+from typing import Any, Mapping
 
 from .enums import (
     AnchorPolicy,
@@ -796,6 +797,7 @@ class DataConfig:
         default_factory=GeneralistDynamicsMixtureConfig
     )
     latent_temporal_layout: LatentTemporalLayout = LatentTemporalLayout.WAN_CAUSAL_STRIDE4
+    adapter_options: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         coerce_fields(
@@ -817,6 +819,9 @@ class DataConfig:
                 "Use `wan_causal_stride4`, re-encode/rebuild affected metadata if needed, and do not train "
                 "or evaluate new runs with the legacy equal-bucket layout."
             )
+        if not isinstance(self.adapter_options, Mapping):
+            raise TypeError("`data.adapter_options` must be a mapping.")
+        object.__setattr__(self, "adapter_options", dict(self.adapter_options))
 
 
 @dataclass(frozen=True)

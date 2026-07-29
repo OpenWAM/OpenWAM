@@ -26,6 +26,16 @@ must remain callable until they have:
 
 ## Command Examples
 
+Installed extensions load before experiment construction. Repeat
+`--extension module[:hook]` when a config uses out-of-tree dataset, policy, or
+decoder registrations:
+
+```bash
+uv run --extra train open-wam-train \
+  --extension acme_open_wam \
+  --cfg configs/experiments/acme_joint.yaml
+```
+
 ```bash
 uv run open-wam-validate-config configs/examples/public_tiny_synthetic_contract.yaml
 ```

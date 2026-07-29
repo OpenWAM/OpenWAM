@@ -36,6 +36,7 @@ from open_wam.data import (
     move_wam_batch_to_device,
 )
 from open_wam.data.latent_temporal import observed_frame_ids_for_latent_segment
+from open_wam.extensions import load_extension_modules
 from open_wam.models.policy_variants import PolicyInferContext
 from open_wam.models.policy_variants.contracts import DecoderSequenceContext
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config
@@ -1044,8 +1045,10 @@ def main() -> None:
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--extension", action="append", default=[])
     args = parser.parse_args()
 
+    load_extension_modules(args.extension)
     request = resolve_evaluation_request(
         args.config,
         mode_override=args.mode,

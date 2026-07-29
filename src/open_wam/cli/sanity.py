@@ -19,6 +19,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--require-gpu", action="store_true")
     parser.add_argument("--output-json", type=str, default=None)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--extension", action="append", default=[])
     return parser
 
 

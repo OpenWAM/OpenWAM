@@ -2056,6 +2056,7 @@ def load_experiment_config(path: str | Path, *, checkpoint_runtime_compat: bool 
             data_raw.get("generalist_dynamics_mixture"),
             data_defaults.generalist_dynamics_mixture,
         ),
+        adapter_options=data_raw.get("adapter_options", data_defaults.adapter_options),
     )
     if data_config_cls is LeRobotConsortiumDataConfig:
         common_data_kwargs.update(

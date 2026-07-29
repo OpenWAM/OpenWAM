@@ -20,9 +20,28 @@ from open_wam.configs import (
     WandBMode,
 )
 from open_wam.training import TrainCliOverrides, load_training_cli_config, resolve_experiment_config_path
+from open_wam.training.cli import parse_train_cli
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_train_cli_accepts_ordered_extensions() -> None:
+    overrides = parse_train_cli(
+        [
+            "--config-name",
+            "parallel_stream_robotwin_smoke",
+            "--extension",
+            "acme_open_wam",
+            "--extension",
+            "research.runtime:install",
+        ]
+    )
+
+    assert overrides.extensions == (
+        "acme_open_wam",
+        "research.runtime:install",
+    )
 
 
 def test_resolve_experiment_config_path_from_config_name() -> None:
@@ -94,6 +113,24 @@ def test_cli_overrides_map_save_root_and_env_defaults(tmp_path: Path) -> None:
     assert config.trainer.wandb_project == "lingbot-va-posttrain-libero"
     assert config.trainer.wandb_entity == "codefishy-stanford-university"
     assert config.trainer.wandb_mode == WandBMode.OFFLINE
+
+
+def test_cli_overrides_support_nested_adapter_options() -> None:
+    config = load_training_cli_config(
+        TrainCliOverrides(
+            config_name="parallel_stream_robotwin_smoke",
+            overrides=(
+                "data.adapter_options.rgb-key=observation.images.front",
+                "data.adapter_options.decode.timestamp_tolerance_us=100",
+            ),
+        ),
+        env={},
+    )
+
+    assert config.data.adapter_options == {
+        "rgb-key": "observation.images.front",
+        "decode": {"timestamp_tolerance_us": 100},
+    }
 
 
 def test_checkpoint_root_prefers_full_training_state(tmp_path: Path) -> None:

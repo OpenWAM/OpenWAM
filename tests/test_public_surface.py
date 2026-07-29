@@ -95,7 +95,7 @@ def test_base_dependencies_stay_minimal_and_extras_are_explicit() -> None:
 def test_minimal_import_surfaces_do_not_import_torch_stack() -> None:
     code = (
         "import sys; "
-        "import open_wam, open_wam.configs, open_wam.runtime, open_wam.utils, open_wam.pipelines, open_wam.simulators; "
+        "import open_wam, open_wam.configs, open_wam.extensions, open_wam.runtime, open_wam.utils, open_wam.pipelines, open_wam.simulators; "
         "from open_wam.cli.train import build_arg_parser as train_parser; "
         "from open_wam.cli.eval import build_arg_parser as eval_parser; "
         "from open_wam.cli.sanity import build_arg_parser as sanity_parser; "
@@ -107,6 +107,30 @@ def test_minimal_import_surfaces_do_not_import_torch_stack() -> None:
         "assert 'diffusers' not in sys.modules"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+@pytest.mark.unit
+def test_runtime_entrypoints_accept_ordered_extensions() -> None:
+    from open_wam.cli.eval import build_arg_parser as eval_parser
+    from open_wam.cli.sanity import build_arg_parser as sanity_parser
+    from open_wam.cli.sim_rollout import build_arg_parser as sim_parser
+    from open_wam.cli.train import build_arg_parser as train_parser
+
+    extension_args = ["--extension", "acme.data", "--extension", "acme.runtime:install"]
+
+    assert train_parser().parse_args(
+        ["--config-name", "smoke", *extension_args]
+    ).extension == ["acme.data", "acme.runtime:install"]
+    assert eval_parser().parse_args(["--cfg", "eval.yaml", *extension_args]).extension == [
+        "acme.data",
+        "acme.runtime:install",
+    ]
+    assert sanity_parser().parse_args(
+        ["--cfg", "experiment.yaml", *extension_args]
+    ).extension == ["acme.data", "acme.runtime:install"]
+    assert sim_parser().parse_args(
+        ["--cfg", "experiment.yaml", "--benchmark", "calvin", *extension_args]
+    ).extension == ["acme.data", "acme.runtime:install"]
 
 
 @pytest.mark.unit

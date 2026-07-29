@@ -1,25 +1,26 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 
 from torch.utils.data import Dataset, Sampler
 
 from open_wam.configs import DataConfig
 
-from .contracts import WAMSample
 from .calvin_npz import build_calvin_npz_train_val_datasets
+from .contracts import WAMSample
 from .lerobot_consortium import build_lerobot_consortium_train_val_datasets
-from .libero_hdf5 import LiberoOfflineWindowDataset, build_libero_offline_train_val_episode_split
 from .lerobot_v2 import LeRobotV2WindowDataset, build_lerobot_train_val_episode_split
 from .lerobot_video import build_lerobot_v2_video_train_val_datasets
+from .libero_hdf5 import (
+    LiberoOfflineWindowDataset,
+    build_libero_offline_train_val_episode_split,
+)
 from .mixed_video import build_mixed_video_train_val_datasets
+from .registries import (
+    DATASET_ADAPTERS,
+    register_dataset_builder,
+)
 from .synthetic import SyntheticWindowDataset
-
-
-DatasetPairBuilder = Callable[[DataConfig], tuple[Dataset[WAMSample], Dataset[WAMSample]]]
-
-_DATASET_BUILDERS: dict[str, DatasetPairBuilder] = {}
 
 
 @dataclass(frozen=True)
@@ -30,28 +31,10 @@ class DatasetLoaderSpec:
     shuffle: bool
 
 
-def register_dataset_builder(dataset_type: str, builder: DatasetPairBuilder) -> None:
-    """Register one train/val dataset builder for a source type.
-
-    The registry is the extension point collaborators should use when adding a
-    new source. The Lightning datamodule depends only on `dataset_type` and does
-    not need source-specific conditionals once the builder is registered here.
-    """
-
-    _DATASET_BUILDERS[dataset_type] = builder
-
-
 def build_train_val_datasets(data_config: DataConfig) -> tuple[Dataset[WAMSample], Dataset[WAMSample]]:
     """Build train/val datasets from the config-defined source type."""
 
-    try:
-        builder = _DATASET_BUILDERS[data_config.dataset_type]
-    except KeyError as exc:
-        supported = ", ".join(sorted(_DATASET_BUILDERS))
-        raise ValueError(
-            f"Unsupported dataset_type '{data_config.dataset_type}'. "
-            f"Registered dataset types: {supported}"
-        ) from exc
+    builder = DATASET_ADAPTERS.require_raw_builder(data_config.dataset_type)
     return builder(data_config)
 
 

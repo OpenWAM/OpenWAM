@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import is_dataclass, replace
-from typing import Any, Mapping
+from typing import Any
 
 import yaml
 
@@ -20,7 +21,7 @@ def apply_config_overrides(config: ExperimentConfig, overrides: Mapping[str, Any
     updated = config
     grouped_overrides: dict[tuple[str, ...], dict[str, Any]] = {}
     for key, value in overrides.items():
-        parts = tuple(part.replace("-", "_") for part in key.split("."))
+        parts = tuple(key.split("."))
         grouped_overrides.setdefault(parts[:-1], {})[parts[-1]] = value
     for parent_path, values in sorted(grouped_overrides.items(), key=lambda item: len(item[0]), reverse=True):
         updated = _replace_dataclass_fields(updated, list(parent_path), values)
@@ -29,15 +30,27 @@ def apply_config_overrides(config: ExperimentConfig, overrides: Mapping[str, Any
 
 def _split_override_token(token: str) -> tuple[str, str]:
     key, raw_value = token.split("=", 1)
-    key = key.strip().replace("-", "_")
+    key = key.strip()
     if not key:
         raise ValueError(f"Override key is empty in token {token!r}.")
     return key, raw_value
 
 
 def _replace_dataclass_fields(node: object, path: list[str], values: Mapping[str, Any]):
+    if isinstance(node, Mapping):
+        updated = dict(node)
+        if path:
+            key = path[0]
+            current_value = updated.get(key, {})
+            updated[key] = _replace_dataclass_fields(current_value, path[1:], values)
+            return updated
+        updated.update(values)
+        return updated
     if not is_dataclass(node):
-        raise ValueError(f"Cannot override nested path on non-dataclass node {type(node).__name__}.")
+        raise ValueError(
+            f"Cannot override nested path on {type(node).__name__}; "
+            "expected a dataclass or mapping."
+        )
     if path:
         field_name = path[0].replace("-", "_")
         if not hasattr(node, field_name):

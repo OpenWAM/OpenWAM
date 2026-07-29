@@ -39,6 +39,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--calvin-dataset-root", type=str, default=None)
     parser.add_argument("--calvin-task-text", type=str, default=None)
     parser.add_argument("--show-gui", action="store_true")
+    parser.add_argument("--extension", action="append", default=[])
     return parser
 
 

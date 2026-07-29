@@ -58,6 +58,38 @@ trainer:
 
 
 @pytest.mark.unit
+def test_static_validator_rejects_non_mapping_adapter_options(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_adapter_options.yaml"
+    config_path.write_text(
+        """
+name: bad_adapter_options
+data:
+  dataset_name: custom
+  dataset_type: custom_dataset
+  adapter_options:
+    - not
+    - a
+    - mapping
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: post_latent
+  attach_site: post_visual_core
+action_decoder:
+  name: mlp_decoder
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any(issue.path == "data.adapter_options" for issue in report.errors)
+
+
+@pytest.mark.unit
 def test_static_validator_rejects_deprecated_equal_bucket_latent_layout(tmp_path: Path) -> None:
     config_path = tmp_path / "bad_latent_layout.yaml"
     config_path.write_text(

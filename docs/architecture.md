@@ -44,7 +44,12 @@ prepared inputs through explicit variant contracts.
 
 ## Data Contract
 
-Dataset adapters normalize raw datasets into one public batch contract:
+Dataset adapters are selected by `data.dataset_type`. One adapter identity may
+provide a raw-RGB builder, a pre-encoded latent builder, or both. External
+adapters register explicitly through `module[:hook]` extensions before
+experiment construction.
+
+Raw adapters normalize source records into one public batch contract:
 
 - canonical RGB tensors with a configured camera/layout policy
 - action tensors with explicit source and model dimensions

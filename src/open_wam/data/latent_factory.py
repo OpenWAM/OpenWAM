@@ -1,26 +1,17 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-
 from torch.utils.data import Dataset
 
 from open_wam.configs import DataConfig
 
 from .latent_contracts import LatentWAMSample
+from .latent_synthetic import SyntheticLatentWindowDataset
 from .lerobot_v2_latent import build_local_lerobot_latent_train_val_datasets
 from .mixed_video import build_mixed_video_latent_train_val_datasets
-from .latent_synthetic import SyntheticLatentWindowDataset
-
-
-LatentDatasetPairBuilder = Callable[[DataConfig], tuple[Dataset[LatentWAMSample], Dataset[LatentWAMSample]]]
-
-_LATENT_DATASET_BUILDERS: dict[str, LatentDatasetPairBuilder] = {}
-
-
-def register_latent_dataset_builder(dataset_type: str, builder: LatentDatasetPairBuilder) -> None:
-    """Register one train/val latent dataset builder for a source type."""
-
-    _LATENT_DATASET_BUILDERS[dataset_type] = builder
+from .registries import (
+    DATASET_ADAPTERS,
+    register_latent_dataset_builder,
+)
 
 
 def build_train_val_latent_datasets(
@@ -28,14 +19,7 @@ def build_train_val_latent_datasets(
 ) -> tuple[Dataset[LatentWAMSample], Dataset[LatentWAMSample]]:
     """Build train/val latent datasets from the config-defined source type."""
 
-    try:
-        builder = _LATENT_DATASET_BUILDERS[data_config.dataset_type]
-    except KeyError as exc:
-        supported = ", ".join(sorted(_LATENT_DATASET_BUILDERS))
-        raise ValueError(
-            f"Unsupported latent dataset_type '{data_config.dataset_type}'. "
-            f"Registered latent dataset types: {supported}"
-        ) from exc
+    builder = DATASET_ADAPTERS.require_latent_builder(data_config.dataset_type)
     return builder(data_config)
 
 
