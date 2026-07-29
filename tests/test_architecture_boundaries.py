@@ -642,6 +642,21 @@ def test_retired_structured_register_runtime_is_not_packaged() -> None:
     assert not any(path.exists() for path in retired_paths)
 
 
+def test_retired_generic_parallel_layout_scaffold_is_not_packaged() -> None:
+    retired_paths = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "common" / "caches.py",
+        PACKAGE_ROOT / "models" / "policy_variants" / "common" / "masks.py",
+        PACKAGE_ROOT / "models" / "policy_variants" / "common" / "positions.py",
+        PACKAGE_ROOT / "models" / "policy_variants" / "common" / "timesteps.py",
+        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream" / "masks.py",
+        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream" / "packing.py",
+        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream" / "positions.py",
+        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream" / "timesteps.py",
+    )
+
+    assert not any(path.exists() for path in retired_paths)
+
+
 def test_deprecated_libero_implementations_and_configs_are_retired() -> None:
     deprecated_script_root = REPO_ROOT / "scripts" / "deprecated"
     deprecated_config_roots = (
