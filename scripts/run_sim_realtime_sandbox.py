@@ -21,6 +21,11 @@ from open_wam.simulators import (  # noqa: E402
     summarize_sim_rollout,
 )
 from open_wam.runtime import build_result_envelope  # noqa: E402
+from open_wam.runtime.checkpoints import (  # noqa: E402
+    load_pipeline_checkpoint,
+    resolve_checkpoint_file,
+    resolve_checkpoint_step_dir_from_transformer_dir,
+)
 from open_wam.utils import load_experiment_config, seed_everywhere  # noqa: E402
 from open_wam.utils.local_paths import load_local_path_registry  # noqa: E402
 
@@ -106,7 +111,11 @@ def main() -> None:
         pipeline = build_variant_pipeline_from_config(config).to(device)
         pipeline.eval()
         if checkpoint_path is not None:
-            _load_pipeline_checkpoint(pipeline, checkpoint_path)
+            checkpoint_report = load_pipeline_checkpoint(pipeline, checkpoint_path)
+            if checkpoint_report.missing_keys:
+                print(f"sim.checkpoint_missing_keys {len(checkpoint_report.missing_keys)}")
+            if checkpoint_report.unexpected_keys:
+                print(f"sim.checkpoint_unexpected_keys {len(checkpoint_report.unexpected_keys)}")
         rollout_runner = VariantRolloutRunner(pipeline)
 
     output_dir = Path(args.output_dir).expanduser().resolve()
@@ -251,107 +260,23 @@ def _resolve_repo_path(value: str) -> Path:
 
 def _resolve_checkpoint_for_config(*, config: Any, checkpoint_arg: str | None) -> Path | None:
     if checkpoint_arg is not None:
-        return _resolve_checkpoint_file(Path(checkpoint_arg))
+        return resolve_checkpoint_file(Path(checkpoint_arg))
     transformer_subdir = getattr(config.backbone, "transformer_subdir", None)
     if transformer_subdir is None:
         return None
     try:
-        checkpoint_step_dir = _resolve_checkpoint_step_dir_from_transformer_dir(Path(str(transformer_subdir)))
-        return _resolve_checkpoint_file(checkpoint_step_dir)
+        checkpoint_step_dir = resolve_checkpoint_step_dir_from_transformer_dir(
+            Path(str(transformer_subdir))
+        )
+        return resolve_checkpoint_file(checkpoint_step_dir)
     except (FileNotFoundError, ValueError):
         return None
-
-
-def _resolve_checkpoint_file(path: Path) -> Path:
-    candidate = path.expanduser().resolve()
-    if candidate.is_file():
-        return candidate
-    for filename in ("model_state.pt", "full_training_state.pt"):
-        checkpoint_file = candidate / filename
-        if checkpoint_file.is_file():
-            return checkpoint_file
-    if candidate.name.startswith("checkpoint_step_"):
-        for filename in ("model_state.pt", "full_training_state.pt"):
-            checkpoint_file = candidate / filename
-            if checkpoint_file.is_file():
-                return checkpoint_file
-    checkpoint_dirs = sorted(
-        [child for child in candidate.glob("checkpoint_step_*") if child.is_dir()],
-        key=lambda child: int(child.name.rsplit("_", 1)[-1]),
-    )
-    for checkpoint_dir in reversed(checkpoint_dirs):
-        for filename in ("model_state.pt", "full_training_state.pt"):
-            checkpoint_file = checkpoint_dir / filename
-            if checkpoint_file.is_file():
-                return checkpoint_file
-    raise FileNotFoundError(f"Could not resolve model_state.pt or full_training_state.pt from {path}.")
-
-
-def _resolve_checkpoint_step_dir_from_transformer_dir(transformer_dir: Path) -> Path:
-    candidate = transformer_dir.expanduser().resolve()
-    if candidate.name != "transformer":
-        raise ValueError(
-            "Expected `backbone.transformer_subdir` to point at a `.../checkpoint_step_*/transformer` directory, "
-            f"got {candidate}."
-        )
-    checkpoint_step_dir = candidate.parent
-    if not checkpoint_step_dir.name.startswith("checkpoint_step_"):
-        raise ValueError(f"Expected transformer parent to be named `checkpoint_step_*`, got {checkpoint_step_dir}.")
-    return checkpoint_step_dir
 
 
 def _apply_checkpoint_backbone_override(config: Any, *, checkpoint_path: Path) -> None:
     transformer_dir = checkpoint_path.parent / "transformer"
     if transformer_dir.is_dir():
         object.__setattr__(config.backbone, "transformer_subdir", str(transformer_dir.resolve()))
-
-
-def _normalize_checkpoint_state_dict(checkpoint: dict[str, Any]) -> dict[str, torch.Tensor]:
-    state_dict = checkpoint.get("state_dict")
-    if state_dict is None:
-        state_dict = checkpoint.get("model_state_dict", checkpoint)
-    if not isinstance(state_dict, dict):
-        raise ValueError("Checkpoint must be a raw state_dict or a checkpoint with `state_dict`/`model_state_dict`.")
-    normalized: dict[str, torch.Tensor] = {}
-    for key, value in state_dict.items():
-        if not isinstance(value, torch.Tensor):
-            continue
-        normalized_key = key[len("pipeline.") :] if key.startswith("pipeline.") else key
-        normalized[normalized_key] = value
-    return normalized
-
-
-def _load_pipeline_checkpoint(pipeline: torch.nn.Module, checkpoint_path: Path) -> None:
-    try:
-        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-    except TypeError:
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    state_dict = _normalize_checkpoint_state_dict(checkpoint)
-    missing, unexpected = pipeline.load_state_dict(state_dict, strict=False)
-    _mark_loaded_lazy_components_initialized(pipeline, state_dict, missing_keys=missing)
-    if missing:
-        print(f"sim.checkpoint_missing_keys {len(missing)}")
-    if unexpected:
-        print(f"sim.checkpoint_unexpected_keys {len(unexpected)}")
-
-
-def _mark_loaded_lazy_components_initialized(
-    pipeline: torch.nn.Module,
-    state_dict: dict[str, torch.Tensor],
-    *,
-    missing_keys: list[str] | tuple[str, ...] = (),
-) -> None:
-    policy_variant = getattr(pipeline, "policy_variant", None)
-    if policy_variant is None:
-        return
-    has_action_expert_weights = any(key.startswith("policy_variant.action_expert.") for key in state_dict)
-    missing_action_expert_weights = any(key.startswith("policy_variant.action_expert.") for key in missing_keys)
-    if (
-        hasattr(policy_variant, "_action_expert_initialized")
-        and has_action_expert_weights
-        and not missing_action_expert_weights
-    ):
-        policy_variant._action_expert_initialized = True
 
 
 if __name__ == "__main__":

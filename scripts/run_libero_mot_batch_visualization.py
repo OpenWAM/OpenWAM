@@ -24,6 +24,7 @@ from open_wam.configs import ReferenceCoreInitMode  # noqa: E402
 from open_wam.integrations import load_libero_task_init_states  # noqa: E402
 from open_wam.models.policy_variants.mot.runtime_routing import ensure_mot_inference_backend  # noqa: E402
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
+from open_wam.runtime.checkpoints import load_pipeline_checkpoint  # noqa: E402
 from open_wam.utils import (  # noqa: E402
     apply_config_overrides,
     load_experiment_config,
@@ -341,7 +342,11 @@ def _load_batch_resources(args: argparse.Namespace) -> SimpleNamespace:
         )
 
     pipeline = build_variant_pipeline_from_config(config)
-    mot_viz.video_viz._load_pipeline_checkpoint(pipeline, checkpoint_path)
+    checkpoint_report = load_pipeline_checkpoint(pipeline, checkpoint_path)
+    if checkpoint_report.missing_keys:
+        print(f"viz.checkpoint_missing_keys {len(checkpoint_report.missing_keys)}")
+    if checkpoint_report.unexpected_keys:
+        print(f"viz.checkpoint_unexpected_keys {len(checkpoint_report.unexpected_keys)}")
     pipeline.to(device=runtime_device)
     if hasattr(pipeline.policy_variant, "_maybe_initialize_action_expert"):
         pipeline.policy_variant._maybe_initialize_action_expert(pipeline.visual_tower)

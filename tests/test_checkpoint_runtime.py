@@ -3,9 +3,16 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import torch
+from torch import nn
 import yaml
 
 from open_wam.configs.enums import RolloutContextPolicy, SampleTargetAlignment, WindowSamplingMode
+from open_wam.runtime.checkpoints import (
+    load_pipeline_checkpoint,
+    normalize_checkpoint_state_dict,
+    resolve_checkpoint_file,
+)
 from open_wam.utils import (
     find_checkpoint_resolved_config,
     load_experiment_config,
@@ -14,6 +21,59 @@ from open_wam.utils import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_resolve_checkpoint_file_accepts_checkpoint_step_dir(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "checkpoint_step_12"
+    checkpoint_dir.mkdir(parents=True)
+    model_state = checkpoint_dir / "model_state.pt"
+    model_state.write_bytes(b"test")
+
+    assert resolve_checkpoint_file(checkpoint_dir) == model_state
+
+
+def test_normalize_checkpoint_state_dict_accepts_pipeline_prefix() -> None:
+    tensor = torch.ones(1)
+
+    normalized = normalize_checkpoint_state_dict(
+        {"state_dict": {"pipeline.layer.weight": tensor, "metadata": "ignored"}}
+    )
+
+    assert normalized == {"layer.weight": tensor}
+
+
+def test_load_pipeline_checkpoint_marks_loaded_lazy_action_expert(tmp_path: Path) -> None:
+    class LazyPolicy(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.action_expert = nn.Linear(1, 1, bias=False)
+            self._action_expert_initialized = False
+
+    class Pipeline(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.policy_variant = LazyPolicy()
+
+    pipeline = Pipeline()
+    checkpoint_path = tmp_path / "model_state.pt"
+    torch.save(
+        {
+            "model_state_dict": {
+                "policy_variant.action_expert.weight": torch.full((1, 1), 3.0)
+            }
+        },
+        checkpoint_path,
+    )
+
+    report = load_pipeline_checkpoint(pipeline, checkpoint_path)
+
+    assert report.missing_keys == ()
+    assert report.unexpected_keys == ()
+    assert pipeline.policy_variant._action_expert_initialized is True
+    torch.testing.assert_close(
+        pipeline.policy_variant.action_expert.weight,
+        torch.full((1, 1), 3.0),
+    )
 
 
 def test_find_checkpoint_resolved_config_uses_checkpoint_dir(tmp_path: Path) -> None:

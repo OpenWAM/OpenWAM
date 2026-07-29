@@ -500,17 +500,6 @@ def test_run_evaluation_loads_pipeline_prefixed_checkpoint(tmp_path: Path) -> No
     assert summary.mean_video_latent_mse is None
 
 
-def test_resolve_checkpoint_file_accepts_checkpoint_step_dir(tmp_path: Path) -> None:
-    checkpoint_dir = tmp_path / "checkpoint_step_12"
-    checkpoint_dir.mkdir(parents=True)
-    model_state = checkpoint_dir / "model_state.pt"
-    model_state.write_bytes(b"test")
-
-    resolved = evaluate_module._resolve_checkpoint_file(checkpoint_dir)
-
-    assert resolved == model_state
-
-
 def test_apply_checkpoint_runtime_override_uses_checkpoint_local_transformer(tmp_path: Path) -> None:
     config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml")
     checkpoint_dir = tmp_path / "checkpoint_step_42"

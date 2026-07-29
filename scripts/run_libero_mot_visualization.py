@@ -27,12 +27,11 @@ for script_path in (SCRIPT_ROOT, Path(__file__).resolve().parent):
     if str(script_path) not in sys.path:
         sys.path.insert(0, str(script_path))
 
-import run_libero_video_sequence_visualization as video_viz  # noqa: E402
-
 from open_wam.configs import ReferenceCoreInitMode  # noqa: E402
 from open_wam.data.latent_temporal import raw_window_frames_for_latents  # noqa: E402
 from open_wam.integrations import (  # noqa: E402
     LiberoTaskSpec,
+    build_libero_state_history,
     ensure_local_libero_config,
     load_libero_task_init_states,
 )
@@ -46,6 +45,11 @@ from open_wam.models.policy_variants.mot.runtime_routing import (  # noqa: E402
     resolve_mot_rollout_cache_window_frames,
 )
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
+from open_wam.runtime.checkpoints import (  # noqa: E402
+    load_pipeline_checkpoint,
+    resolve_checkpoint_file,
+    resolve_checkpoint_step_dir_from_transformer_dir,
+)
 from open_wam.utils.local_paths import read_yaml_with_local_paths  # noqa: E402
 from open_wam.utils import (  # noqa: E402
     apply_config_overrides,
@@ -390,7 +394,11 @@ def main() -> None:
         )
 
     pipeline = build_variant_pipeline_from_config(config)
-    video_viz._load_pipeline_checkpoint(pipeline, checkpoint_path)
+    checkpoint_report = load_pipeline_checkpoint(pipeline, checkpoint_path)
+    if checkpoint_report.missing_keys:
+        print(f"viz.checkpoint_missing_keys {len(checkpoint_report.missing_keys)}")
+    if checkpoint_report.unexpected_keys:
+        print(f"viz.checkpoint_unexpected_keys {len(checkpoint_report.unexpected_keys)}")
     pipeline.to(device=runtime_device)
     if hasattr(pipeline.policy_variant, "_maybe_initialize_action_expert"):
         pipeline.policy_variant._maybe_initialize_action_expert(pipeline.visual_tower)
@@ -948,17 +956,16 @@ def _resolve_mot_checkpoint_path(
     transformer_subdir: str | None,
 ) -> Path | None:
     if checkpoint_arg is not None:
-        return video_viz._resolve_checkpoint_file(Path(checkpoint_arg))
+        return resolve_checkpoint_file(Path(checkpoint_arg))
     raw = read_yaml_with_local_paths(config_path)
     raw_checkpoint = raw.get("checkpoint_path")
     if raw_checkpoint is not None:
-        return video_viz._resolve_checkpoint_file(Path(str(raw_checkpoint)))
+        return resolve_checkpoint_file(Path(str(raw_checkpoint)))
     if transformer_subdir is None:
         return None
     try:
-        return video_viz._resolve_checkpoint_path_from_args_or_config(
-            checkpoint_arg=None,
-            transformer_subdir=transformer_subdir,
+        return resolve_checkpoint_file(
+            resolve_checkpoint_step_dir_from_transformer_dir(transformer_subdir)
         )
     except (FileNotFoundError, ValueError):
         return None
@@ -988,10 +995,10 @@ def _build_infer_context(
         extra["action_conditioning_mode"] = str(mot_generalist_rollout_mode)
         extra["mot_generalist_rollout_mode"] = str(mot_generalist_rollout_mode)
     return PolicyInferContext(
-        state=video_viz._build_state_inputs_from_obs_window(
+        state=build_libero_state_history(
             model_obs_window,
             state_horizon=int(config.data.action_schema.state_horizon),
-            state_encoding=str(config.data.action_target.state_encoding),
+            state_encoding=config.data.action_target.state_encoding,
         )
         .unsqueeze(0)
         .to(device=runtime_device),
@@ -1356,11 +1363,10 @@ def _warmup_mot_packed_history_from_visual_outputs(
         and hasattr(runtime_state, "past_hidden_proprio_states")
         and getattr(runtime_state, "past_hidden_proprio_states", None) is not None
     ):
-        state_encoding = str(config.data.action_target.state_encoding)
-        raw_state = video_viz._build_state_inputs_from_obs_window(
+        raw_state = build_libero_state_history(
             obs_list,
             state_horizon=len(obs_list),
-            state_encoding=state_encoding,
+            state_encoding=config.data.action_target.state_encoding,
         ).to(device=runtime_device, dtype=runtime_dtype)
         if raw_state.ndim == 2 and int(raw_state.shape[0]) > 0 and int(real_latents.shape[2]) > 0:
             if int(raw_state.shape[0]) >= int(real_latents.shape[2]):

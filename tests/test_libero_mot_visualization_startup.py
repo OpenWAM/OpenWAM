@@ -428,24 +428,20 @@ def test_standalone_offline_visualization_encoding_uses_shared_reference_assets(
     encoded = torch.ones(1, 48, 1, 2, 2)
     placements = ("placement",)
 
-    for helper in (
-        mot_viz._encode_video_window_offline,
-        mot_viz.video_viz._encode_video_window_offline,
-    ):
-        assets = _FakeReferenceAssets(encoded)
+    assets = _FakeReferenceAssets(encoded)
 
-        result = helper(
-            assets,
-            canonical_video=canonical_video,
-            placements=placements,
-            device=torch.device("cpu"),
-        )
+    result = mot_viz._encode_video_window_offline(
+        assets,
+        canonical_video=canonical_video,
+        placements=placements,
+        device=torch.device("cpu"),
+    )
 
-        assert result is encoded
-        assert assets.calls == [
-            {
-                "shape": tuple(canonical_video.shape),
-                "placements": placements,
-                "reset_cache": True,
-            }
-        ]
+    assert result is encoded
+    assert assets.calls == [
+        {
+            "shape": tuple(canonical_video.shape),
+            "placements": placements,
+            "reset_cache": True,
+        }
+    ]

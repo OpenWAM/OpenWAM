@@ -40,6 +40,7 @@ from open_wam.extensions import load_extension_modules
 from open_wam.models.policy_variants import PolicyInferContext
 from open_wam.models.policy_variants.contracts import DecoderSequenceContext
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config
+from open_wam.runtime.checkpoints import load_pipeline_checkpoint, resolve_checkpoint_file
 from open_wam.utils.local_paths import read_yaml_with_local_paths
 from open_wam.utils import load_experiment_config, seed_everywhere
 
@@ -110,31 +111,11 @@ def _resolve_relative_path(base_path: Path, value: str | None) -> Path | None:
     )
 
 
-def _resolve_checkpoint_file(path: Path) -> Path:
-    candidate = path.expanduser().resolve()
-    if candidate.is_file():
-        return candidate
-    for filename in ("model_state.pt", "full_training_state.pt"):
-        direct_file = candidate / filename
-        if direct_file.is_file():
-            return direct_file
-    checkpoint_dirs = sorted(
-        [child for child in candidate.glob("checkpoint_step_*") if child.is_dir()],
-        key=lambda child: int(child.name.rsplit("_", 1)[-1]),
-    )
-    for checkpoint_dir in reversed(checkpoint_dirs):
-        for filename in ("model_state.pt", "full_training_state.pt"):
-            checkpoint_file = checkpoint_dir / filename
-            if checkpoint_file.is_file():
-                return checkpoint_file
-    raise FileNotFoundError(f"Could not resolve model_state.pt or full_training_state.pt from {path}.")
-
-
 def _apply_checkpoint_runtime_override(
     experiment_config: ExperimentConfig,
     checkpoint_path: Path,
 ) -> Path | None:
-    checkpoint_file = _resolve_checkpoint_file(checkpoint_path)
+    checkpoint_file = resolve_checkpoint_file(checkpoint_path)
     transformer_dir = checkpoint_file.parent / "transformer"
     if not _is_usable_transformer_dir(transformer_dir):
         return checkpoint_file
@@ -294,39 +275,6 @@ def _select_eval_dataset(
 
 def _uses_latent_dataset(data_config: DataConfig) -> bool:
     return str(data_config.dataset_type) == "lerobot_v2_latent_local"
-
-
-def _normalize_checkpoint_state_dict(checkpoint: dict[str, Any]) -> dict[str, torch.Tensor]:
-    state_dict = checkpoint.get("state_dict")
-    if state_dict is None:
-        state_dict = checkpoint.get("model_state_dict", checkpoint)
-    if not isinstance(state_dict, dict):
-        raise ValueError("Checkpoint must be a raw state_dict or a Lightning checkpoint with `state_dict`.")
-    normalized: dict[str, torch.Tensor] = {}
-    for key, value in state_dict.items():
-        if not isinstance(value, torch.Tensor):
-            continue
-        normalized_key = key[len("pipeline.") :] if key.startswith("pipeline.") else key
-        normalized[normalized_key] = value
-    return normalized
-
-
-def _load_pipeline_checkpoint(
-    pipeline: torch.nn.Module,
-    checkpoint_path: Path,
-    *,
-    map_location: torch.device,
-) -> None:
-    try:
-        checkpoint = torch.load(checkpoint_path, map_location=map_location, weights_only=True)
-    except TypeError:
-        checkpoint = torch.load(checkpoint_path, map_location=map_location)
-    state_dict = _normalize_checkpoint_state_dict(checkpoint)
-    missing, unexpected = pipeline.load_state_dict(state_dict, strict=False)
-    if missing:
-        print(f"eval.checkpoint_missing_keys {len(missing)}")
-    if unexpected:
-        print(f"eval.checkpoint_unexpected_keys {len(unexpected)}")
 
 
 def _masked_action_mse(
@@ -654,11 +602,15 @@ def run_evaluation(
     if resolved_checkpoint_path is not None:
         # Load checkpoints on CPU first to avoid doubling GPU memory during
         # deserialization for large full-model eval checkpoints.
-        _load_pipeline_checkpoint(
+        checkpoint_report = load_pipeline_checkpoint(
             pipeline,
             resolved_checkpoint_path,
             map_location=torch.device("cpu"),
         )
+        if checkpoint_report.missing_keys:
+            print(f"eval.checkpoint_missing_keys {len(checkpoint_report.missing_keys)}")
+        if checkpoint_report.unexpected_keys:
+            print(f"eval.checkpoint_unexpected_keys {len(checkpoint_report.unexpected_keys)}")
     pipeline = pipeline.to(device)
     pipeline.eval()
 

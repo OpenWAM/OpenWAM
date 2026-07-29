@@ -23,6 +23,7 @@ _EXPORTS: dict[str, str] = {
     "LiberoEnvConfig": "open_wam.integrations.libero_env",
     "LiberoTaskSpec": "open_wam.integrations.libero_env",
     "LiberoTrackingResult": "open_wam.integrations.libero_env",
+    "build_libero_state_history": "open_wam.integrations.libero_rollout",
     "absolute_joint_position_to_libero_joint_delta_action": "open_wam.integrations.libero_env",
     "build_libero_control_env": "open_wam.integrations.libero_env",
     "build_libero_offscreen_env": "open_wam.integrations.libero_env",
