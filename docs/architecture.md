@@ -87,6 +87,9 @@ plain contracts:
 - `visual_tower.context_encoders` owns learned proprio and GJD mode
   projections. `SharedVideoTransformerCore` attaches them under stable
   checkpoint names and owns their execution lifecycle.
+- `visual_tower.runtime_tensor_transport` owns parameter-free tensor,
+  attention-profile, and slot-pool-state movement across block devices. The
+  core binds model patch geometry but does not reimplement transport policy.
 - `models.common.cache_backends` owns parameter-free attention-cache policy:
   dense-mask normalization, cached-prefix visibility, packed sequence ids,
   slot retention, and merged-prefix truncation. The shared transformer owns

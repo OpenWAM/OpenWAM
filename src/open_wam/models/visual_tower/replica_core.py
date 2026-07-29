@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import math
-from dataclasses import replace
-
 import torch
 from diffusers.models.embeddings import PixArtAlphaTextProjection
 from diffusers.models.normalization import FP32LayerNorm
@@ -11,7 +9,6 @@ from torch import nn
 
 from open_wam.models.common import (
     PreparedAttentionProfile,
-    build_chunked_temporal_exact_attention_profile,
     cache_backend_uses_slot_pool,
     clear_cache_backend_payload,
     init_cache_backend_payload,
@@ -23,7 +20,6 @@ from open_wam.models.common import (
     resolve_cache_backend_spec,
     resolve_slot_pool_prefix_visibility as _resolve_slot_pool_prefix_visibility,
     retained_slot_pool_indices_for_current_write as _retained_slot_pool_indices_for_current_write,
-    SlotPoolLayerState,
     unpatchify_video_tokens,
 )
 from open_wam.configs.backbone import SharedVideoTransformerConfig
@@ -48,6 +44,13 @@ from .context_encoders import (
     ProprioHiddenContextEncoder,
 )
 from .runtime_programs import RuntimeStepInput, RuntimeStepOutput
+from .runtime_tensor_transport import (
+    cached_attention_profile,
+    cached_optional_tensor,
+    move_attention_profile,
+    move_optional_tensor,
+    move_slot_pool_layer_state,
+)
 from .sequence_adapters import (
     PreparedExactTrainSequence,
     prepare_exact_dual_stream_train_sequence,
@@ -65,16 +68,8 @@ from .shared_transformer_support import (
     materialize_runtime_parameter as _materialize_runtime_parameter,
     rms_norm_with_materialized_weight as _rms_norm_with_materialized_weight,
     select_chunk_slices as _select_chunk_slices,
+    select_split_segments as _select_split_segments,
 )
-
-
-def _select_split_segments(tensor: torch.Tensor, lengths: tuple[int, ...]) -> tuple[torch.Tensor, ...]:
-    offset = 0
-    segments: list[torch.Tensor] = []
-    for length in lengths:
-        segments.append(tensor.narrow(1, offset, length).clone())
-        offset += length
-    return tuple(segments)
 
 
 class SharedVideoTransformerCore(nn.Module):
@@ -316,34 +311,9 @@ class SharedVideoTransformerCore(nn.Module):
         hidden_context = encoder(proprio_state.reshape(batch_size * frame_count, state_dim))
         return hidden_context.reshape(batch_size, frame_count, -1).to(device=device, dtype=dtype)
 
-    @staticmethod
-    def _move_optional_tensor(tensor: torch.Tensor | None, *, device: torch.device, dtype: torch.dtype | None = None):
-        if tensor is None:
-            return None
-        kwargs = {"device": device}
-        if dtype is not None and tensor.is_floating_point():
-            kwargs["dtype"] = dtype
-        return tensor.to(**kwargs)
-
-    @classmethod
-    def _cached_optional_tensor(
-        cls,
-        tensor: torch.Tensor | None,
-        *,
-        cache: dict[tuple[str, torch.device, torch.dtype | None], torch.Tensor],
-        name: str,
-        device: torch.device,
-        dtype: torch.dtype | None = None,
-    ) -> torch.Tensor | None:
-        if tensor is None:
-            return None
-        dtype_key = dtype if dtype is not None and tensor.is_floating_point() else None
-        cache_key = (name, torch.device(device), dtype_key)
-        cached = cache.get(cache_key)
-        if cached is None:
-            cached = cls._move_optional_tensor(tensor, device=torch.device(device), dtype=dtype)
-            cache[cache_key] = cached
-        return cached
+    _move_optional_tensor = staticmethod(move_optional_tensor)
+    _cached_optional_tensor = staticmethod(cached_optional_tensor)
+    _move_slot_pool_layer_state = staticmethod(move_slot_pool_layer_state)
 
     def _move_attention_profile(
         self,
@@ -351,90 +321,10 @@ class SharedVideoTransformerCore(nn.Module):
         *,
         device: torch.device,
     ) -> PreparedAttentionProfile | None:
-        if profile is None:
-            return None
-        device = torch.device(device)
-        has_block_masks = (
-            profile.self_attention_block_mask is not None
-            or profile.cross_attention_block_mask is not None
-        )
-        if has_block_masks:
-            metadata = profile.metadata
-            required_keys = (
-                "latent_shape",
-                "action_shape",
-                "padded_length",
-                "chunk_size",
-                "window_size",
-                "text_token_count",
-            )
-            if all(key in metadata for key in required_keys) and (
-                "current_block_coupling" in metadata
-                or "allow_joint_noisy_block_attention" in metadata
-            ):
-                current_block_coupling = metadata.get("current_block_coupling")
-                if current_block_coupling is None:
-                    current_block_coupling = (
-                        "joint"
-                        if bool(metadata["allow_joint_noisy_block_attention"])
-                        else "video_then_action"
-                    )
-                return build_chunked_temporal_exact_attention_profile(
-                    latent_shape=tuple(int(v) for v in metadata["latent_shape"]),
-                    action_shape=tuple(int(v) for v in metadata["action_shape"]),
-                    padded_length=int(metadata["padded_length"]),
-                    chunk_size=int(metadata["chunk_size"]),
-                    window_size=int(metadata["window_size"]),
-                    patch_size=self.patch_size,
-                    text_token_count=int(metadata["text_token_count"]),
-                    base_text_token_count=(
-                        None
-                        if "base_text_token_count" not in metadata
-                        else int(metadata["base_text_token_count"])
-                    ),
-                    proprio_context_token_count=int(metadata.get("proprio_context_token_count", 0)),
-                    chunk_origin_frame=int(metadata.get("chunk_origin_frame", 0)),
-                    prefix_condition_frames=int(metadata.get("prefix_condition_frames", 0)),
-                    singleton_chunk_frame=(
-                        None
-                        if metadata.get("singleton_chunk_frame") is None
-                        else int(metadata["singleton_chunk_frame"])
-                    ),
-                    action_context_mask=(
-                        torch.tensor(
-                            metadata["action_context_valid_tokens"],
-                            device=device,
-                            dtype=torch.bool,
-                        )[None, :]
-                        if metadata.get("action_context_valid_tokens") is not None
-                        else None
-                    ),
-                    device=device,
-                    build_dense_masks=(
-                        profile.self_attention_mask is not None
-                        or profile.cross_attention_mask is not None
-                    ),
-                    build_flex_masks=True,
-                    current_block_coupling=str(current_block_coupling),
-                    preserve_video_pretrain_history=bool(
-                        metadata.get("preserve_video_pretrain_history", False)
-                    ),
-                    history_stream_visibility=metadata.get("history_stream_visibility"),
-                    conditional_history_policy=metadata.get("conditional_history_policy"),
-                )
-            if profile.self_attention_mask is None and profile.cross_attention_mask is None:
-                return profile
-            return replace(
-                profile,
-                self_attention_mask=self._move_optional_tensor(profile.self_attention_mask, device=device),
-                cross_attention_mask=self._move_optional_tensor(profile.cross_attention_mask, device=device),
-                self_attention_block_mask=None,
-                cross_attention_block_mask=None,
-            )
-        return replace(
+        return move_attention_profile(
             profile,
-            self_attention_mask=self._move_optional_tensor(profile.self_attention_mask, device=device),
-            cross_attention_mask=self._move_optional_tensor(profile.cross_attention_mask, device=device),
+            patch_size=self.patch_size,
+            device=device,
         )
 
     def _cached_attention_profile(
@@ -444,24 +334,12 @@ class SharedVideoTransformerCore(nn.Module):
         cache: dict[torch.device, PreparedAttentionProfile | None],
         device: torch.device,
     ) -> PreparedAttentionProfile | None:
-        device = torch.device(device)
-        if device not in cache:
-            cache[device] = self._move_attention_profile(profile, device=device)
-        return cache[device]
-
-    @staticmethod
-    def _move_slot_pool_layer_state(
-        layer_state: SlotPoolLayerState | None,
-        *,
-        device: torch.device,
-    ) -> SlotPoolLayerState | None:
-        if layer_state is None:
-            return None
-        for name in ("key", "value", "slot_ids", "stream_ids", "slot_mask", "prediction_mask"):
-            tensor = getattr(layer_state, name)
-            if tensor is not None and tensor.device != device:
-                setattr(layer_state, name, tensor.to(device=device))
-        return layer_state
+        return cached_attention_profile(
+            profile,
+            cache=cache,
+            patch_size=self.patch_size,
+            device=device,
+        )
 
     def project_video_tokens_to_latents(
         self,

@@ -703,6 +703,15 @@ class SharedTransformerBlock(nn.Module):
         return hidden_states, self_cache_entry, cross_cache_entry
 
 
+def select_split_segments(tensor: torch.Tensor, lengths: tuple[int, ...]) -> tuple[torch.Tensor, ...]:
+    offset = 0
+    segments: list[torch.Tensor] = []
+    for length in lengths:
+        segments.append(tensor.narrow(1, offset, length).clone())
+        offset += length
+    return tuple(segments)
+
+
 __all__ = [
     "SharedTransformerAttention",
     "SharedTransformerBlock",
@@ -715,4 +724,5 @@ __all__ = [
     "materialize_runtime_parameter",
     "rms_norm_with_materialized_weight",
     "select_chunk_slices",
+    "select_split_segments",
 ]

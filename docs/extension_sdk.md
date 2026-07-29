@@ -222,7 +222,7 @@ building blocks used by the visual core and action-side experts:
 
 - timestep and rotary positional embeddings;
 - `SharedTransformerAttention` and `SharedTransformerBlock`;
-- rotary and chunk-slice tensor helpers;
+- rotary, chunk-slice, and split-segment tensor helpers;
 - FSDP-safe linear, normalization, and feed-forward helpers.
 
 These functions own learned transformer execution, not sequence visibility or

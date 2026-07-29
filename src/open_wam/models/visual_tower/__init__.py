@@ -33,6 +33,7 @@ from .shared_transformer_support import (
     materialize_runtime_parameter,
     rms_norm_with_materialized_weight,
     select_chunk_slices,
+    select_split_segments,
 )
 from .tower import VisualTower
 
@@ -58,6 +59,7 @@ __all__ = [
     "materialize_runtime_parameter",
     "rms_norm_with_materialized_weight",
     "select_chunk_slices",
+    "select_split_segments",
     "VisualCoreInput",
     "VisualCoreOutput",
     "VisualDecodeOutput",

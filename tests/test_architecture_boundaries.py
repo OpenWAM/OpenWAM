@@ -586,6 +586,7 @@ def test_shared_transformer_support_has_one_implementation_owner() -> None:
         "materialize_runtime_parameter",
         "rms_norm_with_materialized_weight",
         "select_chunk_slices",
+        "select_split_segments",
     }
     support_path = PACKAGE_ROOT / "models" / "visual_tower" / "shared_transformer_support.py"
     replica_core_path = PACKAGE_ROOT / "models" / "visual_tower" / "replica_core.py"
@@ -595,6 +596,21 @@ def test_shared_transformer_support_has_one_implementation_owner() -> None:
     assert {
         f"_{name}" for name in support_definitions if not name.startswith("Shared")
     }.isdisjoint(_top_level_definitions(replica_core_path))
+
+
+def test_visual_runtime_tensor_transport_has_one_implementation_owner() -> None:
+    transport_definitions = {
+        "cached_attention_profile",
+        "cached_optional_tensor",
+        "move_attention_profile",
+        "move_optional_tensor",
+        "move_slot_pool_layer_state",
+    }
+    transport_path = PACKAGE_ROOT / "models" / "visual_tower" / "runtime_tensor_transport.py"
+    replica_core_path = PACKAGE_ROOT / "models" / "visual_tower" / "replica_core.py"
+
+    assert transport_definitions <= _top_level_definitions(transport_path)
+    assert transport_definitions.isdisjoint(_top_level_definitions(replica_core_path))
 
 
 def test_visual_context_encoders_have_one_implementation_owner() -> None:

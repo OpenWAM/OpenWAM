@@ -36,6 +36,7 @@ from open_wam.models.visual_tower import (
     materialize_runtime_parameter,
     rms_norm_with_materialized_weight,
     select_chunk_slices,
+    select_split_segments,
 )
 from open_wam.models.visual_tower import replica_core as replica_core_module
 from open_wam.models.visual_tower import shared_transformer_support as transformer_support_module
@@ -64,6 +65,7 @@ def test_shared_transformer_public_and_compatibility_exports_preserve_identity()
     assert replica_core_module.SharedTransformerTimeEmbedding is SharedTransformerTimeEmbedding
     assert replica_core_module._apply_rotary_emb is apply_rotary_emb
     assert replica_core_module._select_chunk_slices is select_chunk_slices
+    assert replica_core_module._select_split_segments is select_split_segments
     assert replica_core_module._materialize_runtime_parameter is materialize_runtime_parameter
     assert replica_core_module._linear_with_materialized_params is linear_with_materialized_params
     assert replica_core_module._rms_norm_with_materialized_weight is rms_norm_with_materialized_weight
