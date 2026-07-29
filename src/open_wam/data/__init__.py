@@ -41,6 +41,13 @@ from .latent_contracts import (
     collate_latent_wam_samples,
     move_latent_wam_batch_to_device,
 )
+from .latent_segment_geometry import (
+    LatentSegmentBoundary,
+    compact_boundary_start_range,
+    resolve_compact_boundary_segment,
+    resolve_rollout_parity_boundary_segment,
+    rollout_parity_start_range,
+)
 
 _LAZY_EXPORTS = {
     "CalvinNPZWindowDataset": "calvin_npz",
@@ -167,6 +174,7 @@ __all__ = [
     "expected_pose_target_dim",
     "LiberoOfflineWindowDataset",
     "LatentDatasetPairBuilder",
+    "LatentSegmentBoundary",
     "LatentWAMBatch",
     "LatentWAMSample",
     "LeRobotConsortiumWindowDataset",
@@ -217,6 +225,7 @@ __all__ = [
     "branch_seed_offset",
     "collate_latent_wam_samples",
     "collate_wam_samples",
+    "compact_boundary_start_range",
     "denormalize_action_targets",
     "decode_video_frames",
     "discover_local_lerobot_consortium_members",
@@ -248,9 +257,12 @@ __all__ = [
     "inverse_action_mapping",
     "resolve_action_source_dim",
     "resolve_action_target_dim",
+    "resolve_compact_boundary_segment",
     "resolve_dataset_loader_spec",
+    "resolve_rollout_parity_boundary_segment",
     "resolve_lerobot_consortium_train_val_split",
     "render_lerobot_consortium_inventory_markdown",
+    "rollout_parity_start_range",
     "state_sequence_to_pose_sequence",
     "split_mixed_video_episodes",
     "transform_frame",

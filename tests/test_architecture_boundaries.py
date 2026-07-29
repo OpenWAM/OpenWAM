@@ -124,6 +124,27 @@ def test_lerobot_latent_repository_io_has_one_storage_owner() -> None:
     assert storage_owned.isdisjoint(dataset_definitions)
 
 
+def test_lerobot_latent_segment_geometry_has_one_owner() -> None:
+    geometry_functions = {
+        "compact_boundary_start_range",
+        "resolve_compact_boundary_segment",
+        "resolve_rollout_parity_boundary_segment",
+        "rollout_parity_start_range",
+    }
+    geometry_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "data" / "latent_segment_geometry.py"
+    )
+    dataset_methods = _class_method_definitions(
+        PACKAGE_ROOT / "data" / "lerobot_v2_latent.py",
+        "UniformSegmentLocalLeRobotLatentDataset",
+    )
+
+    assert geometry_functions <= geometry_definitions
+    assert {
+        f"_{name}" for name in geometry_functions
+    }.isdisjoint(dataset_methods)
+
+
 def test_sequence_contract_semantics_have_one_config_owner() -> None:
     contract_functions = {
         "apply_parallel_sequence_contract",
