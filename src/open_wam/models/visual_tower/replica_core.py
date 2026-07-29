@@ -30,7 +30,7 @@ from open_wam.models.common import (
     unpatchify_video_tokens,
     update_slot_pool_layer_state,
 )
-from open_wam.models.video_backbone.config import SharedVideoTransformerConfig, resolve_stage_attention_mode
+from open_wam.configs.backbone import SharedVideoTransformerConfig, resolve_stage_attention_mode
 from open_wam.models.video_backbone.contracts import (
     AttentionCacheEntry,
     CacheBranchState,

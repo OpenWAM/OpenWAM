@@ -10,7 +10,7 @@ from diffusers import AutoencoderKLWan
 from open_wam.configs import ReferenceAssetsDevicePolicy
 from open_wam.data.raw_video import ViewPlacement
 from open_wam.models.common.video_geometry import WAN_TEMPORAL_CHUNK_SIZE, wan_safe_temporal_frame_count
-from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
+from open_wam.configs.backbone import LingbotCompatibleVideoBackboneConfig
 
 from .reference_loader import resolve_pretrained_component_dir
 from .reference_transformer import preferred_reference_dtype

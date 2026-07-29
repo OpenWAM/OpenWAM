@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 
 from open_wam.configs import ReferenceCoreInitMode
-from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
+from open_wam.configs.backbone import SharedVideoTransformerConfig
 
 from .reference_loader import load_wan_transformer_class, resolve_pretrained_component_dir
 

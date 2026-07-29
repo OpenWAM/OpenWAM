@@ -53,7 +53,7 @@ from open_wam.models.common.joint_conditioning import (
 )
 from open_wam.models.common.modality_slots import force_clean_noisy_slot, zero_condition_slot
 from open_wam.models.common.rollout_startup import resolve_strict_startup_plan
-from open_wam.models.video_backbone.config import SharedVideoTransformerConfig, resolve_stage_attention_mode
+from open_wam.configs.backbone import SharedVideoTransformerConfig, resolve_stage_attention_mode
 from open_wam.models.video_backbone.contracts import CacheState
 from open_wam.models.visual_tower import (
     RuntimeStepInput,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
+from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.models.video_backbone.contracts import AttentionCacheEntry, CacheState, CacheUpdateMetadata
 
 from .contracts import VisualCoreInput, VisualCoreOutput, VisualIntermediateReadout

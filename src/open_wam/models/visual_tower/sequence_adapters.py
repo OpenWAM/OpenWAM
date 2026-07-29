@@ -16,7 +16,7 @@ from open_wam.models.common import (
     chunked_temporal_exact_coupling_from_profile_name,
     normalize_attention_profile_name,
 )
-from open_wam.models.video_backbone.config import SharedVideoTransformerConfig, resolve_stage_attention_mode
+from open_wam.configs.backbone import SharedVideoTransformerConfig, resolve_stage_attention_mode
 
 from .contracts import (
     StructuredAttentionContext,

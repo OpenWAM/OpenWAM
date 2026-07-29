@@ -16,7 +16,7 @@ from open_wam.data.latent_temporal import (
 
 CONDITION_SOURCE_FRAME_POLICY = CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET
 from open_wam.data.raw_video import ViewPlacement
-from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
+from open_wam.configs.backbone import LingbotCompatibleVideoBackboneConfig
 from open_wam.models.visual_tower.reference_assets import LingbotReferenceAssets
 from open_wam.utils.latent_filenames import match_latent_window_filename
 

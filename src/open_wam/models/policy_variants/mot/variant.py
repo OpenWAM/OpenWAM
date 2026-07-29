@@ -49,7 +49,7 @@ from open_wam.configs import (
 from open_wam.data.sample_metadata import SampleConstructionMetadata
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 from open_wam.models.visual_tower.grid_ids import build_action_grid_ids
-from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
+from open_wam.configs.backbone import SharedVideoTransformerConfig
 
 from ..base import PolicyVariant
 from ..common.layouts import expand_previous_action
@@ -76,7 +76,6 @@ from .modules import MoTActionExpert, init_action_expert_from_video_core
 from .packed_block import MoTPackedBlock, MoTPackedBlockStack
 from .runtime import (
     append_mot_action_cache,
-    append_mot_video_cache,
     build_chunk_causal_video_mask,
     build_mot_attention_mask,
     build_mot_inference_action_attention_mask,
@@ -91,7 +90,6 @@ from .runtime import (
     trim_mot_action_cache_prefix,
     trim_mot_action_cache_tail,
     trim_mot_video_cache_tail,
-    resolve_mot_condition_latents,
 )
 from .runtime_routing import (
     MOT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS,

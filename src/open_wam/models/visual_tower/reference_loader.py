@@ -6,7 +6,7 @@ import sys
 from functools import lru_cache
 from pathlib import Path
 
-from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
+from open_wam.configs.backbone import LingbotCompatibleVideoBackboneConfig
 
 
 def _repo_root() -> Path:

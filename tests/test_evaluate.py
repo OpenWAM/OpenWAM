@@ -516,6 +516,7 @@ def test_apply_checkpoint_runtime_override_uses_checkpoint_local_transformer(tmp
     checkpoint_dir = tmp_path / "checkpoint_step_42"
     transformer_dir = checkpoint_dir / "transformer"
     transformer_dir.mkdir(parents=True)
+    (transformer_dir / "config.json").write_text("{}", encoding="utf-8")
     model_state = checkpoint_dir / "model_state.pt"
     model_state.write_bytes(b"test")
 
@@ -524,6 +525,20 @@ def test_apply_checkpoint_runtime_override_uses_checkpoint_local_transformer(tmp
     assert resolved == model_state
     assert config.backbone.transformer_subdir == str(transformer_dir.resolve())
     assert str(config.backbone.reference_core_init_mode) == "full"
+
+
+def test_apply_checkpoint_runtime_override_ignores_empty_transformer_export(tmp_path: Path) -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml")
+    original_transformer_subdir = config.backbone.transformer_subdir
+    checkpoint_dir = tmp_path / "checkpoint_step_42"
+    (checkpoint_dir / "transformer").mkdir(parents=True)
+    model_state = checkpoint_dir / "model_state.pt"
+    model_state.write_bytes(b"test")
+
+    resolved = evaluate_module._apply_checkpoint_runtime_override(config, checkpoint_dir)
+
+    assert resolved == model_state
+    assert config.backbone.transformer_subdir == original_transformer_subdir
 
 
 def test_run_evaluation_accepts_checkpoint_step_directory(tmp_path: Path) -> None:

@@ -17,7 +17,7 @@ from open_wam.models.common import (
 )
 from open_wam.models.common.video_geometry import unpatchify_video_tokens
 from open_wam.models.video_backbone.contracts import CacheState, CacheUpdateMetadata
-from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
+from open_wam.configs.backbone import LingbotCompatibleVideoBackboneConfig
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
 from ..base import PolicyVariant

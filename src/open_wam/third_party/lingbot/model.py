@@ -17,7 +17,6 @@ from diffusers.models.normalization import FP32LayerNorm
 from einops import rearrange
 from typing import Callable, ClassVar
 from torch.nn.attention.flex_attention import (
-    _mask_mod_signature,
     BlockMask,
     create_block_mask,
     flex_attention,

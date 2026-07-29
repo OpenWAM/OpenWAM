@@ -13,7 +13,7 @@ from open_wam.models.common import (
     init_cache_backend_payload,
     resolve_cache_backend_spec,
 )
-from open_wam.models.video_backbone.config import SharedVideoTransformerConfig, normalize_backbone_implementation
+from open_wam.configs.backbone import SharedVideoTransformerConfig, normalize_backbone_implementation
 from open_wam.models.video_backbone.contracts import AttentionCacheEntry, CacheState, CacheUpdateMetadata
 from open_wam.models.video_backbone.contracts import CacheBranchState
 

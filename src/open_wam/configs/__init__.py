@@ -11,6 +11,12 @@ from .action_decoder import (
     VideoConditionedActionDecoderConfig,
     VideoOnlyActionDecoderConfig,
 )
+from .backbone import (
+    LingbotCompatibleVideoBackboneConfig,
+    SharedVideoTransformerConfig,
+    normalize_backbone_implementation,
+    resolve_stage_attention_mode,
+)
 from .data import (
     ActionMappingConfig,
     ActionNormalizationConfig,
@@ -254,6 +260,7 @@ __all__ = [
     "JointTimestepCoupling",
     "LatentTemporalLayout",
     "LatentWindowProfile",
+    "LingbotCompatibleVideoBackboneConfig",
     "LingbotParallelActionDecoderConfig",
     "LiberoDataConfig",
     "LoopPolicyName",
@@ -318,6 +325,7 @@ __all__ = [
     "SegmentContextPolicy",
     "StateSequenceAdapterFamily",
     "StrategyName",
+    "SharedVideoTransformerConfig",
     "StreamEncoderType",
     "StreamInputAdapterFamily",
     "StreamOutputHeadFamily",
@@ -357,6 +365,8 @@ __all__ = [
     "WindowSamplingMode",
     "WarmupAnchor",
     "default_mixed_video_resize_bins",
+    "normalize_backbone_implementation",
+    "resolve_stage_attention_mode",
     "validate_config_file",
     "validate_config_files",
 ]

@@ -5,7 +5,6 @@ import math
 import mimetypes
 import os
 import re
-import tempfile
 import time
 import urllib.error
 import urllib.request

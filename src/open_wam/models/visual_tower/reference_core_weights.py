@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import torch
 
 from open_wam.configs import ReferenceCoreInitMode
-from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
+from open_wam.configs.backbone import SharedVideoTransformerConfig
 
 from .reference_transformer import build_reference_transformer
 

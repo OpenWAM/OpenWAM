@@ -7,7 +7,7 @@ from safetensors import safe_open
 from safetensors.torch import load_file
 
 from open_wam.configs import ExportedRuntimeActionInitMode
-from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
+from open_wam.configs.backbone import SharedVideoTransformerConfig
 
 from .reference_core_weights import BackboneLoadReport
 from .reference_loader import resolve_pretrained_component_dir

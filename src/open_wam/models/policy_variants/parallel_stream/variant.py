@@ -18,7 +18,7 @@ from open_wam.configs import (
 )
 from open_wam.data.sample_metadata import SampleConstructionMetadata
 from open_wam.models.video_backbone.contracts import CacheState
-from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
+from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.models.policy_variants.common.layouts import expand_previous_action
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 

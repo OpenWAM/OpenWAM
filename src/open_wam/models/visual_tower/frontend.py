@@ -8,7 +8,7 @@ from torch import nn
 from open_wam.data.raw_video import ViewPlacement
 from open_wam.configs.enums import serialize_enum_values
 from open_wam.models.common.video_geometry import video_token_grid_from_latent_shape
-from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
+from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.models.video_backbone.contracts import ChunkMetadata, ConditioningState, TokenGridMetadata
 
 from .contracts import VisualFrontendOutput

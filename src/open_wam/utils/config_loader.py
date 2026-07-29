@@ -4,16 +4,36 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Collection, Mapping, TypeVar
 
-from open_wam.configs.enums import StrEnum
+import open_wam.configs.enums as config_enums
 from open_wam.configs import (
     ActionDecoderConfig,
-    DecodedFeatureActionDecoderConfig,
-    LingbotParallelActionDecoderConfig,
-    MLPActionDecoderConfig,
-    MoTActionDecoderConfig,
-    VideoConditionedActionDecoderConfig,
+    ActionMappingConfig,
+    ActionNormalizationConfig,
+    ActionSchemaConfig,
+    ActionTargetConfig,
+    AuxiliaryValidationTaskConfig,
+    CalvinDataConfig,
     CausalPrefixSuffixBucketConfig,
     CausalVideoPredictionPolicyConfig,
+    ConsortiumChannelMappingConfig,
+    ConsortiumCloudCacheConfig,
+    ConsortiumEpisodeSelectionConfig,
+    ConsortiumLocalCacheConfig,
+    ConsortiumMemberConfig,
+    DataConfig,
+    DecodedFeatureActionDecoderConfig,
+    ExperimentConfig,
+    GeneralistDynamicsMixtureConfig,
+    GenericDataConfig,
+    LeRobotConsortiumDataConfig,
+    LiberoDataConfig,
+    LingbotParallelActionDecoderConfig,
+    MixedVideoDataConfig,
+    MixedVideoResizeBinConfig,
+    MixedVideoSourceConfig,
+    MixedVideoViewCombinationConfig,
+    MLPActionDecoderConfig,
+    MoTActionDecoderConfig,
     MoTPolicyConfig,
     ParallelStreamPolicyConfig,
     PolicyVariantConfig,
@@ -21,41 +41,25 @@ from open_wam.configs import (
     PostLatentPolicyConfig,
     RegisterActionDecoderConfig,
     RegisterAttachedPolicyConfig,
-    VPPActionDecoderConfig,
-    VideoOnlyActionDecoderConfig,
-    VideoSequencePolicyConfig,
-    ActionMappingConfig,
-    ActionNormalizationConfig,
-    ConsortiumChannelMappingConfig,
-    ConsortiumCloudCacheConfig,
-    ConsortiumEpisodeSelectionConfig,
-    ConsortiumLocalCacheConfig,
-    ConsortiumMemberConfig,
-    ActionSchemaConfig,
-    ActionTargetConfig,
-    CalvinDataConfig,
-    DataConfig,
-    ExperimentConfig,
-    GenericDataConfig,
-    GeneralistDynamicsMixtureConfig,
-    LeRobotConsortiumDataConfig,
-    LiberoDataConfig,
-    MixedVideoDataConfig,
-    MixedVideoResizeBinConfig,
-    MixedVideoSourceConfig,
-    MixedVideoViewCombinationConfig,
     RobotWinDataConfig,
     SampleConstructionConfig,
     TrainerConfig,
-    AuxiliaryValidationTaskConfig,
     ValidationConfig,
+    VideoConditionedActionDecoderConfig,
+    VideoOnlyActionDecoderConfig,
+    VideoSequencePolicyConfig,
     ViewLayoutConfig,
     VisualReadoutConfig,
+    VPPActionDecoderConfig,
 )
-import open_wam.configs.enums as config_enums
+from open_wam.configs.backbone import (
+    SharedVideoTransformerConfig,
+    normalize_backbone_implementation,
+)
+from open_wam.configs.enums import StrEnum
 from open_wam.configs.inference import InferenceConfig
 from open_wam.configs.training import TrainingConfig
-from open_wam.models.video_backbone.config import SharedVideoTransformerConfig, normalize_backbone_implementation
+
 from .local_paths import read_yaml_with_local_paths
 from .video_timeline import VideoFrameMapping
 
