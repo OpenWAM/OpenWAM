@@ -114,6 +114,8 @@ samplers own distributed coordination.
 
 - Registration hooks configure contracts; they must not start jobs or mutate
   global training state.
+- Use `open_wam.configs` coercion helpers for enum-backed extension settings;
+  keep cross-section defaults and validation in a named config contract.
 - Dataset parsing remains in data adapters.
 - Policy semantics remain in `PolicyVariant`.
 - Shared visual execution remains in `VisualTower`.

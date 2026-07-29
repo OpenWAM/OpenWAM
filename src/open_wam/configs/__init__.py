@@ -15,6 +15,14 @@ from .backbone import (
     normalize_backbone_implementation,
     resolve_stage_attention_mode,
 )
+from .coercion import (
+    coerce_bool,
+    coerce_enum,
+    coerce_enum_tuple,
+    coerce_optional_enum,
+    coerce_strict_chunk_size,
+    raw_enum_value,
+)
 from .data import (
     ActionMappingConfig,
     ActionNormalizationConfig,
@@ -163,6 +171,13 @@ from .trainer import TrainerConfig
 from .training import TrainingConfig
 from .validation import AuxiliaryValidationTaskConfig, ValidationConfig
 from .visual_readout import VisualReadoutConfig
+from .sequence_contracts import (
+    apply_parallel_sequence_contract,
+    expand_parallel_sequence_contract,
+    validate_experiment_config_runtime_contract,
+    validate_parallel_sequence_contract_override_keys,
+    validate_policy_data_sequence_contract,
+)
 
 __all__ = [
     "ActionDecoderConfig",
@@ -210,6 +225,12 @@ __all__ = [
     "ConsortiumSplitMode",
     "ConsortiumViewPackingMode",
     "ConsortiumWeightMode",
+    "coerce_bool",
+    "coerce_enum",
+    "coerce_enum_tuple",
+    "coerce_optional_enum",
+    "coerce_strict_chunk_size",
+    "raw_enum_value",
     "CurrentBlockCoupling",
     "DecodedFeatureActionDecoderConfig",
     "DataConfig",
@@ -316,9 +337,14 @@ __all__ = [
     "WandBMode",
     "WindowSamplingMode",
     "WarmupAnchor",
+    "apply_parallel_sequence_contract",
     "default_mixed_video_resize_bins",
+    "expand_parallel_sequence_contract",
     "normalize_backbone_implementation",
     "resolve_stage_attention_mode",
     "validate_config_file",
     "validate_config_files",
+    "validate_experiment_config_runtime_contract",
+    "validate_parallel_sequence_contract_override_keys",
+    "validate_policy_data_sequence_contract",
 ]

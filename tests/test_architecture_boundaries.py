@@ -98,6 +98,21 @@ def test_lerobot_latent_repository_io_has_one_storage_owner() -> None:
     assert storage_owned.isdisjoint(dataset_definitions)
 
 
+def test_sequence_contract_semantics_have_one_config_owner() -> None:
+    contract_functions = {
+        "apply_parallel_sequence_contract",
+        "expand_parallel_sequence_contract",
+        "validate_experiment_config_runtime_contract",
+        "validate_parallel_sequence_contract_override_keys",
+        "validate_policy_data_sequence_contract",
+    }
+    config_definitions = _top_level_definitions(PACKAGE_ROOT / "configs" / "sequence_contracts.py")
+    loader_definitions = _top_level_definitions(PACKAGE_ROOT / "utils" / "config_loader.py")
+
+    assert contract_functions <= config_definitions
+    assert contract_functions.isdisjoint(loader_definitions)
+
+
 def test_retired_ablations_namespace_is_not_packaged() -> None:
     assert not (PACKAGE_ROOT / "ablations").exists()
 

@@ -7,14 +7,14 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import open_wam.configs.enums as config_enums
-from open_wam.configs import ExperimentConfig
-from open_wam.extensions import load_extension_modules
-from open_wam.utils import load_experiment_config
-from open_wam.utils.config_overrides import apply_config_overrides, parse_override_assignments
-from open_wam.utils.config_loader import (
+from open_wam.configs import (
+    ExperimentConfig,
     apply_parallel_sequence_contract,
     validate_parallel_sequence_contract_override_keys,
 )
+from open_wam.extensions import load_extension_modules
+from open_wam.utils import load_experiment_config
+from open_wam.utils.config_overrides import apply_config_overrides, parse_override_assignments
 
 
 EXPERIMENT_CONFIG_ROOT = Path(__file__).resolve().parents[3] / "configs" / "experiments"

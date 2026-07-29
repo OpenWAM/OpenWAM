@@ -29,6 +29,14 @@ shared visual execution path for every experiment.
 - Keep public finite choices enum-backed at the typed config boundary.
 - Do not add method-named infrastructure when the abstraction is generic.
 
+## Configuration Contract
+
+`open_wam.configs.coercion` owns reusable YAML/CLI-to-type conversion.
+`open_wam.configs.sequence_contracts` owns defaults and cross-section
+validation for sequence semantics. The YAML loader maps sections into frozen
+dataclasses and retains compatibility imports, but it does not own policy
+contract behavior.
+
 ## Visual Tower Contract
 
 The shared visual stack exposes stage-aware outputs rather than allowing policy
