@@ -1632,9 +1632,6 @@ class MoTPolicyVariant(PolicyVariant):
             device=device,
             dtype=torch.float32,
         )
-        collect_attention_focus = bool(context.extra.get("mot_collect_attention_focus", False))
-        attention_focus_records: list[dict[str, object]] | None = [] if collect_attention_focus else None
-
         forced_clean_action_condition = (
             None
             if forced_action_latents is None
@@ -1697,8 +1694,6 @@ class MoTPolicyVariant(PolicyVariant):
             action_timestep: torch.Tensor,
             current_clean_video_for_step: torch.Tensor,
             current_clean_action_for_step: torch.Tensor,
-            diagnostic_phase: str,
-            diagnostic_step_index: int,
         ):
             dense_video_timestep = torch.cat([history_video_timesteps, video_timestep], dim=1)
             packed_video_hidden_context = (
@@ -1735,20 +1730,6 @@ class MoTPolicyVariant(PolicyVariant):
                 packed_block_stack=self.packed_block_stack,
                 prefer_flex_attention=False,
                 video_hidden_context=packed_video_hidden_context,
-                attention_diagnostics=attention_focus_records,
-                attention_diagnostic_context=(
-                    None
-                    if attention_focus_records is None
-                    else {
-                        "rollout_mode": generalist_rollout_mode.value,
-                        "phase": diagnostic_phase,
-                        "denoise_step_index": int(diagnostic_step_index),
-                        "shared_history_frames": int(shared_history_frames),
-                        "current_video_sequence_frames": int(current_video_sequence_frames),
-                        "current_action_sequence_tokens": int(current_action_sequence_tokens),
-                        "current_action_prefix_tokens": int(current_action_prefix_tokens),
-                    }
-                ),
             ) + (packed_action_pre,)
 
         def _video_timestep(value: torch.Tensor) -> torch.Tensor:
@@ -1859,15 +1840,13 @@ class MoTPolicyVariant(PolicyVariant):
         if generalist_rollout_mode == MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO:
             if forced_clean_action_condition is None:  # pragma: no cover - guarded earlier
                 raise RuntimeError("M5 FDM rollout missing clean action condition.")
-            for step_index, video_timestep in enumerate(video_scheduler.timesteps):
+            for video_timestep in video_scheduler.timesteps:
                 current_video_timestep = _video_timestep(video_timestep)
                 video_flow_pred, _, _ = _run_packed_step(
                     video_timestep=current_video_timestep,
                     action_timestep=zero_current_action_timestep,
                     current_clean_video_for_step=current_clean_video,
                     current_clean_action_for_step=forced_clean_action_condition,
-                    diagnostic_phase="fdm_video_denoise",
-                    diagnostic_step_index=step_index,
                 )
                 _update_video(video_flow_pred, video_timestep)
         elif generalist_rollout_mode == MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION:
@@ -1883,8 +1862,6 @@ class MoTPolicyVariant(PolicyVariant):
                     action_timestep=current_action_timestep,
                     current_clean_video_for_step=current_clean_video,
                     current_clean_action_for_step=zero_current_action_condition,
-                    diagnostic_phase="idm_action_denoise",
-                    diagnostic_step_index=step_index,
                 )
                 _update_action(
                     packed_action_hidden,
@@ -1894,54 +1871,46 @@ class MoTPolicyVariant(PolicyVariant):
                     sigma_next=shared_sigma_next,
                 )
         elif current_block_coupling == CurrentBlockCoupling.VIDEO_THEN_ACTION:
-            for step_index, video_timestep in enumerate(video_scheduler.timesteps):
+            for video_timestep in video_scheduler.timesteps:
                 current_video_timestep = _video_timestep(video_timestep)
                 video_flow_pred, _, _ = _run_packed_step(
                     video_timestep=current_video_timestep,
                     action_timestep=zero_current_action_timestep,
                     current_clean_video_for_step=current_clean_video,
                     current_clean_action_for_step=zero_current_action_condition,
-                    diagnostic_phase="video_then_action_video_denoise",
-                    diagnostic_step_index=step_index,
                 )
                 _update_video(video_flow_pred, video_timestep)
             current_clean_video = predicted_video_sequence[:, :, shared_history_frames:].contiguous()
-            for step_index, action_timestep in enumerate(action_scheduler.timesteps):
+            for action_timestep in action_scheduler.timesteps:
                 current_action_timestep = _action_timestep(action_timestep)
                 _, packed_action_hidden, packed_action_pre = _run_packed_step(
                     video_timestep=zero_current_video_timestep,
                     action_timestep=current_action_timestep,
                     current_clean_video_for_step=current_clean_video,
                     current_clean_action_for_step=zero_current_action_condition,
-                    diagnostic_phase="video_then_action_action_denoise",
-                    diagnostic_step_index=step_index,
                 )
                 _update_action(packed_action_hidden, packed_action_pre, current_action_timestep)
         elif current_block_coupling == CurrentBlockCoupling.ACTION_THEN_VIDEO:
-            for step_index, action_timestep in enumerate(action_scheduler.timesteps):
+            for action_timestep in action_scheduler.timesteps:
                 current_action_timestep = _action_timestep(action_timestep)
                 _, packed_action_hidden, packed_action_pre = _run_packed_step(
                     video_timestep=zero_current_video_timestep,
                     action_timestep=current_action_timestep,
                     current_clean_video_for_step=current_clean_video,
                     current_clean_action_for_step=zero_current_action_condition,
-                    diagnostic_phase="action_then_video_action_denoise",
-                    diagnostic_step_index=step_index,
                 )
                 _update_action(packed_action_hidden, packed_action_pre, current_action_timestep)
             if not action_only_rollout:
                 current_clean_action = packed_inference_layout.compose_current_action_sequence(
                     action_sample
                 )
-                for step_index, video_timestep in enumerate(video_scheduler.timesteps):
+                for video_timestep in video_scheduler.timesteps:
                     current_video_timestep = _video_timestep(video_timestep)
                     video_flow_pred, _, _ = _run_packed_step(
                         video_timestep=current_video_timestep,
                         action_timestep=zero_current_action_timestep,
                         current_clean_video_for_step=current_clean_video,
                         current_clean_action_for_step=current_clean_action,
-                        diagnostic_phase="action_then_video_video_denoise",
-                        diagnostic_step_index=step_index,
                     )
                     _update_video(video_flow_pred, video_timestep)
         else:
@@ -1957,8 +1926,6 @@ class MoTPolicyVariant(PolicyVariant):
                     action_timestep=current_action_timestep,
                     current_clean_video_for_step=current_clean_video,
                     current_clean_action_for_step=zero_current_action_condition,
-                    diagnostic_phase="joint_denoise",
-                    diagnostic_step_index=step_index,
                 )
                 _update_video(
                     video_flow_pred,
@@ -2049,7 +2016,7 @@ class MoTPolicyVariant(PolicyVariant):
                 == MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
                 "mot_diagnostic_zero_current_video_noise": diagnostic_zero_video_noise,
                 "mot_diagnostic_zero_current_action_noise": diagnostic_zero_action_noise,
-                "mot_attention_focus": attention_focus_records,
+                "mot_attention_focus": None,
                 "commit_action_override": commit_action_latents is not None,
                 "returned_action_source": "predicted"
                 if generalist_rollout_mode != MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO

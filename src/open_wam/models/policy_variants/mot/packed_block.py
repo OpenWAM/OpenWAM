@@ -24,7 +24,6 @@ parameter views.
 
 from __future__ import annotations
 
-import math
 from typing import Any
 
 import torch
@@ -33,61 +32,6 @@ import torch.nn.functional as F
 
 from open_wam.models.common.attention_profiles import apply_attention_backend
 from open_wam.models.visual_tower.shared_transformer_support import apply_rotary_emb, select_chunk_slices
-
-
-def _append_attention_focus_records(
-    diagnostics: list[dict[str, Any]] | None,
-    *,
-    query: torch.Tensor,
-    key: torch.Tensor,
-    attention_mask: torch.Tensor | None,
-    query_groups: tuple[tuple[str, int, int], ...],
-    key_groups: tuple[tuple[str, int, int], ...],
-    block_index: int | None,
-    context: dict[str, Any] | None,
-) -> None:
-    """Append compact query-slot to key-slot attention-mass summaries.
-
-    This is deliberately diagnostic-only. Normal forward still uses SDPA/Flex
-    attention; when enabled, this helper recomputes attention probabilities
-    under ``torch.no_grad()`` and stores group-level means rather than full
-    matrices.
-    """
-
-    if diagnostics is None:
-        return
-    with torch.no_grad():
-        scores = torch.matmul(query.float(), key.float().transpose(-2, -1))
-        scores = scores / math.sqrt(max(1, int(query.shape[-1])))
-        if attention_mask is not None:
-            mask = attention_mask.to(device=scores.device)
-            if mask.dtype == torch.bool:
-                scores = scores.masked_fill(~mask, -torch.finfo(scores.dtype).max)
-            else:
-                scores = scores + mask.to(dtype=scores.dtype)
-        probs = torch.softmax(scores, dim=-1)
-        probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
-        for query_label, query_start, query_end in query_groups:
-            if query_end <= query_start:
-                continue
-            query_probs = probs[:, :, query_start:query_end, :]
-            key_mass = {}
-            for key_label, key_start, key_end in key_groups:
-                if key_end <= key_start:
-                    key_mass[key_label] = 0.0
-                    continue
-                key_mass[key_label] = float(query_probs[:, :, :, key_start:key_end].sum(dim=-1).mean().item())
-            entropy = -(query_probs.clamp_min(1e-12) * query_probs.clamp_min(1e-12).log()).sum(dim=-1)
-            record = {
-                "block_index": None if block_index is None else int(block_index),
-                "query_slot": query_label,
-                "key_mass": key_mass,
-                "attention_entropy_mean": float(entropy.mean().item()),
-                "attention_max_mean": float(query_probs.max(dim=-1).values.mean().item()),
-            }
-            if context:
-                record.update(context)
-            diagnostics.append(record)
 
 
 def _native_attention(
@@ -213,9 +157,6 @@ class MoTPackedBlock(nn.Module):
         action_cross_attention_mask: torch.Tensor | None = None,
         block_mask: Any | None = None,
         flex_kernel_options: dict[str, Any] | None = None,
-        attention_diagnostics: list[dict[str, Any]] | None = None,
-        attention_diagnostic_context: dict[str, Any] | None = None,
-        block_index: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         video_attn_inputs = _prepare_self_attention_inputs_native(
             self.video_block,
@@ -259,42 +200,6 @@ class MoTPackedBlock(nn.Module):
             mixed_video = mixed_video.transpose(1, 2).flatten(2, 3)
             mixed_action = mixed_action.transpose(1, 2).flatten(2, 3)
         else:
-            video_seq_len = int(video_attn_inputs["query"].shape[2])
-            action_seq_len = int(action_attn_inputs["query"].shape[2])
-            video_half = video_seq_len // 2
-            action_half = action_seq_len // 2
-            key_groups = (
-                ("video_noisy", 0, video_half),
-                ("video_clean", video_half, video_seq_len),
-                ("action_noisy", video_seq_len, video_seq_len + action_half),
-                ("action_clean", video_seq_len + action_half, video_seq_len + action_seq_len),
-            )
-            _append_attention_focus_records(
-                attention_diagnostics,
-                query=video_attn_inputs["query"],
-                key=joint_key,
-                attention_mask=video_attention_mask,
-                query_groups=(
-                    ("video_noisy", 0, video_half),
-                    ("video_clean", video_half, video_seq_len),
-                ),
-                key_groups=key_groups,
-                block_index=block_index,
-                context=attention_diagnostic_context,
-            )
-            _append_attention_focus_records(
-                attention_diagnostics,
-                query=action_attn_inputs["query"],
-                key=joint_key,
-                attention_mask=action_attention_mask,
-                query_groups=(
-                    ("action_noisy", 0, action_half),
-                    ("action_clean", action_half, action_seq_len),
-                ),
-                key_groups=key_groups,
-                block_index=block_index,
-                context=attention_diagnostic_context,
-            )
             mixed_video = (
                 F.scaled_dot_product_attention(
                     video_attn_inputs["query"],
@@ -372,11 +277,10 @@ class MoTPackedBlockStack(nn.Module):
         action_hidden_states: torch.Tensor,
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        for block_index, packed_block in enumerate(self.packed_blocks):
+        for packed_block in self.packed_blocks:
             video_hidden_states, action_hidden_states = packed_block(
                 video_hidden_states,
                 action_hidden_states,
-                block_index=block_index,
                 **kwargs,
             )
         return video_hidden_states, action_hidden_states

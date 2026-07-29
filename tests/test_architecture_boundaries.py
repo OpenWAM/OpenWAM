@@ -630,6 +630,27 @@ def test_orphaned_diagnostics_and_duplicate_aliases_are_retired() -> None:
     assert not any(path.exists() for path in retired_paths)
 
 
+def test_private_gjd_conditioning_study_driver_is_retired() -> None:
+    retired_paths = (
+        REPO_ROOT / "scripts" / "analyze_gjd_conditioning_sensitivity.py",
+        REPO_ROOT / "notes" / "gjd_attention_and_rollout_parity_overnight_20260708.md",
+    )
+    packed_block = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "packed_block.py"
+    ).read_text(encoding="utf-8")
+    packed_runtime = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "runtime.py"
+    ).read_text(encoding="utf-8")
+    variant = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "variant.py"
+    ).read_text(encoding="utf-8")
+
+    assert not any(path.exists() for path in retired_paths)
+    assert "mot_collect_attention_focus" not in variant
+    assert "attention_diagnostics" not in packed_block
+    assert "attention_diagnostics" not in packed_runtime
+
+
 def test_public_config_enums_are_declared_once() -> None:
     path = PACKAGE_ROOT / "configs" / "enums.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
