@@ -108,6 +108,21 @@ def test_private_uva_comparison_drivers_are_retired() -> None:
     assert not any(path.exists() for path in retired_paths)
 
 
+def test_private_libero_absolute_action_experiment_harness_is_retired() -> None:
+    retired_paths = (
+        REPO_ROOT / "scripts" / "process_libero10_absolute_joint_dataset.py",
+        REPO_ROOT / "scripts" / "calibrate_libero_integrated_delta_scale.py",
+        REPO_ROOT / "scripts" / "calibrate_libero_integrated_eef_scale.py",
+        REPO_ROOT / "scripts" / "check_libero_absolute_joint_adapter_sanity.py",
+        REPO_ROOT / "scripts" / "materialize_libero_absolute_joint_lerobot_overlay.py",
+        REPO_ROOT / "scripts" / "materialize_libero_integrated_eef6d_overlay.py",
+        REPO_ROOT / "scripts" / "run_libero_abs_joint_rollout_debug.py",
+        REPO_ROOT / "scripts" / "validate_libero_absolute_joint_position.py",
+    )
+
+    assert not any(path.exists() for path in retired_paths)
+
+
 def test_public_config_enums_are_declared_once() -> None:
     path = PACKAGE_ROOT / "configs" / "enums.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

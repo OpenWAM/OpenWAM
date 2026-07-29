@@ -30,35 +30,13 @@ def _load_sandbox_module():
     return module
 
 
-def _load_module_from_path(module_path: Path, module_name: str):
-    spec = importlib.util.spec_from_file_location(module_name, module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Failed to load module spec for {module_path}.")
-    module = importlib.util.module_from_spec(spec)
-    previous_module = sys.modules.get(spec.name)
-    sys.modules[spec.name] = module
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        if previous_module is None:
-            sys.modules.pop(spec.name, None)
-        else:
-            sys.modules[spec.name] = previous_module
-    return module
-
-
 def test_realtime_helpers_use_source_visualization_contract() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     expected_module = (repo_root / "src" / "open_wam" / "evals" / "libero_visualization.py").resolve()
     sandbox = _load_sandbox_module()
-    abs_joint = _load_module_from_path(
-        repo_root / "scripts" / "run_libero_abs_joint_rollout_debug.py",
-        f"run_libero_abs_joint_rollout_debug_test_{uuid.uuid4().hex}",
-    )
 
     assert Path(sandbox.exact_viz.__file__).resolve() == expected_module
     assert Path(sandbox.exact_sandbox.exact_viz.__file__).resolve() == expected_module
-    assert Path(abs_joint.exact_viz.__file__).resolve() == expected_module
 
 
 def _build_exact_history_frame_payload() -> tuple[dict[str, np.ndarray], list[dict[str, np.ndarray]], list[np.ndarray]]:

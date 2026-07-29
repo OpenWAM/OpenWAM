@@ -110,19 +110,6 @@ def test_absolute_action_features_are_opt_in_for_legacy_libero_training_configs(
     assert getattr(config.action_decoder, "recovered_osc_loss_weight", 0.0) == 0.0
 
 
-def test_abs_eef6d_training_config_is_the_explicit_absolute_action_opt_in() -> None:
-    config = load_experiment_config(
-        REPO_ROOT / "configs" / "experiments" / "parallel_stream_libero_lingbot_m1_video_then_action_abs_eef6d.yaml"
-    )
-
-    assert config.data.action_schema.action_dim == 10
-    assert config.data.action_target.representation == ActionTargetRepresentation.RAW
-    assert config.data.action_target.source_key == "integrated_eef6d_action"
-    assert config.data.action_target.normalization.mode == ActionNormalizationMode.GAUSSIAN
-    assert config.policy_variant.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
-    assert config.action_decoder.recovered_osc_loss_weight > 0.0
-
-
 def test_legacy_contract_only_maps_to_post_latent() -> None:
     config = load_experiment_config(REPO_ROOT / "configs/experiments/contract_only_robotwin.yaml")
     assert isinstance(config.policy_variant, PostLatentPolicyConfig)
