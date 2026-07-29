@@ -1,9 +1,11 @@
-"""Generic deterministic samplers for sharded dataset index streams."""
+"""Deterministic sampling primitives and sharded dataset index streams."""
 
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence, Sized
+from dataclasses import dataclass
 import math
+import random
 from typing import Protocol
 
 import torch
@@ -15,10 +17,109 @@ __all__ = [
     "EpochOffsetDistributedSampler",
     "EpochOrderDistributedSampler",
     "EpochOrderSource",
+    "HierarchicalSampleIndex",
+    "HierarchicalTaskChoice",
+    "HierarchicalWindowChoice",
     "PaddedEpochOffsetDistributedSampler",
     "UnpaddedEpochOrderDistributedSampler",
     "WeightedReplacementDistributedSampler",
+    "draw_hierarchical_sample_index",
+    "stable_int_seed",
+    "weighted_choice_index",
 ]
+
+
+@dataclass(frozen=True)
+class HierarchicalSampleIndex:
+    """One deterministic task, trajectory, and start draw."""
+
+    task_index: int
+    window_index: int
+    start: int
+
+
+class HierarchicalWindowChoice(Protocol):
+    """Structural window contract consumed by hierarchical draws."""
+
+    @property
+    def mass_within_task(self) -> float: ...
+
+    @property
+    def start_min(self) -> int: ...
+
+    @property
+    def start_max(self) -> int: ...
+
+
+class HierarchicalTaskChoice(Protocol):
+    """Structural task contract exposing its eligible windows."""
+
+    @property
+    def windows(self) -> Sequence[HierarchicalWindowChoice]: ...
+
+
+def stable_int_seed(*values: int) -> int:
+    """Build a stable 63-bit seed without Python's randomized hash."""
+
+    seed = 0x9E3779B97F4A7C15
+    mask = (1 << 64) - 1
+    for value in values:
+        mixed = (int(value) + 0x9E3779B97F4A7C15) & mask
+        mixed = ((mixed ^ (mixed >> 30)) * 0xBF58476D1CE4E5B9) & mask
+        mixed = ((mixed ^ (mixed >> 27)) * 0x94D049BB133111EB) & mask
+        seed ^= mixed ^ (mixed >> 31)
+        seed &= mask
+    return seed & 0x7FFF_FFFF_FFFF_FFFF
+
+
+def weighted_choice_index(weights: Sequence[float], rng: random.Random) -> int:
+    """Draw one index while preserving the caller-owned RNG stream."""
+
+    total = float(sum(weights))
+    if total <= 0.0:
+        return int(rng.randrange(len(weights)))
+    threshold = rng.random() * total
+    cumulative = 0.0
+    for index, weight in enumerate(weights):
+        cumulative += float(weight)
+        if threshold <= cumulative:
+            return index
+    return len(weights) - 1
+
+
+def draw_hierarchical_sample_index(
+    *,
+    seed_values: Sequence[int],
+    task_weights: Sequence[float],
+    task_specs: Sequence[HierarchicalTaskChoice],
+) -> HierarchicalSampleIndex:
+    """Draw task, trajectory, and inclusive start without adapter knowledge."""
+
+    task_count = len(task_weights)
+    if task_count <= 0:
+        raise ValueError("Hierarchical sampling requires at least one task.")
+    if len(task_specs) != task_count:
+        raise ValueError(
+            "Hierarchical sampling requires one task specification per task weight, "
+            f"got weights={task_count}, task_specs={len(task_specs)}."
+        )
+
+    rng = random.Random(stable_int_seed(*seed_values))
+    task_index = weighted_choice_index(task_weights, rng)
+    windows = task_specs[task_index].windows
+    if not windows:
+        raise ValueError(
+            f"Hierarchical sampling task {task_index} requires at least one window."
+        )
+    window_weights = tuple(float(window.mass_within_task) for window in windows)
+    window_index = weighted_choice_index(window_weights, rng)
+    window = windows[window_index]
+    start = int(rng.randint(int(window.start_min), int(window.start_max)))
+    return HierarchicalSampleIndex(
+        task_index=int(task_index),
+        window_index=int(window_index),
+        start=start,
+    )
 
 
 class EpochOrderSource(Protocol):

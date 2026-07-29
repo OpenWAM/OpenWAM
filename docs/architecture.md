@@ -131,7 +131,9 @@ canvas contract. Dataset adapters choose slots and sampling weights, then call
 supply weights or deterministic global index orders without embedding
 distributed control flow. Equal-rank padded orders, intentionally unpadded
 orders, dataset-span draw keys, and padded-span draw keys are separate
-contracts rather than implicit adapter conventions.
+contracts rather than implicit adapter conventions. The same module owns the
+stable task/trajectory/start draw primitive used by real and counterfactual
+hierarchical datasets; adapters still own eligibility and probability mass.
 
 ## Operations Boundary
 

@@ -1,21 +1,30 @@
 from __future__ import annotations
 
+import random
+from types import SimpleNamespace
+
 import pytest
 import torch
 
 from open_wam.data import (
     EpochOffsetDistributedSampler as PublicEpochOffsetDistributedSampler,
     EpochOrderDistributedSampler as PublicEpochOrderDistributedSampler,
+    HierarchicalSampleIndex as PublicHierarchicalSampleIndex,
     PaddedEpochOffsetDistributedSampler as PublicPaddedEpochOffsetDistributedSampler,
     UnpaddedEpochOrderDistributedSampler as PublicUnpaddedEpochOrderDistributedSampler,
     WeightedReplacementDistributedSampler as PublicWeightedReplacementDistributedSampler,
+    draw_hierarchical_sample_index as public_draw_hierarchical_sample_index,
 )
 from open_wam.data.distributed_sampling import (
     EpochOffsetDistributedSampler,
     EpochOrderDistributedSampler,
+    HierarchicalSampleIndex,
     PaddedEpochOffsetDistributedSampler,
     UnpaddedEpochOrderDistributedSampler,
     WeightedReplacementDistributedSampler,
+    draw_hierarchical_sample_index,
+    stable_int_seed,
+    weighted_choice_index,
 )
 from open_wam.data.generalist_dynamics import GeneralistDynamicsMixtureTrainSampler
 from open_wam.data.lerobot_consortium import ConsortiumTrainSampler
@@ -52,6 +61,90 @@ def test_distributed_samplers_are_public_identity_exports() -> None:
     assert PublicPaddedEpochOffsetDistributedSampler is PaddedEpochOffsetDistributedSampler
     assert PublicUnpaddedEpochOrderDistributedSampler is UnpaddedEpochOrderDistributedSampler
     assert PublicWeightedReplacementDistributedSampler is WeightedReplacementDistributedSampler
+    assert PublicHierarchicalSampleIndex is HierarchicalSampleIndex
+    assert public_draw_hierarchical_sample_index is draw_hierarchical_sample_index
+
+
+def test_stable_int_seed_is_repeatable_across_signed_and_large_values() -> None:
+    assert stable_int_seed(7, 17, 0) == 2258631717021994766
+    assert stable_int_seed(7, 53, 1_000_003) == 8044077716504970128
+    assert stable_int_seed(-1) == 8858027199621451829
+    assert stable_int_seed(2**80, -(2**70), 17) == 2212125351011225462
+
+
+def test_weighted_choice_preserves_rng_order_and_zero_mass_fallback() -> None:
+    weighted_rng = random.Random(7)
+    assert [weighted_choice_index((1.0, 2.0, 3.0), weighted_rng) for _ in range(6)] == [
+        1,
+        0,
+        2,
+        0,
+        2,
+        1,
+    ]
+
+    zero_rng = random.Random(7)
+    assert [weighted_choice_index((0.0, 0.0, 0.0), zero_rng) for _ in range(6)] == [
+        1,
+        0,
+        1,
+        2,
+        0,
+        0,
+    ]
+
+
+def test_hierarchical_draw_selects_task_window_and_inclusive_start() -> None:
+    draws = [
+        draw_hierarchical_sample_index(
+            seed_values=(123, 17, index),
+            task_weights=(2.0, 5.0),
+            task_specs=(
+                SimpleNamespace(
+                    windows=(
+                        SimpleNamespace(mass_within_task=1.0, start_min=-3, start_max=5),
+                        SimpleNamespace(mass_within_task=3.0, start_min=7, start_max=11),
+                    )
+                ),
+                SimpleNamespace(
+                    windows=(
+                        SimpleNamespace(mass_within_task=0.0, start_min=100, start_max=100),
+                        SimpleNamespace(mass_within_task=8.0, start_min=20, start_max=27),
+                    )
+                ),
+            ),
+        )
+        for index in (0, 1, 2, 9, 1_000_003)
+    ]
+
+    assert draws == [
+        HierarchicalSampleIndex(task_index=1, window_index=1, start=24),
+        HierarchicalSampleIndex(task_index=0, window_index=0, start=4),
+        HierarchicalSampleIndex(task_index=1, window_index=1, start=26),
+        HierarchicalSampleIndex(task_index=1, window_index=1, start=26),
+        HierarchicalSampleIndex(task_index=1, window_index=1, start=26),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("task_weights", "task_specs", "message"),
+    (
+        ((), (), "at least one task"),
+        ((1.0,), (), "one task specification per task weight"),
+        ((1.0,), (SimpleNamespace(windows=()),), "at least one window"),
+    ),
+)
+def test_hierarchical_draw_rejects_inconsistent_tables(
+    task_weights: tuple[float, ...],
+    task_specs: tuple[SimpleNamespace, ...],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        draw_hierarchical_sample_index(
+            seed_values=(1, 17, 0),
+            task_weights=task_weights,
+            task_specs=task_specs,
+        )
 
 
 def test_dataset_samplers_are_thin_generic_contract_adapters() -> None:

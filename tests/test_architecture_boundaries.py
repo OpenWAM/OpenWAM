@@ -212,6 +212,27 @@ def test_temporal_sequence_packing_has_one_owner() -> None:
         assert "_pack_sequence" not in methods
 
 
+def test_hierarchical_draw_primitives_have_one_owner() -> None:
+    sampling_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "data" / "distributed_sampling.py"
+    )
+    assert {
+        "draw_hierarchical_sample_index",
+        "stable_int_seed",
+        "weighted_choice_index",
+    } <= sampling_definitions
+
+    for filename in (
+        "lerobot_v2_latent.py",
+        "counterfactual_dynamics_dataset.py",
+    ):
+        adapter_definitions = _top_level_definitions(PACKAGE_ROOT / "data" / filename)
+        assert {
+            "_stable_int_seed",
+            "_weighted_choice_index",
+        }.isdisjoint(adapter_definitions)
+
+
 def test_conditional_dynamics_layout_has_one_owner() -> None:
     layout_definitions = _top_level_definitions(
         PACKAGE_ROOT / "data" / "conditional_dynamics_layout.py"

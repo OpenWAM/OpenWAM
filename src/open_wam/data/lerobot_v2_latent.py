@@ -41,6 +41,7 @@ from .distributed_sampling import (
     EpochOffsetDistributedSampler,
     EpochOrderDistributedSampler,
     WeightedReplacementDistributedSampler,
+    draw_hierarchical_sample_index,
 )
 from .latent_contracts import LatentWAMSample
 from .latent_segment_geometry import (
@@ -972,33 +973,6 @@ class HierarchicalFixedSegmentTrainSampler(EpochOffsetDistributedSampler):
         )
 
 
-def _stable_int_seed(*values: int) -> int:
-    """Build a stable 63-bit seed without relying on Python's randomized hash."""
-
-    seed = 0x9E3779B97F4A7C15
-    mask = (1 << 64) - 1
-    for value in values:
-        mixed = (int(value) + 0x9E3779B97F4A7C15) & mask
-        mixed = ((mixed ^ (mixed >> 30)) * 0xBF58476D1CE4E5B9) & mask
-        mixed = ((mixed ^ (mixed >> 27)) * 0x94D049BB133111EB) & mask
-        seed ^= mixed ^ (mixed >> 31)
-        seed &= mask
-    return seed & 0x7FFF_FFFF_FFFF_FFFF
-
-
-def _weighted_choice_index(weights: tuple[float, ...], rng: random.Random) -> int:
-    total = float(sum(weights))
-    if total <= 0.0:
-        return int(rng.randrange(len(weights)))
-    threshold = rng.random() * total
-    cumulative = 0.0
-    for index, weight in enumerate(weights):
-        cumulative += float(weight)
-        if threshold <= cumulative:
-            return index
-    return len(weights) - 1
-
-
 class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
     """Uniform latent-start segment sampler over all eligible trajectories."""
 
@@ -1921,14 +1895,14 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
         index: int,
     ) -> tuple[HierarchicalFixedSegmentTaskSpec, HierarchicalFixedSegmentWindowSpec, int, int]:
         split_salt = 17 if self.data_config.split == DataSplit.TRAIN else 53
-        rng = random.Random(_stable_int_seed(int(self.data_config.split_seed), split_salt, int(index)))
-        task_index = _weighted_choice_index(self._task_weights, rng)
-        task_spec = self._task_specs[task_index]
-        window_weights = tuple(float(window.mass_within_task) for window in task_spec.windows)
-        window_index = _weighted_choice_index(window_weights, rng)
-        window_spec = task_spec.windows[window_index]
-        latent_start = int(rng.randint(window_spec.start_min, window_spec.start_max))
-        return task_spec, window_spec, latent_start, int(window_spec.sampled_chunk_size)
+        draw = draw_hierarchical_sample_index(
+            seed_values=(int(self.data_config.split_seed), split_salt, int(index)),
+            task_weights=self._task_weights,
+            task_specs=self._task_specs,
+        )
+        task_spec = self._task_specs[draw.task_index]
+        window_spec = task_spec.windows[draw.window_index]
+        return task_spec, window_spec, draw.start, int(window_spec.sampled_chunk_size)
 
     def resolve_hierarchical_sample_key(self, index: int) -> dict[str, Any]:
         """Resolve one sampler/dataloader index without loading tensors."""

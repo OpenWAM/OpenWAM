@@ -103,6 +103,12 @@ Prefer typed shared fields over `adapter_options` whenever the setting affects
 model-facing shapes, action/state semantics, temporal alignment, view layout,
 or sampling.
 
+For task-balanced hierarchical sampling, reuse
+`open_wam.data.draw_hierarchical_sample_index`. The adapter computes eligible
+windows and their probability mass; each task exposes windows with
+`mass_within_task`, `start_min`, and `start_max`. The shared primitive owns
+stable seed mixing and the task, window, and inclusive-start RNG order.
+
 ## Validation
 
 ```bash
