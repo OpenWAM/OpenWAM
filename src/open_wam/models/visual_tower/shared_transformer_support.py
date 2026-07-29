@@ -6,6 +6,7 @@ import torch
 import torch.nn.functional as F
 from diffusers.models.attention import FeedForward
 from diffusers.models.embeddings import TimestepEmbedding, Timesteps
+from diffusers.models.normalization import FP32LayerNorm
 from einops import rearrange
 from torch import nn
 
@@ -509,8 +510,202 @@ class SharedTransformerAttention(nn.Module):
         return hidden_states, current_cache_entry
 
 
+class SharedTransformerBlock(nn.Module):
+    """Wan-style transformer block with self-attn, cross-attn, and FFN."""
+
+    def __init__(
+        self,
+        *,
+        dim: int,
+        ffn_dim: int,
+        num_heads: int,
+        cross_attn_norm: bool,
+        eps: float,
+    ) -> None:
+        super().__init__()
+        self.norm1 = FP32LayerNorm(dim, eps, elementwise_affine=False)
+        self.attn1 = SharedTransformerAttention(
+            dim=dim,
+            heads=num_heads,
+            dim_head=dim // num_heads,
+            eps=eps,
+            cross_attention_dim_head=None,
+        )
+        self.attn2 = SharedTransformerAttention(
+            dim=dim,
+            heads=num_heads,
+            dim_head=dim // num_heads,
+            eps=eps,
+            cross_attention_dim_head=dim // num_heads,
+        )
+        self.norm2 = FP32LayerNorm(dim, eps, elementwise_affine=True) if cross_attn_norm else nn.Identity()
+        self.ffn = FeedForward(dim, inner_dim=ffn_dim, activation_fn="gelu-approximate")
+        self.norm3 = FP32LayerNorm(dim, eps, elementwise_affine=False)
+        self.scale_shift_table = nn.Parameter(torch.randn(1, 6, dim) / dim**0.5)
+
+    def prepare_self_attention_inputs(
+        self,
+        hidden_states: torch.Tensor,
+        *,
+        temb: torch.Tensor,
+        rotary_emb: torch.Tensor | None,
+    ) -> dict[str, torch.Tensor]:
+        """Build self-attention Q/K/V plus post-attention modulation state.
+
+        This helper is used by method-5 MoT runtime paths that need to mix
+        cached video K/V with action K/V without changing the existing block
+        `forward()` contract used by other policy families.
+        """
+
+        temb_scale_shift_table = _materialize_runtime_parameter(
+            self.scale_shift_table,
+            device=temb.device,
+            dtype=temb.dtype,
+        )[None] + temb.float()
+        shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = _select_chunk_slices(
+            temb_scale_shift_table,
+            6,
+        )
+        norm_hidden_states = (self.norm1(hidden_states.float()) * (1.0 + scale_msa) + shift_msa).type_as(hidden_states)
+        query = _rms_norm_with_materialized_weight(
+            self.attn1.norm_q,
+            _linear_with_materialized_params(self.attn1.to_q, norm_hidden_states),
+        ).unflatten(2, (self.attn1.heads, -1))
+        key = _rms_norm_with_materialized_weight(
+            self.attn1.norm_k,
+            _linear_with_materialized_params(self.attn1.to_k, norm_hidden_states),
+        ).unflatten(2, (self.attn1.heads, -1))
+        value = _linear_with_materialized_params(self.attn1.to_v, norm_hidden_states).unflatten(
+            2,
+            (self.attn1.heads, -1),
+        )
+        if rotary_emb is not None:
+            query = _apply_rotary_emb(query, rotary_emb)
+            key = _apply_rotary_emb(key, rotary_emb)
+        return {
+            "query": query.transpose(1, 2).contiguous(),
+            "key": key.transpose(1, 2).contiguous(),
+            "value": value.transpose(1, 2).contiguous(),
+            "gate_msa": gate_msa,
+            "c_shift_msa": c_shift_msa,
+            "c_scale_msa": c_scale_msa,
+            "c_gate_msa": c_gate_msa,
+            "hidden_states": hidden_states,
+        }
+
+    def apply_post_attention(
+        self,
+        hidden_states: torch.Tensor,
+        *,
+        mixed_attn_output: torch.Tensor,
+        encoder_hidden_states: torch.Tensor,
+        gate_msa: torch.Tensor,
+        c_shift_msa: torch.Tensor,
+        c_scale_msa: torch.Tensor,
+        c_gate_msa: torch.Tensor,
+        attention_profile: PreparedAttentionProfile | None = None,
+        cross_attention_mask: torch.Tensor | None = None,
+        cross_attention_cache_entry: AttentionCacheEntry | None = None,
+    ) -> tuple[torch.Tensor, AttentionCacheEntry | None]:
+        """Apply residual, cross-attention, and FFN after external self-attn."""
+
+        hidden_states = (hidden_states.float() + mixed_attn_output.float() * gate_msa).type_as(hidden_states)
+        norm_hidden_states = (
+            _layer_norm_with_materialized_params(self.norm2, hidden_states.float())
+            if isinstance(self.norm2, nn.LayerNorm)
+            else self.norm2(hidden_states.float())
+        ).type_as(hidden_states)
+        attn_output, cross_cache_entry = self.attn2(
+            norm_hidden_states,
+            encoder_hidden_states,
+            encoder_hidden_states,
+            rotary_emb=None,
+            attention_mask=cross_attention_mask,
+            attention_profile=attention_profile,
+            is_cross_attention=True,
+            kv_cache_override=cross_attention_cache_entry,
+            cache_current_token_count=encoder_hidden_states.shape[1] if cross_attention_cache_entry is None else 0,
+        )
+        hidden_states = hidden_states + attn_output
+
+        norm_hidden_states = (
+            _layer_norm_with_materialized_params(self.norm3, hidden_states.float()) * (1.0 + c_scale_msa) + c_shift_msa
+        ).type_as(hidden_states)
+        ff_output = _feed_forward_with_materialized_params(self.ffn, norm_hidden_states)
+        hidden_states = (hidden_states.float() + ff_output.float() * c_gate_msa).type_as(hidden_states)
+        return hidden_states, cross_cache_entry
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        *,
+        encoder_hidden_states: torch.Tensor,
+        temb: torch.Tensor,
+        rotary_emb: torch.Tensor | None,
+        attention_mask: torch.Tensor | None = None,
+        attention_profile: PreparedAttentionProfile | None = None,
+        cross_attention_mask: torch.Tensor | None = None,
+        self_attention_cache_entry: AttentionCacheEntry | None = None,
+        cross_attention_cache_entry: AttentionCacheEntry | None = None,
+        cached_prefix_visibility: torch.Tensor | None = None,
+        cache_current_token_count: int = 0,
+        cache_current_token_span: tuple[int, int] | None = None,
+        detach_self_attention_cache: bool = True,
+        self_attention_cache_backend_name: str | None = None,
+        self_attention_cache_backend_state=None,
+        self_attention_cache_update_mode: int = 0,
+        self_attention_cache_stream_ids: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, AttentionCacheEntry | None, AttentionCacheEntry | None]:
+        temb_scale_shift_table = self.scale_shift_table[None] + temb.float()
+        shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = _select_chunk_slices(
+            temb_scale_shift_table,
+            6,
+        )
+
+        norm_hidden_states = (self.norm1(hidden_states.float()) * (1.0 + scale_msa) + shift_msa).type_as(hidden_states)
+        attn_output, self_cache_entry = self.attn1(
+            norm_hidden_states,
+            norm_hidden_states,
+            norm_hidden_states,
+            rotary_emb=rotary_emb,
+            attention_mask=attention_mask,
+            attention_profile=attention_profile,
+            is_cross_attention=False,
+            cached_key_value=self_attention_cache_entry,
+            cached_prefix_visibility=cached_prefix_visibility,
+            cache_current_token_count=cache_current_token_count,
+            cache_current_token_span=cache_current_token_span,
+            detach_cache_entry=detach_self_attention_cache,
+            cache_backend_name=self_attention_cache_backend_name,
+            cache_backend_state=self_attention_cache_backend_state,
+            cache_backend_update_mode=self_attention_cache_update_mode,
+            cache_backend_stream_ids=self_attention_cache_stream_ids,
+        )
+        hidden_states = (hidden_states.float() + attn_output.float() * gate_msa).type_as(hidden_states)
+
+        norm_hidden_states = self.norm2(hidden_states.float()).type_as(hidden_states)
+        attn_output, cross_cache_entry = self.attn2(
+            norm_hidden_states,
+            encoder_hidden_states,
+            encoder_hidden_states,
+            rotary_emb=None,
+            attention_mask=cross_attention_mask,
+            attention_profile=attention_profile,
+            is_cross_attention=True,
+            kv_cache_override=cross_attention_cache_entry,
+            cache_current_token_count=encoder_hidden_states.shape[1] if cross_attention_cache_entry is None else 0,
+        )
+        hidden_states = hidden_states + attn_output
+
+        norm_hidden_states = (self.norm3(hidden_states.float()) * (1.0 + c_scale_msa) + c_shift_msa).type_as(hidden_states)
+        ff_output = self.ffn(norm_hidden_states)
+        hidden_states = (hidden_states.float() + ff_output.float() * c_gate_msa).type_as(hidden_states)
+        return hidden_states, self_cache_entry, cross_cache_entry
+
+
 __all__ = [
     "SharedTransformerAttention",
+    "SharedTransformerBlock",
     "SharedTransformerRotaryPositionalEmbedding",
     "SharedTransformerTimeEmbedding",
     "apply_rotary_emb",

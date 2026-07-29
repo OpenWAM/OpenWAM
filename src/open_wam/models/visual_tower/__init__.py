@@ -23,6 +23,7 @@ from .runtime_programs import (
 from .reference_transformer import build_reference_transformer, preferred_reference_dtype
 from .shared_transformer_support import (
     SharedTransformerAttention,
+    SharedTransformerBlock,
     SharedTransformerRotaryPositionalEmbedding,
     SharedTransformerTimeEmbedding,
     apply_rotary_emb,
@@ -44,6 +45,7 @@ __all__ = [
     "DecodedFeatureLayout",
     "preferred_reference_dtype",
     "SharedTransformerAttention",
+    "SharedTransformerBlock",
     "SharedTransformerRotaryPositionalEmbedding",
     "SharedTransformerTimeEmbedding",
     "RuntimeProgramSpec",

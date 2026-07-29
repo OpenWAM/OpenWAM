@@ -4,6 +4,12 @@ import torch
 
 from open_wam.models.common import build_chunked_temporal_exact_attention_profile
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
+from open_wam.models.visual_tower.context_encoders import (
+    GeneralistModeContextEncoder,
+    ProprioContextEncoder,
+    ProprioHiddenContextEncoder,
+)
+from open_wam.models.visual_tower import replica_core as replica_core_module
 from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore
 
 
@@ -69,3 +75,26 @@ def test_attention_profile_cache_reuses_device_specific_profile() -> None:
     assert first is not None
     assert first.self_attention_mask is not None
     assert first.self_attention_mask.device.type == "cpu"
+
+
+def test_context_encoder_compatibility_exports_preserve_identity() -> None:
+    assert replica_core_module.ProprioContextEncoder is ProprioContextEncoder
+    assert replica_core_module.ProprioHiddenContextEncoder is ProprioHiddenContextEncoder
+    assert replica_core_module.GeneralistModeContextEncoder is GeneralistModeContextEncoder
+
+
+def test_context_encoder_attachment_names_preserve_checkpoint_keys() -> None:
+    core = _small_core()
+    core.configure_proprio_context_encoder(enabled=True, state_dim=3)
+    core.configure_proprio_hidden_context_encoder(enabled=True, state_dim=3)
+    core.configure_generalist_mode_context_encoder(enabled=True)
+
+    keys = set(core.state_dict())
+
+    assert {
+        "proprio_context_encoder.proj.weight",
+        "proprio_context_encoder.proj.bias",
+        "proprio_hidden_context_encoder.proj.weight",
+        "proprio_hidden_context_encoder.proj.bias",
+        "generalist_mode_context_encoder.embedding.weight",
+    } <= keys

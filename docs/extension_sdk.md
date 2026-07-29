@@ -221,7 +221,7 @@ layout semantics, not general attention extension points.
 building blocks used by the visual core and action-side experts:
 
 - timestep and rotary positional embeddings;
-- `SharedTransformerAttention`;
+- `SharedTransformerAttention` and `SharedTransformerBlock`;
 - rotary and chunk-slice tensor helpers;
 - FSDP-safe linear, normalization, and feed-forward helpers.
 

@@ -576,6 +576,7 @@ def test_attention_cache_policy_has_one_implementation_owner() -> None:
 def test_shared_transformer_support_has_one_implementation_owner() -> None:
     support_definitions = {
         "SharedTransformerAttention",
+        "SharedTransformerBlock",
         "SharedTransformerRotaryPositionalEmbedding",
         "SharedTransformerTimeEmbedding",
         "apply_rotary_emb",
@@ -594,6 +595,19 @@ def test_shared_transformer_support_has_one_implementation_owner() -> None:
     assert {
         f"_{name}" for name in support_definitions if not name.startswith("Shared")
     }.isdisjoint(_top_level_definitions(replica_core_path))
+
+
+def test_visual_context_encoders_have_one_implementation_owner() -> None:
+    encoder_definitions = {
+        "GeneralistModeContextEncoder",
+        "ProprioContextEncoder",
+        "ProprioHiddenContextEncoder",
+    }
+    encoder_path = PACKAGE_ROOT / "models" / "visual_tower" / "context_encoders.py"
+    replica_core_path = PACKAGE_ROOT / "models" / "visual_tower" / "replica_core.py"
+
+    assert encoder_definitions <= _top_level_definitions(encoder_path)
+    assert encoder_definitions.isdisjoint(_top_level_definitions(replica_core_path))
 
 
 def test_retired_fdm_guided_planning_namespace_is_not_packaged() -> None:

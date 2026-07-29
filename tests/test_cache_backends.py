@@ -26,6 +26,7 @@ from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.visual_tower import (
     SharedTransformerAttention,
+    SharedTransformerBlock,
     SharedTransformerRotaryPositionalEmbedding,
     SharedTransformerTimeEmbedding,
     apply_rotary_emb,
@@ -55,6 +56,7 @@ def test_cache_policy_public_and_compatibility_exports_preserve_identity() -> No
 
 def test_shared_transformer_public_and_compatibility_exports_preserve_identity() -> None:
     assert replica_core_module.SharedTransformerAttention is SharedTransformerAttention
+    assert replica_core_module.SharedTransformerBlock is SharedTransformerBlock
     assert (
         replica_core_module.SharedTransformerRotaryPositionalEmbedding
         is SharedTransformerRotaryPositionalEmbedding
