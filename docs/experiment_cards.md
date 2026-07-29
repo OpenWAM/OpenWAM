@@ -23,7 +23,7 @@ checkpoint exists.
 | Method | Current variant names | Public card status |
 | --- | --- | --- |
 | 1 | `parallel_stream`, `parallel_stream_lingbot_exact` | layout card added; public checkpoint pending |
-| 2 | `register_attached` | scaffolded; public checkpoint pending |
+| 2 | `parallel_stream` action-conditioned | public checkpoint pending |
 | 3 | `video_sequence_policy` | layout card added; public checkpoint pending |
 | 4 | `post_latent`, `post_decoded` with video-conditioned decoder | scaffolded; public checkpoint pending |
 | 5 | `mot` | scaffolded; public checkpoint pending |

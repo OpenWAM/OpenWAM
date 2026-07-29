@@ -13,10 +13,10 @@ quietly falling back to CPU.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import replace
 import gc
 import os
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -27,9 +27,9 @@ import yaml
 import open_wam.training.runtime as training_runtime_module
 from open_wam.configs import (
     BatchAdapterName,
+    JointTimestepCoupling,
     MoTConditionMode,
     MoTRuntimeMode,
-    JointTimestepCoupling,
     ParallelActionAttentionScope,
     ParallelActionConditionSource,
     ParallelRuntimeMode,
@@ -37,7 +37,6 @@ from open_wam.configs import (
     TrainerPrecision,
     VideoConditionInputSpace,
     VideoConditionTrainMode,
-    VisualReadoutConfig,
     VisualReadoutFusionMode,
     VisualReadoutSourceFamily,
 )
@@ -53,7 +52,6 @@ from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
 from open_wam.pipelines import build_variant_pipeline_from_config
 from open_wam.training import TrainingRuntime
 from open_wam.utils.config_loader import load_experiment_config
-
 
 RUN_GPU_SANITY = os.getenv("OPEN_WAM_RUN_GPU_SANITY") == "1"
 if not RUN_GPU_SANITY:
@@ -115,8 +113,6 @@ def _pipeline_case_path(case_name: str, tmp_path: Path) -> Path:
             output_name="parallel_stream_robotwin_action_conditioned_gpu",
             mutate=_mutate_parallel_action_conditioned,
         )
-    if case_name == "register_attached":
-        return REPO_ROOT / "configs/experiments/register_attached_robotwin_smoke.yaml"
     if case_name == "video_sequence_default":
         return REPO_ROOT / "configs/experiments/video_sequence_policy_robotwin_smoke.yaml"
     if case_name == "video_sequence_core_layer":
@@ -441,7 +437,6 @@ def test_gpu_method4_current_frame_regression_modes_train_only(
     [
         "parallel_exact",
         "parallel_action_conditioned",
-        "register_attached",
         "video_sequence_default",
         "video_sequence_core_layer",
         "post_latent_legacy",

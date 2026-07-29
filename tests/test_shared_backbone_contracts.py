@@ -10,7 +10,6 @@ from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
 from open_wam.pipelines import build_variant_pipeline_from_config
 from open_wam.utils.config_loader import load_experiment_config
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -69,6 +68,18 @@ def test_register_attached_variant_is_obsolete() -> None:
     )
     config = replace(config, backbone=replace(config.backbone, implementation="lingbot_replica"))
 
-    with pytest.warns(RuntimeWarning, match="Traditional Method 2 `register_attached` is obsolete"):
-        with pytest.raises(RuntimeError, match="Traditional Method 2 `register_attached` is obsolete"):
-            build_variant_pipeline_from_config(config)
+    with (
+        pytest.warns(RuntimeWarning, match="Traditional Method 2 `register_attached` is obsolete"),
+        pytest.raises(RuntimeError, match="Traditional Method 2 `register_attached` is obsolete"),
+    ):
+        build_variant_pipeline_from_config(config)
+
+
+def test_register_attached_public_symbol_is_an_explicit_failure_stub() -> None:
+    from open_wam.models.policy_variants import RegisterAttachedPolicyVariant
+
+    with (
+        pytest.warns(RuntimeWarning, match="Traditional Method 2 `register_attached` is obsolete"),
+        pytest.raises(RuntimeError, match="implementation has been removed"),
+    ):
+        RegisterAttachedPolicyVariant()

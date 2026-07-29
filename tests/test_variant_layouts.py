@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import torch
 
-from open_wam.models.policy_variants.parallel_stream.packing import build_parallel_layout
-from open_wam.models.policy_variants.register_attached.layout import build_register_sequence_layout
+from open_wam.models.policy_variants.parallel_stream.packing import (
+    build_parallel_layout,
+)
 from open_wam.models.video_backbone.contracts import TokenGridMetadata
 
 
@@ -18,21 +19,6 @@ def _token_grid(num_frames: int = 4, tokens_per_frame: int = 120) -> TokenGridMe
         tokens_per_frame=tokens_per_frame,
         sequence_length=num_frames * tokens_per_frame,
     )
-
-
-def test_register_layout_block_counts_match() -> None:
-    layout = build_register_sequence_layout(
-        token_grid=_token_grid(),
-        action_horizon=6,
-        state_horizon=3,
-        num_frame_per_block=1,
-        num_action_per_block=2,
-        num_state_per_block=1,
-        include_clean_video_prefix=True,
-    )
-    assert layout.num_image_blocks == 3
-    assert layout.num_action_blocks == 3
-    assert layout.num_state_blocks == 3
 
 
 def test_parallel_layout_length_matches_expected_streams() -> None:

@@ -14,16 +14,15 @@ The current implementation is organized around one constraint:
 The repo currently includes:
 
 - a stage-aware `VisualTower + PolicyVariant + ActionDecoder` stack
-- runnable `parallel_stream`, `register_attached`, `video_sequence_policy`,
-  `post_latent`, `post_decoded`, `mot`, and `causal_video_prediction` variants
+- runnable `parallel_stream`, `video_sequence_policy`, `post_latent`,
+  `post_decoded`, `mot`, and `causal_video_prediction` variants
 - a LingBot replica backbone as the default shared-core family for real
   multimodal variants
 - a shared runtime backbone knob under `backbone.implementation`:
   - `shared_transformer` (default)
   - `dummy` (smoke/legacy only)
 - an optional `backbone.load_reference_core_weights` path that loads LingBot
-  backbone weights into the shared replica core for
-  `register_attached`, `post_latent`, and `post_decoded`
+  backbone weights into the shared replica core
 - an exact LingBot parallel-stream runtime path that executes on the same
   shared backbone object used by the other real variants
 - a uniform data contract for all sources and policy variants
@@ -59,8 +58,8 @@ Important source packages:
 - `src/open_wam/models/visual_tower`: shared visual frontend, core, decode
   boundary, and exact LingBot reference loader
 - `src/open_wam/models/policy_variants`: method-specific train/infer behavior
-  for `parallel_stream`, `register_attached`, `video_sequence_policy`,
-  `post_latent`, `post_decoded`, `mot`, and `causal_video_prediction`
+  for `parallel_stream`, `video_sequence_policy`, `post_latent`,
+  `post_decoded`, `mot`, and `causal_video_prediction`
 - `src/open_wam/models/action_decoders`: action decoders and losses
 - `src/open_wam/models/video_backbone`: backbone config and compatibility contracts
 - `src/open_wam/pipelines`: variant pipeline, exact LingBot runner, and rollout helpers
@@ -140,9 +139,8 @@ The current method split is:
 
 - `parallel_stream` / method 1: exact LingBot train/infer semantics through
   shared-backbone exact runtime programs
-- `register_attached` / method 2: shared runtime-program executor with
-  structured sequence adapters, structured attention kernels, shared stream
-  adapters, and shared stream output heads
+- `parallel_stream` action-conditioned / method 2: joint-denoise semantics
+  expressed by the same exact shared-backbone runtime
 - `post_latent` / `post_decoded`: simple feature-attached baselines over the
   same stage-aware pipeline
 
@@ -163,30 +161,9 @@ Method 1, LingBot:
 - the shared backbone executes method 1 through exact runtime programs rather
   than a sidecar transformer module
 
-Method 2, DreamZero-style register-attached on LingBot backbone:
-
-- video latents get their own noise scheduler, targets, and weighted loss
-- actions get their own noise scheduler, targets, and weighted loss
-- the shared core sees noisy video and noisy action tokens together
-- training loss is `video_diffusion_loss + action_diffusion_loss`
-- `register_attached`
-  - full clean-video teacher-forcing prefix during training
-  - one sampled timestep per video frame
-  - action timesteps are coupled to future video blocks by default
-  - joint inference rollout: update video and action in the same denoising loop
-  - `inference.joint_sampler: unipc` by default for DreamZero-style multistep sampling
-  - optional shared denoising count via `inference.joint_num_inference_steps`
-  - per-stream CFG stays generic:
-    - `inference.video_cfg_mode: guided`
-    - `inference.action_cfg_mode: conditioned`
-  - cache warmup stays generic:
-    - `inference.joint_cache_warmup_source`
-    - `inference.joint_cache_initial_warmup_anchor`
-    - `inference.joint_cache_rollout_warmup_anchor`
-  - `inference.joint_observed_video_prefix_frames: 1` keeps the observed
-    first frame fixed during inference-time denoising
-  - stream tokenizers and flow heads are now backbone-owned shared runtime
-    components rather than variant-local modules
+Traditional Method 2 `register_attached` is removed. Historical config and
+script names remain as compatibility stubs that fail with an explicit
+migration message; they do not contain a second runtime implementation.
 
 Action-only diffusion variants:
 
@@ -288,13 +265,12 @@ The keys in `~/.libero/config.yaml` must be exactly `benchmark_root`,
 `bddl_files`, `init_states`, `datasets`, `assets` — without the `_folder`
 suffix LIBERO's loader rejects them.
 
-Use the lightweight smoke configs after installing Torch/runtime extras when
-you want fast CPU checks of method 1 and method 2 without instantiating the full
-LingBot-scale backbone:
+Use the lightweight smoke config after installing Torch/runtime extras when
+you want a fast CPU check without instantiating the full LingBot-scale
+backbone:
 
 ```bash
 uv run --extra eval open-wam-eval --cfg configs/experiments/parallel_stream_robotwin_smoke.yaml --device cpu
-uv run --extra eval open-wam-eval --cfg configs/experiments/register_attached_robotwin_smoke.yaml --device cpu
 ```
 
 Visualize the default LIBERO reference-relative EEF target in MuJoCo:

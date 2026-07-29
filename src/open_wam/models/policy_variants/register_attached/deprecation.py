@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import warnings
 
-
 REGISTER_ATTACHED_OBSOLETE_MESSAGE = (
     "Traditional Method 2 `register_attached` is obsolete and intentionally disabled. "
-    "This packed joint video/action/register runtime is kept in the tree only as a "
-    "historical reference. Use the maintained Method 2 parallel-stream "
+    "Its packed joint video/action/register implementation has been removed. "
+    "Use the maintained Method 2 parallel-stream "
     "`lingbot_exact_action_conditioned` / joint-denoise path instead."
 )
 

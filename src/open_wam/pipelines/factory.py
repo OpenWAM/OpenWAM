@@ -3,8 +3,8 @@ from __future__ import annotations
 from open_wam.configs import (
     ActionDecoderName,
     ActionNormalizationMode,
-    BatchAdapterName,
     BackboneImplementation,
+    BatchAdapterName,
     CausalVideoPredictionPolicyConfig,
     ExperimentConfig,
     MoTPolicyConfig,
@@ -21,14 +21,19 @@ from open_wam.configs import (
     VideoSequencePolicyConfig,
 )
 from open_wam.data import build_canonical_video_preprocessor
-from open_wam.data.action_mapping import build_action_sampler_mask, validate_action_mapping_preflight
-from open_wam.models.action_decoders import DecodedFeatureActionDecoder, MLPActionDecoder, RegisterActionDecoder
+from open_wam.data.action_mapping import (
+    build_action_sampler_mask,
+    validate_action_mapping_preflight,
+)
 from open_wam.models.action_decoders import (
+    DecodedFeatureActionDecoder,
     LingbotParallelActionDecoder,
+    MLPActionDecoder,
     MoTActionDecoder,
-    VPPSequenceActionDecoder,
+    RegisterActionDecoder,
     VideoConditionedActionDecoder,
     VideoOnlyActionDecoder,
+    VPPSequenceActionDecoder,
 )
 from open_wam.models.policy_variants import (
     CausalVideoPredictionPolicyVariant,
@@ -36,20 +41,20 @@ from open_wam.models.policy_variants import (
     ParallelStreamPolicyVariant,
     PostDecodedPolicyVariant,
     PostLatentPolicyVariant,
-    RegisterAttachedPolicyVariant,
     VideoSequencePolicyVariant,
 )
-from open_wam.models.policy_variants.parallel_stream.action_adapter import build_action_adapter_spec
+from open_wam.models.policy_variants.parallel_stream.action_adapter import (
+    build_action_adapter_spec,
+)
 from open_wam.models.policy_variants.register_attached.deprecation import (
     raise_register_attached_obsolete,
 )
-from open_wam.models.visual_tower import VisualTower
 from open_wam.models.video_backbone import normalize_backbone_implementation
+from open_wam.models.visual_tower import VisualTower
 
+from .lingbot_exact import LingbotExactRunner
 from .registries import ACTION_DECODER_BUILDERS, POLICY_VARIANT_BUILDERS
 from .variant_pipeline import VariantPipeline
-from .lingbot_exact import LingbotExactRunner
-
 
 _PARALLEL_STREAM_EXACT_MODEL_ACTION_MODES = {
     ParallelRuntimeMode.LINGBOT_EXACT,
@@ -102,24 +107,26 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
         config.data.action_mapping,
         action_schema_dim=action_schema.action_dim,
     )
-    if isinstance(
-        config.policy_variant,
-        (
-            ParallelStreamPolicyConfig,
-            RegisterAttachedPolicyConfig,
-            PostLatentPolicyConfig,
-            PostDecodedPolicyConfig,
-            VideoSequencePolicyConfig,
-            CausalVideoPredictionPolicyConfig,
-            MoTPolicyConfig,
-        ),
+    if (
+        isinstance(
+            config.policy_variant,
+            (
+                ParallelStreamPolicyConfig,
+                PostLatentPolicyConfig,
+                PostDecodedPolicyConfig,
+                VideoSequencePolicyConfig,
+                CausalVideoPredictionPolicyConfig,
+                MoTPolicyConfig,
+            ),
+        )
+        and normalize_backbone_implementation(config.backbone.implementation)
+        != BackboneImplementation.SHARED_TRANSFORMER
     ):
-        if normalize_backbone_implementation(config.backbone.implementation) != BackboneImplementation.SHARED_TRANSFORMER:
-            raise ValueError(
-                "Policy variants in the current repo all require the shared transformer backbone so they run "
-                f"through the same LingBot-compatible visual core, got "
-                f"backbone.implementation={config.backbone.implementation!r}."
-            )
+        raise ValueError(
+            "Policy variants in the current repo all require the shared transformer backbone so they run "
+            f"through the same LingBot-compatible visual core, got "
+            f"backbone.implementation={config.backbone.implementation!r}."
+        )
     if isinstance(config.policy_variant, ParallelStreamPolicyConfig):
         if config.policy_variant.runtime_mode not in _PARALLEL_STREAM_EXACT_MODEL_ACTION_MODES:
             raise ValueError(
@@ -160,39 +167,6 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
                 "when dataset and model action dims differ, "
                 f"got adapter raw_action_dim={adapter_spec.raw_action_dim}, "
                 f"data action_dim={action_schema.action_dim}, model action_dim={model_action_dim}."
-            )
-    if isinstance(config.policy_variant, RegisterAttachedPolicyConfig):
-        num_frames = config.data.num_frames
-        if (num_frames - 1) % config.policy_variant.num_frame_per_block != 0:
-            raise ValueError(
-                "Register-attached config requires `(num_frames - 1)` to be divisible by "
-                "`policy_variant.num_frame_per_block`, "
-                f"got num_frames={num_frames}, "
-                f"num_frame_per_block={config.policy_variant.num_frame_per_block}."
-            )
-        if action_schema.action_horizon % config.policy_variant.num_action_per_block != 0:
-            raise ValueError(
-                "Register-attached config requires `action_horizon` to be divisible by "
-                "`policy_variant.num_action_per_block`, "
-                f"got action_horizon={action_schema.action_horizon}, "
-                f"num_action_per_block={config.policy_variant.num_action_per_block}."
-            )
-        if action_schema.state_horizon % config.policy_variant.num_state_per_block != 0:
-            raise ValueError(
-                "Register-attached config requires `state_horizon` to be divisible by "
-                "`policy_variant.num_state_per_block`, "
-                f"got state_horizon={action_schema.state_horizon}, "
-                f"num_state_per_block={config.policy_variant.num_state_per_block}."
-            )
-        image_block_count = (num_frames - 1) // config.policy_variant.num_frame_per_block
-        action_block_count = action_schema.action_horizon // config.policy_variant.num_action_per_block
-        state_block_count = action_schema.state_horizon // config.policy_variant.num_state_per_block
-        if image_block_count != action_block_count or image_block_count != state_block_count:
-            raise ValueError(
-                "Register-attached config requires image, action, and state block counts to match, "
-                f"got image={image_block_count}, action={action_block_count}, state={state_block_count}. "
-                "For raw LIBERO this usually means increasing `data.action_schema.state_horizon` so the "
-                "state register blocks align with the future image/action blocks."
             )
     if isinstance(config.policy_variant, MoTPolicyConfig):
         if action_schema.action_horizon <= 0:

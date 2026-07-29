@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from open_wam.data import build_synthetic_batch
 from open_wam.models.policy_variants import PolicyTrainBatch
 from open_wam.models.visual_tower import (
@@ -12,7 +10,6 @@ from open_wam.models.visual_tower import (
 )
 from open_wam.pipelines import build_variant_pipeline_from_config
 from open_wam.utils.config_loader import load_experiment_config
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -54,41 +51,3 @@ def test_exact_runtime_program_executes_on_shared_backbone() -> None:
     assert step_output.projected_outputs["action_prediction"].ndim == 3
     assert step_output.aux["runtime_program"] == "chunked_dual_stream_exact_train"
     assert step_output.aux["sequence_family"] == "chunked_dual_stream_exact"
-
-
-@pytest.mark.skip(reason="Traditional Method 2 register-attached runtime is obsolete and intentionally disabled.")
-def test_register_runtime_program_executes_on_shared_backbone() -> None:
-    config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/register_attached_robotwin_smoke.yaml"
-    )
-    pipeline = build_variant_pipeline_from_config(config)
-    batch = build_synthetic_batch(config.data, batch_size=2)
-    visual_outputs = pipeline.prepare_visual_outputs(batch.views)
-    variant = pipeline.policy_variant
-    runtime = variant.runtime
-
-    noisy_visual_outputs = runtime.build_noisy_frontend_outputs(
-        pipeline.visual_tower,
-        visual_outputs=visual_outputs,
-        noisy_video_latents=visual_outputs.frontend.video_latents,
-    )
-    result = runtime.run_core(
-        visual_tower=pipeline.visual_tower,
-        visual_outputs=visual_outputs,
-        clean_video_prefix_tokens=visual_outputs.frontend.video_tokens,
-        noisy_video_tokens=noisy_visual_outputs.frontend.video_tokens,
-        action_inputs=batch.actions,
-        state_inputs=batch.state,
-        video_timesteps=visual_outputs.frontend.video_tokens.new_zeros(
-            batch.actions.shape[0], config.data.num_frames
-        ),
-        action_timesteps=visual_outputs.frontend.video_tokens.new_zeros(
-            batch.actions.shape[0], config.data.action_schema.action_horizon
-        ),
-        current_start_frame=0,
-    )
-
-    assert result.aux["runtime_program"] == "register_sequence"
-    assert result.aux["sequence_family"] == "register_sequence"
-    assert result.projected_outputs["video_patch_flow"].ndim == 3
-    assert result.projected_outputs["action_flow"].ndim == 3
