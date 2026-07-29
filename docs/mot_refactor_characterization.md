@@ -280,6 +280,11 @@ On hosts where NCCL shared-memory transport is unavailable, add
 `--disable-nccl-shm`. This sets `NCCL_SHM_DISABLE=1` and
 `NCCL_CUMEM_HOST_ENABLE=0` for worker processes.
 
+Characterization subprocesses default `TORCHINDUCTOR_COMPILE_THREADS=1` to
+avoid leaving one rank-local async compiler pool per GPU after a completed
+report. Set the environment variable explicitly to benchmark another compiler
+parallelism level; it is not changed by production training commands.
+
 For diagnosis only, `--allow-checkpoint-provenance-mismatch` records a stale
 checkpoint and includes every mismatch in the report. Do not use that option
 to establish strict refactor goldens: it proves execution compatibility, not

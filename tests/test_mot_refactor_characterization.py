@@ -1296,6 +1296,7 @@ def test_worker_command_finds_torchrun_beside_active_interpreter(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("TORCHINDUCTOR_COMPILE_THREADS", raising=False)
     interpreter = tmp_path / "bin" / "python"
     torchrun = interpreter.with_name("torchrun")
     interpreter.parent.mkdir()
@@ -1330,6 +1331,7 @@ def test_worker_command_finds_torchrun_beside_active_interpreter(
     assert command[0] == str(torchrun)
     assert environment["OPEN_WAM_ENABLE_FIXED128_ROLLOUT_CONTEXT"] == "0"
     assert environment["OPEN_WAM_FSDP_CPU_OFFLOAD"] == "1"
+    assert environment["TORCHINDUCTOR_COMPILE_THREADS"] == "1"
 
 
 def test_resume_worker_keeps_all_distributed_cuda_devices(
@@ -1475,7 +1477,10 @@ def test_model_only_cli_stage_does_not_expose_sibling_training_state(
     assert not (staged.parent / "full_training_state.pt").exists()
 
 
-def test_end_to_end_environment_supports_nccl_shared_memory_workaround() -> None:
+def test_end_to_end_environment_supports_nccl_shared_memory_workaround(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TORCHINDUCTOR_COMPILE_THREADS", raising=False)
     environment = characterization_environment(
         cuda_devices="0,1,2,3",
         fsdp_cpu_offload=True,
@@ -1485,7 +1490,21 @@ def test_end_to_end_environment_supports_nccl_shared_memory_workaround() -> None
     assert environment["CUDA_VISIBLE_DEVICES"] == "0,1,2,3"
     assert environment["OPEN_WAM_FSDP_CPU_OFFLOAD"] == "1"
     assert environment["NCCL_SHM_DISABLE"] == "1"
+    assert environment["TORCHINDUCTOR_COMPILE_THREADS"] == "1"
     assert environment["NCCL_CUMEM_HOST_ENABLE"] == "0"
+
+
+def test_end_to_end_environment_preserves_compile_thread_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TORCHINDUCTOR_COMPILE_THREADS", "4")
+
+    environment = characterization_environment(
+        cuda_devices="0",
+        fsdp_cpu_offload=False,
+    )
+
+    assert environment["TORCHINDUCTOR_COMPILE_THREADS"] == "4"
 
 
 def test_libero_rollout_report_requires_actions_chunks_and_video(

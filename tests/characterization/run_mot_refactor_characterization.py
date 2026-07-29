@@ -545,6 +545,10 @@ def _worker_command(
             "PYTHONUNBUFFERED": "1",
             "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
             "TOKENIZERS_PARALLELISM": "false",
+            "TORCHINDUCTOR_COMPILE_THREADS": environment.get(
+                "TORCHINDUCTOR_COMPILE_THREADS",
+                "1",
+            ),
         }
     )
     if disable_nccl_shm:
