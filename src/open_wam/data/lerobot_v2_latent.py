@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter, OrderedDict
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
+from functools import partial
 import math
 import random
 from pathlib import Path
@@ -73,6 +74,13 @@ from .lerobot_v2_latent_storage import (
 )
 from .replay_status import load_replay_status_records, split_episode_indices_by_replay_status
 from .row_action_targets import build_row_action_targets, resolve_row_key
+from .sequence_packing import pack_temporal_sequence
+
+
+_TRUNCATING_SEQUENCE_PACKER = partial(
+    pack_temporal_sequence,
+    truncate_to_target_length=True,
+)
 
 
 @dataclass(frozen=True)
@@ -761,7 +769,7 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             action_rows=action_rows,
             target_state_rows=target_state_rows,
             extract_sequence=self._extract_sequence,
-            pack_sequence=self._pack_sequence,
+            pack_sequence=_TRUNCATING_SEQUENCE_PACKER,
             reference_source_subject="Local latent LeRobot datasets",
         )
 
@@ -783,12 +791,13 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             [torch.tensor(row[resolve_row_key(row, key)], dtype=torch.float32) for row in rows],
             dim=0,
         )
-        return self._pack_sequence(
+        return pack_temporal_sequence(
             sequence=sequence,
             target_dim=target_dim,
             target_length=target_length,
             left_pad=left_pad,
             sequence_name=key,
+            truncate_to_target_length=True,
         )
 
     def _extract_state_history_at_frame(
@@ -882,32 +891,6 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             states.append(state[-1])
             masks.append(state_mask[-1])
         return torch.stack(states, dim=0), torch.stack(masks, dim=0)
-
-    def _pack_sequence(
-        self,
-        *,
-        sequence: torch.Tensor,
-        target_dim: int,
-        target_length: int,
-        left_pad: bool = False,
-        sequence_name: str = "sequence",
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        if sequence.ndim != 2:
-            raise ValueError(
-                f"Expected {sequence_name} tensor with shape [T, D], got {tuple(sequence.shape)}."
-            )
-        raw_dim = sequence.shape[-1]
-        if raw_dim > target_dim:
-            raise ValueError(f"Raw {sequence_name} dim {raw_dim} exceeds configured target dim {target_dim}.")
-
-        output = torch.zeros(target_length, target_dim, dtype=torch.float32)
-        mask = torch.zeros(target_length, target_dim, dtype=torch.float32)
-        clipped = sequence[:target_length]
-        start_index = target_length - len(clipped) if left_pad else 0
-        for index, values in enumerate(clipped):
-            output[start_index + index, : raw_dim] = values
-            mask[start_index + index, : raw_dim] = 1.0
-        return output, mask
 
     def _load_episode_rows(
         self,

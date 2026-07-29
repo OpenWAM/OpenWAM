@@ -61,6 +61,7 @@ from .row_action_targets import (
     build_row_action_targets,
     resolve_row_key,
 )
+from .sequence_packing import pack_temporal_sequence
 
 _LAZY_EXPORTS = {
     "CalvinNPZWindowDataset": "calvin_npz",
@@ -268,6 +269,7 @@ __all__ = [
     "normalize_replay_status_policy",
     "normalize_action_targets",
     "normalize_joint_positions",
+    "pack_temporal_sequence",
     "project_real_conditional_sample_to_target_only",
     "move_latent_wam_batch_to_device",
     "move_wam_batch_to_device",

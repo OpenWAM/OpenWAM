@@ -18,6 +18,7 @@ from open_wam.configs import DataConfig
 from .contracts import WAMSample
 from .replay_status import load_replay_status_records, split_episode_indices_by_replay_status
 from .row_action_targets import build_row_action_targets, resolve_row_key
+from .sequence_packing import pack_temporal_sequence
 
 
 _resolve_row_key = resolve_row_key
@@ -185,7 +186,6 @@ class LeRobotV2WindowDataset(Dataset[WAMSample]):
             action_rows=action_rows,
             target_state_rows=target_state_rows,
             extract_sequence=self._extract_sequence,
-            pack_sequence=self._pack_sequence,
             reference_source_subject="LeRobot-v2 reference-relative EEF targets",
         )
 
@@ -271,48 +271,13 @@ class LeRobotV2WindowDataset(Dataset[WAMSample]):
             [torch.tensor(row[resolve_row_key(row, key)], dtype=torch.float32) for row in rows],
             dim=0,
         )
-        return self._pack_sequence(
+        return pack_temporal_sequence(
             sequence=sequence,
             target_dim=target_dim,
             target_length=target_length,
             left_pad=left_pad,
             sequence_name=key,
         )
-
-    def _pack_sequence(
-        self,
-        *,
-        sequence: torch.Tensor,
-        target_dim: int,
-        target_length: int,
-        left_pad: bool = False,
-        sequence_name: str = "sequence",
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        if sequence.ndim != 2:
-            raise ValueError(
-                f"Expected {sequence_name} tensor with shape [T, D], got {tuple(sequence.shape)}."
-            )
-
-        raw_dim = sequence.shape[-1]
-        if raw_dim > target_dim:
-            raise ValueError(f"Raw {sequence_name} dim {raw_dim} exceeds configured target dim {target_dim}.")
-
-        output = torch.zeros(target_length, target_dim, dtype=torch.float32)
-        mask = torch.zeros(target_length, target_dim, dtype=torch.float32)
-
-        # Left-padding is used for state history so short prefixes near the
-        # start of an episode still align to the most recent timestep. Actions
-        # keep left_pad=False because they are future-facing targets.
-        if left_pad:
-            start_index = target_length - len(sequence)
-        else:
-            start_index = 0
-
-        for index, values in enumerate(sequence):
-            output[start_index + index, : raw_dim] = values
-            mask[start_index + index, : raw_dim] = 1.0
-
-        return output, mask
 
 
 def build_lerobot_train_val_episode_split(data_config: DataConfig) -> tuple[list[int], list[int]]:

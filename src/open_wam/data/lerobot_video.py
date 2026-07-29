@@ -18,6 +18,7 @@ from .contracts import WAMSample
 from .lerobot_v2 import EpisodeWindow, LeRobotEpisodeRecord
 from .row_action_targets import resolve_row_key
 from .replay_status import load_replay_status_records, split_episode_indices_by_replay_status
+from .sequence_packing import pack_temporal_sequence
 
 
 @dataclass(frozen=True)
@@ -229,14 +230,14 @@ class LeRobotV2VideoWindowDataset(Dataset[WAMSample]):
         )
         if sequence.shape[-1] > target_dim:
             raise ValueError(f"Raw `{key}` dim {sequence.shape[-1]} exceeds configured target dim {target_dim}.")
-        output = torch.zeros(target_length, target_dim, dtype=torch.float32)
-        mask = torch.zeros(target_length, target_dim, dtype=torch.float32)
-        clipped = sequence[:target_length]
-        start_index = target_length - len(clipped) if left_pad else 0
-        for offset, values in enumerate(clipped):
-            output[start_index + offset, : values.shape[-1]] = values
-            mask[start_index + offset, : values.shape[-1]] = 1.0
-        return output, mask
+        return pack_temporal_sequence(
+            sequence=sequence,
+            target_dim=target_dim,
+            target_length=target_length,
+            left_pad=left_pad,
+            sequence_name=key,
+            truncate_to_target_length=True,
+        )
 
     def _build_sample_index(self) -> list[EpisodeWindow]:
         num_frames = self.data_config.num_frames

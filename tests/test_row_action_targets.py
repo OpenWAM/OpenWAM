@@ -245,7 +245,6 @@ def test_absolute_joint_targets_append_action_command_and_preserve_mask() -> Non
             {"robot0_joint_pos": [3.0, 4.0]},
         ],
         extract_sequence=_extract_sequence,
-        pack_sequence=_pack_sequence,
         reference_source_subject="test rows",
     )
 

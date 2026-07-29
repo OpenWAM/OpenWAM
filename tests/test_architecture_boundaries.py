@@ -181,6 +181,35 @@ def test_row_action_target_transform_has_one_owner() -> None:
         assert isinstance(call, ast.Call)
         assert isinstance(call.func, ast.Name)
         assert call.func.id == "build_row_action_targets"
+        packer_keywords = [
+            keyword for keyword in call.keywords if keyword.arg == "pack_sequence"
+        ]
+        if filename == "lerobot_v2_latent.py":
+            assert len(packer_keywords) == 1
+            assert isinstance(packer_keywords[0].value, ast.Name)
+            assert packer_keywords[0].value.id == "_TRUNCATING_SEQUENCE_PACKER"
+        else:
+            assert not packer_keywords
+
+
+def test_temporal_sequence_packing_has_one_owner() -> None:
+    packing_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "data" / "sequence_packing.py"
+    )
+    assert "pack_temporal_sequence" in packing_definitions
+
+    adapter_classes = {
+        "lerobot_v2.py": "LeRobotV2WindowDataset",
+        "lerobot_v2_latent.py": "LocalLeRobotLatentWindowDataset",
+        "lerobot_consortium.py": "LeRobotConsortiumWindowDataset",
+        "libero_hdf5.py": "LiberoOfflineWindowDataset",
+    }
+    for filename, class_name in adapter_classes.items():
+        methods = _class_method_definitions(
+            PACKAGE_ROOT / "data" / filename,
+            class_name,
+        )
+        assert "_pack_sequence" not in methods
 
 
 def test_conditional_dynamics_layout_has_one_owner() -> None:

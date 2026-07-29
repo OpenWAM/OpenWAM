@@ -16,6 +16,7 @@ from open_wam.configs import ActionTargetReferenceSource, ActionTargetRepresenta
 from .action_transforms import build_relative_pose_targets, expected_pose_target_dim, normalize_action_targets
 from .contracts import WAMSample
 from .replay_status import load_replay_status_records, split_episode_indices_by_replay_status
+from .sequence_packing import pack_temporal_sequence
 
 
 _LIBERO_LOCAL_VIEW_KEY_BY_NAME = {
@@ -119,7 +120,7 @@ class LiberoOfflineWindowDataset(Dataset[WAMSample]):
             action_rows=action_rows,
             target_state_rows=target_state_rows,
         )
-        state, state_mask = self._pack_sequence(
+        state, state_mask = pack_temporal_sequence(
             sequence=state_rows,
             target_dim=self.data_config.action_schema.state_dim,
             target_length=state_horizon,
@@ -162,7 +163,7 @@ class LiberoOfflineWindowDataset(Dataset[WAMSample]):
         target_length = self.data_config.action_schema.action_horizon
 
         if action_target.representation == ActionTargetRepresentation.RAW:
-            actions, action_mask = self._pack_sequence(
+            actions, action_mask = pack_temporal_sequence(
                 sequence=action_rows,
                 target_dim=target_dim,
                 target_length=target_length,
@@ -208,7 +209,7 @@ class LiberoOfflineWindowDataset(Dataset[WAMSample]):
                     "gripper_source_key": action_target.source_key,
                 }
             )
-            actions, action_mask = self._pack_sequence(
+            actions, action_mask = pack_temporal_sequence(
                 sequence=relative_targets,
                 target_dim=target_dim,
                 target_length=target_length,
@@ -269,34 +270,6 @@ class LiberoOfflineWindowDataset(Dataset[WAMSample]):
         while len(self._episode_cache) > self.data_config.episode_cache_size:
             self._episode_cache.popitem(last=False)
         return episode
-
-    def _pack_sequence(
-        self,
-        *,
-        sequence: torch.Tensor,
-        target_dim: int,
-        target_length: int,
-        left_pad: bool = False,
-        sequence_name: str = "sequence",
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        if sequence.ndim != 2:
-            raise ValueError(
-                f"Expected {sequence_name} tensor with shape [T, D], got {tuple(sequence.shape)}."
-            )
-
-        raw_dim = sequence.shape[-1]
-        if raw_dim > target_dim:
-            raise ValueError(f"Raw {sequence_name} dim {raw_dim} exceeds configured target dim {target_dim}.")
-
-        output = torch.zeros(target_length, target_dim, dtype=torch.float32)
-        mask = torch.zeros(target_length, target_dim, dtype=torch.float32)
-        start_index = target_length - len(sequence) if left_pad else 0
-
-        for index, values in enumerate(sequence):
-            output[start_index + index, : raw_dim] = values.to(dtype=torch.float32)
-            mask[start_index + index, : raw_dim] = 1.0
-
-        return output, mask
 
 
 def build_libero_offline_train_val_episode_split(data_config: DataConfig) -> tuple[list[int], list[int]]:

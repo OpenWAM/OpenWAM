@@ -66,13 +66,14 @@ When pre-encoded samples are available, add a `latent_builder` returning
 datasets of `LatentWAMSample` under the same `dataset_type`.
 
 For row-oriented robot data, reuse
-`open_wam.data.build_row_action_targets`. The adapter supplies
-`extract_sequence` and `pack_sequence` callbacks, so source-key resolution,
-empty-row handling, clipping, and padding remain source-owned while the shared
-transform applies the configured raw, relative-EEF, or absolute-joint target,
-normalization, mapping, mask, and metadata contract. Implementing those
-callbacks is enough; do not duplicate the representation transform in a new
-adapter.
+`open_wam.data.build_row_action_targets` and
+`open_wam.data.pack_temporal_sequence`. The adapter supplies
+`extract_sequence`, which owns source-key resolution, empty-row handling, and
+the decision to truncate. The shared packer builds the float32 padded tensor
+and validity mask; the target transform applies the configured raw,
+relative-EEF, or absolute-joint representation, normalization, mapping, and
+metadata contract. A custom `pack_sequence` callback remains available only
+for storage contracts that cannot use the canonical layout.
 
 ## Configuration
 

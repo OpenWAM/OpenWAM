@@ -23,6 +23,7 @@ from .action_transforms import (
     expected_pose_target_dim,
     normalize_action_targets,
 )
+from .sequence_packing import pack_temporal_sequence
 
 
 class RowSequenceExtractor(Protocol):
@@ -72,16 +73,17 @@ def build_row_action_targets(
     action_rows: list[dict[str, Any]],
     target_state_rows: list[dict[str, Any]],
     extract_sequence: RowSequenceExtractor,
-    pack_sequence: SequencePacker,
+    pack_sequence: SequencePacker = pack_temporal_sequence,
     reference_source_subject: str = "Row-oriented datasets",
     relative_sequence_name: str = "sequence",
     include_pose_dimension_context: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
     """Build common WAM action supervision from row-oriented robot data.
 
-    Source adapters retain row loading and sequence padding semantics through
-    the supplied callbacks. This transform owns representation conversion,
-    action-channel mapping, normalization, and target metadata only.
+    Source adapters retain row loading through ``extract_sequence`` and may
+    override the shared sequence packer when their storage contract requires
+    it. This transform owns representation conversion, action-channel mapping,
+    normalization, and target metadata only.
 
     Relative-EEF and absolute-joint rows must span the configured action
     horizon because their source-validity masks are copied without temporal

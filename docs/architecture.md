@@ -114,8 +114,9 @@ action/state extraction, tensor assembly, and public `LatentWAMSample`
 construction.
 For row-oriented robot datasets, `row_action_targets` owns raw, relative-EEF,
 and absolute-joint target conversion, action mapping, normalization, and
-target metadata. Each adapter still owns row decoding and supplies its exact
-sequence extraction and padding policy through the shared callback contract.
+target metadata. `sequence_packing` owns the canonical float32 padded tensor
+and validity-mask layout. Each adapter still owns row decoding, empty-input
+policy, and whether an overlong source sequence may be truncated.
 For mixed conditional-dynamics training, `counterfactual_dynamics_dataset`
 owns encoded counterfactual manifests, payload I/O, hierarchical sampling, and
 target-only sample assembly. `generalist_dynamics` owns source sampling and

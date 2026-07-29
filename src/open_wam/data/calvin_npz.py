@@ -13,6 +13,7 @@ from open_wam.configs import ActionTargetRepresentation, CalvinDataConfig, DataC
 
 from .action_mapping import apply_action_mapping, resolve_action_source_dim
 from .contracts import WAMSample
+from .sequence_packing import pack_temporal_sequence
 
 
 @dataclass(frozen=True)
@@ -170,14 +171,14 @@ class CalvinNPZWindowDataset(Dataset[WAMSample]):
         )
         if sequence.shape[-1] > target_dim:
             raise ValueError(f"Raw CALVIN `{key}` dim {sequence.shape[-1]} exceeds target dim {target_dim}.")
-        output = torch.zeros(target_length, target_dim, dtype=torch.float32)
-        mask = torch.zeros(target_length, target_dim, dtype=torch.float32)
-        clipped = sequence[:target_length]
-        start_index = target_length - len(clipped) if left_pad else 0
-        for offset, values in enumerate(clipped):
-            output[start_index + offset, : values.shape[-1]] = values
-            mask[start_index + offset, : values.shape[-1]] = 1.0
-        return output, mask
+        return pack_temporal_sequence(
+            sequence=sequence,
+            target_dim=target_dim,
+            target_length=target_length,
+            left_pad=left_pad,
+            sequence_name=key,
+            truncate_to_target_length=True,
+        )
 
     def _build_sample_index(self) -> list[CalvinWindow]:
         num_frames = self.data_config.num_frames
