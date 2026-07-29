@@ -1,20 +1,25 @@
 from __future__ import annotations
 
+import json
 from contextlib import nullcontext
 from dataclasses import replace
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
+import yaml
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
-import yaml
 
 from open_wam.configs import AuxiliaryValidationTaskConfig, TrainingConfig
 from open_wam.configs.enums import BatchAdapterName, CheckpointMode
-from open_wam.data import LatentWAMSample, WAMBatch, collate_latent_wam_samples, move_latent_wam_batch_to_device
+from open_wam.data import (
+    LatentWAMSample,
+    WAMBatch,
+    collate_latent_wam_samples,
+    move_latent_wam_batch_to_device,
+)
 from open_wam.models.policy_variants import PolicyTrainBatch
 from open_wam.training import TrainingRuntime
 from open_wam.training.checkpoints import CheckpointManager
@@ -26,14 +31,19 @@ from open_wam.training.runtime import (
     _validate_mixed_dynamics_source_sampling,
 )
 from open_wam.training.state import TrainState
-from open_wam.training.step_executor import LatentBatchAdapter, ViewBatchAdapter, resolve_sample_loss_weight
+from open_wam.training.step_executor import (
+    LatentBatchAdapter,
+    ViewBatchAdapter,
+    resolve_sample_loss_weight,
+)
 from open_wam.utils.config_loader import load_experiment_config
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_normalize_optimizer_state_prefers_gradient_dtype_for_mixed_precision_resume() -> None:
+def test_normalize_optimizer_state_prefers_gradient_dtype_for_mixed_precision_resume() -> (
+    None
+):
     parameter = torch.nn.Parameter(torch.ones(2, dtype=torch.bfloat16))
     optimizer = torch.optim.AdamW([parameter], lr=1e-3)
     parameter.grad = torch.ones_like(parameter)
@@ -140,7 +150,9 @@ def test_train_micro_step_normalizes_optimizer_state_after_gradients() -> None:
     runtime = TrainingRuntime.__new__(TrainingRuntime)
     runtime.step_executor = SimpleNamespace(
         batch_adapter=SimpleNamespace(move_to_device=lambda batch, device: batch),
-        forward_train=lambda batch: SimpleNamespace(loss=torch.tensor(1.0, requires_grad=True), metrics={}),
+        forward_train=lambda batch: SimpleNamespace(
+            loss=torch.tensor(1.0, requires_grad=True), metrics={}
+        ),
     )
     runtime.strategy = Strategy()
     runtime.optimizer = optimizer
@@ -160,7 +172,9 @@ def test_train_micro_step_normalizes_optimizer_state_after_gradients() -> None:
     assert runtime.train_state.optimizer_step == 1
 
 
-def _write_temp_config(tmp_path: Path, *, source_name: str, output_name: str, mutate) -> Path:
+def _write_temp_config(
+    tmp_path: Path, *, source_name: str, output_name: str, mutate
+) -> Path:
     source_path = REPO_ROOT / "configs/experiments" / source_name
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
@@ -207,7 +221,9 @@ def _build_step_runtime_config(
         "mot_robotwin_smoke.yaml",
     ],
 )
-def test_composable_runtime_trains_shared_core_method_smokes(tmp_path: Path, config_name: str) -> None:
+def test_composable_runtime_trains_shared_core_method_smokes(
+    tmp_path: Path, config_name: str
+) -> None:
     config_path = REPO_ROOT / "configs/experiments" / config_name
     config = _build_step_runtime_config(config_path, tmp_path=tmp_path)
 
@@ -217,7 +233,9 @@ def test_composable_runtime_trains_shared_core_method_smokes(tmp_path: Path, con
     assert final_state.optimizer_step == 1
 
 
-def test_step_loop_reshuffles_distributed_sampler_each_loader_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_step_loop_reshuffles_distributed_sampler_each_loader_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     dataset = TensorDataset(torch.arange(1))
     sampler = DistributedSampler(dataset, num_replicas=1, rank=0, shuffle=True)
     loader = DataLoader(dataset, batch_size=1, sampler=sampler)
@@ -252,7 +270,9 @@ def test_step_loop_reshuffles_distributed_sampler_each_loader_pass(monkeypatch: 
 def test_epoch_loop_resume_cursor_skips_seen_batches_within_current_epoch() -> None:
     runtime = TrainingRuntime.__new__(TrainingRuntime)
     runtime.train_loader = range(10)
-    runtime.train_state = TrainState(seen_batches=23, resume_source="/tmp/checkpoint_step_2/full_training_state.pt")
+    runtime.train_state = TrainState(
+        seen_batches=23, resume_source="/tmp/checkpoint_step_2/full_training_state.pt"
+    )
     runtime.config = SimpleNamespace(trainer=SimpleNamespace(limit_train_batches=None))
 
     assert runtime._current_epoch_resume_batch_index() == 3
@@ -266,7 +286,9 @@ def test_epoch_loop_resume_cursor_skips_seen_batches_within_current_epoch() -> N
     assert runtime._current_epoch_resume_batch_index() == 0
 
 
-def test_step_loop_resume_cursor_skips_seen_batches_within_current_loader_pass() -> None:
+def test_step_loop_resume_cursor_skips_seen_batches_within_current_loader_pass() -> (
+    None
+):
     runtime = TrainingRuntime.__new__(TrainingRuntime)
     runtime.train_loader = range(5)
     runtime.train_state = TrainState(
@@ -335,7 +357,9 @@ def test_step_loop_interval_checkpoint_runs_after_micro_step_returns() -> None:
         in_micro_step = False
 
     def save_checkpoint(*, final: bool) -> None:
-        checkpoint_calls.append((final, in_micro_step, runtime.train_state.optimizer_step))
+        checkpoint_calls.append(
+            (final, in_micro_step, runtime.train_state.optimizer_step)
+        )
         events.append(("checkpoint", runtime.train_state.optimizer_step))
 
     runtime._run_all_validation = run_validation
@@ -364,7 +388,9 @@ def test_sample_loss_weight_can_scale_by_valid_action_steps() -> None:
         batch=batch,
     )
     sqrt_weight = resolve_sample_loss_weight(
-        training_config=TrainingConfig(sample_loss_weight_mode="sqrt_valid_action_steps"),
+        training_config=TrainingConfig(
+            sample_loss_weight_mode="sqrt_valid_action_steps"
+        ),
         batch=batch,
     )
 
@@ -388,13 +414,19 @@ def test_sample_loss_weight_rejects_reduced_multi_sample_batches() -> None:
 
     with pytest.raises(ValueError, match="train_batch_size=1"):
         resolve_sample_loss_weight(
-            training_config=TrainingConfig(sample_loss_weight_mode="valid_action_steps"),
+            training_config=TrainingConfig(
+                sample_loss_weight_mode="valid_action_steps"
+            ),
             batch=batch,
         )
 
 
-def test_mixed_dynamics_source_sampling_runtime_guard_rejects_non_uniform_weights() -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+def test_mixed_dynamics_source_sampling_runtime_guard_rejects_non_uniform_weights() -> (
+    None
+):
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml"
+    )
     config = replace(
         config,
         trainer=replace(config.trainer, batch_adapter=BatchAdapterName.LATENTS),
@@ -412,7 +444,9 @@ def test_mixed_dynamics_source_sampling_runtime_guard_rejects_non_uniform_weight
 
 
 def test_mixed_dynamics_source_sampling_runtime_guard_rejects_views_adapter() -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml"
+    )
 
     with pytest.raises(ValueError, match="batch_adapter=latents"):
         _validate_mixed_dynamics_source_sampling(config)
@@ -432,7 +466,9 @@ def test_latent_batch_adapter_preserves_condition_latents() -> None:
 
     batch = collate_latent_wam_samples(samples)
     assert batch.condition_latents is not None
-    torch.testing.assert_close(batch.condition_latents[:, 0, 0, 0, 0], torch.tensor([10.0, 11.0]))
+    torch.testing.assert_close(
+        batch.condition_latents[:, 0, 0, 0, 0], torch.tensor([10.0, 11.0])
+    )
 
     moved = move_latent_wam_batch_to_device(batch, torch.device("cpu"))
     assert moved.condition_latents is not None
@@ -457,7 +493,9 @@ def test_latent_batch_adapter_preserves_proprio_context_state() -> None:
     batch = collate_latent_wam_samples(samples)
     assert batch.proprio_context_state is not None
     assert batch.proprio_context_state_mask is not None
-    torch.testing.assert_close(batch.proprio_context_state[:, 0, 0], torch.tensor([20.0, 21.0]))
+    torch.testing.assert_close(
+        batch.proprio_context_state[:, 0, 0], torch.tensor([20.0, 21.0])
+    )
     torch.testing.assert_close(batch.proprio_context_state_mask[:, 0, 0], torch.ones(2))
 
     moved = move_latent_wam_batch_to_device(batch, torch.device("cpu"))
@@ -465,11 +503,19 @@ def test_latent_batch_adapter_preserves_proprio_context_state() -> None:
     assert moved.proprio_context_state_mask is not None
     prepared = LatentBatchAdapter().prepare(moved)
 
-    assert prepared.policy_batch.extra["proprio_context_state"] is moved.proprio_context_state
-    assert prepared.policy_batch.extra["proprio_context_state_mask"] is moved.proprio_context_state_mask
+    assert (
+        prepared.policy_batch.extra["proprio_context_state"]
+        is moved.proprio_context_state
+    )
+    assert (
+        prepared.policy_batch.extra["proprio_context_state_mask"]
+        is moved.proprio_context_state_mask
+    )
 
 
-def test_auxiliary_validation_dataset_forces_generalist_metadata_and_drops_text() -> None:
+def test_auxiliary_validation_dataset_forces_generalist_metadata_and_drops_text() -> (
+    None
+):
     sample = LatentWAMSample(
         video_latents=torch.zeros(2, 3),
         actions=torch.zeros(4, 7),
@@ -490,7 +536,10 @@ def test_auxiliary_validation_dataset_forces_generalist_metadata_and_drops_text(
     assert forced.task_text is None
     assert torch.equal(forced.text_context, torch.zeros(1, 2))
     assert forced.metadata["existing"] == "kept"
-    assert forced.metadata["generalist_training_mode_override"] == "action_conditioned_video"
+    assert (
+        forced.metadata["generalist_training_mode_override"]
+        == "action_conditioned_video"
+    )
     assert forced.metadata["generalist_drop_text_conditioning"] is True
     assert forced.metadata["generalist_training_source"] == "auxiliary_validation"
     assert forced.metadata["generalist_training_bucket"] == "fdm_val"
@@ -510,7 +559,9 @@ def test_auxiliary_validation_source_can_select_pure_counterfactual_dataset() ->
             return self.real_dataset[index]
 
     mixed = MixedDataset()
-    task = AuxiliaryValidationTaskConfig(name="fdm_val", source="counterfactual_dynamics")
+    task = AuxiliaryValidationTaskConfig(
+        name="fdm_val", source="counterfactual_dynamics"
+    )
 
     selected, resolved_source = _resolve_auxiliary_validation_source(mixed, task=task)
 
@@ -520,9 +571,13 @@ def test_auxiliary_validation_source_can_select_pure_counterfactual_dataset() ->
         _resolve_auxiliary_validation_source(TensorDataset(torch.ones(1, 1)), task=task)
 
 
-def test_auxiliary_validation_source_can_fallback_when_counterfactual_is_unavailable() -> None:
+def test_auxiliary_validation_source_can_fallback_when_counterfactual_is_unavailable() -> (
+    None
+):
     dataset = TensorDataset(torch.ones(1, 1))
-    task = AuxiliaryValidationTaskConfig(name="fdm_val", source="counterfactual_dynamics_if_available")
+    task = AuxiliaryValidationTaskConfig(
+        name="fdm_val", source="counterfactual_dynamics_if_available"
+    )
 
     selected, resolved_source = _resolve_auxiliary_validation_source(dataset, task=task)
 
@@ -539,7 +594,9 @@ def test_training_runtime_runs_primary_and_auxiliary_validation_phases() -> None
     )
     runtime = TrainingRuntime.__new__(TrainingRuntime)
     runtime.val_loader = [1]
-    runtime.auxiliary_validation_runs = (SimpleNamespace(config=task, loader=[2, 4, 6]),)
+    runtime.auxiliary_validation_runs = (
+        SimpleNamespace(config=task, loader=[2, 4, 6]),
+    )
     runtime.model = SimpleNamespace(eval=lambda: None)
     runtime.strategy = SimpleNamespace(
         device=torch.device("cpu"),
@@ -548,7 +605,9 @@ def test_training_runtime_runs_primary_and_auxiliary_validation_phases() -> None
     runtime.train_state = TrainState(optimizer_step=7)
     logged: list[tuple[str, int, dict[str, float]]] = []
     runtime.log_sink = SimpleNamespace(
-        log_metrics=lambda *, step, phase, metrics: logged.append((phase, step, metrics)),
+        log_metrics=lambda *, step, phase, metrics: logged.append(
+            (phase, step, metrics)
+        ),
     )
 
     class Adapter:
@@ -575,12 +634,16 @@ def test_training_runtime_runs_primary_and_auxiliary_validation_phases() -> None
 
     runtime._run_all_validation(limit_batches=1)
 
-    assert logged[0] == ("val", 7, {
-        "loss": 1.0,
-        "joint_denoise/action_loss_active": 0.0,
-        "joint_denoise/latent_loss_active": 1.0,
-        "joint_denoise/action_conditioned_video/count": 1.0,
-    })
+    assert logged[0] == (
+        "val",
+        7,
+        {
+            "loss": 1.0,
+            "joint_denoise/action_loss_active": 0.0,
+            "joint_denoise/latent_loss_active": 1.0,
+            "joint_denoise/action_conditioned_video/count": 1.0,
+        },
+    )
     assert logged[1][0] == "val_fdm"
     assert logged[1][1] == 7
     assert logged[1][2]["loss"] == pytest.approx(3.0)
@@ -590,7 +653,9 @@ def test_training_runtime_runs_primary_and_auxiliary_validation_phases() -> None
     assert logged[1][2]["mode_fraction"] == 1.0
 
 
-def test_validation_metrics_reduce_sums_and_counts_across_ranks(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_validation_metrics_reduce_sums_and_counts_across_ranks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     runtime = TrainingRuntime.__new__(TrainingRuntime)
     runtime.val_loader = [1, 3]
     runtime.model = SimpleNamespace(eval=lambda: None)
@@ -601,7 +666,9 @@ def test_validation_metrics_reduce_sums_and_counts_across_ranks(monkeypatch: pyt
     runtime.train_state = TrainState(optimizer_step=5)
     logged: list[tuple[int, str, dict[str, float]]] = []
     runtime.log_sink = SimpleNamespace(
-        log_metrics=lambda *, step, phase, metrics: logged.append((step, phase, metrics)),
+        log_metrics=lambda *, step, phase, metrics: logged.append(
+            (step, phase, metrics)
+        ),
     )
     runtime.step_executor = SimpleNamespace(
         batch_adapter=SimpleNamespace(move_to_device=lambda batch, device: batch),
@@ -626,11 +693,15 @@ def test_validation_metrics_reduce_sums_and_counts_across_ranks(monkeypatch: pyt
     assert logged == [(5, "val", {"loss": pytest.approx(3.0)})]
 
 
-def test_step_loop_runs_validation_interval_without_duplicate_final_validation() -> None:
+def test_step_loop_runs_validation_interval_without_duplicate_final_validation() -> (
+    None
+):
     runtime = TrainingRuntime.__new__(TrainingRuntime)
     runtime.train_loader = range(4)
     runtime.train_state = TrainState(run_name="validation-interval")
-    runtime.config = SimpleNamespace(trainer=SimpleNamespace(limit_train_batches=None, validation_interval=2))
+    runtime.config = SimpleNamespace(
+        trainer=SimpleNamespace(limit_train_batches=None, validation_interval=2)
+    )
     runtime.strategy = SimpleNamespace(is_main_process=True)
     validation_steps: list[int] = []
 
@@ -650,14 +721,22 @@ def test_step_loop_runs_validation_interval_without_duplicate_final_validation()
 
     runtime._train_micro_step = train_one_batch
 
-    TrainingRuntime._run_step_loop(runtime, StepLoopPolicy(max_steps=4, limit_val_batches=1))
+    TrainingRuntime._run_step_loop(
+        runtime, StepLoopPolicy(max_steps=4, limit_val_batches=1)
+    )
 
     assert validation_steps == [2, 4]
 
 
-def test_composable_runtime_trains_causal_video_prediction_smoke(tmp_path: Path) -> None:
-    config_path = REPO_ROOT / "configs/experiments/causal_video_prediction_robotwin_smoke.yaml"
-    config = _build_step_runtime_config(config_path, tmp_path=tmp_path, batch_adapter="latents")
+def test_composable_runtime_trains_causal_video_prediction_smoke(
+    tmp_path: Path,
+) -> None:
+    config_path = (
+        REPO_ROOT / "configs/experiments/causal_video_prediction_robotwin_smoke.yaml"
+    )
+    config = _build_step_runtime_config(
+        config_path, tmp_path=tmp_path, batch_adapter="latents"
+    )
 
     runtime = TrainingRuntime.from_config(config)
     final_state = runtime.run()
@@ -665,7 +744,9 @@ def test_composable_runtime_trains_causal_video_prediction_smoke(tmp_path: Path)
     assert final_state.optimizer_step == 1
 
 
-def test_training_runtime_initializes_mot_variant_before_strategy_wrap(tmp_path: Path) -> None:
+def test_training_runtime_initializes_mot_variant_before_strategy_wrap(
+    tmp_path: Path,
+) -> None:
     config_path = REPO_ROOT / "configs/experiments/mot_robotwin_smoke.yaml"
     config = _build_step_runtime_config(config_path, tmp_path=tmp_path)
 
@@ -677,7 +758,8 @@ def test_training_runtime_initializes_mot_variant_before_strategy_wrap(tmp_path:
 
 def test_generalist_checkpoint_writes_yaml_safe_enum_dict_keys(tmp_path: Path) -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml"
+        REPO_ROOT
+        / "configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml"
     )
     manager = CheckpointManager(
         root_dir=tmp_path / "checkpoints",
@@ -689,13 +771,19 @@ def test_generalist_checkpoint_writes_yaml_safe_enum_dict_keys(tmp_path: Path) -
 
     manager._write_resolved_config(checkpoint_dir)
 
-    resolved_text = (checkpoint_dir / "resolved_config.yaml").read_text(encoding="utf-8")
+    resolved_text = (checkpoint_dir / "resolved_config.yaml").read_text(
+        encoding="utf-8"
+    )
     assert "mot_generalist_training_mode_probs:" in resolved_text
     assert "joint:" in resolved_text
 
 
-def test_model_only_checkpoint_does_not_collect_optimizer_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
+def test_model_only_checkpoint_does_not_collect_optimizer_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    )
     manager = CheckpointManager(
         root_dir=tmp_path / "checkpoints",
         config=config,
@@ -714,8 +802,13 @@ def test_model_only_checkpoint_does_not_collect_optimizer_state(tmp_path: Path, 
         calls["optimizer_state"] += 1
         raise AssertionError("model_only checkpoints must not collect optimizer state")
 
-    monkeypatch.setattr("open_wam.training.checkpoints.get_model_state_dict", fake_model_state_dict)
-    monkeypatch.setattr("open_wam.training.checkpoints.get_optimizer_state_dict", fail_optimizer_state_dict)
+    monkeypatch.setattr(
+        "open_wam.training.checkpoints.get_model_state_dict", fake_model_state_dict
+    )
+    monkeypatch.setattr(
+        "open_wam.training.checkpoints.get_optimizer_state_dict",
+        fail_optimizer_state_dict,
+    )
 
     checkpoint_dir = manager.save(
         step=1,
@@ -731,10 +824,77 @@ def test_model_only_checkpoint_does_not_collect_optimizer_state(tmp_path: Path, 
     assert (checkpoint_dir / ".checkpoint_complete").exists()
 
 
+def test_full_state_resume_preserves_sparse_adamw_state(tmp_path: Path) -> None:
+    class SparseOptimizerModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.first = torch.nn.Parameter(torch.tensor([1.0]))
+            self.later = torch.nn.Parameter(torch.tensor([2.0]))
+
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    )
+    manager = CheckpointManager(
+        root_dir=tmp_path / "checkpoints",
+        config=config,
+        checkpoint_mode=CheckpointMode.FULL_TRAINING_STATE,
+    )
+    model = SparseOptimizerModel()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    model.first.square().sum().backward()
+    optimizer.step()
+    optimizer.zero_grad(set_to_none=True)
+    assert model.later not in optimizer.state
+
+    checkpoint_dir = manager.save(
+        step=1,
+        model=model,
+        optimizer=optimizer,
+        scheduler=None,
+        train_state=TrainState(global_step=1, optimizer_step=1),
+    )
+
+    resumed_model = SparseOptimizerModel()
+    resumed_optimizer = torch.optim.AdamW(resumed_model.parameters(), lr=1e-3)
+    resumed_state, _ = manager.load(
+        path=checkpoint_dir,
+        model=resumed_model,
+        optimizer=resumed_optimizer,
+    )
+
+    assert resumed_state.optimizer_step == 1
+    assert resumed_model.later not in resumed_optimizer.state
+    assert len(resumed_optimizer.state) == len(optimizer.state) == 1
+
+    for candidate_model, candidate_optimizer in (
+        (model, optimizer),
+        (resumed_model, resumed_optimizer),
+    ):
+        candidate_model.later.square().sum().backward()
+        candidate_optimizer.step()
+        candidate_optimizer.zero_grad(set_to_none=True)
+
+    torch.testing.assert_close(resumed_model.first, model.first, rtol=0, atol=0)
+    torch.testing.assert_close(resumed_model.later, model.later, rtol=0, atol=0)
+    for original_parameter, resumed_parameter in (
+        (model.first, resumed_model.first),
+        (model.later, resumed_model.later),
+    ):
+        for key in ("step", "exp_avg", "exp_avg_sq"):
+            torch.testing.assert_close(
+                resumed_optimizer.state[resumed_parameter][key],
+                optimizer.state[original_parameter][key],
+                rtol=0,
+                atol=0,
+            )
+
+
 def test_checkpoint_manager_prunes_old_checkpoints_after_successful_save(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    )
     manager = CheckpointManager(
         root_dir=tmp_path / "checkpoints",
         config=config,
@@ -747,7 +907,9 @@ def test_checkpoint_manager_prunes_old_checkpoints_after_successful_save(
         del model, options
         return {"weight": torch.ones(1)}
 
-    monkeypatch.setattr("open_wam.training.checkpoints.get_model_state_dict", fake_model_state_dict)
+    monkeypatch.setattr(
+        "open_wam.training.checkpoints.get_model_state_dict", fake_model_state_dict
+    )
 
     for step in (100, 200, 300, 400, 500):
         train_state = TrainState(optimizer_step=step)
@@ -759,14 +921,22 @@ def test_checkpoint_manager_prunes_old_checkpoints_after_successful_save(
             train_state=train_state,
         )
 
-    remaining = sorted(path.name for path in (tmp_path / "checkpoints").glob("checkpoint_step_*"))
-    assert remaining == ["checkpoint_step_300", "checkpoint_step_400", "checkpoint_step_500"]
+    remaining = sorted(
+        path.name for path in (tmp_path / "checkpoints").glob("checkpoint_step_*")
+    )
+    assert remaining == [
+        "checkpoint_step_300",
+        "checkpoint_step_400",
+        "checkpoint_step_500",
+    ]
 
 
 def test_model_only_checkpoint_loads_sibling_train_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    )
     manager = CheckpointManager(
         root_dir=tmp_path / "checkpoints",
         config=config,
@@ -774,9 +944,14 @@ def test_model_only_checkpoint_loads_sibling_train_state(
     )
     checkpoint_dir = manager.checkpoint_dir_for_step(500)
     checkpoint_dir.mkdir(parents=True)
-    torch.save({"model_state_dict": {"weight": torch.ones(1)}}, checkpoint_dir / "model_state.pt")
+    torch.save(
+        {"model_state_dict": {"weight": torch.ones(1)}},
+        checkpoint_dir / "model_state.pt",
+    )
     (checkpoint_dir / "train_state.json").write_text(
-        json.dumps({"global_step": 10000, "optimizer_step": 500, "seen_batches": 10000}),
+        json.dumps(
+            {"global_step": 10000, "optimizer_step": 500, "seen_batches": 10000}
+        ),
         encoding="utf-8",
     )
 
@@ -786,9 +961,13 @@ def test_model_only_checkpoint_loads_sibling_train_state(
         del model, options
         loaded_keys.extend(state_dict.keys())
 
-    monkeypatch.setattr("open_wam.training.checkpoints.set_model_state_dict", fake_set_model_state_dict)
+    monkeypatch.setattr(
+        "open_wam.training.checkpoints.set_model_state_dict", fake_set_model_state_dict
+    )
 
-    train_state, payload = manager.load(path=checkpoint_dir / "model_state.pt", model=torch.nn.Linear(1, 1))
+    train_state, payload = manager.load(
+        path=checkpoint_dir / "model_state.pt", model=torch.nn.Linear(1, 1)
+    )
 
     assert loaded_keys == ["weight"]
     assert "optimizer_state_dict" not in payload
@@ -798,8 +977,12 @@ def test_model_only_checkpoint_loads_sibling_train_state(
     assert train_state.resume_source == str(checkpoint_dir / "model_state.pt")
 
 
-def test_full_state_checkpoint_resume_prefers_sibling_full_state(tmp_path: Path) -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
+def test_full_state_checkpoint_resume_prefers_sibling_full_state(
+    tmp_path: Path,
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    )
     manager = CheckpointManager(
         root_dir=tmp_path / "checkpoints",
         config=config,
@@ -807,7 +990,10 @@ def test_full_state_checkpoint_resume_prefers_sibling_full_state(tmp_path: Path)
     )
     checkpoint_dir = manager.checkpoint_dir_for_step(500)
     checkpoint_dir.mkdir(parents=True)
-    torch.save({"model_state_dict": {"weight": torch.ones(1)}}, checkpoint_dir / "model_state.pt")
+    torch.save(
+        {"model_state_dict": {"weight": torch.ones(1)}},
+        checkpoint_dir / "model_state.pt",
+    )
     torch.save(
         {
             "model_state_dict": {"weight": torch.ones(1)},
@@ -825,8 +1011,12 @@ def test_full_state_checkpoint_resume_prefers_sibling_full_state(tmp_path: Path)
     assert resolved == checkpoint_dir / "full_training_state.pt"
 
 
-def test_checkpoint_latest_ignores_unmarked_partial_when_markers_exist(tmp_path: Path) -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
+def test_checkpoint_latest_ignores_unmarked_partial_when_markers_exist(
+    tmp_path: Path,
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    )
     manager = CheckpointManager(
         root_dir=tmp_path / "checkpoints",
         config=config,
@@ -834,17 +1024,23 @@ def test_checkpoint_latest_ignores_unmarked_partial_when_markers_exist(tmp_path:
     )
     complete = manager.checkpoint_dir_for_step(100)
     complete.mkdir(parents=True)
-    torch.save({"model_state_dict": {"weight": torch.ones(1)}}, complete / "model_state.pt")
+    torch.save(
+        {"model_state_dict": {"weight": torch.ones(1)}}, complete / "model_state.pt"
+    )
     (complete / ".checkpoint_complete").write_text("ok\n", encoding="utf-8")
     partial = manager.checkpoint_dir_for_step(200)
     partial.mkdir(parents=True)
-    torch.save({"model_state_dict": {"weight": torch.ones(1)}}, partial / "model_state.pt")
+    torch.save(
+        {"model_state_dict": {"weight": torch.ones(1)}}, partial / "model_state.pt"
+    )
 
     assert manager.find_latest_checkpoint(tmp_path / "checkpoints") == complete
 
 
 def test_checkpoint_latest_preserves_legacy_unmarked_dirs(tmp_path: Path) -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    )
     manager = CheckpointManager(
         root_dir=tmp_path / "checkpoints",
         config=config,
@@ -853,13 +1049,22 @@ def test_checkpoint_latest_preserves_legacy_unmarked_dirs(tmp_path: Path) -> Non
     for step in (100, 200):
         checkpoint_dir = manager.checkpoint_dir_for_step(step)
         checkpoint_dir.mkdir(parents=True)
-        torch.save({"model_state_dict": {"weight": torch.ones(1)}}, checkpoint_dir / "model_state.pt")
+        torch.save(
+            {"model_state_dict": {"weight": torch.ones(1)}},
+            checkpoint_dir / "model_state.pt",
+        )
 
-    assert manager.find_latest_checkpoint(tmp_path / "checkpoints") == manager.checkpoint_dir_for_step(200)
+    assert manager.find_latest_checkpoint(
+        tmp_path / "checkpoints"
+    ) == manager.checkpoint_dir_for_step(200)
 
 
-def test_final_checkpoint_skips_when_interval_checkpoint_already_saved(tmp_path: Path) -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
+def test_final_checkpoint_skips_when_interval_checkpoint_already_saved(
+    tmp_path: Path,
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    )
     config = replace(
         config,
         trainer=replace(
@@ -872,17 +1077,25 @@ def test_final_checkpoint_skips_when_interval_checkpoint_already_saved(tmp_path:
         config=config,
         train_state=TrainState(optimizer_step=5),
         checkpoint_manager=SimpleNamespace(
-            checkpoint_dir_for_step=lambda step: tmp_path / "checkpoints" / f"checkpoint_step_{step}",
-            save=lambda **kwargs: (_ for _ in ()).throw(AssertionError("duplicate final checkpoint")),
+            checkpoint_dir_for_step=lambda step: (
+                tmp_path / "checkpoints" / f"checkpoint_step_{step}"
+            ),
+            save=lambda **kwargs: (_ for _ in ()).throw(
+                AssertionError("duplicate final checkpoint")
+            ),
         ),
     )
-    runtime.train_state.last_checkpoint_path = str(tmp_path / "checkpoints" / "checkpoint_step_5")
+    runtime.train_state.last_checkpoint_path = str(
+        tmp_path / "checkpoints" / "checkpoint_step_5"
+    )
 
     TrainingRuntime._save_checkpoint(runtime, final=True)
 
 
 def test_save_interval_zero_disables_final_checkpoint(tmp_path: Path) -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    )
     config = replace(
         config,
         trainer=replace(
@@ -895,8 +1108,12 @@ def test_save_interval_zero_disables_final_checkpoint(tmp_path: Path) -> None:
         config=config,
         train_state=TrainState(optimizer_step=5),
         checkpoint_manager=SimpleNamespace(
-            checkpoint_dir_for_step=lambda step: tmp_path / "checkpoints" / f"checkpoint_step_{step}",
-            save=lambda **kwargs: (_ for _ in ()).throw(AssertionError("checkpoint should be disabled")),
+            checkpoint_dir_for_step=lambda step: (
+                tmp_path / "checkpoints" / f"checkpoint_step_{step}"
+            ),
+            save=lambda **kwargs: (_ for _ in ()).throw(
+                AssertionError("checkpoint should be disabled")
+            ),
         ),
     )
 
@@ -904,7 +1121,9 @@ def test_save_interval_zero_disables_final_checkpoint(tmp_path: Path) -> None:
 
 
 def test_composable_runtime_logs_checkpoints_and_resume(tmp_path: Path) -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    )
     config = replace(
         config,
         training=replace(
@@ -948,7 +1167,9 @@ def test_composable_runtime_logs_checkpoints_and_resume(tmp_path: Path) -> None:
 
 
 def test_composable_runtime_exports_runtime_backbone(tmp_path: Path) -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    )
     config = replace(
         config,
         training=replace(config.training, num_steps=1),
@@ -969,13 +1190,19 @@ def test_composable_runtime_exports_runtime_backbone(tmp_path: Path) -> None:
     runtime = TrainingRuntime.from_config(config)
     runtime.run()
 
-    checkpoint_dir = tmp_path / config.name / "checkpoints" / "checkpoint_step_1" / "transformer"
+    checkpoint_dir = (
+        tmp_path / config.name / "checkpoints" / "checkpoint_step_1" / "transformer"
+    )
     assert (checkpoint_dir / "diffusion_pytorch_model.safetensors").exists()
     assert (checkpoint_dir / "config.json").exists()
 
 
-def test_composable_runtime_disable_checkpointing_suppresses_export_runtime_backbone(tmp_path: Path) -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
+def test_composable_runtime_disable_checkpointing_suppresses_export_runtime_backbone(
+    tmp_path: Path,
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    )
     config = replace(
         config,
         training=replace(config.training, num_steps=1),
@@ -1000,8 +1227,12 @@ def test_composable_runtime_disable_checkpointing_suppresses_export_runtime_back
     assert not list(checkpoint_root.glob("checkpoint_step_*"))
 
 
-def test_composable_runtime_ddp_strategy_degrades_cleanly_to_single_process(tmp_path: Path) -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml")
+def test_composable_runtime_ddp_strategy_degrades_cleanly_to_single_process(
+    tmp_path: Path,
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
+    )
     config = replace(
         config,
         training=replace(config.training, num_steps=1),
@@ -1021,7 +1252,9 @@ def test_composable_runtime_ddp_strategy_degrades_cleanly_to_single_process(tmp_
     assert final_state.optimizer_step == 1
 
 
-def test_composable_runtime_trains_post_latent_with_core_layer_visual_readout(tmp_path: Path) -> None:
+def test_composable_runtime_trains_post_latent_with_core_layer_visual_readout(
+    tmp_path: Path,
+) -> None:
     def _mutate(raw) -> None:
         raw["policy_variant"]["visual_readout"] = {
             "source_family": "core_layer_tokens",
@@ -1043,7 +1276,9 @@ def test_composable_runtime_trains_post_latent_with_core_layer_visual_readout(tm
     assert final_state.optimizer_step == 1
 
 
-def test_composable_runtime_trains_post_decoded_with_multi_layer_visual_readout(tmp_path: Path) -> None:
+def test_composable_runtime_trains_post_decoded_with_multi_layer_visual_readout(
+    tmp_path: Path,
+) -> None:
     def _mutate(raw) -> None:
         raw["policy_variant"]["visual_readout"] = {
             "source_family": "core_multi_layer_tokens",
@@ -1066,22 +1301,35 @@ def test_composable_runtime_trains_post_decoded_with_multi_layer_visual_readout(
     assert final_state.optimizer_step == 1
 
 
-def test_composable_runtime_trains_method4_with_implicit_video_conditioned_decoder(tmp_path: Path) -> None:
-    post_latent_path = REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml"
+def test_composable_runtime_trains_method4_with_implicit_video_conditioned_decoder(
+    tmp_path: Path,
+) -> None:
+    post_latent_path = (
+        REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml"
+    )
     post_latent_config = _build_step_runtime_config(post_latent_path, tmp_path=tmp_path)
     post_latent_runtime = TrainingRuntime.from_config(post_latent_config)
     post_latent_state = post_latent_runtime.run()
     assert post_latent_state.optimizer_step == 1
 
-    post_decoded_path = REPO_ROOT / "configs/experiments/post_decoded_robotwin_video_conditioned.yaml"
-    post_decoded_config = _build_step_runtime_config(post_decoded_path, tmp_path=tmp_path)
+    post_decoded_path = (
+        REPO_ROOT / "configs/experiments/post_decoded_robotwin_video_conditioned.yaml"
+    )
+    post_decoded_config = _build_step_runtime_config(
+        post_decoded_path, tmp_path=tmp_path
+    )
     post_decoded_runtime = TrainingRuntime.from_config(post_decoded_config)
     post_decoded_state = post_decoded_runtime.run()
     assert post_decoded_state.optimizer_step == 1
 
 
-def test_composable_runtime_trains_method4_current_frame_regression_mode(tmp_path: Path) -> None:
-    config_path = REPO_ROOT / "configs/experiments/post_decoded_robotwin_current_frame_regression.yaml"
+def test_composable_runtime_trains_method4_current_frame_regression_mode(
+    tmp_path: Path,
+) -> None:
+    config_path = (
+        REPO_ROOT
+        / "configs/experiments/post_decoded_robotwin_current_frame_regression.yaml"
+    )
     config = _build_step_runtime_config(config_path, tmp_path=tmp_path)
 
     runtime = TrainingRuntime.from_config(config)
@@ -1090,7 +1338,9 @@ def test_composable_runtime_trains_method4_current_frame_regression_mode(tmp_pat
     assert final_state.optimizer_step == 1
 
 
-def test_composable_runtime_trains_video_sequence_policy_with_core_layer_visual_readout(tmp_path: Path) -> None:
+def test_composable_runtime_trains_video_sequence_policy_with_core_layer_visual_readout(
+    tmp_path: Path,
+) -> None:
     def _mutate(raw) -> None:
         raw["policy_variant"]["name"] = "video_sequence_policy"
         raw["policy_variant"]["attach_site"] = "post_visual_core"

@@ -1,19 +1,26 @@
 from __future__ import annotations
 
+import os
 from contextlib import nullcontext
 from dataclasses import dataclass
-import os
 
 import torch
 import torch.distributed as dist
-from torch.distributed.device_mesh import init_device_mesh
 from torch import nn
+from torch.distributed.device_mesh import init_device_mesh
 from torch.nn.parallel import DistributedDataParallel
 
-from open_wam.configs import StrategyName, TrainerAccelerator, TrainerConfig, TrainerPrecision
+from open_wam.configs import (
+    StrategyName,
+    TrainerAccelerator,
+    TrainerConfig,
+    TrainerPrecision,
+)
 
 
-def _resolve_device(accelerator: TrainerAccelerator | str, local_rank: int = 0) -> torch.device:
+def _resolve_device(
+    accelerator: TrainerAccelerator | str, local_rank: int = 0
+) -> torch.device:
     if accelerator == TrainerAccelerator.GPU:
         if not torch.cuda.is_available():
             raise RuntimeError("Requested `accelerator=gpu` but CUDA is not available.")
@@ -23,7 +30,9 @@ def _resolve_device(accelerator: TrainerAccelerator | str, local_rank: int = 0) 
 
 def _apply_block_activation_checkpointing(module: nn.Module) -> None:
     try:
-        from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
+        from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
+            checkpoint_wrapper,
+        )
     except ImportError:
         return
 
@@ -57,11 +66,11 @@ def _apply_composable_fsdp_sharding(
 
         offload_policy = CPUOffloadPolicy(pin_memory=True)
 
-    def _shard_kwargs() -> dict:
+    def _shard_kwargs(*, reshard_after_forward: bool = True) -> dict:
         kwargs = {
             "mesh": mesh,
             "mp_policy": mp_policy,
-            "reshard_after_forward": True,
+            "reshard_after_forward": reshard_after_forward,
         }
         if offload_policy is not None:
             kwargs["offload_policy"] = offload_policy
@@ -85,7 +94,11 @@ def _apply_composable_fsdp_sharding(
     visual_tower = getattr(model, "visual_tower", None)
     core = getattr(visual_tower, "core", None) if visual_tower is not None else None
     policy_variant = getattr(model, "policy_variant", None)
-    action_expert = getattr(policy_variant, "action_expert", None) if policy_variant is not None else None
+    action_expert = (
+        getattr(policy_variant, "action_expert", None)
+        if policy_variant is not None
+        else None
+    )
 
     # MoT packed-coupling path: blocks have been transferred from
     # core.blocks / action_expert.blocks into a MoTPackedBlockStack at
@@ -105,6 +118,13 @@ def _apply_composable_fsdp_sharding(
     else:
         _shard_block_stack(core)
         _shard_block_stack(action_expert)
+
+    # FSDP2 expects a bottom-up hierarchy: leaf blocks first, then the root.
+    # The root owns embeddings, projections, conditioning encoders, mode
+    # tokens, and any other parameters outside the block stacks. Leaving it
+    # unsharded also leaves those trainable parameters unsynchronized across
+    # ranks, so each rank silently develops a different logical model.
+    fully_shard(model, **_shard_kwargs(reshard_after_forward=False))
 
     return model
 
@@ -158,17 +178,22 @@ def _clip_grad_norm_mixed(
     *,
     distributed: bool,
 ) -> torch.Tensor:
-    grads: list[torch.Tensor] = [param.grad for param in parameters if getattr(param, "grad", None) is not None]
+    grads: list[torch.Tensor] = [
+        param.grad for param in parameters if getattr(param, "grad", None) is not None
+    ]
     if not grads:
         return torch.tensor(0.0)
 
-    device = _local_grad_tensor(grads[0]).device
-    local_tensor_sq = torch.zeros((), device=device, dtype=torch.float32)
-    local_dtensor_sq = torch.zeros((), device=device, dtype=torch.float32)
+    local_device = _local_grad_tensor(grads[0]).device
+    reduction_device = local_device
+    if distributed and dist.is_initialized() and dist.get_backend() == "nccl":
+        reduction_device = torch.device("cuda", torch.cuda.current_device())
+    local_tensor_sq = torch.zeros((), device=reduction_device, dtype=torch.float32)
+    local_dtensor_sq = torch.zeros((), device=reduction_device, dtype=torch.float32)
 
     for grad in grads:
         local_grad = _local_grad_tensor(grad).detach()
-        grad_norm_sq = local_grad.float().pow(2).sum()
+        grad_norm_sq = local_grad.float().pow(2).sum().to(reduction_device)
         if _is_dtensor_grad(grad):
             local_dtensor_sq = local_dtensor_sq + grad_norm_sq
         else:
@@ -179,13 +204,19 @@ def _clip_grad_norm_mixed(
         dist.all_reduce(total_dtensor_sq, op=dist.ReduceOp.SUM)
 
     total_norm = torch.sqrt(local_tensor_sq + total_dtensor_sq)
-    max_norm_tensor = torch.tensor(float(max_grad_norm), device=device, dtype=torch.float32)
+    max_norm_tensor = torch.tensor(
+        float(max_grad_norm),
+        device=reduction_device,
+        dtype=torch.float32,
+    )
     clip_coef = torch.clamp(max_norm_tensor / (total_norm + 1e-6), max=1.0)
 
     if clip_coef.item() < 1.0:
         for grad in grads:
             local_grad = _local_grad_tensor(grad)
-            local_grad.mul_(clip_coef.to(device=local_grad.device, dtype=local_grad.dtype))
+            local_grad.mul_(
+                clip_coef.to(device=local_grad.device, dtype=local_grad.dtype)
+            )
 
     return total_norm
 
@@ -204,7 +235,9 @@ class SingleDeviceStrategy:
         self.distributed = False
         self.is_main_process = True
         self.device = _resolve_device(self.accelerator)
-        self._use_fp16_scaler = self.precision == TrainerPrecision.FP16 and self.device.type == "cuda"
+        self._use_fp16_scaler = (
+            self.precision == TrainerPrecision.FP16 and self.device.type == "cuda"
+        )
         self.grad_scaler = torch.amp.GradScaler("cuda", enabled=self._use_fp16_scaler)
 
     def prepare_model(self, model: nn.Module) -> nn.Module:
@@ -248,7 +281,11 @@ class SingleDeviceStrategy:
         return None
 
     def state_dict(self) -> dict[str, object]:
-        return {"grad_scaler": self.grad_scaler.state_dict() if self.grad_scaler.is_enabled() else None}
+        return {
+            "grad_scaler": self.grad_scaler.state_dict()
+            if self.grad_scaler.is_enabled()
+            else None
+        }
 
     def load_state_dict(self, raw: dict[str, object] | None) -> None:
         if not self.grad_scaler.is_enabled():
@@ -287,7 +324,9 @@ class DistributedStrategy(SingleDeviceStrategy):
         if self.accelerator == TrainerAccelerator.GPU and torch.cuda.is_available():
             torch.cuda.set_device(self.local_rank)
         self.device = _resolve_device(self.accelerator, local_rank=self.local_rank)
-        self._use_fp16_scaler = self.precision == TrainerPrecision.FP16 and self.device.type == "cuda"
+        self._use_fp16_scaler = (
+            self.precision == TrainerPrecision.FP16 and self.device.type == "cuda"
+        )
         self.grad_scaler = torch.amp.GradScaler("cuda", enabled=self._use_fp16_scaler)
         self._owns_process_group = False
         if self.distributed and not dist.is_initialized():
@@ -350,7 +389,9 @@ class DistributedStrategy(SingleDeviceStrategy):
         _set_gradient_sync_recursive(model, enabled)
 
     def clip_grad_norm_(self, parameters, max_grad_norm: float) -> torch.Tensor:
-        return _clip_grad_norm_mixed(parameters, max_grad_norm, distributed=self.distributed)
+        return _clip_grad_norm_mixed(
+            parameters, max_grad_norm, distributed=self.distributed
+        )
 
     def close(self) -> None:
         if self._owns_process_group and dist.is_initialized():
@@ -360,7 +401,13 @@ class DistributedStrategy(SingleDeviceStrategy):
 def build_training_strategy(config: TrainerConfig) -> SingleDeviceStrategy:
     strategy_name = config.strategy
     if strategy_name in {StrategyName.LIGHTNING, StrategyName.SINGLE_DEVICE}:
-        return SingleDeviceStrategy(accelerator=config.accelerator, precision=config.precision)
+        return SingleDeviceStrategy(
+            accelerator=config.accelerator, precision=config.precision
+        )
     if strategy_name in {StrategyName.DDP, StrategyName.FSDP}:
-        return DistributedStrategy(accelerator=config.accelerator, precision=config.precision, kind=strategy_name)
+        return DistributedStrategy(
+            accelerator=config.accelerator,
+            precision=config.precision,
+            kind=strategy_name,
+        )
     raise NotImplementedError(f"Unsupported training strategy {strategy_name!r}.")
