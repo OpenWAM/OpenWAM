@@ -116,8 +116,10 @@ For row-oriented robot datasets, `row_action_targets` owns raw, relative-EEF,
 and absolute-joint target conversion, action mapping, normalization, and
 target metadata. Each adapter still owns row decoding and supplies its exact
 sequence extraction and padding policy through the shared callback contract.
-For mixed conditional-dynamics training, `generalist_dynamics` owns source
-sampling and FDM/IDM mode routing, while `conditional_dynamics_layout` owns the
+For mixed conditional-dynamics training, `counterfactual_dynamics_dataset`
+owns encoded counterfactual manifests, payload I/O, hierarchical sampling, and
+target-only sample assembly. `generalist_dynamics` owns source sampling and
+FDM/IDM mode routing, while `conditional_dynamics_layout` owns the
 parameter-free projection of real demonstrations to the rollout-style
 `t0 + future` tensor and metadata contract. Joint samples bypass that
 projection.

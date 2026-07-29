@@ -69,7 +69,9 @@ def build_counterfactual_fdm_eval_dataset(
 ) -> Dataset[LatentWAMSample]:
     """Build the encoded counterfactual target-only latent dataset."""
 
-    from open_wam.data.generalist_dynamics import EncodedCounterfactualDynamicsLatentDataset
+    from open_wam.data.counterfactual_dynamics_dataset import (
+        EncodedCounterfactualDynamicsLatentDataset,
+    )
 
     return EncodedCounterfactualDynamicsLatentDataset(
         data_config=data_config,

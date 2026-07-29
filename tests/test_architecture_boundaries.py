@@ -201,6 +201,40 @@ def test_conditional_dynamics_layout_has_one_owner() -> None:
     }.isdisjoint(mixture_definitions)
 
 
+def test_counterfactual_dataset_and_mixture_have_separate_owners() -> None:
+    dataset_path = PACKAGE_ROOT / "data" / "counterfactual_dynamics_dataset.py"
+    mixture_path = PACKAGE_ROOT / "data" / "generalist_dynamics.py"
+    dataset_definitions = _top_level_definitions(dataset_path)
+    mixture_definitions = _top_level_definitions(mixture_path)
+
+    assert "EncodedCounterfactualDynamicsLatentDataset" in dataset_definitions
+    assert {
+        "EncodedCounterfactualDynamicsLatentDataset",
+        "_build_counterfactual_fixed_segment",
+        "_counterfactual_action_steps_per_frame",
+        "_counterfactual_latent_state_frames",
+        "_load_latent_payload",
+    }.isdisjoint(mixture_definitions)
+    assert {
+        "GeneralistDynamicsMixtureDataset",
+        "GeneralistDynamicsSourceViewDataset",
+        "build_generalist_dynamics_mixture_datasets",
+    } <= mixture_definitions
+
+    from open_wam.data.counterfactual_dynamics_dataset import (
+        EncodedCounterfactualDynamicsLatentDataset as CanonicalDataset,
+    )
+    from open_wam.data import (
+        EncodedCounterfactualDynamicsLatentDataset as PublicDataset,
+    )
+    from open_wam.data.generalist_dynamics import (
+        EncodedCounterfactualDynamicsLatentDataset as LegacyDataset,
+    )
+
+    assert PublicDataset is CanonicalDataset
+    assert LegacyDataset is CanonicalDataset
+
+
 def test_latent_view_assembly_has_one_owner() -> None:
     assembly_definitions = _top_level_definitions(
         PACKAGE_ROOT / "data" / "latent_view_assembly.py"

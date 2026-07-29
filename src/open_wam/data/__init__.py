@@ -67,7 +67,7 @@ _LAZY_EXPORTS = {
     "build_calvin_npz_train_val_datasets": "calvin_npz",
     "discover_calvin_npz_episodes": "calvin_npz",
     "DatasetLoaderSpec": "factory",
-    "EncodedCounterfactualDynamicsLatentDataset": "generalist_dynamics",
+    "EncodedCounterfactualDynamicsLatentDataset": "counterfactual_dynamics_dataset",
     "GeneralistDynamicsMixtureDataset": "generalist_dynamics",
     "build_train_val_datasets": "factory",
     "build_generalist_dynamics_mixture_datasets": "generalist_dynamics",
