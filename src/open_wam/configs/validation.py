@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any, Mapping
 
+from .coercion import coerce_enum, coerce_optional_enum
 from .enums import AuxiliaryValidationSource, DataSplit, JointDenoiseTrainingMode, coerce_fields
 
 
@@ -72,3 +74,46 @@ class ValidationConfig:
         if len(phases) != len(set(phases)):
             raise ValueError("Enabled `validation.auxiliary_tasks` entries must have unique report prefixes.")
         object.__setattr__(self, "auxiliary_tasks", tasks)
+
+
+def parse_validation_config(raw_value: Mapping[str, Any] | None) -> ValidationConfig:
+    """Parse optional validation probes independently from loop mechanics."""
+
+    raw = raw_value or {}
+    tasks_raw = raw.get("auxiliary_tasks", ())
+    if tasks_raw is None:
+        tasks_raw = ()
+    if not isinstance(tasks_raw, (list, tuple)):
+        raise ValueError("Expected `validation.auxiliary_tasks` to be a list.")
+    tasks: list[AuxiliaryValidationTaskConfig] = []
+    for item in tasks_raw:
+        if not isinstance(item, dict):
+            raise ValueError(
+                "Expected each `validation.auxiliary_tasks` entry to be a mapping."
+            )
+        if "name" not in item:
+            raise ValueError(
+                "Expected each `validation.auxiliary_tasks` entry to include `name`."
+            )
+        tasks.append(
+            AuxiliaryValidationTaskConfig(
+                name=item["name"],
+                mode_override=coerce_optional_enum(
+                    JointDenoiseTrainingMode,
+                    item.get("mode_override"),
+                ),
+                dataset_split=coerce_enum(
+                    DataSplit,
+                    item.get("dataset_split", DataSplit.VAL),
+                ),
+                source=coerce_enum(
+                    AuxiliaryValidationSource,
+                    item.get("source", AuxiliaryValidationSource.DATASET),
+                ),
+                max_batches=item.get("max_batches", 16),
+                report_prefix=item.get("report_prefix"),
+                drop_text_conditioning=item.get("drop_text_conditioning"),
+                enabled=item.get("enabled", True),
+            )
+        )
+    return ValidationConfig(auxiliary_tasks=tuple(tasks))

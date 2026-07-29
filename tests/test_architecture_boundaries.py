@@ -160,6 +160,27 @@ def test_local_path_resolution_has_one_package_owner() -> None:
     assert LegacyReadYamlWithLocalPaths is read_yaml_with_local_paths
 
 
+def test_typed_component_parsers_live_beside_their_contracts() -> None:
+    parser_owners = {
+        "parse_data_config": "data_parsing.py",
+        "parse_shared_video_transformer_config": "backbone.py",
+        "parse_training_config": "training.py",
+        "parse_inference_config": "inference.py",
+        "parse_trainer_config": "trainer.py",
+        "parse_validation_config": "validation.py",
+        "parse_visual_readout_config": "visual_readout.py",
+        "parse_policy_variant_config": "policy_variant.py",
+        "parse_action_decoder_config": "action_decoder.py",
+    }
+    loader_definitions = _top_level_definitions(PACKAGE_ROOT / "configs" / "loader.py")
+
+    for parser_name, owner_filename in parser_owners.items():
+        assert parser_name in _top_level_definitions(
+            PACKAGE_ROOT / "configs" / owner_filename
+        )
+        assert parser_name not in loader_definitions
+
+
 def test_mot_generalist_mode_semantics_have_one_owner() -> None:
     mode_functions = {
         "apply_generalist_training_mode",

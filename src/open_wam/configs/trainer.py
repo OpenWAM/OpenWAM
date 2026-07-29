@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Mapping
 
+from .coercion import coerce_enum
 from .enums import (
     BatchAdapterName,
     CheckpointMode,
@@ -87,3 +89,63 @@ class TrainerConfig:
             if isinstance(self.max_checkpoints_to_keep, bool) or int(self.max_checkpoints_to_keep) <= 0:
                 raise ValueError("`trainer.max_checkpoints_to_keep` must be a positive integer or null.")
             object.__setattr__(self, "max_checkpoints_to_keep", int(self.max_checkpoints_to_keep))
+
+
+def parse_trainer_config(raw_value: Mapping[str, Any] | None) -> TrainerConfig:
+    """Parse generic loop, device, checkpoint, and logging controls."""
+
+    raw = raw_value or {}
+    return TrainerConfig(
+        max_epochs=raw.get("max_epochs", 1),
+        limit_train_batches=raw.get("limit_train_batches", 2),
+        limit_val_batches=raw.get("limit_val_batches", 1),
+        validation_interval=raw.get("validation_interval"),
+        log_every_n_steps=raw.get("log_every_n_steps", 1),
+        accelerator=coerce_enum(
+            TrainerAccelerator,
+            raw.get("accelerator", "cpu"),
+        ),
+        devices=raw.get("devices", 1),
+        precision=coerce_enum(
+            TrainerPrecision,
+            raw.get("precision", "32-true"),
+        ),
+        enable_checkpointing=raw.get("enable_checkpointing", False),
+        enable_model_summary=raw.get("enable_model_summary", False),
+        runtime=coerce_enum(
+            TrainerRuntimeName,
+            raw.get("runtime", "composable"),
+        ),
+        batch_adapter=coerce_enum(
+            BatchAdapterName,
+            raw.get("batch_adapter", "views"),
+        ),
+        loop_policy=coerce_enum(
+            LoopPolicyName,
+            raw.get("loop_policy", "epochs"),
+        ),
+        strategy=coerce_enum(
+            StrategyName,
+            raw.get("strategy", "single_device"),
+        ),
+        default_root_dir=raw.get("default_root_dir"),
+        checkpoint_dir=raw.get("checkpoint_dir"),
+        save_interval=raw.get("save_interval"),
+        checkpoint_mode=coerce_enum(
+            CheckpointMode,
+            raw.get("checkpoint_mode", "full_training_state"),
+        ),
+        max_checkpoints_to_keep=raw.get("max_checkpoints_to_keep"),
+        export_runtime_backbone=raw.get("export_runtime_backbone", False),
+        resume_from=raw.get("resume_from"),
+        enable_jsonl_logging=raw.get("enable_jsonl_logging", False),
+        metrics_filename=raw.get("metrics_filename", "metrics.jsonl"),
+        enable_wandb=raw.get("enable_wandb", False),
+        wandb_project=raw.get("wandb_project"),
+        wandb_entity=raw.get("wandb_entity"),
+        wandb_mode=coerce_enum(
+            WandBMode,
+            raw.get("wandb_mode", "disabled"),
+        ),
+        run_name=raw.get("run_name"),
+    )

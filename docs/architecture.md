@@ -35,9 +35,12 @@ shared visual execution path for every experiment.
 entrypoint, and `open_wam.configs.local_paths` owns machine-local path
 expansion. `open_wam.configs.coercion` owns reusable YAML/CLI-to-type conversion.
 `open_wam.configs.sequence_contracts` owns defaults and cross-section
-validation for sequence semantics. The YAML loader maps sections into frozen
-dataclasses; historical `open_wam.utils` loader/path imports are compatibility
-aliases only. The loader does not own policy contract behavior.
+validation for sequence semantics. Each typed component module owns its
+mapping-to-dataclass parser; the larger data section is isolated in
+`open_wam.configs.data_parsing`. The root loader only reads YAML, composes those
+parsers, and runs explicit cross-section checks. Historical `open_wam.utils`
+loader/path imports are compatibility aliases only. Configuration parsing does
+not own policy runtime behavior.
 
 ## Visual Tower Contract
 

@@ -9,11 +9,13 @@ from .action_decoder import (
     MoTActionDecoderConfig,
     VideoConditionedActionDecoderConfig,
     VideoOnlyActionDecoderConfig,
+    parse_action_decoder_config,
 )
 from .backbone import (
     LingbotCompatibleVideoBackboneConfig,
     SharedVideoTransformerConfig,
     normalize_backbone_implementation,
+    parse_shared_video_transformer_config,
     resolve_stage_attention_mode,
 )
 from .coercion import (
@@ -50,6 +52,7 @@ from .data import (
     ViewLayoutConfig,
     default_mixed_video_resize_bins,
 )
+from .data_parsing import parse_data_config
 from .enums import (
     AnchorPolicy,
     ActionDecoderName,
@@ -158,7 +161,7 @@ from .enums import (
     WarmupAnchor,
 )
 from .experiment import ExperimentConfig
-from .inference import InferenceConfig
+from .inference import InferenceConfig, parse_inference_config
 from .policy_variant import (
     CausalVideoPredictionPolicyConfig,
     ExtensionPolicyConfig,
@@ -167,12 +170,17 @@ from .policy_variant import (
     PolicyVariantConfig,
     PostDecodedPolicyConfig,
     PostLatentPolicyConfig,
+    parse_policy_variant_config,
 )
 from .static_schema import StaticConfigIssue, StaticConfigReport, validate_config_file, validate_config_files
-from .trainer import TrainerConfig
-from .training import TrainingConfig
-from .validation import AuxiliaryValidationTaskConfig, ValidationConfig
-from .visual_readout import VisualReadoutConfig
+from .trainer import TrainerConfig, parse_trainer_config
+from .training import TrainingConfig, parse_training_config
+from .validation import (
+    AuxiliaryValidationTaskConfig,
+    ValidationConfig,
+    parse_validation_config,
+)
+from .visual_readout import VisualReadoutConfig, parse_visual_readout_config
 from .sequence_contracts import (
     apply_parallel_sequence_contract,
     expand_parallel_sequence_contract,
@@ -349,6 +357,15 @@ __all__ = [
     "load_experiment_config",
     "load_local_path_registry",
     "normalize_backbone_implementation",
+    "parse_inference_config",
+    "parse_action_decoder_config",
+    "parse_data_config",
+    "parse_policy_variant_config",
+    "parse_shared_video_transformer_config",
+    "parse_trainer_config",
+    "parse_training_config",
+    "parse_validation_config",
+    "parse_visual_readout_config",
     "read_yaml_with_local_paths",
     "resolve_stage_attention_mode",
     "validate_config_file",

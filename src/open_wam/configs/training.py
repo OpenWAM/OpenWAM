@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Mapping
 
+from .coercion import coerce_enum
 from .enums import (
     OptimizerName,
     SampleLossWeightMode,
@@ -120,3 +122,49 @@ class TrainingConfig:
         if resolved_name == TrainingObjective.ACTION:
             return float(self.action_loss_weight)
         raise ValueError(f"Unsupported objective {objective_name!r}.")
+
+
+def parse_training_config(raw_value: Mapping[str, Any] | None) -> TrainingConfig:
+    """Parse the shared optimization and objective section."""
+
+    raw = raw_value or {}
+    return TrainingConfig(
+        video_num_train_timesteps=raw.get("video_num_train_timesteps", 1000),
+        action_num_train_timesteps=raw.get("action_num_train_timesteps", 1000),
+        video_sigma_shift=raw.get("video_sigma_shift", 5.0),
+        action_sigma_shift=raw.get("action_sigma_shift", 1.0),
+        use_teacher_forcing=raw.get("use_teacher_forcing", False),
+        chunk_size=raw.get("chunk_size", 2),
+        window_size=raw.get("window_size", 8),
+        optimizer_name=coerce_enum(
+            OptimizerName,
+            raw.get("optimizer_name", "adamw"),
+        ),
+        scheduler_name=coerce_enum(
+            SchedulerName,
+            raw.get("scheduler_name", "constant"),
+        ),
+        learning_rate=raw.get("learning_rate", 1e-4),
+        beta1=raw.get("beta1", 0.9),
+        beta2=raw.get("beta2", 0.999),
+        weight_decay=raw.get("weight_decay", 0.0),
+        warmup_steps=raw.get("warmup_steps", 0),
+        gradient_accumulation_steps=raw.get("gradient_accumulation_steps", 1),
+        max_grad_norm=raw.get("max_grad_norm"),
+        num_steps=raw.get("num_steps"),
+        text_condition_dropout_prob=raw.get("text_condition_dropout_prob", 0.0),
+        enabled_objectives=tuple(raw.get("enabled_objectives", ("action", "latent"))),
+        latent_loss_weight=raw.get("latent_loss_weight", 1.0),
+        action_loss_weight=raw.get("action_loss_weight", 1.0),
+        sample_loss_weight_mode=coerce_enum(
+            SampleLossWeightMode,
+            raw.get("sample_loss_weight_mode", "none"),
+        ),
+        sample_loss_weight_reference_steps=raw.get(
+            "sample_loss_weight_reference_steps"
+        ),
+        sample_loss_weight_min=raw.get("sample_loss_weight_min"),
+        sample_loss_weight_max=raw.get("sample_loss_weight_max"),
+        trainable_components=tuple(raw.get("trainable_components", ("all",))),
+        frozen_components=tuple(raw.get("frozen_components", ())),
+    )
