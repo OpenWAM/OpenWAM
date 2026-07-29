@@ -820,11 +820,14 @@ def test_mot_train_loss_masks_use_objective_specific_metadata() -> None:
         },
     )
 
-    action_mask = variant._build_effective_action_mask(batch=batch, observed_num_frames=4)
+    action_mask = variant.training_layout.build_effective_action_mask(
+        batch=batch,
+        observed_num_frames=4,
+    )
     assert action_mask is not None
     assert torch.equal(action_mask[:, :, 0], torch.tensor([[0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0]]))
 
-    video_mask = variant._build_effective_video_loss_mask(
+    video_mask = variant.training_layout.build_effective_video_loss_mask(
         video_latents=torch.ones(1, 2, 4, 1, 1),
         batch=batch,
         default_history_frames=1,

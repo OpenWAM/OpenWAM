@@ -50,6 +50,25 @@ variants to reach into arbitrary backbone internals. Common stage families are:
 Policy variants request stages through `required_visual_stages()` and consume
 prepared inputs through explicit variant contracts.
 
+## MoT Sequence Contract
+
+The built-in MoT policy keeps method routing and visual execution in
+`MoTPolicyVariant`, but delegates sample layout mechanics to
+`mot.sequence_layout`:
+
+- `MoTTrainingLayout` converts typed batch metadata into loss ranges, history
+  length, chunk/window geometry, and action/video supervision masks.
+- `build_action_grid_ids_for_sequence` owns the frame-aligned action
+  coordinates shared by training and recurrent inference.
+- `mot.generalist_modes` owns GJD mode selection and conditional tensor
+  rewrites.
+- common attention profiles own token visibility; the policy selects a profile
+  and supplies its resolved layout.
+
+These helpers are plain contracts, not model modules. They must not own
+parameters, buffers, visual execution, or decoder losses, so extracting or
+replacing orchestration cannot change checkpoint keys.
+
 ## Data Contract
 
 Dataset adapters are selected by `data.dataset_type`. One adapter identity may

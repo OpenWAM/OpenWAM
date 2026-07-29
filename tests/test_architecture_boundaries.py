@@ -33,6 +33,20 @@ def _top_level_definitions(path: Path) -> set[str]:
     }
 
 
+def _class_method_definitions(path: Path, class_name: str) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    class_node = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == class_name
+    )
+    return {
+        node.name
+        for node in class_node.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
 def test_config_package_does_not_depend_on_runtime_implementations() -> None:
     forbidden_prefixes = (
         "open_wam.data",
@@ -133,6 +147,48 @@ def test_mot_generalist_mode_semantics_have_one_owner() -> None:
 
     assert mode_functions <= mode_definitions
     assert mode_functions.isdisjoint(variant_definitions)
+
+
+def test_mot_training_layout_semantics_have_one_owner() -> None:
+    layout_methods = {
+        "apply_history_action_condition",
+        "build_effective_action_mask",
+        "build_effective_video_loss_mask",
+        "resolve_action_tokens_per_frame",
+        "resolve_chunk_origin_frame",
+        "resolve_conditional_history_policy",
+        "resolve_frame_shift",
+        "resolve_history_frames",
+        "resolve_loss_frame_range",
+        "resolve_sampled_chunk_size",
+        "resolve_sampled_window_size",
+        "resolve_singleton_chunk_frame",
+        "sample_full_segment_geometry",
+    }
+    layout_path = PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "sequence_layout.py"
+    variant_path = PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "variant.py"
+    retired_variant_methods = {
+        "_apply_train_history_action_condition",
+        "_build_action_grid_ids_for_sequence",
+        "_build_effective_action_mask",
+        "_build_effective_video_loss_mask",
+        "_resolve_train_action_tokens_per_frame",
+        "_resolve_train_chunk_origin_frame",
+        "_resolve_train_conditional_history_policy",
+        "_resolve_train_frame_shift",
+        "_resolve_train_history_frames",
+        "_resolve_train_loss_frame_range",
+        "_resolve_train_sampled_chunk_size",
+        "_resolve_train_sampled_window_size",
+        "_resolve_train_singleton_chunk_frame",
+        "_sample_full_segment_train_geometry",
+    }
+
+    assert layout_methods <= _class_method_definitions(layout_path, "MoTTrainingLayout")
+    assert "build_action_grid_ids_for_sequence" in _top_level_definitions(layout_path)
+    assert retired_variant_methods.isdisjoint(
+        _class_method_definitions(variant_path, "MoTPolicyVariant")
+    )
 
 
 def test_retired_ablations_namespace_is_not_packaged() -> None:

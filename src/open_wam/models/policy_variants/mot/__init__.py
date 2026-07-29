@@ -13,13 +13,16 @@ from .runtime_routing import (
     MoTRuntimeRouteKind,
     resolve_mot_runtime_route,
 )
+from .sequence_layout import MoTTrainingLayout, build_action_grid_ids_for_sequence
 from .variant import MoTPolicyVariant
 
 __all__ = [
     "MoTPolicyVariant",
     "MoTRuntimeRoute",
     "MoTRuntimeRouteKind",
+    "MoTTrainingLayout",
     "apply_generalist_training_mode",
+    "build_action_grid_ids_for_sequence",
     "generalist_forces_clean_video_condition",
     "generalist_rollout_enabled",
     "generalist_rollout_mode_from_value",

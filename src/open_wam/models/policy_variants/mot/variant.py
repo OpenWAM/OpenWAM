@@ -43,9 +43,7 @@ from open_wam.configs import (
     ProprioContextMode,
     TrainingConfig,
 )
-from open_wam.data.sample_metadata import SampleConstructionMetadata
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
-from open_wam.models.visual_tower.grid_ids import build_action_grid_ids
 from open_wam.configs.backbone import SharedVideoTransformerConfig
 
 from ..base import PolicyVariant
@@ -103,6 +101,7 @@ from .runtime_routing import (
     ensure_mot_policy_variant_inference_backend,
     resolve_mot_rollout_cache_window_frames,
 )
+from .sequence_layout import MoTTrainingLayout, build_action_grid_ids_for_sequence
 
 # Default LingBot-reference slot-pool window used by both `_initialize_reference_cache`
 # and the Method-1-aligned video-cache trim. Rollout callers may override this
@@ -381,6 +380,7 @@ class MoTPolicyVariant(PolicyVariant):
         self.action_dim = action_dim
         self.action_horizon = action_horizon
         self.state_dim = state_dim
+        self.training_layout = MoTTrainingLayout(config, training_config)
         action_hidden_size = (
             int(config.action_hidden_size)
             if config.action_hidden_size is not None
@@ -816,275 +816,6 @@ class MoTPolicyVariant(PolicyVariant):
             self._train_video_cache_detach_by_core_id[core_id] = detach_cache
         return bool(detach_cache)
 
-    def _resolve_train_loss_frame_range(
-        self,
-        *,
-        batch: PolicyTrainBatch,
-        observed_num_frames: int,
-        start_key: str = "loss_frame_start",
-        end_key: str = "loss_frame_end",
-        fallback_to_generic: bool = True,
-    ) -> tuple[int, int] | None:
-        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
-        if sample_metadata is None:
-            return None
-        return sample_metadata.optional_frame_range(
-            observed_num_frames=observed_num_frames,
-            start_key=start_key,
-            end_key=end_key,
-            fallback_to_generic=fallback_to_generic,
-            error_label="MoT train loss-frame metadata",
-        )
-
-    def _resolve_train_history_frames(
-        self,
-        *,
-        batch: PolicyTrainBatch,
-        observed_num_frames: int,
-    ) -> int:
-        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
-        resolved_history_frames: int | None = None
-        if sample_metadata is not None:
-            resolved_history_frames = sample_metadata.history_frames
-        loss_frame_range = self._resolve_train_loss_frame_range(
-            batch=batch,
-            observed_num_frames=observed_num_frames,
-        )
-        if loss_frame_range is not None:
-            resolved_history_frames = int(loss_frame_range[0])
-        if resolved_history_frames is None:
-            resolved_history_frames = int(self.config.video_prefix_frames)
-        if resolved_history_frames <= 0 or resolved_history_frames >= observed_num_frames:
-            raise ValueError(
-                "MoT training requires at least one history frame and one current frame, "
-                f"got resolved_history_frames={resolved_history_frames}, observed_num_frames={observed_num_frames}."
-            )
-        return resolved_history_frames
-
-    def _build_effective_action_mask(
-        self,
-        *,
-        batch: PolicyTrainBatch,
-        observed_num_frames: int,
-    ) -> torch.Tensor | None:
-        base_mask = batch.action_mask
-        loss_frame_range = self._resolve_train_loss_frame_range(
-            batch=batch,
-            observed_num_frames=observed_num_frames,
-            start_key="action_loss_frame_start",
-            end_key="action_loss_frame_end",
-        )
-        if loss_frame_range is None:
-            return base_mask
-        if batch.actions.shape[1] % max(1, observed_num_frames) != 0:
-            return base_mask
-        action_per_frame = batch.actions.shape[1] // max(1, observed_num_frames)
-        if action_per_frame <= 0:
-            return base_mask
-        loss_frame_start, loss_frame_end = loss_frame_range
-        effective_mask = (
-            torch.ones_like(batch.actions, dtype=torch.float32)
-            if base_mask is None
-            else base_mask.to(dtype=torch.float32)
-        )
-        frame_mask = torch.zeros_like(effective_mask)
-        frame_mask[:, loss_frame_start * action_per_frame : loss_frame_end * action_per_frame] = 1.0
-        return effective_mask * frame_mask
-
-    def _build_effective_video_loss_mask(
-        self,
-        *,
-        video_latents: torch.Tensor,
-        batch: PolicyTrainBatch,
-        default_history_frames: int,
-    ) -> torch.Tensor:
-        future_loss_mask = torch.zeros(
-            video_latents.shape[0],
-            1,
-            video_latents.shape[2],
-            1,
-            1,
-            device=video_latents.device,
-            dtype=video_latents.dtype,
-        )
-        loss_frame_range = self._resolve_train_loss_frame_range(
-            batch=batch,
-            observed_num_frames=int(video_latents.shape[2]),
-            start_key="latent_loss_frame_start",
-            end_key="latent_loss_frame_end",
-        )
-        if loss_frame_range is None:
-            future_loss_mask[:, :, default_history_frames:] = 1.0
-            return future_loss_mask
-        loss_frame_start, loss_frame_end = loss_frame_range
-        future_loss_mask[:, :, loss_frame_start:loss_frame_end] = 1.0
-        return future_loss_mask
-
-    def _resolve_train_action_tokens_per_frame(
-        self,
-        *,
-        batch: PolicyTrainBatch,
-        observed_num_frames: int,
-    ) -> int | None:
-        if observed_num_frames <= 0:
-            return None
-        if batch.actions.shape[1] % observed_num_frames != 0:
-            return None
-        action_tokens_per_frame = batch.actions.shape[1] // observed_num_frames
-        return action_tokens_per_frame if action_tokens_per_frame > 0 else None
-
-    def _resolve_train_sampled_chunk_size(
-        self,
-        *,
-        batch: PolicyTrainBatch,
-        observed_num_frames: int,
-    ) -> int | None:
-        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
-        if sample_metadata is None:
-            return None
-        return sample_metadata.sampled_chunk_size_for(observed_num_frames)
-
-    def _resolve_train_sampled_window_size(
-        self,
-        *,
-        batch: PolicyTrainBatch,
-    ) -> int | None:
-        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
-        return None if sample_metadata is None else sample_metadata.sampled_window_size
-
-    def _resolve_train_frame_shift(
-        self,
-        *,
-        batch: PolicyTrainBatch,
-    ) -> int:
-        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
-        if sample_metadata is None or sample_metadata.frame_shift is None:
-            return 0
-        return int(sample_metadata.frame_shift)
-
-    @staticmethod
-    def _resolve_train_chunk_origin_frame(
-        *,
-        batch: PolicyTrainBatch,
-        observed_num_frames: int,
-    ) -> int:
-        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
-        if sample_metadata is None:
-            return 0
-        explicit_chunk_origin = sample_metadata.raw.get("chunk_origin_frame")
-        if explicit_chunk_origin is not None:
-            return int(explicit_chunk_origin)
-        if str(sample_metadata.raw.get("target_alignment", "")) != "next_after_context":
-            return 0
-        loss_frame_start, _ = sample_metadata.frame_range_or_default(
-            observed_num_frames=observed_num_frames,
-            error_label="M5 train chunk-origin metadata",
-        )
-        return int(loss_frame_start)
-
-    @staticmethod
-    def _resolve_train_singleton_chunk_frame(
-        *,
-        batch: PolicyTrainBatch,
-        observed_num_frames: int,
-    ) -> int | None:
-        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
-        if sample_metadata is None:
-            return None
-        raw = sample_metadata.raw
-        if raw.get("generalist_gjd_chunk_contract") != "t0_singleton":
-            return None
-        singleton_frame = raw.get("singleton_chunk_frame", raw.get("target_observation_frame_in_sample"))
-        if singleton_frame is None:
-            return None
-        resolved = int(singleton_frame)
-        if resolved < 0 or resolved >= int(observed_num_frames):
-            raise ValueError(
-                "Invalid GJD singleton chunk frame, "
-                f"got {resolved} for observed_num_frames={int(observed_num_frames)}."
-            )
-        return resolved
-
-    @staticmethod
-    def _resolve_train_conditional_history_policy(*, batch: PolicyTrainBatch) -> str | None:
-        sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
-        if sample_metadata is None:
-            return None
-        raw = sample_metadata.raw
-        policy = raw.get("generalist_conditional_history_policy")
-        return None if policy is None else str(policy)
-
-    def _sample_full_segment_train_geometry(
-        self,
-        *,
-        observed_num_frames: int,
-        device: torch.device,
-    ) -> tuple[int, int, int]:
-        # FULL_SEGMENT data path: data adapter does not pre-sample chunk/window
-        # geometry, so the variant draws it per-step the same way method-1 does
-        # in `prepare_lingbot_parallel_train_artifacts` — chunk_size in
-        # [1, training_config.chunk_size] and window_size in
-        # [4, training_config.window_size]. history_frames is then drawn
-        # uniformly over chunk-aligned positions inside the episode so the
-        # action expert sees every (history_len, current_chunk) pair.
-        cs_max = max(1, int(self.training_config.chunk_size))
-        sampled_chunk_size = int(torch.randint(1, cs_max + 1, (1,), device=device).item())
-        if int(self.training_config.window_size) >= 4:
-            sampled_window_size = int(
-                torch.randint(4, int(self.training_config.window_size) + 1, (1,), device=device).item()
-            )
-        else:
-            sampled_window_size = max(1, int(self.training_config.window_size))
-        max_history_chunks = max(1, observed_num_frames // sampled_chunk_size - 1)
-        history_chunks = int(torch.randint(1, max_history_chunks + 1, (1,), device=device).item())
-        history_frames = max(1, min(history_chunks * sampled_chunk_size, observed_num_frames - sampled_chunk_size))
-        return sampled_chunk_size, sampled_window_size, history_frames
-
-    def _build_action_grid_ids_for_sequence(
-        self,
-        *,
-        batch_size: int,
-        seq_len: int,
-        action_tokens_per_frame: int,
-        device: torch.device,
-        frame_shift: int,
-    ) -> torch.Tensor:
-        if seq_len <= 0:
-            raise ValueError(f"Expected positive action seq_len, got {seq_len}.")
-        if action_tokens_per_frame <= 0 or seq_len % action_tokens_per_frame != 0:
-            raise ValueError(
-                "MoT action grid ids require `seq_len` to divide by `action_tokens_per_frame`, "
-                f"got seq_len={seq_len}, action_tokens_per_frame={action_tokens_per_frame}."
-            )
-        num_frames = seq_len // action_tokens_per_frame
-        return build_action_grid_ids(
-            num_frames=num_frames,
-            action_per_frame=action_tokens_per_frame,
-            device=device,
-            frame_shift=float(frame_shift),
-        )[None].expand(batch_size, -1, -1)
-
-    def _apply_train_history_action_condition(
-        self,
-        *,
-        train_artifacts,
-        actions: torch.Tensor,
-        observed_num_frames: int,
-        history_frames: int,
-    ):
-        if observed_num_frames <= 0 or actions.shape[1] % observed_num_frames != 0:
-            return train_artifacts
-        action_tokens_per_frame = actions.shape[1] // observed_num_frames
-        if action_tokens_per_frame <= 0:
-            return train_artifacts
-        history_action_tokens = int(history_frames * action_tokens_per_frame)
-        if history_action_tokens <= 0:
-            return train_artifacts
-        history_action_tokens = min(history_action_tokens, int(actions.shape[1]))
-        train_artifacts.noisy_actions[:, :history_action_tokens] = actions[:, :history_action_tokens]
-        train_artifacts.timesteps[:, :history_action_tokens] = 0.0
-        return train_artifacts
-
     def _build_video_train_rollout(
         self,
         *,
@@ -1111,7 +842,7 @@ class MoTPolicyVariant(PolicyVariant):
         history_condition_latents = clean_condition_latents if clean_condition_latents is not None else video_latents
         noisy_latents[:, :, :history_frames] = history_condition_latents[:, :, :history_frames]
         timesteps[:, :history_frames] = 0.0
-        future_loss_mask = self._build_effective_video_loss_mask(
+        future_loss_mask = self.training_layout.build_effective_video_loss_mask(
             video_latents=video_latents,
             batch=batch,
             default_history_frames=history_frames,
@@ -1389,7 +1120,7 @@ class MoTPolicyVariant(PolicyVariant):
         text_context = prepared_inputs.variant_inputs["text_context"]
         proprio_state = prepared_inputs.variant_inputs.get("proprio_state")
         hidden_proprio_state = prepared_inputs.variant_inputs.get("hidden_proprio_state")
-        history_frames = self._resolve_train_history_frames(
+        history_frames = self.training_layout.resolve_history_frames(
             batch=prepared_inputs.batch,
             observed_num_frames=int(video_latents.shape[2]),
         )
@@ -1403,16 +1134,16 @@ class MoTPolicyVariant(PolicyVariant):
             training_config=self.training_config,
             condition_latents=clean_video_condition_latents,
         )
-        effective_action_mask = self._build_effective_action_mask(
+        effective_action_mask = self.training_layout.build_effective_action_mask(
             batch=prepared_inputs.batch,
             observed_num_frames=int(video_latents.shape[2]),
         )
-        action_tokens_per_frame = self._resolve_train_action_tokens_per_frame(
+        action_tokens_per_frame = self.training_layout.resolve_action_tokens_per_frame(
             batch=prepared_inputs.batch,
             observed_num_frames=int(video_latents.shape[2]),
         )
         video_tokens_per_frame = int(prepared_inputs.variant_inputs["video_tokens_per_frame"])
-        sampled_chunk_size = self._resolve_train_sampled_chunk_size(
+        sampled_chunk_size = self.training_layout.resolve_sampled_chunk_size(
             batch=prepared_inputs.batch,
             observed_num_frames=int(video_latents.shape[2]),
         )
@@ -1421,13 +1152,13 @@ class MoTPolicyVariant(PolicyVariant):
                 1,
                 min(int(self.training_config.chunk_size), int(video_latents.shape[2])),
             )
-        sampled_window_size = self._resolve_train_sampled_window_size(
+        sampled_window_size = self.training_layout.resolve_sampled_window_size(
             batch=prepared_inputs.batch,
         )
         if sampled_window_size is None:
             sampled_window_size = max(1, int(self.training_config.window_size))
-        frame_shift = self._resolve_train_frame_shift(batch=prepared_inputs.batch)
-        chunk_origin_frame = self._resolve_train_chunk_origin_frame(
+        frame_shift = self.training_layout.resolve_frame_shift(batch=prepared_inputs.batch)
+        chunk_origin_frame = self.training_layout.resolve_chunk_origin_frame(
             batch=prepared_inputs.batch,
             observed_num_frames=int(video_latents.shape[2]),
         )
@@ -1478,7 +1209,7 @@ class MoTPolicyVariant(PolicyVariant):
             effective_action_mask,
             training_config=self.training_config,
         )
-        train_artifacts = self._apply_train_history_action_condition(
+        train_artifacts = self.training_layout.apply_history_action_condition(
             train_artifacts=train_artifacts,
             actions=prepared_inputs.batch.actions,
             observed_num_frames=int(video_latents.shape[2]),
@@ -1512,7 +1243,7 @@ class MoTPolicyVariant(PolicyVariant):
             timestep=train_artifacts.timesteps,
             context=resolved_text,
             cross_attention_mask=action_cross_attention_mask,
-            action_grid_ids=self._build_action_grid_ids_for_sequence(
+            action_grid_ids=build_action_grid_ids_for_sequence(
                 batch_size=train_artifacts.noisy_actions.shape[0],
                 seq_len=train_artifacts.noisy_actions.shape[1],
                 action_tokens_per_frame=action_tokens_per_frame,
@@ -1617,7 +1348,7 @@ class MoTPolicyVariant(PolicyVariant):
                 f"got current_block_coupling={current_block_coupling.value!r}. "
                 "Use runtime_mode='non_joint_two_stream' for staged video_then_action."
             )
-        history_frames = self._resolve_train_history_frames(
+        history_frames = self.training_layout.resolve_history_frames(
             batch=prepared_inputs.batch,
             observed_num_frames=int(video_latents.shape[2]),
         )
@@ -1637,32 +1368,32 @@ class MoTPolicyVariant(PolicyVariant):
         history_condition_latents = clean_video_condition_latents if clean_video_condition_latents is not None else video_latents
         noisy_video_latents[:, :, :history_frames] = history_condition_latents[:, :, :history_frames]
         video_timesteps[:, :history_frames] = 0.0
-        future_loss_mask = self._build_effective_video_loss_mask(
+        future_loss_mask = self.training_layout.build_effective_video_loss_mask(
             video_latents=video_latents,
             batch=prepared_inputs.batch,
             default_history_frames=history_frames,
         )
-        effective_action_mask = self._build_effective_action_mask(
+        effective_action_mask = self.training_layout.build_effective_action_mask(
             batch=prepared_inputs.batch,
             observed_num_frames=int(video_latents.shape[2]),
         )
-        action_tokens_per_frame = self._resolve_train_action_tokens_per_frame(
+        action_tokens_per_frame = self.training_layout.resolve_action_tokens_per_frame(
             batch=prepared_inputs.batch,
             observed_num_frames=int(video_latents.shape[2]),
         )
-        sampled_chunk_size = self._resolve_train_sampled_chunk_size(
+        sampled_chunk_size = self.training_layout.resolve_sampled_chunk_size(
             batch=prepared_inputs.batch,
             observed_num_frames=int(video_latents.shape[2]),
         )
-        sampled_window_size = self._resolve_train_sampled_window_size(
+        sampled_window_size = self.training_layout.resolve_sampled_window_size(
             batch=prepared_inputs.batch,
         )
         if sampled_chunk_size is None:
             sampled_chunk_size = max(1, int(self.training_config.chunk_size))
         if sampled_window_size is None:
             sampled_window_size = max(1, int(self.training_config.window_size))
-        frame_shift = self._resolve_train_frame_shift(batch=prepared_inputs.batch)
-        chunk_origin_frame = self._resolve_train_chunk_origin_frame(
+        frame_shift = self.training_layout.resolve_frame_shift(batch=prepared_inputs.batch)
+        chunk_origin_frame = self.training_layout.resolve_chunk_origin_frame(
             batch=prepared_inputs.batch,
             observed_num_frames=int(video_latents.shape[2]),
         )
@@ -1706,7 +1437,7 @@ class MoTPolicyVariant(PolicyVariant):
             timestep=train_artifacts.timesteps,
             context=resolved_text,
             cross_attention_mask=action_cross_attention_mask,
-            action_grid_ids=self._build_action_grid_ids_for_sequence(
+            action_grid_ids=build_action_grid_ids_for_sequence(
                 batch_size=train_artifacts.noisy_actions.shape[0],
                 seq_len=train_artifacts.noisy_actions.shape[1],
                 action_tokens_per_frame=action_tokens_per_frame,
@@ -1838,20 +1569,20 @@ class MoTPolicyVariant(PolicyVariant):
             and metadata_for_geometry[0].get("sampled_chunk_size") is not None
         )
         if metadata_has_geometry:
-            history_frames = self._resolve_train_history_frames(
+            history_frames = self.training_layout.resolve_history_frames(
                 batch=prepared_inputs.batch,
                 observed_num_frames=target_num_video_frames,
             )
-            sampled_chunk_size = self._resolve_train_sampled_chunk_size(
+            sampled_chunk_size = self.training_layout.resolve_sampled_chunk_size(
                 batch=prepared_inputs.batch,
                 observed_num_frames=target_num_video_frames,
             )
-            sampled_window_size = self._resolve_train_sampled_window_size(
+            sampled_window_size = self.training_layout.resolve_sampled_window_size(
                 batch=prepared_inputs.batch,
             )
         else:
             sampled_chunk_size, sampled_window_size, history_frames = (
-                self._sample_full_segment_train_geometry(
+                self.training_layout.sample_full_segment_geometry(
                     observed_num_frames=target_num_video_frames,
                     device=video_latents.device,
                 )
@@ -1866,21 +1597,21 @@ class MoTPolicyVariant(PolicyVariant):
         )
         num_video_frames = int(video_latents.shape[2])
         current_block_coupling = resolve_mot_current_block_coupling(self.config)
-        effective_action_mask = self._build_effective_action_mask(
+        effective_action_mask = self.training_layout.build_effective_action_mask(
             batch=prepared_inputs.batch,
             observed_num_frames=target_num_video_frames,
         )
         clean_action_condition_mask = prepared_inputs.batch.action_mask
-        action_tokens_per_frame = self._resolve_train_action_tokens_per_frame(
+        action_tokens_per_frame = self.training_layout.resolve_action_tokens_per_frame(
             batch=prepared_inputs.batch,
             observed_num_frames=target_num_video_frames,
         )
-        frame_shift = self._resolve_train_frame_shift(batch=prepared_inputs.batch)
-        chunk_origin_frame = self._resolve_train_chunk_origin_frame(
+        frame_shift = self.training_layout.resolve_frame_shift(batch=prepared_inputs.batch)
+        chunk_origin_frame = self.training_layout.resolve_chunk_origin_frame(
             batch=prepared_inputs.batch,
             observed_num_frames=target_num_video_frames,
         )
-        singleton_chunk_frame = self._resolve_train_singleton_chunk_frame(
+        singleton_chunk_frame = self.training_layout.resolve_singleton_chunk_frame(
             batch=prepared_inputs.batch,
             observed_num_frames=target_num_video_frames,
         )
@@ -1975,14 +1706,14 @@ class MoTPolicyVariant(PolicyVariant):
             if joint_timestep_coupling == JointTimestepCoupling.SHARED_VIDEO_SCHEDULE
             else None
         )
-        future_loss_mask = self._build_effective_video_loss_mask(
+        future_loss_mask = self.training_layout.build_effective_video_loss_mask(
             video_latents=video_latents,
             batch=prepared_inputs.batch,
             default_history_frames=history_frames,
         )
         if prefix_condition_frames > 0:
             future_loss_mask.zero_()
-            explicit_video_loss_range = self._resolve_train_loss_frame_range(
+            explicit_video_loss_range = self.training_layout.resolve_loss_frame_range(
                 batch=prepared_inputs.batch,
                 observed_num_frames=target_num_video_frames,
                 start_key="latent_loss_frame_start",
@@ -2064,7 +1795,7 @@ class MoTPolicyVariant(PolicyVariant):
                 )
                 history_stream_visibility = ParallelHistoryStreamVisibility.VIDEO_ONLY
                 conditional_history_policy = (
-                    self._resolve_train_conditional_history_policy(batch=prepared_inputs.batch)
+                    self.training_layout.resolve_conditional_history_policy(batch=prepared_inputs.batch)
                     or CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY
                 )
 
@@ -2141,7 +1872,7 @@ class MoTPolicyVariant(PolicyVariant):
             global_suffix_token_count=generalist_mode_text_token_count,
         )
 
-        single_action_grid = self._build_action_grid_ids_for_sequence(
+        single_action_grid = build_action_grid_ids_for_sequence(
             batch_size=noisy_actions.shape[0],
             seq_len=action_seq_len,
             action_tokens_per_frame=action_tokens_per_frame,
@@ -2712,7 +2443,7 @@ class MoTPolicyVariant(PolicyVariant):
                 else None
             ),
         )
-        action_grid_ids = self._build_action_grid_ids_for_sequence(
+        action_grid_ids = build_action_grid_ids_for_sequence(
             batch_size=batch_size,
             seq_len=current_action_sequence_tokens,
             action_tokens_per_frame=action_tokens_per_frame,
@@ -2720,7 +2451,7 @@ class MoTPolicyVariant(PolicyVariant):
             frame_shift=current_start_frame,
         )
         if shared_history_frames > 0:
-            history_action_grid_ids = self._build_action_grid_ids_for_sequence(
+            history_action_grid_ids = build_action_grid_ids_for_sequence(
                 batch_size=batch_size,
                 seq_len=history_action_tokens,
                 action_tokens_per_frame=action_tokens_per_frame,
@@ -4078,7 +3809,7 @@ class MoTPolicyVariant(PolicyVariant):
                 action_tokens=sample,
                 timestep=dense_timestep,
                 context=text_context.to(device=device, dtype=dtype),
-                action_grid_ids=self._build_action_grid_ids_for_sequence(
+                action_grid_ids=build_action_grid_ids_for_sequence(
                     batch_size=batch_size,
                     seq_len=action_horizon,
                     action_tokens_per_frame=action_tokens_per_frame,
@@ -4113,7 +3844,7 @@ class MoTPolicyVariant(PolicyVariant):
             action_tokens=sample,
             timestep=cache_write_timestep,
             context=text_context.to(device=device, dtype=dtype),
-            action_grid_ids=self._build_action_grid_ids_for_sequence(
+            action_grid_ids=build_action_grid_ids_for_sequence(
                 batch_size=batch_size,
                 seq_len=action_horizon,
                 action_tokens_per_frame=action_tokens_per_frame,
