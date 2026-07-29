@@ -25,6 +25,10 @@ Training uses the same generic stack across method families:
 open-wam-train --cfg configs/experiments/<experiment>.yaml
 ```
 
+Slurm and other schedulers should wrap this command externally. Keep account,
+partition, environment-module, scratch-path, queue-monitoring, and retry
+settings out of experiment configs.
+
 Before real training, check:
 
 - local dataset paths are configured through `configs/local_paths.yaml`

@@ -76,12 +76,6 @@ class DataSplit(StrEnum):
     VAL = "val"
 
 
-class DatasetPreflightKind(StrEnum):
-    """Filesystem preflight check used by launch dataset profiles."""
-
-    LOCAL_LATENT = "local_latent"
-
-
 class AuxiliaryValidationSource(StrEnum):
     """Dataset source used by an auxiliary validation probe."""
 

@@ -60,6 +60,13 @@ Raw adapters normalize source records into one public batch contract:
 This lets LIBERO, RoboTwin, CALVIN, synthetic fixtures, and future datasets use
 the same train/eval/runtime stack.
 
+## Operations Boundary
+
+Open-WAM owns scheduler-agnostic train, eval, sanity, and rollout commands.
+Cluster repositories own accounts, partitions, environment modules, scratch
+paths, queue monitoring, and retry policy. Scheduler adapters should invoke the
+same public commands and must not redefine experiment or model semantics.
+
 ## What Not To Extend
 
 The legacy `ActionHead` and `UnifiedWAMPipeline` paradigms are intentionally

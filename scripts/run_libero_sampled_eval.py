@@ -33,7 +33,6 @@ from open_wam.data.replay_status import (  # noqa: E402
     normalize_replay_status_policy,
 )
 from open_wam.configs.enums import ParallelStreamVariantProfile  # noqa: E402
-from open_wam.launch.preflight import has_transformer_weights  # noqa: E402
 from open_wam.utils import load_experiment_config  # noqa: E402
 
 DEFAULT_CONFIG = "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
@@ -1950,7 +1949,19 @@ def is_usable_transformer_dir(path: Path) -> bool:
 
 
 def is_transformer_only_input_dir(path: Path) -> bool:
-    return path.is_dir() and (path / "config.json").is_file() and has_transformer_weights(path)
+    return (
+        path.is_dir()
+        and (path / "config.json").is_file()
+        and _has_transformer_weights(path)
+    )
+
+
+def _has_transformer_weights(path: Path) -> bool:
+    return (
+        (path / "diffusion_pytorch_model.safetensors").is_file()
+        or (path / "diffusion_pytorch_model.safetensors.index.json").is_file()
+        or any(path.glob("diffusion_pytorch_model-*.safetensors"))
+    )
 
 
 def run_cases(cases: list[EvalCase], *, args: argparse.Namespace, status_dir: Path, logs_dir: Path) -> None:
