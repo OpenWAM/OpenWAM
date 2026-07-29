@@ -10,14 +10,14 @@ semantics, not a separate top-level training stack.
 | --- | --- | --- |
 | Method 1 | `parallel_stream` | Exact LingBot-compatible visual/action diffusion semantics through shared-backbone runtime programs. |
 | Method 2 | `parallel_stream` (action-conditioned) | Joint-denoise profile on the exact shared LingBot-compatible runtime. |
-| Method 3 | `video_sequence_policy` | Sequence-native policy over post-core visual token grids. |
 | Method 4 | `post_latent` / `post_decoded` | Feature-attached action heads over latent or decoded visual representations. |
 | Method 5 | `mot` | Multi-object-token style action modeling with explicit typed state. |
 | Video-only | `causal_video_prediction` | Visual prediction baseline without an action decoder. |
 
-Traditional Method 2 `register_attached` has been removed. Its historical
-config and script names are compatibility stubs that fail with a migration
-message.
+Traditional Method 2 `register_attached` and the experimental Method 3
+`video_sequence_policy`/VPP path have been retired. Method 2 keeps explicit
+compatibility stubs; Method 3 had no public checkpoint contract and is
+recoverable from Git history.
 
 ## Shared Execution
 

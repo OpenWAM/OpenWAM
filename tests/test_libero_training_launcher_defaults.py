@@ -29,7 +29,6 @@ POSTTRAIN_LAUNCHERS = (
     "scripts/run_parallel_stream_posttrain_libero.sh",
     "scripts/run_post_decoded_posttrain_libero.sh",
     "scripts/run_post_latent_posttrain_libero.sh",
-    "scripts/run_video_sequence_policy_posttrain_libero.sh",
 )
 DEPRECATED_MOT_WRAPPERS = (
     "scripts/deprecated/run_mot_non_joint_aligned_libero_A.sh",

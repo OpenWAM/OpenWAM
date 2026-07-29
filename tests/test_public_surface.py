@@ -281,7 +281,6 @@ def test_public_tiny_fixture_artifact_layout_is_valid() -> None:
     "config_name",
     [
         "parallel_stream_robotwin_smoke.yaml",
-        "video_sequence_policy_robotwin_smoke.yaml",
         "mot_robotwin_smoke.yaml",
     ],
 )

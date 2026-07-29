@@ -48,9 +48,8 @@ class VideoConditionWindowContext:
 class DecoderSequenceContext:
     """Structured decoder-facing visual sequence context.
 
-    This is the additive contract needed by future `video_sequence_policy`
-    decoders. Existing simple decoders can ignore it and continue consuming
-    `policy_features` only.
+    Sequence-aware decoders can consume this additive contract. Simpler
+    decoders can ignore it and continue consuming `policy_features` only.
 
     `sequence_tokens` is intentionally flexible:
     - `[B, T, N, D]` for frame-token grids

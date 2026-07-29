@@ -1,12 +1,92 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from typing import Any
 
 import numpy as np
 import torch
 
 from open_wam.configs import ActionTargetStateEncoding
-from open_wam.data.action_transforms import normalize_quaternion, quaternion_to_axis_angle
+from open_wam.data import reconstruct_absolute_pose_targets
+from open_wam.data.action_transforms import (
+    PoseSequence,
+    normalize_quaternion,
+    quaternion_to_axis_angle,
+)
+
+
+LIBERO_ROLLOUT_VIEW_KEYS = (
+    "observation.images.agentview_rgb",
+    "observation.images.eye_in_hand_rgb",
+)
+
+
+def extract_libero_rollout_observation(observation: Mapping[str, Any]) -> dict[str, np.ndarray]:
+    """Translate one raw LIBERO observation into Open-WAM rollout fields."""
+
+    return {
+        LIBERO_ROLLOUT_VIEW_KEYS[0]: np.ascontiguousarray(
+            observation["agentview_image"][::-1]
+        ),
+        LIBERO_ROLLOUT_VIEW_KEYS[1]: np.ascontiguousarray(
+            observation["robot0_eye_in_hand_image"][::-1]
+        ),
+        "robot0_eef_pos": np.asarray(
+            observation["robot0_eef_pos"],
+            dtype=np.float32,
+        ).copy(),
+        "robot0_eef_quat": np.asarray(
+            observation["robot0_eef_quat"],
+            dtype=np.float32,
+        ).copy(),
+        "robot0_gripper_qpos": np.asarray(
+            observation["robot0_gripper_qpos"],
+            dtype=np.float32,
+        ).copy(),
+    }
+
+
+def initialize_libero_observation_window(
+    env: Any,
+    init_state: Any,
+    *,
+    num_frames: int,
+    init_steps: int = 5,
+) -> list[dict[str, np.ndarray]]:
+    """Reset one LIBERO env and collect its zero-action startup window."""
+
+    if num_frames <= 0:
+        raise ValueError(f"Expected positive num_frames, got {num_frames}.")
+    if init_steps <= 0:
+        raise ValueError(f"Expected positive init_steps, got {init_steps}.")
+    env.reset()
+    env.set_init_state(init_state)
+    observations: list[dict[str, np.ndarray]] = []
+    for _ in range(max(init_steps, num_frames)):
+        observation, _, _, _ = env.step([0.0] * 7)
+        observations.append(extract_libero_rollout_observation(observation))
+    if not observations:
+        raise RuntimeError(
+            "LIBERO env did not return an observation during initialization."
+        )
+    return observations[-num_frames:]
+
+
+def libero_observation_window_to_views(
+    observations: Sequence[Mapping[str, np.ndarray]],
+    *,
+    device: torch.device,
+) -> dict[str, torch.Tensor]:
+    """Stack canonical LIBERO rollout images into the public view mapping."""
+
+    if not observations:
+        raise ValueError("Cannot build LIBERO views from an empty observation window.")
+    return {
+        key: torch.from_numpy(
+            np.stack([observation[key] for observation in observations], axis=0)
+        ).to(device=device)
+        for key in LIBERO_ROLLOUT_VIEW_KEYS
+    }
 
 
 def build_libero_state_history(
@@ -61,4 +141,42 @@ def _build_libero_state_vector(
         return torch.cat([position, quaternion, gripper[:1]], dim=0)
     raise ValueError(
         f"Unsupported LIBERO rollout state encoding: {state_encoding.value}"
+    )
+
+
+def pose_from_libero_observation(
+    observation: Mapping[str, np.ndarray],
+) -> PoseSequence:
+    return PoseSequence(
+        position=torch.from_numpy(
+            np.asarray(observation["robot0_eef_pos"], dtype=np.float32)
+        ),
+        quaternion=normalize_quaternion(
+            torch.from_numpy(
+                np.asarray(observation["robot0_eef_quat"], dtype=np.float32)
+            ).unsqueeze(0)
+        )[0],
+        gripper=torch.from_numpy(
+            np.asarray(observation["robot0_gripper_qpos"], dtype=np.float32)
+        ),
+    )
+
+
+def reconstruct_libero_pose_targets(
+    action_prediction: np.ndarray,
+    *,
+    reference_observation: Mapping[str, np.ndarray],
+    rotation_representation: str,
+) -> PoseSequence:
+    """Recover absolute EEF targets from one reference-relative action chunk."""
+
+    relative_pose_targets = torch.from_numpy(
+        np.asarray(action_prediction, dtype=np.float32)
+    )
+    reference_pose = pose_from_libero_observation(reference_observation)
+    return reconstruct_absolute_pose_targets(
+        reference_position=reference_pose.position,
+        reference_quaternion=reference_pose.quaternion,
+        relative_pose_targets=relative_pose_targets,
+        rotation_representation=rotation_representation,
     )

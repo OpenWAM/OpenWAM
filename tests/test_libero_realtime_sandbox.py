@@ -1640,7 +1640,7 @@ def test_apply_sequence_replan_result_records_trace_and_merges_future_steps() ->
     assert merged[3].source == "new"
 
 
-def test_video_sequence_visualization_commits_full_decoder_chunk() -> None:
+def test_realtime_sandbox_commits_full_decoder_chunk() -> None:
     sandbox = _load_sandbox_module()
     decoder_output = SimpleNamespace(
         action_pred=sandbox.torch.arange(6, dtype=sandbox.torch.float32).view(1, 6, 1),
@@ -1655,7 +1655,9 @@ def test_video_sequence_visualization_commits_full_decoder_chunk() -> None:
         ),
     )
 
-    planned_chunk, metadata = sandbox.video_viz._decoder_output_to_rollout_action_plan(decoder_output)
+    planned_chunk, metadata = sandbox._decoder_output_to_rollout_action_plan(
+        decoder_output
+    )
 
     assert planned_chunk.shape == (6, 1)
     np.testing.assert_allclose(planned_chunk[:, 0], np.arange(6, dtype=np.float32))
@@ -1665,42 +1667,40 @@ def test_video_sequence_visualization_commits_full_decoder_chunk() -> None:
             decoder_state=SimpleNamespace(step_within_chunk=1),
         )
     )
-    sandbox.video_viz._advance_decoder_state_to_rollout_commit(session, metadata)
+    sandbox._advance_decoder_state_to_rollout_commit(session, metadata)
     assert session.policy_state.decoder_state.step_within_chunk == 6
 
 
-def test_video_sequence_visualization_clamps_raw_control_actions() -> None:
-    sandbox = _load_sandbox_module()
-
-    action = sandbox.video_viz._materialize_raw_control_action(np.array([1.5, -2.0, 0.25], dtype=np.float32))
-
-    np.testing.assert_allclose(action, np.array([1.0, -1.0, 0.25], dtype=np.float32))
-
-
-def test_video_sequence_visualization_can_override_rollout_chunk_steps() -> None:
+def test_realtime_sandbox_can_override_rollout_chunk_steps() -> None:
     sandbox = _load_sandbox_module()
     config = SimpleNamespace(action_decoder=SimpleNamespace(rollout_chunk_steps=6))
 
-    sandbox.video_viz._apply_rollout_chunk_steps_override(config, 1)
+    sandbox.rollout_runtime.apply_rollout_chunk_steps_override(config, 1)
 
     assert config.action_decoder.rollout_chunk_steps == 1
 
 
-def test_video_sequence_visualization_initial_generation_start_matches_warmup_window() -> None:
-    sandbox = _load_sandbox_module()
-
-    initial_obs_window = [{"image": np.zeros((2, 2, 3), dtype=np.uint8)} for _ in range(15)]
-
-    assert sandbox.video_viz._initial_generation_action_start(initial_obs_window) == 15
-
-
-def test_video_sequence_visualization_can_override_initial_generation_start() -> None:
+def test_initial_generation_start_matches_warmup_window() -> None:
     sandbox = _load_sandbox_module()
 
     initial_obs_window = [{"image": np.zeros((2, 2, 3), dtype=np.uint8)} for _ in range(15)]
 
     assert (
-        sandbox.video_viz._resolve_initial_generation_action_start(
+        sandbox.rollout_runtime.resolve_initial_generation_action_start(
+            initial_obs_window,
+            initial_generation_action_start=None,
+        )
+        == 15
+    )
+
+
+def test_rollout_runtime_can_override_initial_generation_start() -> None:
+    sandbox = _load_sandbox_module()
+
+    initial_obs_window = [{"image": np.zeros((2, 2, 3), dtype=np.uint8)} for _ in range(15)]
+
+    assert (
+        sandbox.rollout_runtime.resolve_initial_generation_action_start(
             initial_obs_window,
             initial_generation_action_start=0,
             rollout_starts_at_action_zero=False,
@@ -1708,7 +1708,7 @@ def test_video_sequence_visualization_can_override_initial_generation_start() ->
         == 0
     )
     assert (
-        sandbox.video_viz._resolve_initial_generation_action_start(
+        sandbox.rollout_runtime.resolve_initial_generation_action_start(
             initial_obs_window,
             initial_generation_action_start=7,
             rollout_starts_at_action_zero=False,
@@ -1716,7 +1716,7 @@ def test_video_sequence_visualization_can_override_initial_generation_start() ->
         == 7
     )
     assert (
-        sandbox.video_viz._resolve_initial_generation_action_start(
+        sandbox.rollout_runtime.resolve_initial_generation_action_start(
             initial_obs_window,
             initial_generation_action_start=None,
             rollout_starts_at_action_zero=False,
@@ -1731,7 +1731,7 @@ def test_generated_future_rollout_defaults_initial_generation_start_to_zero() ->
     initial_obs_window = [{"image": np.zeros((2, 2, 3), dtype=np.uint8)} for _ in range(15)]
 
     assert (
-        sandbox.video_viz._resolve_initial_generation_action_start(
+        sandbox.rollout_runtime.resolve_initial_generation_action_start(
             initial_obs_window,
             initial_generation_action_start=None,
             rollout_starts_at_action_zero=True,
@@ -1746,12 +1746,14 @@ def test_mot_rollout_defaults_initial_generation_start_to_zero() -> None:
     config = SimpleNamespace(policy_variant=SimpleNamespace(name="mot"))
     initial_obs_window = [{"image": np.zeros((2, 2, 3), dtype=np.uint8)} for _ in range(15)]
 
-    assert sandbox.video_viz._uses_zero_based_generation_start(config) is True
+    assert sandbox.rollout_runtime.uses_zero_based_generation_start(config) is True
     assert (
-        sandbox.video_viz._resolve_initial_generation_action_start(
+        sandbox.rollout_runtime.resolve_initial_generation_action_start(
             initial_obs_window,
             initial_generation_action_start=None,
-            rollout_starts_at_action_zero=sandbox.video_viz._uses_zero_based_generation_start(config),
+            rollout_starts_at_action_zero=sandbox.rollout_runtime.uses_zero_based_generation_start(
+                config
+            ),
         )
         == 0
     )
@@ -1946,13 +1948,13 @@ def test_method4_realtime_replan_uses_absolute_action_start_for_video_condition(
     captured_extra = {}
 
     monkeypatch.setattr(
-        sandbox.video_viz,
-        "_obs_window_to_rollout_views",
+        sandbox.libero_rollout,
+        "libero_observation_window_to_views",
         lambda obs_window, *, device: {},
     )
     monkeypatch.setattr(
-        sandbox.video_viz,
-        "_prepare_rollout_inputs",
+        sandbox.rollout_runtime,
+        "prepare_rollout_observation_inputs",
         lambda *args, **kwargs: {
             "video_latents": sandbox.torch.zeros(1, 1, 1, 1, 1),
             "text_context": None,
@@ -2027,7 +2029,7 @@ def test_method4_realtime_replan_uses_absolute_action_start_for_video_condition(
 
     assert captured_extra["video_condition_observed_prefix_anchor"] == "end"
     assert captured_extra["video_condition_frame_start"] == 42
-    assert captured_extra["video_condition_sample_seed"] == sandbox.video_viz.derive_video_condition_sample_seed(
+    assert captured_extra["video_condition_sample_seed"] == sandbox.rollout_runtime.derive_video_condition_sample_seed(
         {
             "task_index": 1,
             "episode_index": 7,
@@ -2045,7 +2047,7 @@ def test_sequence_rollout_infer_extra_matches_sandbox_and_viz_contract() -> None
     method4_config = SimpleNamespace(policy_variant=SimpleNamespace(name="post_latent"))
     mot_config = SimpleNamespace(policy_variant=SimpleNamespace(name="mot"))
 
-    method4_extra = sandbox.video_viz._build_sequence_rollout_infer_extra(
+    method4_extra = sandbox.rollout_runtime.build_sequence_rollout_infer_extra(
         config=method4_config,
         prompt="task",
         generation_action_start=42,
@@ -2053,7 +2055,7 @@ def test_sequence_rollout_infer_extra_matches_sandbox_and_viz_contract() -> None
         task_id=1,
         episode_idx=7,
     )
-    mot_extra = sandbox.video_viz._build_sequence_rollout_infer_extra(
+    mot_extra = sandbox.rollout_runtime.build_sequence_rollout_infer_extra(
         config=mot_config,
         prompt="task",
         generation_action_start=7,
@@ -2063,7 +2065,7 @@ def test_sequence_rollout_infer_extra_matches_sandbox_and_viz_contract() -> None
     assert method4_extra == {
         "task_text": ("task",),
         "video_condition_frame_start": 42,
-        "video_condition_sample_seed": sandbox.video_viz.derive_video_condition_sample_seed(
+        "video_condition_sample_seed": sandbox.rollout_runtime.derive_video_condition_sample_seed(
             {
                 "task_index": 1,
                 "episode_index": 7,
@@ -2334,15 +2336,40 @@ def test_strict_split_cache_mot_realtime_init_calls_env_with_single_frame(monkey
     monkeypatch.setattr(sandbox, "build_variant_pipeline_from_config", lambda cfg: FakePipeline())
     monkeypatch.setattr(sandbox, "VariantRolloutRunner", FakeRunner)
     monkeypatch.setattr(sandbox, "ensure_mot_inference_backend", lambda pipeline, cfg: {"backend": "test"})
-    monkeypatch.setattr(sandbox.video_viz, "_load_pipeline_checkpoint", lambda *args, **kwargs: None)
-    monkeypatch.setattr(sandbox.video_viz, "_resolve_task_spec", lambda benchmark, task_id: ("task_spec", "task"))
-    monkeypatch.setattr(sandbox.video_viz, "load_libero_task_init_states", lambda task_spec: ["init"])
-    monkeypatch.setattr(sandbox, "_construct_realtime_libero_env", lambda *args, **kwargs: FakeEnv())
-    monkeypatch.setattr(sandbox.video_viz, "_init_single_env", fake_init_single_env)
-    monkeypatch.setattr(sandbox.video_viz, "_obs_window_to_rollout_views", lambda obs_window, *, device: {})
     monkeypatch.setattr(
-        sandbox.video_viz,
-        "_prepare_rollout_inputs",
+        sandbox.runtime_checkpoints,
+        "load_pipeline_checkpoint",
+        lambda *args, **kwargs: SimpleNamespace(
+            missing_keys=(),
+            unexpected_keys=(),
+        ),
+    )
+    monkeypatch.setattr(
+        sandbox,
+        "resolve_libero_task_by_id",
+        lambda benchmark, task_id, project_root: SimpleNamespace(
+            task_language="task"
+        ),
+    )
+    monkeypatch.setattr(
+        sandbox,
+        "load_libero_task_init_states",
+        lambda task_spec, project_root: ["init"],
+    )
+    monkeypatch.setattr(sandbox, "_construct_realtime_libero_env", lambda *args, **kwargs: FakeEnv())
+    monkeypatch.setattr(
+        sandbox.libero_rollout,
+        "initialize_libero_observation_window",
+        fake_init_single_env,
+    )
+    monkeypatch.setattr(
+        sandbox.libero_rollout,
+        "libero_observation_window_to_views",
+        lambda obs_window, *, device: {},
+    )
+    monkeypatch.setattr(
+        sandbox.rollout_runtime,
+        "prepare_rollout_observation_inputs",
         lambda *args, **kwargs: {
             "text_context": "text",
             "negative_text_context": "negative",
@@ -2434,13 +2461,13 @@ def test_strict_split_cache_mot_startup_replan_trace_reports_origin(monkeypatch)
     captured_video_latents = {}
 
     monkeypatch.setattr(
-        sandbox.video_viz,
-        "_obs_window_to_rollout_views",
+        sandbox.libero_rollout,
+        "libero_observation_window_to_views",
         lambda obs_window, *, device: {"obs_count": len(obs_window)},
     )
     monkeypatch.setattr(
-        sandbox.video_viz,
-        "_prepare_rollout_inputs",
+        sandbox.rollout_runtime,
+        "prepare_rollout_observation_inputs",
         lambda *args, **kwargs: {
             "video_latents": sandbox.torch.zeros(1, 48, 1, 1, 1),
             "text_context": None,
@@ -2565,31 +2592,6 @@ def test_decoder_rollout_plan_falls_back_to_full_chunk_without_current_action() 
     assert metadata["decoder_rollout_committed_actions"] == 2
     assert planned.shape == (2, 2)
     np.testing.assert_allclose(planned, np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32))
-
-
-def test_loaded_mot_action_expert_is_marked_initialized() -> None:
-    sandbox = _load_sandbox_module()
-    pipeline = SimpleNamespace(policy_variant=SimpleNamespace(_action_expert_initialized=False))
-
-    sandbox.video_viz._mark_loaded_lazy_components_initialized(
-        pipeline,
-        {"policy_variant.action_expert.layers.0.weight": sandbox.torch.ones(1)},
-    )
-
-    assert pipeline.policy_variant._action_expert_initialized is True
-
-
-def test_missing_mot_action_expert_weights_are_not_marked_initialized() -> None:
-    sandbox = _load_sandbox_module()
-    pipeline = SimpleNamespace(policy_variant=SimpleNamespace(_action_expert_initialized=False))
-
-    sandbox.video_viz._mark_loaded_lazy_components_initialized(
-        pipeline,
-        {"policy_variant.action_expert.layers.0.weight": sandbox.torch.ones(1)},
-        missing_keys=["policy_variant.action_expert.layers.0.weight"],
-    )
-
-    assert pipeline.policy_variant._action_expert_initialized is False
 
 
 def test_realtime_common_inference_overrides_preserve_config_values_by_default() -> None:

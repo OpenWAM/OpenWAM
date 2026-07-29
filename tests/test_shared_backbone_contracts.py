@@ -43,25 +43,6 @@ def test_post_latent_and_post_decoded_share_video_conditioner_path() -> None:
         assert infer_output.visual_outputs.core.aux["used_action_conditioner"] is False
 
 
-def test_video_sequence_policy_can_request_shared_core_outputs() -> None:
-    config_path = REPO_ROOT / "configs/experiments/video_sequence_policy_robotwin_smoke.yaml"
-    config, _, batch, train_batch = _build_train_batch(config_path)
-    config = replace(config, policy_variant=replace(config.policy_variant, visual_state_source="core_tokens"))
-    pipeline = build_variant_pipeline_from_config(config)
-
-    train_output = pipeline.forward_train(batch.views, train_batch)
-    infer_output = pipeline.forward_infer_step(
-        batch.views,
-        PolicyInferContext(state=batch.state, extra={"task_text": batch.task_text}),
-    )
-
-    assert train_output.visual_outputs.core is not None
-    assert train_output.visual_outputs.core.aux["weight_source"] == "local_init"
-    assert train_output.visual_outputs.core.aux["used_action_conditioner"] is False
-    assert infer_output.visual_outputs.core is not None
-    assert infer_output.visual_outputs.core.aux["used_action_conditioner"] is False
-
-
 def test_register_attached_variant_is_obsolete() -> None:
     config = load_experiment_config(
         REPO_ROOT / "configs/experiments/register_attached_robotwin_smoke.yaml"

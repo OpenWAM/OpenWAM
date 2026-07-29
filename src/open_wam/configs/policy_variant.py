@@ -44,7 +44,6 @@ from .enums import (
     TemporalProjection,
     VideoConditionInputSpace,
     VideoConditionSource,
-    VisualStateSource,
     coerce_fields,
 )
 from .variant_semantics import coerce_probability_map, default_video_action_conditioning_mode_probs
@@ -204,47 +203,6 @@ class PostDecodedPolicyConfig(PolicyVariantConfig):
                 "Post-decoded policy requires `0 <= current_video_frame_index < local_video_window_frames`, "
                 f"got current_video_frame_index={self.current_video_frame_index!r}, "
                 f"local_video_window_frames={self.local_video_window_frames!r}."
-            )
-
-
-@dataclass(frozen=True)
-class VideoSequencePolicyConfig(PolicyVariantConfig):
-    """Sequence-preserving post-core policy family for future method-3 decoders.
-
-    The variant itself stays intentionally lightweight: it owns the attachment
-    point and packages rich decoder-facing sequence context, while future
-    sequence decoders own temporal compression, goal/state conditioning, and
-    action-generation algorithms.
-    """
-
-    name: PolicyVariantName = PolicyVariantName.VIDEO_SEQUENCE_POLICY
-    hidden_size: int = 256
-    attach_site: AttachSite = AttachSite.POST_VISUAL_CORE
-    temporal_projection: TemporalProjection = TemporalProjection.INTERPOLATE
-    visual_readout: VisualReadoutConfig | None = None
-    visual_state_source: VisualStateSource = VisualStateSource.DENOISED_VIDEO_TOKENS
-    visual_denoise_ratio: float = 1.0
-    use_state_context: bool = True
-    use_goal_context: bool = True
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        if self.attach_site != AttachSite.POST_VISUAL_CORE:
-            raise ValueError(
-                "Video-sequence policy requires `attach_site = post_visual_core`, "
-                f"got attach_site={self.attach_site!r}."
-            )
-        coerce_fields(
-            self,
-            enum_fields={
-                "temporal_projection": TemporalProjection,
-                "visual_state_source": VisualStateSource,
-            },
-        )
-        if not (0.0 < float(self.visual_denoise_ratio) <= 1.0):
-            raise ValueError(
-                "Video-sequence policy requires `0 < visual_denoise_ratio <= 1`, "
-                f"got visual_denoise_ratio={self.visual_denoise_ratio!r}."
             )
 
 

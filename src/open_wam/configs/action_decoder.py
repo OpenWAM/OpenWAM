@@ -6,13 +6,6 @@ from .enums import (
     ActionDecoderName,
     ActionChunkAnchorMode,
     ActionExpertInitMode,
-    ActionGenerationBackendFamily,
-    DiffusionNoiseSchedule,
-    DiffusionSampler,
-    GoalConditioningAdapterFamily,
-    SequenceDenoiserFamily,
-    StateSequenceAdapterFamily,
-    TemporalCompressionAdapterFamily,
     VideoConditionInputSpace,
     VideoConditionTrainMode,
     coerce_fields,
@@ -140,56 +133,6 @@ class MoTActionDecoderConfig(ActionDecoderConfig):
     hidden_size: int = 256
     action_dim: int = 0
     action_horizon: int = 0
-
-
-@dataclass(frozen=True)
-class VPPActionDecoderConfig(ActionDecoderConfig):
-    """Sequence-native action decoder configuration closest to VPP semantics."""
-
-    name: ActionDecoderName = ActionDecoderName.VPP
-    hidden_size: int = 256
-    action_dim: int = 0
-    action_horizon: int = 0
-    temporal_compression_adapter_family: TemporalCompressionAdapterFamily = (
-        TemporalCompressionAdapterFamily.TEMPORAL_LATENT_RESAMPLER_3D
-    )
-    sequence_denoiser_family: SequenceDenoiserFamily = SequenceDenoiserFamily.GENERIC_TRANSFORMER
-    goal_conditioning_adapter_family: GoalConditioningAdapterFamily = GoalConditioningAdapterFamily.PASSTHROUGH
-    state_sequence_adapter_family: StateSequenceAdapterFamily = StateSequenceAdapterFamily.LINEAR
-    action_generation_backend: ActionGenerationBackendFamily = ActionGenerationBackendFamily.EDM_DIFFUSION
-    diffusion_noise_schedule: DiffusionNoiseSchedule = DiffusionNoiseSchedule.EXPONENTIAL
-    diffusion_sampler: DiffusionSampler = DiffusionSampler.DDIM
-    num_sampling_steps: int | None = None
-    rollout_chunk_steps: int | None = None
-    compressed_tokens_per_frame: int = 2
-    compression_depth: int = 2
-    temporal_compression_max_frames: int = 32
-    num_heads: int = 8
-    encoder_layers: int = 2
-    decoder_layers: int = 2
-    sigma_data: float = 0.5
-    sigma_min: float = 0.001
-    sigma_max: float = 80.0
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        coerce_fields(
-            self,
-            enum_fields={
-                "temporal_compression_adapter_family": TemporalCompressionAdapterFamily,
-                "sequence_denoiser_family": SequenceDenoiserFamily,
-                "goal_conditioning_adapter_family": GoalConditioningAdapterFamily,
-                "state_sequence_adapter_family": StateSequenceAdapterFamily,
-                "action_generation_backend": ActionGenerationBackendFamily,
-                "diffusion_noise_schedule": DiffusionNoiseSchedule,
-                "diffusion_sampler": DiffusionSampler,
-            },
-        )
-        if int(self.temporal_compression_max_frames) <= 0:
-            raise ValueError(
-                "VPP action decoder requires `temporal_compression_max_frames > 0`, "
-                f"got {self.temporal_compression_max_frames!r}."
-            )
 
 
 @dataclass(frozen=True)

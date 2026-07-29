@@ -47,10 +47,8 @@ from open_wam.configs import (
     ValidationConfig,
     VideoConditionedActionDecoderConfig,
     VideoOnlyActionDecoderConfig,
-    VideoSequencePolicyConfig,
     ViewLayoutConfig,
     VisualReadoutConfig,
-    VPPActionDecoderConfig,
 )
 from open_wam.configs.backbone import (
     SharedVideoTransformerConfig,
@@ -770,26 +768,6 @@ def _load_policy_variant_config(
             current_video_frame_index=resolved_raw.get("current_video_frame_index", 0),
             visual_readout=_load_visual_readout_config(resolved_raw.get("visual_readout")),
         )
-    if name == config_enums.PolicyVariantName.VIDEO_SEQUENCE_POLICY:
-        return VideoSequencePolicyConfig(
-            hidden_size=hidden_size,
-            attach_site=_coerce_enum(
-                config_enums.AttachSite,
-                resolved_raw.get("attach_site", config_enums.AttachSite.POST_VISUAL_CORE),
-            ),
-            temporal_projection=_coerce_enum(
-                config_enums.TemporalProjection,
-                resolved_raw.get("temporal_projection", config_enums.TemporalProjection.INTERPOLATE),
-            ),
-            visual_readout=_load_visual_readout_config(resolved_raw.get("visual_readout")),
-            visual_state_source=_coerce_enum(
-                config_enums.VisualStateSource,
-                resolved_raw.get("visual_state_source", config_enums.VisualStateSource.DENOISED_VIDEO_TOKENS),
-            ),
-            visual_denoise_ratio=resolved_raw.get("visual_denoise_ratio", 1.0),
-            use_state_context=resolved_raw.get("use_state_context", True),
-            use_goal_context=resolved_raw.get("use_goal_context", True),
-        )
     if name == config_enums.PolicyVariantName.CAUSAL_VIDEO_PREDICTION:
         return CausalVideoPredictionPolicyConfig(
             hidden_size=hidden_size,
@@ -1212,8 +1190,6 @@ def _load_action_decoder_config(
             resolved_raw["name"] = config_enums.ActionDecoderName.MOT
         elif policy_variant_config.name == config_enums.PolicyVariantName.CAUSAL_VIDEO_PREDICTION:
             resolved_raw["name"] = config_enums.ActionDecoderName.VIDEO_ONLY
-        elif policy_variant_config.name == config_enums.PolicyVariantName.VIDEO_SEQUENCE_POLICY:
-            resolved_raw["name"] = config_enums.ActionDecoderName.VPP
         elif policy_variant_config.name == config_enums.PolicyVariantName.POST_DECODED:
             resolved_raw["name"] = config_enums.ActionDecoderName.VIDEO_CONDITIONED
         elif (
@@ -1329,70 +1305,6 @@ def _load_action_decoder_config(
             direct_rgb_patch_size=resolved_raw.get("direct_rgb_patch_size", 16),
             use_text_conditioning=resolved_raw.get("use_text_conditioning", True),
             use_state_conditioning=resolved_raw.get("use_state_conditioning", True),
-        )
-    if name == config_enums.ActionDecoderName.VPP:
-        return VPPActionDecoderConfig(
-            hidden_size=hidden_size,
-            action_dim=action_dim,
-            action_horizon=action_horizon,
-            dropout=dropout,
-            temporal_compression_adapter_family=_coerce_enum(
-                config_enums.TemporalCompressionAdapterFamily,
-                resolved_raw.get(
-                    "temporal_compression_adapter_family",
-                    config_enums.TemporalCompressionAdapterFamily.TEMPORAL_LATENT_RESAMPLER_3D,
-                ),
-            ),
-            sequence_denoiser_family=_coerce_enum(
-                config_enums.SequenceDenoiserFamily,
-                resolved_raw.get(
-                    "sequence_denoiser_family",
-                    config_enums.SequenceDenoiserFamily.GENERIC_TRANSFORMER,
-                ),
-            ),
-            goal_conditioning_adapter_family=_coerce_enum(
-                config_enums.GoalConditioningAdapterFamily,
-                resolved_raw.get(
-                    "goal_conditioning_adapter_family",
-                    config_enums.GoalConditioningAdapterFamily.PASSTHROUGH,
-                ),
-            ),
-            state_sequence_adapter_family=_coerce_enum(
-                config_enums.StateSequenceAdapterFamily,
-                resolved_raw.get(
-                    "state_sequence_adapter_family",
-                    config_enums.StateSequenceAdapterFamily.LINEAR,
-                ),
-            ),
-            action_generation_backend=_coerce_enum(
-                config_enums.ActionGenerationBackendFamily,
-                resolved_raw.get(
-                    "action_generation_backend",
-                    config_enums.ActionGenerationBackendFamily.EDM_DIFFUSION,
-                ),
-            ),
-            diffusion_noise_schedule=_coerce_enum(
-                config_enums.DiffusionNoiseSchedule,
-                resolved_raw.get(
-                    "diffusion_noise_schedule",
-                    config_enums.DiffusionNoiseSchedule.EXPONENTIAL,
-                ),
-            ),
-            diffusion_sampler=_coerce_enum(
-                config_enums.DiffusionSampler,
-                resolved_raw.get("diffusion_sampler", config_enums.DiffusionSampler.DDIM),
-            ),
-            num_sampling_steps=resolved_raw.get("num_sampling_steps"),
-            rollout_chunk_steps=resolved_raw.get("rollout_chunk_steps"),
-            compressed_tokens_per_frame=resolved_raw.get("compressed_tokens_per_frame", 2),
-            compression_depth=resolved_raw.get("compression_depth", 2),
-            temporal_compression_max_frames=resolved_raw.get("temporal_compression_max_frames", 32),
-            num_heads=resolved_raw.get("num_heads", 8),
-            encoder_layers=resolved_raw.get("encoder_layers", 2),
-            decoder_layers=resolved_raw.get("decoder_layers", 2),
-            sigma_data=resolved_raw.get("sigma_data", 0.5),
-            sigma_min=resolved_raw.get("sigma_min", 0.001),
-            sigma_max=resolved_raw.get("sigma_max", 80.0),
         )
     if name == config_enums.ActionDecoderName.LINGBOT_PARALLEL:
         return LingbotParallelActionDecoderConfig(

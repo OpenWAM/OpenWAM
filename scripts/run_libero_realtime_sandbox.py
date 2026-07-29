@@ -37,11 +37,19 @@ _prepend_import_path(DEPRECATED_SCRIPT_ROOT)
 
 import libero_exact_realtime_common as exact_sandbox  # noqa: E402
 import run_libero_exact_visualization as exact_viz  # noqa: E402
-import run_libero_video_sequence_visualization as video_viz  # noqa: E402
 
 from open_wam.configs import ActionTargetRepresentation, GripperRepresentation, ParallelRuntimeMode  # noqa: E402
 from open_wam.configs.enums import DeadlineMissPolicy, FallbackHistoryPolicy  # noqa: E402
-from open_wam.integrations import LiberoControlConfig, compute_osc_pose_action, ensure_local_libero_config  # noqa: E402
+from open_wam.data.action_transforms import PoseSequence  # noqa: E402
+from open_wam.data.latent_temporal import raw_window_frames_for_latents  # noqa: E402
+from open_wam.integrations import (  # noqa: E402
+    LiberoControlConfig,
+    compute_osc_pose_action,
+    ensure_local_libero_config,
+    load_libero_task_init_states,
+    resolve_libero_task_by_id,
+)
+from open_wam.integrations import libero_rollout  # noqa: E402
 from open_wam.integrations.realtime_control import build_live_rollout_summary  # noqa: E402
 from open_wam.models.common.rollout_startup import require_strict_startup_generation_frame  # noqa: E402
 from open_wam.models.policy_variants import PolicyInferContext  # noqa: E402
@@ -53,6 +61,8 @@ from open_wam.models.policy_variants.mot.runtime_routing import (  # noqa: E402
     resolve_mot_runtime_route,
 )
 from open_wam.pipelines import LingbotExactRunner, VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
+from open_wam.runtime import checkpoints as runtime_checkpoints  # noqa: E402
+from open_wam.runtime import rollout as rollout_runtime  # noqa: E402
 from open_wam.utils import (  # noqa: E402
     apply_config_overrides,
     load_experiment_config,
@@ -247,7 +257,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Run one trained LIBERO policy in a fixed-rate realtime sandbox across exact/joint, "
-            "method-3, method-4 video-conditioned, and method-5 MoT variants."
+            "method-4 video-conditioned, and method-5 MoT variants."
         )
     )
     parser.add_argument(
@@ -556,7 +566,10 @@ def main() -> None:
             raise FileNotFoundError(f"--pretrained-model-root must be an existing directory: {pretrained_model_root}")
         object.__setattr__(config.backbone, "pretrained_model_name_or_path", str(pretrained_model_root))
     object.__setattr__(config.backbone, "reference_assets_device_policy", args.reference_assets_device_policy)
-    video_viz._apply_rollout_chunk_steps_override(config, args.rollout_chunk_steps)
+    rollout_runtime.apply_rollout_chunk_steps_override(
+        config,
+        args.rollout_chunk_steps,
+    )
     require_current_libero_policy_paradigm(
         config,
         config_path=config_path,
@@ -567,7 +580,10 @@ def main() -> None:
     runtime_device = exact_viz._resolve_device(args.runtime_device)
     frontend_device = exact_viz._resolve_device(args.frontend_device, fallback=runtime_device)
     decode_device = exact_viz._resolve_device(args.decode_device, fallback=frontend_device)
-    runtime_devices = video_viz._resolve_runtime_devices(args.runtime_devices, fallback=runtime_device)
+    runtime_devices = rollout_runtime.resolve_runtime_devices(
+        args.runtime_devices,
+        fallback=runtime_device,
+    )
     runtime_prep_device = exact_viz._resolve_device(args.runtime_prep_device, fallback=runtime_device)
     runtime_output_device = exact_viz._resolve_device(args.runtime_output_device, fallback=runtime_device)
     fallback_history_policy = FallbackHistoryPolicy(args.fallback_history_policy)
@@ -610,43 +626,6 @@ def main() -> None:
             artifact_profile=args.artifact_profile,
             debug_startup_dump=args.debug_startup_dump,
             exact_startup_bootstrap_padding=exact_startup_bootstrap_padding,
-        )
-    elif policy_name == "video_sequence_policy":
-        summary = _run_sequence_policy_realtime_rollout(
-            config=config,
-            checkpoint_path=checkpoint_path,
-            rollout_label="method3",
-            benchmark=args.benchmark,
-            task_id=args.task_id,
-            episode_idx=args.episode_idx,
-            max_actions=args.max_actions,
-            env_horizon=args.env_horizon,
-            target_action_hz=args.target_action_hz,
-            video_fps=args.video_fps,
-            planner_mode=args.planner_mode,
-            deadline_miss_policy=args.deadline_miss_policy,
-            deadline_tolerance_ms=args.deadline_tolerance_ms,
-            output_dir=Path(args.output_dir),
-            suffix=args.suffix,
-            seed=args.seed,
-            runtime_device=runtime_device,
-            runtime_devices=runtime_devices,
-            runtime_prep_device=runtime_prep_device,
-            runtime_output_device=runtime_output_device,
-            frontend_device=frontend_device,
-            decode_device=decode_device,
-            sequence_buffer_threshold=args.sequence_buffer_threshold,
-            sequence_empty_plan_policy=args.sequence_empty_plan_policy,
-            fallback_history_policy=fallback_history_policy,
-            startup_open_loop_chunks=args.startup_open_loop_chunks,
-            replan_low_watermark_actions=args.replan_low_watermark_actions,
-            video_num_inference_steps=args.video_num_inference_steps,
-            action_num_inference_steps=args.action_num_inference_steps,
-            guidance_scale=args.guidance_scale,
-            action_guidance_scale=args.action_guidance_scale,
-            initial_generation_action_start=args.initial_generation_action_start,
-            write_fallback_timeline_video=args.write_fallback_timeline_video,
-            artifact_profile=args.artifact_profile,
         )
     elif policy_name in {"post_latent", "post_decoded"}:
         summary = _run_sequence_policy_realtime_rollout(
@@ -724,7 +703,7 @@ def main() -> None:
         )
     else:
         raise ValueError(
-            "The realtime sandbox currently supports exact/joint `parallel_stream`, `video_sequence_policy`, "
+            "The realtime sandbox currently supports exact/joint `parallel_stream`, "
             "`post_latent`, `post_decoded`, and `mot`, "
             f"got policy_variant={policy_name!r}."
         )
@@ -827,14 +806,15 @@ def _sequence_startup_env_init_frames(config, *, raw_window_frames: int) -> int:
 
 def _resolve_checkpoint_path_for_config(*, config, checkpoint_arg: str | None) -> Path | None:
     if checkpoint_arg is not None:
-        return video_viz._resolve_checkpoint_file(Path(checkpoint_arg))
+        return runtime_checkpoints.resolve_checkpoint_file(Path(checkpoint_arg))
     transformer_subdir = getattr(config.backbone, "transformer_subdir", None)
     if transformer_subdir is None:
         return None
     try:
-        return video_viz._resolve_checkpoint_path_from_args_or_config(
-            checkpoint_arg=None,
-            transformer_subdir=str(transformer_subdir),
+        return runtime_checkpoints.resolve_checkpoint_file(
+            runtime_checkpoints.resolve_checkpoint_step_dir_from_transformer_dir(
+                str(transformer_subdir)
+            )
         )
     except (FileNotFoundError, ValueError) as exc:
         if VERBOSE:
@@ -2555,7 +2535,17 @@ def _run_sequence_policy_realtime_rollout(
     pipeline = build_variant_pipeline_from_config(config)
     _print_stage(f"{rollout_label}_build_pipeline_done")
     _print_stage(f"{rollout_label}_load_checkpoint_start", checkpoint=str(checkpoint_path))
-    video_viz._load_pipeline_checkpoint(pipeline, checkpoint_path)
+    checkpoint_report = runtime_checkpoints.load_pipeline_checkpoint(
+        pipeline,
+        checkpoint_path,
+    )
+    if checkpoint_report.missing_keys:
+        print(f"viz.checkpoint_missing_keys {len(checkpoint_report.missing_keys)}")
+    if checkpoint_report.unexpected_keys:
+        print(
+            "viz.checkpoint_unexpected_keys "
+            f"{len(checkpoint_report.unexpected_keys)}"
+        )
     _print_stage(f"{rollout_label}_load_checkpoint_done")
     _print_stage(f"{rollout_label}_move_pipeline_start", runtime_device=str(runtime_device))
     pipeline = pipeline.to(runtime_device)
@@ -2612,9 +2602,10 @@ def _run_sequence_policy_realtime_rollout(
         load_report["mot_inference_backend"] = mot_inference_backend
 
     _print_stage(f"{rollout_label}_resolve_task_start", benchmark=benchmark, task_id=task_id)
-    task_spec, prompt = video_viz._resolve_task_spec(benchmark, task_id)
+    task_spec = resolve_libero_task_by_id(benchmark, task_id, REPO_ROOT)
+    prompt = task_spec.task_language
     _print_stage(f"{rollout_label}_resolve_task_done", prompt=prompt)
-    init_states = video_viz.load_libero_task_init_states(task_spec)
+    init_states = load_libero_task_init_states(task_spec, REPO_ROOT)
     _print_stage(f"{rollout_label}_load_init_states_done", num_init_states=len(init_states))
     env = _construct_realtime_libero_env(task_spec, env_horizon=env_horizon)
     _print_stage(f"{rollout_label}_construct_env_done", env_created=env is not None)
@@ -2624,7 +2615,7 @@ def _run_sequence_policy_realtime_rollout(
     action_period_s = 1.0 / float(target_action_hz)
     deadline_tolerance_s = float(deadline_tolerance_ms) / 1000.0
     action_horizon = int(config.data.action_schema.action_horizon)
-    raw_window_frames = video_viz._default_raw_window_frames(int(config.data.num_frames))
+    raw_window_frames = raw_window_frames_for_latents(int(config.data.num_frames))
     startup_env_init_frames = _sequence_startup_env_init_frames(
         config,
         raw_window_frames=raw_window_frames,
@@ -2640,7 +2631,7 @@ def _run_sequence_policy_realtime_rollout(
 
     try:
         with torch.inference_mode():
-            initial_obs_window = video_viz._init_single_env(
+            initial_obs_window = libero_rollout.initialize_libero_observation_window(
                 env,
                 init_states[episode_idx % len(init_states)],
                 num_frames=startup_env_init_frames,
@@ -2648,9 +2639,12 @@ def _run_sequence_policy_realtime_rollout(
             _print_stage(f"{rollout_label}_init_env_done", initial_window=len(initial_obs_window))
             startup_model_obs_window = _sequence_startup_model_obs_window(config, initial_obs_window)
             startup_prepare_t0 = time.perf_counter()
-            initial_inputs = video_viz._prepare_rollout_inputs(
+            initial_inputs = rollout_runtime.prepare_rollout_observation_inputs(
                 pipeline,
-                views=video_viz._obs_window_to_rollout_views(startup_model_obs_window, device=frontend_device),
+                views=libero_rollout.libero_observation_window_to_views(
+                    startup_model_obs_window,
+                    device=frontend_device,
+                ),
                 task_text=(prompt,),
                 frontend_device=frontend_device,
                 runtime_device=runtime_device,
@@ -2674,10 +2668,12 @@ def _run_sequence_policy_realtime_rollout(
                 config=config,
                 frontend_device=frontend_device,
                 runtime_device=runtime_device,
-                generation_action_start=video_viz._resolve_initial_generation_action_start(
+                generation_action_start=rollout_runtime.resolve_initial_generation_action_start(
                     initial_obs_window,
                     initial_generation_action_start=initial_generation_action_start,
-                    rollout_starts_at_action_zero=video_viz._uses_zero_based_generation_start(config),
+                    rollout_starts_at_action_zero=rollout_runtime.uses_zero_based_generation_start(
+                        config
+                    ),
                 ),
                 source="startup_plan",
             )
@@ -2981,7 +2977,7 @@ def _run_sequence_policy_realtime_rollout(
                 action_end_monotonic = time.perf_counter()
                 env_step_s = action_end_monotonic - actual_start_monotonic
                 last_action_end_monotonic = action_end_monotonic
-                current_obs = video_viz._extract_obs(obs)
+                current_obs = libero_rollout.extract_libero_rollout_observation(obs)
                 obs_window = _append_obs_window_record(
                     obs_window,
                     current_obs,
@@ -3382,9 +3378,12 @@ def _run_sequence_replan_job(
                 snapshot=runtime_cache_snapshot,
             )
         prepare_t0 = time.perf_counter()
-        rollout_inputs = video_viz._prepare_rollout_inputs(
+        rollout_inputs = rollout_runtime.prepare_rollout_observation_inputs(
             runner.pipeline,
-            views=video_viz._obs_window_to_rollout_views(obs_window, device=frontend_device),
+            views=libero_rollout.libero_observation_window_to_views(
+                obs_window,
+                device=frontend_device,
+            ),
             task_text=(prompt,),
             frontend_device=frontend_device,
             runtime_device=runtime_device,
@@ -3411,7 +3410,7 @@ def _run_sequence_replan_job(
             else session
         )
         reset_session_for_replan = inference_session is not session
-        infer_extra = video_viz._build_sequence_rollout_infer_extra(
+        infer_extra = rollout_runtime.build_sequence_rollout_infer_extra(
             config=config,
             prompt=prompt,
             generation_action_start=int(generation_action_start),
@@ -3434,10 +3433,10 @@ def _run_sequence_replan_job(
         step_output = runner.infer_step(
             session=inference_session,
             context=PolicyInferContext(
-                state=video_viz._build_state_inputs_from_obs_window(
+                state=libero_rollout.build_libero_state_history(
                     obs_window,
                     state_horizon=int(config.data.action_schema.state_horizon),
-                    state_encoding=str(config.data.action_target.state_encoding),
+                    state_encoding=config.data.action_target.state_encoding,
                 ).unsqueeze(0).to(device=runtime_device),
                 extra=infer_extra,
             ),
@@ -3845,9 +3844,9 @@ def _sequence_chunk_to_planned_steps(
     if representation != ActionTargetRepresentation.EEF_POSE_RELATIVE_TO_REFERENCE:
         raise ValueError(f"Unsupported action target representation for sequence rollout: {representation!r}.")
 
-    desired_pose_targets = video_viz._reconstruct_chunk_pose_targets(
+    desired_pose_targets = libero_rollout.reconstruct_libero_pose_targets(
         action_pred,
-        reference_obs=reference_obs,
+        reference_observation=reference_obs,
         rotation_representation=rotation_representation,
     )
     for action_offset in range(action_pred.shape[0]):
@@ -3898,7 +3897,7 @@ def _materialize_sequence_control_action(
         return np.clip(np.asarray(planned_step.raw_action, dtype=np.float32), -1.0, 1.0)
     if planned_step.desired_position is None or planned_step.desired_quaternion is None:
         raise RuntimeError("Sequence rollout step is missing absolute pose targets.")
-    desired_pose = video_viz.PoseSequence(
+    desired_pose = PoseSequence(
         position=torch.from_numpy(np.asarray(planned_step.desired_position, dtype=np.float32)),
         quaternion=torch.from_numpy(np.asarray(planned_step.desired_quaternion, dtype=np.float32)),
         gripper=(
@@ -3908,7 +3907,7 @@ def _materialize_sequence_control_action(
         ),
     )
     return compute_osc_pose_action(
-        current_pose=video_viz._pose_from_obs_record(current_obs),
+        current_pose=libero_rollout.pose_from_libero_observation(current_obs),
         desired_pose=desired_pose,
         control_config=control_config,
         gripper_representation=gripper_representation,

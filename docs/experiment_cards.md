@@ -1,7 +1,7 @@
 # Experiment Cards
 
-Experiment cards are the public reproducibility layer for method families 1
-through 5. Each card should point to an artifact manifest entry once a public
+Experiment cards are the public reproducibility layer for maintained method
+families. Each card should point to an artifact manifest entry once a public
 checkpoint exists.
 
 ## Required Fields
@@ -24,7 +24,6 @@ checkpoint exists.
 | --- | --- | --- |
 | 1 | `parallel_stream`, `parallel_stream_lingbot_exact` | layout card added; public checkpoint pending |
 | 2 | `parallel_stream` action-conditioned | public checkpoint pending |
-| 3 | `video_sequence_policy` | layout card added; public checkpoint pending |
 | 4 | `post_latent`, `post_decoded` with video-conditioned decoder | scaffolded; public checkpoint pending |
 | 5 | `mot` | scaffolded; public checkpoint pending |
 | fixture | `public_tiny_synthetic_contract` | public structural fixture card added |
@@ -33,7 +32,6 @@ checkpoint exists.
 
 - `docs/cards/public_tiny_synthetic_contract.md`
 - `docs/cards/method1_libero_exact_step400.md`
-- `docs/cards/method3_libero_video_sequence_step800.md`
 
 ## Template
 

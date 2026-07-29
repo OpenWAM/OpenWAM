@@ -22,8 +22,6 @@ def _resolve_method_family(config: ExperimentConfig) -> str:
         return "method_1"
     if policy_name == PolicyVariantName.REGISTER_ATTACHED:
         return "method_2"
-    if policy_name == PolicyVariantName.VIDEO_SEQUENCE_POLICY:
-        return "method_3"
     if policy_name in {PolicyVariantName.POST_LATENT, PolicyVariantName.POST_DECODED}:
         return "method_4"
     if policy_name == PolicyVariantName.MOT:
@@ -37,7 +35,6 @@ def _resolve_method_label(method_family: str) -> str:
     return {
         "method_1": "m1",
         "method_2": "m2",
-        "method_3": "m3",
         "method_4": "m4",
         "method_5": "m5",
         "causal_video_prediction": "causal",

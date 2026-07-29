@@ -217,7 +217,6 @@ def _build_step_runtime_config(
     "config_name",
     [
         "parallel_stream_robotwin_smoke.yaml",
-        "video_sequence_policy_robotwin_smoke.yaml",
         "mot_robotwin_smoke.yaml",
     ],
 )
@@ -231,7 +230,6 @@ def test_composable_runtime_trains_shared_core_method_smokes(
     final_state = runtime.run()
 
     assert final_state.optimizer_step == 1
-
 
 def test_step_loop_reshuffles_distributed_sampler_each_loader_pass(
     monkeypatch: pytest.MonkeyPatch,
@@ -1329,38 +1327,6 @@ def test_composable_runtime_trains_method4_current_frame_regression_mode(
     config_path = (
         REPO_ROOT
         / "configs/experiments/post_decoded_robotwin_current_frame_regression.yaml"
-    )
-    config = _build_step_runtime_config(config_path, tmp_path=tmp_path)
-
-    runtime = TrainingRuntime.from_config(config)
-    final_state = runtime.run()
-
-    assert final_state.optimizer_step == 1
-
-
-def test_composable_runtime_trains_video_sequence_policy_with_core_layer_visual_readout(
-    tmp_path: Path,
-) -> None:
-    def _mutate(raw) -> None:
-        raw["policy_variant"]["name"] = "video_sequence_policy"
-        raw["policy_variant"]["attach_site"] = "post_visual_core"
-        raw["policy_variant"]["visual_readout"] = {
-            "source_family": "core_layer_tokens",
-            "layer_index": 0,
-        }
-        raw["policy_variant"].pop("pooling_mode", None)
-        raw["policy_variant"].pop("query_count", None)
-        raw["policy_variant"].pop("use_state_projection", None)
-        raw["action_decoder"]["name"] = "vpp_decoder"
-        raw["action_decoder"]["num_sampling_steps"] = 2
-        raw["action_decoder"]["rollout_chunk_steps"] = 2
-        raw["backbone"]["num_layers"] = 2
-
-    config_path = _write_temp_config(
-        tmp_path,
-        source_name="post_latent_robotwin.yaml",
-        output_name="video_sequence_policy_core_layer_runtime",
-        mutate=_mutate,
     )
     config = _build_step_runtime_config(config_path, tmp_path=tmp_path)
 

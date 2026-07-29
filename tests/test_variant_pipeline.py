@@ -57,7 +57,6 @@ def _build_pipeline(config_path: Path) -> tuple:
         ("post_decoded_robotwin.yaml", 6),
         ("post_latent_robotwin_video_conditioned.yaml", 6),
         ("post_decoded_robotwin_video_conditioned.yaml", 6),
-        ("video_sequence_policy_robotwin_smoke.yaml", 6),
         ("parallel_stream_robotwin_smoke.yaml", 8),
         ("mot_robotwin_smoke.yaml", 8),
     ],
@@ -95,7 +94,6 @@ def test_variant_pipeline_train_and_infer_shapes(config_name: str, expected_hori
     [
         ("post_latent_libero_smoke.yaml", 6),
         ("post_decoded_libero_smoke.yaml", 6),
-        ("video_sequence_policy_libero_smoke.yaml", 6),
         ("parallel_stream_libero_raw_smoke.yaml", 16),
     ],
 )
@@ -495,151 +493,6 @@ def test_method4_current_frame_regression_rejects_rollout_inference() -> None:
 
     with pytest.raises(ValueError, match="train-only"):
         pipeline.forward_infer_step(batch.views, PolicyInferContext(state=batch.state))
-
-
-def test_video_sequence_policy_pipeline_emits_core_token_sequence_context(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
-    with source_path.open("r", encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle)
-    raw["name"] = "video_sequence_policy_robotwin"
-    raw["policy_variant"]["name"] = "video_sequence_policy"
-    raw["policy_variant"]["attach_site"] = "post_visual_core"
-    raw["policy_variant"]["visual_state_source"] = "core_tokens"
-    raw["policy_variant"].pop("pooling_mode", None)
-    raw["policy_variant"].pop("query_count", None)
-    raw["policy_variant"].pop("use_state_projection", None)
-    raw["action_decoder"]["name"] = "vpp_decoder"
-    raw["action_decoder"]["num_sampling_steps"] = 2
-    raw["action_decoder"]["rollout_chunk_steps"] = 2
-
-    config_path = tmp_path / "video_sequence_policy_robotwin.yaml"
-    with config_path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(raw, handle, sort_keys=False)
-
-    config, pipeline, batch, train_batch = _build_pipeline(config_path)
-    sequence_train_batch = PolicyTrainBatch(
-        actions=train_batch.actions,
-        action_mask=train_batch.action_mask,
-        state=train_batch.state,
-        extra={"task_text": batch.task_text},
-    )
-
-    train_output = pipeline.forward_train(batch.views, sequence_train_batch)
-    infer_output = pipeline.forward_infer_step(
-        batch.views,
-        PolicyInferContext(state=batch.state, extra={"task_text": batch.task_text}),
-    )
-
-    assert train_output.decoder_output.action_pred.shape == (2, 6, config.action_decoder.action_dim)
-    assert infer_output.decoder_output.action_pred.shape == (2, 6, config.action_decoder.action_dim)
-
-    train_context = train_output.policy_output.decoder_sequence_context
-    infer_context = infer_output.policy_output.decoder_sequence_context
-
-    assert train_context is not None
-    assert infer_context is not None
-    assert train_context.sequence_layout["family"] == "video_sequence_policy"
-    assert infer_context.sequence_layout["family"] == "video_sequence_policy"
-    assert train_context.source_stage == "core"
-    assert infer_context.source_stage == "core"
-    assert train_context.state_sequence is not None
-    assert infer_context.state_sequence is not None
-    assert infer_output.decoder_output.aux["sampled_new_chunk"] is True
-
-    second_infer_output = pipeline.forward_infer_step(
-        batch.views,
-        PolicyInferContext(state=batch.state, extra={"task_text": batch.task_text}),
-        infer_state=infer_output.policy_output.next_state,
-    )
-    assert second_infer_output.decoder_output.aux["sampled_new_chunk"] is False
-    assert second_infer_output.policy_output.next_state.decoder_state is not None
-    assert torch.allclose(
-        second_infer_output.decoder_output.action_pred,
-        infer_output.decoder_output.action_pred,
-    )
-
-
-def test_video_sequence_policy_exact_vpp_knobs_pipeline_runs(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
-    with source_path.open("r", encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle)
-    raw["name"] = "video_sequence_policy_exact_robotwin"
-    raw["policy_variant"]["name"] = "video_sequence_policy"
-    raw["policy_variant"]["attach_site"] = "post_visual_core"
-    raw["policy_variant"].pop("pooling_mode", None)
-    raw["policy_variant"].pop("query_count", None)
-    raw["policy_variant"].pop("use_state_projection", None)
-    raw["action_decoder"]["name"] = "vpp_decoder"
-    raw["action_decoder"]["num_sampling_steps"] = 2
-    raw["action_decoder"]["rollout_chunk_steps"] = 2
-    raw["action_decoder"]["temporal_compression_adapter_family"] = "video_former_3d"
-    raw["action_decoder"]["sequence_denoiser_family"] = "film_diffusion_transformer"
-
-    config_path = tmp_path / "video_sequence_policy_exact_robotwin.yaml"
-    with config_path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(raw, handle, sort_keys=False)
-
-    config, pipeline, batch, train_batch = _build_pipeline(config_path)
-    sequence_train_batch = PolicyTrainBatch(
-        actions=train_batch.actions,
-        action_mask=train_batch.action_mask,
-        state=train_batch.state,
-        extra={"task_text": batch.task_text},
-    )
-
-    train_output = pipeline.forward_train(batch.views, sequence_train_batch)
-    infer_output = pipeline.forward_infer_step(
-        batch.views,
-        PolicyInferContext(state=batch.state, extra={"task_text": batch.task_text}),
-    )
-
-    assert train_output.decoder_output.action_pred.shape == (2, 6, config.action_decoder.action_dim)
-    assert infer_output.decoder_output.action_pred.shape == (2, 6, config.action_decoder.action_dim)
-    assert infer_output.policy_output.decoder_sequence_context is not None
-    assert infer_output.decoder_output.aux["sampled_new_chunk"] is True
-
-
-def test_video_sequence_policy_core_layer_visual_readout_pipeline_runs(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
-    with source_path.open("r", encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle)
-    raw["name"] = "video_sequence_policy_core_layer"
-    raw["policy_variant"]["name"] = "video_sequence_policy"
-    raw["policy_variant"]["attach_site"] = "post_visual_core"
-    raw["policy_variant"]["visual_readout"] = {
-        "source_family": "core_layer_tokens",
-        "layer_index": 0,
-    }
-    raw["policy_variant"].pop("pooling_mode", None)
-    raw["policy_variant"].pop("query_count", None)
-    raw["policy_variant"].pop("use_state_projection", None)
-    raw["action_decoder"]["name"] = "vpp_decoder"
-    raw["action_decoder"]["num_sampling_steps"] = 2
-    raw["action_decoder"]["rollout_chunk_steps"] = 2
-    raw["backbone"]["num_layers"] = 2
-
-    config_path = tmp_path / "video_sequence_policy_core_layer.yaml"
-    with config_path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(raw, handle, sort_keys=False)
-
-    _, pipeline, batch, train_batch = _build_pipeline(config_path)
-    sequence_train_batch = PolicyTrainBatch(
-        actions=train_batch.actions,
-        action_mask=train_batch.action_mask,
-        state=train_batch.state,
-        extra={"task_text": batch.task_text},
-    )
-    train_output = pipeline.forward_train(batch.views, sequence_train_batch)
-    infer_output = pipeline.forward_infer_step(
-        batch.views,
-        PolicyInferContext(state=batch.state, extra={"task_text": batch.task_text}),
-    )
-
-    assert train_output.policy_output.decoder_sequence_context is not None
-    assert infer_output.policy_output.decoder_sequence_context is not None
-    assert train_output.policy_output.decoder_sequence_context.source_stage == "core_layer_0"
-    assert infer_output.policy_output.decoder_sequence_context.source_stage == "core_layer_0"
-    assert train_output.policy_output.decoder_sequence_context.sequence_layout["source_family"] == "core_layer_tokens"
 
 
 def test_post_latent_core_layer_visual_readout_pipeline_runs(tmp_path: Path) -> None:

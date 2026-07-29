@@ -18,7 +18,6 @@ from open_wam.configs import (
     VideoConditionInputSpace,
     VideoConditionSource,
     VideoConditionTrainMode,
-    VideoSequencePolicyConfig,
 )
 from open_wam.data import build_canonical_video_preprocessor
 from open_wam.data.action_mapping import (
@@ -33,7 +32,6 @@ from open_wam.models.action_decoders import (
     RegisterActionDecoder,
     VideoConditionedActionDecoder,
     VideoOnlyActionDecoder,
-    VPPSequenceActionDecoder,
 )
 from open_wam.models.policy_variants import (
     CausalVideoPredictionPolicyVariant,
@@ -41,7 +39,6 @@ from open_wam.models.policy_variants import (
     ParallelStreamPolicyVariant,
     PostDecodedPolicyVariant,
     PostLatentPolicyVariant,
-    VideoSequencePolicyVariant,
 )
 from open_wam.models.policy_variants.parallel_stream.action_adapter import (
     build_action_adapter_spec,
@@ -114,7 +111,6 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
                 ParallelStreamPolicyConfig,
                 PostLatentPolicyConfig,
                 PostDecodedPolicyConfig,
-                VideoSequencePolicyConfig,
                 CausalVideoPredictionPolicyConfig,
                 MoTPolicyConfig,
             ),
@@ -284,19 +280,6 @@ def _build_post_decoded_policy_variant(config: ExperimentConfig):
     policy_config = config.policy_variant
     assert isinstance(policy_config, PostDecodedPolicyConfig)
     return PostDecodedPolicyVariant(
-        config=policy_config,
-        training_config=config.training,
-        inference_config=config.inference,
-        action_horizon=action_schema.action_horizon,
-        state_dim=action_schema.state_dim,
-    )
-
-
-def _build_video_sequence_policy_variant(config: ExperimentConfig):
-    action_schema = config.data.action_schema
-    policy_config = config.policy_variant
-    assert isinstance(policy_config, VideoSequencePolicyConfig)
-    return VideoSequencePolicyVariant(
         config=policy_config,
         training_config=config.training,
         inference_config=config.inference,
@@ -480,18 +463,6 @@ def _build_mot_action_decoder(config: ExperimentConfig):
     )
 
 
-def _build_vpp_action_decoder(config: ExperimentConfig):
-    decoder_config = config.action_decoder
-    return VPPSequenceActionDecoder(
-        decoder_config,
-        training_config=config.training,
-        inference_config=config.inference,
-        state_dim=config.data.action_schema.state_dim,
-        observation_token_dim=config.backbone.hidden_size,
-        goal_feature_dim=config.backbone.text_dim,
-    )
-
-
 def _build_video_only_action_decoder(config: ExperimentConfig):
     decoder_config = config.action_decoder
     return VideoOnlyActionDecoder(
@@ -522,12 +493,6 @@ def _register_builtin_pipeline_builders() -> None:
         PostDecodedPolicyConfig,
         _build_post_decoded_policy_variant,
         description="Post-decoded policy variant.",
-        replace=True,
-    )
-    POLICY_VARIANT_BUILDERS.register(
-        VideoSequencePolicyConfig,
-        _build_video_sequence_policy_variant,
-        description="Sequence-native video-policy policy variant.",
         replace=True,
     )
     POLICY_VARIANT_BUILDERS.register(
@@ -573,7 +538,6 @@ def _register_builtin_pipeline_builders() -> None:
         replace=True,
     )
     ACTION_DECODER_BUILDERS.register(ActionDecoderName.MOT, _build_mot_action_decoder, replace=True)
-    ACTION_DECODER_BUILDERS.register(ActionDecoderName.VPP, _build_vpp_action_decoder, replace=True)
     ACTION_DECODER_BUILDERS.register(ActionDecoderName.VIDEO_ONLY, _build_video_only_action_decoder, replace=True)
 
 

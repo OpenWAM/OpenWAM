@@ -14,8 +14,8 @@ The current implementation is organized around one constraint:
 The repo currently includes:
 
 - a stage-aware `VisualTower + PolicyVariant + ActionDecoder` stack
-- runnable `parallel_stream`, `video_sequence_policy`, `post_latent`,
-  `post_decoded`, `mot`, and `causal_video_prediction` variants
+- runnable `parallel_stream`, `post_latent`, `post_decoded`, `mot`, and
+  `causal_video_prediction` variants
 - a LingBot replica backbone as the default shared-core family for real
   multimodal variants
 - a shared runtime backbone knob under `backbone.implementation`:
@@ -57,8 +57,8 @@ Important source packages:
 - `src/open_wam/models/visual_tower`: shared visual frontend, core, decode
   boundary, and exact LingBot reference loader
 - `src/open_wam/models/policy_variants`: method-specific train/infer behavior
-  for `parallel_stream`, `video_sequence_policy`, `post_latent`,
-  `post_decoded`, `mot`, and `causal_video_prediction`
+  for `parallel_stream`, `post_latent`, `post_decoded`, `mot`, and
+  `causal_video_prediction`
 - `src/open_wam/models/action_decoders`: action decoders and losses
 - `src/open_wam/models/video_backbone`: backbone config and compatibility contracts
 - `src/open_wam/pipelines`: variant pipeline, exact LingBot runner, and rollout helpers

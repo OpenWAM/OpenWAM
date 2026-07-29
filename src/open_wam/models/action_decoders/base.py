@@ -40,8 +40,8 @@ class ActionDecoderInferOutput:
 class DecoderRolloutState:
     """Reusable decoder-owned inference state.
 
-    Sequence-native decoders such as VPP-style action models may cache a full
-    predicted action chunk and only refresh it every few environment steps.
+    Sequence-native decoders may cache a full predicted action chunk and only
+    refresh it every few environment steps.
     Keeping this state generic lets the pipeline support that behavior without
     turning decoders into hidden stateful singletons.
     """

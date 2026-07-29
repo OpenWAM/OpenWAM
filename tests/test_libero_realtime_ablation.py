@@ -254,7 +254,7 @@ def test_auto_low_watermark_rejects_unverified_cases() -> None:
 
     with pytest.raises(ValueError, match="only defined for verified built-in cases"):
         ablation._resolve_case_replan_low_watermark_actions(
-            case=ablation.DEFAULT_CASES["method3_vsp_step800"],
+            case=ablation.DEFAULT_CASES["method4_generated_step5000"],
             spec="auto",
         )
 

@@ -176,12 +176,6 @@ DEFAULT_CASES: dict[str, RolloutCase] = {
         checkpoint="${paths.checkpoints.parallel_stream_joint_libero_step_600_0402}",
         description="Method-2/functionality via action-conditioned parallel-stream runtime.",
     ),
-    "method3_vsp_step800": RolloutCase(
-        name="method3_vsp_step800",
-        config=Path("configs/experiments/video_sequence_policy_libero_latent_local_random_subwindow.yaml"),
-        checkpoint="${paths.checkpoints.video_sequence_policy_libero_random_subwindow_step_800_0402}",
-        description="Method-3 video-sequence policy checkpoint.",
-    ),
     "method4_generated_step5000": RolloutCase(
         name="method4_generated_step5000",
         config=Path("configs/experiments/post_latent_libero_latent_local_generated_video_conditioned.yaml"),

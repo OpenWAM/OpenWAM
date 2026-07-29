@@ -26,7 +26,6 @@ nav:
           - Card Index: cards/index.md
           - Public Tiny Synthetic: cards/public_tiny_synthetic_contract.md
           - Method 1 LIBERO Exact Step 400: cards/method1_libero_exact_step400.md
-          - Method 3 LIBERO Video Sequence Step 800: cards/method3_libero_video_sequence_step800.md
   - Extending:
       - Extension SDK: extension_sdk.md
       - Add A Method: cookbooks/new_method.md

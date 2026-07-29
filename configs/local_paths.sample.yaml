@@ -56,7 +56,6 @@ paths:
     parallel_stream_exact_libero_step_1100_0402: /path/to/runs/parallel_stream_libero_lingbot_exact_heng_compatible_0402/checkpoints/checkpoint_step_1100
     parallel_stream_joint_libero_step_300: /path/to/runs/parallel_stream_libero_lingbot_joint_denoise_heng_compatible/checkpoints/checkpoint_step_300
     parallel_stream_joint_libero_step_600_0402: /path/to/runs/parallel_stream_libero_lingbot_joint_denoise_heng_compatible_0402/checkpoints/checkpoint_step_600
-    video_sequence_policy_libero_random_subwindow_step_800_0402: /path/to/runs/video_sequence_policy_libero_latent_local_random_subwindow_0402/checkpoints/checkpoint_step_800
     method4_generated_video_conditioned_step_5000: /path/to/runs/method4_post_latent_generated_video_conditioned_libero/checkpoints/checkpoint_step_5000
 
     # Method-1 exact and joint transformer exports.

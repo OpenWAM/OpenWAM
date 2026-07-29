@@ -73,7 +73,6 @@ def test_run_tracking_metadata_normalizes_method_families(tmp_path: Path) -> Non
     cases = [
         ("parallel_stream_robotwin_smoke.yaml", "method_1", "parallel_stream"),
         ("register_attached_robotwin_smoke.yaml", "method_2", "register_attached"),
-        ("video_sequence_policy_robotwin_smoke.yaml", "method_3", "video_sequence_policy"),
         ("post_latent_robotwin_video_conditioned.yaml", "method_4", "post_latent"),
         ("mot_robotwin_smoke.yaml", "method_5", "mot"),
         ("causal_video_prediction_robotwin_smoke.yaml", "causal_video_prediction", "causal_video_prediction"),
@@ -90,7 +89,7 @@ def test_run_tracking_metadata_normalizes_method_families(tmp_path: Path) -> Non
         assert metadata["run_name"] == config.name
         assert metadata["run_slug"] == config.name
         assert metadata["method_family"] == expected_method_family
-        assert metadata["method_label"] in {"m1", "m2", "m3", "m4", "m5", "causal"}
+        assert metadata["method_label"] in {"m1", "m2", "m4", "m5", "causal"}
         assert metadata["policy_variant"] == expected_job_type
         assert metadata["run_title"] == build_run_title(metadata)
         assert metadata["dataset_name"] == config.data.dataset_name

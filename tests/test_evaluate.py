@@ -102,11 +102,6 @@ def test_method4_video_conditioned_eval_wrappers_resolve_experiment_configs() ->
             "parallel_stream_libero_lingbot_joint_denoise_heng_compatible.yaml",
             "parallel_stream_libero_lingbot_joint_denoise_heng_compatible/checkpoints/checkpoint_step_300/full_training_state.pt",
         ),
-        (
-            "video_sequence_policy_libero_heng_eval.yaml",
-            "video_sequence_policy_libero_latent_local_random_subwindow.yaml",
-            "video_sequence_policy_libero_latent_local_random_subwindow_0402/checkpoints/checkpoint_step_800/model_state.pt",
-        ),
     ],
 )
 def test_libero_heng_eval_wrappers_resolve_experiment_configs_and_checkpoints(
@@ -158,7 +153,6 @@ def test_mot_libero_eval_configs_resolve_model_checkpoints(
     [
         ("parallel_stream_robotwin_smoke.yaml", "parallel_stream_robotwin_smoke.yaml"),
         ("register_attached_robotwin_smoke.yaml", "register_attached_robotwin_smoke.yaml"),
-        ("video_sequence_policy_robotwin_smoke.yaml", "video_sequence_policy_robotwin_smoke.yaml"),
         ("mot_robotwin_smoke.yaml", "mot_robotwin_smoke.yaml"),
         ("causal_video_prediction_robotwin_smoke.yaml", "causal_video_prediction_robotwin_smoke.yaml"),
     ],
@@ -285,7 +279,6 @@ def test_run_evaluation_on_parallel_stream_robotwin(tmp_path: Path) -> None:
     ("config_path", "expected_name"),
     [
         (REPO_ROOT / "configs/evals/parallel_stream_robotwin_smoke.yaml", "parallel_stream_robotwin_smoke"),
-        (REPO_ROOT / "configs/evals/video_sequence_policy_robotwin_smoke.yaml", "video_sequence_policy_robotwin_smoke"),
         (REPO_ROOT / "configs/evals/mot_robotwin_smoke.yaml", "mot_robotwin_smoke"),
         (REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml", "post_latent_robotwin_video_conditioned"),
         (REPO_ROOT / "configs/experiments/post_decoded_robotwin_video_conditioned.yaml", "post_decoded_robotwin_video_conditioned"),
@@ -389,7 +382,7 @@ def test_run_trajectory_evaluation_carries_across_episode_windows(monkeypatch) -
     ("config_path", "action_horizon", "expected_reset_calls"),
     [
         (REPO_ROOT / "configs/experiments/mot_robotwin_smoke.yaml", 8, 2),
-        (REPO_ROOT / "configs/experiments/video_sequence_policy_robotwin_smoke.yaml", 6, 1),
+        (REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml", 6, 1),
     ],
 )
 def test_run_trajectory_evaluation_resets_only_mot_observation_conditioned_sessions(

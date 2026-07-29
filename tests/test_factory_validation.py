@@ -27,7 +27,6 @@ from open_wam.configs import (
     TrainingConfig,
     VideoConditionedActionDecoderConfig,
     VideoOnlyActionDecoderConfig,
-    VideoSequencePolicyConfig,
 )
 from open_wam.models.action_decoders import MoTActionDecoder
 from open_wam.models.policy_variants import MoTPolicyVariant
@@ -695,27 +694,6 @@ def test_parallel_stream_requires_shared_transformer_backbone() -> None:
         assert "shared transformer backbone" in str(exc)
     else:  # pragma: no cover - defensive guard
         raise AssertionError("Expected parallel-stream validation to reject a non-shared backbone.")
-
-
-def test_video_sequence_policy_requires_shared_transformer_backbone() -> None:
-    config = ExperimentConfig(
-        data=RobotWinDataConfig(
-            num_frames=2,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
-        ),
-        backbone=LingbotCompatibleVideoBackboneConfig(implementation="dummy"),
-        policy_variant=VideoSequencePolicyConfig(hidden_size=32),
-        action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
-        training=TrainingConfig(chunk_size=2, window_size=8),
-        inference=InferenceConfig(frame_chunk_size=2),
-    )
-
-    try:
-        build_variant_pipeline_from_config(config)
-    except ValueError as exc:
-        assert "shared transformer backbone" in str(exc)
-    else:  # pragma: no cover - defensive guard
-        raise AssertionError("Expected video-sequence validation to reject a non-shared backbone.")
 
 
 def test_register_attached_pipeline_build_is_obsolete() -> None:

@@ -27,7 +27,6 @@ class ActionDecoderName(StrEnum):
     REGISTER = "register_decoder"
     DECODED_FEATURE = "decoded_feature_decoder"
     VIDEO_CONDITIONED = "video_conditioned_action_decoder"
-    VPP = "vpp_decoder"
     LINGBOT_PARALLEL = "lingbot_parallel_decoder"
     MOT = "mot_decoder"
     VIDEO_ONLY = "video_only_decoder"
@@ -450,7 +449,6 @@ class PolicyVariantName(StrEnum):
 
     POST_LATENT = "post_latent"
     POST_DECODED = "post_decoded"
-    VIDEO_SEQUENCE_POLICY = "video_sequence_policy"
     CAUSAL_VIDEO_PREDICTION = "causal_video_prediction"
     MOT = "mot"
     # Obsolete traditional Method 2. Kept for loading historical configs only;
@@ -528,56 +526,6 @@ class VisualReadoutFusionMode(StrEnum):
     CONCAT_PROJECT = "concat_project"
 
 
-class GoalConditioningAdapterFamily(StrEnum):
-    """Goal/language conditioning adapter family for sequence decoders."""
-
-    PASSTHROUGH = "passthrough"
-    MEAN_POOL = "mean_pool"
-
-
-class StateSequenceAdapterFamily(StrEnum):
-    """State/proprio adapter family for sequence decoders."""
-
-    IDENTITY = "identity"
-    LINEAR = "linear"
-
-
-class TemporalCompressionAdapterFamily(StrEnum):
-    """Temporal/token compression family for sequence decoders."""
-
-    IDENTITY = "identity"
-    FRAME_MEAN_POOL = "frame_mean_pool"
-    TEMPORAL_LATENT_RESAMPLER_3D = "temporal_latent_resampler_3d"
-    VIDEO_FORMER_3D = "video_former_3d"
-
-
-class SequenceDenoiserFamily(StrEnum):
-    """Sequence-denoiser architecture for sequence-native action decoders."""
-
-    GENERIC_TRANSFORMER = "generic_transformer"
-    FILM_DIFFUSION_TRANSFORMER = "film_diffusion_transformer"
-
-
-class ActionGenerationBackendFamily(StrEnum):
-    """Action-generation backend family for sequence-native decoders."""
-
-    EDM_DIFFUSION = "edm_diffusion"
-
-
-class DiffusionNoiseSchedule(StrEnum):
-    """Noise schedule family for diffusion-based action decoders."""
-
-    EXPONENTIAL = "exponential"
-    KARRAS = "karras"
-
-
-class DiffusionSampler(StrEnum):
-    """Sampling solver family for diffusion-based action decoders."""
-
-    DDIM = "ddim"
-    EULER = "euler"
-
-
 class AttachSite(StrEnum):
     """Where policy logic conceptually attaches relative to the visual stack."""
 
@@ -598,13 +546,6 @@ class TemporalProjection(StrEnum):
     """How feature sequences are aligned to the action horizon."""
 
     INTERPOLATE = "interpolate"
-
-
-class VisualStateSource(StrEnum):
-    """Which visual-state family a policy variant should consume."""
-
-    CORE_TOKENS = "core_tokens"
-    DENOISED_VIDEO_TOKENS = "denoised_video_tokens"
 
 
 class VisualReadoutSourceFamily(StrEnum):

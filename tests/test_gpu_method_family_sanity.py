@@ -1,4 +1,4 @@
-"""Dedicated one-GPU sanity checks for methods 1 through 5.
+"""Dedicated one-GPU sanity checks for maintained policy families.
 
 These tests are intentionally more rigorous than the default CPU smoke suite.
 They are opt-in and require exactly the kind of environment a developer would
@@ -37,8 +37,6 @@ from open_wam.configs import (
     TrainerPrecision,
     VideoConditionInputSpace,
     VideoConditionTrainMode,
-    VisualReadoutFusionMode,
-    VisualReadoutSourceFamily,
 )
 from open_wam.data import (
     SyntheticLatentWindowDataset,
@@ -113,22 +111,6 @@ def _pipeline_case_path(case_name: str, tmp_path: Path) -> Path:
             output_name="parallel_stream_robotwin_action_conditioned_gpu",
             mutate=_mutate_parallel_action_conditioned,
         )
-    if case_name == "video_sequence_default":
-        return REPO_ROOT / "configs/experiments/video_sequence_policy_robotwin_smoke.yaml"
-    if case_name == "video_sequence_core_layer":
-        return _write_temp_config(
-            tmp_path,
-            source_name="video_sequence_policy_robotwin_smoke.yaml",
-            output_name="video_sequence_policy_robotwin_core_layer_gpu",
-            mutate=_mutate_video_sequence_core_layer,
-        )
-    if case_name == "video_sequence_core_multi_layer":
-        return _write_temp_config(
-            tmp_path,
-            source_name="video_sequence_policy_robotwin_smoke.yaml",
-            output_name="video_sequence_policy_robotwin_multi_layer_gpu",
-            mutate=_mutate_video_sequence_core_multi_layer,
-        )
     if case_name == "post_latent_legacy":
         return REPO_ROOT / "configs/experiments/post_latent_robotwin.yaml"
     if case_name == "post_decoded_legacy":
@@ -178,23 +160,6 @@ def _mutate_parallel_action_conditioned(raw: dict[str, Any]) -> None:
     policy_variant["joint_timestep_coupling"] = JointTimestepCoupling.MATCH_SIGMA.value
     _cap_inference_steps(raw, steps=2)
     raw.setdefault("inference", {})["use_cache"] = False
-
-
-def _mutate_video_sequence_core_layer(raw: dict[str, Any]) -> None:
-    raw.setdefault("backbone", {})["num_layers"] = 2
-    raw.setdefault("policy_variant", {})["visual_readout"] = {
-        "source_family": VisualReadoutSourceFamily.CORE_LAYER_TOKENS.value,
-        "layer_index": 0,
-    }
-
-
-def _mutate_video_sequence_core_multi_layer(raw: dict[str, Any]) -> None:
-    raw.setdefault("backbone", {})["num_layers"] = 2
-    raw.setdefault("policy_variant", {})["visual_readout"] = {
-        "source_family": VisualReadoutSourceFamily.CORE_MULTI_LAYER_TOKENS.value,
-        "layer_indices": [0, 1],
-        "fusion_mode": VisualReadoutFusionMode.CONCAT_PROJECT.value,
-    }
 
 
 def _mutate_mot_joint_denoise(raw: dict[str, Any]) -> None:
@@ -337,9 +302,6 @@ def _clear_cuda_between_tests():
     [
         ("parallel_exact", 8),
         ("parallel_action_conditioned", 8),
-        ("video_sequence_default", 6),
-        ("video_sequence_core_layer", 6),
-        ("video_sequence_core_multi_layer", 6),
         ("post_latent_legacy", 6),
         ("post_decoded_legacy", 6),
         ("post_latent_video_conditioned", 6),
@@ -366,18 +328,6 @@ def test_gpu_method_family_pipeline_train_and_infer_matrix(
 
     assert train_output.decoder_output.action_pred.shape == (1, expected_horizon, config.action_decoder.action_dim)
     assert infer_output.decoder_output.action_pred.shape == (1, expected_horizon, config.action_decoder.action_dim)
-
-    if case_name == "video_sequence_core_layer":
-        assert train_output.policy_output.decoder_sequence_context is not None
-        assert infer_output.policy_output.decoder_sequence_context is not None
-        assert train_output.policy_output.decoder_sequence_context.source_stage == "core_layer_0"
-        assert infer_output.policy_output.decoder_sequence_context.source_stage == "core_layer_0"
-    if case_name == "video_sequence_core_multi_layer":
-        assert train_output.policy_output.decoder_sequence_context is not None
-        assert infer_output.policy_output.decoder_sequence_context is not None
-        assert train_output.policy_output.decoder_sequence_context.source_stage == "core_multi_layer"
-        assert infer_output.policy_output.decoder_sequence_context.source_stage == "core_multi_layer"
-
 
 @pytest.mark.parametrize(
     "case_name",
@@ -437,8 +387,6 @@ def test_gpu_method4_current_frame_regression_modes_train_only(
     [
         "parallel_exact",
         "parallel_action_conditioned",
-        "video_sequence_default",
-        "video_sequence_core_layer",
         "post_latent_legacy",
         "post_decoded_legacy",
         "post_latent_video_conditioned",
@@ -479,8 +427,6 @@ def test_gpu_method_family_runtime_train_matrix(
     [
         ("parallel_exact", "parallel_stream_robotwin_smoke"),
         ("parallel_action_conditioned", "parallel_stream_robotwin_action_conditioned_gpu"),
-        ("video_sequence_default", "video_sequence_policy_robotwin_smoke"),
-        ("video_sequence_core_layer", "video_sequence_policy_robotwin_core_layer_gpu"),
         ("post_latent_legacy", "post_latent_robotwin"),
         ("post_decoded_legacy", "post_decoded_robotwin"),
         ("post_latent_video_conditioned", "post_latent_robotwin_video_conditioned"),
