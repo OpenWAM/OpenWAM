@@ -73,6 +73,7 @@ from .generalist_modes import (
     resolve_generalist_training_metadata as _resolve_mot_generalist_training_metadata,
     sample_generalist_training_mode as _sample_mot_generalist_training_mode,
 )
+from .inference_layout import MoTPackedHistory, MoTPackedInferenceLayout
 from .modules import MoTActionExpert, init_action_expert_from_video_core
 from .packed_block import MoTPackedBlock, MoTPackedBlockStack
 from .runtime import (
@@ -403,7 +404,9 @@ class MoTPolicyVariant(PolicyVariant):
             condition_latents=condition_latents,
             history_frames=history_frames,
         )
-        video_train_artifacts = build_video_flow_match_train_artifacts(
+        # This unused draw is part of the legacy prefill training RNG contract:
+        # action noise/timesteps are sampled after the video artifacts.
+        _ = build_video_flow_match_train_artifacts(
             video_latents,
             training_config=self.training_config,
             condition_latents=clean_video_condition_latents,
@@ -667,11 +670,6 @@ class MoTPolicyVariant(PolicyVariant):
         if sampled_window_size is None:
             sampled_window_size = max(1, int(self.training_config.window_size))
         frame_shift = self.training_layout.resolve_frame_shift(batch=prepared_inputs.batch)
-        chunk_origin_frame = self.training_layout.resolve_chunk_origin_frame(
-            batch=prepared_inputs.batch,
-            observed_num_frames=int(video_latents.shape[2]),
-        )
-
         train_artifacts = build_action_flow_match_train_artifacts(
             prepared_inputs.batch.actions,
             effective_action_mask,
@@ -1395,36 +1393,34 @@ class MoTPolicyVariant(PolicyVariant):
             action_horizon=action_horizon,
         )
         first_step_bootstrap = startup_plan.is_startup
-
-        past_clean_latents = runtime_state.past_clean_latents
-        if past_clean_latents is not None:
-            past_clean_latents = past_clean_latents.to(device=device, dtype=dtype)
-            if past_clean_latents.shape[0] != batch_size or past_clean_latents.shape[1] != video_latents.shape[1]:
-                raise ValueError(
-                    "M5 packed video history shape does not match current video latents, "
-                    f"got past={tuple(past_clean_latents.shape)}, current={tuple(video_latents.shape)}."
-                )
-            if past_clean_latents.shape[-2:] != video_latents.shape[-2:]:
-                raise ValueError(
-                    "M5 packed video history spatial shape does not match current video latents, "
-                    f"got past={tuple(past_clean_latents.shape)}, current={tuple(video_latents.shape)}."
-                )
-        past_clean_actions = runtime_state.past_clean_actions
-        if past_clean_actions is not None:
-            past_clean_actions = past_clean_actions.to(device=device, dtype=dtype)
-            if past_clean_actions.shape[0] != batch_size or past_clean_actions.shape[-1] != self.action_dim:
-                raise ValueError(
-                    "M5 packed action history shape does not match current action shape, "
-                    f"got past_actions={tuple(past_clean_actions.shape)}, batch_size={batch_size}, action_dim={self.action_dim}."
-                )
-            if past_clean_actions.shape[1] % action_tokens_per_frame != 0:
-                raise ValueError(
-                    "M5 packed action history length must be divisible by action_tokens_per_frame, "
-                    f"got past_action_tokens={past_clean_actions.shape[1]}, action_tokens_per_frame={action_tokens_per_frame}."
-                )
-
         current_video_prefix_frames = startup_plan.video_prefix_frames
         generation_frame_start = startup_plan.generation_frame_start
+        current_action_prefix_tokens = startup_plan.action_prefix_tokens
+        current_action_sequence_tokens = startup_plan.current_action_sequence_tokens
+        packed_inference_layout = MoTPackedInferenceLayout(
+            batch_size=batch_size,
+            action_dim=self.action_dim,
+            configured_action_horizon=self.action_horizon,
+            frame_chunk_size=frame_chunk_size,
+            action_tokens_per_frame=action_tokens_per_frame,
+            current_video_prefix_frames=current_video_prefix_frames,
+            current_video_sequence_frames=current_video_prefix_frames + frame_chunk_size,
+            current_action_prefix_tokens=current_action_prefix_tokens,
+            current_action_sequence_tokens=current_action_sequence_tokens,
+            video_channels=int(video_latents.shape[1]),
+            video_height=latent_height,
+            video_width=latent_width,
+            device=device,
+            dtype=dtype,
+        )
+        packed_history = MoTPackedHistory.from_runtime_state(
+            runtime_state,
+            layout=packed_inference_layout,
+            current_video_latents=video_latents,
+        )
+        past_clean_latents = packed_history.video_latents
+        past_clean_actions = packed_history.action_latents
+
         if first_step_bootstrap:
             observed_prefix = video_latents[:, :, -1:].contiguous()
             current_generated_video = torch.randn(
@@ -1463,81 +1459,14 @@ class MoTPolicyVariant(PolicyVariant):
             current_noisy_video = current_clean_video.clone()
         if diagnostic_zero_action_noise:
             current_action_sample = torch.zeros_like(current_action_sample)
-        current_action_prefix_tokens = startup_plan.action_prefix_tokens
-        current_action_sequence_tokens = startup_plan.current_action_sequence_tokens
-
-        def _context_tensor(key: str) -> torch.Tensor | None:
-            value = context.extra.get(key)
-            if value is None:
-                return None
-            if not isinstance(value, torch.Tensor):
-                raise TypeError(f"M5 GJD rollout context {key!r} must be a torch.Tensor, got {type(value)!r}.")
-            return value.to(device=device, dtype=dtype)
-
-        def _coerce_current_action_tensor(key: str, *, required: bool) -> torch.Tensor | None:
-            value = _context_tensor(key)
-            if value is None:
-                if required:
-                    raise ValueError(f"M5 GJD rollout mode {generalist_rollout_mode.value!r} requires {key!r}.")
-                return None
-            if value.ndim != 3:
-                raise ValueError(f"M5 GJD rollout context {key!r} must have shape [B, H, D], got {tuple(value.shape)}.")
-            if int(value.shape[0]) != batch_size or int(value.shape[-1]) != self.action_dim:
-                raise ValueError(
-                    f"M5 GJD rollout context {key!r} shape does not match current action shape, "
-                    f"got {tuple(value.shape)}, expected batch={batch_size}, action_dim={self.action_dim}."
-                )
-            if int(value.shape[1]) == self.action_horizon:
-                return value.contiguous()
-            if int(value.shape[1]) == current_action_sequence_tokens:
-                return value[:, current_action_prefix_tokens:].contiguous()
-            raise ValueError(
-                f"M5 GJD rollout context {key!r} must contain either action_horizon={self.action_horizon} "
-                f"or current_action_sequence_tokens={current_action_sequence_tokens} tokens, got {value.shape[1]}."
-            )
-
-        def _coerce_current_video_tensor(key: str, *, required: bool) -> torch.Tensor | None:
-            value = _context_tensor(key)
-            if value is None:
-                if required:
-                    raise ValueError(f"M5 GJD rollout mode {generalist_rollout_mode.value!r} requires {key!r}.")
-                return None
-            if value.ndim != 5:
-                raise ValueError(
-                    f"M5 GJD rollout context {key!r} must have shape [B, C, T, H, W], got {tuple(value.shape)}."
-                )
-            expected_prefix = (
-                batch_size,
-                int(video_latents.shape[1]),
-                int(video_latents.shape[-2]),
-                int(video_latents.shape[-1]),
-            )
-            got_prefix = (int(value.shape[0]), int(value.shape[1]), int(value.shape[-2]), int(value.shape[-1]))
-            if got_prefix != expected_prefix:
-                raise ValueError(
-                    f"M5 GJD rollout context {key!r} shape does not match current video shape, "
-                    f"got {tuple(value.shape)}, expected batch/channels/spatial={expected_prefix}."
-                )
-            if int(value.shape[2]) == frame_chunk_size:
-                if current_video_prefix_frames <= 0:
-                    return value.contiguous()
-                return torch.cat([current_clean_video[:, :, :current_video_prefix_frames], value], dim=2).contiguous()
-            if int(value.shape[2]) == current_video_sequence_frames:
-                return value.contiguous()
-            raise ValueError(
-                f"M5 GJD rollout context {key!r} must contain either frame_chunk_size={frame_chunk_size} "
-                f"or current_video_sequence_frames={current_video_sequence_frames} frames, got {value.shape[2]}."
-            )
-
-        forced_action_latents = _coerce_current_action_tensor(
-            "mot_forced_action_latents",
-            required=generalist_rollout_mode == MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
+        conditional_inputs = packed_inference_layout.resolve_conditional_rollout_inputs(
+            context.extra,
+            generalist_rollout_mode=generalist_rollout_mode,
+            current_clean_video=current_clean_video,
         )
-        commit_action_latents = _coerce_current_action_tensor("mot_commit_action_latents", required=False)
-        video_condition_latents = _coerce_current_video_tensor(
-            "mot_video_condition_latents",
-            required=generalist_rollout_mode == MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
-        )
+        forced_action_latents = conditional_inputs.forced_action_latents
+        commit_action_latents = conditional_inputs.commit_action_latents
+        video_condition_latents = conditional_inputs.video_condition_latents
         if generalist_rollout_mode == MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO:
             if forced_action_latents is None:  # pragma: no cover - guarded by required=True
                 raise RuntimeError("M5 FDM rollout missing forced action latents.")
@@ -1560,70 +1489,21 @@ class MoTPolicyVariant(PolicyVariant):
             window_size=inference_window_size,
             frame_chunk_size=frame_chunk_size,
         )
-        history_video_frames = 0 if past_clean_latents is None else int(past_clean_latents.shape[2])
-        history_action_tokens = 0 if past_clean_actions is None else int(past_clean_actions.shape[1])
-        history_action_frames = history_action_tokens // action_tokens_per_frame
-        shared_history_frames = min(history_video_frames, history_action_frames)
-        max_history_frames = max(0, history_window_frames - frame_chunk_size)
-        if max_history_frames > 0:
-            shared_history_frames = min(shared_history_frames, max_history_frames)
-        else:
-            shared_history_frames = 0
-        if shared_history_frames > 0:
-            history_video = past_clean_latents[:, :, -shared_history_frames:].contiguous()
-            history_action_tokens = shared_history_frames * action_tokens_per_frame
-            history_actions = past_clean_actions[:, -history_action_tokens:].contiguous()
-        else:
-            history_video = None
-            history_actions = None
-            history_action_tokens = 0
         hidden_proprio_state = runtime_state.hidden_proprio_state
-        history_hidden_proprio = runtime_state.past_hidden_proprio_states
-        if history_hidden_proprio is not None and shared_history_frames > 0:
-            history_hidden_proprio = history_hidden_proprio.to(device=device, dtype=dtype)
-            if int(history_hidden_proprio.shape[0]) != batch_size:
-                raise ValueError(
-                    "M5 packed hidden proprio history batch size does not match current batch, "
-                    f"got history={tuple(history_hidden_proprio.shape)}, batch_size={batch_size}."
-                )
-            history_hidden_proprio = history_hidden_proprio[:, -shared_history_frames:].contiguous()
-        else:
-            history_hidden_proprio = None
-        if shared_history_frames > 0 and self.conditioning.uses_per_chunk_proprio_context() and history_hidden_proprio is None:
-            raise ValueError("M5 per-chunk additive proprio inference is missing hidden proprio history.")
-        current_hidden_proprio_frames = None
-        if hidden_proprio_state is not None:
-            current_hidden_proprio_frames = hidden_proprio_state.to(device=device, dtype=dtype)[:, None, :].expand(
-                -1,
-                current_video_sequence_frames,
-                -1,
-            )
-        if history_hidden_proprio is None:
-            video_hidden_proprio_sequence = current_hidden_proprio_frames
-        elif current_hidden_proprio_frames is None:
-            video_hidden_proprio_sequence = history_hidden_proprio
-        else:
-            video_hidden_proprio_sequence = torch.cat([history_hidden_proprio, current_hidden_proprio_frames], dim=1)
-
-        if history_video is None:
-            noisy_video_sequence = current_noisy_video
-            clean_video_sequence = current_clean_video
-        else:
-            noisy_video_sequence = torch.cat([history_video, current_noisy_video], dim=2)
-            clean_video_sequence = torch.cat([history_video, current_clean_video], dim=2)
+        history = packed_history.select_window(
+            layout=packed_inference_layout,
+            history_window_frames=history_window_frames,
+            hidden_proprio_state=hidden_proprio_state,
+            require_hidden_proprio_history=self.conditioning.uses_per_chunk_proprio_context(),
+        )
+        history_actions = history.action_latents
+        history_action_tokens = history.action_tokens
+        shared_history_frames = history.frames
+        max_history_frames = history.max_frames
+        video_hidden_proprio_sequence = history.hidden_proprio_sequence
+        noisy_video_sequence = history.prepend_video(current_noisy_video)
+        clean_video_sequence = history.prepend_video(current_clean_video)
         history_video_timesteps = torch.zeros(batch_size, shared_history_frames, device=device, dtype=torch.float32)
-        current_zero_video_timesteps = torch.zeros(
-            batch_size,
-            current_video_sequence_frames,
-            device=device,
-            dtype=torch.float32,
-        )
-        zero_action_current_timesteps = torch.zeros(
-            batch_size,
-            current_action_sequence_tokens,
-            device=device,
-            dtype=torch.float32,
-        )
         zero_current_action_condition = current_action_sample.new_zeros(
             batch_size,
             current_action_sequence_tokens,
@@ -1755,25 +1635,12 @@ class MoTPolicyVariant(PolicyVariant):
         collect_attention_focus = bool(context.extra.get("mot_collect_attention_focus", False))
         attention_focus_records: list[dict[str, object]] | None = [] if collect_attention_focus else None
 
-        def _compose_clean_video_sequence(current_clean_video_for_step: torch.Tensor) -> torch.Tensor:
-            if history_video is None:
-                return current_clean_video_for_step
-            return torch.cat([history_video, current_clean_video_for_step], dim=2)
-
-        def _compose_current_action_sequence(action_tokens: torch.Tensor) -> torch.Tensor:
-            if current_action_prefix_tokens <= 0:
-                return action_tokens
-            invalid_prefix = action_tokens.new_zeros(
-                action_tokens.shape[0],
-                current_action_prefix_tokens,
-                action_tokens.shape[-1],
-            )
-            return torch.cat([invalid_prefix, action_tokens], dim=1)
-
         forced_clean_action_condition = (
             None
             if forced_action_latents is None
-            else _compose_current_action_sequence(forced_action_latents)
+            else packed_inference_layout.compose_current_action_sequence(
+                forced_action_latents
+            )
         )
 
         def _build_packed_action_pre(
@@ -1845,14 +1712,18 @@ class MoTPolicyVariant(PolicyVariant):
                 else None
             )
             packed_action_pre = _build_packed_action_pre(
-                action_tokens=_compose_current_action_sequence(action_sample),
+                action_tokens=packed_inference_layout.compose_current_action_sequence(
+                    action_sample
+                ),
                 action_timestep=action_timestep,
                 current_clean_action_for_step=current_clean_action_for_step,
             )
             return forward_mot_packed_coupling_denoise(
                 visual_tower=visual_tower,
                 noisy_video_latents=predicted_video_sequence,
-                clean_video_latents=_compose_clean_video_sequence(current_clean_video_for_step),
+                clean_video_latents=history.prepend_video(
+                    current_clean_video_for_step
+                ),
                 noisy_video_timesteps=dense_video_timestep,
                 clean_video_timesteps=torch.zeros_like(dense_video_timestep),
                 action_expert=self.action_expert,
@@ -2059,7 +1930,9 @@ class MoTPolicyVariant(PolicyVariant):
                 )
                 _update_action(packed_action_hidden, packed_action_pre, current_action_timestep)
             if not action_only_rollout:
-                current_clean_action = _compose_current_action_sequence(action_sample)
+                current_clean_action = packed_inference_layout.compose_current_action_sequence(
+                    action_sample
+                )
                 for step_index, video_timestep in enumerate(video_scheduler.timesteps):
                     current_video_timestep = _video_timestep(video_timestep)
                     video_flow_pred, _, _ = _run_packed_step(
@@ -3017,7 +2890,6 @@ class MoTPolicyVariant(PolicyVariant):
                 f"got past_action_seq_len={past_action_seq_len}, action_tokens_per_frame={action_tokens_per_frame}."
             )
         past_action_frames = past_action_seq_len // action_tokens_per_frame
-        total_action_seq_len = past_action_seq_len + action_horizon
         # Method-1 byte-aligned mask: replicates
         # `build_chunked_temporal_exact_attention_profile` for the inference
         # `[video_cache; past_action_cache; current_action]` layout. Block

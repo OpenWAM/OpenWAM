@@ -61,6 +61,9 @@ plain contracts:
 - `MoTConditioning` prepares condition latents, prefix layout, text/proprio
   tensors, mode tokens, and cross-attention gating. Learned conditioning
   encoders remain owned by the visual core.
+- `MoTPackedInferenceLayout` validates current-chunk FDM/IDM tensor overrides.
+  `MoTPackedHistory` selects one frame-aligned recurrent video/action/proprio
+  window without owning or mutating policy state.
 - `build_action_grid_ids_for_sequence` owns the frame-aligned action
   coordinates shared by training and recurrent inference.
 - `mot.generalist_modes` owns GJD mode selection and conditional tensor

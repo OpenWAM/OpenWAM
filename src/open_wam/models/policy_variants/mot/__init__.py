@@ -9,6 +9,12 @@ from .generalist_modes import (
     resolve_generalist_training_metadata,
     sample_generalist_training_mode,
 )
+from .inference_layout import (
+    MoTConditionalRolloutInputs,
+    MoTPackedHistory,
+    MoTPackedHistoryWindow,
+    MoTPackedInferenceLayout,
+)
 from .runtime_routing import (
     MoTRuntimeRoute,
     MoTRuntimeRouteKind,
@@ -19,6 +25,10 @@ from .variant import MoTPolicyVariant
 
 __all__ = [
     "MoTConditioning",
+    "MoTConditionalRolloutInputs",
+    "MoTPackedHistory",
+    "MoTPackedHistoryWindow",
+    "MoTPackedInferenceLayout",
     "MoTPolicyVariant",
     "MoTRuntimeRoute",
     "MoTRuntimeRouteKind",

@@ -289,6 +289,37 @@ def test_mot_runtime_controls_have_role_owners() -> None:
     )
 
 
+def test_mot_packed_inference_layout_has_one_owner() -> None:
+    inference_layout_path = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "inference_layout.py"
+    )
+    variant_path = PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "variant.py"
+
+    assert {
+        "MoTConditionalRolloutInputs",
+        "MoTPackedHistory",
+        "MoTPackedHistoryWindow",
+        "MoTPackedInferenceLayout",
+    } <= _top_level_definitions(inference_layout_path)
+    assert {
+        "from_runtime_state",
+        "select_window",
+    } <= _class_method_definitions(inference_layout_path, "MoTPackedHistory")
+    assert {
+        "compose_current_action_sequence",
+        "resolve_conditional_rollout_inputs",
+    } <= _class_method_definitions(
+        inference_layout_path,
+        "MoTPackedInferenceLayout",
+    )
+    assert {
+        "MoTConditionalRolloutInputs",
+        "MoTPackedHistory",
+        "MoTPackedHistoryWindow",
+        "MoTPackedInferenceLayout",
+    }.isdisjoint(_top_level_definitions(variant_path))
+
+
 def test_retired_ablations_namespace_is_not_packaged() -> None:
     assert not (PACKAGE_ROOT / "ablations").exists()
 
