@@ -265,15 +265,23 @@ uv run python -m tests.characterization.run_mot_refactor_characterization \
   --assets /path/to/mot_assets.yaml \
   --fixture-root /path/to/frozen_fixtures \
   --output-root /path/to/current_reports \
-  --golden-root /path/to/golden_reports \
   --stage-root /local/nvme/openwam_mot_stage \
   --asset-id mot_joint \
   --cuda-devices 0,1,2,3
+
+uv run python -m tests.characterization.run_mot_refactor_characterization \
+  initialize-goldens \
+  --actual-root /path/to/current_reports \
+  --golden-root /path/to/new_versioned_golden_reports \
+  --asset-id mot_joint
 ```
 
 Omit `--asset-id` only when deliberately running all six currently required
-checkpoints. The training worker defaults to four GPUs and FSDP CPU offload because a strict
-full-segment backward pass is near the memory limit of a 48 GB GPU. Use
+checkpoints. Review the reports before initializing their goldens. Golden
+initialization refuses to replace an existing report; use a new versioned
+directory when the baseline contract intentionally changes.
+The training worker defaults to four GPUs and FSDP CPU offload because a
+strict full-segment backward pass is near the memory limit of a 48 GB GPU. Use
 `--no-fsdp-cpu-offload` only on hardware with enough verified headroom.
 
 On hosts where NCCL shared-memory transport is unavailable, add
@@ -346,7 +354,6 @@ uv run python -m tests.characterization.run_mot_refactor_characterization \
   --assets /path/to/mot_assets.yaml \
   --fixture-root /path/to/frozen_fixtures \
   --output-root /path/to/cache_rollover_reports \
-  --golden-root /path/to/infrastructure_goldens \
   --phase cache_rollover \
   --asset-id mot_joint \
   --asset-id gjd_mode_token \
@@ -357,12 +364,26 @@ uv run python -m tests.characterization.run_mot_refactor_characterization \
   --assets /path/to/mot_assets.yaml \
   --fixture-root /path/to/frozen_fixtures \
   --output-root /path/to/resume_reports \
-  --golden-root /path/to/infrastructure_goldens \
   --phase resume \
   --asset-id gjd_mode_token \
   --training-world-size 4 \
   --cuda-devices 0,1,2,3 \
   --no-fsdp-cpu-offload
+
+uv run python -m tests.characterization.run_mot_refactor_characterization \
+  initialize-goldens \
+  --actual-root /path/to/cache_rollover_reports \
+  --golden-root /path/to/new_versioned_infrastructure_goldens \
+  --phase cache_rollover \
+  --asset-id mot_joint \
+  --asset-id gjd_mode_token
+
+uv run python -m tests.characterization.run_mot_refactor_characterization \
+  initialize-goldens \
+  --actual-root /path/to/resume_reports \
+  --golden-root /path/to/new_versioned_infrastructure_goldens \
+  --phase resume \
+  --asset-id gjd_mode_token
 ```
 
 The resume sentinel uses one frozen microbatch per optimizer update. Ordinary
@@ -416,9 +437,13 @@ uv run python -m tests.characterization.run_mot_refactor_characterization \
   libero-rollout \
   --assets /path/to/mot_assets.yaml \
   --output-root /path/to/current_rollouts \
-  --golden-root /path/to/rollout_goldens \
   --cuda-devices 0,1,2,3 \
   --task-id 0 --episode-idx 0 --seed 0
+
+uv run python -m tests.characterization.run_mot_refactor_characterization \
+  initialize-libero-goldens \
+  --actual-root /path/to/current_rollouts \
+  --golden-root /path/to/new_versioned_rollout_goldens
 ```
 
 Non-GJD methods retain 800/50 limits and GJD retains 1500/100. Each report

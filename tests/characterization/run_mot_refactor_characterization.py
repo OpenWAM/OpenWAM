@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -147,14 +148,6 @@ def record_characterization(args: argparse.Namespace) -> None:
             "completed": completed,
         },
     )
-    if args.golden_root is not None:
-        golden_root = args.golden_root.expanduser().resolve()
-        golden_root.mkdir(parents=True, exist_ok=True)
-        for item in completed:
-            source = Path(item["report"])
-            shutil.copy2(source, golden_root / source.name)
-
-
 def verify_characterization(args: argparse.Namespace) -> None:
     actual_root = args.actual_root.expanduser().resolve()
     golden_root = args.golden_root.expanduser().resolve()
@@ -190,6 +183,28 @@ def verify_characterization(args: argparse.Namespace) -> None:
             f"{preview}{suffix}"
         )
     print(f"Verified {len(selected) * len(phases)} MoT characterization reports.")
+
+
+def initialize_characterization_goldens(args: argparse.Namespace) -> None:
+    actual_root = args.actual_root.expanduser().resolve()
+    selected = _selected_asset_ids(args.asset_id)
+    phases = tuple(args.phase or DEFAULT_PHASES)
+    _validate_phase_asset_selection(selected=selected, phases=phases)
+    _initialize_golden_files(
+        (
+            (
+                actual_root / f"{asset_id}.{phase}.json",
+                f"{asset_id}.{phase}.json",
+            )
+            for asset_id in selected
+            for phase in phases
+        ),
+        golden_root=args.golden_root,
+    )
+    print(
+        "Initialized "
+        f"{len(selected) * len(phases)} immutable characterization goldens."
+    )
 
 
 def freeze_fixtures(args: argparse.Namespace) -> None:
@@ -339,17 +354,6 @@ def record_libero_rollouts(args: argparse.Namespace) -> None:
             "reports": merged_reports,
         },
     )
-    if args.golden_root is not None:
-        golden_root = args.golden_root.expanduser().resolve()
-        golden_root.mkdir(parents=True, exist_ok=True)
-        for report in reports:
-            asset_id = str(report["asset_id"])
-            shutil.copy2(
-                output_root / asset_id / "rollout_report.json",
-                golden_root / f"{asset_id}.rollout.json",
-            )
-
-
 def verify_libero_rollouts(args: argparse.Namespace) -> None:
     selected = _selected_asset_ids(args.asset_id)
     differences: list[str] = []
@@ -370,6 +374,22 @@ def verify_libero_rollouts(args: argparse.Namespace) -> None:
         preview = "\n".join(f"- {item}" for item in differences[:100])
         raise AssertionError(f"LIBERO rollout characterization changed:\n{preview}")
     print(f"Verified {len(selected)} LIBERO rollout reports exactly.")
+
+
+def initialize_libero_rollout_goldens(args: argparse.Namespace) -> None:
+    actual_root = args.actual_root.expanduser().resolve()
+    selected = _selected_asset_ids(args.asset_id)
+    _initialize_golden_files(
+        (
+            (
+                actual_root / asset_id / "rollout_report.json",
+                f"{asset_id}.rollout.json",
+            )
+            for asset_id in selected
+        ),
+        golden_root=args.golden_root,
+    )
+    print(f"Initialized {len(selected)} immutable LIBERO rollout goldens.")
 
 
 def _run_fixture_replay(
@@ -555,6 +575,55 @@ def _worker_command(
         environment["NCCL_SHM_DISABLE"] = "1"
         environment["NCCL_CUMEM_HOST_ENABLE"] = "0"
     return command, environment
+
+
+def _initialize_golden_files(
+    sources: Iterable[tuple[Path, str]],
+    *,
+    golden_root: Path,
+) -> None:
+    """Create immutable golden files without replacing an existing baseline."""
+
+    resolved_root = golden_root.expanduser().resolve()
+    planned = [
+        (source.expanduser().resolve(), resolved_root / filename)
+        for source, filename in sources
+    ]
+    existing = [destination for _, destination in planned if destination.exists()]
+    if existing:
+        formatted = "\n- ".join(str(path) for path in existing)
+        raise FileExistsError(
+            "Refusing to replace existing characterization goldens:\n- "
+            f"{formatted}\nUse a new versioned golden root."
+        )
+    missing = [source for source, _ in planned if not source.is_file()]
+    if missing:
+        formatted = "\n- ".join(str(path) for path in missing)
+        raise FileNotFoundError(
+            f"Cannot initialize goldens from missing reports:\n- {formatted}"
+        )
+
+    resolved_root.mkdir(parents=True, exist_ok=True)
+    staged: list[tuple[Path, Path]] = []
+    created: list[Path] = []
+    try:
+        for source, destination in planned:
+            temporary = destination.with_name(
+                f".{destination.name}.tmp.{os.getpid()}"
+            )
+            shutil.copy2(source, temporary)
+            staged.append((temporary, destination))
+        for temporary, destination in staged:
+            os.link(temporary, destination)
+            created.append(destination)
+    except Exception:
+        for destination in reversed(created):
+            destination.unlink(missing_ok=True)
+        raise
+    finally:
+        for temporary, _ in staged:
+            if temporary.exists():
+                temporary.unlink()
 
 
 def _stage_file(source: Path, destination: Path, *, refresh: bool) -> Path:
@@ -837,7 +906,6 @@ def _parse_args() -> argparse.Namespace:
     record.add_argument("--assets", type=Path, required=True)
     record.add_argument("--fixture-root", type=Path, required=True)
     record.add_argument("--output-root", type=Path, required=True)
-    record.add_argument("--golden-root", type=Path)
     record.add_argument("--stage-root", type=Path)
     record.add_argument("--refresh-stage", action="store_true")
     record.add_argument("--training-world-size", type=int, default=4)
@@ -884,7 +952,6 @@ def _parse_args() -> argparse.Namespace:
     rollout = subparsers.add_parser("libero-rollout")
     rollout.add_argument("--assets", type=Path, required=True)
     rollout.add_argument("--output-root", type=Path, required=True)
-    rollout.add_argument("--golden-root", type=Path)
     rollout.add_argument("--cuda-devices", default="0,1,2,3")
     rollout.add_argument("--libero-repo-root", type=Path)
     rollout.add_argument("--task-id", type=int, default=0)
@@ -905,6 +972,12 @@ def _parse_args() -> argparse.Namespace:
     _add_selection_args(verify_rollout, include_phase=False)
     verify_rollout.set_defaults(handler=verify_libero_rollouts)
 
+    initialize_rollout = subparsers.add_parser("initialize-libero-goldens")
+    initialize_rollout.add_argument("--actual-root", type=Path, required=True)
+    initialize_rollout.add_argument("--golden-root", type=Path, required=True)
+    _add_selection_args(initialize_rollout, include_phase=False)
+    initialize_rollout.set_defaults(handler=initialize_libero_rollout_goldens)
+
     verify = subparsers.add_parser("verify")
     verify.add_argument("--actual-root", type=Path, required=True)
     verify.add_argument("--golden-root", type=Path, required=True)
@@ -924,6 +997,12 @@ def _parse_args() -> argparse.Namespace:
     )
     _add_selection_args(verify)
     verify.set_defaults(handler=verify_characterization)
+
+    initialize = subparsers.add_parser("initialize-goldens")
+    initialize.add_argument("--actual-root", type=Path, required=True)
+    initialize.add_argument("--golden-root", type=Path, required=True)
+    _add_selection_args(initialize)
+    initialize.set_defaults(handler=initialize_characterization_goldens)
     return parser.parse_args()
 
 

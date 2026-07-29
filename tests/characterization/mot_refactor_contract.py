@@ -10,8 +10,9 @@ from typing import Any
 
 import yaml
 
-from open_wam.configs import ExperimentConfig, apply_parallel_sequence_contract
+from open_wam.configs import ExperimentConfig
 from open_wam.utils import apply_config_overrides
+from open_wam.utils.config_loader import apply_parallel_sequence_contract
 
 
 class MoTTrainingProfile(StrEnum):

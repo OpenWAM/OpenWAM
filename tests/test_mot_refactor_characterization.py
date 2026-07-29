@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
@@ -71,6 +72,7 @@ from tests.characterization.mot_refactor_worker import (
 )
 from tests.characterization.run_mot_refactor_characterization import (
     _comparison_projection,
+    _initialize_golden_files,
     _numeric_tolerance_resolver,
     _preflight_checkpoint_provenance,
     _selected_asset_ids,
@@ -108,6 +110,78 @@ def test_default_exact_checkpoint_selection_uses_available_strict_assets() -> No
         method.asset_id for method in EXACT_CHECKPOINT_METHODS
     )
     assert _selected_asset_ids(["gjd_vanilla"]) == ("gjd_vanilla",)
+
+
+def test_golden_initialization_never_replaces_an_existing_report(
+    tmp_path: Path,
+) -> None:
+    first_report = tmp_path / "first.json"
+    first_report.write_text('{"value": 1}\n', encoding="utf-8")
+    second_report = tmp_path / "second.json"
+    second_report.write_text('{"value": 2}\n', encoding="utf-8")
+    golden_root = tmp_path / "goldens"
+
+    _initialize_golden_files(
+        ((first_report, "mot_joint.training.json"),),
+        golden_root=golden_root,
+    )
+    golden = golden_root / "mot_joint.training.json"
+    assert golden.read_bytes() == first_report.read_bytes()
+
+    with pytest.raises(FileExistsError, match="new versioned golden root"):
+        _initialize_golden_files(
+            ((second_report, "mot_joint.training.json"),),
+            golden_root=golden_root,
+        )
+
+    assert golden.read_bytes() == first_report.read_bytes()
+
+
+def test_golden_initialization_is_all_or_nothing_for_missing_sources(
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "report.json"
+    report.write_text("{}\n", encoding="utf-8")
+    golden_root = tmp_path / "goldens"
+
+    with pytest.raises(FileNotFoundError, match="missing reports"):
+        _initialize_golden_files(
+            (
+                (report, "mot_joint.training.json"),
+                (tmp_path / "missing.json", "mot_joint.inference.json"),
+            ),
+            golden_root=golden_root,
+        )
+
+    assert not golden_root.exists()
+
+
+def test_golden_initialization_rolls_back_a_partial_atomic_promotion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reports = []
+    for index in range(2):
+        report = tmp_path / f"report-{index}.json"
+        report.write_text(f'{{"value": {index}}}\n', encoding="utf-8")
+        reports.append((report, f"report-{index}.json"))
+
+    real_link = os.link
+    link_calls = 0
+
+    def fail_second_link(source, destination) -> None:
+        nonlocal link_calls
+        link_calls += 1
+        if link_calls == 2:
+            raise OSError("simulated promotion failure")
+        real_link(source, destination)
+
+    monkeypatch.setattr(os, "link", fail_second_link)
+    golden_root = tmp_path / "goldens"
+    with pytest.raises(OSError, match="simulated promotion failure"):
+        _initialize_golden_files(reports, golden_root=golden_root)
+
+    assert list(golden_root.iterdir()) == []
 
 
 @pytest.mark.parametrize("method", NON_GJD_METHODS, ids=lambda method: method.asset_id)
