@@ -67,7 +67,9 @@ discovery, metadata, filenames, and payload reshaping;
 `LatentWAMSample` construction.
 `distributed_sampling` owns rank sharding and epoch coordination; adapters
 supply weights or deterministic global index orders without embedding
-distributed control flow.
+distributed control flow. Equal-rank padded orders, intentionally unpadded
+orders, dataset-span draw keys, and padded-span draw keys are separate
+contracts rather than implicit adapter conventions.
 
 ## Operations Boundary
 

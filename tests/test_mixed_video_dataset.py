@@ -28,6 +28,7 @@ from open_wam.configs import (
     MixedVideoSourceFormat,
     MixedVideoSourceConfig,
     MixedVideoViewCombinationConfig,
+    MixedVideoWeightMode,
     SampleConstructionConfig,
     ViewLayoutConfig,
     WindowSamplingMode,
@@ -2431,3 +2432,33 @@ def test_mixed_video_train_sampler_pads_to_equal_distributed_rank_lengths(tmp_pa
     assert len(flattened) == expected_rank_length * world_size
     assert all(0 <= sample_index < len(train_dataset) for sample_index in flattened)
     assert set(base_order).issubset(set(flattened))
+
+
+def test_mixed_video_train_sampler_sizes_ranks_from_weighted_epoch_order(tmp_path: Path) -> None:
+    config = _mixed_video_fixture_config(tmp_path)
+    config = _dataclass_replace(
+        config,
+        video_sources=(
+            config.video_sources[0],
+            _dataclass_replace(config.video_sources[1], sampling_weight=2.0),
+        ),
+        weight_mode=MixedVideoWeightMode.PROPORTIONAL_THEN_MANUAL_SCALE,
+    )
+    train_dataset, _ = build_train_val_datasets(config)
+    base_order = list(train_dataset.build_epoch_index_order(epoch=0))
+    world_size = 3
+    expected_rank_length = math.ceil(len(base_order) / world_size)
+    total_size = expected_rank_length * world_size
+    repeats = math.ceil(total_size / len(base_order))
+    padded_order = (base_order * repeats)[:total_size]
+
+    rank_orders = [
+        list(train_dataset.build_train_sampler(world_size=world_size, rank=rank))
+        for rank in range(world_size)
+    ]
+
+    assert len(base_order) != len(train_dataset)
+    assert rank_orders == [
+        padded_order[rank:total_size:world_size]
+        for rank in range(world_size)
+    ]

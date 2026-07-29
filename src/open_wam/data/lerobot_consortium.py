@@ -10,14 +10,14 @@ from pathlib import Path
 import random
 import shutil
 import sys
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterable
 import warnings
 
 import pyarrow.parquet as pq
 import torch
 from huggingface_hub import hf_hub_download
 from PIL import Image
-from torch.utils.data import Dataset, Sampler
+from torch.utils.data import Dataset
 
 from open_wam.configs import (
     ActionTargetReferenceSource,
@@ -49,6 +49,7 @@ from .action_mapping import (
     resolve_action_source_dim,
 )
 from .contracts import WAMSample
+from .distributed_sampling import UnpaddedEpochOrderDistributedSampler
 from .lerobot_consortium_contracts import (
     build_lerobot_consortium_contract_catalog_from_inventory_rows,
     write_lerobot_consortium_contract_catalog,
@@ -1048,7 +1049,7 @@ def _seeded_shuffle(values: list[int], seed: int) -> list[int]:
     return shuffled
 
 
-class ConsortiumTrainSampler(Sampler[int]):
+class ConsortiumTrainSampler(UnpaddedEpochOrderDistributedSampler):
     """Deterministic train sampler for consortium datasets."""
 
     def __init__(
@@ -1058,21 +1059,12 @@ class ConsortiumTrainSampler(Sampler[int]):
         world_size: int = 1,
         rank: int = 0,
     ) -> None:
-        self.dataset = dataset
-        self.world_size = world_size
-        self.rank = rank
-        self.epoch = 0
-
-    def set_epoch(self, epoch: int) -> None:
-        self.epoch = epoch
-
-    def __len__(self) -> int:
-        total = len(self.dataset)
-        return len(range(self.rank, total, self.world_size))
-
-    def __iter__(self) -> Iterator[int]:
-        order = self.dataset.build_epoch_index_order(epoch=self.epoch)
-        return iter(order[self.rank :: self.world_size])
+        super().__init__(
+            dataset,
+            world_size=world_size,
+            rank=rank,
+            empty_dataset_message=None,
+        )
 
 
 class LeRobotConsortiumWindowDataset(Dataset[WAMSample]):

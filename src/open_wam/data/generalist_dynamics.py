@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 import json
 import math
@@ -28,6 +28,7 @@ from open_wam.configs.variant_semantics import (
     GENERALIST_TRAINING_SOURCE_METADATA_KEY,
 )
 
+from .distributed_sampling import PaddedEpochOffsetDistributedSampler
 from .latent_contracts import LatentWAMSample
 from .latent_temporal import latent_anchor_positions
 
@@ -694,36 +695,20 @@ class GeneralistDynamicsSourceViewDataset(Dataset[LatentWAMSample]):
         return sample
 
 
-class GeneralistDynamicsMixtureTrainSampler(Sampler[int]):
+class GeneralistDynamicsMixtureTrainSampler(PaddedEpochOffsetDistributedSampler):
     """Epoch-offset sampler for mixed real/counterfactual dynamics draws."""
 
     def __init__(self, dataset: GeneralistDynamicsMixtureDataset, *, world_size: int = 1, rank: int = 0) -> None:
-        if len(dataset) <= 0:
-            raise ValueError("Generalist dynamics mixture sampling requires a non-empty dataset.")
-        if world_size <= 0:
-            raise ValueError(f"`world_size` must be positive, got {world_size}.")
-        if rank < 0 or rank >= world_size:
-            raise ValueError(f"`rank` must be in [0, world_size), got rank={rank}, world_size={world_size}.")
-        self.dataset = dataset
-        self.world_size = int(world_size)
-        self.rank = int(rank)
-        self.epoch = 0
-        self._num_samples = int(math.ceil(len(dataset) / float(self.world_size)))
-        self._total_size = self._num_samples * self.world_size
+        super().__init__(
+            dataset,
+            world_size=world_size,
+            rank=rank,
+            empty_dataset_message="Generalist dynamics mixture sampling requires a non-empty dataset.",
+        )
         self.dataset.set_distributed_draw_geometry(
             world_size=self.world_size,
             epoch_size=self._total_size,
         )
-
-    def __len__(self) -> int:
-        return self._num_samples
-
-    def set_epoch(self, epoch: int) -> None:
-        self.epoch = int(epoch)
-
-    def __iter__(self) -> Iterator[int]:
-        epoch_offset = int(self.epoch) * self._total_size
-        return iter(epoch_offset + global_index for global_index in range(self.rank, self._total_size, self.world_size))
 
 
 def build_generalist_dynamics_mixture_datasets(

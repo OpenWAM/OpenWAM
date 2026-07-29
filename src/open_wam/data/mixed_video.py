@@ -15,7 +15,7 @@ import numpy as np
 from PIL import Image
 import torch
 import torch.nn.functional as F
-from torch.utils.data import Dataset, Sampler
+from torch.utils.data import Dataset
 
 # WHY: decord's C++ batch decode is 3-5x faster than imageio's Python frame-by-frame
 # iteration. We keep imageio as fallback for codec edge cases.
@@ -42,6 +42,7 @@ from open_wam.configs import (
 )
 
 from .contracts import WAMSample
+from .distributed_sampling import EpochOrderDistributedSampler
 from .latent_contracts import LatentWAMSample
 from open_wam.utils.video_timeline import (
     ResolvedVideoClip,
@@ -206,7 +207,7 @@ def resample_video_frames_to_fps(
     )
 
 
-class MixedVideoTrainSampler(Sampler[int]):
+class MixedVideoTrainSampler(EpochOrderDistributedSampler):
     """Source-balanced sampler for mixed-video training.
 
     The sampler keeps the nmotions-style "federated" property: one epoch draws
@@ -221,45 +222,19 @@ class MixedVideoTrainSampler(Sampler[int]):
         world_size: int = 1,
         rank: int = 0,
     ) -> None:
-        self.dataset = dataset
-        self.world_size = max(1, int(world_size))
-        self.rank = int(rank)
-        if self.rank < 0 or self.rank >= self.world_size:
+        resolved_world_size = max(1, int(world_size))
+        resolved_rank = int(rank)
+        if resolved_rank < 0 or resolved_rank >= resolved_world_size:
             raise ValueError(f"Invalid sampler rank={rank} for world_size={world_size}.")
-        self.epoch = 0
-        self.num_samples = 0
-        self.total_size = 0
-        self._epoch_order: tuple[int, ...] = ()
-        self._refresh_epoch_order()
-
-    def set_epoch(self, epoch: int) -> None:
-        """Refresh the deterministic source-balanced order for one training epoch."""
-
-        self.epoch = int(epoch)
-        self._refresh_epoch_order()
-
-    def _refresh_epoch_order(self) -> None:
-        base_order = tuple(self.dataset.build_epoch_index_order(epoch=self.epoch))
-        if not base_order:
-            self.num_samples = 0
-            self.total_size = 0
-            self._epoch_order = ()
-            return
-        self.num_samples = int(math.ceil(len(base_order) / self.world_size))
-        self.total_size = self.num_samples * self.world_size
-        padding_size = self.total_size - len(base_order)
-        if padding_size <= 0:
-            self._epoch_order = base_order[: self.total_size]
-            return
-        repeats = (padding_size + len(base_order) - 1) // len(base_order)
-        padding = (list(base_order) * repeats)[:padding_size]
-        self._epoch_order = tuple(list(base_order) + padding)
-
-    def __iter__(self) -> Iterator[int]:
-        yield from self._epoch_order[self.rank : self.total_size : self.world_size]
-
-    def __len__(self) -> int:
-        return self.num_samples
+        super().__init__(
+            dataset,
+            world_size=resolved_world_size,
+            rank=resolved_rank,
+            empty_dataset_message=None,
+            empty_order_message=None,
+            cache_order=True,
+            geometry_from_order=True,
+        )
 
 
 class MixedVideoWindowDataset(Dataset[WAMSample]):

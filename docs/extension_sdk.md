@@ -71,6 +71,27 @@ Registration rejects accidental replacement. Use a globally unique
 `dataset_type`; `replace=True` is reserved for intentional process-local
 overrides.
 
+### Distributed Sampling
+
+A training dataset may implement
+`build_train_sampler(*, world_size, rank)`. Prefer the shared contracts in
+`open_wam.data`:
+
+- `WeightedReplacementDistributedSampler` for seeded weighted draws
+- `EpochOrderDistributedSampler` for a dataset-provided global order padded to
+  equal rank lengths; set `geometry_from_order=True` when weighting changes
+  the epoch length
+- `EpochOffsetDistributedSampler` for deterministic draw keys interpreted by
+  the dataset
+- `PaddedEpochOffsetDistributedSampler` when draw-key epochs must not overlap
+  after equal-rank padding
+- `UnpaddedEpochOrderDistributedSampler` only when the training strategy
+  explicitly supports unequal rank lengths
+
+Construct one deterministic global order, then shard it by rank. Dataset
+adapters should own source weights and index interpretation, while these
+samplers own distributed coordination.
+
 ## Adding A Policy Variant
 
 1. Add or extend a typed policy config.
