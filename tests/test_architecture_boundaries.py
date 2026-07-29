@@ -51,5 +51,30 @@ def test_utils_package_does_not_depend_on_model_implementations() -> None:
     assert violations == []
 
 
+def test_core_packages_do_not_depend_on_optional_runtime_surfaces() -> None:
+    forbidden_prefixes = (
+        "open_wam.evals",
+        "open_wam.integrations",
+        "open_wam.planning",
+        "open_wam.simulators",
+    )
+    violations: dict[str, list[str]] = {}
+
+    for package in ("configs", "data", "models", "pipelines", "runtime", "training"):
+        package_violations = sorted(
+            imported
+            for imported in _absolute_imports(package)
+            if imported.startswith(forbidden_prefixes)
+        )
+        if package_violations:
+            violations[package] = package_violations
+
+    assert violations == {}
+
+
+def test_retired_ablations_namespace_is_not_packaged() -> None:
+    assert not (PACKAGE_ROOT / "ablations").exists()
+
+
 def test_legacy_backbone_config_import_is_identity_preserving() -> None:
     assert LegacySharedVideoTransformerConfig is SharedVideoTransformerConfig

@@ -18,7 +18,7 @@ import pyarrow.parquet as pq
 import imageio.v2 as imageio
 import torch
 
-from open_wam.ablations.joint_denoising_fdm.branches import (
+from open_wam.data.counterfactual_actions import (
     BRANCH_PRESETS,
     apply_action_branch,
     branch_metadata,

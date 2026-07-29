@@ -933,7 +933,7 @@ def _validate_live_sim_mot_generalist_rollout_mode(mode: str | None) -> None:
             f"--mot-generalist-rollout-mode={mode!r} is an offline diagnostic mode, not a live sim rollout mode. "
             "It requires ground-truth clean action and/or video condition tensors that this LIBERO visualization "
             f"script does not provide. Use one of [{supported}] here, or use "
-            "open_wam.ablations.joint_denoising_fdm.cli for offline FDM/IDM diagnostics."
+            "open_wam.evals.dynamics.cli for offline FDM/IDM diagnostics."
         )
     raise ValueError(f"Unsupported --mot-generalist-rollout-mode={mode!r}.")
 

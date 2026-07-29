@@ -2160,13 +2160,13 @@ def _build_openwam_gjd_dynamics(args: argparse.Namespace) -> OpenWamActionCondit
         raise ValueError("--openwam-checkpoint is required when --dynamics openwam_gjd.")
     import torch
 
-    from open_wam.ablations.joint_denoising_fdm.cli import (
+    from open_wam.evals.dynamics.cli import (
         _build_fdm_rollout_for_config,
         _repair_runtime_config_for_local_eval,
         _resolve_runtime_dtype,
     )
-    from open_wam.ablations.joint_denoising_fdm.types import FdmAblationMode
-    from open_wam.ablations.joint_denoising_fdm.visualization import decode_latent_video
+    from open_wam.evals.dynamics.types import FdmAblationMode
+    from open_wam.evals.dynamics.visualization import decode_latent_video
     from open_wam.utils import (
         load_experiment_config,
         merge_runtime_config_from_checkpoint,

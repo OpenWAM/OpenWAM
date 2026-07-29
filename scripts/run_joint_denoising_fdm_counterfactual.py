@@ -10,7 +10,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from open_wam.ablations.joint_denoising_fdm.counterfactual import main
+from open_wam.evals.dynamics.counterfactual import main
 
 
 if __name__ == "__main__":

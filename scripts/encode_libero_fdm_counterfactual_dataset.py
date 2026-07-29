@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from open_wam.ablations.joint_denoising_fdm.cli import (
+from open_wam.evals.dynamics.cli import (
     DEFAULT_CHECKPOINT,
     _repair_runtime_config_for_local_eval,
 )

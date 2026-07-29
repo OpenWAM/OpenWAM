@@ -26,6 +26,15 @@ from .action_mapping import (
     validate_action_mapping_preflight,
 )
 from .contracts import WAMBatch, WAMSample, collate_wam_samples, move_wam_batch_to_device
+from .counterfactual_actions import (
+    ACTION_BRANCH_SPECS,
+    BRANCH_PRESETS,
+    ActionBranchSpec,
+    apply_action_branch,
+    branch_metadata,
+    branch_seed_offset,
+    expand_branch_names,
+)
 from .latent_contracts import (
     LatentWAMBatch,
     LatentWAMSample,
@@ -127,6 +136,9 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "ACTION_BRANCH_SPECS",
+    "BRANCH_PRESETS",
+    "ActionBranchSpec",
     "CanonicalVideoBatch",
     "AdaptiveSingleViewCanonicalVideoPreprocessor",
     "CalvinNPZWindowDataset",
@@ -165,6 +177,7 @@ __all__ = [
     "WAMBatch",
     "WAMSample",
     "action_mapping_is_active",
+    "apply_action_branch",
     "apply_action_mapping",
     "build_canonical_video_preprocessor",
     "build_calvin_npz_train_val_datasets",
@@ -188,12 +201,15 @@ __all__ = [
     "build_train_val_latent_datasets",
     "build_generalist_dynamics_mixture_datasets",
     "build_train_val_datasets",
+    "branch_metadata",
+    "branch_seed_offset",
     "collate_latent_wam_samples",
     "collate_wam_samples",
     "denormalize_action_targets",
     "decode_video_frames",
     "discover_local_lerobot_consortium_members",
     "discover_calvin_npz_episodes",
+    "expand_branch_names",
     "format_lerobot_consortium_report",
     "infer_lerobot_consortium_source_group",
     "discover_local_lerobot_repo_bundles",
