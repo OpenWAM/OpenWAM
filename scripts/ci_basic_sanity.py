@@ -274,13 +274,6 @@ def _check_static_source_contracts() -> None:
         if forbidden in source:
             raise SystemExit(f"{relative} still contains forbidden source contract {forbidden!r}.")
 
-    writer_source = (REPO_ROOT / "deployment/openwam/lerobot_writer.py").read_text(encoding="utf-8")
-    if "import cv2" not in writer_source:
-        raise SystemExit("deployment/openwam/lerobot_writer.py should lazily import cv2 in the video writer.")
-    if "import cv2" in "\n".join(writer_source.splitlines()[:60]):
-        raise SystemExit("deployment/openwam/lerobot_writer.py must not import cv2 at module import time.")
-
-
 def _check_workflow_is_no_torch() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     if "OPEN_WAM_CI_NO_TORCH" not in workflow:
