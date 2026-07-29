@@ -139,6 +139,18 @@ def test_private_local_posttraining_supervisor_is_retired() -> None:
     assert not any(path.exists() for path in retired_paths)
 
 
+def test_orphaned_diagnostics_and_duplicate_aliases_are_retired() -> None:
+    retired_paths = (
+        REPO_ROOT / "scripts" / "visualize_libero_reference_pose_slurm.py",
+        REPO_ROOT / "scripts" / "check_libero_proprio_state_alignment.py",
+        REPO_ROOT / "scripts" / "smoke_parallel_stream_lingbot_replica.py",
+        REPO_ROOT / "scripts" / "run_contract_only.sh",
+        REPO_ROOT / "scripts" / "run_backbone_only.sh",
+    )
+
+    assert not any(path.exists() for path in retired_paths)
+
+
 def test_public_config_enums_are_declared_once() -> None:
     path = PACKAGE_ROOT / "configs" / "enums.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
