@@ -63,7 +63,11 @@ the same train/eval/runtime stack.
 Dataset storage and sample semantics are separate responsibilities. For the
 local LeRobot latent adapter, `lerobot_v2_latent_storage` owns repository
 discovery, metadata, filenames, and payload reshaping;
-`lerobot_v2_latent` owns sampling and public `LatentWAMSample` construction.
+`lerobot_v2_latent` owns eligible-window geometry and public
+`LatentWAMSample` construction.
+`distributed_sampling` owns rank sharding and epoch coordination; adapters
+supply weights or deterministic global index orders without embedding
+distributed control flow.
 
 ## Operations Boundary
 

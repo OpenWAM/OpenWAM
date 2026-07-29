@@ -44,6 +44,11 @@ from .action_mapping import (
     apply_action_mapping,
     resolve_action_source_dim,
 )
+from .distributed_sampling import (
+    EpochOffsetDistributedSampler,
+    EpochOrderDistributedSampler,
+    WeightedReplacementDistributedSampler,
+)
 from .latent_contracts import LatentWAMSample
 from .latent_temporal import (
     CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET,
@@ -1102,81 +1107,34 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
         )
 
 
-class LocalLatentWeightedTrainSampler(Sampler[int]):
+class LocalLatentWeightedTrainSampler(WeightedReplacementDistributedSampler):
     """Replacement train sampler for weighted local latent examples."""
 
     def __init__(self, dataset: LocalLeRobotLatentWindowDataset, *, world_size: int = 1, rank: int = 0) -> None:
-        if len(dataset) <= 0:
-            raise ValueError("Weighted local latent sampling requires a non-empty dataset.")
-        if world_size <= 0:
-            raise ValueError(f"`world_size` must be positive, got {world_size}.")
-        if rank < 0 or rank >= world_size:
-            raise ValueError(f"`rank` must be in [0, world_size), got rank={rank}, world_size={world_size}.")
-        self.dataset = dataset
-        self.world_size = int(world_size)
-        self.rank = int(rank)
-        self.epoch = 0
-        self._num_samples = int(math.ceil(len(dataset) / float(self.world_size)))
-        self._total_size = self._num_samples * self.world_size
-
-    def __len__(self) -> int:
-        return self._num_samples
-
-    def set_epoch(self, epoch: int) -> None:
-        self.epoch = int(epoch)
-
-    def __iter__(self) -> Iterator[int]:
-        weights = torch.tensor(self.dataset.sample_weights, dtype=torch.double)
-        if float(weights.sum().item()) <= 0:
-            weights = torch.ones(len(self.dataset), dtype=torch.double)
-        generator = torch.Generator()
-        seed = (int(self.dataset.data_config.split_seed) + self.epoch * 1_000_003) & 0x7FFF_FFFF_FFFF_FFFF
-        generator.manual_seed(seed)
-        sampled = torch.multinomial(
-            weights,
-            num_samples=self._total_size,
-            replacement=True,
-            generator=generator,
-        ).tolist()
-        return iter(int(index) for index in sampled[self.rank : self._total_size : self.world_size])
+        super().__init__(
+            dataset,
+            weights=dataset.sample_weights,
+            base_seed=int(dataset.data_config.split_seed),
+            world_size=world_size,
+            rank=rank,
+            empty_dataset_message="Weighted local latent sampling requires a non-empty dataset.",
+        )
 
 
-class LocalLatentEpochOrderSampler(Sampler[int]):
+class LocalLatentEpochOrderSampler(EpochOrderDistributedSampler):
     """Sampler backed by a dataset-provided epoch order."""
 
     def __init__(self, dataset: "UniformSegmentLocalLeRobotLatentDataset", *, world_size: int = 1, rank: int = 0) -> None:
-        if len(dataset) <= 0:
-            raise ValueError("Epoch-order local latent sampling requires a non-empty dataset.")
-        if world_size <= 0:
-            raise ValueError(f"`world_size` must be positive, got {world_size}.")
-        if rank < 0 or rank >= world_size:
-            raise ValueError(f"`rank` must be in [0, world_size), got rank={rank}, world_size={world_size}.")
-        self.dataset = dataset
-        self.world_size = int(world_size)
-        self.rank = int(rank)
-        self.epoch = 0
-        self._num_samples = int(math.ceil(len(dataset) / float(self.world_size)))
-        self._total_size = self._num_samples * self.world_size
-
-    def __len__(self) -> int:
-        return self._num_samples
-
-    def set_epoch(self, epoch: int) -> None:
-        self.epoch = int(epoch)
-
-    def __iter__(self) -> Iterator[int]:
-        order = self.dataset.build_epoch_index_order(epoch=self.epoch)
-        if not order:
-            raise ValueError("Epoch-order local latent sampler received an empty order.")
-        if len(order) < self._total_size:
-            repeats = int(math.ceil(self._total_size / len(order)))
-            order = (order * repeats)[: self._total_size]
-        else:
-            order = order[: self._total_size]
-        return iter(int(index) for index in order[self.rank : self._total_size : self.world_size])
+        super().__init__(
+            dataset,
+            world_size=world_size,
+            rank=rank,
+            empty_dataset_message="Epoch-order local latent sampling requires a non-empty dataset.",
+            empty_order_message="Epoch-order local latent sampler received an empty order.",
+        )
 
 
-class HierarchicalFixedSegmentTrainSampler(Sampler[int]):
+class HierarchicalFixedSegmentTrainSampler(EpochOffsetDistributedSampler):
     """Deterministic step-wise sampler for hierarchical fixed-segment draw keys."""
 
     def __init__(
@@ -1186,28 +1144,12 @@ class HierarchicalFixedSegmentTrainSampler(Sampler[int]):
         world_size: int = 1,
         rank: int = 0,
     ) -> None:
-        if len(dataset) <= 0:
-            raise ValueError("Hierarchical fixed-segment sampling requires a non-empty dataset.")
-        if world_size <= 0:
-            raise ValueError(f"`world_size` must be positive, got {world_size}.")
-        if rank < 0 or rank >= world_size:
-            raise ValueError(f"`rank` must be in [0, world_size), got rank={rank}, world_size={world_size}.")
-        self.dataset = dataset
-        self.world_size = int(world_size)
-        self.rank = int(rank)
-        self.epoch = 0
-        self._num_samples = int(math.ceil(len(dataset) / float(self.world_size)))
-        self._total_size = self._num_samples * self.world_size
-
-    def __len__(self) -> int:
-        return self._num_samples
-
-    def set_epoch(self, epoch: int) -> None:
-        self.epoch = int(epoch)
-
-    def __iter__(self) -> Iterator[int]:
-        epoch_offset = int(self.epoch) * len(self.dataset)
-        return iter(epoch_offset + global_index for global_index in range(self.rank, self._total_size, self.world_size))
+        super().__init__(
+            dataset,
+            world_size=world_size,
+            rank=rank,
+            empty_dataset_message="Hierarchical fixed-segment sampling requires a non-empty dataset.",
+        )
 
 
 def _stable_int_seed(*values: int) -> int:
