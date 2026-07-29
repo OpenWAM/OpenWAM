@@ -76,6 +76,10 @@ def test_retired_ablations_namespace_is_not_packaged() -> None:
     assert not (PACKAGE_ROOT / "ablations").exists()
 
 
+def test_retired_fdm_guided_planning_namespace_is_not_packaged() -> None:
+    assert not (PACKAGE_ROOT / "planning").exists()
+
+
 def test_retired_structured_register_runtime_is_not_packaged() -> None:
     retired_paths = (
         PACKAGE_ROOT / "models" / "common" / "joint_runtime.py",
