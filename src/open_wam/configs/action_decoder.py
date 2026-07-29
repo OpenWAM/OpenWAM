@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import Any
 
 from .enums import (
     ActionDecoderName,
@@ -24,6 +26,32 @@ class ActionDecoderConfig:
 
     def __post_init__(self) -> None:
         coerce_fields(self, enum_fields={"name": ActionDecoderName})
+
+
+@dataclass(frozen=True)
+class ExtensionActionDecoderConfig(ActionDecoderConfig):
+    """Config envelope for an application-owned action decoder."""
+
+    name: ActionDecoderName = ActionDecoderName.EXTENSION
+    hidden_size: int = 256
+    action_dim: int = 0
+    action_horizon: int = 0
+    extension_type: str = ""
+    options: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.name != ActionDecoderName.EXTENSION:
+            raise ValueError("Extension action decoder requires `name = extension`.")
+        if not isinstance(self.extension_type, str) or not self.extension_type.strip():
+            raise ValueError("Extension action decoder requires a non-empty `extension_type` string.")
+        if self.extension_type != self.extension_type.strip():
+            raise ValueError("Extension action decoder `extension_type` must not have surrounding whitespace.")
+        if not isinstance(self.options, Mapping):
+            raise ValueError("Extension action decoder `options` must be a mapping.")
+        if not all(isinstance(key, str) for key in self.options):
+            raise ValueError("Extension action decoder `options` keys must be strings.")
+        object.__setattr__(self, "options", dict(self.options))
 
 
 @dataclass(frozen=True)

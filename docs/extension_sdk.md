@@ -37,11 +37,11 @@ The same `--extension` contract is available on `open-wam-eval`,
 `open-wam-sanity`, and `open-wam-sim-rollout`. The module must be installed in
 the active environment or otherwise importable on `PYTHONPATH`.
 
-## Current Registries
+## Registration APIs
 
 - dataset adapters: `open_wam.data.register_dataset_adapter`
-- policy variant builders: `open_wam.pipelines.POLICY_VARIANT_BUILDERS`
-- action decoder builders: `open_wam.pipelines.ACTION_DECODER_BUILDERS`
+- policy variants: `open_wam.pipelines.register_policy_variant`
+- action decoders: `open_wam.pipelines.register_action_decoder`
 
 The active architectural boundary remains:
 
@@ -92,28 +92,135 @@ Construct one deterministic global order, then shard it by rank. Dataset
 adapters should own source weights and index interpretation, while these
 samplers own distributed coordination.
 
+## Policy And Decoder Envelopes
+
+Application-owned policies and decoders use a typed outer envelope. The
+extension identifier is intentionally an open string; all built-in finite
+choices remain enums.
+
+```yaml
+policy_variant:
+  name: extension
+  extension_type: acme.block_sparse_policy
+  hidden_size: 1536
+  attach_site: within_visual_core
+  options:
+    block_size: 64
+    history_chunks: 8
+
+action_decoder:
+  name: extension
+  extension_type: acme.flow_action_decoder
+  hidden_size: 1536
+  action_dim: 7
+  action_horizon: 16
+  options:
+    loss: smooth_l1
+```
+
+`options` is copied into the frozen config envelope and must be a mapping with
+string keys. Parse it into an application-owned typed dataclass inside the
+builder. Shared data, backbone, training, and inference semantics stay in their
+normal typed config sections.
+
 ## Adding A Policy Variant
 
-1. Add or extend a typed policy config.
-2. Implement `PolicyVariant` methods:
+1. Implement the `PolicyVariant` contract in the extension package.
+2. Define its required methods:
    `required_visual_stages`, `prepare_train_inputs`, `forward_train`,
    `prepare_infer_state`, and `forward_infer_step`.
-3. Register a builder in `POLICY_VARIANT_BUILDERS`.
-4. Add construction parity tests before migrating existing methods.
-5. Keep old enum/config names as aliases during the migration window.
+3. Register a builder under the YAML `extension_type`.
+4. Add config, construction, gradient, and recurrent-inference tests.
+
+```python
+from open_wam.configs import ExtensionPolicyConfig
+from open_wam.pipelines import register_policy_variant
+
+from .policy import AcmePolicy, AcmePolicyOptions
+
+
+def build_policy(experiment):
+    config = experiment.policy_variant
+    assert isinstance(config, ExtensionPolicyConfig)
+    options = AcmePolicyOptions.from_mapping(config.options)
+    return AcmePolicy(config=config, options=options)
+
+
+def register_open_wam() -> None:
+    register_policy_variant(
+        "acme.block_sparse_policy",
+        build_policy,
+        description="ACME block-sparse policy.",
+    )
+```
 
 ## Adding An Action Decoder
 
-1. Add or extend a typed decoder config.
-2. Implement the `ActionDecoder` contract.
-3. Register a builder in `ACTION_DECODER_BUILDERS`.
+1. Implement the `ActionDecoder` contract in the extension package.
+2. Keep final output construction, supervised loss, and action sampling in the
+   decoder.
+3. Register a builder under the YAML `extension_type`.
 4. Add loss/output shape tests.
-5. Keep result schemas backward compatible when adding new outputs.
+5. Keep result schemas backward compatible when adding outputs.
+
+```python
+from open_wam.configs import ExtensionActionDecoderConfig
+from open_wam.pipelines import register_action_decoder
+
+from .decoder import AcmeActionDecoder, AcmeDecoderOptions
+
+
+def build_decoder(experiment):
+    config = experiment.action_decoder
+    assert isinstance(config, ExtensionActionDecoderConfig)
+    options = AcmeDecoderOptions.from_mapping(config.options)
+    return AcmeActionDecoder(config=config, options=options)
+
+
+def register_open_wam() -> None:
+    register_action_decoder("acme.flow_action_decoder", build_decoder)
+```
+
+The policy and decoder snippets are standalone examples. When one module owns
+both, call both registration functions from the same `register_open_wam` hook.
+
+## Custom Attention
+
+Attention visibility is data passed through the policy/runtime boundary, not a
+backbone subclass. A custom policy can build a
+`open_wam.models.common.PreparedAttentionProfile` and pass it in
+`VisualCoreInput.attention_profile` through the dense runtime program:
+
+```python
+from open_wam.models.visual_tower import (
+    RuntimeStepInput,
+    VisualCoreInput,
+    build_dense_runtime_program,
+)
+
+result = visual_tower.execute_runtime_step(
+    RuntimeStepInput(
+        program=build_dense_runtime_program(),
+        core_input=VisualCoreInput(
+            tokens=tokens,
+            attention_profile=prepared_profile,
+        ),
+    )
+)
+```
+
+The profile may provide dense boolean masks, FlexAttention block masks, or
+both. Keep sequence packing and mask construction in the policy extension;
+the visual tower owns kernel selection and backbone execution. The exact
+dual-stream M1/M5 programs are checkpoint-compatibility contracts with fixed
+layout semantics, not general attention extension points.
 
 ## Contract Rules
 
 - Registration hooks configure contracts; they must not start jobs or mutate
   global training state.
+- Use globally unique extension identifiers. Duplicate registration fails
+  unless the caller explicitly requests a process-local replacement.
 - Use `open_wam.configs` coercion helpers for enum-backed extension settings;
   keep cross-section defaults and validation in a named config contract.
 - Dataset parsing remains in data adapters.

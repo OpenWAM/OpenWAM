@@ -200,6 +200,8 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
     if policy_variant is not None:
         _validate_enum(policy_variant, "name", PolicyVariantName, issues, "policy_variant")
         _validate_enum(policy_variant, "attach_site", AttachSite, issues, "policy_variant")
+        if policy_variant.get("name") == PolicyVariantName.EXTENSION.value:
+            _validate_extension_envelope(policy_variant, issues, "policy_variant")
         if policy_variant.get("name") == PolicyVariantName.PARALLEL_STREAM.value:
             _validate_enum(policy_variant, "runtime_mode", ParallelRuntimeMode, issues, "policy_variant")
             _validate_enum(policy_variant, "variant_profile", ParallelStreamVariantProfile, issues, "policy_variant")
@@ -283,6 +285,8 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
         _validate_positive_ints(policy_variant, issues, "policy_variant", ("hidden_size",))
     if action_decoder is not None:
         _validate_enum(action_decoder, "name", ActionDecoderName, issues, "action_decoder")
+        if action_decoder.get("name") == ActionDecoderName.EXTENSION.value:
+            _validate_extension_envelope(action_decoder, issues, "action_decoder")
         _validate_positive_ints(action_decoder, issues, "action_decoder", ("hidden_size", "action_dim"))
     _validate_action_horizons(action_schema, policy_variant, action_decoder, issues)
     _validate_action_schema_compatibility(action_schema, action_decoder, action_head, issues)
@@ -301,6 +305,29 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
     validation = _mapping(raw.get("validation"))
     if validation is not None:
         _validate_validation_config(validation, issues)
+
+
+def _validate_extension_envelope(
+    section: Mapping[str, Any],
+    issues: "_IssueBuilder",
+    path: str,
+) -> None:
+    extension_type = section.get("extension_type")
+    if (
+        not isinstance(extension_type, str)
+        or not extension_type.strip()
+        or extension_type != extension_type.strip()
+    ):
+        issues.error(
+            f"{path}.extension_type",
+            "Expected a non-empty string without surrounding whitespace.",
+        )
+    if "options" in section:
+        options = section["options"]
+        if not isinstance(options, Mapping):
+            issues.error(f"{path}.options", "Expected a mapping of extension-owned options.")
+        elif not all(isinstance(key, str) for key in options):
+            issues.error(f"{path}.options", "Expected extension option keys to be strings.")
 
 
 def _validate_eval_config(raw: Mapping[str, Any], issues: "_IssueBuilder") -> None:

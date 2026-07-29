@@ -22,6 +22,8 @@ from open_wam.configs import (
     DataConfig,
     DecodedFeatureActionDecoderConfig,
     ExperimentConfig,
+    ExtensionActionDecoderConfig,
+    ExtensionPolicyConfig,
     GeneralistDynamicsMixtureConfig,
     GenericDataConfig,
     LeRobotConsortiumDataConfig,
@@ -491,6 +493,16 @@ def _load_policy_variant_config(
         resolved_raw.get("name", config_enums.PolicyVariantName.POST_LATENT),
     )
     hidden_size = resolved_raw.get("hidden_size", backbone_config.hidden_size)
+    if name == config_enums.PolicyVariantName.EXTENSION:
+        return ExtensionPolicyConfig(
+            hidden_size=hidden_size,
+            attach_site=_coerce_enum(
+                config_enums.AttachSite,
+                resolved_raw.get("attach_site", config_enums.AttachSite.POST_VISUAL_CORE),
+            ),
+            extension_type=resolved_raw.get("extension_type", ""),
+            options=resolved_raw.get("options", {}),
+        )
     if name == config_enums.PolicyVariantName.POST_LATENT:
         return PostLatentPolicyConfig(
             hidden_size=hidden_size,
@@ -1055,6 +1067,15 @@ def _load_action_decoder_config(
             action_dim=action_dim,
             action_horizon=action_horizon,
             dropout=dropout,
+        )
+    if name == config_enums.ActionDecoderName.EXTENSION:
+        return ExtensionActionDecoderConfig(
+            hidden_size=hidden_size,
+            action_dim=action_dim,
+            action_horizon=action_horizon,
+            dropout=dropout,
+            extension_type=resolved_raw.get("extension_type", ""),
+            options=resolved_raw.get("options", {}),
         )
     raise ValueError(f"Unsupported action decoder '{name}'.")
 

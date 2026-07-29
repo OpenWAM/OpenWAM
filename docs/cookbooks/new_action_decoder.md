@@ -3,14 +3,44 @@
 Use this when the policy attachment stays the same but the supervised action
 output, loss, or sampling backend changes.
 
-## Files To Touch
+## Extension Package
 
-- `src/open_wam/configs/enums.py`: add one `ActionDecoderName`.
-- `src/open_wam/configs/action_decoder.py`: add a typed decoder config.
-- `src/open_wam/models/action_decoders/`: implement the decoder.
-- `src/open_wam/pipelines/factory.py`: register the decoder builder.
-- `configs/examples/`: add one tiny config that uses the decoder.
-- `tests/`: add loss/output shape tests and static config validation.
+Implement `ActionDecoder` in an installed application package, then register a
+builder:
+
+```python
+from open_wam.configs import ExtensionActionDecoderConfig
+from open_wam.pipelines import register_action_decoder
+
+from .config import AcmeDecoderOptions
+from .decoder import AcmeActionDecoder
+
+
+def build_decoder(experiment):
+    config = experiment.action_decoder
+    assert isinstance(config, ExtensionActionDecoderConfig)
+    return AcmeActionDecoder(
+        config=config,
+        options=AcmeDecoderOptions.from_mapping(config.options),
+    )
+
+
+def register_open_wam() -> None:
+    register_action_decoder("acme.action_decoder", build_decoder)
+```
+
+Select it in YAML:
+
+```yaml
+action_decoder:
+  name: extension
+  extension_type: acme.action_decoder
+  hidden_size: 1536
+  action_dim: 7
+  action_horizon: 16
+  options:
+    loss: smooth_l1
+```
 
 ## Contract
 
@@ -27,6 +57,6 @@ Required checks:
 ## Validation
 
 ```bash
-open-wam-validate-config configs/examples/<decoder_smoke>.yaml
-uv run --extra train pytest tests/<decoder_test>.py -q
+open-wam-validate-config experiment.yaml
+open-wam-train --extension acme_open_wam.registration --cfg experiment.yaml
 ```

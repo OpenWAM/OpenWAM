@@ -7,6 +7,8 @@ from open_wam.configs import (
     BatchAdapterName,
     CausalVideoPredictionPolicyConfig,
     ExperimentConfig,
+    ExtensionActionDecoderConfig,
+    ExtensionPolicyConfig,
     MoTPolicyConfig,
     MoTRuntimeMode,
     ParallelRuntimeMode,
@@ -24,6 +26,7 @@ from open_wam.data.action_mapping import (
     validate_action_mapping_preflight,
 )
 from open_wam.models.action_decoders import (
+    ActionDecoder,
     DecodedFeatureActionDecoder,
     LingbotParallelActionDecoder,
     MLPActionDecoder,
@@ -35,6 +38,7 @@ from open_wam.models.policy_variants import (
     CausalVideoPredictionPolicyVariant,
     MoTPolicyVariant,
     ParallelStreamPolicyVariant,
+    PolicyVariant,
     PostDecodedPolicyVariant,
     PostLatentPolicyVariant,
 )
@@ -45,7 +49,12 @@ from open_wam.models.video_backbone import normalize_backbone_implementation
 from open_wam.models.visual_tower import VisualTower
 
 from .lingbot_exact import LingbotExactRunner
-from .registries import ACTION_DECODER_BUILDERS, POLICY_VARIANT_BUILDERS
+from .registries import (
+    ACTION_DECODER_BUILDERS,
+    POLICY_VARIANT_BUILDERS,
+    _EXTENSION_ACTION_DECODER_BUILDERS,
+    _EXTENSION_POLICY_VARIANT_BUILDERS,
+)
 from .variant_pipeline import VariantPipeline
 
 _PARALLEL_STREAM_EXACT_MODEL_ACTION_MODES = {
@@ -321,11 +330,31 @@ def _build_parallel_stream_policy_variant(config: ExperimentConfig):
     )
 
 
+def _build_extension_policy_variant(config: ExperimentConfig):
+    policy_config = config.policy_variant
+    assert isinstance(policy_config, ExtensionPolicyConfig)
+    builder = _EXTENSION_POLICY_VARIANT_BUILDERS.get(policy_config.extension_type)
+    if builder is None:
+        registered = ", ".join(_EXTENSION_POLICY_VARIANT_BUILDERS.keys()) or "<none>"
+        raise ValueError(
+            f"Unsupported policy variant extension {policy_config.extension_type!r}. "
+            f"Registered extension types: {registered}. "
+            "Load its module with `--extension module[:hook]` before constructing the experiment."
+        )
+    return builder(config)
+
+
 def build_policy_variant(config: ExperimentConfig):
     builder = POLICY_VARIANT_BUILDERS.get(type(config.policy_variant))
     if builder is None:
         raise ValueError(f"Unsupported policy variant config '{type(config.policy_variant).__name__}'.")
-    return builder(config)
+    policy_variant = builder(config)
+    if not isinstance(policy_variant, PolicyVariant):
+        raise TypeError(
+            f"Policy variant builder returned {type(policy_variant).__name__}; "
+            "expected an `open_wam.models.policy_variants.PolicyVariant`."
+        )
+    return policy_variant
 
 
 def _build_mlp_action_decoder(config: ExperimentConfig):
@@ -450,11 +479,31 @@ def _build_video_only_action_decoder(config: ExperimentConfig):
     )
 
 
+def _build_extension_action_decoder(config: ExperimentConfig):
+    decoder_config = config.action_decoder
+    assert isinstance(decoder_config, ExtensionActionDecoderConfig)
+    builder = _EXTENSION_ACTION_DECODER_BUILDERS.get(decoder_config.extension_type)
+    if builder is None:
+        registered = ", ".join(_EXTENSION_ACTION_DECODER_BUILDERS.keys()) or "<none>"
+        raise ValueError(
+            f"Unsupported action decoder extension {decoder_config.extension_type!r}. "
+            f"Registered extension types: {registered}. "
+            "Load its module with `--extension module[:hook]` before constructing the experiment."
+        )
+    return builder(config)
+
+
 def build_action_decoder(config: ExperimentConfig):
     builder = ACTION_DECODER_BUILDERS.get(config.action_decoder.name)
     if builder is None:
         raise ValueError(f"Unsupported action decoder '{config.action_decoder.name}'.")
-    return builder(config)
+    action_decoder = builder(config)
+    if not isinstance(action_decoder, ActionDecoder):
+        raise TypeError(
+            f"Action decoder builder returned {type(action_decoder).__name__}; "
+            "expected an `open_wam.models.action_decoders.ActionDecoder`."
+        )
+    return action_decoder
 
 
 def _register_builtin_pipeline_builders() -> None:
@@ -488,6 +537,12 @@ def _register_builtin_pipeline_builders() -> None:
         description="Parallel-stream LingBot-compatible policy variant.",
         replace=True,
     )
+    POLICY_VARIANT_BUILDERS.register(
+        ExtensionPolicyConfig,
+        _build_extension_policy_variant,
+        description="Application-owned policy variant.",
+        replace=True,
+    )
 
     ACTION_DECODER_BUILDERS.register(ActionDecoderName.MLP, _build_mlp_action_decoder, replace=True)
     ACTION_DECODER_BUILDERS.register(
@@ -507,6 +562,11 @@ def _register_builtin_pipeline_builders() -> None:
     )
     ACTION_DECODER_BUILDERS.register(ActionDecoderName.MOT, _build_mot_action_decoder, replace=True)
     ACTION_DECODER_BUILDERS.register(ActionDecoderName.VIDEO_ONLY, _build_video_only_action_decoder, replace=True)
+    ACTION_DECODER_BUILDERS.register(
+        ActionDecoderName.EXTENSION,
+        _build_extension_action_decoder,
+        replace=True,
+    )
 
 
 _register_builtin_pipeline_builders()

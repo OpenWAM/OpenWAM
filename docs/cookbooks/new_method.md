@@ -3,17 +3,54 @@
 Use this when the research idea changes policy semantics while keeping the
 shared visual tower.
 
-## Files To Touch
+## Extension Package
 
-- `src/open_wam/configs/enums.py`: add one `PolicyVariantName` value when the
-  variant is a public finite choice.
-- `src/open_wam/configs/policy_variant.py`: add a typed config dataclass.
-- `src/open_wam/models/policy_variants/`: implement the `PolicyVariant`.
-- `src/open_wam/pipelines/factory.py`: register a builder while registry
-  migration is in progress.
-- `configs/examples/`: add one tiny smoke config.
-- `tests/`: add config, factory, and shape tests.
-- `docs/cards/`: add an experiment or fixture card.
+Keep the implementation outside the Open-WAM source tree:
+
+```text
+acme_open_wam/
+  __init__.py
+  config.py
+  policy.py
+  registration.py
+```
+
+Implement `PolicyVariant` in `policy.py`. Parse the open `options` mapping into
+an application-owned frozen dataclass in `config.py`. Register the builder in
+the module hook:
+
+```python
+from open_wam.configs import ExtensionPolicyConfig
+from open_wam.pipelines import register_policy_variant
+
+from .config import AcmePolicyOptions
+from .policy import AcmePolicy
+
+
+def build_policy(experiment):
+    config = experiment.policy_variant
+    assert isinstance(config, ExtensionPolicyConfig)
+    return AcmePolicy(
+        config=config,
+        options=AcmePolicyOptions.from_mapping(config.options),
+    )
+
+
+def register_open_wam() -> None:
+    register_policy_variant("acme.policy", build_policy)
+```
+
+Select it without adding a core enum:
+
+```yaml
+policy_variant:
+  name: extension
+  extension_type: acme.policy
+  hidden_size: 1536
+  attach_site: post_visual_core
+  options:
+    history_frames: 8
+```
 
 ## Files Not To Touch By Default
 
@@ -21,6 +58,7 @@ shared visual tower.
 - Do not bypass `VisualTower`.
 - Do not reintroduce `ActionHead` or `UnifiedWAMPipeline`.
 - Do not edit unrelated method configs.
+- Do not mutate `POLICY_VARIANT_BUILDERS`; use the registration function.
 
 ## Contract
 
@@ -41,8 +79,10 @@ Implement:
 ## Validation
 
 ```bash
-open-wam-validate-config configs/examples/<new_method_smoke>.yaml
-uv run --extra train pytest tests/<new_method_test>.py -q
+open-wam-validate-config experiment.yaml
+open-wam-train --extension acme_open_wam.registration --cfg experiment.yaml
 ```
 
-Keep GPU or simulator validation in a labeled or self-hosted tier.
+Test one deterministic train step through gradients and one recurrent inference
+step before relying on the extension in an experiment. Keep GPU or simulator
+validation in a labeled or self-hosted tier.

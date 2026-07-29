@@ -29,6 +29,7 @@ class ActionDecoderName(StrEnum):
     LINGBOT_PARALLEL = "lingbot_parallel_decoder"
     MOT = "mot_decoder"
     VIDEO_ONLY = "video_only_decoder"
+    EXTENSION = "extension"
 
 
 class ActionChunkAnchorMode(StrEnum):
@@ -448,6 +449,7 @@ class PolicyVariantName(StrEnum):
     CAUSAL_VIDEO_PREDICTION = "causal_video_prediction"
     MOT = "mot"
     PARALLEL_STREAM = "parallel_stream"
+    EXTENSION = "extension"
 
 
 class MoTRuntimeMode(StrEnum):

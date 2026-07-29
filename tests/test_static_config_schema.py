@@ -1347,3 +1347,48 @@ trainer:
         issue.path.endswith("action_conditioned_video") and "finite" in issue.message
         for issue in report.errors
     )
+
+
+@pytest.mark.unit
+def test_static_validator_checks_extension_envelopes_without_importing_plugins(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "bad_extensions.yaml"
+    config_path.write_text(
+        """
+name: bad_extensions
+data:
+  dataset_name: custom
+  dataset_type: custom
+  action_schema:
+    action_dim: 7
+    action_horizon: 4
+    state_dim: 8
+    state_horizon: 1
+backbone:
+  implementation: shared_transformer
+policy_variant:
+  name: extension
+  extension_type: " "
+  attach_site: post_visual_core
+  options: []
+action_decoder:
+  name: extension
+  extension_type: " decoder.with.spaces "
+  action_dim: 7
+  action_horizon: 4
+  options:
+    1: invalid-key
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
+
+    assert not report.ok
+    assert any(issue.path == "policy_variant.extension_type" for issue in report.errors)
+    assert any(issue.path == "policy_variant.options" for issue in report.errors)
+    assert any(issue.path == "action_decoder.extension_type" for issue in report.errors)
+    assert any(issue.path == "action_decoder.options" for issue in report.errors)

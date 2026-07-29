@@ -3,6 +3,7 @@
 from .action_decoder import (
     ActionDecoderConfig,
     DecodedFeatureActionDecoderConfig,
+    ExtensionActionDecoderConfig,
     LingbotParallelActionDecoderConfig,
     MLPActionDecoderConfig,
     MoTActionDecoderConfig,
@@ -160,6 +161,7 @@ from .experiment import ExperimentConfig
 from .inference import InferenceConfig
 from .policy_variant import (
     CausalVideoPredictionPolicyConfig,
+    ExtensionPolicyConfig,
     MoTPolicyConfig,
     ParallelStreamPolicyConfig,
     PolicyVariantConfig,
@@ -237,6 +239,8 @@ __all__ = [
     "DataSplit",
     "DecodeFeatureMode",
     "ExperimentConfig",
+    "ExtensionActionDecoderConfig",
+    "ExtensionPolicyConfig",
     "EvalMode",
     "EvalPredictionSource",
     "ExportedRuntimeActionInitMode",
