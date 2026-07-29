@@ -25,5 +25,7 @@ engineering notes are not published as part of this site.
 
 - [CLI Reference](cli.md): package-owned commands and legacy script policy.
 - [Testing](testing.md): CI tiers, pytest markers, and resource gates.
+- [MoT Refactor Characterization](mot_refactor_characterization.md): opt-in
+  real-checkpoint training and streaming-inference regression gate.
 - [GitHub Pages](github_pages.md): how this site is built and deployed.
 - [Release Process](release.md): versioning, packaging checks, and release checklist.

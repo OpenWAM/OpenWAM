@@ -36,6 +36,7 @@ nav:
       - Reproduce A Result: cookbooks/reproduce_result.md
   - Operations:
       - Testing: testing.md
+      - MoT Refactor Characterization: mot_refactor_characterization.md
       - HAIC M5 GJD Runbook: haic_m5_gjd_results_runbook.md
       - Deployment Namespace: deployment_namespace.md
       - GitHub Pages: github_pages.md

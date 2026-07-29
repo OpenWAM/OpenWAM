@@ -20,7 +20,7 @@ from open_wam.models.visual_tower.reference_loader import load_wan_transformer_c
 from open_wam.models.visual_tower.reference_transformer import preferred_reference_dtype
 from open_wam.pipelines import build_variant_pipeline_from_config
 
-from reference_model_test_utils import reference_model_path_or_skip
+from .reference_model_test_utils import reference_model_path_or_skip
 
 
 def test_lingbot_reference_transformer_weights_load_as_is(tmp_path: Path) -> None:

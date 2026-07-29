@@ -8,7 +8,7 @@ from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.visual_tower import VisualCoreInput, VisualTower
 from open_wam.models.visual_tower.reference_loader import load_wan_transformer_class
 
-from reference_model_test_utils import reference_model_path_or_skip
+from .reference_model_test_utils import reference_model_path_or_skip
 
 
 def test_visual_tower_can_initialize_replica_core_from_reference_weights(tmp_path: Path) -> None:

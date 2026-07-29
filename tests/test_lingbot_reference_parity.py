@@ -11,7 +11,7 @@ from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackbone
 from open_wam.models.visual_tower import VisualTower
 from open_wam.models.visual_tower.reference_loader import load_wan_transformer_class
 
-from reference_model_test_utils import reference_model_path_or_skip
+from .reference_model_test_utils import reference_model_path_or_skip
 
 
 def _clone_train_input_dict(input_dict: dict[str, object]) -> dict[str, object]:

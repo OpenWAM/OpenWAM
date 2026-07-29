@@ -1,0 +1,36 @@
+schema_version: 1
+
+# Keep machine-specific paths outside git. Copy this file to a private location
+# and point OPEN_WAM_MOT_CHARACTERIZATION_ASSETS at that copy.
+paths:
+  dataset_root: ${OPEN_WAM_LIBERO_DATA_ROOT}
+  base_model_root: ${OPEN_WAM_LINGBOT_VA_BASE}
+  video_transformer_root: ${OPEN_WAM_LIBERO_VIDEO_TRANSFORMER}
+  empty_text_embedding: ${OPEN_WAM_EMPTY_TEXT_EMBEDDING}
+  counterfactual_train_root: ${OPEN_WAM_GJD_CF_TRAIN_ROOT}
+  counterfactual_val_root: ${OPEN_WAM_GJD_CF_VAL_ROOT}
+
+checkpoints:
+  # Each value should be a checkpoint directory containing model_state.pt and
+  # resolved_config.yaml. If weights were copied separately, use:
+  # mot_joint:
+  #   model_state: /path/to/model_state.pt
+  #   resolved_config: /path/to/original/resolved_config.yaml
+  #   accepted_origin_mismatch_fields:
+  #     - data.replay_status_policy
+  # The allowlist must exactly equal the saved-config differences and is only
+  # appropriate when the checkpoint is an explicitly approved numerical
+  # weight golden while the current command remains the runtime golden.
+  mot_video_then_action: ${OPEN_WAM_MOT_VTA_CHECKPOINT}
+  mot_action_then_video: ${OPEN_WAM_MOT_ATV_CHECKPOINT}
+  mot_joint: ${OPEN_WAM_MOT_JOINT_CHECKPOINT}
+  mot_decoupled_same_step: ${OPEN_WAM_MOT_DECOUPLED_CHECKPOINT}
+  # VNA and ANV remain in static syntax/semantics coverage. Add strict
+  # checkpoints here only when checkpoints from the supplied commands exist:
+  # mot_video_noisy_to_action: ${OPEN_WAM_MOT_VNA_CHECKPOINT}
+  # mot_action_noisy_to_video: ${OPEN_WAM_MOT_ANV_CHECKPOINT}
+  # Vanilla remains in static syntax/semantics coverage. Add it explicitly
+  # once a checkpoint trained under the current mixed-dynamics contract exists:
+  # gjd_vanilla: ${OPEN_WAM_GJD_VANILLA_CHECKPOINT}
+  gjd_pure_joint: ${OPEN_WAM_GJD_PURE_JOINT_CHECKPOINT}
+  gjd_mode_token: ${OPEN_WAM_GJD_MODE_TOKEN_CHECKPOINT}

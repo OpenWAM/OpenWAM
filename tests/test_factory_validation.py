@@ -36,7 +36,7 @@ from open_wam.models.visual_tower.reference_loader import load_wan_transformer_c
 from open_wam.pipelines import build_variant_pipeline_from_config
 from open_wam.utils.config_loader import load_experiment_config
 
-from reference_model_test_utils import reference_model_path_or_skip
+from .reference_model_test_utils import reference_model_path_or_skip
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

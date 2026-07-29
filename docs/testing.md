@@ -61,6 +61,13 @@ Run GPU tests only when a GPU is intentionally allocated:
 OPEN_WAM_RUN_GPU_SANITY=1 uv run pytest -m gpu
 ```
 
+Core MoT/GJD refactors have a stricter, separately gated real-checkpoint
+workflow. See
+[MoT Refactor Characterization](mot_refactor_characterization.md) for its
+nine-method static contract matrix, six available exact-checkpoint slots,
+frozen real-data replay, FSDP update checks, stateful inference, and
+record-versus-verify commands.
+
 Run simulator tests only after configuring `configs/local_paths.yaml` or
 `OPEN_WAM_LOCAL_PATHS`:
 

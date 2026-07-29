@@ -18,7 +18,7 @@ from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.visual_tower.reference_loader import load_wan_transformer_class
 from open_wam.pipelines import build_exact_runtime_runner_from_config
 
-from reference_model_test_utils import reference_model_path_or_skip
+from .reference_model_test_utils import reference_model_path_or_skip
 
 
 def test_lingbot_exact_runner_supports_warmup_and_chunk_generation(tmp_path: Path) -> None:
