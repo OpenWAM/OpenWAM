@@ -10,7 +10,13 @@ from open_wam.models.common import (
     clear_cache_backend_payload,
     init_cache_backend_payload,
     materialize_cache_backend_entries,
+    merge_attention_cache_entries,
+    packed_slot_pool_query_sequence_ids,
+    prepend_cached_prefix_mask,
     PreparedAttentionProfile,
+    prepare_sdpa_mask,
+    resolve_slot_pool_prefix_visibility,
+    retained_slot_pool_indices_for_current_write,
     update_slot_pool_layer_state,
 )
 from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
@@ -22,9 +28,19 @@ from open_wam.models.visual_tower import replica_core as replica_core_module
 from open_wam.models.visual_tower.replica_core import (
     SharedTransformerAttention,
     SharedVideoTransformerCore,
-    _packed_slot_pool_query_sequence_ids,
-    _resolve_slot_pool_prefix_visibility,
 )
+
+
+def test_cache_policy_public_and_compatibility_exports_preserve_identity() -> None:
+    assert replica_core_module._prepare_sdpa_mask is prepare_sdpa_mask
+    assert replica_core_module._prepend_cached_prefix_mask is prepend_cached_prefix_mask
+    assert replica_core_module._resolve_slot_pool_prefix_visibility is resolve_slot_pool_prefix_visibility
+    assert replica_core_module._packed_slot_pool_query_sequence_ids is packed_slot_pool_query_sequence_ids
+    assert (
+        replica_core_module._retained_slot_pool_indices_for_current_write
+        is retained_slot_pool_indices_for_current_write
+    )
+    assert replica_core_module._merge_attention_cache_entries is merge_attention_cache_entries
 
 
 def test_slot_pool_backend_materializes_and_clears_predicted_entries() -> None:
@@ -77,7 +93,7 @@ def test_slot_pool_backend_materializes_and_clears_predicted_entries() -> None:
 def test_slot_pool_prefix_visibility_preserves_video_pretrain_history() -> None:
     current_mask = torch.ones(3, 2, dtype=torch.bool)
 
-    resolved = _resolve_slot_pool_prefix_visibility(
+    resolved = resolve_slot_pool_prefix_visibility(
         current_mask,
         prefix_len=2,
         prefix_visibility_mode="preserve_video_pretrain_history",
@@ -100,7 +116,7 @@ def test_slot_pool_prefix_visibility_preserves_video_pretrain_history() -> None:
 def test_slot_pool_prefix_visibility_allows_staged_current_action_tail() -> None:
     current_mask = torch.ones(3, 2, dtype=torch.bool)
 
-    resolved = _resolve_slot_pool_prefix_visibility(
+    resolved = resolve_slot_pool_prefix_visibility(
         current_mask,
         prefix_len=3,
         prefix_visibility_mode="preserve_video_pretrain_history",
@@ -124,7 +140,7 @@ def test_slot_pool_prefix_visibility_allows_staged_current_action_tail() -> None
 def test_slot_pool_prefix_visibility_uses_packed_sequence_ids() -> None:
     current_mask = torch.ones(3, 2, dtype=torch.bool)
 
-    resolved = _resolve_slot_pool_prefix_visibility(
+    resolved = resolve_slot_pool_prefix_visibility(
         current_mask,
         prefix_len=4,
         prefix_visibility_mode="full_history",
@@ -164,7 +180,7 @@ def test_packed_slot_pool_query_sequence_ids_matches_exact_flattened_layout() ->
         dim=0,
     )
 
-    sequence_ids = _packed_slot_pool_query_sequence_ids(
+    sequence_ids = packed_slot_pool_query_sequence_ids(
         attention_profile=profile,
         query_stream_ids=stream_ids,
         query_len=int(stream_ids.numel()),
@@ -213,7 +229,7 @@ def test_packed_slot_pool_query_sequence_ids_rejects_misaligned_stream_runs() ->
     )
 
     with pytest.raises(ValueError, match="stream run"):
-        _packed_slot_pool_query_sequence_ids(
+        packed_slot_pool_query_sequence_ids(
             attention_profile=profile,
             query_stream_ids=torch.zeros(7, dtype=torch.long),
             query_len=7,

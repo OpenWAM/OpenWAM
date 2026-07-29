@@ -80,6 +80,10 @@ plain contracts:
   explicit-sigma flow integration and speculative action-cache rewind.
 - common attention profiles own token visibility; the policy selects a profile
   and supplies its resolved layout.
+- `models.common.cache_backends` owns parameter-free attention-cache policy:
+  dense-mask normalization, cached-prefix visibility, packed sequence ids,
+  slot retention, and merged-prefix truncation. The shared transformer owns
+  projections and attention execution, not those retention rules.
 
 The layout, conditioning, mode, and routing helpers are plain contracts, not
 model modules. They must not own parameters, buffers, visual execution, or

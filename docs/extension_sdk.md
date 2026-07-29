@@ -215,6 +215,24 @@ the visual tower owns kernel selection and backbone execution. The exact
 dual-stream M1/M5 programs are checkpoint-compatibility contracts with fixed
 layout semantics, not general attention extension points.
 
+### Cache Policy
+
+`open_wam.models.common.cache_backends` contains the parameter-free cache
+operations used by the shared visual runtime. Custom policies that retain the
+built-in cache formats can reuse:
+
+- `prepare_sdpa_mask` and `prepend_cached_prefix_mask`;
+- `resolve_slot_pool_prefix_visibility`;
+- `packed_slot_pool_query_sequence_ids`;
+- `retained_slot_pool_indices_for_current_write`;
+- `merge_attention_cache_entries`.
+
+Attention profiles decide which tokens may interact. Cache policy decides how
+already-computed keys and values are represented, retained, and prepended.
+Neither contract owns learned parameters. A new cache representation still
+requires a backend integration; do not encode its retention rules inside a
+policy variant or transformer block.
+
 ## Contract Rules
 
 - Registration hooks configure contracts; they must not start jobs or mutate

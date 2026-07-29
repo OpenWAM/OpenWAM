@@ -555,6 +555,24 @@ def test_retired_ablations_namespace_is_not_packaged() -> None:
     assert not (PACKAGE_ROOT / "ablations").exists()
 
 
+def test_attention_cache_policy_has_one_implementation_owner() -> None:
+    cache_policy_functions = {
+        "merge_attention_cache_entries",
+        "packed_slot_pool_query_sequence_ids",
+        "prepend_cached_prefix_mask",
+        "prepare_sdpa_mask",
+        "resolve_slot_pool_prefix_visibility",
+        "retained_slot_pool_indices_for_current_write",
+    }
+    cache_backend_path = PACKAGE_ROOT / "models" / "common" / "cache_backends.py"
+    replica_core_path = PACKAGE_ROOT / "models" / "visual_tower" / "replica_core.py"
+
+    assert cache_policy_functions <= _top_level_definitions(cache_backend_path)
+    assert {
+        f"_{name}" for name in cache_policy_functions
+    }.isdisjoint(_top_level_definitions(replica_core_path))
+
+
 def test_retired_fdm_guided_planning_namespace_is_not_packaged() -> None:
     assert not (PACKAGE_ROOT / "planning").exists()
 
