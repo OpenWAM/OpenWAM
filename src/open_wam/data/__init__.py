@@ -54,6 +54,7 @@ from .latent_segment_geometry import (
     resolve_rollout_parity_boundary_segment,
     rollout_parity_start_range,
 )
+from .latent_view_assembly import assemble_latent_views
 from .row_action_targets import (
     RowSequenceExtractor,
     SequencePacker,
@@ -216,6 +217,7 @@ __all__ = [
     "action_mapping_is_active",
     "apply_action_branch",
     "apply_action_mapping",
+    "assemble_latent_views",
     "build_canonical_video_preprocessor",
     "build_calvin_npz_train_val_datasets",
     "build_lerobot_consortium_catalog",

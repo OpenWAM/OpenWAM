@@ -121,6 +121,9 @@ sampling and FDM/IDM mode routing, while `conditional_dynamics_layout` owns the
 parameter-free projection of real demonstrations to the rollout-style
 `t0 + future` tensor and metadata contract. Joint samples bypass that
 projection.
+`latent_view_assembly` owns the public, dataset-independent 1-4-view latent
+canvas contract. Dataset adapters choose slots and sampling weights, then call
+`assemble_latent_views`; backbones receive only the assembled canonical tensor.
 `distributed_sampling` owns rank sharding and epoch coordination; adapters
 supply weights or deterministic global index orders without embedding
 distributed control flow. Equal-rank padded orders, intentionally unpadded

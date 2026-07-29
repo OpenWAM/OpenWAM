@@ -201,6 +201,22 @@ def test_conditional_dynamics_layout_has_one_owner() -> None:
     }.isdisjoint(mixture_definitions)
 
 
+def test_latent_view_assembly_has_one_owner() -> None:
+    assembly_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "data" / "latent_view_assembly.py"
+    )
+    mixed_video_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "data" / "mixed_video.py"
+    )
+
+    assert "assemble_latent_views" in assembly_definitions
+    assert {
+        "assemble_mixed_video_latent_views",
+        "_latent_assembly_canvas_shape",
+        "_latent_assembly_placements",
+    }.isdisjoint(mixed_video_definitions)
+
+
 def test_sequence_contract_semantics_have_one_config_owner() -> None:
     contract_functions = {
         "apply_parallel_sequence_contract",
