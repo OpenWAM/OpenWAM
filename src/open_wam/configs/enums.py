@@ -128,9 +128,6 @@ class WindowSamplingMode(StrEnum):
     FULL_SEGMENT = "full_segment"
     UNIFORM_SEGMENT = "uniform_segment"
     HIERARCHICAL_FIXED_SEGMENT = "hierarchical_fixed_segment"
-    RANDOM_SUBWINDOW = "random_subwindow"
-    CONTEXTUAL_SUBWINDOW = "contextual_subwindow"
-    ALIGNED_SUBWINDOW = "aligned_subwindow"
     CAUSAL_PREFIX_SUFFIX = "causal_prefix_suffix"
 
 

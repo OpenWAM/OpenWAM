@@ -62,7 +62,7 @@ open_wam_should_apply_fixed128_rollout_context() {
   esac
 }
 
-open_wam_deprecated_libero_policy_config_reason() {
+open_wam_removed_libero_policy_config_reason() {
   local config_name
   config_name="$(open_wam_normalize_config_name "${1:-}")"
   case "${config_name}" in
@@ -81,26 +81,7 @@ open_wam_deprecated_libero_policy_config_reason() {
   esac
 }
 
-open_wam_allows_deprecated_libero_config() {
-  case "${OPEN_WAM_ALLOW_DEPRECATED_LIBERO_CONFIG:-0}" in
-    1|true|yes) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-open_wam_resolve_libero_policy_config_name() {
-  local config_name="${1:-}"
-  local normalized
-  normalized="$(open_wam_normalize_config_name "${config_name}")"
-  if open_wam_deprecated_libero_policy_config_reason "${config_name}" >/dev/null 2>&1 \
-    && open_wam_allows_deprecated_libero_config; then
-    printf 'configs/experiments/deprecated/%s.yaml\n' "${normalized}"
-    return 0
-  fi
-  printf '%s\n' "${config_name}"
-}
-
-open_wam_deprecated_libero_launcher_replacement() {
+open_wam_removed_libero_launcher_replacement() {
   local launcher_name="${1:-}"
   launcher_name="${launcher_name##*/}"
   case "${launcher_name}" in
@@ -117,31 +98,25 @@ open_wam_deprecated_libero_launcher_replacement() {
   esac
 }
 
-open_wam_reject_deprecated_libero_launcher() {
+open_wam_reject_removed_libero_launcher() {
   local launcher_name="${1:-}"
   local replacement="${2:-}"
-  if open_wam_allows_deprecated_libero_config; then
-    return 0
-  fi
   if [ -z "${replacement}" ]; then
-    replacement="$(open_wam_deprecated_libero_launcher_replacement "${launcher_name}")" || return 0
+    replacement="$(open_wam_removed_libero_launcher_replacement "${launcher_name}")" || return 0
   fi
-  echo "Refusing deprecated LIBERO launcher '${launcher_name}'." >&2
+  echo "Removed LIBERO launcher '${launcher_name}'." >&2
   echo "Use ${replacement}." >&2
-  echo "Set OPEN_WAM_ALLOW_DEPRECATED_LIBERO_CONFIG=1 only for historical debugging." >&2
+  echo "Git history retains the historical implementation; there is no runtime opt-in." >&2
   return 2
 }
 
-open_wam_reject_deprecated_libero_policy_config() {
+open_wam_reject_removed_libero_policy_config() {
   local config_name="${1:-}"
   local reason
-  if open_wam_allows_deprecated_libero_config; then
-    return 0
-  fi
-  if reason="$(open_wam_deprecated_libero_policy_config_reason "${config_name}")"; then
-    echo "Refusing deprecated LIBERO M1/M5 config '${config_name}': ${reason}." >&2
+  if reason="$(open_wam_removed_libero_policy_config_reason "${config_name}")"; then
+    echo "Removed LIBERO M1/M5 config '${config_name}': ${reason}." >&2
     echo "Current non-GJD launchers require strict fixed-128 rollout parity; current GJD launchers require full-segment W64 sampling." >&2
-    echo "Use a current *_heng_compatible config, or set OPEN_WAM_ALLOW_DEPRECATED_LIBERO_CONFIG=1 only for historical debugging." >&2
+    echo "Use a current *_heng_compatible config. Git history retains the historical YAML." >&2
     return 2
   fi
 }

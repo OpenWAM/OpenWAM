@@ -761,9 +761,6 @@ def test_raw_libero_smoke_variant_yaml_configs_load() -> None:
 
 
 def test_latent_libero_local_training_yaml_configs_load() -> None:
-    mot = load_experiment_config(REPO_ROOT / "configs/experiments/deprecated/mot_libero_latent_local.yaml")
-    mot_idm = load_experiment_config(REPO_ROOT / "configs/experiments/deprecated/mot_libero_latent_local_idm.yaml")
-    mot_joint = load_experiment_config(REPO_ROOT / "configs/experiments/deprecated/mot_libero_latent_local_joint.yaml")
     post_latent = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_libero_latent_local.yaml")
     post_decoded = load_experiment_config(REPO_ROOT / "configs/experiments/post_decoded_libero_latent_local.yaml")
     post_latent_video_conditioned = load_experiment_config(
@@ -772,61 +769,34 @@ def test_latent_libero_local_training_yaml_configs_load() -> None:
     post_decoded_video_conditioned = load_experiment_config(
         REPO_ROOT / "configs/experiments/post_decoded_libero_latent_local_video_conditioned.yaml"
     )
-    assert isinstance(mot.policy_variant, MoTPolicyConfig)
-    assert isinstance(mot_idm.policy_variant, MoTPolicyConfig)
-    assert isinstance(mot_joint.policy_variant, MoTPolicyConfig)
-    assert mot.data.dataset_type == "lerobot_v2_latent_local"
-    assert mot_idm.data.dataset_type == "lerobot_v2_latent_local"
-    assert mot_joint.data.dataset_type == "lerobot_v2_latent_local"
     assert post_latent.data.dataset_type == "lerobot_v2_latent_local"
     assert post_decoded.data.dataset_type == "lerobot_v2_latent_local"
     assert post_latent_video_conditioned.data.dataset_type == "lerobot_v2_latent_local"
     assert post_decoded_video_conditioned.data.dataset_type == "lerobot_v2_latent_local"
-    assert mot.data.local_root.endswith("/libero_heng/libero_10")
-    assert mot_idm.data.local_root.endswith("/libero_heng/libero_10")
-    assert mot_joint.data.local_root.endswith("/libero_heng/libero_10")
     assert post_latent.data.local_root.endswith("/libero_heng/libero_10")
     assert post_decoded.data.local_root.endswith("/libero_heng/libero_10")
     assert post_latent_video_conditioned.data.local_root.endswith("/libero_heng/libero_10")
     assert post_decoded_video_conditioned.data.local_root.endswith("/libero_heng/libero_10")
-    assert mot.trainer.batch_adapter == BatchAdapterName.LATENTS
-    assert mot_idm.trainer.batch_adapter == BatchAdapterName.LATENTS
-    assert mot_joint.trainer.batch_adapter == BatchAdapterName.LATENTS
     assert post_latent.trainer.batch_adapter == BatchAdapterName.LATENTS
     assert post_decoded.trainer.batch_adapter == BatchAdapterName.LATENTS
     assert post_latent_video_conditioned.trainer.batch_adapter == BatchAdapterName.LATENTS
     assert post_decoded_video_conditioned.trainer.batch_adapter == BatchAdapterName.LATENTS
-    assert mot.trainer.strategy == StrategyName.FSDP
-    assert mot_idm.trainer.strategy == StrategyName.FSDP
-    assert mot_joint.trainer.strategy == StrategyName.FSDP
     assert post_latent.trainer.strategy == StrategyName.FSDP
     assert post_decoded.trainer.strategy == StrategyName.FSDP
     assert post_latent_video_conditioned.trainer.strategy == StrategyName.FSDP
     assert post_decoded_video_conditioned.trainer.strategy == StrategyName.FSDP
-    assert mot.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
-    assert mot_idm.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
-    assert mot_joint.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
     assert post_latent.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
     assert post_decoded.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
     assert post_latent_video_conditioned.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
     assert post_decoded_video_conditioned.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
-    assert mot.backbone.load_reference_core_weights is True
-    assert mot_idm.backbone.load_reference_core_weights is True
-    assert mot_joint.backbone.load_reference_core_weights is True
     assert post_latent.backbone.load_reference_core_weights is True
     assert post_decoded.backbone.load_reference_core_weights is True
     assert post_latent_video_conditioned.backbone.load_reference_core_weights is True
     assert post_decoded_video_conditioned.backbone.load_reference_core_weights is True
-    assert mot.data.sample_construction.mode == WindowSamplingMode.ALIGNED_SUBWINDOW
-    assert mot_idm.data.sample_construction.mode == WindowSamplingMode.ALIGNED_SUBWINDOW
-    assert mot_joint.data.sample_construction.mode == WindowSamplingMode.ALIGNED_SUBWINDOW
     assert post_latent.data.sample_construction.mode == WindowSamplingMode.FULL_SEGMENT
     assert post_decoded.data.sample_construction.mode == WindowSamplingMode.FULL_SEGMENT
     assert post_latent_video_conditioned.data.sample_construction.mode == WindowSamplingMode.FULL_SEGMENT
     assert post_decoded_video_conditioned.data.sample_construction.mode == WindowSamplingMode.FULL_SEGMENT
-    assert mot.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
-    assert mot_idm.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
-    assert mot_joint.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
     assert post_latent.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
     assert post_decoded.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
     assert post_latent_video_conditioned.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
@@ -835,37 +805,6 @@ def test_latent_libero_local_training_yaml_configs_load() -> None:
     assert post_decoded_video_conditioned.action_decoder.name == ActionDecoderName.VIDEO_CONDITIONED
     assert post_latent_video_conditioned.policy_variant.video_condition_input_space == VideoConditionInputSpace.VIDEO_LATENT
     assert post_decoded_video_conditioned.policy_variant.video_condition_input_space == VideoConditionInputSpace.VIDEO_LATENT
-    assert mot.policy_variant.preset == MoTPreset.FASTWAM
-    assert mot.action_decoder.name == ActionDecoderName.MOT
-    assert mot.policy_variant.condition_mode == "first_frame"
-    assert mot.policy_variant.action_hidden_size == 2048
-    assert mot.policy_variant.action_ffn_dim == 8192
-    assert mot.training.enabled_objectives == (TrainingObjective.ACTION,)
-    assert mot.training.trainable_components == (TrainingComponentSelector.POLICY_VARIANT_ACTION_EXPERT,)
-    assert mot_idm.policy_variant.preset == MoTPreset.FASTWAM_IDM
-    assert mot_idm.action_decoder.name == ActionDecoderName.MOT
-    assert mot_idm.policy_variant.condition_mode == "teacher_forcing_cond_video"
-    assert mot_idm.policy_variant.action_hidden_size == 2048
-    assert mot_idm.policy_variant.action_ffn_dim == 8192
-    assert mot_idm.policy_variant.teacher_forcing_video_noise_prob == 0.5
-    assert mot_idm.training.enabled_objectives == (TrainingObjective.ACTION,)
-    assert mot_idm.training.trainable_components == (TrainingComponentSelector.POLICY_VARIANT_ACTION_EXPERT,)
-    assert mot_joint.policy_variant.preset == MoTPreset.FASTWAM_JOINT
-    assert mot_joint.action_decoder.name == ActionDecoderName.MOT
-    assert mot_joint.policy_variant.condition_mode == "full_video"
-    assert mot_joint.policy_variant.action_hidden_size == 2048
-    assert mot_joint.policy_variant.action_ffn_dim == 8192
-    assert mot_joint.training.enabled_objectives == (TrainingObjective.ACTION, TrainingObjective.LATENT)
-    assert mot_joint.training.trainable_components == (
-        TrainingComponentSelector.POLICY_VARIANT_ACTION_EXPERT,
-        TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE,
-    )
-    assert mot.data.sample_construction.anchor_policy == AnchorPolicy.RANDOM_VALID
-    assert mot.data.sample_construction.num_frames == 4
-    assert mot.data.sample_construction.action_horizon == 6
-    assert mot.data.sample_construction.state_horizon == 3
-
-
 def test_method4_current_frame_regression_yaml_configs_load() -> None:
     latent_direct = load_experiment_config(
         REPO_ROOT / "configs/experiments/post_latent_libero_latent_local_current_frame_regression.yaml"
@@ -1030,28 +969,6 @@ def test_local_libero_yaml_config_loads() -> None:
     assert local_libero.data.repo_id is None
     assert "${" not in local_libero.data.local_root
     assert Path(local_libero.data.local_root).name == "libero_10"
-
-
-def test_exact_local_libero_yaml_config_loads() -> None:
-    exact_libero = load_experiment_config(
-        REPO_ROOT / "configs/experiments/deprecated/parallel_stream_libero_lingbot_exact_local.yaml"
-    )
-    assert isinstance(exact_libero.policy_variant, ParallelStreamPolicyConfig)
-    assert exact_libero.policy_variant.runtime_mode == "lingbot_exact"
-    assert exact_libero.policy_variant.reference_profile == "libero"
-    assert exact_libero.backbone.train_attn_mode == "flex"
-    assert exact_libero.backbone.infer_attn_mode == "torch"
-    assert exact_libero.backbone.max_text_tokens == 512
-    assert exact_libero.data.canonical_height == 128
-    assert exact_libero.data.canonical_width == 256
-    assert [view.canonical_name for view in exact_libero.data.view_layout] == ["image", "wrist_image"]
-    assert [(view.top, view.left, view.height, view.width) for view in exact_libero.data.view_layout] == [
-        (0, 0, 128, 128),
-        (0, 128, 128, 128),
-    ]
-    assert exact_libero.data.action_schema.action_dim == 7
-    assert exact_libero.action_decoder.action_dim == 30
-    assert exact_libero.action_decoder.action_horizon == 16
 
 
 def test_heng_compatible_libero_yaml_config_loads() -> None:
@@ -1501,6 +1418,24 @@ def test_loaded_enum_like_fields_are_real_enum_members() -> None:
     config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml")
 
     assert isinstance(config.backbone.train_attn_mode, AttentionMode)
+
+
+@pytest.mark.parametrize(
+    "removed_mode",
+    ("random_subwindow", "contextual_subwindow", "aligned_subwindow"),
+)
+def test_removed_window_sampling_modes_are_rejected(tmp_path: Path, removed_mode: str) -> None:
+    source_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_joint_heng_compatible.yaml"
+    with source_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    raw["data"]["sample_construction"]["mode"] = removed_mode
+    config_path = tmp_path / f"{removed_mode}.yaml"
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+
+    with pytest.raises(ValueError, match=rf"{removed_mode}.*WindowSamplingMode"):
+        load_experiment_config(config_path)
 
 
 def test_deprecated_equal_bucket_latent_temporal_layout_is_rejected(tmp_path: Path) -> None:
@@ -2176,40 +2111,6 @@ def test_hierarchical_fixed_segment_rejects_legacy_full_segment_flag(tmp_path: P
 
     with pytest.raises(ValueError, match="remove legacy fields: `require_full_segment`"):
         load_experiment_config(config_path)
-
-
-def test_contextual_sample_construction_and_temporal_position_mode_load(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_joint_denoise_heng_compatible.yaml"
-    with source_path.open("r", encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle)
-
-    raw.setdefault("data", {})
-    raw["data"]["sample_construction"] = {
-        "mode": "contextual_subwindow",
-        "num_frames": 4,
-        "action_horizon": 16,
-        "state_horizon": 1,
-        "frame_stride": 1,
-        "chunk_size": 4,
-        "window_size": 64,
-        "predict_blocks_per_sample": 1,
-        "randomize_geometry": False,
-    }
-    raw.setdefault("policy_variant", {})
-    raw["policy_variant"]["temporal_position_mode"] = "global_shifted"
-
-    config_path = tmp_path / "parallel_stream_contextual.yaml"
-    with config_path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(raw, handle, sort_keys=False)
-
-    config = load_experiment_config(config_path)
-
-    assert config.data.sample_construction.mode == WindowSamplingMode.CONTEXTUAL_SUBWINDOW
-    assert config.data.sample_construction.chunk_size == 4
-    assert config.data.sample_construction.window_size == 64
-    assert config.data.sample_construction.predict_blocks_per_sample == 1
-    assert config.data.sample_construction.randomize_geometry is False
-    assert config.policy_variant.temporal_position_mode == TemporalPositionMode.GLOBAL_SHIFTED
 
 
 def test_legacy_inference_aliases_still_map_to_generic_runtime_config(tmp_path: Path) -> None:

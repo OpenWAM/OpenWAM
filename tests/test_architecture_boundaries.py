@@ -92,10 +92,16 @@ def test_retired_structured_register_runtime_is_not_packaged() -> None:
     assert not any(path.exists() for path in retired_paths)
 
 
-def test_deprecated_scripts_do_not_contain_python_runtime_implementations() -> None:
+def test_deprecated_libero_implementations_and_configs_are_retired() -> None:
     deprecated_script_root = REPO_ROOT / "scripts" / "deprecated"
+    deprecated_config_roots = (
+        REPO_ROOT / "configs" / "experiments" / "deprecated",
+        REPO_ROOT / "configs" / "evals" / "deprecated",
+    )
 
     assert list(deprecated_script_root.glob("*.py")) == []
+    assert list(deprecated_script_root.glob("*.sh")) == []
+    assert not any(path for root in deprecated_config_roots for path in root.glob("*.yaml"))
 
 
 def test_private_uva_comparison_drivers_are_retired() -> None:

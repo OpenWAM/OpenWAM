@@ -121,34 +121,6 @@ def test_libero_heng_eval_wrappers_resolve_experiment_configs_and_checkpoints(
 
 
 @pytest.mark.parametrize(
-    ("config_name", "checkpoint_suffix"),
-    [
-        (
-            "mot_libero_latent_local_idm_eval.yaml",
-            "mot_libero_latent_local_idm/checkpoints/checkpoint_step_1900/model_state.pt",
-        ),
-        (
-            "mot_libero_latent_local_joint_eval.yaml",
-            "mot_libero_latent_local_joint/checkpoints/checkpoint_step_900/model_state.pt",
-        ),
-    ],
-)
-def test_mot_libero_eval_configs_resolve_model_checkpoints(
-    config_name: str,
-    checkpoint_suffix: str,
-) -> None:
-    config_path = REPO_ROOT / "configs/evals/deprecated" / config_name
-    request = resolve_evaluation_request(config_path)
-
-    assert request.experiment_config_path == config_path.resolve()
-    assert request.mode == "batch"
-    assert request.split == "val"
-    assert request.batch_size is None
-    assert request.checkpoint_path is not None
-    assert request.checkpoint_path.as_posix().endswith(checkpoint_suffix)
-
-
-@pytest.mark.parametrize(
     ("wrapper_name", "experiment_name"),
     [
         ("parallel_stream_robotwin_smoke.yaml", "parallel_stream_robotwin_smoke.yaml"),

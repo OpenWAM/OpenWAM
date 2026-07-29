@@ -19,7 +19,7 @@ from open_wam.configs.enums import (
 
 ALLOW_DEPRECATED_LIBERO_CONFIG_ENV = "OPEN_WAM_ALLOW_DEPRECATED_LIBERO_CONFIG"
 
-_DEPRECATED_LIBERO_POLICY_CONFIG_REASONS = {
+_REMOVED_LIBERO_POLICY_CONFIG_REASONS = {
     "mot_libero_latent_local": "legacy M5 local config without strict one-frame fixed-128 rollout parity",
     "mot_libero_latent_local_idm": "legacy M5 IDM config without strict one-frame fixed-128 rollout parity",
     "mot_libero_latent_local_joint": "legacy M5 joint config without strict one-frame fixed-128 rollout parity",
@@ -43,9 +43,6 @@ _REMOVED_LIBERO_SCRIPT_REPLACEMENTS = {
     "run_libero_exact_realtime_sandbox.py": "scripts/run_libero_realtime_sandbox.py",
     "run_libero_exact_visualization.py": "scripts/run_libero_realtime_sandbox.py",
     "run_libero_realtime_ablation.py": "scripts/run_libero_sampled_eval.py",
-}
-
-_DEPRECATED_LIBERO_SCRIPT_REPLACEMENTS = {
     "run_mot_non_joint_aligned_libero_A.sh": (
         "scripts/run_mot_nonjoint_posttrain_libero.sh with a current *_heng_compatible CONFIG_NAME"
     ),
@@ -66,18 +63,14 @@ def normalize_config_stem(config_path: str | Path | None) -> str:
     return name
 
 
-def deprecated_libero_policy_config_reason(config_path: str | Path | None) -> str | None:
-    return _DEPRECATED_LIBERO_POLICY_CONFIG_REASONS.get(normalize_config_stem(config_path))
+def removed_libero_policy_config_reason(config_path: str | Path | None) -> str | None:
+    return _REMOVED_LIBERO_POLICY_CONFIG_REASONS.get(normalize_config_stem(config_path))
 
 
 def normalize_libero_script_name(script_path: str | Path | None) -> str:
     if script_path is None:
         return ""
     return Path(str(script_path)).name
-
-
-def deprecated_libero_script_replacement(script_path: str | Path | None) -> str | None:
-    return _DEPRECATED_LIBERO_SCRIPT_REPLACEMENTS.get(normalize_libero_script_name(script_path))
 
 
 def removed_libero_script_replacement(script_path: str | Path | None) -> str | None:
@@ -87,7 +80,6 @@ def removed_libero_script_replacement(script_path: str | Path | None) -> str | N
 def require_current_libero_script(
     script_path: str | Path | None,
     *,
-    allow_deprecated: bool = False,
     source: str | None = None,
 ) -> None:
     script_label = str(source or script_path or "<unknown>")
@@ -97,16 +89,6 @@ def require_current_libero_script(
             f"{script_label} was removed from the maintained Open-WAM runtime. "
             f"Use {removed_replacement}. Git history retains the historical implementation."
         )
-
-    replacement = deprecated_libero_script_replacement(script_path)
-    if replacement is None or allow_deprecated or _env_allows_deprecated_libero_config():
-        return
-
-    raise ValueError(
-        f"{script_label} is deprecated for current LIBERO M1/M5 launch paths. "
-        f"Use {replacement}. Set {ALLOW_DEPRECATED_LIBERO_CONFIG_ENV}=1 or pass "
-        "--allow-deprecated-libero-config only for historical debugging."
-    )
 
 
 def collect_current_libero_policy_paradigm_issues(
@@ -128,7 +110,7 @@ def collect_current_libero_policy_paradigm_issues(
     if "libero" not in f"{config_name} {dataset_name} {config_path or ''}".lower():
         return []
 
-    deprecated_reason = deprecated_libero_policy_config_reason(config_path)
+    removed_reason = removed_libero_policy_config_reason(config_path)
 
     issues: list[str] = []
     sample = getattr(data, "sample_construction", None)
@@ -218,8 +200,8 @@ def collect_current_libero_policy_paradigm_issues(
                 f"{_display_value(proprio_mode)!r}, expected {expected_proprio_mode!r}"
             )
 
-    if deprecated_reason is not None and issues:
-        issues.insert(0, deprecated_reason)
+    if removed_reason is not None and issues:
+        issues.insert(0, removed_reason)
 
     return issues
 

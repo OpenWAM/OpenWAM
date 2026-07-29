@@ -9,9 +9,9 @@ from open_wam.configs import ProprioContextMode
 from open_wam.utils.config_loader import load_experiment_config
 from open_wam.utils.libero_paradigm import (
     collect_current_libero_policy_paradigm_issues,
-    deprecated_libero_policy_config_reason,
     require_current_libero_policy_paradigm,
     require_current_libero_script,
+    removed_libero_policy_config_reason,
 )
 
 
@@ -123,7 +123,18 @@ def test_libero_paradigm_guard_prefers_resolved_config_over_legacy_wrapper_path(
 
 def test_libero_paradigm_guard_rejects_known_legacy_m5_config() -> None:
     config_path = REPO_ROOT / "configs/experiments/deprecated/mot_libero_latent_local_joint.yaml"
-    config = load_experiment_config(config_path)
+    current_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_joint_heng_compatible.yaml"
+    config = load_experiment_config(current_path)
+    config = replace(
+        config,
+        data=replace(
+            config.data,
+            sample_construction=replace(
+                config.data.sample_construction,
+                window_size=29,
+            ),
+        ),
+    )
 
     with pytest.raises(ValueError, match="Refuses deprecated LIBERO M1/M5 config|refuses deprecated LIBERO M1/M5 config"):
         require_current_libero_policy_paradigm(
@@ -132,7 +143,7 @@ def test_libero_paradigm_guard_rejects_known_legacy_m5_config() -> None:
             source="test",
         )
 
-    assert deprecated_libero_policy_config_reason(config_path) == (
+    assert removed_libero_policy_config_reason(config_path) == (
         "legacy M5 joint config without strict one-frame fixed-128 rollout parity"
     )
 
@@ -150,11 +161,14 @@ def test_libero_paradigm_guard_ignores_non_libero_smoke_config() -> None:
         "scripts/run_libero_exact_realtime_sandbox.py",
         "scripts/run_libero_exact_visualization.py",
         "scripts/run_libero_realtime_ablation.py",
+        "scripts/run_mot_non_joint_aligned_libero_A.sh",
+        "scripts/run_mot_non_joint_action_only_libero_B.sh",
+        "scripts/run_mot_full_segment_nonjoint_libero.sh",
     ),
 )
 def test_libero_script_guard_never_allows_removed_entrypoints(script_name: str) -> None:
     with pytest.raises(ValueError, match="was removed from the maintained Open-WAM runtime"):
-        require_current_libero_script(script_name, allow_deprecated=True)
+        require_current_libero_script(script_name)
 
 
 def test_libero_script_guard_allows_current_entrypoints_and_explicit_opt_in() -> None:

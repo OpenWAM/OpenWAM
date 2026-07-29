@@ -13,16 +13,14 @@ NGPU=${NGPU:-"1"}
 MASTER_PORT=${MASTER_PORT:-"29501"}
 LOG_RANK=${LOG_RANK:-"0"}
 # Default to the maintained strict fixed-128 M5 video-then-action config.
-# Legacy full-segment configs remain available only through an explicit
-# CONFIG_NAME=... opt-in with OPEN_WAM_ALLOW_DEPRECATED_LIBERO_CONFIG=1.
+# Historical config names are permanently rejected; use a maintained config.
 CONFIG_NAME=${CONFIG_NAME:-"mot_libero_latent_local_video_then_action_heng_compatible"}
 open_wam_reject_cli_config_override_args "$@"
-open_wam_reject_deprecated_libero_policy_config "${CONFIG_NAME}"
-CONFIG_NAME_FOR_TRAIN="$(open_wam_resolve_libero_policy_config_name "${CONFIG_NAME}")"
+open_wam_reject_removed_libero_policy_config "${CONFIG_NAME}"
 OPEN_WAM_FIXED128_ROLLOUT_CONTEXT_ARGS=()
-open_wam_append_fixed128_rollout_context_args OPEN_WAM_FIXED128_ROLLOUT_CONTEXT_ARGS "${CONFIG_NAME_FOR_TRAIN}"
+open_wam_append_fixed128_rollout_context_args OPEN_WAM_FIXED128_ROLLOUT_CONTEXT_ARGS "${CONFIG_NAME}"
 OPEN_WAM_TRAIN_ARGS=(
-  --config-name "${CONFIG_NAME_FOR_TRAIN}"
+  --config-name "${CONFIG_NAME}"
   --devices "${NGPU}"
   "${OPEN_WAM_FIXED128_ROLLOUT_CONTEXT_ARGS[@]}"
   "$@"

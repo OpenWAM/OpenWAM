@@ -30,10 +30,6 @@ POSTTRAIN_LAUNCHERS = (
     "scripts/run_post_decoded_posttrain_libero.sh",
     "scripts/run_post_latent_posttrain_libero.sh",
 )
-DEPRECATED_MOT_WRAPPERS = (
-    "scripts/deprecated/run_mot_non_joint_aligned_libero_A.sh",
-    "scripts/deprecated/run_mot_non_joint_action_only_libero_B.sh",
-)
 TOP_LEVEL_DEPRECATED_MOT_WRAPPER_STUBS = (
     "scripts/run_mot_full_segment_nonjoint_libero.sh",
     "scripts/run_mot_non_joint_aligned_libero_A.sh",
@@ -306,9 +302,15 @@ def _assert_gjd_fullseg_w64_raw_config(raw: dict) -> None:
     assert mixture["conditional_history_frames"] is None
 
 
-def _deprecated_launcher_result(relative_path: str) -> subprocess.CompletedProcess[str]:
+def _deprecated_launcher_result(
+    relative_path: str,
+    *,
+    allow_deprecated: bool = False,
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.pop("OPEN_WAM_ALLOW_DEPRECATED_LIBERO_CONFIG", None)
+    if allow_deprecated:
+        env["OPEN_WAM_ALLOW_DEPRECATED_LIBERO_CONFIG"] = "true"
     env["NGPU"] = "1"
     return subprocess.run(
         ["bash", str(REPO_ROOT / relative_path)],
@@ -491,7 +493,7 @@ def test_libero_posttrain_launchers_inherit_shared_fixed128_defaults() -> None:
 
         assert "libero_fixed128_rollout_context_defaults.sh" in text
         assert "open_wam_reject_cli_config_override_args" in text
-        assert "open_wam_resolve_libero_policy_config_name" in text
+        assert "open_wam_reject_removed_libero_policy_config" in text
         assert "open_wam_append_fixed128_rollout_context_args" in text
         assert "open_wam_maybe_print_train_argv" in text
         assert '"${OPEN_WAM_FIXED128_ROLLOUT_CONTEXT_ARGS[@]}"' in text
@@ -903,68 +905,45 @@ def test_mot_launchers_reject_legacy_configs_by_default() -> None:
         )
 
         assert result.returncode == 2
-        assert "Refusing deprecated LIBERO M1/M5 config" in result.stderr
+        assert "Removed LIBERO M1/M5 config" in result.stderr
 
 
-def test_deprecated_mot_wrapper_scripts_fail_closed_by_default() -> None:
-    for relative_path in (*DEPRECATED_MOT_WRAPPERS, *TOP_LEVEL_DEPRECATED_MOT_WRAPPER_STUBS):
-        result = _deprecated_launcher_result(relative_path)
+@pytest.mark.parametrize("allow_deprecated", (False, True))
+def test_removed_mot_wrapper_scripts_always_fail_closed(allow_deprecated: bool) -> None:
+    for relative_path in TOP_LEVEL_DEPRECATED_MOT_WRAPPER_STUBS:
+        result = _deprecated_launcher_result(
+            relative_path,
+            allow_deprecated=allow_deprecated,
+        )
 
         assert result.returncode == 2
-        assert "Refusing deprecated LIBERO launcher" in result.stderr
+        assert "Removed LIBERO launcher" in result.stderr
         assert "run_mot_nonjoint_posttrain_libero.sh" in result.stderr
+        assert "there is no runtime opt-in" in result.stderr
 
 
-def test_mot_launchers_allow_legacy_configs_only_with_explicit_opt_in() -> None:
-    legacy_joint_argv = _launcher_train_argv(
-        "scripts/run_mot_posttrain_libero.sh",
-        env_overrides={
+def test_removed_mot_configs_reject_explicit_opt_in() -> None:
+    env = os.environ.copy()
+    env.update(
+        {
+            "OPEN_WAM_ALLOW_DEPRECATED_LIBERO_CONFIG": "true",
+            "OPEN_WAM_PRINT_TRAIN_ARGV": "1",
             "CONFIG_NAME": "mot_libero_latent_local_joint",
-            "OPEN_WAM_ALLOW_DEPRECATED_LIBERO_CONFIG": "true",
-        },
+            "NGPU": "1",
+        }
+    )
+    result = subprocess.run(
+        ["bash", str(REPO_ROOT / "scripts/run_mot_posttrain_libero.sh")],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
     )
 
-    assert legacy_joint_argv[:2] == [
-        "--config-name",
-        "configs/experiments/deprecated/mot_libero_latent_local_joint.yaml",
-    ]
-    for value in FIXED_128_VALUES:
-        assert value not in legacy_joint_argv
-
-
-def test_deprecated_aligned_wrapper_preserves_legacy_config_when_allowed() -> None:
-    argv = _launcher_train_argv(
-        "scripts/deprecated/run_mot_non_joint_aligned_libero_A.sh",
-        env_overrides={
-            "OPEN_WAM_ALLOW_DEPRECATED_LIBERO_CONFIG": "true",
-            "TRANSFORMER_SUBDIR": "/tmp/open_wam_transformer",
-        },
-    )
-
-    assert argv[:2] == [
-        "--config-name",
-        "configs/experiments/deprecated/mot_libero_latent_local_full_segment_non_joint_aligned.yaml",
-    ]
-    assert "--transformer-subdir" in argv
-    assert argv[argv.index("--transformer-subdir") + 1] == "/tmp/open_wam_transformer"
-    for value in FIXED_128_VALUES:
-        assert value not in argv
-
-
-def test_deprecated_full_segment_name_delegates_to_renamed_nonjoint_launcher_when_allowed() -> None:
-    argv = _launcher_train_argv(
-        "scripts/run_mot_full_segment_nonjoint_libero.sh",
-        env_overrides={"OPEN_WAM_ALLOW_DEPRECATED_LIBERO_CONFIG": "true"},
-    )
-
-    assert argv[:4] == [
-        "--config-name",
-        "mot_libero_latent_local_video_then_action_heng_compatible",
-        "--devices",
-        "1",
-    ]
-    for value in FIXED_128_VALUES:
-        assert value in argv
+    assert result.returncode == 2
+    assert "Removed LIBERO M1/M5 config" in result.stderr
+    assert "Git history retains the historical YAML" in result.stderr
 
 
 def test_libero_posttrain_launcher_can_print_exact_train_argv_without_running() -> None:

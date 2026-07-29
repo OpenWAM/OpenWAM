@@ -2001,10 +2001,9 @@ class MoTPolicyVariant(PolicyVariant):
         target_video_latents = video_latents
         target_num_video_frames = int(target_video_latents.shape[2])
         num_video_frames = target_num_video_frames
-        # Geometry resolution: contextual_subwindow data path stamps
-        # `sampled_chunk_size` etc. into per-sample metadata; FULL_SEGMENT
-        # data path leaves it unset, so we draw it per-step here the same way
-        # method-1's `prepare_lingbot_parallel_train_artifacts` does.
+        # Dataset adapters may stamp sampled geometry into per-sample metadata.
+        # Full-segment samples leave it unset, so draw geometry per step using
+        # the same contract as method-1 parallel training.
         metadata_for_geometry = prepared_inputs.batch.extra.get("metadata")
         metadata_has_geometry = (
             isinstance(metadata_for_geometry, tuple)

@@ -12,12 +12,8 @@ from open_wam.utils.libero_paradigm import require_current_libero_script  # noqa
 
 
 def main() -> None:
-    allow_deprecated = "--allow-deprecated-libero-config" in sys.argv[1:]
     try:
-        require_current_libero_script(
-            "scripts/run_libero_exact_visualization.py",
-            allow_deprecated=allow_deprecated,
-        )
+        require_current_libero_script("scripts/run_libero_exact_visualization.py")
     except ValueError as exc:
         print(exc, file=sys.stderr)
         raise SystemExit(2) from exc
