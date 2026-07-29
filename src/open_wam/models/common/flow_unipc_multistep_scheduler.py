@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from typing import List
 
 import numpy as np
@@ -23,8 +22,8 @@ class FlowUniPCMultistepScheduler(SchedulerMixin, ConfigMixin):
     """DreamZero-style UniPC sampler adapted for flow-matching prediction.
 
     This is a local copy of the flow-oriented UniPC scheduler used by DreamZero.
-    We keep it under `src/` so register-attached runtime semantics are explicit
-    and independent of the vendored previous-work tree.
+    We keep it under `src/` so joint flow-matching sampler semantics are
+    explicit and independent of the vendored previous-work tree.
     """
 
     order = 1

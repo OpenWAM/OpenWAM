@@ -57,7 +57,6 @@ from open_wam.configs.backbone import SharedVideoTransformerConfig, resolve_stag
 from open_wam.models.video_backbone.contracts import CacheState
 from open_wam.models.visual_tower import (
     RuntimeStepInput,
-    build_chunked_dual_stream_exact_inference_program,
     build_chunked_dual_stream_exact_train_program,
     build_single_stream_exact_runtime_program,
 )
@@ -5479,7 +5478,6 @@ def run_parallel_exact_train(
                     cache_backend_name="slot_pool_exact",
                 ),
                 payload=input_dict,
-                train_mode=True,
             )
         )
         try:

@@ -503,25 +503,6 @@ class MoTPreset(StrEnum):
     FASTWAM_NON_JOINT = "fastwam_non_joint"
 
 
-class VisualReadoutSourceFamily(StrEnum):
-    """Which shared visual representation a post-visual policy reads from."""
-
-    FINAL_CORE_TOKENS = "final_core_tokens"
-    CORE_LAYER_TOKENS = "core_layer_tokens"
-    CORE_MULTI_LAYER_TOKENS = "core_multi_layer_tokens"
-    GENERATED_FUTURE_TOKENS = "generated_future_tokens"
-    DIFFUSION_FEATURE_TOKENS = "diffusion_feature_tokens"
-
-
-class VisualReadoutFusionMode(StrEnum):
-    """How multi-layer shared visual readouts are fused."""
-
-    NONE = "none"
-    MEAN = "mean"
-    LEARNED_WEIGHTED_SUM = "learned_weighted_sum"
-    CONCAT_PROJECT = "concat_project"
-
-
 class AttachSite(StrEnum):
     """Where policy logic conceptually attaches relative to the visual stack."""
 

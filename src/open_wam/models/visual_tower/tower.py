@@ -175,32 +175,6 @@ class VisualTower(nn.Module):
                 step_output.core_output.aux.setdefault("reference_core_loaded_keys", loaded_key_count)
         return step_output
 
-    def prepare_runtime_stream_inputs(
-        self,
-        *,
-        family: str,
-        action_inputs: torch.Tensor | None,
-        state_inputs: torch.Tensor | None,
-        action_timesteps: torch.Tensor | None,
-        state_timesteps: torch.Tensor | None,
-        action_adapter_name: str = "mlp",
-        state_adapter_name: str = "mlp",
-        use_state_adapter: bool = True,
-    ):
-        prepare_stream_inputs = getattr(self.core, "prepare_runtime_stream_inputs", None)
-        if not callable(prepare_stream_inputs):
-            raise ValueError("Current visual core does not support shared runtime stream adapters.")
-        return prepare_stream_inputs(
-            family=family,
-            action_inputs=action_inputs,
-            state_inputs=state_inputs,
-            action_timesteps=action_timesteps,
-            state_timesteps=state_timesteps,
-            action_adapter_name=action_adapter_name,
-            state_adapter_name=state_adapter_name,
-            use_state_adapter=use_state_adapter,
-        )
-
     def configure_runtime_devices(
         self,
         devices: tuple[torch.device, ...],
@@ -215,22 +189,6 @@ class VisualTower(nn.Module):
                 prep_device=None if prep_device is None else torch.device(prep_device),
                 output_device=None if output_device is None else torch.device(output_device),
             )
-
-    def project_runtime_stream_outputs(
-        self,
-        *,
-        family: str,
-        hidden_states: torch.Tensor,
-        token_layout: object | None,
-    ) -> dict[str, torch.Tensor]:
-        project_stream_outputs = getattr(self.core, "project_runtime_stream_outputs", None)
-        if not callable(project_stream_outputs):
-            raise ValueError("Current visual core does not support shared runtime stream output heads.")
-        return project_stream_outputs(
-            family=family,
-            hidden_states=hidden_states,
-            token_layout=token_layout,
-        )
 
     def project_video_tokens_to_latents(
         self,

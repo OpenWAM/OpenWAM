@@ -1,30 +1,20 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Any, Callable
 
 import torch
 import torch.nn.functional as F
-from einops import rearrange
 
 from open_wam.models.common import (
     PreparedAttentionProfile,
     build_chunked_temporal_exact_attention_profile,
-    build_register_attention_mask,
-    build_register_position_context,
     chunked_temporal_exact_coupling_from_profile_name,
     normalize_attention_profile_name,
 )
 from open_wam.configs.backbone import SharedVideoTransformerConfig, resolve_stage_attention_mode
 
-from .contracts import (
-    StructuredAttentionContext,
-    StructuredBlockSemantics,
-    StructuredFrequencyBundle,
-    VisualCoreInput,
-)
-from .grid_ids import build_block_register_grid_ids, build_video_grid_ids
+from .contracts import VisualCoreInput
 from .runtime_programs import RuntimeStepInput
 
 
@@ -54,270 +44,6 @@ class PreparedRuntimeSequence:
     update_cache: int = 0
     cache_name: str = "open_wam_exact"
     action_mode: bool = False
-
-
-def _materialize_register_core_input(
-    core_input: VisualCoreInput,
-    *,
-    hidden_size: int,
-) -> VisualCoreInput:
-    register_components = core_input.register_components
-    if register_components is None:
-        return core_input
-
-    layout = register_components.layout
-    semantics = register_components.semantics
-    if semantics.sequence_family != "register_sequence":
-        raise ValueError(
-            "Structured runtime adapter only supports `register_sequence`, "
-            f"got {semantics.sequence_family!r}."
-        )
-    if semantics.attention_style != "blockwise_causal":
-        raise ValueError(
-            "Structured runtime adapter only supports `blockwise_causal`, "
-            f"got {semantics.attention_style!r}."
-        )
-
-    batch_size = register_components.noisy_video_tokens.shape[0]
-    device = register_components.noisy_video_tokens.device
-
-    clean_prefix_grid_ids = build_video_grid_ids(
-        register_components.token_grid,
-        device=device,
-        frame_shift=float(register_components.current_start_frame),
-    )
-    noisy_video_grid_ids = build_video_grid_ids(
-        register_components.token_grid,
-        device=device,
-        frame_shift=float(register_components.current_start_frame),
-    )
-    packed_token_chunks: list[torch.Tensor] = []
-    packed_grid_chunks: list[torch.Tensor] = []
-    if register_components.clean_video_prefix_tokens is not None:
-        packed_token_chunks.append(register_components.clean_video_prefix_tokens)
-        packed_grid_chunks.append(clean_prefix_grid_ids)
-    packed_token_chunks.extend(
-        [
-            register_components.noisy_video_tokens,
-            register_components.action_register_tokens,
-            register_components.state_register_tokens,
-        ]
-    )
-    observed_prefix_frames = 1
-    register_frame_shift = float(register_components.current_start_frame + observed_prefix_frames)
-    action_tokens_per_block = (
-        register_components.action_register_tokens.shape[1] // max(layout.num_action_blocks, 1)
-        if layout.num_action_blocks > 0
-        else 0
-    )
-    state_tokens_per_block = (
-        register_components.state_register_tokens.shape[1] // max(layout.num_state_blocks, 1)
-        if layout.num_state_blocks > 0
-        else 0
-    )
-    action_grid_ids = build_block_register_grid_ids(
-        num_blocks=layout.num_action_blocks,
-        tokens_per_block=action_tokens_per_block,
-        device=device,
-        frame_shift=register_frame_shift,
-        stream_marker=-1.0,
-    )
-    state_grid_ids = build_block_register_grid_ids(
-        num_blocks=layout.num_state_blocks,
-        tokens_per_block=state_tokens_per_block,
-        device=device,
-        frame_shift=register_frame_shift,
-        stream_marker=-2.0,
-    )
-    packed_grid_chunks.extend(
-        [
-            noisy_video_grid_ids,
-            action_grid_ids,
-            state_grid_ids,
-        ]
-    )
-    packed_tokens = torch.cat(packed_token_chunks, dim=1)
-    packed_grid_ids = torch.cat(packed_grid_chunks, dim=1)
-    position_context = build_register_position_context(
-        layout=layout,
-        token_grid=register_components.token_grid,
-        hidden_size=hidden_size,
-        device=device,
-        current_start_frame=register_components.current_start_frame,
-    )[None, :, :].expand(batch_size, -1, -1)
-
-    clean_video_values = torch.zeros(
-        batch_size,
-        layout.clean_video_sequence_length,
-        device=device,
-        dtype=torch.float32,
-    )
-    noisy_video_values = register_components.video_timesteps.repeat_interleave(
-        register_components.token_grid.tokens_per_frame,
-        dim=1,
-    )
-    timestep_chunks: list[torch.Tensor] = []
-    if layout.has_clean_video_prefix:
-        timestep_chunks.append(clean_video_values)
-    timestep_chunks.append(noisy_video_values)
-    if register_components.action_register_tokens.shape[1] > 0:
-        timestep_chunks.append(register_components.action_timesteps)
-    if register_components.state_register_tokens.shape[1] > 0:
-        timestep_chunks.append(register_components.state_timesteps)
-    timestep_values = torch.cat(timestep_chunks, dim=1)
-    attention_mask = build_register_attention_mask(layout, batch_size=batch_size, device=device)
-
-    stream_id_chunks: list[torch.Tensor] = []
-    if layout.has_clean_video_prefix:
-        stream_id_chunks.append(
-            torch.zeros(batch_size, layout.clean_video_sequence_length, device=device, dtype=torch.long)
-        )
-    stream_id_chunks.extend(
-        [
-            torch.zeros(batch_size, layout.noisy_video_sequence_length, device=device, dtype=torch.long),
-            torch.ones(batch_size, register_components.action_register_tokens.shape[1], device=device, dtype=torch.long),
-            torch.ones(batch_size, register_components.state_register_tokens.shape[1], device=device, dtype=torch.long),
-        ]
-    )
-    stream_ids = torch.cat(stream_id_chunks, dim=1)
-
-    action_span = (
-        layout.action_block_spans[0][0],
-        layout.action_block_spans[-1][1],
-    ) if layout.action_block_spans else (layout.noisy_video_span[1], layout.noisy_video_span[1])
-    state_span = (
-        layout.state_block_spans[0][0],
-        layout.state_block_spans[-1][1],
-    ) if layout.state_block_spans else (action_span[1], action_span[1])
-    structured_block_semantics = None
-    structured_frequency_bundle = None
-    structured_attention_context = None
-    if register_components.semantics.structured_block_mode != "none":
-        structured_block_semantics = StructuredBlockSemantics(
-            mode=register_components.semantics.structured_block_mode,
-            teacher_forcing_enabled=register_components.semantics.teacher_forcing,
-            clean_prefix_span=layout.clean_video_span,
-            video_span=layout.noisy_video_span,
-            action_span=action_span,
-            state_span=state_span,
-            clean_prefix_length=layout.clean_video_sequence_length,
-            video_token_length=layout.noisy_video_sequence_length,
-            action_register_length=register_components.action_register_tokens.shape[1],
-            state_register_length=register_components.state_register_tokens.shape[1],
-            current_start_frame=register_components.current_start_frame,
-            observed_prefix_frames=observed_prefix_frames,
-            time_layout=register_components.semantics.structured_time_layout,
-            position_layout=register_components.semantics.structured_teacher_forcing_layout,
-            frequency_mode=register_components.semantics.structured_frequency_mode,
-            metadata={
-                "sequence_family": register_components.semantics.sequence_family,
-                "attention_style": register_components.semantics.attention_style,
-                "teacher_forcing_layout": register_components.semantics.teacher_forcing_layout,
-                "timestep_layout": register_components.semantics.timestep_layout,
-                "attention_kernel": register_components.semantics.structured_attention_kernel,
-                "cache_kernel": register_components.semantics.structured_cache_kernel,
-                "rollout_phase": (
-                    "teacher_forcing"
-                    if register_components.semantics.teacher_forcing
-                    else "cached_rollout"
-                ),
-                "action_state_index": max(
-                    (register_components.current_start_frame - observed_prefix_frames)
-                    // max(layout.tokens_per_image_block // max(layout.tokens_per_frame, 1), 1),
-                    0,
-                ),
-                "register_frame_shift": register_frame_shift,
-            },
-        )
-        structured_frequency_bundle = StructuredFrequencyBundle(
-            layout=register_components.semantics.structured_frequency_mode,
-            clean_prefix_grid_ids=(
-                clean_prefix_grid_ids if register_components.clean_video_prefix_tokens is not None else None
-            ),
-            video_grid_ids=noisy_video_grid_ids,
-            action_grid_ids=action_grid_ids,
-            state_grid_ids=state_grid_ids,
-            shared_grid_ids=packed_grid_ids,
-            metadata={
-                "current_start_frame": register_components.current_start_frame,
-                "register_frame_shift": register_frame_shift,
-                "video_tokens": layout.noisy_video_sequence_length,
-                "action_tokens": register_components.action_register_tokens.shape[1],
-                "state_tokens": register_components.state_register_tokens.shape[1],
-                "num_action_blocks": layout.num_action_blocks,
-                "num_state_blocks": layout.num_state_blocks,
-                "action_tokens_per_block": action_tokens_per_block,
-                "state_tokens_per_block": state_tokens_per_block,
-            },
-        )
-        structured_attention_context = StructuredAttentionContext(
-            mode=register_components.semantics.structured_block_mode,
-            teacher_forcing_enabled=register_components.semantics.teacher_forcing,
-            clean_prefix_length=layout.clean_video_sequence_length,
-            video_token_length=layout.noisy_video_sequence_length,
-            action_register_length=register_components.action_register_tokens.shape[1],
-            state_register_length=register_components.state_register_tokens.shape[1],
-            current_start_frame=register_components.current_start_frame,
-            observed_prefix_frames=observed_prefix_frames,
-            num_frame_per_block=max(layout.tokens_per_image_block // max(layout.tokens_per_frame, 1), 1),
-            num_action_per_block=action_tokens_per_block,
-            num_state_per_block=state_tokens_per_block,
-            num_video_blocks=layout.num_image_blocks,
-            num_action_blocks=layout.num_action_blocks,
-            num_state_blocks=layout.num_state_blocks,
-            tokens_per_frame=layout.tokens_per_frame,
-            tokens_per_video_block=layout.tokens_per_image_block,
-            frequency_mode=register_components.semantics.structured_frequency_mode,
-            attention_kernel=register_components.semantics.structured_attention_kernel,
-            cache_kernel=register_components.semantics.structured_cache_kernel,
-            rollout_phase=(
-                "teacher_forcing"
-                if register_components.semantics.teacher_forcing
-                else "cached_rollout"
-            ),
-            action_state_index=max(
-                (register_components.current_start_frame - observed_prefix_frames)
-                // max(
-                    max(layout.tokens_per_image_block // max(layout.tokens_per_frame, 1), 1),
-                    1,
-                ),
-                0,
-            ),
-            clean_prefix_grid_ids=(
-                clean_prefix_grid_ids if register_components.clean_video_prefix_tokens is not None else None
-            ),
-            video_grid_ids=noisy_video_grid_ids,
-            action_grid_ids=action_grid_ids,
-            state_grid_ids=state_grid_ids,
-            metadata={
-                "sequence_family": register_components.semantics.sequence_family,
-                "attention_style": register_components.semantics.attention_style,
-                "teacher_forcing_layout": register_components.semantics.teacher_forcing_layout,
-                "timestep_layout": register_components.semantics.timestep_layout,
-                "register_frame_shift": register_frame_shift,
-            },
-        )
-
-    return VisualCoreInput(
-        tokens=packed_tokens,
-        token_layout=layout,
-        position_context=position_context,
-        timestep_context=None,
-        grid_ids=packed_grid_ids,
-        timestep_values=timestep_values,
-        stream_ids=stream_ids,
-        text_context=core_input.text_context,
-        attention_mask=attention_mask,
-        attention_profile=core_input.attention_profile,
-        cache_state=core_input.cache_state,
-        cache_update_metadata=core_input.cache_update_metadata,
-        conditioning=core_input.conditioning,
-        sequence_metadata=core_input.sequence_metadata,
-        register_components=None,
-        structured_block_semantics=structured_block_semantics,
-        structured_frequency_bundle=structured_frequency_bundle,
-        structured_attention_context=structured_attention_context,
-    )
 
 
 def prepare_exact_dual_stream_train_sequence(
@@ -505,63 +231,19 @@ def _action_mask_has_invalid_tokens(mask: Any) -> bool:
 def prepare_runtime_sequence(
     step_input: RuntimeStepInput,
     *,
-    hidden_size: int | None = None,
     exact_train_preparer: Callable[[dict[str, torch.Tensor | dict[str, torch.Tensor]]], PreparedExactTrainSequence] | None = None,
 ) -> PreparedRuntimeSequence:
     """Resolve one runtime step into an executable backbone payload."""
 
     family = step_input.program.sequence_family
-    if family in {"dense_default", "register_sequence"}:
+    if family == "dense_default":
         if step_input.core_input is None:
             raise ValueError(
                 f"Runtime program {step_input.program.name!r} requires `core_input`."
             )
-        core_input = step_input.core_input
-        if family == "register_sequence":
-            if hidden_size is None:
-                raise ValueError("Register-sequence runtime preparation requires `hidden_size`.")
-            core_input = _materialize_register_core_input(core_input, hidden_size=hidden_size)
-        if (
-            step_input.structured_block_semantics is not None
-            or step_input.structured_frequency_bundle is not None
-            or step_input.structured_attention_context is not None
-        ):
-            core_input = VisualCoreInput(
-                tokens=core_input.tokens,
-                token_layout=core_input.token_layout,
-                position_context=core_input.position_context,
-                timestep_context=core_input.timestep_context,
-                grid_ids=core_input.grid_ids,
-                timestep_values=core_input.timestep_values,
-                stream_ids=core_input.stream_ids,
-                text_context=core_input.text_context,
-                attention_mask=core_input.attention_mask,
-                attention_profile=core_input.attention_profile,
-                cache_state=core_input.cache_state,
-                cache_update_metadata=core_input.cache_update_metadata,
-                conditioning=core_input.conditioning,
-                readout_request=core_input.readout_request,
-                sequence_metadata=core_input.sequence_metadata,
-                register_components=core_input.register_components,
-                structured_block_semantics=(
-                    step_input.structured_block_semantics
-                    if step_input.structured_block_semantics is not None
-                    else core_input.structured_block_semantics
-                ),
-                structured_frequency_bundle=(
-                    step_input.structured_frequency_bundle
-                    if step_input.structured_frequency_bundle is not None
-                    else core_input.structured_frequency_bundle
-                ),
-                structured_attention_context=(
-                    step_input.structured_attention_context
-                    if step_input.structured_attention_context is not None
-                    else core_input.structured_attention_context
-                ),
-            )
         return PreparedRuntimeSequence(
             mode="core_input",
-            core_input=core_input,
+            core_input=step_input.core_input,
         )
     if family in {"chunked_dual_stream_exact", "chunked_dual_stream_exact_inference"}:
         if step_input.payload is None:

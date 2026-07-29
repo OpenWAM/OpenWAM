@@ -138,8 +138,8 @@ The current method split is:
 
 - `parallel_stream` / method 1: exact LingBot train/infer semantics through
   shared-backbone exact runtime programs
-- `parallel_stream` action-conditioned / method 2: joint-denoise semantics
-  expressed by the same exact shared-backbone runtime
+- `mot` / method 5: VTA, ATV, joint, decoupled, VNA, ANV, and GJD semantics
+  expressed through the same exact shared-backbone runtime
 - `post_latent` / `post_decoded`: simple feature-attached baselines over the
   same stage-aware pipeline
 
@@ -414,18 +414,22 @@ All canonical multimodal methods now run through the same top-level owner:
 
 - `VariantPipeline -> VisualTower -> PolicyVariant -> ActionDecoder`
 
-With `backbone.implementation = shared_transformer`, methods 1, 2, and 4 run
-through the same shared `VisualTower` frontend and shared transformer-core
+With `backbone.implementation = shared_transformer`, retained multimodal
+methods run through the same shared `VisualTower` frontend and transformer-core
 object.
 
 What differs between the methods is the runtime program:
 
 - method 1 uses exact LingBot-compatible runtime programs, chunk/window
   attention, and slot-pool cache semantics
-- method 2 uses structured register-sequence runtime programs, structured
-  branchwise attention, and structured rollout-cache semantics
+- method 5 uses exact MoT runtime programs with config-selected sequence,
+  attention, scheduler, and cache semantics
 - method 4 uses the same shared core with a lightweight decoded-feature policy
   head
+
+The historical register-attached Method 2 runtime is not a supported public
+surface. Its implementation and configs were removed; historical design notes
+remain under `notes/finished_roadmaps/`.
 
 `post_latent` is the intentional exception: when configured with
 `attach_site=post_frontend_latents`, it may stop at the shared frontend and

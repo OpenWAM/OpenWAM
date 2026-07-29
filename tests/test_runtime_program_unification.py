@@ -43,7 +43,6 @@ def test_exact_runtime_program_executes_on_shared_backbone() -> None:
                 cache_backend_name="slot_pool_exact",
             ),
             payload=train_artifacts.input_dict,
-            train_mode=True,
         )
     )
 

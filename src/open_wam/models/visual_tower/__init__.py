@@ -2,11 +2,6 @@
 
 from .contracts import (
     DecodedFeatureLayout,
-    RegisterSequenceComponents,
-    RegisterSequenceSemantics,
-    StructuredAttentionContext,
-    StructuredBlockSemantics,
-    StructuredFrequencyBundle,
     VisualCoreInput,
     VisualCoreOutput,
     VisualDecodeOutput,
@@ -23,7 +18,6 @@ from .runtime_programs import (
     build_chunked_dual_stream_exact_inference_program,
     build_chunked_dual_stream_exact_train_program,
     build_dense_runtime_program,
-    build_register_sequence_runtime_program,
     build_single_stream_exact_runtime_program,
 )
 from .reference_transformer import build_reference_transformer, preferred_reference_dtype
@@ -39,8 +33,6 @@ from .shared_transformer_support import (
     rms_norm_with_materialized_weight,
     select_chunk_slices,
 )
-from .stream_adapters import PreparedStreamInput, SharedRuntimeStreamAdapters, StreamInputAdapterSpec
-from .stream_heads import StreamOutputHeadSpec
 from .tower import VisualTower
 
 __all__ = [
@@ -48,19 +40,9 @@ __all__ = [
     "build_chunked_dual_stream_exact_inference_program",
     "build_chunked_dual_stream_exact_train_program",
     "build_dense_runtime_program",
-    "build_register_sequence_runtime_program",
     "build_single_stream_exact_runtime_program",
     "DecodedFeatureLayout",
-    "PreparedStreamInput",
     "preferred_reference_dtype",
-    "RegisterSequenceComponents",
-    "RegisterSequenceSemantics",
-    "SharedRuntimeStreamAdapters",
-    "StreamInputAdapterSpec",
-    "StreamOutputHeadSpec",
-    "StructuredAttentionContext",
-    "StructuredBlockSemantics",
-    "StructuredFrequencyBundle",
     "SharedTransformerAttention",
     "SharedTransformerRotaryPositionalEmbedding",
     "SharedTransformerTimeEmbedding",

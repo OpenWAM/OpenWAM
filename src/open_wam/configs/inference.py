@@ -19,8 +19,8 @@ class InferenceConfig:
 
     video_num_inference_steps: int = 25
     action_num_inference_steps: int = 50
-    # Optional shared denoising count for variants such as DreamZero-like
-    # register-attached models that update video and action in one joint loop.
+    # Optional shared denoising count for variants that update video and action
+    # in one joint loop.
     joint_num_inference_steps: int | None = None
     # `flow_match`: first-order LingBot-style flow step
     # `unipc`: DreamZero-style multistep sampler for joint video/action rollout
@@ -61,8 +61,8 @@ class InferenceConfig:
     joint_cache_rollout_warmup_frames: int | None = None
     # Number of observed video frames that should stay fixed when a joint
     # video/action rollout variant denoises a window from the current visual
-    # observation. Method-2 style register-attached inference uses this to keep
-    # the observed prefix anchored while future frames are generated.
+    # observation. Joint inference uses this to keep the observed prefix
+    # anchored while future frames are generated.
     joint_observed_video_prefix_frames: int = 1
     frame_chunk_size: int = 2
     use_cache: bool = True

@@ -137,3 +137,24 @@ def test_exported_runtime_action_missing_key_policy_matches_skip_predicate() -> 
         "generalist_mode_context_encoder.embedding.weight",
         allow_random_action=False,
     )
+
+
+def test_checkpoint_compatibility_parameter_keys_keep_legacy_order(tmp_path: Path) -> None:
+    config = _tiny_backbone_config(tmp_path, action_init_mode=ExportedRuntimeActionInitMode.LOAD_FROM_CHECKPOINT)
+    core = SharedVideoTransformerCore(config, action_dim=4, state_dim=3)
+
+    compatibility_keys = tuple(
+        key for key in core.state_dict() if key.startswith("runtime_stream_adapters.")
+    )
+
+    assert compatibility_keys == (
+        "runtime_stream_adapters.action_register_adapter.0.weight",
+        "runtime_stream_adapters.action_register_adapter.0.bias",
+        "runtime_stream_adapters.action_register_adapter.2.weight",
+        "runtime_stream_adapters.action_register_adapter.2.bias",
+        "runtime_stream_adapters.state_register_adapter.0.weight",
+        "runtime_stream_adapters.state_register_adapter.0.bias",
+        "runtime_stream_adapters.state_register_adapter.2.weight",
+        "runtime_stream_adapters.state_register_adapter.2.bias",
+        "runtime_stream_adapters.role_embedding.weight",
+    )

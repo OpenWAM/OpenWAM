@@ -76,5 +76,26 @@ def test_retired_ablations_namespace_is_not_packaged() -> None:
     assert not (PACKAGE_ROOT / "ablations").exists()
 
 
+def test_retired_structured_register_runtime_is_not_packaged() -> None:
+    retired_paths = (
+        PACKAGE_ROOT / "models" / "common" / "joint_runtime.py",
+        PACKAGE_ROOT / "models" / "common" / "register_sequence.py",
+        PACKAGE_ROOT / "models" / "visual_tower" / "stream_adapters.py",
+        PACKAGE_ROOT / "models" / "visual_tower" / "stream_heads.py",
+        PACKAGE_ROOT / "models" / "visual_tower" / "structured_attention.py",
+    )
+
+    assert not any(path.exists() for path in retired_paths)
+
+
+def test_public_config_enums_are_declared_once() -> None:
+    path = PACKAGE_ROOT / "configs" / "enums.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    names = [node.name for node in tree.body if isinstance(node, ast.ClassDef)]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+
+    assert duplicates == []
+
+
 def test_legacy_backbone_config_import_is_identity_preserving() -> None:
     assert LegacySharedVideoTransformerConfig is SharedVideoTransformerConfig

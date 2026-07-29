@@ -18,19 +18,16 @@ from open_wam.models.common import (
     apply_attention_backend,
     build_chunked_temporal_exact_attention_profile,
     cache_backend_uses_slot_pool,
-    build_register_attention_mask,
-    build_register_position_context,
     clear_cache_backend_payload,
     init_cache_backend_payload,
     materialize_cache_backend_entries,
-    normalize_attention_profile_name,
     resolve_cache_backend_spec,
     select_attention_profile_mask,
     SlotPoolLayerState,
     unpatchify_video_tokens,
     update_slot_pool_layer_state,
 )
-from open_wam.configs.backbone import SharedVideoTransformerConfig, resolve_stage_attention_mode
+from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.models.video_backbone.contracts import (
     AttentionCacheEntry,
     CacheBranchState,
@@ -41,23 +38,16 @@ from open_wam.models.video_backbone.contracts import (
 )
 
 from .contracts import (
-    RegisterSequenceComponents,
-    StructuredAttentionContext,
-    StructuredBlockSemantics,
-    StructuredFrequencyBundle,
     VisualCoreInput,
     VisualIntermediateReadout,
     VisualCoreOutput,
 )
-from .grid_ids import build_sequence_grid_ids, build_video_grid_ids
+from .checkpoint_compat import RuntimeStreamCompatibilityParameters
 from .runtime_programs import RuntimeStepInput, RuntimeStepOutput
-from .sequence_adapters import prepare_exact_dual_stream_train_sequence, prepare_runtime_sequence
-from .stream_adapters import PreparedStreamInput, SharedRuntimeStreamAdapters
-from .stream_heads import project_runtime_stream_outputs
-from .structured_attention import (
-    StructuredAttentionExecutionPlan,
-    build_structured_attention_execution_plan,
-    execute_structured_attention,
+from .sequence_adapters import (
+    PreparedExactTrainSequence,
+    prepare_exact_dual_stream_train_sequence,
+    prepare_runtime_sequence,
 )
 
 
@@ -521,8 +511,6 @@ class SharedTransformerAttention(nn.Module):
         v: torch.Tensor,
         *,
         rotary_emb: torch.Tensor | None = None,
-        structured_attention_context: StructuredAttentionContext | None = None,
-        structured_attention_plan: StructuredAttentionExecutionPlan | None = None,
         attention_mask: torch.Tensor | None = None,
         attention_profile: PreparedAttentionProfile | None = None,
         is_cross_attention: bool = False,
@@ -556,17 +544,9 @@ class SharedTransformerAttention(nn.Module):
                 _linear_with_materialized_params(self.to_k, k),
             ).unflatten(2, (self.heads, -1))
             value = _linear_with_materialized_params(self.to_v, v).unflatten(2, (self.heads, -1))
-            structured_rotary_emb = (
-                structured_attention_plan.rotary_freqs if structured_attention_plan is not None else None
-            )
-            if structured_rotary_emb is not None:
-                query = _apply_rotary_emb(query, structured_rotary_emb)
-                key = _apply_rotary_emb(key, structured_rotary_emb)
-            elif rotary_emb is not None:
+            if rotary_emb is not None:
                 query = _apply_rotary_emb(query, rotary_emb)
                 key = _apply_rotary_emb(key, rotary_emb)
-            else:
-                query = query
             if use_slot_pool_backend:
                 current_cache_entry = None
             else:
@@ -596,27 +576,9 @@ class SharedTransformerAttention(nn.Module):
                 key = key_t
                 value = value_t
         if kv_cache_override is None:
-            structured_hidden_states = execute_structured_attention(
-                query,
-                key.transpose(1, 2) if key.ndim == 4 and key.shape[1] == self.heads else key,
-                value.transpose(1, 2) if value.ndim == 4 and value.shape[1] == self.heads else value,
-                context=structured_attention_context,
-                plan=structured_attention_plan,
-                cached_key_value=cached_key_value,
-            )
-            if structured_hidden_states is not None and not use_slot_pool_backend:
-                hidden_states = structured_hidden_states.flatten(2, 3)
-                hidden_states = _linear_with_materialized_params(self.to_out[0], hidden_states)
-                hidden_states = self.to_out[1](hidden_states)
-                return hidden_states, current_cache_entry
             query = query.transpose(1, 2)
         else:
-            structured_rotary_emb = (
-                structured_attention_plan.rotary_freqs if structured_attention_plan is not None else None
-            )
-            if structured_rotary_emb is not None:
-                query = _apply_rotary_emb(query, structured_rotary_emb)
-            elif rotary_emb is not None:
+            if rotary_emb is not None:
                 query = _apply_rotary_emb(query, rotary_emb)
             query = query.transpose(1, 2)
         slot_pool_update_key = None
@@ -953,9 +915,6 @@ class SharedTransformerBlock(nn.Module):
         encoder_hidden_states: torch.Tensor,
         temb: torch.Tensor,
         rotary_emb: torch.Tensor | None,
-        structured_attention_context: StructuredAttentionContext | None = None,
-        structured_block_semantics: StructuredBlockSemantics | None = None,
-        structured_frequency_bundle: StructuredFrequencyBundle | None = None,
         attention_mask: torch.Tensor | None = None,
         attention_profile: PreparedAttentionProfile | None = None,
         cross_attention_mask: torch.Tensor | None = None,
@@ -976,45 +935,17 @@ class SharedTransformerBlock(nn.Module):
             6,
         )
 
-        structured_attention_plan = build_structured_attention_execution_plan(
-            structured_attention_context,
-            batch_size=hidden_states.shape[0],
-            device=hidden_states.device,
-            cached_prefix_len=(
-                int(self_attention_cache_entry.key.shape[2])
-                if self_attention_cache_entry is not None and self_attention_cache_entry.key is not None
-                else 0
-            ),
-            cached_segment_lengths=(
-                tuple(self_attention_cache_entry.metadata.get("segment_token_lengths", ()))
-                if self_attention_cache_entry is not None and self_attention_cache_entry.key is not None
-                else ()
-            ),
-        )
-        resolved_attention_mask = (
-            structured_attention_plan.attention_mask
-            if structured_attention_plan is not None and structured_attention_plan.attention_mask is not None
-            else attention_mask
-        )
-        resolved_cached_prefix_visibility = (
-            structured_attention_plan.cached_prefix_visibility
-            if structured_attention_plan is not None and structured_attention_plan.cached_prefix_visibility is not None
-            else cached_prefix_visibility
-        )
-
         norm_hidden_states = (self.norm1(hidden_states.float()) * (1.0 + scale_msa) + shift_msa).type_as(hidden_states)
         attn_output, self_cache_entry = self.attn1(
             norm_hidden_states,
             norm_hidden_states,
             norm_hidden_states,
             rotary_emb=rotary_emb,
-            structured_attention_context=structured_attention_context,
-            structured_attention_plan=structured_attention_plan,
-            attention_mask=resolved_attention_mask,
+            attention_mask=attention_mask,
             attention_profile=attention_profile,
             is_cross_attention=False,
             cached_key_value=self_attention_cache_entry,
-            cached_prefix_visibility=resolved_cached_prefix_visibility,
+            cached_prefix_visibility=cached_prefix_visibility,
             cache_current_token_count=cache_current_token_count,
             cache_current_token_span=cache_current_token_span,
             detach_cache_entry=detach_self_attention_cache,
@@ -1042,7 +973,6 @@ class SharedTransformerBlock(nn.Module):
         norm_hidden_states = (self.norm3(hidden_states.float()) * (1.0 + c_scale_msa) + c_shift_msa).type_as(hidden_states)
         ff_output = self.ffn(norm_hidden_states)
         hidden_states = (hidden_states.float() + ff_output.float() * c_gate_msa).type_as(hidden_states)
-        del structured_attention_context, structured_attention_plan, structured_block_semantics, structured_frequency_bundle
         return hidden_states, self_cache_entry, cross_cache_entry
 
 
@@ -1306,7 +1236,7 @@ class SharedVideoTransformerCore(nn.Module):
             self.config.hidden_size,
         )
         self.action_embedder = nn.Linear(max(self.action_dim, 1), self.config.hidden_size)
-        self.runtime_stream_adapters = SharedRuntimeStreamAdapters(
+        self.runtime_stream_adapters = RuntimeStreamCompatibilityParameters(
             hidden_size=self.config.hidden_size,
             action_dim=self.action_dim,
             state_dim=self.state_dim,
@@ -1654,90 +1584,6 @@ class SharedVideoTransformerCore(nn.Module):
                 setattr(layer_state, name, tensor.to(device=device))
         return layer_state
 
-    def _move_structured_attention_context(
-        self,
-        context: StructuredAttentionContext | None,
-        *,
-        device: torch.device,
-    ) -> StructuredAttentionContext | None:
-        if context is None:
-            return None
-        return replace(
-            context,
-            clean_prefix_grid_ids=self._move_optional_tensor(context.clean_prefix_grid_ids, device=device),
-            video_grid_ids=self._move_optional_tensor(context.video_grid_ids, device=device),
-            action_grid_ids=self._move_optional_tensor(context.action_grid_ids, device=device),
-            state_grid_ids=self._move_optional_tensor(context.state_grid_ids, device=device),
-            clean_prefix_freqs=self._move_optional_tensor(context.clean_prefix_freqs, device=device),
-            video_freqs=self._move_optional_tensor(context.video_freqs, device=device),
-            action_freqs=self._move_optional_tensor(context.action_freqs, device=device),
-            state_freqs=self._move_optional_tensor(context.state_freqs, device=device),
-        )
-
-    def _move_structured_frequency_bundle(
-        self,
-        bundle: StructuredFrequencyBundle | None,
-        *,
-        device: torch.device,
-    ) -> StructuredFrequencyBundle | None:
-        if bundle is None:
-            return None
-        return replace(
-            bundle,
-            clean_prefix_grid_ids=self._move_optional_tensor(bundle.clean_prefix_grid_ids, device=device),
-            video_grid_ids=self._move_optional_tensor(bundle.video_grid_ids, device=device),
-            action_grid_ids=self._move_optional_tensor(bundle.action_grid_ids, device=device),
-            state_grid_ids=self._move_optional_tensor(bundle.state_grid_ids, device=device),
-            shared_grid_ids=self._move_optional_tensor(bundle.shared_grid_ids, device=device),
-        )
-
-    def prepare_runtime_stream_inputs(
-        self,
-        *,
-        family: str,
-        action_inputs: torch.Tensor | None,
-        state_inputs: torch.Tensor | None,
-        action_timesteps: torch.Tensor | None,
-        state_timesteps: torch.Tensor | None,
-        action_adapter_name: str = "mlp",
-        state_adapter_name: str = "mlp",
-        use_state_adapter: bool = True,
-    ) -> dict[str, PreparedStreamInput]:
-        adapter_device = self.runtime_stream_adapters.role_embedding.weight.device
-        if action_inputs is not None and action_inputs.device != adapter_device:
-            action_inputs = action_inputs.to(device=adapter_device)
-        if state_inputs is not None and state_inputs.device != adapter_device:
-            state_inputs = state_inputs.to(device=adapter_device)
-        if action_timesteps is not None and action_timesteps.device != adapter_device:
-            action_timesteps = action_timesteps.to(device=adapter_device)
-        if state_timesteps is not None and state_timesteps.device != adapter_device:
-            state_timesteps = state_timesteps.to(device=adapter_device)
-        return self.runtime_stream_adapters.prepare_stream_inputs(
-            family=family,
-            action_inputs=action_inputs,
-            state_inputs=state_inputs,
-            action_timesteps=action_timesteps,
-            state_timesteps=state_timesteps,
-            action_adapter_name=action_adapter_name,
-            state_adapter_name=state_adapter_name,
-            use_state_adapter=use_state_adapter,
-        )
-
-    def project_runtime_stream_outputs(
-        self,
-        *,
-        family: str,
-        hidden_states: torch.Tensor,
-        token_layout: object | None,
-    ) -> dict[str, torch.Tensor]:
-        return project_runtime_stream_outputs(
-            family=family,
-            hidden_states=hidden_states,
-            token_layout=token_layout,
-            video_projector=self.proj_out,
-            action_projector=self.action_proj_out,
-        )
-
     def project_video_tokens_to_latents(
         self,
         *,
@@ -1754,187 +1600,6 @@ class SharedVideoTransformerCore(nn.Module):
             video_patch_prediction,
             token_grid=token_grid,
             latent_channels=self.config.latent_channels,
-        )
-
-    def _compose_structured_rotary_grid_ids(
-        self,
-        *,
-        structured_block_semantics: StructuredBlockSemantics | None,
-        structured_frequency_bundle: StructuredFrequencyBundle | None,
-        fallback_grid_ids: torch.Tensor | None,
-    ) -> torch.Tensor | None:
-        if structured_block_semantics is None or structured_frequency_bundle is None:
-            return (
-                structured_frequency_bundle.shared_grid_ids
-                if structured_frequency_bundle is not None and structured_frequency_bundle.shared_grid_ids is not None
-                else fallback_grid_ids
-            )
-
-        frequency_chunks: list[torch.Tensor] = []
-        if structured_block_semantics.clean_prefix_length > 0:
-            clean_prefix_grid_ids = structured_frequency_bundle.clean_prefix_grid_ids
-            if clean_prefix_grid_ids is None:
-                raise ValueError(
-                    "Structured block semantics requested an explicit clean-prefix span, but no "
-                    "`clean_prefix_grid_ids` were provided."
-                )
-            if clean_prefix_grid_ids.shape[1] != structured_block_semantics.clean_prefix_length:
-                raise ValueError(
-                    "Structured clean-prefix frequency length mismatch: expected "
-                    f"{structured_block_semantics.clean_prefix_length}, got {clean_prefix_grid_ids.shape[1]}."
-                )
-            frequency_chunks.append(clean_prefix_grid_ids)
-
-        if structured_block_semantics.video_token_length > 0:
-            video_grid_ids = structured_frequency_bundle.video_grid_ids
-            if video_grid_ids is None:
-                raise ValueError(
-                    "Structured block semantics requested explicit video-token frequencies, but no "
-                    "`video_grid_ids` were provided."
-                )
-            if video_grid_ids.shape[1] != structured_block_semantics.video_token_length:
-                raise ValueError(
-                    "Structured video frequency length mismatch: expected "
-                    f"{structured_block_semantics.video_token_length}, got {video_grid_ids.shape[1]}."
-                )
-            frequency_chunks.append(video_grid_ids)
-
-        if structured_block_semantics.action_register_length > 0:
-            action_grid_ids = structured_frequency_bundle.action_grid_ids
-            if action_grid_ids is None:
-                raise ValueError(
-                    "Structured block semantics requested explicit action-register frequencies, but no "
-                    "`action_grid_ids` were provided."
-                )
-            if action_grid_ids.shape[1] != structured_block_semantics.action_register_length:
-                raise ValueError(
-                    "Structured action-register frequency length mismatch: expected "
-                    f"{structured_block_semantics.action_register_length}, got {action_grid_ids.shape[1]}."
-                )
-            frequency_chunks.append(action_grid_ids)
-
-        if structured_block_semantics.state_register_length > 0:
-            state_grid_ids = structured_frequency_bundle.state_grid_ids
-            if state_grid_ids is None:
-                raise ValueError(
-                    "Structured block semantics requested explicit state-register frequencies, but no "
-                    "`state_grid_ids` were provided."
-                )
-            if state_grid_ids.shape[1] != structured_block_semantics.state_register_length:
-                raise ValueError(
-                    "Structured state-register frequency length mismatch: expected "
-                    f"{structured_block_semantics.state_register_length}, got {state_grid_ids.shape[1]}."
-                )
-            frequency_chunks.append(state_grid_ids)
-
-        if frequency_chunks:
-            return torch.cat(frequency_chunks, dim=1)
-        return (
-            structured_frequency_bundle.shared_grid_ids
-            if structured_frequency_bundle.shared_grid_ids is not None
-            else fallback_grid_ids
-        )
-
-    def _resolve_structured_attention_context(
-        self,
-        core_input: VisualCoreInput,
-        *,
-        device: torch.device,
-    ) -> StructuredAttentionContext | None:
-        context = core_input.structured_attention_context
-        if context is None and (
-            core_input.structured_block_semantics is not None or core_input.structured_frequency_bundle is not None
-        ):
-            semantics = core_input.structured_block_semantics
-            frequencies = core_input.structured_frequency_bundle
-            if semantics is not None:
-                context = StructuredAttentionContext(
-                    mode=semantics.mode,
-                    teacher_forcing_enabled=semantics.teacher_forcing_enabled,
-                    clean_prefix_length=semantics.clean_prefix_length,
-                    video_token_length=semantics.video_token_length,
-                    action_register_length=semantics.action_register_length,
-                    state_register_length=semantics.state_register_length,
-                    current_start_frame=semantics.current_start_frame,
-                    observed_prefix_frames=semantics.observed_prefix_frames,
-                    num_frame_per_block=1,
-                    num_action_per_block=0,
-                    num_state_per_block=0,
-                    num_video_blocks=0,
-                    num_action_blocks=0,
-                    num_state_blocks=0,
-                    tokens_per_frame=0,
-                    tokens_per_video_block=0,
-                    frequency_mode=semantics.frequency_mode,
-                    attention_kernel=semantics.metadata.get("attention_kernel", "mask_only"),
-                    cache_kernel=semantics.metadata.get("cache_kernel", "prefix_mask_only"),
-                    rollout_phase=semantics.metadata.get("rollout_phase", "teacher_forcing"),
-                    action_state_index=int(semantics.metadata.get("action_state_index", 0)),
-                    cached_video_tokens=int(semantics.metadata.get("cached_video_tokens", 0)),
-                    cached_segment_lengths=tuple(semantics.metadata.get("cached_segment_lengths", ())),
-                    clean_prefix_grid_ids=frequencies.clean_prefix_grid_ids if frequencies is not None else None,
-                    video_grid_ids=frequencies.video_grid_ids if frequencies is not None else None,
-                    action_grid_ids=frequencies.action_grid_ids if frequencies is not None else None,
-                    state_grid_ids=frequencies.state_grid_ids if frequencies is not None else None,
-                    metadata=dict(semantics.metadata),
-                )
-        if context is None or context.mode == "none":
-            return context
-
-        def _resolve_freq(grid_ids: torch.Tensor | None) -> torch.Tensor | None:
-            if grid_ids is None:
-                return None
-            return self.rope(grid_ids.to(device=device))
-
-        return StructuredAttentionContext(
-            mode=context.mode,
-            teacher_forcing_enabled=context.teacher_forcing_enabled,
-            clean_prefix_length=context.clean_prefix_length,
-            video_token_length=context.video_token_length,
-            action_register_length=context.action_register_length,
-            state_register_length=context.state_register_length,
-            current_start_frame=context.current_start_frame,
-            observed_prefix_frames=context.observed_prefix_frames,
-            num_frame_per_block=context.num_frame_per_block,
-            num_action_per_block=context.num_action_per_block,
-            num_state_per_block=context.num_state_per_block,
-            num_video_blocks=context.num_video_blocks,
-            num_action_blocks=context.num_action_blocks,
-            num_state_blocks=context.num_state_blocks,
-            tokens_per_frame=context.tokens_per_frame,
-            tokens_per_video_block=context.tokens_per_video_block,
-            frequency_mode=context.frequency_mode,
-            attention_kernel=context.attention_kernel,
-            cache_kernel=context.cache_kernel,
-            rollout_phase=context.rollout_phase,
-            action_state_index=context.action_state_index,
-            cached_video_tokens=context.cached_video_tokens,
-            cached_segment_lengths=tuple(context.cached_segment_lengths),
-            clean_prefix_grid_ids=context.clean_prefix_grid_ids,
-            video_grid_ids=context.video_grid_ids,
-            action_grid_ids=context.action_grid_ids,
-            state_grid_ids=context.state_grid_ids,
-            clean_prefix_freqs=(
-                context.clean_prefix_freqs
-                if context.clean_prefix_freqs is not None
-                else _resolve_freq(context.clean_prefix_grid_ids)
-            ),
-            video_freqs=(
-                context.video_freqs
-                if context.video_freqs is not None
-                else _resolve_freq(context.video_grid_ids)
-            ),
-            action_freqs=(
-                context.action_freqs
-                if context.action_freqs is not None
-                else _resolve_freq(context.action_grid_ids)
-            ),
-            state_freqs=(
-                context.state_freqs
-                if context.state_freqs is not None
-                else _resolve_freq(context.state_grid_ids)
-            ),
-            metadata=dict(context.metadata),
         )
 
     def _require_exact_action_dim(self) -> None:
@@ -2476,7 +2141,6 @@ class SharedVideoTransformerCore(nn.Module):
     def execute_runtime_step(self, step_input: RuntimeStepInput) -> RuntimeStepOutput:
         prepared = prepare_runtime_sequence(
             step_input,
-            hidden_size=self.config.hidden_size,
             exact_train_preparer=lambda payload: prepare_exact_dual_stream_train_sequence(
                 payload,
                 config=self.config,
@@ -2503,25 +2167,16 @@ class SharedVideoTransformerCore(nn.Module):
             core_output = self.forward(prepared.core_input)
             core_output.aux.setdefault("runtime_program", step_input.program.name)
             core_output.aux.setdefault("sequence_family", step_input.program.sequence_family)
-            projected_outputs = (
-                self.project_runtime_stream_outputs(
-                    family=step_input.program.output_head_family,
-                    hidden_states=core_output.tokens,
-                    token_layout=core_output.token_layout,
-                )
-                if step_input.program.output_head_family
-                else {}
-            )
             return RuntimeStepOutput(
                 tokens=core_output.tokens,
                 core_output=core_output,
-                projected_outputs=projected_outputs,
+                projected_outputs={},
                 cache_state=core_output.cache_state,
                 aux={
                     **core_output.aux,
                     "runtime_program": step_input.program.name,
                     "sequence_family": step_input.program.sequence_family,
-                    "stream_output_head_family": step_input.program.output_head_family or "none",
+                    "stream_output_head_family": "none",
                 },
             )
         if prepared.mode == "exact_train":
@@ -2638,100 +2293,6 @@ class SharedVideoTransformerCore(nn.Module):
             return stream_ids.to(device=device, dtype=torch.long)
         raise ValueError(f"Expected stream_ids with ndim 1 or 2, got shape {tuple(stream_ids.shape)}")
 
-    def _materialize_register_components(
-        self,
-        register_components: RegisterSequenceComponents,
-        *,
-        batch_size: int,
-        device: torch.device,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        layout = register_components.layout
-        if register_components.semantics.sequence_family != "register_sequence":
-            raise ValueError(
-                "Replica core only supports the generic structured register-sequence family on the "
-                f"structured register path, got {register_components.semantics.sequence_family!r}."
-            )
-        if register_components.semantics.attention_style != "blockwise_causal":
-            raise ValueError(
-                "Replica core currently supports only `blockwise_causal` register attention style, "
-                f"got {register_components.semantics.attention_style!r}."
-            )
-        video_grid_ids = build_video_grid_ids(
-            register_components.token_grid,
-            device=device,
-            frame_shift=float(register_components.current_start_frame),
-        )
-        packed_token_chunks = []
-        packed_grid_chunks = []
-        if register_components.clean_video_prefix_tokens is not None:
-            packed_token_chunks.append(register_components.clean_video_prefix_tokens)
-            packed_grid_chunks.append(video_grid_ids)
-        packed_token_chunks.extend(
-            [
-                register_components.noisy_video_tokens,
-                register_components.action_register_tokens,
-                register_components.state_register_tokens,
-            ]
-        )
-        packed_grid_chunks.extend(
-            [
-                video_grid_ids,
-                build_sequence_grid_ids(
-                    register_components.action_register_tokens.shape[1],
-                    device=device,
-                    offset=0.0,
-                ),
-                build_sequence_grid_ids(
-                    register_components.state_register_tokens.shape[1],
-                    device=device,
-                    offset=float(register_components.action_register_tokens.shape[1]),
-                ),
-            ]
-        )
-        packed_tokens = torch.cat(packed_token_chunks, dim=1)
-        packed_grid_ids = torch.cat(packed_grid_chunks, dim=1)
-        position_context = build_register_position_context(
-            layout=layout,
-            token_grid=register_components.token_grid,
-            hidden_size=self.config.hidden_size,
-            device=device,
-            current_start_frame=register_components.current_start_frame,
-        )[None, :, :].expand(batch_size, -1, -1)
-        clean_video_values = torch.zeros(
-            batch_size,
-            layout.clean_video_sequence_length,
-            device=device,
-            dtype=torch.float32,
-        )
-        noisy_video_values = register_components.video_timesteps.repeat_interleave(
-            register_components.token_grid.tokens_per_frame,
-            dim=1,
-        )
-        timestep_chunks = []
-        if layout.has_clean_video_prefix:
-            timestep_chunks.append(clean_video_values)
-        timestep_chunks.append(noisy_video_values)
-        if register_components.action_register_tokens.shape[1] > 0:
-            timestep_chunks.append(register_components.action_timesteps)
-        if register_components.state_register_tokens.shape[1] > 0:
-            timestep_chunks.append(register_components.state_timesteps)
-        timestep_values = torch.cat(timestep_chunks, dim=1)
-        attention_mask = build_register_attention_mask(layout, batch_size=batch_size, device=device)
-        stream_id_chunks = []
-        if layout.has_clean_video_prefix:
-            stream_id_chunks.append(
-                torch.zeros(batch_size, layout.clean_video_sequence_length, device=device, dtype=torch.long)
-            )
-        stream_id_chunks.extend(
-            [
-                torch.zeros(batch_size, layout.noisy_video_sequence_length, device=device, dtype=torch.long),
-                torch.ones(batch_size, register_components.action_register_tokens.shape[1], device=device, dtype=torch.long),
-                torch.ones(batch_size, register_components.state_register_tokens.shape[1], device=device, dtype=torch.long),
-            ]
-        )
-        stream_ids = torch.cat(stream_id_chunks, dim=1)
-        return packed_tokens, position_context, packed_grid_ids, timestep_values, attention_mask, stream_ids
-
     def _select_stream_tensor(
         self,
         video_tensor: torch.Tensor,
@@ -2790,29 +2351,12 @@ class SharedVideoTransformerCore(nn.Module):
                 action_mode=action_mode,
             )
         token_layout = core_input.token_layout
-        if core_input.register_components is not None:
-            (
-                hidden_states,
-                position_context,
-                grid_ids,
-                timestep_values,
-                attention_mask,
-                stream_ids_tensor,
-            ) = self._materialize_register_components(
-                core_input.register_components,
-                batch_size=core_input.register_components.noisy_video_tokens.shape[0],
-                device=core_input.register_components.noisy_video_tokens.device,
-            )
-            token_layout = core_input.register_components.layout
-        else:
-            if core_input.tokens is None:
-                raise ValueError("Replica core expected `tokens` unless `register_components` is provided.")
-            hidden_states = core_input.tokens
-            position_context = core_input.position_context
-            grid_ids = core_input.grid_ids
-            timestep_values = core_input.timestep_values
-            attention_mask = core_input.attention_mask
-            stream_ids_tensor = core_input.stream_ids
+        hidden_states = core_input.tokens
+        position_context = core_input.position_context
+        grid_ids = core_input.grid_ids
+        timestep_values = core_input.timestep_values
+        attention_mask = core_input.attention_mask
+        stream_ids_tensor = core_input.stream_ids
         batch_size, seq_len, _ = hidden_states.shape
         prep_device = (
             self.time_conditioner.time_embedder.linear_1.weight.device
@@ -2864,17 +2408,7 @@ class SharedVideoTransformerCore(nn.Module):
         temb = self._select_stream_tensor(video_temb, action_temb, stream_ids)
         timestep_proj = self._select_stream_tensor(video_timestep_proj, action_timestep_proj, stream_ids)
 
-        structured_block_semantics = core_input.structured_block_semantics
-        structured_frequency_bundle = core_input.structured_frequency_bundle
-        structured_attention_context = self._resolve_structured_attention_context(
-            core_input,
-            device=device,
-        )
-        rotary_grid_ids = self._compose_structured_rotary_grid_ids(
-            structured_block_semantics=structured_block_semantics,
-            structured_frequency_bundle=structured_frequency_bundle,
-            fallback_grid_ids=grid_ids,
-        )
+        rotary_grid_ids = grid_ids
         rotary_emb = self.rope(rotary_grid_ids.to(device=device))[:, :, None] if rotary_grid_ids is not None else None
         encoder_hidden_states = self._resolve_encoder_hidden_states(
             core_input,
@@ -2929,22 +2463,11 @@ class SharedVideoTransformerCore(nn.Module):
                 device=block_device,
                 dtype=hidden_states.dtype,
             )
-            block_structured_attention_context = self._move_structured_attention_context(
-                structured_attention_context,
-                device=block_device,
-            )
-            block_structured_frequency_bundle = self._move_structured_frequency_bundle(
-                structured_frequency_bundle,
-                device=block_device,
-            )
             hidden_states, current_self_cache_entry, current_cross_cache_entry = block(
                 hidden_states,
                 encoder_hidden_states=block_encoder_hidden_states,
                 temb=block_timestep_proj,
                 rotary_emb=block_rotary_emb,
-                structured_attention_context=block_structured_attention_context,
-                structured_block_semantics=structured_block_semantics,
-                structured_frequency_bundle=block_structured_frequency_bundle,
                 attention_mask=block_attention_mask,
                 attention_profile=core_input.attention_profile,
                 self_attention_cache_entry=(
@@ -3104,85 +2627,24 @@ class SharedVideoTransformerCore(nn.Module):
                 "used_rotary": rotary_grid_ids is not None,
                 "used_action_conditioner": bool((stream_ids != 0).any().item()),
                 "has_sequence_metadata": core_input.sequence_metadata is not None,
-                "structured_block_mode": (
-                    structured_block_semantics.mode if structured_block_semantics is not None else "none"
-                ),
-                "structured_attention_mode": (
-                    structured_attention_context.mode if structured_attention_context is not None else "none"
-                ),
-                "structured_attention_kernel": (
-                    structured_attention_context.attention_kernel
-                    if structured_attention_context is not None
-                    else "none"
-                ),
-                "structured_cache_kernel": (
-                    structured_attention_context.cache_kernel
-                    if structured_attention_context is not None
-                    else "none"
-                ),
-                "structured_attention_internal_mask": bool(
-                    structured_attention_context is not None
-                    and structured_attention_context.mode == "register_explicit"
-                ),
-                "structured_attention_full_cache_prefix": bool(
-                    structured_attention_context is not None
-                    and structured_attention_context.mode == "register_explicit"
-                    and incoming_self_attention_kv
-                    and incoming_self_attention_kv[0].key is not None
-                ),
-                "structured_frequency_mode": (
-                    structured_frequency_bundle.layout if structured_frequency_bundle is not None else "none"
-                ),
-                "structured_has_clean_prefix_frequencies": bool(
-                    structured_frequency_bundle is not None
-                    and structured_frequency_bundle.clean_prefix_grid_ids is not None
-                ),
-                "structured_has_action_frequencies": bool(
-                    structured_frequency_bundle is not None
-                    and structured_frequency_bundle.action_grid_ids is not None
-                ),
-                "structured_has_state_frequencies": bool(
-                    structured_frequency_bundle is not None
-                    and structured_frequency_bundle.state_grid_ids is not None
-                ),
-                "structured_register_frame_shift": (
-                    structured_attention_context.metadata.get("register_frame_shift")
-                    if structured_attention_context is not None
-                    else None
-                ),
-                "structured_time_layout": (
-                    structured_block_semantics.time_layout if structured_block_semantics is not None else "generic"
-                ),
-                "structured_position_layout": (
-                    structured_block_semantics.position_layout
-                    if structured_block_semantics is not None
-                    else "generic"
-                ),
-                "structured_current_start_frame": (
-                    structured_block_semantics.current_start_frame
-                    if structured_block_semantics is not None
-                    else None
-                ),
-                "structured_observed_prefix_frames": (
-                    structured_block_semantics.observed_prefix_frames
-                    if structured_block_semantics is not None
-                    else None
-                ),
-                "structured_action_register_length": (
-                    structured_block_semantics.action_register_length
-                    if structured_block_semantics is not None
-                    else None
-                ),
-                "structured_state_register_length": (
-                    structured_block_semantics.state_register_length
-                    if structured_block_semantics is not None
-                    else None
-                ),
-                "structured_clean_prefix_length": (
-                    structured_block_semantics.clean_prefix_length
-                    if structured_block_semantics is not None
-                    else None
-                ),
+                "structured_block_mode": "none",
+                "structured_attention_mode": "none",
+                "structured_attention_kernel": "none",
+                "structured_cache_kernel": "none",
+                "structured_attention_internal_mask": False,
+                "structured_attention_full_cache_prefix": False,
+                "structured_frequency_mode": "none",
+                "structured_has_clean_prefix_frequencies": False,
+                "structured_has_action_frequencies": False,
+                "structured_has_state_frequencies": False,
+                "structured_register_frame_shift": None,
+                "structured_time_layout": "generic",
+                "structured_position_layout": "generic",
+                "structured_current_start_frame": None,
+                "structured_observed_prefix_frames": None,
+                "structured_action_register_length": None,
+                "structured_state_register_length": None,
+                "structured_clean_prefix_length": None,
                 "cache_runtime_metadata": cache_update_metadata,
             },
         )
