@@ -157,7 +157,7 @@ def _launcher_realtime_result(
 
 
 def _load_mot_visualization_module():
-    module_path = REPO_ROOT / "scripts/deprecated/run_libero_mot_visualization.py"
+    module_path = REPO_ROOT / "scripts/run_libero_mot_visualization.py"
     spec = importlib.util.spec_from_file_location("open_wam_test_mot_visualization", module_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Failed to import {module_path}.")
@@ -725,7 +725,7 @@ def test_mot_gjd_realtime_launcher_exposes_named_ablation_overrides() -> None:
     assert _arg_value(argv, "--startup-env-init-steps") == "5"
     assert _arg_value(argv, "--max-timestep") == "1500"
     assert _arg_value(argv, "--max-chunks") == "100"
-    assert "--allow-deprecated-libero-config" in argv
+    assert "--allow-deprecated-libero-config" not in argv
     assert "policy_variant.generalist_mode_text_token=true" in argv
     for value in FIXED_128_VALUES:
         assert value not in argv
@@ -793,7 +793,7 @@ def test_unified_gjd_realtime_launcher_covers_m1_and_m5_ablation_surfaces() -> N
                 assert _arg_value(argv, "--startup-env-init-steps") == "5"
                 assert _arg_value(argv, "--max-timestep") == "1500"
                 assert _arg_value(argv, "--max-chunks") == "100"
-                assert "--allow-deprecated-libero-config" in argv
+                assert "--allow-deprecated-libero-config" not in argv
             assert any(token.startswith(expected_prob_prefixes[method]) for token in argv)
             assert f"policy_variant.generalist_mode_text_token={str(ablation == 'mode_token').lower()}" in argv
             _assert_gjd_ablation_config(_resolved_config_from_realtime_argv(argv), method=method, ablation=ablation)

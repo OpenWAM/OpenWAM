@@ -32,7 +32,7 @@ from open_wam.utils import (  # noqa: E402
 )
 from open_wam.utils.libero_paradigm import require_current_libero_policy_paradigm  # noqa: E402
 
-_MOT_VIZ_PATH = REPO_ROOT / "scripts" / "deprecated" / "run_libero_mot_visualization.py"
+_MOT_VIZ_PATH = REPO_ROOT / "scripts" / "run_libero_mot_visualization.py"
 _spec = importlib.util.spec_from_file_location("open_wam_mot_single_visualization", _MOT_VIZ_PATH)
 if _spec is None or _spec.loader is None:  # pragma: no cover - importlib defensive guard
     raise RuntimeError(f"Failed to import MoT visualization helpers from {_MOT_VIZ_PATH}.")

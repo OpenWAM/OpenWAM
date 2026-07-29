@@ -42,7 +42,6 @@ _DEPRECATED_LIBERO_POLICY_CONFIG_REASONS = {
 _DEPRECATED_LIBERO_SCRIPT_REPLACEMENTS = {
     "run_libero_exact_realtime_sandbox.py": "scripts/run_libero_realtime_sandbox.py",
     "run_libero_exact_visualization.py": "scripts/run_libero_realtime_sandbox.py or scripts/run_libero_sampled_eval.py",
-    "run_libero_mot_visualization.py": "scripts/run_libero_realtime_sandbox.py or scripts/run_libero_sampled_eval.py",
     "run_libero_realtime_ablation.py": "scripts/run_libero_sampled_eval.py",
     "run_mot_non_joint_aligned_libero_A.sh": (
         "scripts/run_mot_nonjoint_posttrain_libero.sh with a current *_heng_compatible CONFIG_NAME"

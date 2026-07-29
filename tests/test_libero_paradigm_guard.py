@@ -149,11 +149,8 @@ def test_libero_script_guard_rejects_legacy_visualization_entrypoints() -> None:
     with pytest.raises(ValueError, match="run_libero_realtime_sandbox.py"):
         require_current_libero_script("scripts/deprecated/run_libero_exact_visualization.py")
 
-    assert deprecated_libero_script_replacement("scripts/deprecated/run_libero_mot_visualization.py") == (
-        "scripts/run_libero_realtime_sandbox.py or scripts/run_libero_sampled_eval.py"
-    )
-
 
 def test_libero_script_guard_allows_current_entrypoints_and_explicit_opt_in() -> None:
     require_current_libero_script("scripts/run_libero_realtime_sandbox.py")
+    require_current_libero_script("scripts/run_libero_mot_visualization.py")
     require_current_libero_script("scripts/deprecated/run_libero_exact_visualization.py", allow_deprecated=True)

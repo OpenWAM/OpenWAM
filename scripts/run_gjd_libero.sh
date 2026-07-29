@@ -350,14 +350,6 @@ gjd_append_default_arg() {
   fi
 }
 
-gjd_append_default_flag() {
-  local -n default_args_ref="$1"
-  local flag="$2"
-  if ! gjd_has_cli_arg "${flag}" "${PASSTHROUGH_ARGS[@]}"; then
-    default_args_ref+=("${flag}")
-  fi
-}
-
 build_default_m5_rollout_semantic_args() {
   local -n rollout_semantic_args_ref="$1"
   gjd_reject_deprecated_m5_frontend_encode_mode
@@ -367,7 +359,6 @@ build_default_m5_rollout_semantic_args() {
   gjd_append_default_arg rollout_semantic_args_ref --startup-env-init-steps "${GJD_M5_STARTUP_ENV_INIT_STEPS:-5}"
   gjd_append_default_arg rollout_semantic_args_ref --max-timestep "${GJD_M5_MAX_TIMESTEP:-1500}"
   gjd_append_default_arg rollout_semantic_args_ref --max-chunks "${GJD_M5_MAX_CHUNKS:-100}"
-  gjd_append_default_flag rollout_semantic_args_ref --allow-deprecated-libero-config
 }
 
 build_ablation_args() {

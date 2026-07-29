@@ -15,7 +15,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
     "relative_path",
     (
         "scripts/run_libero_exact_visualization.py",
-        "scripts/run_libero_mot_visualization.py",
         "scripts/run_libero_exact_realtime_sandbox.py",
         "scripts/run_libero_realtime_ablation.py",
     ),
