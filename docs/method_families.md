@@ -15,9 +15,9 @@ semantics, not a separate top-level training stack.
 | Video-only | `causal_video_prediction` | Visual prediction baseline without an action decoder. |
 
 Traditional Method 2 `register_attached` and the experimental Method 3
-`video_sequence_policy`/VPP path have been retired. Method 2 keeps explicit
-compatibility stubs; Method 3 had no public checkpoint contract and is
-recoverable from Git history.
+`video_sequence_policy`/VPP path have been retired from the public package.
+Their unsupported implementations and inputs remain recoverable from Git
+history.
 
 ## Shared Execution
 

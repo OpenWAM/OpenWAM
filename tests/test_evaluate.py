@@ -152,7 +152,6 @@ def test_mot_libero_eval_configs_resolve_model_checkpoints(
     ("wrapper_name", "experiment_name"),
     [
         ("parallel_stream_robotwin_smoke.yaml", "parallel_stream_robotwin_smoke.yaml"),
-        ("register_attached_robotwin_smoke.yaml", "register_attached_robotwin_smoke.yaml"),
         ("mot_robotwin_smoke.yaml", "mot_robotwin_smoke.yaml"),
         ("causal_video_prediction_robotwin_smoke.yaml", "causal_video_prediction_robotwin_smoke.yaml"),
     ],

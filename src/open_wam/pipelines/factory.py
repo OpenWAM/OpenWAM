@@ -14,7 +14,6 @@ from open_wam.configs import (
     PostDecodedPolicyConfig,
     PostLatentPolicyConfig,
     ProprioContextMode,
-    RegisterAttachedPolicyConfig,
     VideoConditionInputSpace,
     VideoConditionSource,
     VideoConditionTrainMode,
@@ -29,7 +28,6 @@ from open_wam.models.action_decoders import (
     LingbotParallelActionDecoder,
     MLPActionDecoder,
     MoTActionDecoder,
-    RegisterActionDecoder,
     VideoConditionedActionDecoder,
     VideoOnlyActionDecoder,
 )
@@ -42,9 +40,6 @@ from open_wam.models.policy_variants import (
 )
 from open_wam.models.policy_variants.parallel_stream.action_adapter import (
     build_action_adapter_spec,
-)
-from open_wam.models.policy_variants.register_attached.deprecation import (
-    raise_register_attached_obsolete,
 )
 from open_wam.models.video_backbone import normalize_backbone_implementation
 from open_wam.models.visual_tower import VisualTower
@@ -98,8 +93,6 @@ def _resolve_proprio_hidden_context_state_dim(config: ExperimentConfig) -> int |
 
 def validate_experiment_config(config: ExperimentConfig) -> None:
     action_schema = config.data.action_schema
-    if isinstance(config.policy_variant, RegisterAttachedPolicyConfig):
-        raise_register_attached_obsolete(stacklevel=3)
     validate_action_mapping_preflight(
         config.data.action_mapping,
         action_schema_dim=action_schema.action_dim,
@@ -313,12 +306,6 @@ def _build_mot_policy_variant(config: ExperimentConfig):
     )
 
 
-def _build_register_attached_policy_variant(config: ExperimentConfig):
-    policy_config = config.policy_variant
-    assert isinstance(policy_config, RegisterAttachedPolicyConfig)
-    raise_register_attached_obsolete(stacklevel=3)
-
-
 def _build_parallel_stream_policy_variant(config: ExperimentConfig):
     action_schema = config.data.action_schema
     policy_config = config.policy_variant
@@ -357,18 +344,6 @@ def _build_mlp_action_decoder(config: ExperimentConfig):
             dropout=decoder_config.dropout,
         )
     return MLPActionDecoder(
-        hidden_size=decoder_config.hidden_size,
-        action_dim=decoder_config.action_dim,
-        action_horizon=decoder_config.action_horizon,
-        training_config=config.training,
-        inference_config=config.inference,
-        dropout=decoder_config.dropout,
-    )
-
-
-def _build_register_action_decoder(config: ExperimentConfig):
-    decoder_config = config.action_decoder
-    return RegisterActionDecoder(
         hidden_size=decoder_config.hidden_size,
         action_dim=decoder_config.action_dim,
         action_horizon=decoder_config.action_horizon,
@@ -508,12 +483,6 @@ def _register_builtin_pipeline_builders() -> None:
         replace=True,
     )
     POLICY_VARIANT_BUILDERS.register(
-        RegisterAttachedPolicyConfig,
-        _build_register_attached_policy_variant,
-        description="OBSOLETE traditional Method 2 register-attached policy variant.",
-        replace=True,
-    )
-    POLICY_VARIANT_BUILDERS.register(
         ParallelStreamPolicyConfig,
         _build_parallel_stream_policy_variant,
         description="Parallel-stream LingBot-compatible policy variant.",
@@ -521,7 +490,6 @@ def _register_builtin_pipeline_builders() -> None:
     )
 
     ACTION_DECODER_BUILDERS.register(ActionDecoderName.MLP, _build_mlp_action_decoder, replace=True)
-    ACTION_DECODER_BUILDERS.register(ActionDecoderName.REGISTER, _build_register_action_decoder, replace=True)
     ACTION_DECODER_BUILDERS.register(
         ActionDecoderName.DECODED_FEATURE,
         _build_decoded_feature_action_decoder,

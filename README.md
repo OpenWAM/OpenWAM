@@ -160,9 +160,9 @@ Method 1, LingBot:
 - the shared backbone executes method 1 through exact runtime programs rather
   than a sidecar transformer module
 
-Traditional Method 2 `register_attached` is removed. Historical config and
-script names remain as compatibility stubs that fail with an explicit
-migration message; they do not contain a second runtime implementation.
+Traditional Method 2 `register_attached` has been removed from the public
+configuration and runtime surface. Use action-conditioned `parallel_stream`
+for the maintained Method 2 semantics; Git history preserves obsolete inputs.
 
 Action-only diffusion variants:
 

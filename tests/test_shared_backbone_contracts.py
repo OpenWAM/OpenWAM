@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-import pytest
-
 from open_wam.data import build_synthetic_batch
 from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
 from open_wam.pipelines import build_variant_pipeline_from_config
@@ -41,26 +39,3 @@ def test_post_latent_and_post_decoded_share_video_conditioner_path() -> None:
         assert train_output.visual_outputs.core.aux["used_action_conditioner"] is False
         assert infer_output.visual_outputs.core is not None
         assert infer_output.visual_outputs.core.aux["used_action_conditioner"] is False
-
-
-def test_register_attached_variant_is_obsolete() -> None:
-    config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/register_attached_robotwin_smoke.yaml"
-    )
-    config = replace(config, backbone=replace(config.backbone, implementation="lingbot_replica"))
-
-    with (
-        pytest.warns(RuntimeWarning, match="Traditional Method 2 `register_attached` is obsolete"),
-        pytest.raises(RuntimeError, match="Traditional Method 2 `register_attached` is obsolete"),
-    ):
-        build_variant_pipeline_from_config(config)
-
-
-def test_register_attached_public_symbol_is_an_explicit_failure_stub() -> None:
-    from open_wam.models.policy_variants import RegisterAttachedPolicyVariant
-
-    with (
-        pytest.warns(RuntimeWarning, match="Traditional Method 2 `register_attached` is obsolete"),
-        pytest.raises(RuntimeError, match="implementation has been removed"),
-    ):
-        RegisterAttachedPolicyVariant()

@@ -21,7 +21,6 @@ if TYPE_CHECKING:
     from .parallel_stream import ParallelStreamPolicyVariant
     from .post_decoded import PostDecodedPolicyVariant
     from .post_latent import PostLatentPolicyVariant
-    from .register_attached import RegisterAttachedPolicyVariant
 
 __all__ = [
     "ParallelStreamPolicyVariant",
@@ -39,7 +38,6 @@ __all__ = [
     "PolicyVariant",
     "PostDecodedPolicyVariant",
     "PostLatentPolicyVariant",
-    "RegisterAttachedPolicyVariant",
 ]
 
 
@@ -64,8 +62,4 @@ def __getattr__(name: str):
         from .post_latent import PostLatentPolicyVariant
 
         return PostLatentPolicyVariant
-    if name == "RegisterAttachedPolicyVariant":
-        from .register_attached import RegisterAttachedPolicyVariant
-
-        return RegisterAttachedPolicyVariant
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

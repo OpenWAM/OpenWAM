@@ -72,7 +72,6 @@ def test_wandb_log_sink_can_use_contiguous_global_step(monkeypatch) -> None:
 def test_run_tracking_metadata_normalizes_method_families(tmp_path: Path) -> None:
     cases = [
         ("parallel_stream_robotwin_smoke.yaml", "method_1", "parallel_stream"),
-        ("register_attached_robotwin_smoke.yaml", "method_2", "register_attached"),
         ("post_latent_robotwin_video_conditioned.yaml", "method_4", "post_latent"),
         ("mot_robotwin_smoke.yaml", "method_5", "mot"),
         ("causal_video_prediction_robotwin_smoke.yaml", "causal_video_prediction", "causal_video_prediction"),

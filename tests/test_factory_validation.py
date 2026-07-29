@@ -20,8 +20,6 @@ from open_wam.configs import (
     ParallelStreamPolicyConfig,
     PostLatentPolicyConfig,
     PostDecodedPolicyConfig,
-    RegisterActionDecoderConfig,
-    RegisterAttachedPolicyConfig,
     RobotWinDataConfig,
     TrainerConfig,
     TrainingConfig,
@@ -696,29 +694,6 @@ def test_parallel_stream_requires_shared_transformer_backbone() -> None:
         raise AssertionError("Expected parallel-stream validation to reject a non-shared backbone.")
 
 
-def test_register_attached_pipeline_build_is_obsolete() -> None:
-    config = ExperimentConfig(
-        data=RobotWinDataConfig(
-            num_frames=2,
-            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=2, state_dim=4, state_horizon=2),
-        ),
-        backbone=LingbotCompatibleVideoBackboneConfig(implementation="dummy"),
-        policy_variant=RegisterAttachedPolicyConfig(
-            hidden_size=32,
-            num_frame_per_block=1,
-            num_action_per_block=1,
-            num_state_per_block=1,
-        ),
-        action_decoder=RegisterActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=2),
-        training=TrainingConfig(chunk_size=2, window_size=8),
-        inference=InferenceConfig(frame_chunk_size=2),
-    )
-
-    with pytest.warns(RuntimeWarning, match="Traditional Method 2 `register_attached` is obsolete"):
-        with pytest.raises(RuntimeError, match="Traditional Method 2 `register_attached` is obsolete"):
-            build_variant_pipeline_from_config(config)
-
-
 def test_mot_policy_builds_with_shared_transformer_backbone() -> None:
     config = ExperimentConfig(
         data=RobotWinDataConfig(
@@ -813,33 +788,3 @@ def test_post_decoded_rejects_non_decode_attachment() -> None:
         assert "post_visual_decode" in str(exc)
     else:  # pragma: no cover - defensive guard
         raise AssertionError("Expected post-decoded config to reject non-decode attachment.")
-
-
-def test_register_attached_libero_style_config_is_obsolete_before_block_validation() -> None:
-    config = ExperimentConfig(
-        data=LiberoDataConfig(
-            num_frames=4,
-            action_schema=ActionSchemaConfig(action_dim=7, action_horizon=6, state_dim=8, state_horizon=1),
-            action_target=ActionTargetConfig(representation="eef_pose_relative_to_reference"),
-        ),
-        backbone=LingbotCompatibleVideoBackboneConfig(
-            implementation="shared_transformer",
-            hidden_size=32,
-            num_layers=1,
-            num_heads=4,
-            attention_head_dim=8,
-        ),
-        policy_variant=RegisterAttachedPolicyConfig(
-            hidden_size=32,
-            num_frame_per_block=1,
-            num_action_per_block=2,
-            num_state_per_block=1,
-        ),
-        action_decoder=RegisterActionDecoderConfig(hidden_size=32, action_dim=7, action_horizon=6),
-        training=TrainingConfig(chunk_size=2, window_size=8),
-        inference=InferenceConfig(frame_chunk_size=1),
-    )
-
-    with pytest.warns(RuntimeWarning, match="Traditional Method 2 `register_attached` is obsolete"):
-        with pytest.raises(RuntimeError, match="Traditional Method 2 `register_attached` is obsolete"):
-            build_variant_pipeline_from_config(config)

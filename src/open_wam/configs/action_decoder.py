@@ -35,14 +35,6 @@ class MLPActionDecoderConfig(ActionDecoderConfig):
 
 
 @dataclass(frozen=True)
-class RegisterActionDecoderConfig(ActionDecoderConfig):
-    name: ActionDecoderName = ActionDecoderName.REGISTER
-    hidden_size: int = 256
-    action_dim: int = 0
-    action_horizon: int = 0
-
-
-@dataclass(frozen=True)
 class DecodedFeatureActionDecoderConfig(ActionDecoderConfig):
     name: ActionDecoderName = ActionDecoderName.DECODED_FEATURE
     hidden_size: int = 256

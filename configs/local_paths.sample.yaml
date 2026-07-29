@@ -69,10 +69,6 @@ paths:
     libero_videoonly_step_850: /path/to/runs/libero_videoonly/checkpoints/checkpoint_step_850/transformer
     libero_videoonly_all_subsets_step_3500: /path/to/runs/causal_video_prediction_libero_video_only_base_all_subsets/checkpoints/checkpoint_step_3500/transformer
 
-    # OBSOLETE traditional Method-2 register-attached export. Kept only so
-    # historical configs can resolve paths before failing at pipeline build.
-    register_attached_libero_step_1000: /path/to/runs/register_attached_libero_latent_local/checkpoints/checkpoint_step_1000/transformer
-
     # Method-5 eval checkpoints.
     mot_libero_idm_step_1900_root: /path/to/runs/mot_libero_latent_local_idm/checkpoints/checkpoint_step_1900
     mot_libero_joint_step_900_root: /path/to/runs/mot_libero_latent_local_joint/checkpoints/checkpoint_step_900

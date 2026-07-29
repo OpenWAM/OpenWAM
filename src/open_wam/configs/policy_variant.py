@@ -29,17 +29,6 @@ from .enums import (
     PolicyVariantName,
     ProprioContextMode,
     PoolingMode,
-    RegisterLayout,
-    RegisterMaskMode,
-    StreamEncoderType,
-    StreamInputAdapterFamily,
-    StreamOutputHeadFamily,
-    StructuredAttentionKernel,
-    StructuredBlockMode,
-    StructuredCacheKernel,
-    StructuredFrequencyMode,
-    StructuredTeacherForcingLayout,
-    StructuredTimeLayout,
     TemporalPositionMode,
     TemporalProjection,
     VideoConditionInputSpace,
@@ -374,51 +363,6 @@ class MoTPolicyConfig(PolicyVariantConfig):
                 "`generalist_training_paradigm = mixed_dynamics` requires "
                 "`mot_generalist_training_mode_probs` so the runtime can consume forced GJD modes."
             )
-
-
-@dataclass(frozen=True)
-class RegisterAttachedPolicyConfig(PolicyVariantConfig):
-    name: PolicyVariantName = PolicyVariantName.REGISTER_ATTACHED
-    hidden_size: int = 256
-    attach_site: AttachSite = AttachSite.WITHIN_VISUAL_CORE
-    num_frame_per_block: int = 1
-    num_action_per_block: int = 1
-    num_state_per_block: int = 1
-    max_chunk_size: int = 1
-    register_layout: RegisterLayout = RegisterLayout.ACTION_THEN_STATE
-    mask_mode: RegisterMaskMode = RegisterMaskMode.DREAMZERO_BLOCKWISE
-    use_state_encoder: bool = True
-    action_encoder_type: StreamEncoderType = StreamEncoderType.MLP
-    state_encoder_type: StreamEncoderType = StreamEncoderType.MLP
-    couple_action_to_video_blocks: bool = True
-    structured_block_mode: StructuredBlockMode = StructuredBlockMode.REGISTER_EXPLICIT
-    structured_time_layout: StructuredTimeLayout = StructuredTimeLayout.VIDEO_ACTION_STATE
-    structured_frequency_mode: StructuredFrequencyMode = StructuredFrequencyMode.STREAM_LOCAL
-    structured_teacher_forcing_layout: StructuredTeacherForcingLayout = StructuredTeacherForcingLayout.CLEAN_PREFIX
-    structured_attention_kernel: StructuredAttentionKernel = StructuredAttentionKernel.BRANCHWISE_EXPLICIT
-    structured_cache_kernel: StructuredCacheKernel = StructuredCacheKernel.BRANCHWISE_ROLLOUT_EXPLICIT
-    stream_input_adapter_family: StreamInputAdapterFamily = StreamInputAdapterFamily.STRUCTURED_REGISTER_STREAMS
-    stream_output_head_family: StreamOutputHeadFamily = StreamOutputHeadFamily.STRUCTURED_JOINT_FLOW
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        coerce_fields(
-            self,
-            enum_fields={
-                "register_layout": RegisterLayout,
-                "mask_mode": RegisterMaskMode,
-                "action_encoder_type": StreamEncoderType,
-                "state_encoder_type": StreamEncoderType,
-                "structured_block_mode": StructuredBlockMode,
-                "structured_time_layout": StructuredTimeLayout,
-                "structured_frequency_mode": StructuredFrequencyMode,
-                "structured_teacher_forcing_layout": StructuredTeacherForcingLayout,
-                "structured_attention_kernel": StructuredAttentionKernel,
-                "structured_cache_kernel": StructuredCacheKernel,
-                "stream_input_adapter_family": StreamInputAdapterFamily,
-                "stream_output_head_family": StreamOutputHeadFamily,
-            },
-        )
 
 
 @dataclass(frozen=True)

@@ -24,7 +24,6 @@ class ActionDecoderName(StrEnum):
     """Final action-decoder family selected by experiment config."""
 
     MLP = "mlp_decoder"
-    REGISTER = "register_decoder"
     DECODED_FEATURE = "decoded_feature_decoder"
     VIDEO_CONDITIONED = "video_conditioned_action_decoder"
     LINGBOT_PARALLEL = "lingbot_parallel_decoder"
@@ -451,9 +450,6 @@ class PolicyVariantName(StrEnum):
     POST_DECODED = "post_decoded"
     CAUSAL_VIDEO_PREDICTION = "causal_video_prediction"
     MOT = "mot"
-    # Obsolete traditional Method 2. Kept for loading historical configs only;
-    # pipeline construction raises an explicit error.
-    REGISTER_ATTACHED = "register_attached"
     PARALLEL_STREAM = "parallel_stream"
 
 
@@ -570,72 +566,6 @@ class DecodeFeatureMode(StrEnum):
     """How decoded visual features are surfaced to a decoder."""
 
     FRAME_TOKEN_SEQUENCE = "frame_token_sequence"
-
-
-class RegisterLayout(StrEnum):
-    """Ordering of action/state registers in register-attached variants."""
-
-    ACTION_THEN_STATE = "action_then_state"
-
-
-class RegisterMaskMode(StrEnum):
-    """Masking profile for register-attached sequence packing."""
-
-    DREAMZERO_BLOCKWISE = "dreamzero_blockwise"
-
-
-class StreamEncoderType(StrEnum):
-    """Adapter family used for action/state stream embeddings."""
-
-    MLP = "mlp"
-
-
-class StructuredBlockMode(StrEnum):
-    """Structured block semantics understood by the shared visual core."""
-
-    REGISTER_EXPLICIT = "register_explicit"
-
-
-class StructuredTimeLayout(StrEnum):
-    """Temporal ordering convention for structured register sequences."""
-
-    VIDEO_ACTION_STATE = "video_action_state"
-
-
-class StructuredFrequencyMode(StrEnum):
-    """How frequency/position signals are allocated across structured streams."""
-
-    STREAM_LOCAL = "stream_local"
-
-
-class StructuredTeacherForcingLayout(StrEnum):
-    """Teacher-forcing layout used by structured block runtimes."""
-
-    CLEAN_PREFIX = "clean_prefix"
-
-
-class StructuredAttentionKernel(StrEnum):
-    """Attention-kernel family used by structured block execution."""
-
-    BRANCHWISE_EXPLICIT = "branchwise_explicit"
-
-
-class StructuredCacheKernel(StrEnum):
-    """Cache-update kernel used by structured rollout execution."""
-
-    BRANCHWISE_ROLLOUT_EXPLICIT = "branchwise_rollout_explicit"
-
-
-class StreamInputAdapterFamily(StrEnum):
-    """Shared-core input adapter family for structured runtime programs."""
-
-    STRUCTURED_REGISTER_STREAMS = "structured_register_streams"
-
-
-class StreamOutputHeadFamily(StrEnum):
-    """Shared-core output head family for structured runtime programs."""
-
-    STRUCTURED_JOINT_FLOW = "structured_joint_flow"
 
 
 class ParallelRuntimeMode(StrEnum):

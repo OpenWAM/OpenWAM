@@ -10,7 +10,11 @@ import pytest
 import yaml
 
 import open_wam
+import open_wam.configs as open_wam_configs
+import open_wam.models.action_decoders as action_decoders
+import open_wam.models.policy_variants as policy_variants
 from open_wam.cli.inspect_config import build_arg_parser
+from open_wam.configs import ActionDecoderName, PolicyVariantName
 from open_wam.pipelines import ACTION_DECODER_BUILDERS, POLICY_VARIANT_BUILDERS
 from open_wam.pipelines.factory import build_action_decoder, build_policy_variant
 from open_wam.runtime import (
@@ -293,15 +297,11 @@ def test_builtin_pipeline_registries_construct_smoke_variants(config_name: str) 
     assert build_action_decoder(config) is not None
 
 
-@pytest.mark.smoke
-def test_obsolete_register_attached_builder_fails_loudly() -> None:
-    config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/register_attached_robotwin_smoke.yaml"
-    )
-
-    assert type(config.policy_variant) in POLICY_VARIANT_BUILDERS.keys()
-    assert config.action_decoder.name in ACTION_DECODER_BUILDERS.keys()
-    with pytest.warns(RuntimeWarning, match="Traditional Method 2 `register_attached` is obsolete"):
-        with pytest.raises(RuntimeError, match="Traditional Method 2 `register_attached` is obsolete"):
-            build_policy_variant(config)
-    assert build_action_decoder(config) is not None
+@pytest.mark.unit
+def test_retired_register_attached_surface_is_not_publicly_selectable() -> None:
+    assert "register_attached" not in {member.value for member in PolicyVariantName}
+    assert "register_decoder" not in {member.value for member in ActionDecoderName}
+    assert not hasattr(open_wam_configs, "RegisterAttachedPolicyConfig")
+    assert not hasattr(open_wam_configs, "RegisterActionDecoderConfig")
+    assert not hasattr(policy_variants, "RegisterAttachedPolicyVariant")
+    assert not hasattr(action_decoders, "RegisterActionDecoder")

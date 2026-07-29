@@ -57,7 +57,6 @@ from open_wam.configs import (
     SegmentContextPolicy,
     TailPaddingPolicy,
     ReferenceCoreInitMode,
-    RegisterAttachedPolicyConfig,
     TemporalPositionMode,
     WindowSamplingMode,
     StrategyName,
@@ -141,7 +140,6 @@ def test_new_variant_yaml_configs_load() -> None:
         REPO_ROOT / "configs/experiments/post_decoded_robotwin_video_conditioned.yaml"
     )
     mot = load_experiment_config(REPO_ROOT / "configs/experiments/mot_robotwin_smoke.yaml")
-    register = load_experiment_config(REPO_ROOT / "configs/experiments/register_attached_robotwin.yaml")
     parallel = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin.yaml")
     smoke_parallel = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
 
@@ -149,7 +147,6 @@ def test_new_variant_yaml_configs_load() -> None:
     assert isinstance(post_latent_video_conditioned.policy_variant, PostLatentPolicyConfig)
     assert isinstance(post_decoded_video_conditioned.policy_variant, PostDecodedPolicyConfig)
     assert isinstance(mot.policy_variant, MoTPolicyConfig)
-    assert isinstance(register.policy_variant, RegisterAttachedPolicyConfig)
     assert isinstance(parallel.policy_variant, ParallelStreamPolicyConfig)
     assert isinstance(smoke_parallel.policy_variant, ParallelStreamPolicyConfig)
     assert post_latent_video_conditioned.action_decoder.name == ActionDecoderName.VIDEO_CONDITIONED
@@ -159,7 +156,6 @@ def test_new_variant_yaml_configs_load() -> None:
     assert mot.policy_variant.condition_mode == "first_frame"
     assert mot.policy_variant.use_condition_latents is True
     assert mot.training.trainable_components == (TrainingComponentSelector.POLICY_VARIANT_ACTION_EXPERT,)
-    assert register.backbone.implementation == "shared_transformer"
     assert parallel.backbone.implementation == "shared_transformer"
     assert smoke_parallel.backbone.implementation == "shared_transformer"
     assert parallel.backbone.train_attn_mode == "flex"
@@ -172,20 +168,6 @@ def test_new_variant_yaml_configs_load() -> None:
     assert smoke_parallel.backbone.reference_model_path is None
     assert post_latent_video_conditioned.policy_variant.video_condition_input_space == VideoConditionInputSpace.VIDEO_LATENT
     assert post_decoded_video_conditioned.policy_variant.video_condition_input_space == VideoConditionInputSpace.RGB_VIDEO
-    assert register.inference.video_cfg_mode == "guided"
-    assert register.inference.action_cfg_mode == "conditioned"
-    assert register.inference.joint_cache_warmup_source == "reference_video"
-    assert register.inference.joint_cache_initial_warmup_anchor == "start"
-    assert register.inference.joint_cache_rollout_warmup_anchor == "end"
-    assert register.inference.joint_observed_video_prefix_frames == 1
-    assert register.policy_variant.structured_block_mode == "register_explicit"
-    assert register.policy_variant.structured_time_layout == "video_action_state"
-    assert register.policy_variant.structured_frequency_mode == "stream_local"
-    assert register.policy_variant.structured_teacher_forcing_layout == "clean_prefix"
-    assert register.policy_variant.structured_attention_kernel == "branchwise_explicit"
-    assert register.policy_variant.structured_cache_kernel == "branchwise_rollout_explicit"
-    assert register.policy_variant.stream_input_adapter_family == "structured_register_streams"
-    assert register.policy_variant.stream_output_head_family == "structured_joint_flow"
 
 
 def test_generalist_mixed_dynamics_knob_loads_from_yaml(tmp_path: Path) -> None:
@@ -768,7 +750,6 @@ trainer:
 def test_raw_libero_smoke_variant_yaml_configs_load() -> None:
     post_latent = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_libero_smoke.yaml")
     post_decoded = load_experiment_config(REPO_ROOT / "configs/experiments/post_decoded_libero_smoke.yaml")
-    register = load_experiment_config(REPO_ROOT / "configs/experiments/register_attached_libero_smoke.yaml")
     parallel = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_raw_smoke.yaml")
     parallel_action_conditioned = load_experiment_config(
         REPO_ROOT / "configs/experiments/parallel_stream_libero_action_conditioned_smoke.yaml"
@@ -776,17 +757,14 @@ def test_raw_libero_smoke_variant_yaml_configs_load() -> None:
 
     assert isinstance(post_latent.policy_variant, PostLatentPolicyConfig)
     assert isinstance(post_decoded.policy_variant, PostDecodedPolicyConfig)
-    assert isinstance(register.policy_variant, RegisterAttachedPolicyConfig)
     assert isinstance(parallel.policy_variant, ParallelStreamPolicyConfig)
     assert isinstance(parallel_action_conditioned.policy_variant, ParallelStreamPolicyConfig)
 
     assert post_latent.data.dataset_name == "libero"
     assert post_decoded.data.dataset_name == "libero"
-    assert register.data.dataset_name == "libero"
     assert parallel.data.dataset_name == "libero"
     assert parallel_action_conditioned.data.dataset_name == "libero"
 
-    assert register.data.action_schema.state_horizon == 3
     assert parallel.data.action_schema.action_horizon == 16
     assert parallel.action_decoder.name == ActionDecoderName.LINGBOT_PARALLEL
     assert parallel_action_conditioned.policy_variant.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED
@@ -807,8 +785,6 @@ def test_latent_libero_local_training_yaml_configs_load() -> None:
     post_decoded_video_conditioned = load_experiment_config(
         REPO_ROOT / "configs/experiments/post_decoded_libero_latent_local_video_conditioned.yaml"
     )
-    register = load_experiment_config(REPO_ROOT / "configs/experiments/register_attached_libero_latent_local.yaml")
-
     assert isinstance(mot.policy_variant, MoTPolicyConfig)
     assert isinstance(mot_idm.policy_variant, MoTPolicyConfig)
     assert isinstance(mot_joint.policy_variant, MoTPolicyConfig)
@@ -819,7 +795,6 @@ def test_latent_libero_local_training_yaml_configs_load() -> None:
     assert post_decoded.data.dataset_type == "lerobot_v2_latent_local"
     assert post_latent_video_conditioned.data.dataset_type == "lerobot_v2_latent_local"
     assert post_decoded_video_conditioned.data.dataset_type == "lerobot_v2_latent_local"
-    assert register.data.dataset_type == "lerobot_v2_latent_local"
     assert mot.data.local_root.endswith("/libero_heng/libero_10")
     assert mot_idm.data.local_root.endswith("/libero_heng/libero_10")
     assert mot_joint.data.local_root.endswith("/libero_heng/libero_10")
@@ -827,7 +802,6 @@ def test_latent_libero_local_training_yaml_configs_load() -> None:
     assert post_decoded.data.local_root.endswith("/libero_heng/libero_10")
     assert post_latent_video_conditioned.data.local_root.endswith("/libero_heng/libero_10")
     assert post_decoded_video_conditioned.data.local_root.endswith("/libero_heng/libero_10")
-    assert register.data.local_root.endswith("/libero_heng/libero_10")
     assert mot.trainer.batch_adapter == BatchAdapterName.LATENTS
     assert mot_idm.trainer.batch_adapter == BatchAdapterName.LATENTS
     assert mot_joint.trainer.batch_adapter == BatchAdapterName.LATENTS
@@ -835,7 +809,6 @@ def test_latent_libero_local_training_yaml_configs_load() -> None:
     assert post_decoded.trainer.batch_adapter == BatchAdapterName.LATENTS
     assert post_latent_video_conditioned.trainer.batch_adapter == BatchAdapterName.LATENTS
     assert post_decoded_video_conditioned.trainer.batch_adapter == BatchAdapterName.LATENTS
-    assert register.trainer.batch_adapter == BatchAdapterName.LATENTS
     assert mot.trainer.strategy == StrategyName.FSDP
     assert mot_idm.trainer.strategy == StrategyName.FSDP
     assert mot_joint.trainer.strategy == StrategyName.FSDP
@@ -843,7 +816,6 @@ def test_latent_libero_local_training_yaml_configs_load() -> None:
     assert post_decoded.trainer.strategy == StrategyName.FSDP
     assert post_latent_video_conditioned.trainer.strategy == StrategyName.FSDP
     assert post_decoded_video_conditioned.trainer.strategy == StrategyName.FSDP
-    assert register.trainer.strategy == StrategyName.FSDP
     assert mot.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
     assert mot_idm.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
     assert mot_joint.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
@@ -851,7 +823,6 @@ def test_latent_libero_local_training_yaml_configs_load() -> None:
     assert post_decoded.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
     assert post_latent_video_conditioned.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
     assert post_decoded_video_conditioned.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
-    assert register.backbone.reference_core_init_mode == ReferenceCoreInitMode.VIDEO_ONLY
     assert mot.backbone.load_reference_core_weights is True
     assert mot_idm.backbone.load_reference_core_weights is True
     assert mot_joint.backbone.load_reference_core_weights is True
@@ -859,7 +830,6 @@ def test_latent_libero_local_training_yaml_configs_load() -> None:
     assert post_decoded.backbone.load_reference_core_weights is True
     assert post_latent_video_conditioned.backbone.load_reference_core_weights is True
     assert post_decoded_video_conditioned.backbone.load_reference_core_weights is True
-    assert register.backbone.load_reference_core_weights is True
     assert mot.data.sample_construction.mode == WindowSamplingMode.ALIGNED_SUBWINDOW
     assert mot_idm.data.sample_construction.mode == WindowSamplingMode.ALIGNED_SUBWINDOW
     assert mot_joint.data.sample_construction.mode == WindowSamplingMode.ALIGNED_SUBWINDOW
@@ -867,7 +837,6 @@ def test_latent_libero_local_training_yaml_configs_load() -> None:
     assert post_decoded.data.sample_construction.mode == WindowSamplingMode.FULL_SEGMENT
     assert post_latent_video_conditioned.data.sample_construction.mode == WindowSamplingMode.FULL_SEGMENT
     assert post_decoded_video_conditioned.data.sample_construction.mode == WindowSamplingMode.FULL_SEGMENT
-    assert register.data.sample_construction.mode == WindowSamplingMode.ALIGNED_SUBWINDOW
     assert mot.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
     assert mot_idm.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
     assert mot_joint.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
@@ -879,7 +848,6 @@ def test_latent_libero_local_training_yaml_configs_load() -> None:
     assert post_decoded_video_conditioned.action_decoder.name == ActionDecoderName.VIDEO_CONDITIONED
     assert post_latent_video_conditioned.policy_variant.video_condition_input_space == VideoConditionInputSpace.VIDEO_LATENT
     assert post_decoded_video_conditioned.policy_variant.video_condition_input_space == VideoConditionInputSpace.VIDEO_LATENT
-    assert register.data.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW
     assert mot.policy_variant.preset == MoTPreset.FASTWAM
     assert mot.action_decoder.name == ActionDecoderName.MOT
     assert mot.policy_variant.condition_mode == "first_frame"
@@ -905,10 +873,10 @@ def test_latent_libero_local_training_yaml_configs_load() -> None:
         TrainingComponentSelector.POLICY_VARIANT_ACTION_EXPERT,
         TrainingComponentSelector.VISUAL_TOWER_RUNTIME_BACKBONE,
     )
-    assert register.data.sample_construction.anchor_policy == AnchorPolicy.RANDOM_VALID
-    assert register.data.sample_construction.num_frames == 4
-    assert register.data.sample_construction.action_horizon == 6
-    assert register.data.sample_construction.state_horizon == 3
+    assert mot.data.sample_construction.anchor_policy == AnchorPolicy.RANDOM_VALID
+    assert mot.data.sample_construction.num_frames == 4
+    assert mot.data.sample_construction.action_horizon == 6
+    assert mot.data.sample_construction.state_horizon == 3
 
 
 def test_method4_current_frame_regression_yaml_configs_load() -> None:
@@ -1979,7 +1947,7 @@ def test_parallel_stream_generalist_rejects_single_frame_context_source(tmp_path
 
 
 def test_sample_construction_yaml_strings_are_coerced_to_enum_members(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/register_attached_libero_latent_local.yaml"
+    source_path = REPO_ROOT / "configs/experiments/post_latent_libero_latent_local.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -2008,7 +1976,7 @@ def test_sample_construction_yaml_strings_are_coerced_to_enum_members(tmp_path: 
         "sample_weight_max": 4.0,
     }
 
-    config_path = tmp_path / "register_attached_sample_construction.yaml"
+    config_path = tmp_path / "sample_construction.yaml"
     with config_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(raw, handle, sort_keys=False)
 
@@ -2037,7 +2005,7 @@ def test_sample_construction_yaml_strings_are_coerced_to_enum_members(tmp_path: 
 
 
 def test_hierarchical_fixed_segment_sample_construction_loads_explicit_sampler_fields(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/register_attached_libero_latent_local.yaml"
+    source_path = REPO_ROOT / "configs/experiments/post_latent_libero_latent_local.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -2054,7 +2022,7 @@ def test_hierarchical_fixed_segment_sample_construction_loads_explicit_sampler_f
         "trajectory_start_power": 1.0,
     }
 
-    config_path = tmp_path / "register_attached_hierarchical_fixed_segment.yaml"
+    config_path = tmp_path / "hierarchical_fixed_segment.yaml"
     with config_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(raw, handle, sort_keys=False)
 
@@ -2072,7 +2040,7 @@ def test_hierarchical_fixed_segment_sample_construction_loads_explicit_sampler_f
 
 
 def test_hierarchical_fixed_segment_rejects_replacement_sample_order_typed_path(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/register_attached_libero_latent_local.yaml"
+    source_path = REPO_ROOT / "configs/experiments/post_latent_libero_latent_local.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -2083,7 +2051,7 @@ def test_hierarchical_fixed_segment_rejects_replacement_sample_order_typed_path(
         "sample_order_mode": "replacement",
     }
 
-    config_path = tmp_path / "register_attached_bad_hierarchical_replacement_order.yaml"
+    config_path = tmp_path / "bad_hierarchical_replacement_order.yaml"
     with config_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(raw, handle, sort_keys=False)
 
@@ -2092,7 +2060,7 @@ def test_hierarchical_fixed_segment_rejects_replacement_sample_order_typed_path(
 
 
 def test_hierarchical_fixed_segment_loads_strict_rollout_parity_fields(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/register_attached_libero_latent_local.yaml"
+    source_path = REPO_ROOT / "configs/experiments/post_latent_libero_latent_local.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -2116,7 +2084,7 @@ def test_hierarchical_fixed_segment_loads_strict_rollout_parity_fields(tmp_path:
     raw.setdefault("training", {})["chunk_size"] = 4
     raw.setdefault("inference", {})["frame_chunk_size"] = 4
 
-    config_path = tmp_path / "register_attached_hierarchical_rollout_parity.yaml"
+    config_path = tmp_path / "hierarchical_rollout_parity.yaml"
     with config_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(raw, handle, sort_keys=False)
 
@@ -2131,7 +2099,7 @@ def test_hierarchical_fixed_segment_loads_strict_rollout_parity_fields(tmp_path:
 
 
 def test_hierarchical_fixed_segment_rollout_parity_rejects_legacy_context_fields(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/register_attached_libero_latent_local.yaml"
+    source_path = REPO_ROOT / "configs/experiments/post_latent_libero_latent_local.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -2146,7 +2114,7 @@ def test_hierarchical_fixed_segment_rollout_parity_rejects_legacy_context_fields
         "context_prefix_policy": "none",
     }
 
-    config_path = tmp_path / "register_attached_bad_hierarchical_rollout_parity.yaml"
+    config_path = tmp_path / "bad_hierarchical_rollout_parity.yaml"
     with config_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(raw, handle, sort_keys=False)
 
@@ -2179,7 +2147,7 @@ def test_sample_construction_rollout_parity_rejects_programmatic_legacy_context_
 
 
 def test_hierarchical_fixed_segment_rollout_parity_rejects_malformed_chunk_size(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/register_attached_libero_latent_local.yaml"
+    source_path = REPO_ROOT / "configs/experiments/post_latent_libero_latent_local.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -2195,7 +2163,7 @@ def test_hierarchical_fixed_segment_rollout_parity_rejects_malformed_chunk_size(
     raw.setdefault("training", {})["chunk_size"] = "four"
     raw.setdefault("inference", {})["frame_chunk_size"] = 4
 
-    config_path = tmp_path / "register_attached_bad_strict_chunk.yaml"
+    config_path = tmp_path / "bad_strict_chunk.yaml"
     with config_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(raw, handle, sort_keys=False)
 
@@ -2204,7 +2172,7 @@ def test_hierarchical_fixed_segment_rollout_parity_rejects_malformed_chunk_size(
 
 
 def test_hierarchical_fixed_segment_rejects_legacy_full_segment_flag(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/register_attached_libero_latent_local.yaml"
+    source_path = REPO_ROOT / "configs/experiments/post_latent_libero_latent_local.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -2215,7 +2183,7 @@ def test_hierarchical_fixed_segment_rejects_legacy_full_segment_flag(tmp_path: P
         "require_full_segment": False,
     }
 
-    config_path = tmp_path / "register_attached_bad_hierarchical_fixed_segment.yaml"
+    config_path = tmp_path / "bad_hierarchical_fixed_segment.yaml"
     with config_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(raw, handle, sort_keys=False)
 
@@ -2257,8 +2225,8 @@ def test_contextual_sample_construction_and_temporal_position_mode_load(tmp_path
     assert config.policy_variant.temporal_position_mode == TemporalPositionMode.GLOBAL_SHIFTED
 
 
-def test_legacy_method2_runtime_fields_still_map_to_generic_runtime_config(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/register_attached_robotwin_smoke.yaml"
+def test_legacy_inference_aliases_still_map_to_generic_runtime_config(tmp_path: Path) -> None:
+    source_path = REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
     raw["inference"].pop("video_cfg_mode", None)
@@ -2270,7 +2238,7 @@ def test_legacy_method2_runtime_fields_still_map_to_generic_runtime_config(tmp_p
     raw["inference"]["joint_cfg_application"] = "joint"
     raw["inference"]["joint_cache_warmup_source"] = "dreamzero_reference_block"
 
-    legacy_path = tmp_path / "legacy_register.yaml"
+    legacy_path = tmp_path / "legacy_inference_aliases.yaml"
     with legacy_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(raw, handle, sort_keys=False)
 

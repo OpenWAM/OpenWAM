@@ -2324,7 +2324,7 @@ def test_aligned_subwindow_sampling_uses_sample_construction_horizons_and_stride
         latent_num_frames=8,
     )
 
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/register_attached_libero_latent_local.yaml")
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/post_latent_libero_latent_local.yaml")
     config = replace(
         config,
         data=replace(
@@ -2335,8 +2335,10 @@ def test_aligned_subwindow_sampling_uses_sample_construction_horizons_and_stride
             num_workers=0,
             train_batch_size=1,
             val_batch_size=1,
+            action_schema=replace(config.data.action_schema, state_horizon=3),
             sample_construction=replace(
                 config.data.sample_construction,
+                mode=WindowSamplingMode.ALIGNED_SUBWINDOW,
                 num_frames=4,
                 action_horizon=3,
                 state_horizon=3,

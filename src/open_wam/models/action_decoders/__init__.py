@@ -11,7 +11,6 @@ from .decoded_feature_decoder import DecodedFeatureActionDecoder
 from .lingbot_parallel_decoder import LingbotParallelActionDecoder
 from .mlp_decoder import MLPActionDecoder
 from .mot_decoder import MoTActionDecoder
-from .register_decoder import RegisterActionDecoder
 from .sequence_base import SequenceActionDecoder
 from .video_only_decoder import VideoOnlyActionDecoder
 from .video_conditioned_action_decoder import VideoConditionedActionDecoder
@@ -27,7 +26,6 @@ __all__ = [
     "LingbotParallelActionDecoder",
     "MLPActionDecoder",
     "MoTActionDecoder",
-    "RegisterActionDecoder",
     "SequenceActionDecoder",
     "VideoConditionedActionDecoder",
     "VideoConditionedActionExpert",

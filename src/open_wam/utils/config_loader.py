@@ -39,8 +39,6 @@ from open_wam.configs import (
     PolicyVariantConfig,
     PostDecodedPolicyConfig,
     PostLatentPolicyConfig,
-    RegisterActionDecoderConfig,
-    RegisterAttachedPolicyConfig,
     RobotWinDataConfig,
     SampleConstructionConfig,
     TrainerConfig,
@@ -924,79 +922,6 @@ def _load_policy_variant_config(
                 ),
             ),
         )
-    if name == config_enums.PolicyVariantName.REGISTER_ATTACHED:
-        return RegisterAttachedPolicyConfig(
-            hidden_size=hidden_size,
-            num_frame_per_block=resolved_raw.get("num_frame_per_block", 1),
-            num_action_per_block=resolved_raw.get("num_action_per_block", 1),
-            num_state_per_block=resolved_raw.get("num_state_per_block", 1),
-            max_chunk_size=resolved_raw.get("max_chunk_size", inference_config.frame_chunk_size),
-            register_layout=_coerce_enum(
-                config_enums.RegisterLayout,
-                resolved_raw.get("register_layout", config_enums.RegisterLayout.ACTION_THEN_STATE),
-            ),
-            mask_mode=_coerce_enum(
-                config_enums.RegisterMaskMode,
-                resolved_raw.get("mask_mode", config_enums.RegisterMaskMode.DREAMZERO_BLOCKWISE),
-            ),
-            use_state_encoder=resolved_raw.get("use_state_encoder", True),
-            action_encoder_type=_coerce_enum(
-                config_enums.StreamEncoderType,
-                resolved_raw.get("action_encoder_type", config_enums.StreamEncoderType.MLP),
-            ),
-            state_encoder_type=_coerce_enum(
-                config_enums.StreamEncoderType,
-                resolved_raw.get("state_encoder_type", config_enums.StreamEncoderType.MLP),
-            ),
-            couple_action_to_video_blocks=resolved_raw.get("couple_action_to_video_blocks", True),
-            structured_block_mode=_coerce_enum(
-                config_enums.StructuredBlockMode,
-                resolved_raw.get("structured_block_mode", config_enums.StructuredBlockMode.REGISTER_EXPLICIT),
-            ),
-            structured_time_layout=_coerce_enum(
-                config_enums.StructuredTimeLayout,
-                resolved_raw.get("structured_time_layout", config_enums.StructuredTimeLayout.VIDEO_ACTION_STATE),
-            ),
-            structured_frequency_mode=_coerce_enum(
-                config_enums.StructuredFrequencyMode,
-                resolved_raw.get("structured_frequency_mode", config_enums.StructuredFrequencyMode.STREAM_LOCAL),
-            ),
-            structured_teacher_forcing_layout=_coerce_enum(
-                config_enums.StructuredTeacherForcingLayout,
-                resolved_raw.get(
-                    "structured_teacher_forcing_layout",
-                    config_enums.StructuredTeacherForcingLayout.CLEAN_PREFIX,
-                ),
-            ),
-            structured_attention_kernel=_coerce_enum(
-                config_enums.StructuredAttentionKernel,
-                resolved_raw.get(
-                    "structured_attention_kernel",
-                    config_enums.StructuredAttentionKernel.BRANCHWISE_EXPLICIT,
-                ),
-            ),
-            structured_cache_kernel=_coerce_enum(
-                config_enums.StructuredCacheKernel,
-                resolved_raw.get(
-                    "structured_cache_kernel",
-                    config_enums.StructuredCacheKernel.BRANCHWISE_ROLLOUT_EXPLICIT,
-                ),
-            ),
-            stream_input_adapter_family=_coerce_enum(
-                config_enums.StreamInputAdapterFamily,
-                resolved_raw.get(
-                    "stream_input_adapter_family",
-                    config_enums.StreamInputAdapterFamily.STRUCTURED_REGISTER_STREAMS,
-                ),
-            ),
-            stream_output_head_family=_coerce_enum(
-                config_enums.StreamOutputHeadFamily,
-                resolved_raw.get(
-                    "stream_output_head_family",
-                    config_enums.StreamOutputHeadFamily.STRUCTURED_JOINT_FLOW,
-                ),
-            ),
-        )
     if name == config_enums.PolicyVariantName.PARALLEL_STREAM:
         default_action_per_frame = max(
             1,
@@ -1184,9 +1109,7 @@ def _load_action_decoder_config(
 ) -> ActionDecoderConfig:
     resolved_raw = dict(action_decoder_raw)
     if not resolved_raw:
-        if policy_variant_config.name == config_enums.PolicyVariantName.REGISTER_ATTACHED:
-            resolved_raw["name"] = config_enums.ActionDecoderName.REGISTER
-        elif policy_variant_config.name == config_enums.PolicyVariantName.MOT:
+        if policy_variant_config.name == config_enums.PolicyVariantName.MOT:
             resolved_raw["name"] = config_enums.ActionDecoderName.MOT
         elif policy_variant_config.name == config_enums.PolicyVariantName.CAUSAL_VIDEO_PREDICTION:
             resolved_raw["name"] = config_enums.ActionDecoderName.VIDEO_ONLY
@@ -1231,13 +1154,6 @@ def _load_action_decoder_config(
 
     if name == config_enums.ActionDecoderName.MLP:
         return MLPActionDecoderConfig(
-            hidden_size=hidden_size,
-            action_dim=action_dim,
-            action_horizon=action_horizon,
-            dropout=dropout,
-        )
-    if name == config_enums.ActionDecoderName.REGISTER:
-        return RegisterActionDecoderConfig(
             hidden_size=hidden_size,
             action_dim=action_dim,
             action_horizon=action_horizon,
