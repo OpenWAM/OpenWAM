@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 import sys
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -69,12 +69,6 @@ from open_wam.models.visual_tower.replica_core import (
 )
 from open_wam.models.visual_tower.sequence_adapters import prepare_exact_dual_stream_train_sequence
 from open_wam.models.visual_tower.tower import VisualTower
-from scripts.deprecated.run_libero_exact_visualization import (
-    _binarize_raw_gripper_actions,
-    _build_warmup_raw_actions,
-    _extract_libero_eef_axisangle_gripper_state,
-    _select_executed_raw_actions,
-)
 
 
 def test_repeat_input_for_cfg_preserves_hidden_context() -> None:
@@ -184,71 +178,6 @@ class _GradTrackingTransformer(nn.Module):
         del update_cache, cache_name, action_mode
         self.grad_enabled_during_forward = torch.is_grad_enabled()
         return input_dict["noisy_latents"] * self.weight
-
-
-def test_exact_visualization_partial_execution_selects_executed_tail() -> None:
-    raw_actions = torch.arange(4 * 4 * 7, dtype=torch.float32).reshape(4, 4, 7)
-
-    executed = _select_executed_raw_actions(
-        raw_actions,
-        start_frame_group=0,
-        execute_action_steps=8,
-        action_per_frame=4,
-    )
-
-    assert torch.equal(executed, raw_actions[:2])
-
-
-def test_exact_visualization_warmup_rejects_skipped_first_chunk_prefix() -> None:
-    raw_actions = torch.arange(4 * 4 * 7, dtype=torch.float32).reshape(4, 4, 7)
-    executed = _select_executed_raw_actions(
-        raw_actions,
-        start_frame_group=1,
-        execute_action_steps=None,
-        action_per_frame=4,
-    )
-
-    with pytest.raises(ValueError, match="deprecated"):
-        _build_warmup_raw_actions(
-            raw_actions=raw_actions,
-            executed_raw_actions=executed,
-            start_frame_group=1,
-            first_chunk=True,
-            exact_startup_bootstrap_padding=False,
-            partial_execution_enabled=False,
-            binarize_gripper=False,
-        )
-
-
-def test_exact_visualization_gripper_binarization_applies_to_last_channel_only() -> None:
-    raw_actions = torch.tensor(
-        [
-            [[0.1, -0.2, 0.0], [0.3, 0.4, -0.1]],
-            [[0.5, 0.6, 2.0], [0.7, 0.8, -3.0]],
-        ],
-        dtype=torch.float32,
-    )
-
-    binarized = _binarize_raw_gripper_actions(raw_actions)
-
-    assert torch.equal(binarized[..., :2], raw_actions[..., :2])
-    assert torch.equal(binarized[..., -1], torch.tensor([[1.0, -1.0], [1.0, -1.0]]))
-
-
-def test_libero_proprio_state_matches_eef_axisangle_gripper_2d() -> None:
-    state = _extract_libero_eef_axisangle_gripper_state(
-        {
-            "robot0_eef_pos": [1.0, 2.0, 3.0],
-            "robot0_eef_quat": [0.0, 0.0, 0.0, 1.0],
-            "robot0_gripper_qpos": [0.4, 0.5],
-        }
-    )
-
-    assert state.dtype == torch.empty((), dtype=torch.float32).numpy().dtype
-    torch.testing.assert_close(
-        torch.from_numpy(state),
-        torch.tensor([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 0.4, 0.5], dtype=torch.float32),
-    )
 
 
 def test_deprecated_text_token_proprio_encoder_is_default_off_and_zero_init() -> None:

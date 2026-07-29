@@ -8,13 +8,8 @@ import pytest
 
 
 def _load_sandbox_module():
-    module_path = (
-        Path(__file__).resolve().parents[1]
-        / "scripts"
-        / "deprecated"
-        / "run_libero_exact_realtime_sandbox.py"
-    )
-    spec = importlib.util.spec_from_file_location("run_libero_exact_realtime_sandbox", module_path)
+    module_path = Path(__file__).resolve().parents[1] / "scripts" / "libero_exact_realtime_common.py"
+    spec = importlib.util.spec_from_file_location("libero_exact_realtime_common", module_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Failed to load module spec for {module_path}.")
     module = importlib.util.module_from_spec(spec)
@@ -38,7 +33,7 @@ def test_build_output_stem_sanitizes_prompt_and_suffix(tmp_path: Path) -> None:
     assert output_stem.name == "7_step600_unsafe"
 
 
-def test_legacy_exact_realtime_rejects_frame_zero_startup_actions() -> None:
+def test_exact_realtime_common_rejects_frame_zero_startup_actions() -> None:
     sandbox = _load_sandbox_module()
     chunk = SimpleNamespace(
         raw_chunk_action_pred=sandbox.torch.zeros(1, 16, 1),

@@ -11,21 +11,16 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.parametrize(
-    "relative_path",
-    (
-        "scripts/run_libero_exact_visualization.py",
-        "scripts/run_libero_exact_realtime_sandbox.py",
-        "scripts/run_libero_realtime_ablation.py",
-    ),
-)
-def test_top_level_deprecated_python_entrypoint_stubs_fail_closed(relative_path: str) -> None:
+def _run_entrypoint(relative_path: str, *, allow_deprecated: bool = False) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(REPO_ROOT / "src")
     env.pop("OPEN_WAM_ALLOW_DEPRECATED_LIBERO_CONFIG", None)
+    command = [sys.executable, str(REPO_ROOT / relative_path)]
+    if allow_deprecated:
+        command.append("--allow-deprecated-libero-config")
 
-    result = subprocess.run(
-        [sys.executable, str(REPO_ROOT / relative_path)],
+    return subprocess.run(
+        command,
         cwd=REPO_ROOT,
         env=env,
         text=True,
@@ -33,5 +28,23 @@ def test_top_level_deprecated_python_entrypoint_stubs_fail_closed(relative_path:
         check=False,
     )
 
+
+@pytest.mark.parametrize(
+    "relative_path,replacement",
+    (
+        ("scripts/run_libero_exact_realtime_sandbox.py", "scripts/run_libero_realtime_sandbox.py"),
+        ("scripts/run_libero_exact_visualization.py", "scripts/run_libero_realtime_sandbox.py"),
+        ("scripts/run_libero_realtime_ablation.py", "scripts/run_libero_sampled_eval.py"),
+    ),
+)
+@pytest.mark.parametrize("allow_deprecated", (False, True))
+def test_removed_python_entrypoint_stubs_always_fail_closed(
+    relative_path: str,
+    replacement: str,
+    allow_deprecated: bool,
+) -> None:
+    result = _run_entrypoint(relative_path, allow_deprecated=allow_deprecated)
+
     assert result.returncode == 2
-    assert "deprecated for current LIBERO M1/M5 launch paths" in result.stderr
+    assert "was removed from the maintained Open-WAM runtime" in result.stderr
+    assert replacement in result.stderr

@@ -47,40 +47,18 @@ def _load_module_from_path(module_path: Path, module_name: str):
     return module
 
 
-def test_legacy_helper_imports_prefer_deprecated_scripts_when_scripts_path_preexists() -> None:
+def test_realtime_helpers_use_source_visualization_contract() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    scripts_root = str(repo_root / "scripts")
-    deprecated_root = repo_root / "scripts" / "deprecated"
-    deprecated_root_str = str(deprecated_root)
-    imported_module_names = ("run_libero_exact_visualization", "libero_exact_realtime_common")
-    missing = object()
-    previous_path = list(sys.path)
-    previous_modules = {name: sys.modules.get(name, missing) for name in imported_module_names}
-    try:
-        for name in imported_module_names:
-            sys.modules.pop(name, None)
-        sys.path[:] = [
-            scripts_root,
-            deprecated_root_str,
-            *[entry for entry in previous_path if entry not in {scripts_root, deprecated_root_str}],
-        ]
+    expected_module = (repo_root / "src" / "open_wam" / "evals" / "libero_visualization.py").resolve()
+    sandbox = _load_sandbox_module()
+    abs_joint = _load_module_from_path(
+        repo_root / "scripts" / "run_libero_abs_joint_rollout_debug.py",
+        f"run_libero_abs_joint_rollout_debug_test_{uuid.uuid4().hex}",
+    )
 
-        sandbox = _load_sandbox_module()
-        abs_joint = _load_module_from_path(
-            repo_root / "scripts" / "run_libero_abs_joint_rollout_debug.py",
-            f"run_libero_abs_joint_rollout_debug_test_{uuid.uuid4().hex}",
-        )
-
-        assert Path(sandbox.exact_viz.__file__).resolve().parent == deprecated_root
-        assert Path(sandbox.exact_sandbox.exact_viz.__file__).resolve().parent == deprecated_root
-        assert Path(abs_joint.exact_viz.__file__).resolve().parent == deprecated_root
-    finally:
-        sys.path[:] = previous_path
-        for name, module in previous_modules.items():
-            if module is missing:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = module
+    assert Path(sandbox.exact_viz.__file__).resolve() == expected_module
+    assert Path(sandbox.exact_sandbox.exact_viz.__file__).resolve() == expected_module
+    assert Path(abs_joint.exact_viz.__file__).resolve() == expected_module
 
 
 def _build_exact_history_frame_payload() -> tuple[dict[str, np.ndarray], list[dict[str, np.ndarray]], list[np.ndarray]]:

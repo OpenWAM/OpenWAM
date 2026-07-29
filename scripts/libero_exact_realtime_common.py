@@ -16,7 +16,6 @@ from einops import rearrange
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
-DEPRECATED_SCRIPT_ROOT = REPO_ROOT / "scripts" / "deprecated"
 
 
 def _prepend_import_path(path: Path) -> None:
@@ -27,13 +26,11 @@ def _prepend_import_path(path: Path) -> None:
 
 _prepend_import_path(SRC_ROOT)
 _prepend_import_path(REPO_ROOT / "scripts")
-_prepend_import_path(DEPRECATED_SCRIPT_ROOT)
-
-import run_libero_exact_visualization as exact_viz  # noqa: E402
 
 from open_wam.configs import ParallelRuntimeMode  # noqa: E402
 from open_wam.configs.enums import DeadlineMissPolicy  # noqa: E402
 from open_wam.data.latent_temporal import raw_window_frames_for_latents  # noqa: E402
+from open_wam.evals import libero_visualization as exact_viz  # noqa: E402
 from open_wam.integrations.realtime_control import (  # noqa: E402
     PlannedFrameAction,
     make_planned_frame_actions,
@@ -685,9 +682,9 @@ def _prepare_history_runtime_inputs(
     resolved_text_context = text_context
     resolved_negative_text_context = negative_text_context
     if history_views:
-        prepared = exact_viz._prepare_exact_runtime_inputs(
+        prepared = exact_viz.prepare_exact_runtime_inputs(
             runner,
-            views=exact_viz._obs_list_to_views(history_views, config=config, device=frontend_device),
+            views=exact_viz.observations_to_views(history_views, device=frontend_device),
             task_text=task_text,
             text_context=resolved_text_context,
             negative_text_context=resolved_negative_text_context,
@@ -792,7 +789,7 @@ def _history_records_to_proprio_state(
     config,
     device: torch.device,
 ) -> torch.Tensor | None:
-    if not exact_viz._proprio_context_enabled(config):
+    if not exact_viz.proprio_context_enabled(config):
         return None
     for record in reversed(history_records):
         proprio_state = record.get("proprio_state")
@@ -875,7 +872,7 @@ def _build_realtime_video_frames(
         agentview = np.ascontiguousarray(obs[exact_viz.LIBERO_OBS_KEYS[0]])
         wrist = np.ascontiguousarray(obs[exact_viz.LIBERO_OBS_KEYS[1]])
         row_real = np.hstack([agentview, wrist])
-        titled = exact_viz._with_title(Image.fromarray(np.ascontiguousarray(row_real)), "Live LIBERO (AgentView / Wrist)")
+        titled = exact_viz.with_title(Image.fromarray(np.ascontiguousarray(row_real)), "Live LIBERO (AgentView / Wrist)")
         info_panel = Image.new("RGB", (titled.width, 108), color=(0, 0, 0))
         draw = ImageDraw.Draw(info_panel)
         header = (
@@ -919,7 +916,7 @@ def _build_fallback_timeline_video_frames(
         agentview = np.ascontiguousarray(obs[exact_viz.LIBERO_OBS_KEYS[0]])
         wrist = np.ascontiguousarray(obs[exact_viz.LIBERO_OBS_KEYS[1]])
         row_real = np.hstack([agentview, wrist])
-        titled = exact_viz._with_title(
+        titled = exact_viz.with_title(
             Image.fromarray(np.ascontiguousarray(row_real)),
             "Live LIBERO fallback timeline (AgentView / Wrist)",
         )

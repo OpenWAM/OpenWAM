@@ -356,8 +356,10 @@ uv run python scripts/run_heng_libero_exact_visualization.py \
 
 Replace `<LINGBOT_VA_BASE_ROOT>` with the local LingBot/Wan base model root and
 `<CURRENT_METHOD1_CHECKPOINT>` / `<METHOD1_STEP400_CHECKPOINT>` with local
-checkpoint-step directories. The legacy Open-WAM visualization wrappers now live
-under `scripts/deprecated/` and require an explicit historical-debug opt-in.
+checkpoint-step directories. Retired exact visualization, realtime, and
+ablation command paths fail closed and point to the maintained realtime or
+sampled-evaluation tools. Historical implementations remain available in Git
+history and the frozen reference checkout.
 
 Run eval:
 
@@ -446,10 +448,10 @@ through the LingBot-compatible exact runtime programs exposed by the shared
 runtime executor rather than a sidecar transformer module.
 
 For exact loading and execution details, including the local LIBERO 30D path
-and Heng comparison workflow, see:
+and maintained realtime rollout workflow, see:
 
 - [notes/lingbot_reference_usage.md](notes/lingbot_reference_usage.md)
-- [notes/libero_exact_rendering.md](notes/libero_exact_rendering.md)
+- [notes/libero_realtime_sandbox.md](notes/libero_realtime_sandbox.md)
 
 ## Current Dataset Contract
 
@@ -486,7 +488,7 @@ Start here for collaborator-facing context:
 - [notes/architecture.md](notes/architecture.md)
 - [notes/current_all_variant_execution_status.md](notes/current_all_variant_execution_status.md)
 - [notes/current_method_architecture.md](notes/current_method_architecture.md)
-- [notes/libero_exact_rendering.md](notes/libero_exact_rendering.md)
+- [notes/libero_realtime_sandbox.md](notes/libero_realtime_sandbox.md)
 - [notes/lingbot_reference_usage.md](notes/lingbot_reference_usage.md)
 - [notes/libero_lerobot.md](notes/libero_lerobot.md)
 

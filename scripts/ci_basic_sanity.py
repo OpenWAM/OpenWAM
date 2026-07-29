@@ -40,6 +40,7 @@ def main() -> None:
     experiment_paths = _check_experiment_configs()
     example_paths = _check_example_configs()
     eval_paths = _check_eval_configs(experiment_paths)
+    _check_no_merge_conflict_markers()
     _check_static_source_contracts()
     _check_workflow_is_no_torch()
     _check_pages_workflow()
@@ -258,6 +259,27 @@ def _check_eval_configs(experiment_paths: tuple[Path, ...]) -> tuple[Path, ...]:
             if raw_value not in (None, "", "null", "None") and int(raw_value) <= 0:
                 raise SystemExit(f"{path.relative_to(REPO_ROOT)} has non-positive {int_field}.")
     return paths
+
+
+def _check_no_merge_conflict_markers() -> None:
+    roots = ("configs", "docs", "notes", "scripts", "src", "tests")
+    suffixes = {".json", ".md", ".py", ".sh", ".toml", ".yaml", ".yml"}
+    markers = ("<<<<<<< ", ">>>>>>> ")
+    violations: list[str] = []
+
+    for root in roots:
+        for path in (REPO_ROOT / root).rglob("*"):
+            if not path.is_file() or path.suffix not in suffixes:
+                continue
+            for line_number, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(),
+                start=1,
+            ):
+                if line.startswith(markers):
+                    violations.append(f"{path.relative_to(REPO_ROOT)}:{line_number}")
+
+    if violations:
+        raise SystemExit(f"Unresolved merge conflict markers: {violations!r}")
 
 
 def _check_static_source_contracts() -> None:

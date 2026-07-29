@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import runpy
 import sys
 from pathlib import Path
 
@@ -23,9 +22,7 @@ def main() -> None:
         print(exc, file=sys.stderr)
         raise SystemExit(2) from exc
 
-    target = REPO_ROOT / "scripts" / "deprecated" / "run_libero_exact_visualization.py"
-    sys.argv[0] = str(target)
-    runpy.run_path(str(target), run_name="__main__")
+    raise AssertionError("Removed LIBERO entrypoint unexpectedly passed its guard.")
 
 
 if __name__ == "__main__":

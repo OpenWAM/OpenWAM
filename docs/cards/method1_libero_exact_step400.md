@@ -63,9 +63,10 @@ uv run --extra sim python scripts/run_libero_realtime_sandbox.py \
   --runtime-device cuda:0 --frontend-device cuda:0 --decode-device cuda:0
 ```
 
-The old realtime-ablation wrapper is retained under `scripts/deprecated/` for
-historical PR #58 reproduction and requires the explicit deprecated-config
-opt-in.
+The old realtime-ablation implementation was removed. Use
+`scripts/run_libero_sampled_eval.py` for comparison matrices or the maintained
+realtime sandbox for a single rollout; Git history retains historical PR #58
+commands.
 
 Local rollout prerequisites — see
 [docs/quickstart.md](../quickstart.md) "LIBERO Local Rollout Setup":

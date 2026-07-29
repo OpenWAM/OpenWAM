@@ -9,7 +9,6 @@ from open_wam.configs import ProprioContextMode
 from open_wam.utils.config_loader import load_experiment_config
 from open_wam.utils.libero_paradigm import (
     collect_current_libero_policy_paradigm_issues,
-    deprecated_libero_script_replacement,
     deprecated_libero_policy_config_reason,
     require_current_libero_policy_paradigm,
     require_current_libero_script,
@@ -145,12 +144,19 @@ def test_libero_paradigm_guard_ignores_non_libero_smoke_config() -> None:
     assert collect_current_libero_policy_paradigm_issues(config, config_path=config_path) == []
 
 
-def test_libero_script_guard_rejects_legacy_visualization_entrypoints() -> None:
-    with pytest.raises(ValueError, match="run_libero_realtime_sandbox.py"):
-        require_current_libero_script("scripts/deprecated/run_libero_exact_visualization.py")
+@pytest.mark.parametrize(
+    "script_name",
+    (
+        "scripts/run_libero_exact_realtime_sandbox.py",
+        "scripts/run_libero_exact_visualization.py",
+        "scripts/run_libero_realtime_ablation.py",
+    ),
+)
+def test_libero_script_guard_never_allows_removed_entrypoints(script_name: str) -> None:
+    with pytest.raises(ValueError, match="was removed from the maintained Open-WAM runtime"):
+        require_current_libero_script(script_name, allow_deprecated=True)
 
 
 def test_libero_script_guard_allows_current_entrypoints_and_explicit_opt_in() -> None:
     require_current_libero_script("scripts/run_libero_realtime_sandbox.py")
     require_current_libero_script("scripts/run_libero_mot_visualization.py")
-    require_current_libero_script("scripts/deprecated/run_libero_exact_visualization.py", allow_deprecated=True)

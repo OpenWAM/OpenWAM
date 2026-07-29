@@ -15,7 +15,6 @@ import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
-DEPRECATED_SCRIPT_ROOT = REPO_ROOT / "scripts" / "deprecated"
 
 
 def _prepend_import_path(path: Path) -> None:
@@ -26,11 +25,10 @@ def _prepend_import_path(path: Path) -> None:
 
 _prepend_import_path(SRC_ROOT)
 _prepend_import_path(REPO_ROOT / "scripts")
-_prepend_import_path(DEPRECATED_SCRIPT_ROOT)
 
-import run_libero_exact_visualization as exact_viz  # noqa: E402
 from open_wam.configs import ActionTargetRepresentation, LiberoAbsoluteJointExecutionMode  # noqa: E402
 from open_wam.data.action_transforms import expected_joint_position_target_dim  # noqa: E402
+from open_wam.evals import libero_visualization as exact_viz  # noqa: E402
 from open_wam.integrations import LiberoBenchmarkAdapter, LiberoEnvConfig  # noqa: E402
 from open_wam.pipelines import LingbotExactRunner, build_variant_pipeline_from_config  # noqa: E402
 from open_wam.simulators import (  # noqa: E402
@@ -186,9 +184,9 @@ def _run_abs_joint_exact_rollout(
         seed_everywhere(int(seed) + chunk_count)
         policy_start = time.perf_counter()
         if first_chunk:
-            first_chunk_inputs = exact_viz._prepare_exact_runtime_inputs(
+            first_chunk_inputs = exact_viz.prepare_exact_runtime_inputs(
                 runner,
-                views=exact_viz._obs_list_to_views([first_obs], config=config, device=frontend_device),
+                views=exact_viz.observations_to_views([first_obs], device=frontend_device),
                 task_text=(task_text,),
                 frontend_device=frontend_device,
                 runtime_device=runtime_device,
@@ -265,9 +263,9 @@ def _run_abs_joint_exact_rollout(
             break
 
         if first_chunk:
-            new_visual_outputs = exact_viz._prepare_exact_runtime_inputs(
+            new_visual_outputs = exact_viz.prepare_exact_runtime_inputs(
                 runner,
-                views=exact_viz._obs_list_to_views(key_frame_list, config=config, device=frontend_device),
+                views=exact_viz.observations_to_views(key_frame_list, device=frontend_device),
                 task_text=(task_text,),
                 text_context=session.text_context,
                 negative_text_context=session.negative_text_context,
@@ -291,9 +289,9 @@ def _run_abs_joint_exact_rollout(
                 proprio_state=_proprio_state_tensor(latest_observation, device=runtime_device),
             )
         else:
-            warmup_inputs = exact_viz._prepare_exact_runtime_inputs(
+            warmup_inputs = exact_viz.prepare_exact_runtime_inputs(
                 runner,
-                views=exact_viz._obs_list_to_views(key_frame_list, config=config, device=frontend_device),
+                views=exact_viz.observations_to_views(key_frame_list, device=frontend_device),
                 task_text=(task_text,),
                 text_context=session.text_context,
                 negative_text_context=session.negative_text_context,
@@ -411,13 +409,13 @@ def _build_exact_style_video_frames(
     adapter: _MappedLiberoAbsJointAdapter,
     decode_device: torch.device,
 ) -> list[np.ndarray]:
-    imagined_video = exact_viz._decode_imagined_video(
+    imagined_video = exact_viz.decode_imagined_video(
         runner,
         predicted_latent_chunks,
         decode_device=decode_device,
     )
-    return exact_viz._build_comparison_video_frames(
-        real_obs_list=adapter.real_obs_list,
+    return exact_viz.build_comparison_video_frames(
+        real_observations=adapter.real_obs_list,
         imagined_video=imagined_video,
     )
 

@@ -15,14 +15,12 @@ from typing import Any, Protocol
 
 import imageio.v2 as imageio
 import numpy as np
-import os
 import torch
 from einops import rearrange
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 SCRIPT_ROOT = Path(__file__).resolve().parent
-DEPRECATED_SCRIPT_ROOT = SCRIPT_ROOT / "deprecated"
 
 
 def _prepend_import_path(path: Path) -> None:
@@ -33,10 +31,8 @@ def _prepend_import_path(path: Path) -> None:
 
 _prepend_import_path(SRC_ROOT)
 _prepend_import_path(SCRIPT_ROOT)
-_prepend_import_path(DEPRECATED_SCRIPT_ROOT)
 
 import libero_exact_realtime_common as exact_sandbox  # noqa: E402
-import run_libero_exact_visualization as exact_viz  # noqa: E402
 
 from open_wam.configs import ActionTargetRepresentation, GripperRepresentation, ParallelRuntimeMode  # noqa: E402
 from open_wam.configs.enums import DeadlineMissPolicy, FallbackHistoryPolicy  # noqa: E402
@@ -51,6 +47,7 @@ from open_wam.integrations import (  # noqa: E402
 )
 from open_wam.integrations import libero_rollout  # noqa: E402
 from open_wam.integrations.realtime_control import build_live_rollout_summary  # noqa: E402
+from open_wam.evals import libero_visualization as exact_viz  # noqa: E402
 from open_wam.models.common.rollout_startup import require_strict_startup_generation_frame  # noqa: E402
 from open_wam.models.policy_variants import PolicyInferContext  # noqa: E402
 from open_wam.models.policy_variants.mot.runtime_routing import (  # noqa: E402
@@ -279,9 +276,8 @@ def main() -> None:
         type=str,
         default=None,
         help=(
-            "Exact/joint exported-transformer override. This mirrors "
-            "scripts/deprecated/run_libero_exact_visualization.py and intentionally does not merge "
-            "checkpoint resolved_config.yaml."
+            "Exact/joint exported-transformer override. This intentionally does "
+            "not merge checkpoint resolved_config.yaml."
         ),
     )
     parser.add_argument(
@@ -577,15 +573,15 @@ def main() -> None:
         allow_deprecated=bool(args.allow_deprecated_libero_config),
     )
 
-    runtime_device = exact_viz._resolve_device(args.runtime_device)
-    frontend_device = exact_viz._resolve_device(args.frontend_device, fallback=runtime_device)
-    decode_device = exact_viz._resolve_device(args.decode_device, fallback=frontend_device)
+    runtime_device = exact_viz.resolve_device(args.runtime_device)
+    frontend_device = exact_viz.resolve_device(args.frontend_device, fallback=runtime_device)
+    decode_device = exact_viz.resolve_device(args.decode_device, fallback=frontend_device)
     runtime_devices = rollout_runtime.resolve_runtime_devices(
         args.runtime_devices,
         fallback=runtime_device,
     )
-    runtime_prep_device = exact_viz._resolve_device(args.runtime_prep_device, fallback=runtime_device)
-    runtime_output_device = exact_viz._resolve_device(args.runtime_output_device, fallback=runtime_device)
+    runtime_prep_device = exact_viz.resolve_device(args.runtime_prep_device, fallback=runtime_device)
+    runtime_output_device = exact_viz.resolve_device(args.runtime_output_device, fallback=runtime_device)
     fallback_history_policy = FallbackHistoryPolicy(args.fallback_history_policy)
     exact_startup_bootstrap_padding = _resolve_exact_startup_bootstrap_padding(
         config,
@@ -1364,8 +1360,8 @@ def _run_exact_like_realtime_rollout(
         "exact_startup_bootstrap_padding": bool(exact_startup_bootstrap_padding),
     }
 
-    task_spec, prompt = exact_viz._resolve_task_spec(benchmark, task_id)
-    init_states = exact_viz.load_libero_task_init_states(task_spec)
+    task_spec, prompt = exact_viz.resolve_task_spec(benchmark, task_id)
+    init_states = load_libero_task_init_states(task_spec)
     env = _construct_realtime_libero_env(task_spec, env_horizon=env_horizon)
     if env is None:
         raise RuntimeError("Failed to construct LIBERO OffScreenRenderEnv after 5 retries.")
@@ -1378,9 +1374,9 @@ def _run_exact_like_realtime_rollout(
     max_frames = int(math.ceil(max_actions / action_per_frame))
 
     try:
-        first_raw_obs = exact_viz._init_single_env_raw(env, init_states[episode_idx % len(init_states)])
-        first_obs = exact_viz._extract_obs(first_raw_obs)
-        latest_proprio_state = exact_viz._extract_proprio_context_tensor(
+        first_raw_obs = exact_viz.initialize_raw_observation(env, init_states[episode_idx % len(init_states)])
+        first_obs = exact_viz.extract_observation(first_raw_obs)
+        latest_proprio_state = exact_viz.extract_proprio_context_tensor(
             first_raw_obs,
             config=config,
             device=runtime_device,
@@ -1392,8 +1388,7 @@ def _run_exact_like_realtime_rollout(
         startup_history_frame_index = 0
         with torch.inference_mode():
             session = runner.reset(task_text=(prompt,))
-            # Match scripts/deprecated/run_libero_exact_visualization.py, which seeds
-            # immediately before each chunk instead of only at process start.
+            # Preserve the exact M1 contract: reseed immediately before each chunk.
             with exact_sandbox._isolated_torch_rng(seed, frontend_device, runtime_device):
                 startup_prepare_t0 = time.perf_counter()
                 if VERBOSE:
@@ -1402,9 +1397,9 @@ def _run_exact_like_realtime_rollout(
                         f"bootstrap_padding={exact_startup_bootstrap_padding}",
                         flush=True,
                     )
-                initial_inputs = exact_viz._prepare_exact_runtime_inputs(
+                initial_inputs = exact_viz.prepare_exact_runtime_inputs(
                     runner,
-                    views=exact_viz._obs_list_to_views([first_obs], config=config, device=frontend_device),
+                    views=exact_viz.observations_to_views([first_obs], device=frontend_device),
                     task_text=(prompt,),
                     frontend_device=frontend_device,
                     runtime_device=runtime_device,
@@ -1870,8 +1865,8 @@ def _run_exact_like_realtime_rollout(
                     obs, _, done, _ = env.step(action.astype(np.float32, copy=False))
                     action_end_monotonic = time.perf_counter()
                     env_step_s = action_end_monotonic - actual_start_monotonic
-                    extracted_obs = exact_viz._extract_obs(obs)
-                    latest_proprio_state = exact_viz._extract_proprio_context_tensor(
+                    extracted_obs = exact_viz.extract_observation(obs)
+                    latest_proprio_state = exact_viz.extract_proprio_context_tensor(
                         obs,
                         config=config,
                         device=runtime_device,

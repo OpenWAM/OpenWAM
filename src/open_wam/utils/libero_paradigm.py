@@ -39,10 +39,13 @@ _DEPRECATED_LIBERO_POLICY_CONFIG_REASONS = {
     ),
 }
 
-_DEPRECATED_LIBERO_SCRIPT_REPLACEMENTS = {
+_REMOVED_LIBERO_SCRIPT_REPLACEMENTS = {
     "run_libero_exact_realtime_sandbox.py": "scripts/run_libero_realtime_sandbox.py",
-    "run_libero_exact_visualization.py": "scripts/run_libero_realtime_sandbox.py or scripts/run_libero_sampled_eval.py",
+    "run_libero_exact_visualization.py": "scripts/run_libero_realtime_sandbox.py",
     "run_libero_realtime_ablation.py": "scripts/run_libero_sampled_eval.py",
+}
+
+_DEPRECATED_LIBERO_SCRIPT_REPLACEMENTS = {
     "run_mot_non_joint_aligned_libero_A.sh": (
         "scripts/run_mot_nonjoint_posttrain_libero.sh with a current *_heng_compatible CONFIG_NAME"
     ),
@@ -77,17 +80,28 @@ def deprecated_libero_script_replacement(script_path: str | Path | None) -> str 
     return _DEPRECATED_LIBERO_SCRIPT_REPLACEMENTS.get(normalize_libero_script_name(script_path))
 
 
+def removed_libero_script_replacement(script_path: str | Path | None) -> str | None:
+    return _REMOVED_LIBERO_SCRIPT_REPLACEMENTS.get(normalize_libero_script_name(script_path))
+
+
 def require_current_libero_script(
     script_path: str | Path | None,
     *,
     allow_deprecated: bool = False,
     source: str | None = None,
 ) -> None:
+    script_label = str(source or script_path or "<unknown>")
+    removed_replacement = removed_libero_script_replacement(script_path)
+    if removed_replacement is not None:
+        raise ValueError(
+            f"{script_label} was removed from the maintained Open-WAM runtime. "
+            f"Use {removed_replacement}. Git history retains the historical implementation."
+        )
+
     replacement = deprecated_libero_script_replacement(script_path)
     if replacement is None or allow_deprecated or _env_allows_deprecated_libero_config():
         return
 
-    script_label = str(source or script_path or "<unknown>")
     raise ValueError(
         f"{script_label} is deprecated for current LIBERO M1/M5 launch paths. "
         f"Use {replacement}. Set {ALLOW_DEPRECATED_LIBERO_CONFIG_ENV}=1 or pass "
