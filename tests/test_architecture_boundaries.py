@@ -123,6 +123,16 @@ def test_private_libero_absolute_action_experiment_harness_is_retired() -> None:
     assert not any(path.exists() for path in retired_paths)
 
 
+def test_private_local_posttraining_supervisor_is_retired() -> None:
+    retired_paths = (
+        REPO_ROOT / "scripts" / "run_local_libero10_posttrain_m1_m2_m5.sh",
+        REPO_ROOT / "scripts" / "run_local_libero10_posttrain_m2_m5.sh",
+        REPO_ROOT / "scripts" / "env_local_data_openwam.sh",
+    )
+
+    assert not any(path.exists() for path in retired_paths)
+
+
 def test_public_config_enums_are_declared_once() -> None:
     path = PACKAGE_ROOT / "configs" / "enums.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
