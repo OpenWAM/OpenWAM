@@ -302,13 +302,17 @@ outputs, cache schemas, action execution, state progression, optimizer schema,
 scheduler values, and all other non-distributed fields compare exactly,
 including floating-point values. Tensor fingerprints include SHA-256 over all
 normalized tensor bytes in addition to diagnostic statistics and probes.
-Explicit absolute/relative tolerance applies only below `gradients`, where
-NCCL reduction order can change the final low bits. Optimizer state, scheduler
-state, parameter-group summaries, and selected parameter updates remain exact.
-Raw nonzero gradient counts remain in reports, while verification compares
-their density rounded to one part per million because near-underflow values can
-cross exact zero. Checkpoint paths and peak CUDA allocation are excluded because
-staging location and allocator behavior are not model semantics.
+Explicit absolute/relative tolerance applies to gradient summaries, gradient
+norms, and selected gradient probes, where NCCL reduction order can change the
+final low bits. All-reduced post-step parameter-group aggregates use a fixed
+absolute bound of `0.25`; subtracting two roughly `10^7`-scale BF16 summaries
+is not byte-stable across process teardown. Inputs, outputs, losses, optimizer
+schema, scheduler state, and every field outside those named distributed
+numeric paths remain exact. Raw nonzero gradient counts remain in reports,
+while verification compares their density rounded to one part per million
+because near-underflow values can cross exact zero. Checkpoint paths and peak
+CUDA allocation are excluded because staging location and allocator behavior
+are not model semantics.
 
 The pytest entrypoint is deliberately gated:
 

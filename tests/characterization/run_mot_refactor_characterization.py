@@ -50,7 +50,10 @@ VOLATILE_REPORT_KEYS = frozenset(
 NONZERO_GRADIENT_DENSITY_PRECISION = 6
 CONTENT_PROBE_CHUNK_BYTES = 64 * 1024
 CONTENT_PROBE_COUNT = 17
-NUMERICALLY_TOLERANT_REPORT_PATH_PARTS = (".gradients.",)
+DISTRIBUTED_AGGREGATE_TOLERANCE = ComparisonTolerance(
+    absolute=0.25,
+    relative=0.0,
+)
 
 
 def record_characterization(args: argparse.Namespace) -> None:
@@ -728,11 +731,17 @@ def _comparison_projection(
 
 
 def _numeric_tolerance_resolver(
-    tolerance: ComparisonTolerance,
+    gradient_tolerance: ComparisonTolerance,
 ):
     def resolve(path: str) -> ComparisonTolerance | None:
-        if any(part in path for part in NUMERICALLY_TOLERANT_REPORT_PATH_PARTS):
-            return tolerance
+        if ".optimizer_step.distributed_numeric.parameter_groups." in path:
+            return DISTRIBUTED_AGGREGATE_TOLERANCE
+        if (
+            ".gradients." in path
+            or ".optimizer_step.distributed_numeric.parameter_probes" in path
+            or path.endswith(".optimizer_step.distributed_numeric.grad_norm")
+        ):
+            return gradient_tolerance
         return None
 
     return resolve

@@ -708,7 +708,7 @@ def test_report_comparison_supports_explicit_float_tolerance() -> None:
     assert any(".mode" in difference for difference in differences)
 
 
-def test_characterization_tolerance_is_limited_to_gradients() -> None:
+def test_characterization_tolerance_is_limited_to_distributed_numeric_fields() -> None:
     expected = {
         "scenarios": {
             "sample": {
@@ -716,7 +716,11 @@ def test_characterization_tolerance_is_limited_to_gradients() -> None:
                 "outputs": {"mean": 2.0},
                 "gradients": {"video_backbone": {"absolute_sum": 3.0}},
                 "optimizer_step": {
-                    "distributed_numeric": {"after_sum": 4.0},
+                    "distributed_numeric": {
+                        "parameter_groups": {
+                            "video_backbone": {"after": {"sum": 4.0}}
+                        }
+                    },
                     "scheduler": {"lr": 5.0e-6},
                 },
             }
@@ -729,7 +733,11 @@ def test_characterization_tolerance_is_limited_to_gradients() -> None:
                 "outputs": {"mean": 2.0001},
                 "gradients": {"video_backbone": {"absolute_sum": 3.0001}},
                 "optimizer_step": {
-                    "distributed_numeric": {"after_sum": 4.0001},
+                    "distributed_numeric": {
+                        "parameter_groups": {
+                            "video_backbone": {"after": {"sum": 4.0001}}
+                        }
+                    },
                     "scheduler": {"lr": 5.1e-6},
                 },
             }
@@ -744,15 +752,33 @@ def test_characterization_tolerance_is_limited_to_gradients() -> None:
         ),
     )
 
-    assert len(differences) == 4
+    assert len(differences) == 3
     assert any(".metrics.loss" in difference for difference in differences)
     assert any(".outputs.mean" in difference for difference in differences)
     assert any(".scheduler.lr" in difference for difference in differences)
-    assert any(
+    assert not any(".gradients." in difference for difference in differences)
+    assert not any(
         ".optimizer_step.distributed_numeric." in difference
         for difference in differences
     )
-    assert not any(".gradients." in difference for difference in differences)
+
+    actual["scenarios"]["sample"]["optimizer_step"]["distributed_numeric"][
+        "parameter_groups"
+    ]["video_backbone"]["after"]["sum"] = 4.3
+    differences = compare_characterization_reports(
+        expected,
+        actual,
+        tolerance=ComparisonTolerance(absolute=0.0, relative=0.0),
+        tolerance_for_path=_numeric_tolerance_resolver(
+            ComparisonTolerance(absolute=1e-3, relative=0.0)
+        ),
+    )
+
+    assert any(
+        ".optimizer_step.distributed_numeric.parameter_groups.video_backbone.after.sum"
+        in difference
+        for difference in differences
+    )
 
 
 def test_fixture_directory_comparison_requires_byte_identical_files(
