@@ -98,6 +98,16 @@ def test_deprecated_scripts_do_not_contain_python_runtime_implementations() -> N
     assert list(deprecated_script_root.glob("*.py")) == []
 
 
+def test_private_uva_comparison_drivers_are_retired() -> None:
+    retired_paths = (
+        REPO_ROOT / "scripts" / "debug_gjd_uva_mode_videos.py",
+        REPO_ROOT / "scripts" / "eval_uva_openwam_aligned.py",
+        REPO_ROOT / "scripts" / "eval_openwam_fdm_fvd.py",
+    )
+
+    assert not any(path.exists() for path in retired_paths)
+
+
 def test_public_config_enums_are_declared_once() -> None:
     path = PACKAGE_ROOT / "configs" / "enums.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
