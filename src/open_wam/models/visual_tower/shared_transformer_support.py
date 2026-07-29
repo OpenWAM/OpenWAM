@@ -1,61 +1,512 @@
+"""Reusable Wan-style transformer primitives shared by visual and action paths."""
+
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
+from diffusers.models.attention import FeedForward
+from diffusers.models.embeddings import TimestepEmbedding, Timesteps
+from einops import rearrange
+from torch import nn
 
-from .replica_core import (
-    SharedTransformerAttention,
-    SharedTransformerRotaryPositionalEmbedding,
-    SharedTransformerTimeEmbedding,
-    _apply_rotary_emb,
-    _feed_forward_with_materialized_params,
-    _layer_norm_with_materialized_params,
-    _linear_with_materialized_params,
-    _materialize_runtime_parameter,
-    _rms_norm_with_materialized_weight,
-    _select_chunk_slices,
+from open_wam.models.common import (
+    PreparedAttentionProfile,
+    SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS,
+    apply_attention_backend,
+    cache_backend_uses_slot_pool,
+    packed_slot_pool_query_sequence_ids as _packed_slot_pool_query_sequence_ids,
+    prepend_cached_prefix_mask as _prepend_cached_prefix_mask,
+    prepare_sdpa_mask as _prepare_sdpa_mask,
+    resolve_slot_pool_prefix_visibility as _resolve_slot_pool_prefix_visibility,
+    retained_slot_pool_indices_for_current_write as _retained_slot_pool_indices_for_current_write,
+    select_attention_profile_mask,
+    update_slot_pool_layer_state,
 )
+from open_wam.models.video_backbone.contracts import AttentionCacheEntry
+
+
+class SharedTransformerTimeEmbedding(nn.Module):
+    """Wan-style timestep conditioner used by the shared transformer core."""
+
+    def __init__(self, hidden_size: int, freq_dim: int) -> None:
+        super().__init__()
+        self.timesteps_proj = Timesteps(num_channels=freq_dim, flip_sin_to_cos=True, downscale_freq_shift=0)
+        self.time_embedder = TimestepEmbedding(in_channels=freq_dim, time_embed_dim=hidden_size)
+        self.act_fn = nn.SiLU()
+        self.time_proj = nn.Linear(hidden_size, hidden_size * 6)
+
+    def forward(self, timestep_values: torch.Tensor, *, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
+        batch_size, seq_len = timestep_values.shape
+        flat = timestep_values.reshape(-1)
+        projected = self.timesteps_proj(flat)
+        projected = projected.to(self.time_embedder.linear_1.weight.dtype)
+        temb = self.time_embedder(projected).to(dtype=dtype).reshape(batch_size, seq_len, -1)
+        timestep_proj = self.time_proj(self.act_fn(temb)).reshape(batch_size, seq_len, 6, -1)
+        return temb, timestep_proj
+
+
+class SharedTransformerRotaryPositionalEmbedding(nn.Module):
+    """Wan-style rotary embedding over frame, height, and width axes."""
+
+    def __init__(self, attention_head_dim: int, theta: float = 10000.0) -> None:
+        super().__init__()
+        self.attention_head_dim = attention_head_dim
+        self.theta = theta
+        self.f_dim = self.attention_head_dim - 2 * (self.attention_head_dim // 3)
+        self.h_dim = self.attention_head_dim // 3
+        self.w_dim = self.attention_head_dim // 3
+        self.register_buffer("f_freqs_base", self._make_freqs_base(self.f_dim), persistent=False)
+        self.register_buffer("h_freqs_base", self._make_freqs_base(self.h_dim), persistent=False)
+        self.register_buffer("w_freqs_base", self._make_freqs_base(self.w_dim), persistent=False)
+
+    def _make_freqs_base(self, dim: int) -> torch.Tensor:
+        half_dim = max(1, dim // 2)
+        return 1.0 / (self.theta ** (torch.arange(0, dim, 2)[:half_dim].double() / max(dim, 1)))
+
+    def forward(self, grid_ids: torch.Tensor) -> torch.Tensor:
+        if grid_ids.ndim == 2:
+            grid_ids = grid_ids.unsqueeze(0)
+        f_freqs = grid_ids[:, 0, :].unsqueeze(-1) * self.f_freqs_base.to(grid_ids.device)
+        h_freqs = grid_ids[:, 1, :].unsqueeze(-1) * self.h_freqs_base.to(grid_ids.device)
+        w_freqs = grid_ids[:, 2, :].unsqueeze(-1) * self.w_freqs_base.to(grid_ids.device)
+        freqs = torch.cat([f_freqs, h_freqs, w_freqs], dim=-1).float()
+        return torch.polar(torch.ones_like(freqs), freqs)
 
 
 def apply_rotary_emb(x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
-    """Public wrapper for the shared transformer rotary helper."""
+    """Apply complex rotary frequencies to per-head query or key features."""
 
-    return _apply_rotary_emb(x, freqs)
+    x_complex = torch.view_as_complex(x.to(torch.float64).reshape(x.shape[0], x.shape[1], x.shape[2], -1, 2))
+    if freqs.ndim == 3:
+        freqs = freqs[:, :, None, :]
+    x_out = torch.view_as_real(x_complex * freqs).flatten(3)
+    return x_out.to(x.dtype)
 
 
 def select_chunk_slices(tensor: torch.Tensor, count: int) -> tuple[torch.Tensor, ...]:
-    """Public wrapper for chunk-slice selection used by shared transformer blocks."""
+    """Split the chunk axis into cloned per-chunk tensors."""
 
-    return _select_chunk_slices(tensor, count)
-
-
-def materialize_runtime_parameter(parameter: torch.Tensor, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
-    """Materialize an FSDP-safe parameter shard onto the runtime device."""
-
-    return _materialize_runtime_parameter(parameter, device=device, dtype=dtype)
+    chunked = rearrange(tensor, "b l n c -> b n l c").contiguous()
+    if int(chunked.shape[1]) != count:
+        raise ValueError(f"Expected chunk axis length {count}, got {tuple(chunked.shape)}.")
+    return tuple(chunked[:, index, :, :].clone() for index in range(count))
 
 
-def linear_with_materialized_params(module, inputs: torch.Tensor) -> torch.Tensor:
-    """Apply a linear module using fully materialized runtime parameters."""
+def materialize_runtime_parameter(
+    parameter: torch.Tensor,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Return a dense tensor for helper paths that bypass FSDP pre-forward hooks."""
 
-    return _linear_with_materialized_params(module, inputs)
-
-
-def rms_norm_with_materialized_weight(module, inputs: torch.Tensor) -> torch.Tensor:
-    """Apply RMSNorm using materialized weights."""
-
-    return _rms_norm_with_materialized_weight(module, inputs)
-
-
-def layer_norm_with_materialized_params(module, inputs: torch.Tensor) -> torch.Tensor:
-    """Apply LayerNorm using materialized runtime parameters."""
-
-    return _layer_norm_with_materialized_params(module, inputs)
+    if hasattr(parameter, "full_tensor"):
+        return parameter.full_tensor().to(device=device, dtype=dtype)
+    return parameter.to(device=device, dtype=dtype)
 
 
-def feed_forward_with_materialized_params(module, inputs: torch.Tensor) -> torch.Tensor:
-    """Apply a feed-forward block using materialized runtime parameters."""
+def linear_with_materialized_params(
+    linear: nn.Linear,
+    inputs: torch.Tensor,
+) -> torch.Tensor:
+    """Apply a linear layer after materializing any sharded parameters."""
 
-    return _feed_forward_with_materialized_params(module, inputs)
+    weight = materialize_runtime_parameter(
+        linear.weight,
+        device=inputs.device,
+        dtype=inputs.dtype,
+    )
+    bias = None
+    if linear.bias is not None:
+        bias = materialize_runtime_parameter(
+            linear.bias,
+            device=inputs.device,
+            dtype=inputs.dtype,
+        )
+    return F.linear(inputs, weight, bias)
+
+
+def rms_norm_with_materialized_weight(
+    norm: nn.RMSNorm,
+    inputs: torch.Tensor,
+) -> torch.Tensor:
+    """Apply RMS normalization with a materialized affine weight."""
+
+    weight = None
+    if norm.weight is not None:
+        weight = materialize_runtime_parameter(
+            norm.weight,
+            device=inputs.device,
+            dtype=inputs.dtype,
+        )
+    return F.rms_norm(
+        inputs,
+        list(norm.normalized_shape),
+        weight=weight,
+        eps=norm.eps,
+    )
+
+
+def layer_norm_with_materialized_params(
+    norm: nn.LayerNorm,
+    inputs: torch.Tensor,
+) -> torch.Tensor:
+    """Apply layer normalization with materialized affine parameters."""
+
+    weight = None
+    bias = None
+    if getattr(norm, "weight", None) is not None:
+        weight = materialize_runtime_parameter(
+            norm.weight,
+            device=inputs.device,
+            dtype=inputs.dtype,
+        )
+    if getattr(norm, "bias", None) is not None:
+        bias = materialize_runtime_parameter(
+            norm.bias,
+            device=inputs.device,
+            dtype=inputs.dtype,
+        )
+    return F.layer_norm(
+        inputs,
+        list(norm.normalized_shape),
+        weight=weight,
+        bias=bias,
+        eps=norm.eps,
+    )
+
+
+def feed_forward_with_materialized_params(
+    ffn: FeedForward,
+    inputs: torch.Tensor,
+) -> torch.Tensor:
+    """Apply the supported Diffusers feed-forward layout with dense parameters."""
+
+    if len(ffn.net) != 3:
+        raise ValueError(f"Unsupported FeedForward layout for materialized helper: {ffn.net!r}")
+    act = ffn.net[0]
+    dropout = ffn.net[1]
+    proj_out = ffn.net[2]
+    if not hasattr(act, "proj"):
+        raise ValueError(f"Unsupported FeedForward activation module for materialized helper: {act!r}")
+    hidden = linear_with_materialized_params(act.proj, inputs)
+    hidden = F.gelu(hidden, approximate="tanh")
+    hidden = dropout(hidden)
+    return linear_with_materialized_params(proj_out, hidden)
+
+
+# Private aliases preserve historical internal imports while this module owns no
+# duplicate implementation.
+_apply_rotary_emb = apply_rotary_emb
+_select_chunk_slices = select_chunk_slices
+_materialize_runtime_parameter = materialize_runtime_parameter
+_linear_with_materialized_params = linear_with_materialized_params
+_rms_norm_with_materialized_weight = rms_norm_with_materialized_weight
+_layer_norm_with_materialized_params = layer_norm_with_materialized_params
+_feed_forward_with_materialized_params = feed_forward_with_materialized_params
+
+
+class SharedTransformerAttention(nn.Module):
+    """Wan-style attention block with SDPA mask support."""
+
+    def __init__(
+        self,
+        *,
+        dim: int,
+        heads: int,
+        dim_head: int,
+        eps: float,
+        dropout: float = 0.0,
+        cross_attention_dim_head: int | None = None,
+    ) -> None:
+        super().__init__()
+        self.inner_dim = dim_head * heads
+        self.heads = heads
+        self.kv_inner_dim = self.inner_dim if cross_attention_dim_head is None else cross_attention_dim_head * heads
+        self.to_q = nn.Linear(dim, self.inner_dim, bias=True)
+        self.to_k = nn.Linear(dim, self.kv_inner_dim, bias=True)
+        self.to_v = nn.Linear(dim, self.kv_inner_dim, bias=True)
+        self.to_out = nn.ModuleList([nn.Linear(self.inner_dim, dim, bias=True), nn.Dropout(dropout)])
+        self.norm_q = nn.RMSNorm(dim_head * heads, eps=eps, elementwise_affine=True)
+        self.norm_k = nn.RMSNorm(dim_head * heads, eps=eps, elementwise_affine=True)
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        *,
+        rotary_emb: torch.Tensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+        attention_profile: PreparedAttentionProfile | None = None,
+        is_cross_attention: bool = False,
+        cached_key_value: AttentionCacheEntry | None = None,
+        cached_prefix_visibility: torch.Tensor | None = None,
+        cache_current_token_count: int = 0,
+        cache_current_token_span: tuple[int, int] | None = None,
+        detach_cache_entry: bool = True,
+        kv_cache_override: AttentionCacheEntry | None = None,
+        cache_backend_name: str | None = None,
+        cache_backend_state=None,
+        cache_backend_update_mode: int = 0,
+        cache_backend_stream_ids: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, AttentionCacheEntry | None]:
+        q = q.contiguous().clone()
+        k = k.contiguous().clone()
+        v = v.contiguous().clone()
+        query = _rms_norm_with_materialized_weight(
+            self.norm_q,
+            _linear_with_materialized_params(self.to_q, q),
+        ).unflatten(2, (self.heads, -1))
+        use_slot_pool_backend = cache_backend_uses_slot_pool(cache_backend_name) and cache_backend_state is not None
+        current_cache_entry = None
+        if kv_cache_override is not None and kv_cache_override.key is not None and kv_cache_override.value is not None:
+            key = kv_cache_override.key.to(device=q.device, dtype=q.dtype)
+            value = kv_cache_override.value.to(device=q.device, dtype=q.dtype)
+            current_cache_entry = kv_cache_override
+        else:
+            key = _rms_norm_with_materialized_weight(
+                self.norm_k,
+                _linear_with_materialized_params(self.to_k, k),
+            ).unflatten(2, (self.heads, -1))
+            value = _linear_with_materialized_params(self.to_v, v).unflatten(2, (self.heads, -1))
+            if rotary_emb is not None:
+                query = _apply_rotary_emb(query, rotary_emb)
+                key = _apply_rotary_emb(key, rotary_emb)
+            if use_slot_pool_backend:
+                current_cache_entry = None
+            else:
+                key_t = key.transpose(1, 2)
+                value_t = value.transpose(1, 2)
+                cache_start = cache_current_token_span[0] if cache_current_token_span is not None else 0
+                cache_end = (
+                    cache_current_token_span[1]
+                    if cache_current_token_span is not None
+                    else cache_current_token_count
+                )
+                cache_token_count = int(cache_end - cache_start)
+                if cache_token_count > 0:
+                    cache_key = key_t[:, :, cache_start:cache_end, :]
+                    cache_value = value_t[:, :, cache_start:cache_end, :]
+                    if detach_cache_entry:
+                        cache_key = cache_key.detach()
+                        cache_value = cache_value.detach()
+                    current_cache_entry = AttentionCacheEntry(
+                        key=cache_key,
+                        value=cache_value,
+                        metadata={
+                            "cached_tokens": cache_token_count,
+                            "segment_token_lengths": (cache_token_count,),
+                        },
+                    )
+                key = key_t
+                value = value_t
+        if kv_cache_override is None:
+            query = query.transpose(1, 2)
+        else:
+            if rotary_emb is not None:
+                query = _apply_rotary_emb(query, rotary_emb)
+            query = query.transpose(1, 2)
+        slot_pool_update_key = None
+        slot_pool_update_value = None
+        slot_pool_update_stream_ids = cache_backend_stream_ids
+        if use_slot_pool_backend and kv_cache_override is None:
+            if cache_backend_state.slot_mask is None or cache_backend_state.key is None or cache_backend_state.value is None:
+                raise ValueError("LingBot slot-pool backend requires initialized slot mask and KV tensors.")
+            valid = cache_backend_state.slot_mask.nonzero(as_tuple=False).squeeze(-1)
+            if cache_backend_state.slot_ids is not None and valid.numel() > 1:
+                valid = valid[torch.argsort(cache_backend_state.slot_ids[valid], stable=True)]
+            current_key = key.transpose(1, 2)
+            current_value = value.transpose(1, 2)
+            valid = _retained_slot_pool_indices_for_current_write(
+                cache_backend_state,
+                valid=valid,
+                current_token_count=int(current_key.shape[2]),
+                update_mode=int(cache_backend_update_mode),
+            )
+            prefix_key = cache_backend_state.key[:, valid].transpose(1, 2).to(device=q.device, dtype=query.dtype)
+            prefix_value = cache_backend_state.value[:, valid].transpose(1, 2).to(device=q.device, dtype=query.dtype)
+            prefix_stream_ids = (
+                cache_backend_state.stream_ids[valid].to(device=q.device)
+                if cache_backend_state.stream_ids is not None
+                else None
+            )
+            query_sequence_ids = None
+            cached_prefix_sequence_ids = None
+            if valid.numel() > 0 and int(prefix_key.shape[0]) != int(current_key.shape[0]):
+                if int(current_key.shape[0]) != 1:
+                    raise ValueError(
+                        "Slot-pool prefix/current batch mismatch is only supported for packed exact-runtime "
+                        f"current tokens, got prefix_batch={int(prefix_key.shape[0])}, "
+                        f"current_batch={int(current_key.shape[0])}."
+                    )
+                prefix_batch_size = int(prefix_key.shape[0])
+                prefix_token_count = int(prefix_key.shape[2])
+                query_sequence_ids = _packed_slot_pool_query_sequence_ids(
+                    attention_profile=attention_profile,
+                    query_stream_ids=cache_backend_stream_ids,
+                    query_len=int(current_key.shape[2]),
+                    cache_batch_size=prefix_batch_size,
+                    device=q.device,
+                )
+                if query_sequence_ids is None:
+                    raise ValueError(
+                        "Slot-pool prefix/current batch mismatch requires packed exact-runtime attention metadata."
+                    )
+                cached_prefix_sequence_ids = torch.arange(
+                    prefix_batch_size,
+                    device=q.device,
+                    dtype=torch.long,
+                ).repeat_interleave(prefix_token_count)
+                prefix_key = (
+                    prefix_key.permute(1, 0, 2, 3)
+                    .reshape(prefix_key.shape[1], prefix_batch_size * prefix_token_count, prefix_key.shape[3])
+                    .unsqueeze(0)
+                )
+                prefix_value = (
+                    prefix_value.permute(1, 0, 2, 3)
+                    .reshape(prefix_value.shape[1], prefix_batch_size * prefix_token_count, prefix_value.shape[3])
+                    .unsqueeze(0)
+                )
+                if prefix_stream_ids is not None:
+                    prefix_stream_ids = prefix_stream_ids.repeat(prefix_batch_size)
+            key = torch.cat([prefix_key, current_key], dim=2) if valid.numel() > 0 else current_key
+            value = torch.cat([prefix_value, current_value], dim=2) if valid.numel() > 0 else current_value
+            if prefix_stream_ids is not None:
+                if cache_backend_stream_ids is None:
+                    current_stream_ids = torch.full(
+                        (int(current_key.shape[2]),),
+                        -1,
+                        device=prefix_stream_ids.device,
+                        dtype=prefix_stream_ids.dtype,
+                    )
+                else:
+                    current_stream_ids = cache_backend_stream_ids.to(
+                        device=prefix_stream_ids.device,
+                        dtype=prefix_stream_ids.dtype,
+                    )
+                    if current_stream_ids.ndim == 2:
+                        if current_stream_ids.shape[0] != 1:
+                            raise ValueError(
+                                "Slot-pool current stream ids must be rank-1 or batch-shared rank-2, "
+                                f"got shape {tuple(current_stream_ids.shape)}."
+                        )
+                        current_stream_ids = current_stream_ids.squeeze(0)
+                    if current_stream_ids.ndim != 1 or int(current_stream_ids.shape[0]) != int(current_key.shape[2]):
+                        raise ValueError(
+                            "Slot-pool current stream ids must have one value per current KV token, "
+                            f"got shape {tuple(current_stream_ids.shape)} for key_size={int(current_key.shape[2])}."
+                        )
+                valid_stream_ids = torch.cat([prefix_stream_ids, current_stream_ids], dim=0)
+            else:
+                valid_stream_ids = None
+            slot_pool_update_key = current_key.transpose(1, 2).detach()
+            slot_pool_update_value = current_value.transpose(1, 2).detach()
+        else:
+            valid_stream_ids = None
+        if cached_key_value is not None and cached_key_value.key is not None and cached_key_value.value is not None:
+            key = torch.cat([cached_key_value.key.to(device=q.device, dtype=key.dtype), key], dim=2)
+            value = torch.cat([cached_key_value.value.to(device=q.device, dtype=value.dtype), value], dim=2)
+            attention_mask = _prepend_cached_prefix_mask(
+                attention_mask,
+                cached_prefix_visibility=cached_prefix_visibility,
+                prefix_len=int(cached_key_value.key.shape[2]),
+                cached_segment_lengths=tuple(cached_key_value.metadata.get("segment_token_lengths", ())),
+            )
+        profile_attention_mask, profile_block_mask = select_attention_profile_mask(
+            attention_profile,
+            device=query.device,
+            prefer_flex=(
+                attention_mask is None
+                and cached_key_value is None
+                and cached_prefix_visibility is None
+                and cache_current_token_count == 0
+                and cache_current_token_span is None
+                and kv_cache_override is None
+            ),
+            is_cross_attention=is_cross_attention,
+        )
+        resolved_attention_mask = attention_mask if attention_mask is not None else profile_attention_mask
+        if use_slot_pool_backend and key.shape[2] > query.shape[2]:
+            prefix_len = int(key.shape[2] - query.shape[2])
+            prefix_visibility_mode = (
+                str(cache_backend_state.metadata.get("prefix_visibility_mode", "full_history"))
+                if cache_backend_state is not None
+                else "full_history"
+            )
+            if resolved_attention_mask is None and prefix_visibility_mode != "full_history":
+                query_len = int(query.shape[2])
+                resolved_attention_mask = torch.ones(
+                    query_len,
+                    query_len,
+                    device=query.device,
+                    dtype=torch.bool,
+                )
+            if resolved_attention_mask is not None:
+                resolved_attention_mask = _resolve_slot_pool_prefix_visibility(
+                    resolved_attention_mask,
+                    prefix_len=prefix_len,
+                    prefix_visibility_mode=prefix_visibility_mode,
+                    query_stream_ids=cache_backend_stream_ids,
+                    cached_prefix_stream_ids=(
+                        valid_stream_ids[:prefix_len]
+                        if valid_stream_ids is not None
+                        else None
+                    ),
+                    query_sequence_ids=query_sequence_ids,
+                    cached_prefix_sequence_ids=cached_prefix_sequence_ids,
+                    allow_video_query_to_action_prefix_tail_tokens=int(
+                        cache_backend_state.metadata.get(
+                            SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS,
+                            0,
+                        )
+                    )
+                    if cache_backend_state is not None
+                    else 0,
+                )
+                profile_block_mask = None
+        sdpa_mask = _prepare_sdpa_mask(resolved_attention_mask, device=query.device)
+        hidden_states = apply_attention_backend(
+            query=query,
+            key=key,
+            value=value,
+            attention_mask=sdpa_mask,
+            block_mask=profile_block_mask,
+            kernel_options={
+                "BLOCK_M": 64,
+                "BLOCK_N": 64,
+                "BLOCK_M1": 32,
+                "BLOCK_N1": 64,
+                "BLOCK_M2": 64,
+                "BLOCK_N2": 32,
+            }
+            if profile_block_mask is not None
+            else None,
+        )
+        hidden_states = hidden_states.transpose(1, 2).flatten(2, 3)
+        hidden_states = _linear_with_materialized_params(self.to_out[0], hidden_states)
+        hidden_states = self.to_out[1](hidden_states)
+        if (
+            use_slot_pool_backend
+            and kv_cache_override is None
+            and cache_backend_update_mode != 0
+            and slot_pool_update_key is not None
+            and slot_pool_update_value is not None
+        ):
+            if int(slot_pool_update_key.shape[0]) != int(cache_backend_state.key.shape[0]):
+                raise ValueError(
+                    "Cannot persist batch-packed current K/V into a slot-pool cache with a different batch size; "
+                    f"got current_batch={int(slot_pool_update_key.shape[0])}, "
+                    f"cache_batch={int(cache_backend_state.key.shape[0])}."
+                )
+            update_slot_pool_layer_state(
+                cache_backend_state,
+                key=slot_pool_update_key,
+                value=slot_pool_update_value,
+                is_pred=cache_backend_update_mode == 1,
+                stream_ids=slot_pool_update_stream_ids,
+            )
+        return hidden_states, current_cache_entry
 
 
 __all__ = [

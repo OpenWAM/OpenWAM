@@ -24,11 +24,21 @@ from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
     prepare_reference_single_stream_input,
 )
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
-from open_wam.models.visual_tower import replica_core as replica_core_module
-from open_wam.models.visual_tower.replica_core import (
+from open_wam.models.visual_tower import (
     SharedTransformerAttention,
-    SharedVideoTransformerCore,
+    SharedTransformerRotaryPositionalEmbedding,
+    SharedTransformerTimeEmbedding,
+    apply_rotary_emb,
+    feed_forward_with_materialized_params,
+    layer_norm_with_materialized_params,
+    linear_with_materialized_params,
+    materialize_runtime_parameter,
+    rms_norm_with_materialized_weight,
+    select_chunk_slices,
 )
+from open_wam.models.visual_tower import replica_core as replica_core_module
+from open_wam.models.visual_tower import shared_transformer_support as transformer_support_module
+from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore
 
 
 def test_cache_policy_public_and_compatibility_exports_preserve_identity() -> None:
@@ -41,6 +51,22 @@ def test_cache_policy_public_and_compatibility_exports_preserve_identity() -> No
         is retained_slot_pool_indices_for_current_write
     )
     assert replica_core_module._merge_attention_cache_entries is merge_attention_cache_entries
+
+
+def test_shared_transformer_public_and_compatibility_exports_preserve_identity() -> None:
+    assert replica_core_module.SharedTransformerAttention is SharedTransformerAttention
+    assert (
+        replica_core_module.SharedTransformerRotaryPositionalEmbedding
+        is SharedTransformerRotaryPositionalEmbedding
+    )
+    assert replica_core_module.SharedTransformerTimeEmbedding is SharedTransformerTimeEmbedding
+    assert replica_core_module._apply_rotary_emb is apply_rotary_emb
+    assert replica_core_module._select_chunk_slices is select_chunk_slices
+    assert replica_core_module._materialize_runtime_parameter is materialize_runtime_parameter
+    assert replica_core_module._linear_with_materialized_params is linear_with_materialized_params
+    assert replica_core_module._rms_norm_with_materialized_weight is rms_norm_with_materialized_weight
+    assert replica_core_module._layer_norm_with_materialized_params is layer_norm_with_materialized_params
+    assert replica_core_module._feed_forward_with_materialized_params is feed_forward_with_materialized_params
 
 
 def test_slot_pool_backend_materializes_and_clears_predicted_entries() -> None:
@@ -346,7 +372,7 @@ def test_slot_pool_update_write_attends_after_non_mutating_eviction(monkeypatch)
         captured["mask_shape"] = tuple(attention_mask.shape) if attention_mask is not None else ()
         return torch.zeros_like(query)
 
-    monkeypatch.setattr(replica_core_module, "apply_attention_backend", fake_apply_attention_backend)
+    monkeypatch.setattr(transformer_support_module, "apply_attention_backend", fake_apply_attention_backend)
 
     attention = SharedTransformerAttention(dim=8, heads=1, dim_head=8, eps=1e-6)
     hidden = torch.randn(1, 1, 8)

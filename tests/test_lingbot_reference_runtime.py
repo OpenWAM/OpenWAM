@@ -62,7 +62,7 @@ from open_wam.models.policy_variants.parallel_stream.variant import ParallelStre
 from open_wam.models.video_backbone.contracts import ChunkMetadata, ConditioningState, TokenGridMetadata
 from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig, SharedVideoTransformerConfig
 from open_wam.models.visual_tower.contracts import VisualFrontendOutput, VisualStageOutputs
-from open_wam.models.visual_tower import replica_core as replica_core_module
+from open_wam.models.visual_tower import shared_transformer_support as transformer_support_module
 from open_wam.models.visual_tower.replica_core import (
     SharedVideoTransformerCore,
     _retained_slot_pool_indices_for_current_write,
@@ -3990,7 +3990,7 @@ def test_conditional_clean_cache_commit_attends_previous_chunk_before_evicting(m
             observed_prefix_key_lengths.append(int(key.shape[2]))
         return torch.zeros_like(query)
 
-    monkeypatch.setattr(replica_core_module, "apply_attention_backend", fake_apply_attention_backend)
+    monkeypatch.setattr(transformer_support_module, "apply_attention_backend", fake_apply_attention_backend)
 
     text_emb = torch.randn(1, 3, 8, dtype=torch.bfloat16)
     video_chunk = torch.randn(1, backbone_config.latent_channels, 2, 1, 1, dtype=torch.bfloat16)

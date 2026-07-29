@@ -215,6 +215,21 @@ the visual tower owns kernel selection and backbone execution. The exact
 dual-stream M1/M5 programs are checkpoint-compatibility contracts with fixed
 layout semantics, not general attention extension points.
 
+### Shared Transformer Primitives
+
+`open_wam.models.visual_tower` exports the shared Wan-style transformer
+building blocks used by the visual core and action-side experts:
+
+- timestep and rotary positional embeddings;
+- `SharedTransformerAttention`;
+- rotary and chunk-slice tensor helpers;
+- FSDP-safe linear, normalization, and feed-forward helpers.
+
+These functions own learned transformer execution, not sequence visibility or
+cache retention. Extensions should normally submit an attention profile
+through `VisualCoreInput`; use the lower-level primitives only when implementing
+a genuinely new reusable block outside the built-in core.
+
 ### Cache Policy
 
 `open_wam.models.common.cache_backends` contains the parameter-free cache

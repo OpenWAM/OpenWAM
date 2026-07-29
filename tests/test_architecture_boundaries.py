@@ -573,6 +573,29 @@ def test_attention_cache_policy_has_one_implementation_owner() -> None:
     }.isdisjoint(_top_level_definitions(replica_core_path))
 
 
+def test_shared_transformer_support_has_one_implementation_owner() -> None:
+    support_definitions = {
+        "SharedTransformerAttention",
+        "SharedTransformerRotaryPositionalEmbedding",
+        "SharedTransformerTimeEmbedding",
+        "apply_rotary_emb",
+        "feed_forward_with_materialized_params",
+        "layer_norm_with_materialized_params",
+        "linear_with_materialized_params",
+        "materialize_runtime_parameter",
+        "rms_norm_with_materialized_weight",
+        "select_chunk_slices",
+    }
+    support_path = PACKAGE_ROOT / "models" / "visual_tower" / "shared_transformer_support.py"
+    replica_core_path = PACKAGE_ROOT / "models" / "visual_tower" / "replica_core.py"
+
+    assert support_definitions <= _top_level_definitions(support_path)
+    assert support_definitions.isdisjoint(_top_level_definitions(replica_core_path))
+    assert {
+        f"_{name}" for name in support_definitions if not name.startswith("Shared")
+    }.isdisjoint(_top_level_definitions(replica_core_path))
+
+
 def test_retired_fdm_guided_planning_namespace_is_not_packaged() -> None:
     assert not (PACKAGE_ROOT / "planning").exists()
 

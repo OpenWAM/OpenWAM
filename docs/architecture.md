@@ -80,6 +80,10 @@ plain contracts:
   explicit-sigma flow integration and speculative action-cache rewind.
 - common attention profiles own token visibility; the policy selects a profile
   and supplies its resolved layout.
+- `visual_tower.shared_transformer_support` owns the reusable learned
+  transformer primitives: timestep and rotary embeddings, attention
+  projections/execution, and FSDP-safe parameter materialization. Both the
+  visual core and action-side experts consume this public implementation.
 - `models.common.cache_backends` owns parameter-free attention-cache policy:
   dense-mask normalization, cached-prefix visibility, packed sequence ids,
   slot retention, and merged-prefix truncation. The shared transformer owns
