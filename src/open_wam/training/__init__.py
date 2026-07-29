@@ -15,7 +15,7 @@ from .controls import TrainabilityReport, apply_training_component_controls, nor
 from .loop_policies import EpochLoopPolicy, StepLoopPolicy
 from .logging import CompositeLogSink, ConsoleLogSink, JsonlLogSink, NoopLogSink, WandBLogSink
 from .optim import build_optimizer, build_scheduler
-from .runtime import TrainingRuntime, should_use_composable_runtime
+from .runtime import TrainingRuntime
 from .state import TrainState
 from .step_executor import LatentBatchAdapter, PipelineTrainStepExecutor, ViewBatchAdapter, build_batch_adapter
 from .strategies import DistributedStrategy, SingleDeviceStrategy, build_training_strategy
@@ -51,5 +51,4 @@ __all__ = [
     "parse_override_assignments",
     "parse_train_cli",
     "resolve_experiment_config_path",
-    "should_use_composable_runtime",
 ]

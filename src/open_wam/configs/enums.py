@@ -910,7 +910,6 @@ class TrainerPrecision(StrEnum):
 class TrainerRuntimeName(StrEnum):
     """Top-level training engine used to run one experiment."""
 
-    LIGHTNING = "lightning"
     COMPOSABLE = "composable"
 
 
@@ -931,7 +930,6 @@ class LoopPolicyName(StrEnum):
 class StrategyName(StrEnum):
     """Distribution/wrapping backend used by the composable runtime."""
 
-    LIGHTNING = "lightning"
     SINGLE_DEVICE = "single_device"
     DDP = "ddp"
     FSDP = "fsdp"

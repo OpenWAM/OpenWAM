@@ -32,10 +32,10 @@ class TrainerConfig:
     precision: TrainerPrecision = TrainerPrecision.FP32
     enable_checkpointing: bool = False
     enable_model_summary: bool = False
-    runtime: TrainerRuntimeName = TrainerRuntimeName.LIGHTNING
+    runtime: TrainerRuntimeName = TrainerRuntimeName.COMPOSABLE
     batch_adapter: BatchAdapterName = BatchAdapterName.VIEWS
     loop_policy: LoopPolicyName = LoopPolicyName.EPOCHS
-    strategy: StrategyName = StrategyName.LIGHTNING
+    strategy: StrategyName = StrategyName.SINGLE_DEVICE
     default_root_dir: str | None = None
 
     # Checkpoint/export knobs
@@ -56,6 +56,16 @@ class TrainerConfig:
     run_name: str | None = None
 
     def __post_init__(self) -> None:
+        if self.runtime == "lightning":
+            raise ValueError(
+                "`trainer.runtime=lightning` is no longer supported. "
+                "Use the production `composable` runtime."
+            )
+        if self.strategy == "lightning":
+            raise ValueError(
+                "`trainer.strategy=lightning` is no longer supported. "
+                "Use `single_device`, `ddp`, or `fsdp`."
+            )
         coerce_fields(
             self,
             enum_fields={

@@ -15,8 +15,6 @@ from open_wam.configs import (
     BatchAdapterName,
     ExperimentConfig,
     LoopPolicyName,
-    StrategyName,
-    TrainerRuntimeName,
 )
 from open_wam.configs.enums import (
     AuxiliaryValidationSource,
@@ -904,19 +902,3 @@ def build_log_sink(*, config: ExperimentConfig, output_dir: Path, run_name: str,
 def resolve_runtime_output_dir(config: ExperimentConfig) -> Path:
     root = Path(config.trainer.default_root_dir) if config.trainer.default_root_dir else Path("runs")
     return root / (config.trainer.run_name or config.name)
-
-
-def should_use_composable_runtime(config: ExperimentConfig) -> bool:
-    if config.trainer.runtime != TrainerRuntimeName.LIGHTNING:
-        return True
-    if config.trainer.batch_adapter != BatchAdapterName.VIEWS:
-        return True
-    if config.trainer.loop_policy != LoopPolicyName.EPOCHS:
-        return True
-    if config.trainer.enable_jsonl_logging or config.trainer.enable_wandb:
-        return True
-    if config.trainer.save_interval is not None or config.trainer.resume_from is not None:
-        return True
-    if config.trainer.strategy not in {StrategyName.LIGHTNING, StrategyName.SINGLE_DEVICE}:
-        return True
-    return False

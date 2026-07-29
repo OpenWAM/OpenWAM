@@ -400,7 +400,7 @@ class DistributedStrategy(SingleDeviceStrategy):
 
 def build_training_strategy(config: TrainerConfig) -> SingleDeviceStrategy:
     strategy_name = config.strategy
-    if strategy_name in {StrategyName.LIGHTNING, StrategyName.SINGLE_DEVICE}:
+    if strategy_name == StrategyName.SINGLE_DEVICE:
         return SingleDeviceStrategy(
             accelerator=config.accelerator, precision=config.precision
         )

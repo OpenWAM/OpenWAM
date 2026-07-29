@@ -44,7 +44,7 @@ class WAMBatch:
     """Uniform batch contract returned by all dataset adapters.
 
     This is the common data-layer artifact that future head variants should
-    consume through the Lightning module and pipeline. The batch is intentionally
+    consume through the training runtime and pipeline. The batch is intentionally
     independent from any specific action-head placement strategy.
     """
 

@@ -16,6 +16,7 @@ from open_wam.configs import (
     RolloutContextPolicy,
     SampleTargetAlignment,
     StrategyName,
+    TrainerConfig,
     TrainerRuntimeName,
     WandBMode,
 )
@@ -50,7 +51,7 @@ def test_resolve_experiment_config_path_from_config_name() -> None:
     assert resolved == REPO_ROOT / "configs" / "experiments" / "parallel_stream_robotwin_smoke.yaml"
 
 
-def test_train_entrypoint_help_does_not_require_lightning() -> None:
+def test_train_entrypoint_help_is_available() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "open_wam.training.train", "--help"],
         cwd=REPO_ROOT,
@@ -61,6 +62,22 @@ def test_train_entrypoint_help_does_not_require_lightning() -> None:
     )
 
     assert "--config-name" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    [
+        ("runtime", "lightning", "trainer.runtime=lightning"),
+        ("strategy", "lightning", "trainer.strategy=lightning"),
+    ],
+)
+def test_legacy_lightning_training_choices_fail_with_migration(
+    field: str,
+    value: str,
+    expected: str,
+) -> None:
+    with pytest.raises(ValueError, match=expected):
+        TrainerConfig(**{field: value})
 
 
 def test_cli_overrides_map_save_root_and_env_defaults(tmp_path: Path) -> None:

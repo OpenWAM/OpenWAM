@@ -30,7 +30,7 @@ The repo currently includes:
 - a dataset registry keyed by `data.dataset_type`
 - a real LeRobot-v2 adapter for `physical-intelligence/libero`
 - legacy `contract_only` compatibility via config migration into the new stack
-- Lightning train/eval wrappers and root experiment YAMLs
+- one composable train runtime for single-device, DDP, and FSDP execution
 
 The first real dataset path is:
 
@@ -42,9 +42,8 @@ The first real dataset path is:
 configs/         runnable experiment and eval YAMLs
 docs/            public quickstart, CLI, testing, artifact, and deployment docs
 notes/           research and engineering notes
-deployment/      compatibility workspace for real-robot and sim deployment tooling
-                 (FR3 ROS2 impedance teleop + recording — see
-                 deployment/real_robot/README.md)
+deployment/      separate FR3/SO-101 hardware operations workspace
+                 (ROS2 impedance teleop + recording; see deployment/README.md)
 AGENTS.md        repo-level contributor and agent style guide
 src/open_wam/third_party/  vendored external modules kept inside the repo
 scripts/         thin wrappers, smoke tests, and inspection scripts
@@ -63,8 +62,7 @@ Important source packages:
 - `src/open_wam/models/action_decoders`: action decoders and losses
 - `src/open_wam/models/video_backbone`: backbone config and compatibility contracts
 - `src/open_wam/pipelines`: variant pipeline, exact LingBot runner, and rollout helpers
-- `src/open_wam/lightning`: Lightning module and datamodule
-- `src/open_wam/training`: train entrypoint
+- `src/open_wam/training`: data loading, train steps, strategies, logging, and checkpoints
 - `src/open_wam/evals`: eval entrypoint
 
 ## Public Docs
@@ -109,13 +107,14 @@ Important source packages:
 
 ## Trainer and Variant Flow
 
-Training uses one generic Lightning stack:
+Training uses one generic composable runtime:
 
 - [src/open_wam/training/train.py](src/open_wam/training/train.py) loads a root
-  experiment config and instantiates one `OpenWAMLightningModule` and one
-  `OpenWAMDataModule`
-- [src/open_wam/lightning/module.py](src/open_wam/lightning/module.py) converts
-  `WAMBatch` into `PolicyTrainBatch` and always calls
+  experiment config and constructs `TrainingRuntime`
+- [src/open_wam/training/runtime.py](src/open_wam/training/runtime.py) owns
+  data loaders, loop policy, strategy, validation, logging, and checkpoints
+- [src/open_wam/training/step_executor.py](src/open_wam/training/step_executor.py)
+  converts the public data batch into `PolicyTrainBatch` and calls
   `pipeline.forward_train(...)`
 - [src/open_wam/pipelines/variant_pipeline.py](src/open_wam/pipelines/variant_pipeline.py)
   is where the variant actually changes behavior:
@@ -181,8 +180,7 @@ These still use LingBot-style action flow matching:
 ## Quick Start
 
 Set up the minimal development environment. This installs the core package
-surface only; it does not install Torch, Lightning, simulator packages, or
-video codecs:
+surface only; it does not install Torch, simulator packages, or video codecs:
 
 ```bash
 uv sync --group dev

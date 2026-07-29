@@ -25,7 +25,9 @@ from open_wam.configs import (
     ConsortiumCloudCacheConfig,
     ConsortiumLocalCacheConfig,
     ConsortiumMemberConfig,
+    ExperimentConfig,
     LeRobotConsortiumDataConfig,
+    TrainerConfig,
     ViewLayoutConfig,
 )
 from open_wam.data import (
@@ -39,7 +41,7 @@ from open_wam.data import (
     resolve_dataset_loader_spec,
     resolve_lerobot_consortium_train_val_split,
 )
-from open_wam.lightning.datamodule import OpenWAMDataModule
+from open_wam.training.runtime import build_runtime_dataloaders
 from open_wam.utils.config_loader import load_experiment_config
 
 
@@ -990,16 +992,9 @@ def test_consortium_report_reuses_precomputed_catalog_and_split(tmp_path: Path, 
     assert report["splits"]["train"]["window_count"] > 0
 
 
-def test_datamodule_passes_trainer_world_size_and_rank_to_loader_spec(monkeypatch: pytest.MonkeyPatch) -> None:
-    try:
-        datamodule = OpenWAMDataModule(
-            _make_consortium_config(
-                members=(ConsortiumMemberConfig(member_id="repo_a", local_root="/tmp/repo_a"),),
-            )
-        )
-    except ImportError:
-        pytest.skip("Lightning is not installed in this test environment.")
-
+def test_training_runtime_passes_strategy_world_size_and_rank_to_loader_spec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class _DummyDataset:
         def __len__(self) -> int:
             return 1
@@ -1007,21 +1002,37 @@ def test_datamodule_passes_trainer_world_size_and_rank_to_loader_spec(monkeypatc
         def __getitem__(self, index: int):
             raise IndexError(index)
 
-    captured: dict[str, int | str] = {}
+    captured: list[dict[str, int | str]] = []
 
     def _fake_resolve(dataset, *, split: str, world_size: int = 1, rank: int = 0) -> DatasetLoaderSpec:
-        captured["split"] = split
-        captured["world_size"] = world_size
-        captured["rank"] = rank
+        captured.append({"split": split, "world_size": world_size, "rank": rank})
         return DatasetLoaderSpec(sampler=None, shuffle=True)
 
-    monkeypatch.setattr("open_wam.lightning.datamodule.resolve_dataset_loader_spec", _fake_resolve)
-    datamodule.train_dataset = _DummyDataset()
-    datamodule._trainer = SimpleNamespace(world_size=4, global_rank=2)
+    train_dataset = _DummyDataset()
+    val_dataset = _DummyDataset()
+    monkeypatch.setattr(
+        "open_wam.training.runtime.build_train_val_datasets",
+        lambda data_config: (train_dataset, val_dataset),
+    )
+    monkeypatch.setattr("open_wam.training.runtime.resolve_dataset_loader_spec", _fake_resolve)
+    config = ExperimentConfig(
+        data=_make_consortium_config(
+            members=(ConsortiumMemberConfig(member_id="repo_a", local_root="/tmp/repo_a"),),
+        ),
+        trainer=TrainerConfig(),
+    )
 
-    _ = datamodule.train_dataloader()
+    train_loader, val_loader = build_runtime_dataloaders(
+        config,
+        SimpleNamespace(world_size=4, rank=2, distributed=False),
+    )
 
-    assert captured == {"split": "train", "world_size": 4, "rank": 2}
+    assert train_loader.dataset is train_dataset
+    assert val_loader.dataset is val_dataset
+    assert captured == [
+        {"split": "train", "world_size": 4, "rank": 2},
+        {"split": "val", "world_size": 4, "rank": 2},
+    ]
 
 
 @pytest.mark.skipif(

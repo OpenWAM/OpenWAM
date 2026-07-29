@@ -28,7 +28,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    # Let argparse handle --help without importing Lightning/Torch.
+    # Let argparse handle --help without importing the Torch training stack.
     build_arg_parser().parse_known_args(argv)
     try:
         from open_wam.training.train import main as training_main

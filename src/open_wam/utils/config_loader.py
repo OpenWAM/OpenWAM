@@ -2438,7 +2438,7 @@ def load_experiment_config(path: str | Path, *, checkpoint_runtime_compat: bool 
         enable_model_summary=trainer_raw.get("enable_model_summary", False),
         runtime=_coerce_enum(
             config_enums.TrainerRuntimeName,
-            trainer_raw.get("runtime", "lightning"),
+            trainer_raw.get("runtime", "composable"),
         ),
         batch_adapter=_coerce_enum(
             config_enums.BatchAdapterName,
@@ -2450,7 +2450,7 @@ def load_experiment_config(path: str | Path, *, checkpoint_runtime_compat: bool 
         ),
         strategy=_coerce_enum(
             config_enums.StrategyName,
-            trainer_raw.get("strategy", "lightning"),
+            trainer_raw.get("strategy", "single_device"),
         ),
         default_root_dir=trainer_raw.get("default_root_dir"),
         checkpoint_dir=trainer_raw.get("checkpoint_dir"),
