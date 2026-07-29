@@ -24,6 +24,15 @@ def _absolute_imports(package: str) -> set[str]:
     return imports
 
 
+def _top_level_definitions(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
 def test_config_package_does_not_depend_on_runtime_implementations() -> None:
     forbidden_prefixes = (
         "open_wam.data",
@@ -70,6 +79,23 @@ def test_core_packages_do_not_depend_on_optional_runtime_surfaces() -> None:
             violations[package] = package_violations
 
     assert violations == {}
+
+
+def test_lerobot_latent_repository_io_has_one_storage_owner() -> None:
+    storage_owned = {
+        "LocalEpisodeWindow",
+        "LocalRepoBundle",
+        "discover_local_lerobot_repo_bundles",
+        "scan_local_latent_windows",
+        "load_lerobot_v2_local_metadata",
+        "resolve_latent_root",
+        "reshape_latent_payload",
+    }
+    storage_definitions = _top_level_definitions(PACKAGE_ROOT / "data" / "lerobot_v2_latent_storage.py")
+    dataset_definitions = _top_level_definitions(PACKAGE_ROOT / "data" / "lerobot_v2_latent.py")
+
+    assert storage_owned <= storage_definitions
+    assert storage_owned.isdisjoint(dataset_definitions)
 
 
 def test_retired_ablations_namespace_is_not_packaged() -> None:

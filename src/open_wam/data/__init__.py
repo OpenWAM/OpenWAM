@@ -65,7 +65,7 @@ _LAZY_EXPORTS = {
     "register_latent_dataset_builder": "registries",
     "LocalLeRobotLatentWindowDataset": "lerobot_v2_latent",
     "build_local_lerobot_latent_train_val_datasets": "lerobot_v2_latent",
-    "discover_local_lerobot_repo_bundles": "lerobot_v2_latent",
+    "discover_local_lerobot_repo_bundles": "lerobot_v2_latent_storage",
     "SyntheticLatentWindowDataset": "latent_synthetic",
     "build_synthetic_latent_batch": "latent_synthetic",
     "LeRobotConsortiumWindowDataset": "lerobot_consortium",

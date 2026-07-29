@@ -23,10 +23,19 @@ from open_wam.configs import (
     SegmentContextPolicy,
     WindowSamplingMode,
 )
-from open_wam.data import build_train_val_latent_datasets, collate_latent_wam_samples
+from open_wam.data import (
+    build_train_val_latent_datasets,
+    collate_latent_wam_samples,
+    discover_local_lerobot_repo_bundles,
+)
 from open_wam.data.lerobot_v2_latent import (
+    LocalEpisodeWindow as LegacyLocalEpisodeWindow,
     LocalLatentEpochOrderSampler,
     LocalLatentWeightedTrainSampler,
+)
+from open_wam.data.lerobot_v2_latent_storage import (
+    LocalEpisodeWindow,
+    discover_local_lerobot_repo_bundles as discover_storage_repo_bundles,
     scan_local_latent_windows,
 )
 from open_wam.training import TrainingRuntime
@@ -34,6 +43,11 @@ from open_wam.utils.config_loader import load_experiment_config
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_lerobot_latent_storage_owns_compatibility_exports() -> None:
+    assert LegacyLocalEpisodeWindow is LocalEpisodeWindow
+    assert discover_local_lerobot_repo_bundles is discover_storage_repo_bundles
 
 
 def _disable_replay_status(data_config):

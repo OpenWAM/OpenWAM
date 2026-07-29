@@ -60,6 +60,11 @@ Raw adapters normalize source records into one public batch contract:
 This lets LIBERO, RoboTwin, CALVIN, synthetic fixtures, and future datasets use
 the same train/eval/runtime stack.
 
+Dataset storage and sample semantics are separate responsibilities. For the
+local LeRobot latent adapter, `lerobot_v2_latent_storage` owns repository
+discovery, metadata, filenames, and payload reshaping;
+`lerobot_v2_latent` owns sampling and public `LatentWAMSample` construction.
+
 ## Operations Boundary
 
 Open-WAM owns scheduler-agnostic train, eval, sanity, and rollout commands.
