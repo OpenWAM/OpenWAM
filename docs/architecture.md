@@ -112,6 +112,10 @@ discovery, metadata, filenames, and payload reshaping;
 loss-bound calculations; and `lerobot_v2_latent` owns sampling draws,
 action/state extraction, tensor assembly, and public `LatentWAMSample`
 construction.
+For row-oriented robot datasets, `row_action_targets` owns raw, relative-EEF,
+and absolute-joint target conversion, action mapping, normalization, and
+target metadata. Each adapter still owns row decoding and supplies its exact
+sequence extraction and padding policy through the shared callback contract.
 `distributed_sampling` owns rank sharding and epoch coordination; adapters
 supply weights or deterministic global index orders without embedding
 distributed control flow. Equal-rank padded orders, intentionally unpadded

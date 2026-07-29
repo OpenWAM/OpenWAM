@@ -48,6 +48,12 @@ from .latent_segment_geometry import (
     resolve_rollout_parity_boundary_segment,
     rollout_parity_start_range,
 )
+from .row_action_targets import (
+    RowSequenceExtractor,
+    SequencePacker,
+    build_row_action_targets,
+    resolve_row_key,
+)
 
 _LAZY_EXPORTS = {
     "CalvinNPZWindowDataset": "calvin_npz",
@@ -189,7 +195,9 @@ __all__ = [
     "PaddedEpochOffsetDistributedSampler",
     "PoseSequence",
     "RobotWinCanonicalVideoPreprocessor",
+    "RowSequenceExtractor",
     "SampleConstructionMetadata",
+    "SequencePacker",
     "SyntheticLatentWindowDataset",
     "SyntheticWindowDataset",
     "UnpaddedEpochOrderDistributedSampler",
@@ -215,6 +223,7 @@ __all__ = [
     "build_mixed_video_train_val_datasets",
     "build_mixed_video_latent_train_val_datasets",
     "build_relative_pose_targets",
+    "build_row_action_targets",
     "build_synthetic_batch",
     "build_synthetic_latent_batch",
     "build_synthetic_views",
@@ -260,6 +269,7 @@ __all__ = [
     "resolve_compact_boundary_segment",
     "resolve_dataset_loader_spec",
     "resolve_rollout_parity_boundary_segment",
+    "resolve_row_key",
     "resolve_lerobot_consortium_train_val_split",
     "render_lerobot_consortium_inventory_markdown",
     "rollout_parity_start_range",

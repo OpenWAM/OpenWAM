@@ -15,7 +15,8 @@ from open_wam.configs import ActionTargetRepresentation, DataConfig
 
 from .action_mapping import apply_action_mapping, resolve_action_source_dim
 from .contracts import WAMSample
-from .lerobot_v2 import EpisodeWindow, LeRobotEpisodeRecord, _resolve_row_key
+from .lerobot_v2 import EpisodeWindow, LeRobotEpisodeRecord
+from .row_action_targets import resolve_row_key
 from .replay_status import load_replay_status_records, split_episode_indices_by_replay_status
 
 
@@ -223,7 +224,7 @@ class LeRobotV2VideoWindowDataset(Dataset[WAMSample]):
         if not rows:
             raise ValueError(f"Cannot extract sequence for key '{key}' from an empty row slice.")
         sequence = torch.stack(
-            [torch.tensor(row[_resolve_row_key(row, key)], dtype=torch.float32).flatten() for row in rows],
+            [torch.tensor(row[resolve_row_key(row, key)], dtype=torch.float32).flatten() for row in rows],
             dim=0,
         )
         if sequence.shape[-1] > target_dim:

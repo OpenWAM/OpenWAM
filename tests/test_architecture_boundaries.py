@@ -59,6 +59,20 @@ def _class_method_definitions(path: Path, class_name: str) -> set[str]:
     }
 
 
+def _class_method(path: Path, class_name: str, method_name: str) -> ast.FunctionDef:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    class_node = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == class_name
+    )
+    return next(
+        node
+        for node in class_node.body
+        if isinstance(node, ast.FunctionDef) and node.name == method_name
+    )
+
+
 def test_config_package_does_not_depend_on_runtime_implementations() -> None:
     forbidden_prefixes = (
         "open_wam.data",
@@ -143,6 +157,30 @@ def test_lerobot_latent_segment_geometry_has_one_owner() -> None:
     assert {
         f"_{name}" for name in geometry_functions
     }.isdisjoint(dataset_methods)
+
+
+def test_row_action_target_transform_has_one_owner() -> None:
+    transform_path = PACKAGE_ROOT / "data" / "row_action_targets.py"
+    transform_definitions = _top_level_definitions(transform_path)
+    assert {"build_row_action_targets", "resolve_row_key"} <= transform_definitions
+
+    adapter_classes = {
+        "lerobot_v2.py": "LeRobotV2WindowDataset",
+        "lerobot_v2_latent.py": "LocalLeRobotLatentWindowDataset",
+        "lerobot_consortium.py": "LeRobotConsortiumWindowDataset",
+    }
+    for filename, class_name in adapter_classes.items():
+        method = _class_method(
+            PACKAGE_ROOT / "data" / filename,
+            class_name,
+            "_build_action_targets",
+        )
+        assert len(method.body) == 1
+        assert isinstance(method.body[0], ast.Return)
+        call = method.body[0].value
+        assert isinstance(call, ast.Call)
+        assert isinstance(call.func, ast.Name)
+        assert call.func.id == "build_row_action_targets"
 
 
 def test_sequence_contract_semantics_have_one_config_owner() -> None:

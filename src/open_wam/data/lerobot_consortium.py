@@ -20,8 +20,6 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 from open_wam.configs import (
-    ActionTargetReferenceSource,
-    ActionTargetRepresentation,
     ConsortiumCacheMode,
     ConsortiumChannelSelectionMode,
     ConsortiumFramePackingOrder,
@@ -31,23 +29,10 @@ from open_wam.configs import (
     ConsortiumViewPackingMode,
     ConsortiumWeightMode,
     DataConfig,
-    GripperRepresentation,
     LeRobotConsortiumDataConfig,
 )
 from open_wam.configs.enums import serialize_enum_values
 
-from .action_transforms import (
-    build_absolute_joint_position_targets,
-    build_relative_pose_targets,
-    expected_joint_position_target_dim,
-    expected_pose_target_dim,
-    normalize_action_targets,
-)
-from .action_mapping import (
-    action_mapping_is_active,
-    apply_action_mapping,
-    resolve_action_source_dim,
-)
 from .contracts import WAMSample
 from .distributed_sampling import UnpaddedEpochOrderDistributedSampler
 from .lerobot_consortium_contracts import (
@@ -65,6 +50,7 @@ from .lerobot_consortium_index import (
     write_lerobot_consortium_inventory_markdown,
     write_lerobot_consortium_repo_targets,
 )
+from .row_action_targets import build_row_action_targets, resolve_row_key
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -73,17 +59,6 @@ _CONSORTIUM_INDEX_INVENTORY_CSV_PATH = _REPO_ROOT / "notes" / "index" / "lerobot
 _CONSORTIUM_INDEX_INVENTORY_MD_PATH = _REPO_ROOT / "notes" / "index" / "lerobot_consortium_hf_dataset_inventory.md"
 _CONSORTIUM_INDEX_CONTRACTS_JSON_PATH = _REPO_ROOT / "notes" / "index" / "lerobot_consortium_hf_dataset_contracts.json"
 _CONSORTIUM_INDEX_SANITY_CACHE: set[tuple[str, ...]] = set()
-
-
-def _resolve_row_key(row: dict[str, Any], key: str) -> str:
-    if key in row:
-        return key
-    if key.endswith("s") and key[:-1] in row:
-        return key[:-1]
-    plural_candidate = f"{key}s"
-    if plural_candidate in row:
-        return plural_candidate
-    raise KeyError(key)
 
 
 def _parse_feature_dim(feature: dict[str, Any] | None) -> int | None:
@@ -1324,175 +1299,16 @@ class LeRobotConsortiumWindowDataset(Dataset[WAMSample]):
         action_rows: list[dict[str, Any]],
         target_state_rows: list[dict[str, Any]],
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
-        action_target = self.data_config.action_target
-        action_mapping = self.data_config.action_mapping
-        target_dim = self.data_config.action_schema.action_dim
-        target_length = self.data_config.action_schema.action_horizon
-
-        if action_target.representation == ActionTargetRepresentation.RAW:
-            source_dim = resolve_action_source_dim(action_mapping, fallback_dim=target_dim)
-            actions, action_mask = self._extract_sequence(
-                rows=action_rows,
-                key=action_target.source_key,
-                target_dim=source_dim,
-                target_length=target_length,
-            )
-            actions = normalize_action_targets(
-                actions,
-                normalization=action_target.normalization,
-            )
-            mapped = apply_action_mapping(
-                actions,
-                action_mask,
-                action_mapping,
-                target_dim=target_dim,
-            )
-            metadata = dict(mapped.metadata)
-            metadata["action_target_normalization_mode"] = str(action_target.normalization.mode)
-            return mapped.actions, mapped.action_mask, metadata
-
-        if action_target.representation == ActionTargetRepresentation.EEF_POSE_RELATIVE_TO_REFERENCE:
-            if action_target.reference_source != ActionTargetReferenceSource.ANCHOR_STATE:
-                raise ValueError(
-                    "Consortium relative pose targets currently support only "
-                    f"`reference_source=anchor_state`, got {action_target.reference_source}."
-                )
-            pose_source = torch.stack(
-                [
-                    torch.tensor(row[_resolve_row_key(row, action_target.pose_source_key)], dtype=torch.float32)
-                    for row in target_state_rows
-                ],
-                dim=0,
-            )
-            raw_action_sequence = torch.stack(
-                [
-                    torch.tensor(row[_resolve_row_key(row, action_target.source_key)], dtype=torch.float32)
-                    for row in action_rows
-                ],
-                dim=0,
-            )
-            relative_targets, relative_mask, metadata = build_relative_pose_targets(
-                pose_source,
-                state_encoding=action_target.state_encoding,
-                rotation_representation=action_target.rotation_representation,
-                include_gripper=action_target.include_gripper,
-                gripper_representation=action_target.gripper_representation,
-                raw_action_sequence=raw_action_sequence,
-                gripper_action_index=action_target.gripper_action_index,
-            )
-            expected_dim = expected_pose_target_dim(
-                rotation_representation=action_target.rotation_representation,
-                include_gripper=action_target.include_gripper,
-                gripper_representation=action_target.gripper_representation,
-            )
-            target_or_source_dim = resolve_action_source_dim(action_mapping, fallback_dim=target_dim)
-            if target_or_source_dim != expected_dim:
-                raise ValueError(
-                    "Configured action_dim does not match the derived pose-target dimension: "
-                    f"configured_dim={target_or_source_dim}, expected={expected_dim}."
-                )
-            metadata.update(
-                {
-                    "reference_source": action_target.reference_source,
-                    "pose_source_key": action_target.pose_source_key,
-                    "gripper_source_key": action_target.source_key,
-                }
-            )
-            actions, action_mask = self._pack_sequence(
-                sequence=relative_targets,
-                target_dim=target_or_source_dim,
-                target_length=target_length,
-                sequence_name="relative_pose_targets",
-            )
-            if relative_mask.shape[-1] != relative_targets.shape[-1]:
-                raise ValueError("Relative target mask shape must match the relative target tensor shape.")
-            action_mask[:, : relative_mask.shape[-1]] = relative_mask
-            mapped = apply_action_mapping(
-                actions,
-                action_mask,
-                action_mapping,
-                target_dim=target_dim,
-            )
-            metadata.update(mapped.metadata)
-            metadata["action_mapping_applied"] = action_mapping_is_active(action_mapping)
-            return mapped.actions, mapped.action_mask, metadata
-
-        if action_target.representation == ActionTargetRepresentation.ABSOLUTE_JOINT_POSITION:
-            joint_position_source = torch.stack(
-                [
-                    torch.tensor(row[_resolve_row_key(row, action_target.joint_position_source_key)], dtype=torch.float32)
-                    for row in target_state_rows
-                ],
-                dim=0,
-            )
-            raw_action_sequence = torch.stack(
-                [
-                    torch.tensor(row[_resolve_row_key(row, action_target.source_key)], dtype=torch.float32)
-                    for row in action_rows
-                ],
-                dim=0,
-            )
-            gripper_position_sequence = None
-            if (
-                action_target.include_gripper
-                and action_target.gripper_representation != GripperRepresentation.ACTION_COMMAND
-            ):
-                gripper_position_sequence = torch.stack(
-                    [
-                        torch.tensor(
-                            row[_resolve_row_key(row, action_target.gripper_position_source_key)],
-                            dtype=torch.float32,
-                        )
-                        for row in target_state_rows
-                    ],
-                    dim=0,
-                )
-            joint_targets, joint_mask, metadata = build_absolute_joint_position_targets(
-                joint_position_source,
-                include_gripper=action_target.include_gripper,
-                gripper_representation=action_target.gripper_representation,
-                gripper_position_sequence=gripper_position_sequence,
-                raw_action_sequence=raw_action_sequence,
-                gripper_action_index=action_target.gripper_action_index,
-                normalization=action_target.joint_position_normalization,
-            )
-            expected_dim = expected_joint_position_target_dim(
-                joint_dim=joint_position_source.shape[-1],
-                include_gripper=action_target.include_gripper,
-                gripper_representation=action_target.gripper_representation,
-            )
-            target_or_source_dim = resolve_action_source_dim(action_mapping, fallback_dim=target_dim)
-            if target_or_source_dim != expected_dim:
-                raise ValueError(
-                    "Configured action_dim does not match the derived absolute-joint target dimension: "
-                    f"configured_dim={target_or_source_dim}, expected={expected_dim}."
-                )
-            metadata.update(
-                {
-                    "joint_position_source_key": action_target.joint_position_source_key,
-                    "gripper_source_key": action_target.source_key,
-                }
-            )
-            actions, action_mask = self._pack_sequence(
-                sequence=joint_targets,
-                target_dim=target_or_source_dim,
-                target_length=target_length,
-                sequence_name="absolute_joint_position_targets",
-            )
-            if joint_mask.shape[-1] != joint_targets.shape[-1]:
-                raise ValueError("Absolute-joint target mask shape must match the target tensor shape.")
-            action_mask[:, : joint_mask.shape[-1]] = joint_mask
-            mapped = apply_action_mapping(
-                actions,
-                action_mask,
-                action_mapping,
-                target_dim=target_dim,
-            )
-            metadata.update(mapped.metadata)
-            metadata["action_mapping_applied"] = action_mapping_is_active(action_mapping)
-            return mapped.actions, mapped.action_mask, metadata
-
-        raise ValueError(f"Unsupported action target representation: {action_target.representation}")
+        return build_row_action_targets(
+            data_config=self.data_config,
+            action_rows=action_rows,
+            target_state_rows=target_state_rows,
+            extract_sequence=self._extract_sequence,
+            pack_sequence=self._pack_sequence,
+            reference_source_subject="Consortium relative pose targets",
+            relative_sequence_name="relative_pose_targets",
+            include_pose_dimension_context=False,
+        )
 
     def _extract_sequence(
         self,
@@ -1506,7 +1322,7 @@ class LeRobotConsortiumWindowDataset(Dataset[WAMSample]):
         if not rows:
             raise ValueError(f"Cannot extract sequence for key '{key}' from an empty row slice.")
         sequence = torch.stack(
-            [torch.tensor(row[_resolve_row_key(row, key)], dtype=torch.float32) for row in rows],
+            [torch.tensor(row[resolve_row_key(row, key)], dtype=torch.float32) for row in rows],
             dim=0,
         )
         return self._pack_sequence(

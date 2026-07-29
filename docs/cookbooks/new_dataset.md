@@ -65,6 +65,15 @@ def register_open_wam() -> None:
 When pre-encoded samples are available, add a `latent_builder` returning
 datasets of `LatentWAMSample` under the same `dataset_type`.
 
+For row-oriented robot data, reuse
+`open_wam.data.build_row_action_targets`. The adapter supplies
+`extract_sequence` and `pack_sequence` callbacks, so source-key resolution,
+empty-row handling, clipping, and padding remain source-owned while the shared
+transform applies the configured raw, relative-EEF, or absolute-joint target,
+normalization, mapping, mask, and metadata contract. Implementing those
+callbacks is enough; do not duplicate the representation transform in a new
+adapter.
+
 ## Configuration
 
 ```yaml
