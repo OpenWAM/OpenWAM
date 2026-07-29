@@ -39,7 +39,7 @@ from open_wam.data.lerobot_v2_latent_storage import (
     scan_local_latent_windows,
 )
 from open_wam.training import TrainingRuntime
-from open_wam.utils.config_loader import load_experiment_config
+from open_wam.configs import load_experiment_config
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

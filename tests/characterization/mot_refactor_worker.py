@@ -26,7 +26,8 @@ from open_wam.pipelines import build_variant_pipeline_from_config
 from open_wam.training import TrainingRuntime
 from open_wam.training.runtime import _normalize_optimizer_state_dtypes
 from open_wam.training.state import TrainState
-from open_wam.utils import apply_config_overrides, load_experiment_config
+from open_wam.configs import load_experiment_config
+from open_wam.utils import apply_config_overrides
 
 from .mot_refactor_artifacts import (
     EXACT_COMPARISON_TOLERANCE,

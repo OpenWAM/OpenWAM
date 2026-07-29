@@ -37,12 +37,12 @@ from open_wam.data import (
 )
 from open_wam.data.latent_temporal import observed_frame_ids_for_latent_segment
 from open_wam.extensions import load_extension_modules
+from open_wam.configs import load_experiment_config, read_yaml_with_local_paths
 from open_wam.models.policy_variants import PolicyInferContext
 from open_wam.models.policy_variants.contracts import DecoderSequenceContext
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config
 from open_wam.runtime.checkpoints import load_pipeline_checkpoint, resolve_checkpoint_file
-from open_wam.utils.local_paths import read_yaml_with_local_paths
-from open_wam.utils import load_experiment_config, seed_everywhere
+from open_wam.utils import seed_everywhere
 
 
 @dataclass(frozen=True)

@@ -16,7 +16,7 @@ from open_wam.data import (
     build_lerobot_consortium_train_val_datasets,
     format_lerobot_consortium_report,
 )
-from open_wam.utils.config_loader import load_experiment_config
+from open_wam.configs import load_experiment_config
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

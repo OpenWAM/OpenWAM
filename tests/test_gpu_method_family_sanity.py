@@ -49,7 +49,7 @@ from open_wam.evals.evaluate import resolve_evaluation_request, run_evaluation
 from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
 from open_wam.pipelines import build_variant_pipeline_from_config
 from open_wam.training import TrainingRuntime
-from open_wam.utils.config_loader import load_experiment_config
+from open_wam.configs import load_experiment_config
 
 RUN_GPU_SANITY = os.getenv("OPEN_WAM_RUN_GPU_SANITY") == "1"
 if not RUN_GPU_SANITY:

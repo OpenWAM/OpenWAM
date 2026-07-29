@@ -52,7 +52,7 @@ src/open_wam/    all source code
 
 Important source packages:
 
-- `src/open_wam/configs`: typed config contracts
+- `src/open_wam/configs`: typed config contracts, loading, and local path resolution
 - `src/open_wam/data`: dataset adapters, collation, and canonical RGB preprocessing
 - `src/open_wam/models/visual_tower`: shared visual frontend, core, decode
   boundary, and exact LingBot reference loader

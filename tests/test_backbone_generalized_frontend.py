@@ -15,7 +15,7 @@ from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackbone
 from open_wam.models.video_backbone.contracts import CacheState, ChunkMetadata, ConditioningState, TokenGridMetadata
 from open_wam.models.visual_tower.contracts import VisualFrontendOutput
 from open_wam.pipelines import build_variant_pipeline_from_config
-from open_wam.utils.config_loader import load_experiment_config
+from open_wam.configs import load_experiment_config
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

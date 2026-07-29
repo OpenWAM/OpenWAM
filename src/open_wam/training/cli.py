@@ -10,10 +10,10 @@ import open_wam.configs.enums as config_enums
 from open_wam.configs import (
     ExperimentConfig,
     apply_parallel_sequence_contract,
+    load_experiment_config,
     validate_parallel_sequence_contract_override_keys,
 )
 from open_wam.extensions import load_extension_modules
-from open_wam.utils import load_experiment_config
 from open_wam.utils.config_overrides import apply_config_overrides, parse_override_assignments
 
 

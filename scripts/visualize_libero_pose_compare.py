@@ -22,7 +22,7 @@ from open_wam.data import (  # noqa: E402
     reconstruct_absolute_pose_targets,
     state_sequence_to_pose_sequence,
 )
-from open_wam.utils import load_experiment_config  # noqa: E402
+from open_wam.configs import load_experiment_config  # noqa: E402
 
 
 def main() -> None:

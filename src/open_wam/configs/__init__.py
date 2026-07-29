@@ -180,6 +180,8 @@ from .sequence_contracts import (
     validate_parallel_sequence_contract_override_keys,
     validate_policy_data_sequence_contract,
 )
+from .loader import load_experiment_config
+from .local_paths import load_local_path_registry, read_yaml_with_local_paths
 
 __all__ = [
     "ActionDecoderConfig",
@@ -344,7 +346,10 @@ __all__ = [
     "apply_parallel_sequence_contract",
     "default_mixed_video_resize_bins",
     "expand_parallel_sequence_contract",
+    "load_experiment_config",
+    "load_local_path_registry",
     "normalize_backbone_implementation",
+    "read_yaml_with_local_paths",
     "resolve_stage_attention_mode",
     "validate_config_file",
     "validate_config_files",

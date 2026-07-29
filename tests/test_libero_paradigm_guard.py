@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from open_wam.configs import ProprioContextMode
-from open_wam.utils.config_loader import load_experiment_config
+from open_wam.configs import load_experiment_config
 from open_wam.utils.libero_paradigm import (
     collect_current_libero_policy_paradigm_issues,
     require_current_libero_policy_paradigm,

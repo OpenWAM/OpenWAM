@@ -9,7 +9,7 @@ from typing import Any
 import yaml
 
 from open_wam.configs import ExperimentConfig
-from open_wam.utils import load_experiment_config
+from open_wam.configs import load_experiment_config
 
 from .mot_refactor_contract import (
     MoTMethodSpec,

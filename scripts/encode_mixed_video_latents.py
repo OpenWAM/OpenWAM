@@ -46,7 +46,7 @@ from open_wam.data.mixed_video import (  # noqa: E402
 from open_wam.data.raw_video import build_canonical_video_preprocessor  # noqa: E402
 from open_wam.models.common.video_geometry import wan_raw_frame_count_to_latent_count  # noqa: E402
 from open_wam.models.visual_tower.reference_assets import LingbotReferenceAssets  # noqa: E402
-from open_wam.utils.config_loader import load_experiment_config  # noqa: E402
+from open_wam.configs import load_experiment_config  # noqa: E402
 from open_wam.utils.video_timeline import VideoFrameMapping  # noqa: E402
 
 

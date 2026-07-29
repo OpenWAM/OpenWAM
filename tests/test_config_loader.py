@@ -68,8 +68,8 @@ from open_wam.configs import (
     WarmupAnchor,
 )
 from open_wam.models.policy_variants.parallel_stream.variant import ParallelStreamPolicyVariant
-from open_wam.utils.config_loader import load_experiment_config
-from open_wam.utils.local_paths import read_yaml_with_local_paths
+from open_wam.configs import load_experiment_config
+from open_wam.configs import read_yaml_with_local_paths
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

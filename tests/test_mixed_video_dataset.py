@@ -33,7 +33,7 @@ from open_wam.configs import (
     ViewLayoutConfig,
     WindowSamplingMode,
 )
-from open_wam.utils.config_loader import load_experiment_config
+from open_wam.configs import load_experiment_config
 from open_wam.data import (
     build_train_val_datasets,
     build_train_val_latent_datasets,

@@ -9,7 +9,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from open_wam.data import LeRobotV2WindowDataset, build_lerobot_train_val_episode_split, collate_wam_samples, load_lerobot_v2_metadata
-from open_wam.utils import load_experiment_config
+from open_wam.configs import load_experiment_config
 
 
 def main() -> None:

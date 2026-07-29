@@ -27,7 +27,7 @@ from open_wam.pipelines import (
     registered_policy_variants,
 )
 from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
-from open_wam.utils import load_experiment_config
+from open_wam.configs import load_experiment_config
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

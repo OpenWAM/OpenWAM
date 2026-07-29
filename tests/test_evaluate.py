@@ -13,7 +13,7 @@ from open_wam.data import WAMSample
 from open_wam.evals.evaluate import resolve_evaluation_request, run_evaluation
 from open_wam.models.policy_variants.contracts import DecoderSequenceContext, VideoConditionWindowContext
 from open_wam.pipelines import build_variant_pipeline_from_config
-from open_wam.utils import load_experiment_config
+from open_wam.configs import load_experiment_config
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

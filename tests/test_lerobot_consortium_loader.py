@@ -42,7 +42,7 @@ from open_wam.data import (
     resolve_lerobot_consortium_train_val_split,
 )
 from open_wam.training.runtime import build_runtime_dataloaders
-from open_wam.utils.config_loader import load_experiment_config
+from open_wam.configs import load_experiment_config
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

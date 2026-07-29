@@ -18,7 +18,7 @@ from open_wam.data import (  # noqa: E402
     build_lerobot_train_val_episode_split,
     reconstruct_absolute_pose_targets,
 )
-from open_wam.utils import load_experiment_config  # noqa: E402
+from open_wam.configs import load_experiment_config  # noqa: E402
 
 
 def main() -> None:

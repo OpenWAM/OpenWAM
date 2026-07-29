@@ -10,7 +10,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from open_wam.data import build_synthetic_batch  # noqa: E402
 from open_wam.pipelines import build_lingbot_exact_runner_from_config  # noqa: E402
-from open_wam.utils.config_loader import load_experiment_config  # noqa: E402
+from open_wam.configs import load_experiment_config  # noqa: E402
 
 
 def main() -> None:

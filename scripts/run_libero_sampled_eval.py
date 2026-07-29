@@ -33,7 +33,7 @@ from open_wam.data.replay_status import (  # noqa: E402
     normalize_replay_status_policy,
 )
 from open_wam.configs.enums import ParallelStreamVariantProfile  # noqa: E402
-from open_wam.utils import load_experiment_config  # noqa: E402
+from open_wam.configs import load_experiment_config  # noqa: E402
 
 DEFAULT_CONFIG = "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
 DEFAULT_BASE_CHECKPOINT = (

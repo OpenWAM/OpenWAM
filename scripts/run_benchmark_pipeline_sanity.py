@@ -31,9 +31,10 @@ from open_wam.data import (  # noqa: E402
 )
 from open_wam.extensions import load_extension_modules  # noqa: E402
 from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch  # noqa: E402
+from open_wam.configs import load_experiment_config  # noqa: E402
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
 from open_wam.runtime import build_result_envelope  # noqa: E402
-from open_wam.utils import load_experiment_config, seed_everywhere  # noqa: E402
+from open_wam.utils import seed_everywhere  # noqa: E402
 from open_wam.utils.libero_paradigm import require_current_libero_policy_paradigm  # noqa: E402
 
 

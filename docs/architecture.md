@@ -31,11 +31,13 @@ shared visual execution path for every experiment.
 
 ## Configuration Contract
 
-`open_wam.configs.coercion` owns reusable YAML/CLI-to-type conversion.
+`open_wam.configs.load_experiment_config` is the public YAML-to-dataclass
+entrypoint, and `open_wam.configs.local_paths` owns machine-local path
+expansion. `open_wam.configs.coercion` owns reusable YAML/CLI-to-type conversion.
 `open_wam.configs.sequence_contracts` owns defaults and cross-section
 validation for sequence semantics. The YAML loader maps sections into frozen
-dataclasses and retains compatibility imports, but it does not own policy
-contract behavior.
+dataclasses; historical `open_wam.utils` loader/path imports are compatibility
+aliases only. The loader does not own policy contract behavior.
 
 ## Visual Tower Contract
 

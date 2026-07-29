@@ -14,7 +14,7 @@ from open_wam.data import (
     register_dataset_adapter,
     register_dataset_builder,
 )
-from open_wam.utils import load_experiment_config
+from open_wam.configs import load_experiment_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

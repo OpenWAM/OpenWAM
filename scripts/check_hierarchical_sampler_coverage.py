@@ -19,7 +19,7 @@ from open_wam.data import (  # noqa: E402
     build_train_val_latent_datasets,
     collate_latent_wam_samples,
 )
-from open_wam.utils import load_experiment_config  # noqa: E402
+from open_wam.configs import load_experiment_config  # noqa: E402
 
 
 def main() -> None:

@@ -9,7 +9,7 @@ from open_wam.configs import (
     LiberoDataConfig,
     RobotWinDataConfig,
 )
-from open_wam.utils.config_loader import load_experiment_config
+from open_wam.configs import load_experiment_config
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

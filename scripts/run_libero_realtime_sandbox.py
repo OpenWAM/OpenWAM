@@ -60,9 +60,9 @@ from open_wam.models.policy_variants.mot.runtime_routing import (  # noqa: E402
 from open_wam.pipelines import LingbotExactRunner, VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
 from open_wam.runtime import checkpoints as runtime_checkpoints  # noqa: E402
 from open_wam.runtime import rollout as rollout_runtime  # noqa: E402
+from open_wam.configs import load_experiment_config  # noqa: E402
 from open_wam.utils import (  # noqa: E402
     apply_config_overrides,
-    load_experiment_config,
     merge_runtime_config_from_checkpoint,
     parse_override_assignments,
     resolve_transformer_dir_override,

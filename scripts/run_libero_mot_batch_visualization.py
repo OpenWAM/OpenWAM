@@ -20,14 +20,13 @@ if str(SRC_ROOT) not in sys.path:
 if str(SCRIPT_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPT_ROOT))
 
-from open_wam.configs import ReferenceCoreInitMode  # noqa: E402
+from open_wam.configs import ReferenceCoreInitMode, load_experiment_config  # noqa: E402
 from open_wam.integrations import load_libero_task_init_states  # noqa: E402
 from open_wam.models.policy_variants.mot.runtime_routing import ensure_mot_inference_backend  # noqa: E402
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
 from open_wam.runtime.checkpoints import load_pipeline_checkpoint  # noqa: E402
 from open_wam.utils import (  # noqa: E402
     apply_config_overrides,
-    load_experiment_config,
     parse_override_assignments,
     seed_everywhere,
 )

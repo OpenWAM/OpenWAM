@@ -7,8 +7,7 @@ from typing import Any, Mapping
 import torch
 from torch import nn
 
-from open_wam.configs import ExperimentConfig
-from open_wam.utils.config_loader import load_experiment_config
+from open_wam.configs import ExperimentConfig, load_experiment_config
 
 
 CHECKPOINT_FILENAMES = ("model_state.pt", "full_training_state.pt")

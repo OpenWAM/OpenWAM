@@ -14,7 +14,7 @@ from open_wam.models.visual_tower import (
     build_dense_runtime_program,
 )
 from open_wam.pipelines import build_variant_pipeline_from_config
-from open_wam.utils.config_loader import load_experiment_config
+from open_wam.configs import load_experiment_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

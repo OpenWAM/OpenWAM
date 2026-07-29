@@ -50,10 +50,9 @@ from open_wam.runtime.checkpoints import (  # noqa: E402
     resolve_checkpoint_file,
     resolve_checkpoint_step_dir_from_transformer_dir,
 )
-from open_wam.utils.local_paths import read_yaml_with_local_paths  # noqa: E402
+from open_wam.configs import load_experiment_config, read_yaml_with_local_paths  # noqa: E402
 from open_wam.utils import (  # noqa: E402
     apply_config_overrides,
-    load_experiment_config,
     merge_runtime_config_from_checkpoint,
     parse_override_assignments,
     seed_everywhere,

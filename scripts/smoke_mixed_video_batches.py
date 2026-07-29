@@ -20,7 +20,7 @@ from open_wam.data import (
     collate_latent_wam_samples,
     collate_wam_samples,
 )
-from open_wam.utils.config_loader import load_experiment_config
+from open_wam.configs import load_experiment_config
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

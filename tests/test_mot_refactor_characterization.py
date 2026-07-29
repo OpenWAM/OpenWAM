@@ -11,7 +11,7 @@ import torch
 
 from open_wam.data import LatentWAMBatch
 from open_wam.models.common.rollout_history import resolve_execute_action_steps
-from open_wam.utils import load_experiment_config
+from open_wam.configs import load_experiment_config
 from tests.characterization.mot_refactor_artifacts import (
     ComparisonTolerance,
     compare_characterization_reports,

@@ -15,7 +15,7 @@ from open_wam.training.run_tracking import (
     build_wandb_tags,
     resolve_wandb_project,
 )
-from open_wam.utils.config_loader import load_experiment_config
+from open_wam.configs import load_experiment_config
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

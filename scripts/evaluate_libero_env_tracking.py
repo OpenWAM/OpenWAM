@@ -23,7 +23,7 @@ from open_wam.integrations import (  # noqa: E402
     infer_task_local_episode_rank,
     track_relative_targets_in_libero_env,
 )
-from open_wam.utils import load_experiment_config  # noqa: E402
+from open_wam.configs import load_experiment_config  # noqa: E402
 
 
 def main() -> None:

@@ -7,7 +7,7 @@ import yaml
 
 from open_wam.configs import JointDenoiseTrainingMode
 from open_wam.configs.enums import serialize_enum_values
-from open_wam.utils import load_experiment_config
+from open_wam.configs import load_experiment_config
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

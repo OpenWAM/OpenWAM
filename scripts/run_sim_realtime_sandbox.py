@@ -26,8 +26,8 @@ from open_wam.runtime.checkpoints import (  # noqa: E402
     resolve_checkpoint_file,
     resolve_checkpoint_step_dir_from_transformer_dir,
 )
-from open_wam.utils import load_experiment_config, seed_everywhere  # noqa: E402
-from open_wam.utils.local_paths import load_local_path_registry  # noqa: E402
+from open_wam.configs import load_experiment_config, load_local_path_registry  # noqa: E402
+from open_wam.utils import seed_everywhere  # noqa: E402
 
 
 def main() -> None:

@@ -21,8 +21,8 @@ from open_wam.data.latent_temporal import (
 )
 from open_wam.data.raw_video import ViewPlacement
 from open_wam.models.visual_tower.reference_assets import LingbotReferenceAssets
+from open_wam.configs import load_experiment_config
 from open_wam.utils import (
-    load_experiment_config,
     merge_runtime_config_from_checkpoint,
     resolve_checkpoint_file,
     resolve_transformer_dir_override,

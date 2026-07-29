@@ -3,9 +3,21 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from open_wam.configs import SharedVideoTransformerConfig
+from open_wam.configs import (
+    SharedVideoTransformerConfig,
+    load_experiment_config,
+    load_local_path_registry,
+    read_yaml_with_local_paths,
+)
 from open_wam.models.video_backbone.config import (
     SharedVideoTransformerConfig as LegacySharedVideoTransformerConfig,
+)
+from open_wam.utils.config_loader import (
+    load_experiment_config as LegacyLoadExperimentConfig,
+)
+from open_wam.utils.local_paths import (
+    load_local_path_registry as LegacyLoadLocalPathRegistry,
+    read_yaml_with_local_paths as LegacyReadYamlWithLocalPaths,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -125,6 +137,27 @@ def test_sequence_contract_semantics_have_one_config_owner() -> None:
 
     assert contract_functions <= config_definitions
     assert contract_functions.isdisjoint(loader_definitions)
+
+
+def test_configuration_loading_has_one_package_owner() -> None:
+    canonical_definitions = _top_level_definitions(PACKAGE_ROOT / "configs" / "loader.py")
+    compatibility_definitions = _top_level_definitions(PACKAGE_ROOT / "utils" / "config_loader.py")
+
+    assert "load_experiment_config" in canonical_definitions
+    assert "load_experiment_config" not in compatibility_definitions
+    assert LegacyLoadExperimentConfig is load_experiment_config
+
+
+def test_local_path_resolution_has_one_package_owner() -> None:
+    canonical_definitions = _top_level_definitions(PACKAGE_ROOT / "configs" / "local_paths.py")
+    compatibility_definitions = _top_level_definitions(PACKAGE_ROOT / "utils" / "local_paths.py")
+
+    assert {"load_local_path_registry", "read_yaml_with_local_paths"} <= canonical_definitions
+    assert {"load_local_path_registry", "read_yaml_with_local_paths"}.isdisjoint(
+        compatibility_definitions
+    )
+    assert LegacyLoadLocalPathRegistry is load_local_path_registry
+    assert LegacyReadYamlWithLocalPaths is read_yaml_with_local_paths
 
 
 def test_mot_generalist_mode_semantics_have_one_owner() -> None:

@@ -23,7 +23,8 @@ from open_wam.runtime import (
     find_repo_root,
     resolve_repo_path,
 )
-from open_wam.utils import load_artifact_manifest, load_experiment_config, validate_artifact_layout
+from open_wam.configs import load_experiment_config
+from open_wam.utils import load_artifact_manifest, validate_artifact_layout
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

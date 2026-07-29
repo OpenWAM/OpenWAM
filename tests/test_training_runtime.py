@@ -36,7 +36,7 @@ from open_wam.training.step_executor import (
     ViewBatchAdapter,
     resolve_sample_loss_weight,
 )
-from open_wam.utils.config_loader import load_experiment_config
+from open_wam.configs import load_experiment_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

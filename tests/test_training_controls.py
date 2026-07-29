@@ -20,7 +20,7 @@ from open_wam.models.policy_variants.mot.packed_block import MoTPackedBlockStack
 from open_wam.models.policy_variants import PolicyTrainBatch
 from open_wam.pipelines import build_variant_pipeline_from_config
 from open_wam.training import apply_training_component_controls
-from open_wam.utils.config_loader import load_experiment_config
+from open_wam.configs import load_experiment_config
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore
 

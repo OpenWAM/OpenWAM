@@ -26,7 +26,8 @@ from open_wam.data.lerobot_video import (
     LeRobotV2VideoWindowDataset,
     load_lerobot_v2_video_metadata,
 )
-from open_wam.utils import apply_config_overrides, load_experiment_config
+from open_wam.configs import load_experiment_config
+from open_wam.utils import apply_config_overrides
 
 from .mot_refactor_artifacts import (
     RolloutInputFixture,

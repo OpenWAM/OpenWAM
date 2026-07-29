@@ -16,7 +16,7 @@ from open_wam.configs.enums import (
     MoTGeneralistTrainingMode,
     SampleOrderMode,
 )
-from open_wam.utils.config_loader import load_experiment_config
+from open_wam.configs import load_experiment_config
 from open_wam.utils.config_overrides import apply_config_overrides, parse_override_assignments
 
 
