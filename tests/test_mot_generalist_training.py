@@ -45,6 +45,12 @@ from open_wam.models.common.flow_matching import (
     build_video_flow_match_train_artifacts,
 )
 from open_wam.models.common.attention_profiles import build_chunked_text_context_cross_attention_mask
+from open_wam.models.policy_variants.mot.generalist_modes import (
+    apply_generalist_training_mode,
+    generalist_rollout_mode_from_value,
+    resolve_generalist_rollout_mode,
+    sample_generalist_training_mode,
+)
 from open_wam.models.policy_variants.mot.variant import (
     _apply_mot_generalist_training_mode,
     _mot_generalist_rollout_mode_from_value,
@@ -54,6 +60,13 @@ from open_wam.models.policy_variants.mot.variant import (
 )
 from open_wam.models.policy_variants.contracts import PolicyInferContext
 from open_wam.models.policy_variants.mot.runtime import build_mot_packed_coupling_attention_profile
+
+
+def test_legacy_generalist_helpers_are_identity_preserving_aliases() -> None:
+    assert _apply_mot_generalist_training_mode is apply_generalist_training_mode
+    assert _mot_generalist_rollout_mode_from_value is generalist_rollout_mode_from_value
+    assert _resolve_mot_generalist_rollout_mode is resolve_generalist_rollout_mode
+    assert _sample_mot_generalist_training_mode is sample_generalist_training_mode
 
 
 def _make_mot_policy_config(**overrides) -> MoTPolicyConfig:

@@ -113,6 +113,28 @@ def test_sequence_contract_semantics_have_one_config_owner() -> None:
     assert contract_functions.isdisjoint(loader_definitions)
 
 
+def test_mot_generalist_mode_semantics_have_one_owner() -> None:
+    mode_functions = {
+        "apply_generalist_training_mode",
+        "generalist_forces_clean_video_condition",
+        "generalist_rollout_enabled",
+        "generalist_rollout_mode_from_value",
+        "is_generalist_conditional_rollout",
+        "resolve_generalist_rollout_mode",
+        "resolve_generalist_training_metadata",
+        "sample_generalist_training_mode",
+    }
+    mode_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "generalist_modes.py"
+    )
+    variant_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "variant.py"
+    )
+
+    assert mode_functions <= mode_definitions
+    assert mode_functions.isdisjoint(variant_definitions)
+
+
 def test_retired_ablations_namespace_is_not_packaged() -> None:
     assert not (PACKAGE_ROOT / "ablations").exists()
 

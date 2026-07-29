@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from dataclasses import replace as _dataclass_replace
 
 import torch
 import torch.nn.functional as F
@@ -26,9 +25,7 @@ from open_wam.models.common.attention_profiles import (
 from open_wam.models.common.packed_token_layout import frame_chunk_ids_for_origin
 from open_wam.models.common.joint_conditioning import (
     resolve_generalist_joint_conditioning_semantics,
-    sample_conditioning_mode,
 )
-from open_wam.models.common.modality_slots import clean_noisy_slot_tensor, zero_loss_mask_like
 from open_wam.models.common.rollout_startup import (
     build_strict_action_context_mask,
     resolve_strict_startup_plan,
@@ -71,6 +68,16 @@ from .contracts import (
     MoTVideoCache,
     MoTVideoLayerCache,
     MoTVideoTrainArtifacts,
+)
+from .generalist_modes import (
+    apply_generalist_training_mode as _apply_mot_generalist_training_mode,
+    generalist_forces_clean_video_condition as _mot_generalist_forces_clean_video_condition,
+    generalist_rollout_enabled as _mot_generalist_rollout_enabled,
+    generalist_rollout_mode_from_value as _mot_generalist_rollout_mode_from_value,
+    is_generalist_conditional_rollout as _is_mot_generalist_conditional_rollout,
+    resolve_generalist_rollout_mode as _resolve_mot_generalist_rollout_mode,
+    resolve_generalist_training_metadata as _resolve_mot_generalist_training_metadata,
+    sample_generalist_training_mode as _sample_mot_generalist_training_mode,
 )
 from .modules import MoTActionExpert, init_action_expert_from_video_core
 from .packed_block import MoTPackedBlock, MoTPackedBlockStack
@@ -309,186 +316,6 @@ def _mot_packed_cache_inference_couplings() -> set[CurrentBlockCoupling]:
         CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
         CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
     }
-
-
-def _sample_mot_generalist_training_mode(
-    probs: dict[MoTGeneralistTrainingMode, float],
-    *,
-    device: torch.device,
-) -> MoTGeneralistTrainingMode:
-    """Sample one M5 generalist regime per segment.
-
-    Mirrors PR #95's ``_sample_joint_denoise_training_mode``: builds a
-    categorical from the (already-normalized) probs dict and draws a single
-    mode. Sampling runs on the same device as the training segment so it
-    stays deterministic under a seeded RNG state.
-    """
-
-    return sample_conditioning_mode(
-        probs,
-        enum_cls=MoTGeneralistTrainingMode,
-        device=device,
-        error_label="M5 generalist training mode",
-    )
-
-
-def _resolve_mot_generalist_training_metadata(
-    batch: PolicyTrainBatch,
-) -> tuple[MoTGeneralistTrainingMode | None, bool | None, str | None]:
-    sample_metadata = SampleConstructionMetadata.from_batch_metadata(batch.extra.get("metadata"))
-    if sample_metadata is None:
-        return None, None, None
-    raw_mode = sample_metadata.generalist.mode_override
-    mode = None if raw_mode is None else MoTGeneralistTrainingMode(raw_mode)
-    return mode, sample_metadata.generalist.drop_text_conditioning, sample_metadata.generalist.source
-
-
-def _apply_mot_generalist_training_mode(
-    *,
-    sampled_mode: MoTGeneralistTrainingMode,
-    video_artifacts: VideoFlowMatchTrainArtifacts,
-    noisy_actions: torch.Tensor,
-    clean_actions: torch.Tensor,
-    noisy_slot_timesteps: torch.Tensor,
-    future_loss_mask: torch.Tensor,
-    effective_action_mask: torch.Tensor | None,
-    clean_action_condition_mask: torch.Tensor | None = None,
-) -> tuple[
-    VideoFlowMatchTrainArtifacts,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor | None,
-]:
-    """Apply M5 generalist denoising mode semantics to packed train tensors.
-
-    Realizes the conditional sub-modes by placing the clean modality into its
-    noisy slot, preserving real clean condition slots for history/context,
-    forcing per-frame timesteps to 0 on the conditioned side, and masking that
-    side's loss. The ``JOINT`` bucket intentionally preserves the clean
-    condition slots so its training contract matches plain M5 packed-joint
-    training and rollout: noisy current tokens can use past clean video/action
-    context through the same Method-1-style packed mask.
-
-    ``effective_action_mask`` is the supervised action-loss mask. It may be
-    narrower than the raw valid-action mask under fixed-segment sampling, so it
-    must not be reused to hide clean action conditions from FDM/IDM context.
-    """
-
-    semantics = resolve_generalist_joint_conditioning_semantics(
-        sampled_mode,
-        joint_mode=MoTGeneralistTrainingMode.JOINT,
-        action_conditioned_video_mode=MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
-        video_conditioned_action_mode=MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
-    )
-
-    if semantics.is_joint:
-        return (
-            video_artifacts,
-            noisy_actions,
-            clean_actions,
-            noisy_slot_timesteps,
-            future_loss_mask,
-            effective_action_mask,
-        )
-
-    if semantics.clean_action_noisy_slot:
-        # Clean action overwrites the A_noisy slot at timestep 0; A_clean
-        # remains real clean action history/context; action loss is masked out
-        # so video-only gradients drive this segment.
-        new_noisy_actions = clean_noisy_slot_tensor(
-            clean_actions.clone(),
-            action_mask=clean_action_condition_mask,
-        )
-        new_noisy_slot_timesteps = torch.zeros_like(noisy_slot_timesteps)
-        new_action_mask = zero_loss_mask_like(effective_action_mask, fallback_like=noisy_actions)
-        return (
-            video_artifacts,
-            new_noisy_actions,
-            clean_actions,
-            new_noisy_slot_timesteps,
-            future_loss_mask,
-            new_action_mask,
-        )
-
-    if semantics.clean_video_noisy_slot:
-        # Clean video overwrites the V_noisy slot at timestep 0; V_clean
-        # remains available as past clean context under the packed attention
-        # mask; video loss is masked out so action-only gradients drive this
-        # segment.
-        new_video_artifacts = _dataclass_replace(
-            video_artifacts,
-            noisy_latents=video_artifacts.condition_latents.clone(),
-            timesteps=torch.zeros_like(video_artifacts.timesteps),
-        )
-        new_future_loss_mask = torch.zeros_like(future_loss_mask)
-        return (
-            new_video_artifacts,
-            noisy_actions,
-            clean_actions,
-            noisy_slot_timesteps,
-            new_future_loss_mask,
-            effective_action_mask,
-        )
-
-    raise ValueError(f"Unsupported MoTGeneralistTrainingMode {sampled_mode!r}.")
-
-
-def _mot_generalist_forces_clean_video_condition(
-    sampled_mode: MoTGeneralistTrainingMode | None,
-) -> bool:
-    if sampled_mode is None:
-        return False
-    semantics = resolve_generalist_joint_conditioning_semantics(
-        sampled_mode,
-        joint_mode=MoTGeneralistTrainingMode.JOINT,
-        action_conditioned_video_mode=MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
-        video_conditioned_action_mode=MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
-    )
-    return semantics.force_clean_video_condition
-
-
-def _mot_generalist_rollout_mode_from_value(
-    value: object = "vanilla_joint_rollout",
-) -> MoTGeneralistTrainingMode:
-    """Map rollout/ablation labels onto the M5 GJD training-mode enum."""
-
-    raw_value = str(getattr(value, "value", value))
-    aliases = {
-        "joint": MoTGeneralistTrainingMode.JOINT,
-        "vanilla_joint_rollout": MoTGeneralistTrainingMode.JOINT,
-        "clean_action_feedback": MoTGeneralistTrainingMode.JOINT,
-        "fdm": MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
-        "forced_action_joint_fdm": MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
-        "action_conditioned_video": MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
-        "idm": MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
-        "video_conditioned_action": MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
-    }
-    try:
-        return aliases[raw_value]
-    except KeyError as exc:
-        raise ValueError(f"Unsupported M5 GJD rollout mode {raw_value!r}.") from exc
-
-
-def _resolve_mot_generalist_rollout_mode(context: PolicyInferContext) -> MoTGeneralistTrainingMode:
-    return _mot_generalist_rollout_mode_from_value(
-        context.extra.get(
-            "mot_generalist_rollout_mode",
-            context.extra.get("action_conditioning_mode", "vanilla_joint_rollout"),
-        )
-    )
-
-
-def _is_mot_generalist_conditional_rollout(mode: MoTGeneralistTrainingMode) -> bool:
-    return mode in {
-        MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
-        MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
-    }
-
-
-def _mot_generalist_rollout_enabled(policy_config: MoTPolicyConfig) -> bool:
-    return getattr(policy_config, "mot_generalist_training_mode_probs", None) is not None
 
 
 def _rewind_runtime_action_cache_to_frame(
