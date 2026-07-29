@@ -4,11 +4,15 @@ from types import SimpleNamespace
 
 import pytest
 
+from open_wam.configs import CurrentBlockCoupling
 from open_wam.models.policy_variants.mot.runtime_routing import (
     MoTRuntimeRouteKind,
     ensure_mot_inference_backend,
     ensure_mot_policy_variant_inference_backend,
     mot_policy_requires_legacy_split_cache_inference,
+    resolve_mot_action_only_rollout,
+    resolve_mot_inference_window_size,
+    resolve_mot_rollout_frame_chunk_size,
     resolve_mot_runtime_route,
     should_use_mot_legacy_split_cache_inference,
 )
@@ -63,6 +67,36 @@ def test_mot_runtime_route_taxonomy_marks_legacy_and_current_paths() -> None:
     assert native.kind is MoTRuntimeRouteKind.NATIVE_PACKED_COUPLING
     assert native.uses_native_packed_rollout
     assert not native.supports_realtime_history_controls
+
+
+def test_mot_rollout_overrides_preserve_configured_action_token_density() -> None:
+    context = SimpleNamespace(
+        extra={
+            "mot_inference_window_size": 17,
+            "mot_rollout_frame_chunk_size": 2,
+        }
+    )
+
+    assert resolve_mot_inference_window_size(context, default_window_size=30) == 17
+    assert resolve_mot_rollout_frame_chunk_size(
+        context,
+        default_frame_chunk_size=4,
+        base_action_horizon=16,
+    ) == (2, 8, 4)
+
+
+def test_mot_action_only_rollout_is_limited_to_action_safe_couplings() -> None:
+    context = SimpleNamespace(extra={"mot_action_only_rollout": True})
+
+    assert resolve_mot_action_only_rollout(
+        context,
+        current_block_coupling=CurrentBlockCoupling.ACTION_THEN_VIDEO,
+    )
+    with pytest.raises(ValueError, match="action-only-safe"):
+        resolve_mot_action_only_rollout(
+            context,
+            current_block_coupling=CurrentBlockCoupling.JOINT,
+        )
 
 
 def test_mot_runtime_routing_selects_legacy_only_for_split_cache_couplings() -> None:

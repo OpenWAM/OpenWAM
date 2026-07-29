@@ -65,12 +65,19 @@ plain contracts:
   coordinates shared by training and recurrent inference.
 - `mot.generalist_modes` owns GJD mode selection and conditional tensor
   rewrites.
+- `mot.runtime_routing` owns finite inference routes, coupling policy, and
+  validated rollout overrides. Its implementation is configuration-only and
+  contains no tensor execution.
+- `mot.runtime` owns MoT tensor execution and cache mechanics, including
+  explicit-sigma flow integration and speculative action-cache rewind.
 - common attention profiles own token visibility; the policy selects a profile
   and supplies its resolved layout.
 
-These helpers are plain contracts, not model modules. They must not own
-parameters, buffers, visual execution, or decoder losses, so extracting or
-replacing orchestration cannot change checkpoint keys.
+The layout, conditioning, mode, and routing helpers are plain contracts, not
+model modules. They must not own parameters, buffers, visual execution, or
+decoder losses, so extracting or replacing orchestration cannot change
+checkpoint keys. `MoTPolicyVariant` selects these contracts and orchestrates
+the learned runtime; it does not redefine their control or tensor mechanics.
 
 ## Data Contract
 

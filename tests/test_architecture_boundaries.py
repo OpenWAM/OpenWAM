@@ -252,6 +252,43 @@ def test_mot_conditioning_semantics_have_one_owner() -> None:
     assert "_uses_mot_legacy_prefix_contract" not in _top_level_definitions(variant_path)
 
 
+def test_mot_runtime_controls_have_role_owners() -> None:
+    routing_functions = {
+        "is_mot_same_step_coupling",
+        "resolve_mot_action_only_rollout",
+        "resolve_mot_current_block_coupling",
+        "resolve_mot_inference_window_size",
+        "resolve_mot_joint_timestep_coupling",
+        "resolve_mot_rollout_frame_chunk_size",
+        "should_couple_mot_action_to_video_sigmas",
+    }
+    tensor_runtime_functions = {
+        "expand_mot_scalar_timestep",
+        "mot_scheduler_next_sigma",
+        "rewind_mot_runtime_action_cache_to_frame",
+        "step_mot_flow_with_sigmas",
+    }
+    retired_variant_functions = routing_functions | tensor_runtime_functions | {
+        "_expand_scalar_timestep",
+        "_flow_step_with_sigmas",
+        "_is_mot_same_step_coupling",
+        "_resolve_mot_action_only_rollout",
+        "_resolve_mot_inference_window_size",
+        "_resolve_mot_joint_timestep_coupling",
+        "_resolve_mot_rollout_frame_chunk_size",
+        "_rewind_runtime_action_cache_to_frame",
+        "_scheduler_next_sigma",
+        "_should_couple_mot_action_to_video_sigmas",
+    }
+    mot_root = PACKAGE_ROOT / "models" / "policy_variants" / "mot"
+
+    assert routing_functions <= _top_level_definitions(mot_root / "runtime_routing.py")
+    assert tensor_runtime_functions <= _top_level_definitions(mot_root / "runtime.py")
+    assert retired_variant_functions.isdisjoint(
+        _top_level_definitions(mot_root / "variant.py")
+    )
+
+
 def test_retired_ablations_namespace_is_not_packaged() -> None:
     assert not (PACKAGE_ROOT / "ablations").exists()
 

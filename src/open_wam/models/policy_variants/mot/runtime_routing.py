@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, Mapping, Protocol
 
-from open_wam.configs import CurrentBlockCoupling, MoTRuntimeMode, PolicyVariantName
+from open_wam.configs import (
+    CurrentBlockCoupling,
+    JointTimestepCoupling,
+    MoTPolicyConfig,
+    MoTRuntimeMode,
+    PolicyVariantName,
+)
 from open_wam.configs.enums import RolloutContextPolicy, SampleTargetAlignment
 
 
@@ -24,6 +30,16 @@ MOT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS = frozenset(
         CurrentBlockCoupling.DECOUPLED_SAME_STEP,
     }
 )
+MOT_ACTION_ONLY_ROLLOUT_COUPLINGS = frozenset(
+    {
+        CurrentBlockCoupling.ACTION_THEN_VIDEO,
+        CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+    }
+)
+
+
+class _InferenceContextLike(Protocol):
+    extra: Mapping[str, Any]
 
 
 @dataclass(frozen=True)
@@ -150,6 +166,141 @@ def resolve_mot_sequence_actions_per_frame(*, action_horizon: int, frame_chunk_s
             f"got action_horizon={action_horizon}, frame_chunk_size={frame_chunk_size}."
         )
     return action_horizon // frame_chunk_size
+
+
+def resolve_mot_inference_window_size(
+    context: _InferenceContextLike,
+    *,
+    default_window_size: int,
+) -> int:
+    """Resolve the positive rollout attention window from config and runtime overrides."""
+
+    raw_override = context.extra.get("mot_inference_window_size")
+    if raw_override is None:
+        resolved = int(default_window_size)
+    else:
+        resolved = int(raw_override)
+    if resolved <= 0:
+        raise ValueError(
+            "MoT inference window size must be positive, "
+            f"got {resolved}."
+        )
+    return resolved
+
+
+def resolve_mot_rollout_frame_chunk_size(
+    context: _InferenceContextLike,
+    *,
+    default_frame_chunk_size: int,
+    base_action_horizon: int,
+) -> tuple[int, int, int]:
+    """Resolve rollout video/action chunk geometry without changing token density."""
+
+    base_frame_chunk_size = int(default_frame_chunk_size)
+    if base_frame_chunk_size <= 0:
+        raise ValueError(
+            "MoT inference frame chunk size must be positive, "
+            f"got {base_frame_chunk_size}."
+        )
+    base_action_horizon = int(base_action_horizon)
+    if base_action_horizon <= 0:
+        raise ValueError(
+            "MoT inference action horizon must be positive, "
+            f"got {base_action_horizon}."
+        )
+    if base_action_horizon % base_frame_chunk_size != 0:
+        raise ValueError(
+            "MoT inference expects `action_horizon` to divide by `inference.frame_chunk_size`, "
+            f"got action_horizon={base_action_horizon}, frame_chunk_size={base_frame_chunk_size}."
+        )
+    action_tokens_per_frame = base_action_horizon // base_frame_chunk_size
+    raw_override = context.extra.get("mot_rollout_frame_chunk_size")
+    if raw_override is None:
+        frame_chunk_size = base_frame_chunk_size
+    else:
+        frame_chunk_size = int(raw_override)
+    if frame_chunk_size <= 0:
+        raise ValueError(
+            "MoT rollout frame chunk size must be positive, "
+            f"got {frame_chunk_size}."
+        )
+    if frame_chunk_size > base_frame_chunk_size:
+        raise ValueError(
+            "MoT rollout frame chunk size cannot exceed the configured inference frame chunk size, "
+            f"got override={frame_chunk_size}, configured={base_frame_chunk_size}."
+        )
+    action_horizon = frame_chunk_size * action_tokens_per_frame
+    return frame_chunk_size, action_horizon, action_tokens_per_frame
+
+
+def resolve_mot_action_only_rollout(
+    context: _InferenceContextLike,
+    *,
+    current_block_coupling: CurrentBlockCoupling,
+) -> bool:
+    """Validate and resolve the optional action-only rollout route."""
+
+    requested = bool(context.extra.get("mot_action_only_rollout", False))
+    if requested and current_block_coupling not in MOT_ACTION_ONLY_ROLLOUT_COUPLINGS:
+        supported = ", ".join(
+            (
+                CurrentBlockCoupling.ACTION_THEN_VIDEO.value,
+                CurrentBlockCoupling.DECOUPLED_SAME_STEP.value,
+            )
+        )
+        raise ValueError(
+            "`mot_action_only_rollout` is only supported for M5 action-only-safe "
+            f"couplings ({supported}); got current_block_coupling={current_block_coupling.value!r}."
+        )
+    return requested
+
+
+def resolve_mot_current_block_coupling(config: MoTPolicyConfig) -> CurrentBlockCoupling:
+    """Resolve Method-5 current-block coupling, defaulting to current behavior."""
+
+    if config.current_block_coupling is None:
+        if config.runtime_mode == MoTRuntimeMode.JOINT_DENOISE:
+            return CurrentBlockCoupling.JOINT
+        return CurrentBlockCoupling.VIDEO_THEN_ACTION
+    return CurrentBlockCoupling(config.current_block_coupling)
+
+
+def is_mot_same_step_coupling(coupling: CurrentBlockCoupling) -> bool:
+    """Return whether both streams participate in the same denoising step."""
+
+    return coupling in {
+        CurrentBlockCoupling.JOINT,
+        CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+        CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
+        CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
+    }
+
+
+def resolve_mot_joint_timestep_coupling(
+    config: MoTPolicyConfig,
+    coupling: CurrentBlockCoupling,
+) -> JointTimestepCoupling:
+    """Resolve M5 joint-like action/video timestep coupling."""
+
+    if coupling not in {
+        CurrentBlockCoupling.JOINT,
+        CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
+        CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
+    }:
+        return JointTimestepCoupling.INDEPENDENT
+    return JointTimestepCoupling(config.joint_timestep_coupling)
+
+
+def should_couple_mot_action_to_video_sigmas(
+    config: MoTPolicyConfig,
+    coupling: CurrentBlockCoupling,
+) -> bool:
+    """Return whether M5 rollout should integrate action on the video sigma clock."""
+
+    return resolve_mot_joint_timestep_coupling(config, coupling) in {
+        JointTimestepCoupling.MATCH_SIGMA,
+        JointTimestepCoupling.SHARED_VIDEO_SCHEDULE,
+    }
 
 
 def resolve_mot_sequence_execution_action_offset(

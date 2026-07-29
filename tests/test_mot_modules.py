@@ -44,18 +44,18 @@ from open_wam.models.policy_variants.mot.runtime import (
     build_mot_packed_coupling_attention_mask,
     build_mot_packed_coupling_attention_profile,
     build_packed_action_attention_mask,
+    expand_mot_scalar_timestep,
+    mot_scheduler_next_sigma,
+    rewind_mot_runtime_action_cache_to_frame,
     resolve_mot_condition_latents,
+    step_mot_flow_with_sigmas,
     trim_mot_action_cache_prefix,
 )
 from open_wam.models.policy_variants.mot.runtime_routing import (
     resolve_mot_rollout_cache_window_frames,
     resolve_mot_rollout_history_frames,
 )
-from open_wam.models.policy_variants.mot.variant import (
-    MoTPolicyVariant,
-    _rewind_runtime_action_cache_to_frame,
-    _slice_current_noisy_action_flow,
-)
+from open_wam.models.policy_variants.mot.variant import MoTPolicyVariant
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore
 from open_wam.pipelines import build_variant_pipeline_from_config
@@ -754,7 +754,7 @@ def test_runtime_action_cache_rewind_uses_absolute_cache_start_frame() -> None:
         action_cache_start_frame=10,
     )
 
-    _rewind_runtime_action_cache_to_frame(
+    rewind_mot_runtime_action_cache_to_frame(
         state,
         absolute_frame_start=14,
         action_tokens_per_frame=2,
@@ -776,7 +776,7 @@ def test_runtime_action_cache_rewind_clears_cache_before_window() -> None:
         action_cache_start_frame=10,
     )
 
-    _rewind_runtime_action_cache_to_frame(
+    rewind_mot_runtime_action_cache_to_frame(
         state,
         absolute_frame_start=8,
         action_tokens_per_frame=2,
@@ -1854,18 +1854,28 @@ def test_mot_generalist_packed_infer_couples_action_to_video_sigma_schedule(
     assert not torch.allclose(second_step_noisy_action_t, torch.full_like(second_step_noisy_action_t, 500.0))
 
 
-def test_slice_current_noisy_action_flow_skips_packed_history_tokens() -> None:
-    packed_action_flow = torch.arange(2 * 20 * 3, dtype=torch.float32).reshape(2, 20, 3)
+def test_mot_explicit_sigma_flow_helpers_preserve_endpoint_semantics() -> None:
+    scheduler = SimpleNamespace(sigmas=torch.tensor([1.0, 0.5]))
 
-    current = _slice_current_noisy_action_flow(
-        packed_action_flow,
-        history_action_tokens=6,
-        action_horizon=8,
+    assert mot_scheduler_next_sigma(scheduler, 0).item() == pytest.approx(0.5)
+    assert mot_scheduler_next_sigma(scheduler, 1).item() == pytest.approx(0.0)
+
+    sample = torch.tensor([[2.0, 4.0]])
+    flow_pred = torch.tensor([[0.5, -1.0]])
+    stepped = step_mot_flow_with_sigmas(
+        sample,
+        flow_pred,
+        sigma=torch.tensor(1.0),
+        sigma_next=torch.tensor(0.5),
     )
+    assert torch.equal(stepped, torch.tensor([[1.75, 4.5]]))
 
-    assert current.shape == (2, 8, 3)
-    assert torch.equal(current, packed_action_flow[:, 6:14])
-    assert current.is_contiguous()
+    dense_timestep = expand_mot_scalar_timestep(
+        torch.tensor(7.0),
+        shape=(2, 3),
+        device=torch.device("cpu"),
+    )
+    assert torch.equal(dense_timestep, torch.full((2, 3), 7.0))
 
 
 @pytest.mark.parametrize(

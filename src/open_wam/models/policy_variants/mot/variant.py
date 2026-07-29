@@ -85,17 +85,27 @@ from .runtime import (
     forward_mot_packed_coupling_denoise,
     forward_action_with_video_and_action_cache,
     forward_action_with_video_cache,
+    expand_mot_scalar_timestep,
+    mot_scheduler_next_sigma,
     move_mot_action_cache,
     move_mot_video_cache,
     prefill_video_kv_cache,
-    trim_mot_action_cache_prefix,
+    rewind_mot_runtime_action_cache_to_frame,
+    step_mot_flow_with_sigmas,
     trim_mot_action_cache_tail,
     trim_mot_video_cache_tail,
 )
 from .runtime_routing import (
     MOT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS,
     ensure_mot_policy_variant_inference_backend,
+    is_mot_same_step_coupling,
+    resolve_mot_action_only_rollout,
+    resolve_mot_current_block_coupling,
+    resolve_mot_inference_window_size,
+    resolve_mot_joint_timestep_coupling,
+    resolve_mot_rollout_frame_chunk_size,
     resolve_mot_rollout_cache_window_frames,
+    should_couple_mot_action_to_video_sigmas,
 )
 from .sequence_layout import MoTTrainingLayout, build_action_grid_ids_for_sequence
 
@@ -105,242 +115,6 @@ from .sequence_layout import MoTTrainingLayout, build_action_grid_ids_for_sequen
 # per-stream effective lookback is `(attn_window // 2) * frame_chunk_size`
 # integer frames (60 at attn_window=30, frame_chunk_size=4).
 _MOT_SLOT_POOL_ATTN_WINDOW = 30
-_MOT_ACTION_ONLY_ROLLOUT_COUPLINGS = frozenset(
-    {
-        CurrentBlockCoupling.ACTION_THEN_VIDEO,
-        CurrentBlockCoupling.DECOUPLED_SAME_STEP,
-    }
-)
-
-
-def _resolve_mot_inference_window_size(
-    context: PolicyInferContext,
-    *,
-    default_window_size: int,
-) -> int:
-    raw_override = context.extra.get("mot_inference_window_size")
-    if raw_override is None:
-        resolved = int(default_window_size)
-    else:
-        resolved = int(raw_override)
-    if resolved <= 0:
-        raise ValueError(
-            "MoT inference window size must be positive, "
-            f"got {resolved}."
-        )
-    return resolved
-
-
-def _resolve_mot_rollout_frame_chunk_size(
-    context: PolicyInferContext,
-    *,
-    default_frame_chunk_size: int,
-    base_action_horizon: int,
-) -> tuple[int, int, int]:
-    base_frame_chunk_size = int(default_frame_chunk_size)
-    if base_frame_chunk_size <= 0:
-        raise ValueError(
-            "MoT inference frame chunk size must be positive, "
-            f"got {base_frame_chunk_size}."
-        )
-    base_action_horizon = int(base_action_horizon)
-    if base_action_horizon <= 0:
-        raise ValueError(
-            "MoT inference action horizon must be positive, "
-            f"got {base_action_horizon}."
-        )
-    if base_action_horizon % base_frame_chunk_size != 0:
-        raise ValueError(
-            "MoT inference expects `action_horizon` to divide by `inference.frame_chunk_size`, "
-            f"got action_horizon={base_action_horizon}, frame_chunk_size={base_frame_chunk_size}."
-        )
-    action_tokens_per_frame = base_action_horizon // base_frame_chunk_size
-    raw_override = context.extra.get("mot_rollout_frame_chunk_size")
-    if raw_override is None:
-        frame_chunk_size = base_frame_chunk_size
-    else:
-        frame_chunk_size = int(raw_override)
-    if frame_chunk_size <= 0:
-        raise ValueError(
-            "MoT rollout frame chunk size must be positive, "
-            f"got {frame_chunk_size}."
-        )
-    if frame_chunk_size > base_frame_chunk_size:
-        raise ValueError(
-            "MoT rollout frame chunk size cannot exceed the configured inference frame chunk size, "
-            f"got override={frame_chunk_size}, configured={base_frame_chunk_size}."
-        )
-    action_horizon = frame_chunk_size * action_tokens_per_frame
-    return frame_chunk_size, action_horizon, action_tokens_per_frame
-
-
-def _resolve_mot_action_only_rollout(
-    context: PolicyInferContext,
-    *,
-    current_block_coupling: CurrentBlockCoupling,
-) -> bool:
-    requested = bool(context.extra.get("mot_action_only_rollout", False))
-    if requested and current_block_coupling not in _MOT_ACTION_ONLY_ROLLOUT_COUPLINGS:
-        supported = ", ".join(
-            (
-                CurrentBlockCoupling.ACTION_THEN_VIDEO.value,
-                CurrentBlockCoupling.DECOUPLED_SAME_STEP.value,
-            )
-        )
-        raise ValueError(
-            "`mot_action_only_rollout` is only supported for M5 action-only-safe "
-            f"couplings ({supported}); got current_block_coupling={current_block_coupling.value!r}."
-        )
-    return requested
-
-
-def resolve_mot_current_block_coupling(config: MoTPolicyConfig) -> CurrentBlockCoupling:
-    """Resolve Method-5 current-block coupling, defaulting to current behavior."""
-
-    if config.current_block_coupling is None:
-        if config.runtime_mode == MoTRuntimeMode.JOINT_DENOISE:
-            return CurrentBlockCoupling.JOINT
-        return CurrentBlockCoupling.VIDEO_THEN_ACTION
-    return CurrentBlockCoupling(config.current_block_coupling)
-
-
-def _is_mot_same_step_coupling(coupling: CurrentBlockCoupling) -> bool:
-    return coupling in {
-        CurrentBlockCoupling.JOINT,
-        CurrentBlockCoupling.DECOUPLED_SAME_STEP,
-        CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
-        CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
-    }
-
-
-def _should_couple_mot_action_to_video_sigmas(
-    config: MoTPolicyConfig,
-    coupling: CurrentBlockCoupling,
-) -> bool:
-    """Return whether M5 rollout should integrate action on the video sigma clock."""
-
-    return _resolve_mot_joint_timestep_coupling(config, coupling) in {
-        JointTimestepCoupling.MATCH_SIGMA,
-        JointTimestepCoupling.SHARED_VIDEO_SCHEDULE,
-    }
-
-
-def _resolve_mot_joint_timestep_coupling(
-    config: MoTPolicyConfig,
-    coupling: CurrentBlockCoupling,
-) -> JointTimestepCoupling:
-    """Resolve M5 joint-like action/video timestep coupling."""
-
-    if coupling not in {
-        CurrentBlockCoupling.JOINT,
-        CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
-        CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
-    }:
-        return JointTimestepCoupling.INDEPENDENT
-    return JointTimestepCoupling(config.joint_timestep_coupling)
-
-
-def _slice_current_noisy_action_flow(
-    packed_action_flow: torch.Tensor,
-    *,
-    history_action_tokens: int,
-    action_horizon: int,
-) -> torch.Tensor:
-    """Select current noisy-action tokens from a packed M5 action stream."""
-
-    start = int(history_action_tokens)
-    end = start + int(action_horizon)
-    if start < 0 or action_horizon <= 0:
-        raise ValueError(
-            "M5 packed action flow slicing requires non-negative history tokens "
-            f"and positive action_horizon, got history_action_tokens={history_action_tokens}, "
-            f"action_horizon={action_horizon}."
-        )
-    if packed_action_flow.ndim < 2 or packed_action_flow.shape[1] < end:
-        raise ValueError(
-            "M5 packed action flow is too short to contain the current noisy-action window, "
-            f"got shape={tuple(packed_action_flow.shape)}, history_action_tokens={history_action_tokens}, "
-            f"action_horizon={action_horizon}."
-        )
-    return packed_action_flow[:, start:end].contiguous()
-
-
-def _scheduler_next_sigma(scheduler, step_index: int) -> torch.Tensor:
-    if int(step_index) + 1 >= len(scheduler.sigmas):
-        return scheduler.sigmas.new_tensor(0.0)
-    return scheduler.sigmas[int(step_index) + 1]
-
-
-def _flow_step_with_sigmas(
-    sample: torch.Tensor,
-    flow_pred: torch.Tensor,
-    *,
-    sigma: torch.Tensor,
-    sigma_next: torch.Tensor,
-) -> torch.Tensor:
-    return sample + flow_pred * (
-        sigma_next.to(device=sample.device, dtype=sample.dtype)
-        - sigma.to(device=sample.device, dtype=sample.dtype)
-    )
-
-
-def _expand_scalar_timestep(
-    value: torch.Tensor | float,
-    *,
-    shape: tuple[int, ...],
-    device: torch.device,
-) -> torch.Tensor:
-    if isinstance(value, torch.Tensor):
-        if value.numel() != 1:
-            raise ValueError(f"Expected scalar timestep value, got shape {tuple(value.shape)}.")
-        return value.to(device=device, dtype=torch.float32).reshape(()).expand(shape).clone()
-    return torch.full(shape, float(value), device=device, dtype=torch.float32)
-
-
-def _mot_packed_cache_inference_couplings() -> set[CurrentBlockCoupling]:
-    return {
-        CurrentBlockCoupling.JOINT,
-        CurrentBlockCoupling.ACTION_THEN_VIDEO,
-        CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
-        CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
-    }
-
-
-def _rewind_runtime_action_cache_to_frame(
-    runtime_state: MoTRuntimeState,
-    *,
-    absolute_frame_start: int,
-    action_tokens_per_frame: int,
-) -> None:
-    if action_tokens_per_frame <= 0:
-        raise ValueError(
-            "MoT action-cache rewind requires positive action_tokens_per_frame, "
-            f"got {action_tokens_per_frame}."
-        )
-    target_frame = int(absolute_frame_start)
-    action_cache = runtime_state.action_cache
-    if action_cache is None:
-        runtime_state.action_cache_start_frame = target_frame
-        return
-    if action_cache.action_seq_len % action_tokens_per_frame != 0:
-        raise ValueError(
-            "MoT action cache length must be frame-aligned before rewind, "
-            f"got action_seq_len={action_cache.action_seq_len}, "
-            f"action_tokens_per_frame={action_tokens_per_frame}."
-        )
-    cache_start_frame = int(runtime_state.action_cache_start_frame)
-    keep_frames = target_frame - cache_start_frame
-    if keep_frames <= 0:
-        runtime_state.action_cache = None
-        runtime_state.action_cache_start_frame = target_frame
-        return
-    cached_frames = action_cache.action_seq_len // action_tokens_per_frame
-    if keep_frames >= cached_frames:
-        return
-    runtime_state.action_cache = trim_mot_action_cache_prefix(
-        action_cache,
-        max_action_seq_len=int(keep_frames * action_tokens_per_frame),
-    )
 
 
 class MoTPolicyVariant(PolicyVariant):
@@ -842,7 +616,7 @@ class MoTPolicyVariant(PolicyVariant):
         proprio_state = prepared_inputs.variant_inputs.get("proprio_state")
         hidden_proprio_state = prepared_inputs.variant_inputs.get("hidden_proprio_state")
         current_block_coupling = resolve_mot_current_block_coupling(self.config)
-        if not _is_mot_same_step_coupling(current_block_coupling):
+        if not is_mot_same_step_coupling(current_block_coupling):
             raise NotImplementedError(
                 "M5 joint_denoise train supports same-step couplings only; "
                 f"got current_block_coupling={current_block_coupling.value!r}. "
@@ -1148,7 +922,7 @@ class MoTPolicyVariant(PolicyVariant):
                 f"unambiguous for batch size 1; got batch_size={int(video_latents.shape[0])}."
             )
 
-        joint_timestep_coupling = _resolve_mot_joint_timestep_coupling(
+        joint_timestep_coupling = resolve_mot_joint_timestep_coupling(
             self.config,
             current_block_coupling,
         )
@@ -1555,7 +1329,7 @@ class MoTPolicyVariant(PolicyVariant):
         runtime_state: MoTRuntimeState,
     ) -> PolicyInferOutput:
         current_block_coupling = resolve_mot_current_block_coupling(self.config)
-        action_only_rollout = _resolve_mot_action_only_rollout(
+        action_only_rollout = resolve_mot_action_only_rollout(
             context,
             current_block_coupling=current_block_coupling,
         )
@@ -1586,7 +1360,7 @@ class MoTPolicyVariant(PolicyVariant):
             action_conditioned_video_mode=MoTGeneralistTrainingMode.ACTION_CONDITIONED_VIDEO,
             video_conditioned_action_mode=MoTGeneralistTrainingMode.VIDEO_CONDITIONED_ACTION,
         )
-        inference_window_size = _resolve_mot_inference_window_size(
+        inference_window_size = resolve_mot_inference_window_size(
             context,
             default_window_size=int(self.training_config.window_size),
         )
@@ -1603,7 +1377,7 @@ class MoTPolicyVariant(PolicyVariant):
             )
         dtype = next(self.action_expert.parameters()).dtype
         batch_size = int(visual_outputs.frontend.video_latents.shape[0])
-        frame_chunk_size, action_horizon, action_tokens_per_frame = _resolve_mot_rollout_frame_chunk_size(
+        frame_chunk_size, action_horizon, action_tokens_per_frame = resolve_mot_rollout_frame_chunk_size(
             context,
             default_frame_chunk_size=int(self.inference_config.frame_chunk_size),
             base_action_horizon=int(self.action_horizon),
@@ -1894,11 +1668,11 @@ class MoTPolicyVariant(PolicyVariant):
                 "M5 packed coupling inference expects matched video/action denoise step counts, "
                 f"got video_steps={len(video_scheduler.timesteps)}, action_steps={len(action_scheduler.timesteps)}."
             )
-        couple_action_video_sigmas = _should_couple_mot_action_to_video_sigmas(
+        couple_action_video_sigmas = should_couple_mot_action_to_video_sigmas(
             self.config,
             current_block_coupling,
         )
-        joint_timestep_coupling = _resolve_mot_joint_timestep_coupling(
+        joint_timestep_coupling = resolve_mot_joint_timestep_coupling(
             self.config,
             current_block_coupling,
         )
@@ -2107,7 +1881,7 @@ class MoTPolicyVariant(PolicyVariant):
             ) + (packed_action_pre,)
 
         def _video_timestep(value: torch.Tensor) -> torch.Tensor:
-            timestep = _expand_scalar_timestep(
+            timestep = expand_mot_scalar_timestep(
                 value,
                 shape=(batch_size, current_video_sequence_frames),
                 device=device,
@@ -2122,7 +1896,7 @@ class MoTPolicyVariant(PolicyVariant):
             return timestep
 
         def _action_timestep(value: torch.Tensor) -> torch.Tensor:
-            timestep = _expand_scalar_timestep(
+            timestep = expand_mot_scalar_timestep(
                 value,
                 shape=(batch_size, current_action_sequence_tokens),
                 device=device,
@@ -2149,7 +1923,7 @@ class MoTPolicyVariant(PolicyVariant):
             if sigma is None or sigma_next is None:
                 current_predicted_video = video_scheduler.step(current_video_flow, video_timestep, current_predicted_video)
             else:
-                current_predicted_video = _flow_step_with_sigmas(
+                current_predicted_video = step_mot_flow_with_sigmas(
                     current_predicted_video,
                     current_video_flow,
                     sigma=sigma,
@@ -2177,7 +1951,7 @@ class MoTPolicyVariant(PolicyVariant):
             if sigma is None or sigma_next is None:
                 action_sample = action_scheduler.step(action_flow_pred, scheduler_timestep, action_sample)
             else:
-                action_sample = _flow_step_with_sigmas(
+                action_sample = step_mot_flow_with_sigmas(
                     action_sample,
                     action_flow_pred,
                     sigma=sigma,
@@ -2194,7 +1968,7 @@ class MoTPolicyVariant(PolicyVariant):
             shared_sigma_next = None
             if couple_action_video_sigmas:
                 shared_sigma = video_scheduler.sigmas[int(step_index)].to(device=device, dtype=torch.float32)
-                shared_sigma_next = _scheduler_next_sigma(video_scheduler, int(step_index)).to(
+                shared_sigma_next = mot_scheduler_next_sigma(video_scheduler, int(step_index)).to(
                     device=device,
                     dtype=torch.float32,
                 )
@@ -2609,7 +2383,7 @@ class MoTPolicyVariant(PolicyVariant):
                     "M5 GJD conditional FDM/IDM rollout is implemented for native packed joint coupling, "
                     f"not legacy runtime_mode={self.config.runtime_mode!r}."
                 )
-            if not _is_mot_same_step_coupling(current_block_coupling):
+            if not is_mot_same_step_coupling(current_block_coupling):
                 raise NotImplementedError(
                     "M5 joint_denoise inference supports same-step couplings only; "
                     f"got current_block_coupling={current_block_coupling.value!r}."
@@ -2639,7 +2413,7 @@ class MoTPolicyVariant(PolicyVariant):
                     f"action_num_inference_steps={self.inference_config.action_num_inference_steps}, "
                     f"runtime_mode={self.config.runtime_mode!r}."
                 )
-            frame_chunk_size, action_horizon, action_tokens_per_frame = _resolve_mot_rollout_frame_chunk_size(
+            frame_chunk_size, action_horizon, action_tokens_per_frame = resolve_mot_rollout_frame_chunk_size(
                 context,
                 default_frame_chunk_size=int(self.inference_config.frame_chunk_size),
                 base_action_horizon=int(self.action_horizon),
@@ -2672,11 +2446,11 @@ class MoTPolicyVariant(PolicyVariant):
                 training_config=self.training_config,
                 inference_config=self.inference_config,
             )
-            couple_action_video_sigmas = _should_couple_mot_action_to_video_sigmas(
+            couple_action_video_sigmas = should_couple_mot_action_to_video_sigmas(
                 self.config,
                 current_block_coupling,
             )
-            joint_timestep_coupling = _resolve_mot_joint_timestep_coupling(
+            joint_timestep_coupling = resolve_mot_joint_timestep_coupling(
                 self.config,
                 current_block_coupling,
             )
@@ -2731,7 +2505,7 @@ class MoTPolicyVariant(PolicyVariant):
                 shared_sigma_next = None
                 if couple_action_video_sigmas:
                     shared_sigma = video_scheduler.sigmas[step_index].to(device=device, dtype=torch.float32)
-                    shared_sigma_next = _scheduler_next_sigma(video_scheduler, step_index).to(
+                    shared_sigma_next = mot_scheduler_next_sigma(video_scheduler, step_index).to(
                         device=device,
                         dtype=torch.float32,
                     )
@@ -2744,13 +2518,13 @@ class MoTPolicyVariant(PolicyVariant):
                         )[0].to(device=device, dtype=torch.float32)
                     elif joint_timestep_coupling == JointTimestepCoupling.SHARED_VIDEO_SCHEDULE:
                         action_timestep = video_timestep.to(device=device, dtype=torch.float32)
-                dense_video_timestep = _expand_scalar_timestep(
+                dense_video_timestep = expand_mot_scalar_timestep(
                     video_timestep,
                     shape=(batch_size, video_latents.shape[2]),
                     device=device,
                 )
                 dense_video_timestep[:, :observed_prefix_frames] = 0.0
-                dense_action_timestep = _expand_scalar_timestep(
+                dense_action_timestep = expand_mot_scalar_timestep(
                     action_timestep,
                     shape=(batch_size, action_horizon),
                     device=device,
@@ -2785,7 +2559,7 @@ class MoTPolicyVariant(PolicyVariant):
                 if shared_sigma is None or shared_sigma_next is None:
                     noisy_video_latents = video_scheduler.step(video_flow_pred, video_timestep, noisy_video_latents)
                 else:
-                    noisy_video_latents = _flow_step_with_sigmas(
+                    noisy_video_latents = step_mot_flow_with_sigmas(
                         noisy_video_latents,
                         video_flow_pred,
                         sigma=shared_sigma,
@@ -2795,7 +2569,7 @@ class MoTPolicyVariant(PolicyVariant):
                 if shared_sigma is None or shared_sigma_next is None:
                     sample = action_scheduler.step(flow_pred, action_timestep, sample)
                 else:
-                    sample = _flow_step_with_sigmas(
+                    sample = step_mot_flow_with_sigmas(
                         sample,
                         flow_pred,
                         sigma=shared_sigma,
@@ -2867,14 +2641,14 @@ class MoTPolicyVariant(PolicyVariant):
         video_device = next(visual_tower.core.parameters()).device
         video_dtype = _reference_runtime_dtype(visual_tower.core)
 
-        chunk_frames, action_horizon, action_tokens_per_frame = _resolve_mot_rollout_frame_chunk_size(
+        chunk_frames, action_horizon, action_tokens_per_frame = resolve_mot_rollout_frame_chunk_size(
             context,
             default_frame_chunk_size=int(self.inference_config.frame_chunk_size),
             base_action_horizon=int(self.action_horizon),
         )
         runtime_state.chunk_advance_frames = int(chunk_frames)
         current_block_coupling = resolve_mot_current_block_coupling(self.config)
-        action_only_rollout = _resolve_mot_action_only_rollout(
+        action_only_rollout = resolve_mot_action_only_rollout(
             context,
             current_block_coupling=current_block_coupling,
         )
@@ -2967,7 +2741,7 @@ class MoTPolicyVariant(PolicyVariant):
         condition_frame_start_override_raw = context.extra.get("mot_condition_frame_start")
         if skip_observation_update and condition_frame_start_override_raw is not None:
             raise ValueError("MoT condition-frame rewind is only valid for observation-conditioned replans.")
-        inference_window_size = _resolve_mot_inference_window_size(
+        inference_window_size = resolve_mot_inference_window_size(
             context,
             default_window_size=_MOT_SLOT_POOL_ATTN_WINDOW,
         )
@@ -3223,7 +2997,7 @@ class MoTPolicyVariant(PolicyVariant):
         if action_cache_rewind_frame_start_raw is None:
             action_cache_rewind_frame_start_raw = context.extra.get("mot_action_cache_prefix_frames")
         if action_cache_rewind_frame_start_raw is not None:
-            _rewind_runtime_action_cache_to_frame(
+            rewind_mot_runtime_action_cache_to_frame(
                 runtime_state,
                 absolute_frame_start=int(action_cache_rewind_frame_start_raw),
                 action_tokens_per_frame=action_tokens_per_frame,

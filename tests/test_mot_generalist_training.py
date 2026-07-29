@@ -56,10 +56,12 @@ from open_wam.models.policy_variants.mot.variant import (
     _mot_generalist_rollout_mode_from_value,
     _resolve_mot_generalist_rollout_mode,
     _sample_mot_generalist_training_mode,
-    _should_couple_mot_action_to_video_sigmas,
 )
 from open_wam.models.policy_variants.contracts import PolicyInferContext
 from open_wam.models.policy_variants.mot.runtime import build_mot_packed_coupling_attention_profile
+from open_wam.models.policy_variants.mot.runtime_routing import (
+    should_couple_mot_action_to_video_sigmas,
+)
 
 
 def test_legacy_generalist_helpers_are_identity_preserving_aliases() -> None:
@@ -112,31 +114,37 @@ def test_generalist_sigma_coupling_is_explicitly_configurable() -> None:
         current_block_coupling=CurrentBlockCoupling.JOINT,
         mot_generalist_training_mode_probs={"joint": 1.0},
     )
-    assert _should_couple_mot_action_to_video_sigmas(cfg, CurrentBlockCoupling.JOINT) is True
+    assert should_couple_mot_action_to_video_sigmas(cfg, CurrentBlockCoupling.JOINT) is True
 
     cfg = _make_mot_policy_config(
         current_block_coupling=CurrentBlockCoupling.JOINT,
         mot_generalist_training_mode_probs={"joint": 1.0},
         joint_timestep_coupling=JointTimestepCoupling.SHARED_VIDEO_SCHEDULE,
     )
-    assert _should_couple_mot_action_to_video_sigmas(cfg, CurrentBlockCoupling.JOINT) is True
+    assert should_couple_mot_action_to_video_sigmas(cfg, CurrentBlockCoupling.JOINT) is True
 
     cfg = _make_mot_policy_config(
         current_block_coupling=CurrentBlockCoupling.JOINT,
         mot_generalist_training_mode_probs={"joint": 1.0},
         joint_timestep_coupling=JointTimestepCoupling.INDEPENDENT,
     )
-    assert _should_couple_mot_action_to_video_sigmas(cfg, CurrentBlockCoupling.JOINT) is False
+    assert should_couple_mot_action_to_video_sigmas(cfg, CurrentBlockCoupling.JOINT) is False
 
     cfg = _make_mot_policy_config(
         current_block_coupling=CurrentBlockCoupling.JOINT,
         mot_generalist_training_mode_probs={"joint": 1.0},
         joint_timestep_coupling=JointTimestepCoupling.MATCH_INDEX,
     )
-    assert _should_couple_mot_action_to_video_sigmas(cfg, CurrentBlockCoupling.JOINT) is False
+    assert should_couple_mot_action_to_video_sigmas(cfg, CurrentBlockCoupling.JOINT) is False
 
     cfg = _make_mot_policy_config(current_block_coupling=CurrentBlockCoupling.DECOUPLED_SAME_STEP)
-    assert _should_couple_mot_action_to_video_sigmas(cfg, CurrentBlockCoupling.DECOUPLED_SAME_STEP) is False
+    assert (
+        should_couple_mot_action_to_video_sigmas(
+            cfg,
+            CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+        )
+        is False
+    )
 
 
 def test_opt_in_without_explicit_joint_coupling_is_rejected() -> None:

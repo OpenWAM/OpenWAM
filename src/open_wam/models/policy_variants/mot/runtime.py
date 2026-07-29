@@ -28,6 +28,7 @@ from open_wam.models.visual_tower.shared_transformer_support import (
 from .contracts import (
     MoTActionCache,
     MoTActionLayerCache,
+    MoTRuntimeState,
     MoTVideoCache,
     MoTVideoLayerCache,
 )
@@ -1160,6 +1161,83 @@ def trim_mot_action_cache_prefix(
         layers=tuple(trimmed_layers),
         action_seq_len=int(max_action_seq_len),
     )
+
+
+def rewind_mot_runtime_action_cache_to_frame(
+    runtime_state: MoTRuntimeState,
+    *,
+    absolute_frame_start: int,
+    action_tokens_per_frame: int,
+) -> None:
+    """Discard a speculative action-cache suffix after an environment rewind."""
+
+    if action_tokens_per_frame <= 0:
+        raise ValueError(
+            "MoT action-cache rewind requires positive action_tokens_per_frame, "
+            f"got {action_tokens_per_frame}."
+        )
+    target_frame = int(absolute_frame_start)
+    action_cache = runtime_state.action_cache
+    if action_cache is None:
+        runtime_state.action_cache_start_frame = target_frame
+        return
+    if action_cache.action_seq_len % action_tokens_per_frame != 0:
+        raise ValueError(
+            "MoT action cache length must be frame-aligned before rewind, "
+            f"got action_seq_len={action_cache.action_seq_len}, "
+            f"action_tokens_per_frame={action_tokens_per_frame}."
+        )
+    cache_start_frame = int(runtime_state.action_cache_start_frame)
+    keep_frames = target_frame - cache_start_frame
+    if keep_frames <= 0:
+        runtime_state.action_cache = None
+        runtime_state.action_cache_start_frame = target_frame
+        return
+    cached_frames = action_cache.action_seq_len // action_tokens_per_frame
+    if keep_frames >= cached_frames:
+        return
+    runtime_state.action_cache = trim_mot_action_cache_prefix(
+        action_cache,
+        max_action_seq_len=int(keep_frames * action_tokens_per_frame),
+    )
+
+
+def mot_scheduler_next_sigma(scheduler, step_index: int) -> torch.Tensor:
+    """Resolve the next MoT integration sigma, ending every schedule at zero."""
+
+    if int(step_index) + 1 >= len(scheduler.sigmas):
+        return scheduler.sigmas.new_tensor(0.0)
+    return scheduler.sigmas[int(step_index) + 1]
+
+
+def step_mot_flow_with_sigmas(
+    sample: torch.Tensor,
+    flow_pred: torch.Tensor,
+    *,
+    sigma: torch.Tensor,
+    sigma_next: torch.Tensor,
+) -> torch.Tensor:
+    """Apply one explicit-sigma Euler flow step."""
+
+    return sample + flow_pred * (
+        sigma_next.to(device=sample.device, dtype=sample.dtype)
+        - sigma.to(device=sample.device, dtype=sample.dtype)
+    )
+
+
+def expand_mot_scalar_timestep(
+    value: torch.Tensor | float,
+    *,
+    shape: tuple[int, ...],
+    device: torch.device,
+) -> torch.Tensor:
+    """Materialize a scalar timestep over a requested MoT stream shape."""
+
+    if isinstance(value, torch.Tensor):
+        if value.numel() != 1:
+            raise ValueError(f"Expected scalar timestep value, got shape {tuple(value.shape)}.")
+        return value.to(device=device, dtype=torch.float32).reshape(()).expand(shape).clone()
+    return torch.full(shape, float(value), device=device, dtype=torch.float32)
 
 
 def forward_action_with_video_and_action_cache(
