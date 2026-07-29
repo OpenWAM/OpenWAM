@@ -31,6 +31,7 @@ from open_wam.models.policy_variants.mot.contracts import (
     MoTActionLayerCache,
     MoTRuntimeState,
 )
+from open_wam.models.policy_variants.mot.conditioning import MoTConditioning
 from open_wam.models.policy_variants.mot.modules import (
     MoTActionExpert,
     init_action_expert_from_video_core,
@@ -835,6 +836,33 @@ def test_mot_train_loss_masks_use_objective_specific_metadata() -> None:
     assert torch.equal(video_mask.flatten(), torch.tensor([0.0, 0.0, 1.0, 1.0]))
 
 
+def test_mot_role_contracts_do_not_register_model_state() -> None:
+    variant = MoTPolicyVariant(
+        config=MoTPolicyConfig(),
+        backbone_config=SharedVideoTransformerConfig(
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+        ),
+        training_config=TrainingConfig(),
+        inference_config=InferenceConfig(),
+        action_dim=1,
+        action_horizon=8,
+        state_dim=4,
+    )
+
+    assert not isinstance(variant.conditioning, torch.nn.Module)
+    assert not isinstance(variant.training_layout, torch.nn.Module)
+    assert all(
+        not key.startswith(("conditioning.", "training_layout."))
+        for key in variant.state_dict()
+    )
+
+
 def test_mot_train_video_cache_detach_decision_is_cached_per_core() -> None:
     class CountingCore:
         def __init__(self) -> None:
@@ -1128,7 +1156,7 @@ def test_mot_deprecated_text_token_proprio_context_uses_shared_batch_context_for
     )
 
     prepared = pipeline.policy_variant.prepare_train_inputs(visual_outputs, batch)
-    resolved = pipeline.policy_variant._resolve_text_context_with_proprio(
+    resolved = pipeline.policy_variant.conditioning.resolve_text_context(
         pipeline.visual_tower,
         prepared.variant_inputs["text_context"],
         prepared.variant_inputs["proprio_state"],
@@ -1191,7 +1219,7 @@ def test_mot_per_chunk_additive_does_not_build_text_proprio_mask() -> None:
     )
 
     prepared = pipeline.policy_variant.prepare_train_inputs(visual_outputs, batch)
-    resolved = pipeline.policy_variant._resolve_text_context_with_proprio(
+    resolved = pipeline.policy_variant.conditioning.resolve_text_context(
         pipeline.visual_tower,
         prepared.variant_inputs["text_context"],
         prepared.variant_inputs["proprio_state"],
@@ -1200,7 +1228,7 @@ def test_mot_per_chunk_additive_does_not_build_text_proprio_mask() -> None:
         dtype=video_latents.dtype,
         materialize_if_missing=True,
     )
-    mask = pipeline.policy_variant._build_proprio_cross_attention_mask(
+    mask = pipeline.policy_variant.conditioning.build_proprio_cross_attention_mask(
         resolved_text_context=resolved,
         proprio_state=prepared.variant_inputs["proprio_state"],
         query_frames_per_copy=4,
@@ -1250,7 +1278,7 @@ def test_mot_deprecated_text_token_proprio_mask_exposes_matching_chunk_token_onl
     resolved_text = torch.zeros(1, 8, 16)
     proprio_context_state = torch.zeros(1, 3, 4)
 
-    mask = pipeline.policy_variant._build_proprio_cross_attention_mask(
+    mask = pipeline.policy_variant.conditioning.build_proprio_cross_attention_mask(
         resolved_text_context=resolved_text,
         proprio_state=proprio_context_state,
         query_frames_per_copy=6,
@@ -1325,7 +1353,7 @@ def test_mot_chunk_origin_aligns_one_frame_context_with_first_target_chunk() -> 
     resolved_text = torch.zeros(1, 3, 16)
     proprio_context_state = torch.zeros(1, 2, 4)
 
-    cross_mask = pipeline.policy_variant._build_proprio_cross_attention_mask(
+    cross_mask = pipeline.policy_variant.conditioning.build_proprio_cross_attention_mask(
         resolved_text_context=resolved_text,
         proprio_state=proprio_context_state,
         query_frames_per_copy=5,
@@ -2424,11 +2452,13 @@ def test_mot_legacy_prefix_prepends_current_state_to_hidden_proprio() -> None:
     target_states = torch.tensor([[[1.0], [2.0], [3.0], [4.0]]]).expand(-1, -1, 4).contiguous()
     batch = PolicyTrainBatch(actions=torch.zeros(1, 4, 4), state=torch.full((1, 1, 4), 9.0))
 
-    model_video_latents, hidden_state, prefix_frames, source = pipeline.policy_variant._prepend_legacy_prefix_video_latents(
-        video_latents=video_latents,
-        condition_latents=condition_latents,
-        hidden_proprio_state=target_states,
-        batch=batch,
+    model_video_latents, hidden_state, prefix_frames, source = (
+        pipeline.policy_variant.conditioning.prepend_legacy_prefix_video_latents(
+            video_latents=video_latents,
+            condition_latents=condition_latents,
+            hidden_proprio_state=target_states,
+            batch=batch,
+        )
     )
 
     assert model_video_latents.shape[2] == 5
@@ -2443,7 +2473,7 @@ def test_mot_legacy_prefix_prepends_current_state_to_hidden_proprio() -> None:
 def test_mot_legacy_prefix_action_hidden_proprio_uses_causal_chunk_boundaries() -> None:
     states = torch.tensor([[[9.0], [1.0], [2.0], [3.0], [4.0], [5.0], [6.0], [7.0], [8.0]]])
 
-    resolved = MoTPolicyVariant._legacy_prefix_action_hidden_proprio_state(
+    resolved = MoTConditioning.legacy_prefix_action_hidden_proprio_state(
         states,
         prefix_condition_frames=1,
         target_num_frames=8,
@@ -2457,7 +2487,7 @@ def test_mot_legacy_prefix_action_hidden_proprio_uses_causal_chunk_boundaries() 
 def test_mot_legacy_prefix_action_hidden_proprio_honors_shifted_chunk_origin() -> None:
     states = torch.tensor([[[9.0], [1.0], [2.0], [3.0], [4.0], [5.0], [6.0]]])
 
-    resolved = MoTPolicyVariant._legacy_prefix_action_hidden_proprio_state(
+    resolved = MoTConditioning.legacy_prefix_action_hidden_proprio_state(
         states,
         prefix_condition_frames=1,
         target_num_frames=6,
@@ -2508,7 +2538,7 @@ def test_mot_legacy_prefix_requires_frame_level_hidden_proprio() -> None:
     )
 
     with pytest.raises(ValueError, match="requires frame-level `proprio_context_frames`"):
-        pipeline.policy_variant._resolve_train_hidden_proprio_context(batch)
+        pipeline.policy_variant.conditioning.resolve_train_hidden_proprio_context(batch)
 
 
 def test_mot_packed_strict_old_infer_skips_video_hidden_proprio(
@@ -2548,21 +2578,29 @@ def test_mot_packed_strict_old_infer_skips_video_hidden_proprio(
     pipeline = build_variant_pipeline_from_config(config)
     captured_video_inputs: list[torch.Tensor | None] = []
     captured_action_inputs: list[torch.Tensor | None] = []
-    original_video_hidden = pipeline.policy_variant._video_hidden_context_for_tokens
-    original_action_hidden = pipeline.policy_variant._action_hidden_context_for_tokens
+    original_video_hidden = MoTConditioning.video_hidden_context_for_tokens
+    original_action_hidden = MoTConditioning.action_hidden_context_for_tokens
 
-    def capture_video_hidden(*args, **kwargs):
+    def capture_video_hidden(conditioning, *args, **kwargs):
         hidden_proprio_state = args[1] if len(args) > 1 else None
         captured_video_inputs.append(None if hidden_proprio_state is None else hidden_proprio_state.detach().clone())
-        return original_video_hidden(*args, **kwargs)
+        return original_video_hidden(conditioning, *args, **kwargs)
 
-    def capture_action_hidden(*args, **kwargs):
+    def capture_action_hidden(conditioning, *args, **kwargs):
         hidden_proprio_state = args[1] if len(args) > 1 else None
         captured_action_inputs.append(None if hidden_proprio_state is None else hidden_proprio_state.detach().clone())
-        return original_action_hidden(*args, **kwargs)
+        return original_action_hidden(conditioning, *args, **kwargs)
 
-    monkeypatch.setattr(pipeline.policy_variant, "_video_hidden_context_for_tokens", capture_video_hidden)
-    monkeypatch.setattr(pipeline.policy_variant, "_action_hidden_context_for_tokens", capture_action_hidden)
+    monkeypatch.setattr(
+        MoTConditioning,
+        "video_hidden_context_for_tokens",
+        capture_video_hidden,
+    )
+    monkeypatch.setattr(
+        MoTConditioning,
+        "action_hidden_context_for_tokens",
+        capture_action_hidden,
+    )
 
     output = pipeline.forward_infer_step_from_latents(
         torch.randn(1, 48, 1, 8, 8),

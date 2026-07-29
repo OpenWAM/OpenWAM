@@ -1,3 +1,4 @@
+from .conditioning import MoTConditioning
 from .generalist_modes import (
     apply_generalist_training_mode,
     generalist_forces_clean_video_condition,
@@ -17,6 +18,7 @@ from .sequence_layout import MoTTrainingLayout, build_action_grid_ids_for_sequen
 from .variant import MoTPolicyVariant
 
 __all__ = [
+    "MoTConditioning",
     "MoTPolicyVariant",
     "MoTRuntimeRoute",
     "MoTRuntimeRouteKind",

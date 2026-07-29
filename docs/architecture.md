@@ -50,14 +50,17 @@ variants to reach into arbitrary backbone internals. Common stage families are:
 Policy variants request stages through `required_visual_stages()` and consume
 prepared inputs through explicit variant contracts.
 
-## MoT Sequence Contract
+## MoT Internal Contracts
 
 The built-in MoT policy keeps method routing and visual execution in
-`MoTPolicyVariant`, but delegates sample layout mechanics to
-`mot.sequence_layout`:
+`MoTPolicyVariant`, but delegates deterministic preparation to role-specific
+plain contracts:
 
 - `MoTTrainingLayout` converts typed batch metadata into loss ranges, history
   length, chunk/window geometry, and action/video supervision masks.
+- `MoTConditioning` prepares condition latents, prefix layout, text/proprio
+  tensors, mode tokens, and cross-attention gating. Learned conditioning
+  encoders remain owned by the visual core.
 - `build_action_grid_ids_for_sequence` owns the frame-aligned action
   coordinates shared by training and recurrent inference.
 - `mot.generalist_modes` owns GJD mode selection and conditional tensor

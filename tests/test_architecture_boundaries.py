@@ -191,6 +191,67 @@ def test_mot_training_layout_semantics_have_one_owner() -> None:
     )
 
 
+def test_mot_conditioning_semantics_have_one_owner() -> None:
+    conditioning_methods = {
+        "action_hidden_context_for_tokens",
+        "append_generalist_mode_text_token",
+        "build_proprio_cross_attention_mask",
+        "context_condition_latent_source",
+        "encode_hidden_proprio_context",
+        "legacy_prefix_action_hidden_proprio_state",
+        "prepend_legacy_prefix_video_latents",
+        "proprio_context_token_count",
+        "resolve_infer_hidden_proprio_context",
+        "resolve_proprio_state",
+        "resolve_text_context",
+        "resolve_train_condition_latents",
+        "resolve_train_hidden_proprio_context",
+        "resolve_train_proprio_context",
+        "select_anchor_state",
+        "train_clean_video_condition_latents",
+        "uses_legacy_prefix_contract",
+        "uses_per_chunk_proprio_context",
+        "uses_proprio_context",
+        "uses_text_proprio_context",
+        "video_condition_source",
+        "video_hidden_context_for_tokens",
+    }
+    retired_variant_methods = {
+        "_action_hidden_context_for_tokens",
+        "_append_generalist_mode_text_token",
+        "_build_proprio_cross_attention_mask",
+        "_context_condition_latent_source",
+        "_encode_hidden_proprio_context",
+        "_legacy_prefix_action_hidden_proprio_state",
+        "_prepend_legacy_prefix_video_latents",
+        "_proprio_context_token_count",
+        "_resolve_infer_hidden_proprio_context",
+        "_resolve_proprio_state",
+        "_resolve_text_context_with_proprio",
+        "_resolve_train_condition_latents",
+        "_resolve_train_hidden_proprio_context",
+        "_resolve_train_proprio_context",
+        "_select_anchor_state",
+        "_train_clean_video_condition_latents",
+        "_uses_per_chunk_proprio_context",
+        "_uses_proprio_context",
+        "_uses_text_proprio_context",
+        "_video_condition_source",
+        "_video_hidden_context_for_tokens",
+    }
+    conditioning_path = PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "conditioning.py"
+    variant_path = PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "variant.py"
+
+    assert conditioning_methods <= _class_method_definitions(
+        conditioning_path,
+        "MoTConditioning",
+    )
+    assert retired_variant_methods.isdisjoint(
+        _class_method_definitions(variant_path, "MoTPolicyVariant")
+    )
+    assert "_uses_mot_legacy_prefix_contract" not in _top_level_definitions(variant_path)
+
+
 def test_retired_ablations_namespace_is_not_packaged() -> None:
     assert not (PACKAGE_ROOT / "ablations").exists()
 

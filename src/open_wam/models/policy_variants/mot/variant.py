@@ -20,9 +20,7 @@ from open_wam.models.common.flow_matching import (
 from open_wam.models.common.flow_noise_plan import frame_sigmas_for_timesteps
 from open_wam.models.common.attention_profiles import (
     CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
-    build_chunked_text_context_cross_attention_mask,
 )
-from open_wam.models.common.packed_token_layout import frame_chunk_ids_for_origin
 from open_wam.models.common.joint_conditioning import (
     resolve_generalist_joint_conditioning_semantics,
 )
@@ -37,10 +35,7 @@ from open_wam.configs import (
     MoTGeneralistTrainingMode,
     MoTPolicyConfig,
     MoTRuntimeMode,
-    ParallelSequenceContract,
-    ParallelContextConditionLatentSource,
     ParallelHistoryStreamVisibility,
-    ProprioContextMode,
     TrainingConfig,
 )
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
@@ -56,6 +51,7 @@ from ..contracts import (
     PolicyTrainBatch,
     PolicyTrainOutput,
 )
+from .conditioning import MoTConditioning
 from .contracts import (
     MoTActionCache,
     MoTActionLayerCache,
@@ -244,13 +240,6 @@ def _resolve_mot_joint_timestep_coupling(
     return JointTimestepCoupling(config.joint_timestep_coupling)
 
 
-def _uses_mot_legacy_prefix_contract(config: MoTPolicyConfig) -> bool:
-    return (
-        ParallelSequenceContract(config.parallel_sequence_contract)
-        == ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
-    )
-
-
 def _slice_current_noisy_action_flow(
     packed_action_flow: torch.Tensor,
     *,
@@ -380,6 +369,7 @@ class MoTPolicyVariant(PolicyVariant):
         self.action_dim = action_dim
         self.action_horizon = action_horizon
         self.state_dim = state_dim
+        self.conditioning = MoTConditioning(config)
         self.training_layout = MoTTrainingLayout(config, training_config)
         action_hidden_size = (
             int(config.action_hidden_size)
@@ -412,334 +402,6 @@ class MoTPolicyVariant(PolicyVariant):
         self._packed_block_stack_attached = False
         self._legacy_inference_blocks_restored = False
 
-    def _uses_proprio_context(self) -> bool:
-        return ProprioContextMode(self.config.proprio_context_mode) != ProprioContextMode.NONE
-
-    def _uses_text_proprio_context(self) -> bool:
-        # Deprecated compatibility path; new proprio runs use per-chunk additive context.
-        return ProprioContextMode(self.config.proprio_context_mode) == ProprioContextMode.TEXT_CONTEXT_TOKEN
-
-    def _uses_per_chunk_proprio_context(self) -> bool:
-        return ProprioContextMode(self.config.proprio_context_mode) == ProprioContextMode.PER_CHUNK_ADDITIVE
-
-    @staticmethod
-    def _select_anchor_state(state: torch.Tensor | None) -> torch.Tensor | None:
-        if state is None:
-            return None
-        if state.ndim == 2:
-            return state
-        if state.ndim == 3:
-            return state[:, -1, :]
-        raise ValueError(
-            "M5 proprio context expects state with shape [B, state_dim] or [B, H, state_dim], "
-            f"got {tuple(state.shape)}."
-        )
-
-    def _resolve_proprio_state(
-        self,
-        state: torch.Tensor | None,
-        *,
-        label: str,
-        fallback_state: torch.Tensor | None = None,
-    ) -> torch.Tensor | None:
-        if not self._uses_text_proprio_context():
-            return None
-        selected = self._select_anchor_state(state)
-        if selected is None:
-            selected = self._select_anchor_state(fallback_state)
-        if selected is None:
-            raise ValueError(f"Proprio context mode is enabled but no state was provided for {label}.")
-        return selected
-
-    def _resolve_train_proprio_context(self, batch: PolicyTrainBatch) -> torch.Tensor | None:
-        if not self._uses_text_proprio_context():
-            return None
-        proprio_context_state = batch.extra.get("proprio_context_state")
-        if isinstance(proprio_context_state, torch.Tensor):
-            if proprio_context_state.ndim != 3:
-                raise ValueError(
-                    "Per-chunk proprio context expects shape [B, chunks, state_dim], "
-                    f"got {tuple(proprio_context_state.shape)}."
-                )
-            proprio_context_state_mask = batch.extra.get("proprio_context_state_mask")
-            if isinstance(proprio_context_state_mask, torch.Tensor):
-                if tuple(proprio_context_state_mask.shape) != tuple(proprio_context_state.shape):
-                    raise ValueError(
-                        "Per-chunk proprio context mask must match proprio_context_state shape, "
-                        f"got mask={tuple(proprio_context_state_mask.shape)}, "
-                        f"state={tuple(proprio_context_state.shape)}."
-                    )
-                proprio_context_state = proprio_context_state * proprio_context_state_mask.to(
-                    device=proprio_context_state.device,
-                    dtype=proprio_context_state.dtype,
-                )
-            return proprio_context_state
-        return self._resolve_proprio_state(
-            batch.state,
-            label="M5 training",
-        )
-
-    def _resolve_train_hidden_proprio_context(self, batch: PolicyTrainBatch) -> torch.Tensor | None:
-        if not self._uses_per_chunk_proprio_context():
-            return None
-        value = batch.extra.get("proprio_context_frames")
-        mask = batch.extra.get("proprio_context_frames_mask")
-        if not isinstance(value, torch.Tensor):
-            fallback_value = batch.extra.get("proprio_context_state")
-            if _uses_mot_legacy_prefix_contract(self.config) and isinstance(fallback_value, torch.Tensor):
-                raise ValueError(
-                    "M5 legacy-prefix per-chunk additive proprio requires frame-level "
-                    "`proprio_context_frames`; chunk-level `proprio_context_state` cannot be "
-                    "safely aligned to prefix and causal chunk-boundary states."
-                )
-            value = fallback_value
-            mask = batch.extra.get("proprio_context_state_mask")
-        if not isinstance(value, torch.Tensor):
-            raise ValueError("proprio_context_mode=per_chunk_additive requires M5 per-frame or per-chunk proprio context.")
-        if value.ndim != 3:
-            raise ValueError(
-                "M5 per-chunk additive proprio expects state with shape [B, frames, state_dim], "
-                f"got {tuple(value.shape)}."
-            )
-        if isinstance(mask, torch.Tensor):
-            if tuple(mask.shape) != tuple(value.shape):
-                raise ValueError(
-                    "M5 per-chunk additive proprio mask must match state shape, "
-                    f"got mask={tuple(mask.shape)}, state={tuple(value.shape)}."
-                )
-            value = value * mask.to(device=value.device, dtype=value.dtype)
-        return value
-
-    def _resolve_infer_hidden_proprio_context(
-        self,
-        state: torch.Tensor | None,
-        *,
-        fallback_state: torch.Tensor | None = None,
-    ) -> torch.Tensor | None:
-        if not self._uses_per_chunk_proprio_context():
-            return None
-        selected = self._select_anchor_state(state)
-        if selected is None:
-            selected = self._select_anchor_state(fallback_state)
-        if selected is None:
-            raise ValueError("proprio_context_mode=per_chunk_additive requires M5 inference state.")
-        return selected
-
-    def _resolve_text_context_with_proprio(
-        self,
-        visual_tower: VisualTower,
-        text_context: torch.Tensor | None,
-        proprio_state: torch.Tensor | None,
-        *,
-        batch_size: int,
-        device: torch.device,
-        dtype: torch.dtype,
-        materialize_if_missing: bool,
-    ) -> torch.Tensor | None:
-        if text_context is None:
-            if not materialize_if_missing:
-                return None
-            text_context = torch.zeros(
-                batch_size,
-                visual_tower.config.max_text_tokens,
-                visual_tower.config.text_dim,
-                device=device,
-                dtype=dtype,
-            )
-        else:
-            text_context = text_context.to(device=device, dtype=dtype)
-        if proprio_state is None:
-            return text_context
-        if not self._uses_text_proprio_context():
-            return text_context
-        append = getattr(visual_tower.core, "append_proprio_context_tokens", None)
-        if not callable(append):
-            raise ValueError(
-                "Deprecated text-space proprio token mode requires the visual tower core "
-                "to support proprio appending."
-            )
-        return append(text_context, proprio_state)
-
-    def _encode_hidden_proprio_context(
-        self,
-        visual_tower: VisualTower,
-        proprio_state: torch.Tensor | None,
-        *,
-        num_frames: int,
-        device: torch.device,
-        dtype: torch.dtype,
-        chunk_size_frames: int | None = None,
-    ) -> torch.Tensor | None:
-        if proprio_state is None:
-            return None
-        encode = getattr(visual_tower.core, "encode_proprio_hidden_context", None)
-        if not callable(encode):
-            raise ValueError("proprio_context_mode=per_chunk_additive requires a core hidden proprio encoder hook.")
-        if proprio_state.ndim == 2:
-            frame_state = proprio_state[:, None, :].expand(-1, int(num_frames), -1)
-        elif proprio_state.ndim == 3:
-            if int(proprio_state.shape[1]) == int(num_frames):
-                frame_state = proprio_state
-            elif int(proprio_state.shape[1]) == 1:
-                frame_state = proprio_state.expand(-1, int(num_frames), -1)
-            elif chunk_size_frames is not None and int(chunk_size_frames) > 0:
-                expanded = proprio_state.repeat_interleave(int(chunk_size_frames), dim=1)
-                if int(expanded.shape[1]) < int(num_frames):
-                    raise ValueError(
-                        "M5 chunk-level hidden proprio context is too short for requested frames, "
-                        f"got state={tuple(proprio_state.shape)}, chunk_size_frames={chunk_size_frames}, "
-                        f"num_frames={num_frames}."
-                    )
-                frame_state = expanded[:, : int(num_frames), :]
-            else:
-                raise ValueError(
-                    "M5 hidden proprio context frame count must match requested frames, be singleton, "
-                    "or be chunk-level with `chunk_size_frames`, "
-                    f"got state={tuple(proprio_state.shape)}, num_frames={num_frames}."
-                )
-        else:
-            raise ValueError(
-                "M5 hidden proprio context expects shape [B, state_dim] or [B, frames, state_dim], "
-                f"got {tuple(proprio_state.shape)}."
-            )
-        return encode(frame_state, device=device, dtype=dtype)
-
-    def _video_hidden_context_for_tokens(
-        self,
-        visual_tower: VisualTower,
-        proprio_state: torch.Tensor | None,
-        *,
-        video_latents: torch.Tensor,
-        copies: int = 1,
-        chunk_size_frames: int | None = None,
-    ) -> torch.Tensor | None:
-        frame_context = self._encode_hidden_proprio_context(
-            visual_tower,
-            proprio_state,
-            num_frames=int(video_latents.shape[2]),
-            device=video_latents.device,
-            dtype=video_latents.dtype,
-            chunk_size_frames=chunk_size_frames,
-        )
-        if frame_context is None:
-            return None
-        patch_t, patch_h, patch_w = visual_tower.core.patch_size
-        frame_context = frame_context[:, :: int(patch_t), :]
-        tokens_per_frame = (int(video_latents.shape[3]) // int(patch_h)) * (
-            int(video_latents.shape[4]) // int(patch_w)
-        )
-        token_context = frame_context.repeat_interleave(tokens_per_frame, dim=1)
-        return token_context.repeat(1, int(copies), 1)
-
-    def _action_hidden_context_for_tokens(
-        self,
-        visual_tower: VisualTower,
-        proprio_state: torch.Tensor | None,
-        *,
-        action_tokens: torch.Tensor,
-        action_tokens_per_frame: int,
-        copies: int = 1,
-        chunk_size_frames: int | None = None,
-    ) -> torch.Tensor | None:
-        if action_tokens_per_frame <= 0 or int(action_tokens.shape[1]) % int(action_tokens_per_frame) != 0:
-            raise ValueError(
-                "M5 action hidden proprio context requires action length divisible by action_tokens_per_frame, "
-                f"got action_shape={tuple(action_tokens.shape)}, action_tokens_per_frame={action_tokens_per_frame}."
-            )
-        num_frames = int(action_tokens.shape[1]) // int(action_tokens_per_frame)
-        frame_context = self._encode_hidden_proprio_context(
-            visual_tower,
-            proprio_state,
-            num_frames=num_frames,
-            device=action_tokens.device,
-            dtype=action_tokens.dtype,
-            chunk_size_frames=chunk_size_frames,
-        )
-        if frame_context is None:
-            return None
-        token_context = frame_context.repeat_interleave(int(action_tokens_per_frame), dim=1)
-        return token_context.repeat(1, int(copies), 1)
-
-    @staticmethod
-    def _proprio_context_token_count(proprio_state: torch.Tensor | None) -> int:
-        if proprio_state is None:
-            return 0
-        if proprio_state.ndim == 2:
-            return 1
-        if proprio_state.ndim == 3:
-            return int(proprio_state.shape[1])
-        raise ValueError(
-            "Proprio context expects state with shape [B, state_dim] or [B, chunks, state_dim], "
-            f"got {tuple(proprio_state.shape)}."
-        )
-
-    def _build_proprio_cross_attention_mask(
-        self,
-        *,
-        resolved_text_context: torch.Tensor,
-        proprio_state: torch.Tensor | None,
-        query_frames_per_copy: int,
-        tokens_per_frame: int,
-        chunk_size_frames: int,
-        chunk_origin_frame: int = 0,
-        singleton_chunk_frame: int | None = None,
-        repeat_copies: int = 1,
-        global_suffix_token_count: int = 0,
-    ) -> torch.Tensor | None:
-        proprio_token_count = self._proprio_context_token_count(proprio_state)
-        suffix_token_count = int(global_suffix_token_count)
-        if proprio_token_count <= 1 and suffix_token_count <= 0:
-            return None
-        gated_proprio_token_count = int(proprio_token_count) if proprio_token_count > 1 else 0
-        if query_frames_per_copy <= 0 or tokens_per_frame <= 0:
-            raise ValueError(
-                "Proprio cross-attention masking requires positive query geometry, "
-                f"got frames={query_frames_per_copy}, tokens_per_frame={tokens_per_frame}."
-            )
-        chunk_size = max(1, int(chunk_size_frames))
-        frame_ids = torch.arange(
-            int(query_frames_per_copy),
-            device=resolved_text_context.device,
-            dtype=torch.long,
-        ).repeat_interleave(int(tokens_per_frame))
-        query_chunk_ids = frame_chunk_ids_for_origin(
-            frame_ids,
-            chunk_origin_frame=int(chunk_origin_frame),
-            chunk_size=chunk_size,
-            singleton_chunk_frame=singleton_chunk_frame,
-        ).repeat(int(repeat_copies))
-        base_text_token_count = int(resolved_text_context.shape[1]) - gated_proprio_token_count - suffix_token_count
-        return build_chunked_text_context_cross_attention_mask(
-            query_chunk_ids=query_chunk_ids,
-            batch_size=int(resolved_text_context.shape[0]),
-            text_token_count=int(resolved_text_context.shape[1]),
-            base_text_token_count=base_text_token_count,
-            proprio_context_token_count=gated_proprio_token_count,
-            global_suffix_token_count=suffix_token_count,
-            device=resolved_text_context.device,
-        )
-
-    def _append_generalist_mode_text_token(
-        self,
-        visual_tower: VisualTower,
-        text_context: torch.Tensor,
-        mode: MoTGeneralistTrainingMode,
-    ) -> tuple[torch.Tensor, int]:
-        if not bool(getattr(self.config, "generalist_mode_text_token", False)):
-            return text_context, 0
-        append = getattr(visual_tower.core, "append_generalist_mode_context_token", None)
-        if not callable(append):
-            raise ValueError("MoT `generalist_mode_text_token=true` requires a visual core mode-token hook.")
-        before_tokens = int(text_context.shape[1])
-        resolved = append(text_context, mode.value)
-        token_count = int(resolved.shape[1]) - before_tokens
-        if token_count != 1:
-            raise ValueError(
-                "MoT generalist mode token appending must add exactly one token, "
-                f"got token_count={token_count}."
-            )
-        return resolved, token_count
-
     def attach_visual_tower(self, visual_tower: VisualTower) -> None:
         """Pipeline-time hook: build the packed-coupling block stack.
 
@@ -754,14 +416,14 @@ class MoTPolicyVariant(PolicyVariant):
         ``self.action_expert.blocks``; after transfer both ModuleLists are
         empty.
         """
-        if self._uses_text_proprio_context():
+        if self.conditioning.uses_text_proprio_context():
             configure = getattr(visual_tower.core, "configure_proprio_context_encoder", None)
             if not callable(configure):
                 raise ValueError(
                     "Deprecated proprio_context_mode=text_context_token requires a core proprio encoder hook."
                 )
             configure(enabled=True, state_dim=int(self.state_dim))
-        elif self._uses_per_chunk_proprio_context():
+        elif self.conditioning.uses_per_chunk_proprio_context():
             configure = getattr(visual_tower.core, "configure_proprio_hidden_context_encoder", None)
             if not callable(configure):
                 raise ValueError("proprio_context_mode=per_chunk_additive requires a core proprio hidden encoder hook.")
@@ -827,7 +489,7 @@ class MoTPolicyVariant(PolicyVariant):
         attention_mask: torch.Tensor | None = None,
     ) -> MoTVideoTrainArtifacts:
         video_latents = visual_outputs.frontend.video_latents
-        clean_condition_latents, _ = self._train_clean_video_condition_latents(
+        clean_condition_latents, _ = self.conditioning.train_clean_video_condition_latents(
             video_latents=video_latents,
             condition_latents=condition_latents,
             history_frames=history_frames,
@@ -894,12 +556,12 @@ class MoTPolicyVariant(PolicyVariant):
         visual_outputs: VisualStageOutputs,
         batch: PolicyTrainBatch,
     ) -> PolicyPreparedInputs:
-        condition_latents = self._resolve_train_condition_latents(
+        condition_latents = self.conditioning.resolve_train_condition_latents(
             batch,
             video_latents=visual_outputs.frontend.video_latents,
         )
-        proprio_state = self._resolve_train_proprio_context(batch)
-        hidden_proprio_state = self._resolve_train_hidden_proprio_context(batch)
+        proprio_state = self.conditioning.resolve_train_proprio_context(batch)
+        hidden_proprio_state = self.conditioning.resolve_train_hidden_proprio_context(batch)
         return PolicyPreparedInputs(
             batch=batch,
             variant_inputs={
@@ -911,168 +573,6 @@ class MoTPolicyVariant(PolicyVariant):
                 "video_tokens_per_frame": visual_outputs.frontend.token_grid.tokens_per_frame,
             },
         )
-
-    def _resolve_train_condition_latents(
-        self,
-        batch: PolicyTrainBatch,
-        *,
-        video_latents: torch.Tensor,
-    ) -> torch.Tensor | None:
-        if not bool(self.config.use_condition_latents):
-            return None
-        condition_latents = batch.extra.get("condition_latents")
-        if condition_latents is None:
-            if bool(self.config.require_condition_latents):
-                raise ValueError(
-                    "M5 training was configured with `require_condition_latents=true`, "
-                    "but the latent batch did not provide `condition_latents`."
-                )
-            return None
-        if not isinstance(condition_latents, torch.Tensor):
-            raise ValueError(
-                "M5 `condition_latents` must be a tensor when provided, "
-                f"got {type(condition_latents).__name__}."
-            )
-        if condition_latents.ndim == 5 and tuple(condition_latents.shape) != tuple(video_latents.shape):
-            time_first_shape = (
-                video_latents.shape[0],
-                video_latents.shape[2],
-                video_latents.shape[1],
-                video_latents.shape[3],
-                video_latents.shape[4],
-            )
-            if tuple(condition_latents.shape) == tuple(time_first_shape):
-                condition_latents = condition_latents.permute(0, 2, 1, 3, 4).contiguous()
-        if condition_latents.ndim != 5 or tuple(condition_latents.shape) != tuple(video_latents.shape):
-            raise ValueError(
-                "M5 `condition_latents` must match video_latents exactly for train-time video conditioning, "
-                f"got condition={tuple(condition_latents.shape)}, video={tuple(video_latents.shape)}."
-            )
-        return condition_latents.to(device=video_latents.device, dtype=video_latents.dtype)
-
-    @staticmethod
-    def _video_condition_source(condition_latents: torch.Tensor | None) -> str:
-        return "condition_latents" if condition_latents is not None else "video_latents"
-
-    def _context_condition_latent_source(self) -> ParallelContextConditionLatentSource:
-        return ParallelContextConditionLatentSource(self.config.context_condition_latent_source)
-
-    def _train_clean_video_condition_latents(
-        self,
-        *,
-        video_latents: torch.Tensor,
-        condition_latents: torch.Tensor | None,
-        history_frames: int,
-    ) -> tuple[torch.Tensor | None, str]:
-        if self._context_condition_latent_source() != ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT:
-            return condition_latents, self._video_condition_source(condition_latents)
-        if condition_latents is None:
-            raise ValueError(
-                "M5 `context_condition_latent_source=single_frame_condition_latent` requires `condition_latents`."
-            )
-        if history_frames <= 0:
-            raise ValueError(
-                "M5 single-frame condition latents require at least one history/context frame, "
-                f"got history_frames={history_frames}."
-            )
-        clean_condition = video_latents.clone()
-        clean_condition[:, :, : int(history_frames)] = condition_latents[:, :, : int(history_frames)].to(
-            device=video_latents.device,
-            dtype=video_latents.dtype,
-        )
-        return clean_condition, "context_condition_latents"
-
-    def _prepend_legacy_prefix_video_latents(
-        self,
-        *,
-        video_latents: torch.Tensor,
-        condition_latents: torch.Tensor | None,
-        hidden_proprio_state: torch.Tensor | None,
-        batch: PolicyTrainBatch,
-    ) -> tuple[torch.Tensor, torch.Tensor | None, int, str]:
-        if not _uses_mot_legacy_prefix_contract(self.config):
-            return video_latents, hidden_proprio_state, 0, self._video_condition_source(condition_latents)
-        if condition_latents is None:
-            raise ValueError(
-                "`parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio` requires "
-                "precomputed single-frame condition_latents for M5. "
-                "Run scripts/augment_lerobot_latents_with_single_frame_condition.py with --source-frame-offset -1."
-            )
-        if condition_latents.ndim != 5 or int(condition_latents.shape[2]) < 1:
-            raise ValueError(
-                "M5 legacy-prefix condition_latents must have shape [B, C, T>=1, H, W], "
-                f"got {tuple(condition_latents.shape)}."
-            )
-        prefix_latents = condition_latents[:, :, :1].to(device=video_latents.device, dtype=video_latents.dtype)
-        model_video_latents = torch.cat([prefix_latents, video_latents], dim=2)
-        if hidden_proprio_state is not None:
-            if hidden_proprio_state.ndim != 3:
-                raise ValueError(
-                    "M5 legacy-prefix per-chunk proprio expects target frame states with shape "
-                    "[B, target_frames, state_dim], "
-                    f"got {tuple(hidden_proprio_state.shape)}."
-                )
-            prefix_state = self._select_anchor_state(batch.state)
-            if prefix_state is None:
-                raise ValueError(
-                    "`parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio` requires "
-                    "batch.state for the prefix/current proprio frame."
-                )
-            target_frames = int(video_latents.shape[2])
-            if int(hidden_proprio_state.shape[1]) < target_frames:
-                raise ValueError(
-                    "M5 legacy-prefix per-chunk proprio expects at least one state per target frame, "
-                    f"got {tuple(hidden_proprio_state.shape)} for target_frames={target_frames}."
-                )
-            hidden_proprio_state = torch.cat(
-                [
-                    prefix_state[:, None, :].to(
-                        device=hidden_proprio_state.device,
-                        dtype=hidden_proprio_state.dtype,
-                    ),
-                    hidden_proprio_state[:, :target_frames, :],
-                ],
-                dim=1,
-            )
-        return model_video_latents, hidden_proprio_state, 1, "condition_latents_prefix"
-
-    @staticmethod
-    def _legacy_prefix_action_hidden_proprio_state(
-        hidden_proprio_state: torch.Tensor | None,
-        *,
-        prefix_condition_frames: int,
-        target_num_frames: int,
-        chunk_size_frames: int,
-        chunk_origin_frame: int = 0,
-    ) -> torch.Tensor | None:
-        if hidden_proprio_state is None or int(prefix_condition_frames) <= 0:
-            return hidden_proprio_state
-        if hidden_proprio_state.ndim != 3:
-            raise ValueError(
-                "M5 legacy-prefix per-chunk proprio expects frame state shape "
-                "[B, prefix_plus_target_frames, state_dim], "
-                f"got {tuple(hidden_proprio_state.shape)}."
-            )
-        required_frames = int(prefix_condition_frames) + int(target_num_frames)
-        if int(hidden_proprio_state.shape[1]) < required_frames:
-            raise ValueError(
-                "M5 legacy-prefix per-chunk proprio expects prefix plus target frame states, "
-                f"got {tuple(hidden_proprio_state.shape)} for required_frames={required_frames}."
-            )
-        chunk_size = max(1, int(chunk_size_frames))
-        target_frame_ids = torch.arange(
-            int(target_num_frames),
-            device=hidden_proprio_state.device,
-            dtype=torch.long,
-        )
-        chunk_origin = int(chunk_origin_frame)
-        target_boundary_ids = (
-            torch.div(target_frame_ids - chunk_origin, chunk_size, rounding_mode="floor") * chunk_size
-            + chunk_origin
-        )
-        target_boundary_ids = target_boundary_ids.clamp(0, required_frames - 1)
-        target_boundary_state = hidden_proprio_state.index_select(dim=1, index=target_boundary_ids)
-        return target_boundary_state
 
     def _resolve_history_stream_visibility(self) -> ParallelHistoryStreamVisibility:
         return ParallelHistoryStreamVisibility(self.config.history_stream_visibility)
@@ -1124,7 +624,7 @@ class MoTPolicyVariant(PolicyVariant):
             batch=prepared_inputs.batch,
             observed_num_frames=int(video_latents.shape[2]),
         )
-        clean_video_condition_latents, video_condition_source = self._train_clean_video_condition_latents(
+        clean_video_condition_latents, video_condition_source = self.conditioning.train_clean_video_condition_latents(
             video_latents=video_latents,
             condition_latents=condition_latents,
             history_frames=history_frames,
@@ -1178,16 +678,16 @@ class MoTPolicyVariant(PolicyVariant):
         action_condition_latents = (
             clean_video_condition_latents if clean_video_condition_latents is not None else video_latents
         )
-        video_text_context = self._resolve_text_context_with_proprio(
+        video_text_context = self.conditioning.resolve_text_context(
             visual_tower,
             text_context,
             proprio_state,
             batch_size=int(action_condition_latents.shape[0]),
             device=action_condition_latents.device,
             dtype=action_condition_latents.dtype,
-            materialize_if_missing=self._uses_proprio_context(),
+            materialize_if_missing=self.conditioning.uses_proprio_context(),
         )
-        video_cross_attention_mask = self._build_proprio_cross_attention_mask(
+        video_cross_attention_mask = self.conditioning.build_proprio_cross_attention_mask(
             resolved_text_context=video_text_context,
             proprio_state=proprio_state,
             query_frames_per_copy=int(action_condition_latents.shape[2]),
@@ -1215,7 +715,7 @@ class MoTPolicyVariant(PolicyVariant):
             observed_num_frames=int(video_latents.shape[2]),
             history_frames=history_frames,
         )
-        resolved_text = self._resolve_text_context_with_proprio(
+        resolved_text = self.conditioning.resolve_text_context(
             visual_tower,
             text_context,
             proprio_state,
@@ -1229,7 +729,7 @@ class MoTPolicyVariant(PolicyVariant):
         action_cross_attention_mask = (
             None
             if action_tokens_per_frame is None
-            else self._build_proprio_cross_attention_mask(
+            else self.conditioning.build_proprio_cross_attention_mask(
                 resolved_text_context=resolved_text,
                 proprio_state=proprio_state,
                 query_frames_per_copy=int(video_latents.shape[2]),
@@ -1253,7 +753,7 @@ class MoTPolicyVariant(PolicyVariant):
             hidden_context=(
                 None
                 if action_tokens_per_frame is None
-                else self._action_hidden_context_for_tokens(
+                else self.conditioning.action_hidden_context_for_tokens(
                     visual_tower,
                     hidden_proprio_state,
                     action_tokens=train_artifacts.noisy_actions,
@@ -1352,7 +852,7 @@ class MoTPolicyVariant(PolicyVariant):
             batch=prepared_inputs.batch,
             observed_num_frames=int(video_latents.shape[2]),
         )
-        clean_video_condition_latents, video_condition_source = self._train_clean_video_condition_latents(
+        clean_video_condition_latents, video_condition_source = self.conditioning.train_clean_video_condition_latents(
             video_latents=video_latents,
             condition_latents=condition_latents,
             history_frames=history_frames,
@@ -1403,7 +903,7 @@ class MoTPolicyVariant(PolicyVariant):
             effective_action_mask,
             training_config=self.training_config,
         )
-        resolved_text = self._resolve_text_context_with_proprio(
+        resolved_text = self.conditioning.resolve_text_context(
             visual_tower,
             text_context,
             proprio_state,
@@ -1417,7 +917,7 @@ class MoTPolicyVariant(PolicyVariant):
         action_cross_attention_mask = (
             None
             if action_tokens_per_frame is None
-            else self._build_proprio_cross_attention_mask(
+            else self.conditioning.build_proprio_cross_attention_mask(
                 resolved_text_context=resolved_text,
                 proprio_state=proprio_state,
                 query_frames_per_copy=int(video_latents.shape[2]),
@@ -1425,7 +925,7 @@ class MoTPolicyVariant(PolicyVariant):
                 chunk_size_frames=sampled_chunk_size,
             )
         )
-        video_cross_attention_mask = self._build_proprio_cross_attention_mask(
+        video_cross_attention_mask = self.conditioning.build_proprio_cross_attention_mask(
             resolved_text_context=resolved_text,
             proprio_state=proprio_state,
             query_frames_per_copy=int(video_latents.shape[2]),
@@ -1447,7 +947,7 @@ class MoTPolicyVariant(PolicyVariant):
             hidden_context=(
                 None
                 if action_tokens_per_frame is None
-                else self._action_hidden_context_for_tokens(
+                else self.conditioning.action_hidden_context_for_tokens(
                     visual_tower,
                     hidden_proprio_state,
                     action_tokens=train_artifacts.noisy_actions,
@@ -1478,7 +978,7 @@ class MoTPolicyVariant(PolicyVariant):
             ),
             use_activation_checkpointing=self.config.use_activation_checkpointing,
             video_cross_attention_mask=video_cross_attention_mask,
-            video_hidden_context=self._video_hidden_context_for_tokens(
+            video_hidden_context=self.conditioning.video_hidden_context_for_tokens(
                 visual_tower,
                 hidden_proprio_state,
                 video_latents=video_latents,
@@ -1588,7 +1088,7 @@ class MoTPolicyVariant(PolicyVariant):
                 )
             )
         video_latents, hidden_proprio_state, prefix_condition_frames, legacy_video_condition_source = (
-            self._prepend_legacy_prefix_video_latents(
+            self.conditioning.prepend_legacy_prefix_video_latents(
                 video_latents=target_video_latents,
                 condition_latents=condition_latents,
                 hidden_proprio_state=hidden_proprio_state,
@@ -1674,7 +1174,7 @@ class MoTPolicyVariant(PolicyVariant):
             clean_video_condition_latents = video_latents
             video_condition_source = legacy_video_condition_source
         else:
-            clean_video_condition_latents, video_condition_source = self._train_clean_video_condition_latents(
+            clean_video_condition_latents, video_condition_source = self.conditioning.train_clean_video_condition_latents(
                 video_latents=video_latents,
                 condition_latents=condition_latents,
                 history_frames=history_frames,
@@ -1800,14 +1300,14 @@ class MoTPolicyVariant(PolicyVariant):
                 )
 
         packed_action_tokens = torch.cat([noisy_actions, clean_actions], dim=1)
-        action_hidden_proprio_state = self._legacy_prefix_action_hidden_proprio_state(
+        action_hidden_proprio_state = self.conditioning.legacy_prefix_action_hidden_proprio_state(
             hidden_proprio_state,
             prefix_condition_frames=prefix_condition_frames,
             target_num_frames=target_num_video_frames,
             chunk_size_frames=sampled_chunk_size,
             chunk_origin_frame=chunk_origin_frame,
         )
-        packed_action_hidden_context = self._action_hidden_context_for_tokens(
+        packed_action_hidden_context = self.conditioning.action_hidden_context_for_tokens(
             visual_tower,
             action_hidden_proprio_state,
             action_tokens=noisy_actions,
@@ -1838,7 +1338,7 @@ class MoTPolicyVariant(PolicyVariant):
             )
         elif text_dropped:
             resolved_text = torch.zeros_like(resolved_text)
-        resolved_text = self._resolve_text_context_with_proprio(
+        resolved_text = self.conditioning.resolve_text_context(
             visual_tower,
             resolved_text,
             proprio_state,
@@ -1855,12 +1355,12 @@ class MoTPolicyVariant(PolicyVariant):
                 raise ValueError(
                     "MoT `generalist_mode_text_token=true` requires an active sampled or forced GJD mode."
                 )
-            resolved_text, generalist_mode_text_token_count = self._append_generalist_mode_text_token(
+            resolved_text, generalist_mode_text_token_count = self.conditioning.append_generalist_mode_text_token(
                 visual_tower,
                 resolved_text,
                 sampled_generalist_mode,
             )
-        packed_video_cross_attention_mask = self._build_proprio_cross_attention_mask(
+        packed_video_cross_attention_mask = self.conditioning.build_proprio_cross_attention_mask(
             resolved_text_context=resolved_text,
             proprio_state=proprio_state,
             query_frames_per_copy=num_video_frames,
@@ -1880,7 +1380,7 @@ class MoTPolicyVariant(PolicyVariant):
             frame_shift=frame_shift,
         )  # [B, 4, T_a*ppF_a]
         packed_action_grid = torch.cat([single_action_grid, single_action_grid], dim=-1)
-        packed_action_cross_attention_mask = self._build_proprio_cross_attention_mask(
+        packed_action_cross_attention_mask = self.conditioning.build_proprio_cross_attention_mask(
             resolved_text_context=resolved_text,
             proprio_state=proprio_state,
             query_frames_per_copy=num_action_frames,
@@ -1919,7 +1419,7 @@ class MoTPolicyVariant(PolicyVariant):
         packed_video_hidden_context = (
             None
             if prefix_condition_frames > 0
-            else self._video_hidden_context_for_tokens(
+            else self.conditioning.video_hidden_context_for_tokens(
                 visual_tower,
                 hidden_proprio_state,
                 video_latents=video_latents,
@@ -2315,7 +1815,7 @@ class MoTPolicyVariant(PolicyVariant):
             history_hidden_proprio = history_hidden_proprio[:, -shared_history_frames:].contiguous()
         else:
             history_hidden_proprio = None
-        if shared_history_frames > 0 and self._uses_per_chunk_proprio_context() and history_hidden_proprio is None:
+        if shared_history_frames > 0 and self.conditioning.uses_per_chunk_proprio_context() and history_hidden_proprio is None:
             raise ValueError("M5 per-chunk additive proprio inference is missing hidden proprio history.")
         current_hidden_proprio_frames = None
         if hidden_proprio_state is not None:
@@ -2373,7 +1873,7 @@ class MoTPolicyVariant(PolicyVariant):
             bool(getattr(self.config, "generalist_mode_text_token", False))
             and int(getattr(runtime_state, "generalist_mode_text_token_count", 0)) <= 0
         ):
-            text_context, token_count = self._append_generalist_mode_text_token(
+            text_context, token_count = self.conditioning.append_generalist_mode_text_token(
                 visual_tower,
                 text_context,
                 generalist_rollout_mode,
@@ -2465,7 +1965,7 @@ class MoTPolicyVariant(PolicyVariant):
 
         predicted_video_sequence = noisy_video_sequence
         action_sample = current_action_sample
-        apply_video_hidden_proprio = not _uses_mot_legacy_prefix_contract(self.config)
+        apply_video_hidden_proprio = not self.conditioning.uses_legacy_prefix_contract()
         zero_current_video_timestep = torch.zeros(
             batch_size,
             current_video_sequence_frames,
@@ -2523,7 +2023,7 @@ class MoTPolicyVariant(PolicyVariant):
                 )
                 clean_action_sequence = torch.cat([history_actions, current_clean_action_for_step], dim=1)
             packed_action_tokens = torch.cat([noisy_action_sequence, clean_action_sequence], dim=1)
-            packed_action_hidden_context = self._action_hidden_context_for_tokens(
+            packed_action_hidden_context = self.conditioning.action_hidden_context_for_tokens(
                 visual_tower,
                 video_hidden_proprio_sequence,
                 action_tokens=noisy_action_sequence,
@@ -2561,7 +2061,7 @@ class MoTPolicyVariant(PolicyVariant):
         ):
             dense_video_timestep = torch.cat([history_video_timesteps, video_timestep], dim=1)
             packed_video_hidden_context = (
-                self._video_hidden_context_for_tokens(
+                self.conditioning.video_hidden_context_for_tokens(
                     visual_tower,
                     video_hidden_proprio_sequence,
                     video_latents=predicted_video_sequence,
@@ -2963,14 +2463,14 @@ class MoTPolicyVariant(PolicyVariant):
             else torch.device(str(action_device_raw))
         )
         action_dtype = next(self.action_expert.parameters()).dtype
-        proprio_state = self._resolve_proprio_state(
+        proprio_state = self.conditioning.resolve_proprio_state(
             context.state,
             label="M5 inference",
             fallback_state=runtime_state.proprio_state,
         )
         if proprio_state is not None:
             runtime_state.proprio_state = proprio_state.detach().clone()
-        hidden_proprio_state = self._resolve_infer_hidden_proprio_context(
+        hidden_proprio_state = self.conditioning.resolve_infer_hidden_proprio_context(
             context.state,
             fallback_state=runtime_state.hidden_proprio_state,
         )
@@ -2990,7 +2490,7 @@ class MoTPolicyVariant(PolicyVariant):
         infer_text_context = visual_outputs.frontend.conditioning.text_context
         if generalist_rollout_semantics.drop_text_conditioning and infer_text_context is not None:
             infer_text_context = torch.zeros_like(infer_text_context)
-        resolved_text_context = self._resolve_text_context_with_proprio(
+        resolved_text_context = self.conditioning.resolve_text_context(
             visual_tower,
             infer_text_context,
             proprio_state,
@@ -2998,7 +2498,7 @@ class MoTPolicyVariant(PolicyVariant):
             device=action_device,
             dtype=action_dtype,
             materialize_if_missing=(
-                self._uses_proprio_context()
+                self.conditioning.uses_proprio_context()
                 or bool(getattr(self.config, "generalist_mode_text_token", False))
             ),
         )
@@ -3006,7 +2506,7 @@ class MoTPolicyVariant(PolicyVariant):
         if bool(getattr(self.config, "generalist_mode_text_token", False)):
             if resolved_text_context is None:  # pragma: no cover - materialized above
                 raise RuntimeError("M5 mode-token rollout expected materialized text context.")
-            resolved_text_context, generalist_mode_text_token_count = self._append_generalist_mode_text_token(
+            resolved_text_context, generalist_mode_text_token_count = self.conditioning.append_generalist_mode_text_token(
                 visual_tower,
                 resolved_text_context,
                 generalist_rollout_mode,
@@ -3259,7 +2759,7 @@ class MoTPolicyVariant(PolicyVariant):
                     action_tokens=sample,
                     timestep=dense_action_timestep,
                     context=text_context,
-                    hidden_context=self._action_hidden_context_for_tokens(
+                    hidden_context=self.conditioning.action_hidden_context_for_tokens(
                         visual_tower,
                         hidden_proprio_sequence,
                         action_tokens=sample,
@@ -3275,7 +2775,7 @@ class MoTPolicyVariant(PolicyVariant):
                     text_context=text_context,
                     attention_mask=attention_mask,
                     frame_start=int(infer_state.cursor.current_start_frame),
-                    video_hidden_context=self._video_hidden_context_for_tokens(
+                    video_hidden_context=self.conditioning.video_hidden_context_for_tokens(
                         visual_tower,
                         hidden_proprio_sequence,
                         video_latents=noisy_video_latents,
@@ -3422,7 +2922,7 @@ class MoTPolicyVariant(PolicyVariant):
             bool(getattr(self.config, "generalist_mode_text_token", False))
             and int(getattr(runtime_state, "generalist_mode_text_token_count", 0)) <= 0
         ):
-            text_context_for_video, token_count = self._append_generalist_mode_text_token(
+            text_context_for_video, token_count = self.conditioning.append_generalist_mode_text_token(
                 visual_tower,
                 text_context_for_video,
                 generalist_rollout_mode,
@@ -3436,7 +2936,7 @@ class MoTPolicyVariant(PolicyVariant):
         # action expert runs at batch=B, so when we extract the
         # MoTVideoCache for action we slice the cond half `[:B]`.
         negative_text_context = visual_outputs.frontend.conditioning.negative_text_context
-        negative_text_context = self._resolve_text_context_with_proprio(
+        negative_text_context = self.conditioning.resolve_text_context(
             visual_tower,
             negative_text_context,
             runtime_state.proprio_state,
@@ -3446,7 +2946,7 @@ class MoTPolicyVariant(PolicyVariant):
             materialize_if_missing=False,
         )
         if bool(getattr(self.config, "generalist_mode_text_token", False)) and negative_text_context is not None:
-            negative_text_context, _ = self._append_generalist_mode_text_token(
+            negative_text_context, _ = self.conditioning.append_generalist_mode_text_token(
                 visual_tower,
                 negative_text_context,
                 generalist_rollout_mode,
@@ -3816,7 +3316,7 @@ class MoTPolicyVariant(PolicyVariant):
                     device=device,
                     frame_shift=int(current_action_frame_start),
                 ),
-                hidden_context=self._action_hidden_context_for_tokens(
+                hidden_context=self.conditioning.action_hidden_context_for_tokens(
                     visual_tower,
                     runtime_state.hidden_proprio_state,
                     action_tokens=sample,
@@ -3851,7 +3351,7 @@ class MoTPolicyVariant(PolicyVariant):
                 device=device,
                 frame_shift=int(current_action_frame_start),
             ),
-            hidden_context=self._action_hidden_context_for_tokens(
+            hidden_context=self.conditioning.action_hidden_context_for_tokens(
                 visual_tower,
                 runtime_state.hidden_proprio_state,
                 action_tokens=sample,
