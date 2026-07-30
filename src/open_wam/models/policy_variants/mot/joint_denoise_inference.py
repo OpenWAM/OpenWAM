@@ -21,6 +21,7 @@ from open_wam.models.common.flow_matching import (
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
 from ..contracts import PolicyInferContext, PolicyInferOutput, PolicyInferState
+from .attention import build_mot_attention_mask
 from .conditioning import MoTConditioning
 from .contracts import MoTInferArtifacts, MoTRuntimeState
 from .generalist_modes import (
@@ -30,7 +31,6 @@ from .generalist_modes import (
 )
 from .modules import MoTActionExpert
 from .runtime import (
-    build_mot_attention_mask,
     expand_mot_scalar_timestep,
     forward_joint_video_action_denoise,
     mot_scheduler_next_sigma,

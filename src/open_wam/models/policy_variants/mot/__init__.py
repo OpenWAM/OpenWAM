@@ -1,3 +1,11 @@
+from .attention import (
+    build_chunk_causal_video_mask,
+    build_mot_attention_mask,
+    build_mot_inference_action_attention_mask,
+    build_mot_packed_coupling_attention_mask,
+    build_mot_packed_coupling_attention_profile,
+    build_packed_action_attention_mask,
+)
 from .conditioning import MoTConditioning
 from .generalist_modes import (
     apply_generalist_training_mode,
@@ -35,6 +43,12 @@ __all__ = [
     "MoTTrainingLayout",
     "apply_generalist_training_mode",
     "build_action_grid_ids_for_sequence",
+    "build_chunk_causal_video_mask",
+    "build_mot_attention_mask",
+    "build_mot_inference_action_attention_mask",
+    "build_mot_packed_coupling_attention_mask",
+    "build_mot_packed_coupling_attention_profile",
+    "build_packed_action_attention_mask",
     "generalist_forces_clean_video_condition",
     "generalist_rollout_enabled",
     "generalist_rollout_mode_from_value",

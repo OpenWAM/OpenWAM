@@ -540,6 +540,23 @@ def test_mot_runtime_controls_have_role_owners() -> None:
     )
 
 
+def test_mot_attention_layouts_have_one_owner() -> None:
+    attention_builders = {
+        "build_chunk_causal_video_mask",
+        "build_mot_attention_mask",
+        "build_mot_inference_action_attention_mask",
+        "build_mot_packed_coupling_attention_mask",
+        "build_mot_packed_coupling_attention_profile",
+        "build_packed_action_attention_mask",
+    }
+    mot_root = PACKAGE_ROOT / "models" / "policy_variants" / "mot"
+
+    assert attention_builders <= _top_level_definitions(mot_root / "attention.py")
+    assert attention_builders.isdisjoint(
+        _top_level_definitions(mot_root / "runtime.py")
+    )
+
+
 def test_superseded_exact_runtime_helpers_are_retired() -> None:
     mot_runtime_definitions = _top_level_definitions(
         PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "runtime.py"

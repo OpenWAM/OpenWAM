@@ -31,6 +31,15 @@ from open_wam.models.policy_variants.mot.contracts import (
     MoTActionLayerCache,
     MoTRuntimeState,
 )
+from open_wam.models.policy_variants.mot import runtime as mot_runtime
+from open_wam.models.policy_variants.mot.attention import (
+    build_chunk_causal_video_mask,
+    build_mot_attention_mask,
+    build_mot_inference_action_attention_mask,
+    build_mot_packed_coupling_attention_mask,
+    build_mot_packed_coupling_attention_profile,
+    build_packed_action_attention_mask,
+)
 from open_wam.models.policy_variants.mot.conditioning import MoTConditioning
 from open_wam.models.policy_variants.mot.modules import (
     MoTActionExpert,
@@ -38,12 +47,6 @@ from open_wam.models.policy_variants.mot.modules import (
 )
 from open_wam.models.policy_variants.mot.packed_block import MoTPackedBlock
 from open_wam.models.policy_variants.mot.runtime import (
-    build_chunk_causal_video_mask,
-    build_mot_inference_action_attention_mask,
-    build_mot_attention_mask,
-    build_mot_packed_coupling_attention_mask,
-    build_mot_packed_coupling_attention_profile,
-    build_packed_action_attention_mask,
     expand_mot_scalar_timestep,
     mot_scheduler_next_sigma,
     rewind_mot_runtime_action_cache_to_frame,
@@ -59,6 +62,19 @@ from open_wam.models.policy_variants.mot.variant import MoTPolicyVariant
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore
 from open_wam.pipelines import build_variant_pipeline_from_config
+
+
+def test_mot_runtime_attention_exports_are_compatibility_aliases() -> None:
+    canonical_builders = {
+        "build_chunk_causal_video_mask": build_chunk_causal_video_mask,
+        "build_mot_attention_mask": build_mot_attention_mask,
+        "build_mot_inference_action_attention_mask": build_mot_inference_action_attention_mask,
+        "build_mot_packed_coupling_attention_mask": build_mot_packed_coupling_attention_mask,
+        "build_mot_packed_coupling_attention_profile": build_mot_packed_coupling_attention_profile,
+        "build_packed_action_attention_mask": build_packed_action_attention_mask,
+    }
+    for name, canonical_builder in canonical_builders.items():
+        assert getattr(mot_runtime, name) is canonical_builder
 
 
 def test_mot_action_expert_pre_and_post_shapes() -> None:

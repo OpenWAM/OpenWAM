@@ -31,6 +31,7 @@ from open_wam.models.common.joint_conditioning import (
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
 from ..contracts import PolicyPreparedInputs, PolicyTrainOutput
+from .attention import build_mot_packed_coupling_attention_profile
 from .conditioning import MoTConditioning
 from .contracts import (
     MoTActionTrainArtifacts,
@@ -45,10 +46,7 @@ from .generalist_modes import (
 )
 from .modules import MoTActionExpert
 from .packed_block import MoTPackedBlockStack
-from .runtime import (
-    build_mot_packed_coupling_attention_profile,
-    forward_mot_packed_coupling_denoise,
-)
+from .runtime import forward_mot_packed_coupling_denoise
 from .runtime_routing import (
     resolve_mot_current_block_coupling,
     resolve_mot_joint_timestep_coupling,

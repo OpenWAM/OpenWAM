@@ -76,8 +76,12 @@ plain contracts:
 - `mot.runtime_routing` owns finite inference routes, coupling policy, and
   validated rollout overrides. Its implementation is configuration-only and
   contains no tensor execution.
-- `mot.runtime` owns MoT tensor execution and cache mechanics, including
-  explicit-sigma flow integration and speculative action-cache rewind.
+- `mot.attention` owns parameter-free MoT mask and prepared-profile
+  construction. Applications can select or replace these layouts without
+  modifying learned runtime execution.
+- `mot.runtime` owns MoT learned tensor execution and cache mechanics,
+  including explicit-sigma flow integration and speculative action-cache
+  rewind. Its historical attention-builder names remain compatibility aliases.
 - common attention profiles own token visibility; the policy selects a profile
   and supplies its resolved layout.
 - `visual_tower.shared_transformer_support` owns the reusable learned

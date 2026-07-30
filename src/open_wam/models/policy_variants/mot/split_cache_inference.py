@@ -33,6 +33,7 @@ from open_wam.models.visual_tower.exact_runtime import (
 )
 
 from ..contracts import PolicyInferContext, PolicyInferOutput, PolicyInferState
+from .attention import build_mot_inference_action_attention_mask
 from .conditioning import MoTConditioning
 from .contracts import (
     MoTActionCache,
@@ -49,7 +50,6 @@ from .generalist_modes import (
 from .modules import MoTActionExpert
 from .runtime import (
     append_mot_action_cache,
-    build_mot_inference_action_attention_mask,
     forward_action_with_video_and_action_cache,
     move_mot_action_cache,
     move_mot_video_cache,

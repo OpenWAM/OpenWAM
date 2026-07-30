@@ -33,6 +33,7 @@ from open_wam.models.common.rollout_startup import (
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
 from ..contracts import PolicyInferContext, PolicyInferOutput, PolicyInferState
+from .attention import build_mot_packed_coupling_attention_profile
 from .conditioning import MoTConditioning
 from .contracts import MoTInferArtifacts, MoTRuntimeState
 from .generalist_modes import (
@@ -44,7 +45,6 @@ from .inference_layout import MoTPackedHistory, MoTPackedInferenceLayout
 from .modules import MoTActionExpert
 from .packed_block import MoTPackedBlockStack
 from .runtime import (
-    build_mot_packed_coupling_attention_profile,
     expand_mot_scalar_timestep,
     forward_mot_packed_coupling_denoise,
     mot_scheduler_next_sigma,

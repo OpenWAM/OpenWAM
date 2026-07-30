@@ -58,7 +58,7 @@ from open_wam.models.policy_variants.mot.variant import (
     _sample_mot_generalist_training_mode,
 )
 from open_wam.models.policy_variants.contracts import PolicyInferContext
-from open_wam.models.policy_variants.mot.runtime import build_mot_packed_coupling_attention_profile
+from open_wam.models.policy_variants.mot.attention import build_mot_packed_coupling_attention_profile
 from open_wam.models.policy_variants.mot.runtime_routing import (
     should_couple_mot_action_to_video_sigmas,
 )
