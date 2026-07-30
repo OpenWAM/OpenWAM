@@ -19,8 +19,10 @@ from open_wam.models.common import (
     retained_slot_pool_indices_for_current_write,
     update_slot_pool_layer_state,
 )
+from open_wam.models.policy_variants.parallel_stream.cache_execution import (
+    build_joint_clean_cache_attention_mask,
+)
 from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
-    _build_joint_clean_cache_attention_mask,
     prepare_reference_single_stream_input,
 )
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
@@ -419,7 +421,7 @@ def test_joint_clean_cache_commit_mask_matches_preserved_history_rule() -> None:
     latents = torch.randn(1, backbone_config.latent_channels, 1, 1, 1)
     actions = torch.randn(1, 4, 1, 1, 1)
 
-    mask = _build_joint_clean_cache_attention_mask(
+    mask = build_joint_clean_cache_attention_mask(
         latents=latents,
         actions=actions,
         text_token_count=1,
@@ -455,7 +457,7 @@ def test_joint_clean_cache_commit_mask_counts_action_width() -> None:
     latents = torch.randn(1, backbone_config.latent_channels, 1, 1, 1)
     actions = torch.randn(1, 4, 1, 2, 3)
 
-    mask = _build_joint_clean_cache_attention_mask(
+    mask = build_joint_clean_cache_attention_mask(
         latents=latents,
         actions=actions,
         text_token_count=1,
@@ -487,7 +489,7 @@ def test_joint_clean_cache_commit_mask_is_batch_local() -> None:
     latents = torch.randn(2, backbone_config.latent_channels, 1, 1, 1)
     actions = torch.randn(2, 4, 1, 1, 1)
 
-    mask = _build_joint_clean_cache_attention_mask(
+    mask = build_joint_clean_cache_attention_mask(
         latents=latents,
         actions=actions,
         text_token_count=1,

@@ -723,6 +723,30 @@ def test_parallel_exact_cache_contract_has_one_implementation_owner() -> None:
     }.isdisjoint(_top_level_definitions(reference_runtime_path))
 
 
+def test_parallel_cache_execution_has_one_implementation_owner() -> None:
+    execution_definitions = {
+        "build_joint_clean_cache_attention_mask",
+        "build_joint_clean_cache_attention_profile",
+        "summarize_slot_pool_cache_state",
+        "write_exact_cache_chunk",
+        "write_joint_clean_tokens_to_exact_cache",
+    }
+    parallel_stream_root = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
+    )
+    execution_path = parallel_stream_root / "cache_execution.py"
+    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
+
+    assert execution_definitions <= _top_level_definitions(execution_path)
+    assert {
+        "_build_joint_clean_cache_attention_mask",
+        "_build_joint_clean_cache_attention_profile",
+        "_summarize_slot_pool_cache_state",
+        "_write_exact_cache_chunk",
+        "_write_joint_clean_tokens_to_exact_cache",
+    }.isdisjoint(_top_level_definitions(reference_runtime_path))
+
+
 def test_parallel_runtime_semantics_have_one_implementation_owner() -> None:
     semantics_definitions = {
         "attention_profile_name_for_current_block_coupling",

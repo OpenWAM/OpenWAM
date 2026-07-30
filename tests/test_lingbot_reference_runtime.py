@@ -57,6 +57,7 @@ from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
     run_parallel_fastwam_first_frame_train,
     run_reference_single_stream_forward,
 )
+from open_wam.models.policy_variants.parallel_stream import cache_execution as cache_execution_module
 from open_wam.models.policy_variants.parallel_stream import reference_runtime as reference_runtime_module
 from open_wam.models.policy_variants.parallel_stream.variant import ParallelStreamPolicyVariant
 from open_wam.models.video_backbone.contracts import ChunkMetadata, ConditioningState, TokenGridMetadata
@@ -1216,8 +1217,8 @@ def test_staged_cache_write_respects_action_then_video_order(monkeypatch) -> Non
         return torch.empty(1, 0, 0)
 
     monkeypatch.setattr(
-        reference_runtime_module,
-        "run_reference_single_stream_forward",
+        cache_execution_module,
+        "run_exact_single_stream_forward",
         fake_single_stream_forward,
     )
 
@@ -1423,6 +1424,11 @@ def test_action_then_video_skip_video_prediction_runs_action_only(monkeypatch) -
         "run_reference_single_stream_forward",
         fake_single_stream_forward,
     )
+    monkeypatch.setattr(
+        cache_execution_module,
+        "run_exact_single_stream_forward",
+        fake_single_stream_forward,
+    )
 
     backbone_config = LingbotCompatibleVideoBackboneConfig(
         hidden_size=32,
@@ -1520,8 +1526,8 @@ def test_staged_cache_write_scopes_action_then_video_tail_for_unequal_history(mo
         return torch.empty(1, 0, 0)
 
     monkeypatch.setattr(
-        reference_runtime_module,
-        "run_reference_single_stream_forward",
+        cache_execution_module,
+        "run_exact_single_stream_forward",
         fake_single_stream_forward,
     )
 
@@ -1595,13 +1601,13 @@ def test_staged_cache_write_uses_decoupled_clean_cache_path(monkeypatch) -> None
         )
 
     monkeypatch.setattr(
-        reference_runtime_module,
-        "run_reference_single_stream_forward",
+        cache_execution_module,
+        "run_exact_single_stream_forward",
         fake_single_stream_forward,
     )
     monkeypatch.setattr(
-        reference_runtime_module,
-        "_write_joint_clean_tokens_to_exact_cache",
+        cache_execution_module,
+        "write_joint_clean_tokens_to_exact_cache",
         fake_joint_clean_cache,
     )
 
