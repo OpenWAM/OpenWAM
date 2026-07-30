@@ -107,6 +107,10 @@ plain contracts:
   owns parameter-free conditional window/chunk, history, warmup-suffix, and
   conditioning-slice layout. Learned mode-token injection and model execution
   remain in the policy runtime.
+- `parallel_stream.training_noise` owns parameter-free exact-stream noising,
+  scheduler-grid adaptation, and tuple layouts for coupled timestep plans. It
+  consumes the generic flow-noise plan from `models.common`; model execution
+  and generalist mode selection remain in the policy runtime.
 - `models.common.video_geometry` owns video token-grid and unpatchifying
   transforms used by visual execution, policy variants, and decoders.
 - `models.common.cache_backends` owns parameter-free attention-cache policy:

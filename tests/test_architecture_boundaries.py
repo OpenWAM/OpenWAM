@@ -787,6 +787,31 @@ def test_parallel_conditional_rollout_has_one_implementation_owner() -> None:
     }.isdisjoint(_top_level_definitions(reference_runtime_path))
 
 
+def test_parallel_training_noise_has_one_implementation_owner() -> None:
+    noise_definitions = {
+        "build_parallel_flow_noise_artifacts",
+        "sample_coupled_parallel_timestep_values",
+        "sample_index_matched_timestep_values",
+        "sample_shared_video_schedule_timestep_values",
+        "share_video_scheduler_grid_with_action_scheduler",
+    }
+    parallel_stream_root = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
+    )
+    noise_path = parallel_stream_root / "training_noise.py"
+    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
+
+    assert noise_definitions <= _top_level_definitions(noise_path)
+    assert {
+        "_add_noise",
+        "_sample_coupled_timestep_values",
+        "_sample_index_matched_timestep_values",
+        "_sample_shared_video_schedule_timestep_values",
+        "_share_video_scheduler_grid_with_action_scheduler",
+        "sample_timestep_id",
+    }.isdisjoint(_top_level_definitions(reference_runtime_path))
+
+
 def test_visual_runtime_tensor_transport_has_one_implementation_owner() -> None:
     transport_definitions = {
         "cached_attention_profile",
