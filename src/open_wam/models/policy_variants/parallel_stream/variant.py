@@ -38,8 +38,8 @@ from .forward_execution import (
     run_parallel_exact_train,
     run_parallel_first_frame_conditioned_train,
 )
+from .packed_rollout import run_parallel_packed_inference_rollout
 from .reference_runtime import (
-    run_parallel_action_conditioned_inference_rollout,
     run_parallel_current_frame_action_chunk_inference_rollout,
     run_parallel_fastwam_first_frame_inference_rollout,
 )
@@ -1013,7 +1013,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         }:
             if skip_video_prediction:
                 raise ValueError("`skip_video_prediction` is only supported by staged exact M1 rollout modes.")
-            infer_artifacts = run_parallel_action_conditioned_inference_rollout(
+            infer_artifacts = run_parallel_packed_inference_rollout(
                 transformer=reference_transformer,
                 backbone_config=self.backbone_config,
                 policy_config=self.config,

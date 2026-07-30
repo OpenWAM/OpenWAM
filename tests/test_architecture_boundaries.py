@@ -831,6 +831,25 @@ def test_parallel_inference_artifacts_and_staged_rollout_have_one_owner() -> Non
     }.isdisjoint(_top_level_definitions(reference_runtime_path))
 
 
+def test_parallel_packed_rollout_has_one_implementation_owner() -> None:
+    parallel_stream_root = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
+    )
+    packed_rollout_path = parallel_stream_root / "packed_rollout.py"
+    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
+
+    assert {
+        "_run_parallel_packed_inference_rollout_impl",
+        "run_parallel_packed_inference_rollout",
+    } <= _top_level_definitions(packed_rollout_path)
+    assert {
+        "_run_parallel_action_conditioned_inference_rollout_impl",
+        "_run_parallel_packed_inference_rollout_impl",
+        "run_parallel_action_conditioned_inference_rollout",
+        "run_parallel_packed_inference_rollout",
+    }.isdisjoint(_top_level_definitions(reference_runtime_path))
+
+
 def test_parallel_training_artifacts_have_one_implementation_owner() -> None:
     artifact_definitions = {
         "LingbotParallelTrainArtifacts",

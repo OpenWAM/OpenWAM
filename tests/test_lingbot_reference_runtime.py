@@ -54,6 +54,7 @@ from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
 from open_wam.models.policy_variants.parallel_stream import cache_execution as cache_execution_module
 from open_wam.models.policy_variants.parallel_stream import cache_lifecycle as cache_lifecycle_module
 from open_wam.models.policy_variants.parallel_stream import forward_execution as forward_execution_module
+from open_wam.models.policy_variants.parallel_stream import packed_rollout as packed_rollout_module
 from open_wam.models.policy_variants.parallel_stream import reference_runtime as reference_runtime_module
 from open_wam.models.policy_variants.parallel_stream import staged_rollout as staged_rollout_module
 from open_wam.models.policy_variants.parallel_stream.cache_lifecycle import (
@@ -486,7 +487,11 @@ def test_action_conditioned_rollout_wrapper_forwards_mode(monkeypatch: pytest.Mo
         captured.update(kwargs)
         return sentinel
 
-    monkeypatch.setattr(reference_runtime_module, "_run_parallel_action_conditioned_inference_rollout_impl", fake_impl)
+    monkeypatch.setattr(
+        packed_rollout_module,
+        "_run_parallel_packed_inference_rollout_impl",
+        fake_impl,
+    )
 
     result = run_parallel_action_conditioned_inference_rollout(
         transformer=object(),
@@ -1120,8 +1125,8 @@ def test_joint_like_first_chunk_anchors_observed_video_frame(monkeypatch) -> Non
         )
 
     monkeypatch.setattr(
-        reference_runtime_module,
-        "_run_parallel_action_conditioned_forward",
+        packed_rollout_module,
+        "run_parallel_action_conditioned_forward",
         fake_joint_forward,
     )
 
@@ -3697,11 +3702,15 @@ def test_parallel_action_conditioned_inference_uses_policy_attention_geometry(mo
         )
 
     monkeypatch.setattr(
-        reference_runtime_module,
-        "_run_parallel_action_conditioned_forward",
+        packed_rollout_module,
+        "run_parallel_action_conditioned_forward",
         fake_action_conditioned_forward,
     )
-    monkeypatch.setattr(reference_runtime_module, "_summarize_slot_pool_cache_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        packed_rollout_module,
+        "summarize_slot_pool_cache_state",
+        lambda *_args, **_kwargs: None,
+    )
 
 
     backbone_config = LingbotCompatibleVideoBackboneConfig(
@@ -3792,18 +3801,26 @@ def test_action_conditioned_override_after_warmup_uses_local_startup_window(monk
             torch.zeros(batch_size, action_tokens, action_noisy.shape[1], device=action_noisy.device, dtype=action_noisy.dtype),
         )
 
-    monkeypatch.setattr(reference_runtime_module, "_write_exact_cache_chunk", fake_write_exact_cache_chunk)
+    monkeypatch.setattr(
+        packed_rollout_module,
+        "write_exact_cache_chunk",
+        fake_write_exact_cache_chunk,
+    )
     monkeypatch.setattr(
         cache_lifecycle_module,
         "_write_exact_cache_chunk",
         fake_write_exact_cache_chunk,
     )
     monkeypatch.setattr(
-        reference_runtime_module,
-        "_run_parallel_action_conditioned_forward",
+        packed_rollout_module,
+        "run_parallel_action_conditioned_forward",
         fake_action_conditioned_forward,
     )
-    monkeypatch.setattr(reference_runtime_module, "_summarize_slot_pool_cache_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        packed_rollout_module,
+        "summarize_slot_pool_cache_state",
+        lambda *_args, **_kwargs: None,
+    )
 
     transformer = _FakeReferenceTransformer()
     backbone_config = LingbotCompatibleVideoBackboneConfig(
@@ -4161,16 +4178,20 @@ def test_video_conditioned_action_returns_prediction_but_commits_clean_action_hi
         fake_write_exact_cache_chunk,
     )
     monkeypatch.setattr(
-        reference_runtime_module,
-        "_write_exact_cache_chunk",
+        packed_rollout_module,
+        "write_exact_cache_chunk",
         fake_write_exact_cache_chunk,
     )
     monkeypatch.setattr(
-        reference_runtime_module,
-        "_run_parallel_action_conditioned_forward",
+        packed_rollout_module,
+        "run_parallel_action_conditioned_forward",
         fake_action_conditioned_forward,
     )
-    monkeypatch.setattr(reference_runtime_module, "_summarize_slot_pool_cache_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        packed_rollout_module,
+        "summarize_slot_pool_cache_state",
+        lambda *_args, **_kwargs: None,
+    )
 
     transformer = _FakeReferenceTransformer()
     backbone_config = LingbotCompatibleVideoBackboneConfig(
@@ -4321,11 +4342,15 @@ def test_joint_inference_masks_inactive_action_channels(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(
-        reference_runtime_module,
-        "_run_parallel_action_conditioned_forward",
+        packed_rollout_module,
+        "run_parallel_action_conditioned_forward",
         fake_action_conditioned_forward,
     )
-    monkeypatch.setattr(reference_runtime_module, "_summarize_slot_pool_cache_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        packed_rollout_module,
+        "summarize_slot_pool_cache_state",
+        lambda *_args, **_kwargs: None,
+    )
 
     backbone_config = LingbotCompatibleVideoBackboneConfig(
         hidden_size=32,
@@ -5078,13 +5103,21 @@ def test_action_conditioned_rollout_cache_commit_passes_per_chunk_hidden_context
             torch.zeros(batch_size, action_tokens, action_dim, device=actions.device, dtype=actions.dtype),
         )
 
-    monkeypatch.setattr(reference_runtime_module, "_write_exact_cache_chunk", fake_write_exact_cache_chunk)
+    monkeypatch.setattr(
+        packed_rollout_module,
+        "write_exact_cache_chunk",
+        fake_write_exact_cache_chunk,
+    )
     monkeypatch.setattr(
         cache_lifecycle_module,
         "_write_exact_cache_chunk",
         fake_write_exact_cache_chunk,
     )
-    monkeypatch.setattr(reference_runtime_module, "_run_parallel_action_conditioned_forward", fake_action_conditioned_forward)
+    monkeypatch.setattr(
+        packed_rollout_module,
+        "run_parallel_action_conditioned_forward",
+        fake_action_conditioned_forward,
+    )
 
     transformer = _FakeReferenceTransformer()
 
