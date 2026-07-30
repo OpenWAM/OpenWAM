@@ -43,11 +43,6 @@ from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
     FlowMatchScheduler,
     _write_exact_cache_chunk,
     initialize_reference_cache,
-    prepare_parallel_action_conditioned_train_artifacts,
-    prepare_parallel_current_frame_action_chunk_train_artifacts,
-    prepare_parallel_exact_train_artifacts,
-    prepare_parallel_fastwam_first_frame_train_artifacts,
-    prepare_parallel_prefix_condition_exact_train_artifacts,
     repeat_input_for_cfg,
     run_parallel_current_frame_action_chunk_inference_rollout,
     run_parallel_action_conditioned_action_override_inference_rollout,
@@ -59,6 +54,13 @@ from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
 )
 from open_wam.models.policy_variants.parallel_stream import cache_execution as cache_execution_module
 from open_wam.models.policy_variants.parallel_stream import reference_runtime as reference_runtime_module
+from open_wam.models.policy_variants.parallel_stream.training_artifacts import (
+    prepare_parallel_action_conditioned_train_artifacts,
+    prepare_parallel_current_frame_action_chunk_train_artifacts,
+    prepare_parallel_exact_train_artifacts,
+    prepare_parallel_fastwam_first_frame_train_artifacts,
+    prepare_parallel_prefix_condition_exact_train_artifacts,
+)
 from open_wam.models.policy_variants.parallel_stream.variant import ParallelStreamPolicyVariant
 from open_wam.models.video_backbone.contracts import ChunkMetadata, ConditioningState, TokenGridMetadata
 from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig, SharedVideoTransformerConfig

@@ -6,7 +6,10 @@ import pytest
 import torch
 
 from open_wam.configs import ParallelStreamPolicyConfig, TrainingConfig
-from open_wam.models.policy_variants.parallel_stream.reference_runtime import prepare_parallel_exact_train_artifacts, run_parallel_exact_train
+from open_wam.models.policy_variants.parallel_stream.reference_runtime import run_parallel_exact_train
+from open_wam.models.policy_variants.parallel_stream.training_artifacts import (
+    prepare_parallel_exact_train_artifacts,
+)
 from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig
 from open_wam.models.visual_tower import VisualTower
 from open_wam.models.visual_tower.reference_loader import load_wan_transformer_class

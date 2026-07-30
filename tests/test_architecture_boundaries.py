@@ -747,6 +747,27 @@ def test_parallel_cache_execution_has_one_implementation_owner() -> None:
     }.isdisjoint(_top_level_definitions(reference_runtime_path))
 
 
+def test_parallel_training_artifacts_have_one_implementation_owner() -> None:
+    artifact_definitions = {
+        "LingbotParallelTrainArtifacts",
+        "prepare_parallel_action_conditioned_train_artifacts",
+        "prepare_parallel_current_frame_action_chunk_train_artifacts",
+        "prepare_parallel_exact_train_artifacts",
+        "prepare_parallel_fastwam_first_frame_train_artifacts",
+        "prepare_parallel_prefix_condition_exact_train_artifacts",
+    }
+    parallel_stream_root = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
+    )
+    artifact_path = parallel_stream_root / "training_artifacts.py"
+    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
+
+    assert artifact_definitions <= _top_level_definitions(artifact_path)
+    assert artifact_definitions.isdisjoint(
+        _top_level_definitions(reference_runtime_path)
+    )
+
+
 def test_parallel_runtime_semantics_have_one_implementation_owner() -> None:
     semantics_definitions = {
         "attention_profile_name_for_current_block_coupling",
