@@ -745,6 +745,38 @@ def test_parallel_runtime_semantics_have_one_implementation_owner() -> None:
     )
 
 
+def test_parallel_conditional_rollout_has_one_implementation_owner() -> None:
+    rollout_definitions = {
+        "generalist_conditioning_chunk_size",
+        "generalist_conditioning_history_stream_visibility",
+        "generalist_conditioning_prefix_visibility_mode",
+        "generalist_conditioning_window_size",
+        "is_conditional_joint_denoise_mode",
+        "resolve_action_conditioning_mode",
+        "select_conditional_warmup_history_suffix",
+        "slice_conditioning_chunk",
+        "uses_generalist_mode_text_token",
+    }
+    parallel_stream_root = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
+    )
+    rollout_path = parallel_stream_root / "conditional_rollout.py"
+    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
+
+    assert rollout_definitions <= _top_level_definitions(rollout_path)
+    assert {
+        "_chunk_size_for_generalist_conditioning",
+        "_generalist_mode_for_action_conditioning",
+        "_history_stream_visibility_for_generalist_conditioning",
+        "_is_conditional_joint_denoise_mode",
+        "_prefix_visibility_mode_for_generalist_conditioning",
+        "_select_conditional_warmup_history_suffix",
+        "_slice_conditioning_chunk",
+        "_uses_generalist_mode_text_token",
+        "_window_size_for_generalist_conditioning",
+    }.isdisjoint(_top_level_definitions(reference_runtime_path))
+
+
 def test_visual_runtime_tensor_transport_has_one_implementation_owner() -> None:
     transport_definitions = {
         "cached_attention_profile",

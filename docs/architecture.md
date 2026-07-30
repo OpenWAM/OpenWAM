@@ -102,6 +102,10 @@ plain contracts:
   condition-latent sources, block/timestep coupling, cache-prefix visibility,
   and attention-profile selection. Policy execution and dynamics evaluation
   consume the same resolver instead of defining local compatibility rules.
+- `parallel_stream.conditional_rollout` maps rollout labels to GJD modes and
+  owns parameter-free conditional window/chunk, history, warmup-suffix, and
+  conditioning-slice layout. Learned mode-token injection and model execution
+  remain in the policy runtime.
 - `models.common.video_geometry` owns video token-grid and unpatchifying
   transforms used by visual execution, policy variants, and decoders.
 - `models.common.cache_backends` owns parameter-free attention-cache policy:
