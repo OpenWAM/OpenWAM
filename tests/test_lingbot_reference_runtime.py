@@ -53,6 +53,7 @@ from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
 )
 from open_wam.models.policy_variants.parallel_stream import cache_execution as cache_execution_module
 from open_wam.models.policy_variants.parallel_stream import cache_lifecycle as cache_lifecycle_module
+from open_wam.models.policy_variants.parallel_stream import forward_execution as forward_execution_module
 from open_wam.models.policy_variants.parallel_stream import reference_runtime as reference_runtime_module
 from open_wam.models.policy_variants.parallel_stream.cache_lifecycle import (
     run_parallel_exact_cache_warmup,
@@ -3316,7 +3317,7 @@ def test_fastwam_first_frame_train_artifacts_can_require_condition_latents() -> 
 
 
 def test_fastwam_first_frame_attention_mask_prevents_action_video_round_trip_leak() -> None:
-    profile = reference_runtime_module._build_fastwam_first_frame_attention_profile(
+    profile = forward_execution_module.build_parallel_first_frame_attention_profile(
         batch_size=1,
         video_seq_len=8,
         action_seq_len=16,

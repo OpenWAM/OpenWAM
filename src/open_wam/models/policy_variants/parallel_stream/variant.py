@@ -33,14 +33,16 @@ from ..contracts import (
     RolloutCursor,
 )
 from .cache_lifecycle import run_parallel_exact_cache_warmup
+from .forward_execution import (
+    run_parallel_action_conditioned_train,
+    run_parallel_exact_train,
+    run_parallel_first_frame_conditioned_train,
+)
 from .reference_runtime import (
     run_parallel_action_conditioned_inference_rollout,
-    run_parallel_action_conditioned_train,
     run_parallel_current_frame_action_chunk_inference_rollout,
     run_parallel_exact_inference_rollout,
-    run_parallel_exact_train,
     run_parallel_fastwam_first_frame_inference_rollout,
-    run_parallel_fastwam_first_frame_train,
 )
 from .training_artifacts import (
     prepare_parallel_action_conditioned_train_artifacts,
@@ -739,7 +741,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         runtime_input_dict = dict(train_artifacts.input_dict)
         runtime_input_dict.pop("proprio_state", None)
         if self.config.runtime_mode == ParallelRuntimeMode.FASTWAM_FIRST_FRAME:
-            latent_pred, action_pred = run_parallel_fastwam_first_frame_train(
+            latent_pred, action_pred = run_parallel_first_frame_conditioned_train(
                 reference_transformer,
                 runtime_input_dict,
             )

@@ -783,6 +783,34 @@ def test_parallel_inference_conditioning_has_one_implementation_owner() -> None:
     }.isdisjoint(_top_level_definitions(reference_runtime_path))
 
 
+def test_parallel_forward_execution_has_one_implementation_owner() -> None:
+    execution_definitions = {
+        "build_parallel_first_frame_attention_profile",
+        "run_parallel_action_conditioned_forward",
+        "run_parallel_action_conditioned_train",
+        "run_parallel_exact_dual_stream_forward",
+        "run_parallel_exact_train",
+        "run_parallel_first_frame_conditioned_forward",
+        "run_parallel_first_frame_conditioned_train",
+    }
+    parallel_stream_root = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
+    )
+    execution_path = parallel_stream_root / "forward_execution.py"
+    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
+
+    assert execution_definitions <= _top_level_definitions(execution_path)
+    assert {
+        "_build_fastwam_first_frame_attention_profile",
+        "_run_parallel_action_conditioned_forward",
+        "_run_parallel_exact_joint_forward_manual",
+        "_run_parallel_fastwam_first_frame_forward_manual",
+        "run_parallel_action_conditioned_train",
+        "run_parallel_exact_train",
+        "run_parallel_fastwam_first_frame_train",
+    }.isdisjoint(_top_level_definitions(reference_runtime_path))
+
+
 def test_parallel_training_artifacts_have_one_implementation_owner() -> None:
     artifact_definitions = {
         "LingbotParallelTrainArtifacts",
