@@ -6,6 +6,7 @@ import torch
 import torch.nn.functional as F
 
 from open_wam.models.common.flow_matching import (
+    FlowMatchScheduler,
     VideoFlowMatchTrainArtifacts,
     build_video_flow_match_train_artifacts,
     build_video_flow_match_inference_scheduler,
@@ -17,6 +18,7 @@ from open_wam.models.common.flow_matching import (
     sample_timestep_id,
     timesteps_matching_sigmas,
 )
+from open_wam.models.common.video_geometry import unpatchify_video_sequence
 from open_wam.models.common.flow_noise_plan import frame_sigmas_for_timesteps
 from open_wam.models.common.attention_profiles import (
     CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
@@ -39,6 +41,13 @@ from open_wam.configs import (
     TrainingConfig,
 )
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
+from open_wam.models.visual_tower.exact_runtime import (
+    clear_exact_prediction_cache,
+    initialize_exact_runtime_cache,
+    prepare_exact_single_stream_input,
+    resolve_runtime_module_dtype,
+    run_exact_single_stream_forward,
+)
 from open_wam.configs.backbone import SharedVideoTransformerConfig
 
 from ..base import PolicyVariant
@@ -110,7 +119,7 @@ from .runtime_routing import (
 )
 from .sequence_layout import MoTTrainingLayout, build_action_grid_ids_for_sequence
 
-# Default LingBot-reference slot-pool window used by both `_initialize_reference_cache`
+# Default LingBot-reference slot-pool window used by both `initialize_exact_runtime_cache`
 # and the Method-1-aligned video-cache trim. Rollout callers may override this
 # through `PolicyInferContext.extra["mot_inference_window_size"]`. Method 1's
 # per-stream effective lookback is `(attn_window // 2) * frame_chunk_size`
@@ -2464,22 +2473,12 @@ class MoTPolicyVariant(PolicyVariant):
         #      cond half when CFG is doubled) so the action expert can
         #      cross-attend the full rollout history.
         #   4) Run action denoise against that MoTVideoCache.
-        from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
-            FlowMatchScheduler as _VideoFlowMatchScheduler,
-            _clear_exact_prediction_cache as _clear_pred_cache,
-            data_seq_to_patch as _data_seq_to_patch,
-            initialize_reference_cache as _initialize_reference_cache,
-            prepare_reference_single_stream_input as _prepare_single_stream_input,
-            reference_runtime_dtype as _reference_runtime_dtype,
-            run_reference_single_stream_forward as _run_single_stream_forward,
-        )
-
         video_latents = visual_outputs.frontend.video_latents
         batch_size = int(video_latents.shape[0])
         device = next(self.action_expert.parameters()).device
         dtype = next(self.action_expert.parameters()).dtype
         video_device = next(visual_tower.core.parameters()).device
-        video_dtype = _reference_runtime_dtype(visual_tower.core)
+        video_dtype = resolve_runtime_module_dtype(visual_tower.core)
 
         chunk_frames, action_horizon, action_tokens_per_frame = resolve_mot_rollout_frame_chunk_size(
             context,
@@ -2586,7 +2585,7 @@ class MoTPolicyVariant(PolicyVariant):
             default_window_size=_MOT_SLOT_POOL_ATTN_WINDOW,
         )
         # Method-1-aligned per-chunk warmup. On chunk 0 we allocate the
-        # slot-pool backend via `initialize_reference_cache` and write the
+        # slot-pool backend via `initialize_exact_runtime_cache` and write the
         # bootstrap obs latents at frame_start=0. On subsequent chunks the
         # driver passes a fresh window of real env observations (encoded
         # into `video_latents`). We:
@@ -2602,7 +2601,7 @@ class MoTPolicyVariant(PolicyVariant):
         # constraint by treating past KV as always-visible.
         current_obs_frame_start = int(runtime_state.next_condition_frame_start)
         if is_first_chunk:
-            _initialize_reference_cache(
+            initialize_exact_runtime_cache(
                 visual_tower.core,
                 cache_name=cache_name,
                 attn_window=inference_window_size,
@@ -2618,10 +2617,10 @@ class MoTPolicyVariant(PolicyVariant):
         elif condition_frame_start_override_raw is not None:
             current_obs_frame_start = int(condition_frame_start_override_raw)
         if self.inference_config.use_cache and not skip_observation_update:
-            _clear_pred_cache(visual_tower.core, cache_name=cache_name)
+            clear_exact_prediction_cache(visual_tower.core, cache_name=cache_name)
         observed_prefix = video_latents.to(device=video_device, dtype=video_dtype)
         if not skip_observation_update:
-            boot_video_input = _prepare_single_stream_input(
+            boot_video_input = prepare_exact_single_stream_input(
                 latents=observed_prefix,
                 timestep=0.0,
                 text_emb=text_context_for_video,
@@ -2629,7 +2628,7 @@ class MoTPolicyVariant(PolicyVariant):
                 backbone_config=visual_tower.config,
                 action_mode=False,
             )
-            _run_single_stream_forward(
+            run_exact_single_stream_forward(
                 visual_tower.core,
                 input_dict=boot_video_input,
                 update_cache=2,
@@ -2675,7 +2674,7 @@ class MoTPolicyVariant(PolicyVariant):
                 device=video_device,
                 dtype=video_dtype,
             )
-            video_scheduler = _VideoFlowMatchScheduler(
+            video_scheduler = FlowMatchScheduler(
                 shift=self.training_config.video_sigma_shift,
                 sigma_min=0.0,
                 extra_one_step=True,
@@ -2690,7 +2689,7 @@ class MoTPolicyVariant(PolicyVariant):
             )
             for index, timestep in enumerate(video_timesteps):
                 last_step = index == len(video_timesteps) - 1
-                video_input = _prepare_single_stream_input(
+                video_input = prepare_exact_single_stream_input(
                     latents=latents,
                     timestep=timestep,
                     text_emb=text_context_for_video,
@@ -2698,7 +2697,7 @@ class MoTPolicyVariant(PolicyVariant):
                     backbone_config=visual_tower.config,
                     action_mode=False,
                 )
-                video_noise_pred = _run_single_stream_forward(
+                video_noise_pred = run_exact_single_stream_forward(
                     visual_tower.core,
                     input_dict=video_input,
                     update_cache=1 if (last_step and video_commit_before_action and self.inference_config.use_cache) else 0,
@@ -2709,7 +2708,7 @@ class MoTPolicyVariant(PolicyVariant):
                     force_cfg_batch=use_cfg,
                 )
                 if not last_step:
-                    video_noise_pred = _data_seq_to_patch(
+                    video_noise_pred = unpatchify_video_sequence(
                         visual_tower.core.patch_size,
                         video_noise_pred,
                         chunk_frames,
@@ -2728,8 +2727,9 @@ class MoTPolicyVariant(PolicyVariant):
         # (teacher-forcing the pred positions with real obs). The pred
         # entries (chunk_frames tokens at rotary [gen_start..gen_start+4))
         # will be cleared + overwritten by the next chunk's stable obs
-        # write via `_clear_pred_cache` + `_run_single_stream_forward(
-        # update_cache=2)`. The TOTAL number of clean video frames the
+        # write via `clear_exact_prediction_cache` plus
+        # `run_exact_single_stream_forward(update_cache=2)`. The TOTAL number
+        # of clean video frames the
         # action expert sees this chunk is observation frames +
         # current-chunk pred frames.
         total_clean_video_frames = generation_frame_start + (0 if action_only_rollout else chunk_frames)
@@ -2999,7 +2999,7 @@ class MoTPolicyVariant(PolicyVariant):
             and self.inference_config.use_cache
             and not action_only_rollout
         ):
-            deferred_video_input = _prepare_single_stream_input(
+            deferred_video_input = prepare_exact_single_stream_input(
                 latents=predicted_latents.to(device=video_device, dtype=video_dtype),
                 timestep=0.0,
                 text_emb=text_context_for_video,
@@ -3007,7 +3007,7 @@ class MoTPolicyVariant(PolicyVariant):
                 backbone_config=visual_tower.config,
                 action_mode=False,
             )
-            _run_single_stream_forward(
+            run_exact_single_stream_forward(
                 visual_tower.core,
                 input_dict=deferred_video_input,
                 update_cache=1,

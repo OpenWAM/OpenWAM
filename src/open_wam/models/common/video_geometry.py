@@ -80,6 +80,39 @@ def slice_token_grid_frames(
     )
 
 
+def unpatchify_video_sequence(
+    patch_size: tuple[int, int, int],
+    token_predictions: torch.Tensor,
+    latent_num_frames: int,
+    latent_height: int,
+    latent_width: int,
+    *,
+    batch_size: int,
+) -> torch.Tensor:
+    """Restore a flattened reference-runtime sequence to video latents.
+
+    This is the geometry-only inverse used by exact single- and dual-stream
+    runtimes when they do not carry a ``TokenGridMetadata`` instance.
+    """
+
+    patch_t, patch_h, patch_w = patch_size
+    post_patch_num_frames = latent_num_frames // patch_t
+    post_patch_height = latent_height // patch_h
+    post_patch_width = latent_width // patch_w
+    patches = token_predictions.reshape(
+        batch_size,
+        post_patch_num_frames,
+        post_patch_height,
+        post_patch_width,
+        patch_t,
+        patch_h,
+        patch_w,
+        -1,
+    )
+    patches = patches.permute(0, 7, 1, 4, 2, 5, 3, 6)
+    return patches.flatten(6, 7).flatten(4, 5).flatten(2, 3)
+
+
 def unpatchify_video_tokens(
     token_predictions: torch.Tensor,
     *,

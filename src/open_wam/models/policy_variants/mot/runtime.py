@@ -15,9 +15,11 @@ from open_wam.models.common.attention_profiles import (
     select_attention_profile_mask,
 )
 from open_wam.models.common.coupling_profiles import build_exact_packed_video_action_coupling_profile
-from open_wam.models.common.video_geometry import video_token_grid_from_latent_shape
+from open_wam.models.common.video_geometry import (
+    unpatchify_video_sequence,
+    video_token_grid_from_latent_shape,
+)
 from open_wam.models.visual_tower.grid_ids import build_video_grid_ids
-from open_wam.models.policy_variants.parallel_stream.reference_runtime import data_seq_to_patch
 from open_wam.models.visual_tower.shared_transformer_support import (
     layer_norm_with_materialized_params,
     linear_with_materialized_params,
@@ -1429,7 +1431,7 @@ def forward_mot_packed_coupling_denoise(
         + shift
     ).type_as(video_hidden_states)
     packed_video_flow = linear_with_materialized_params(visual_tower.core.proj_out, video_hidden_states)
-    packed_video_flow = data_seq_to_patch(
+    packed_video_flow = unpatchify_video_sequence(
         visual_tower.core.patch_size,
         packed_video_flow,
         num_frames * 2,
@@ -1680,7 +1682,7 @@ def forward_joint_video_action_denoise(
         + shift
     ).type_as(video_hidden_states)
     video_flow = linear_with_materialized_params(visual_tower.core.proj_out, video_hidden_states)
-    video_flow = data_seq_to_patch(
+    video_flow = unpatchify_video_sequence(
         visual_tower.core.patch_size,
         video_flow,
         num_frames,

@@ -90,6 +90,12 @@ plain contracts:
 - `visual_tower.runtime_tensor_transport` owns parameter-free tensor,
   attention-profile, and slot-pool-state movement across block devices. The
   core binds model patch geometry but does not reimplement transport policy.
+- `visual_tower.exact_runtime` owns shared exact single-stream input
+  preparation, CFG duplication, dtype selection, execution, and cache
+  lifecycle. Policy runtimes may select when to use it but do not reimplement
+  these backbone operations.
+- `models.common.video_geometry` owns video token-grid and unpatchifying
+  transforms used by visual execution, policy variants, and decoders.
 - `models.common.cache_backends` owns parameter-free attention-cache policy:
   dense-mask normalization, cached-prefix visibility, packed sequence ids,
   slot retention, and merged-prefix truncation. The shared transformer owns

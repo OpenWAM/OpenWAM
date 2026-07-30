@@ -100,6 +100,26 @@ def test_utils_package_does_not_depend_on_model_implementations() -> None:
     assert violations == []
 
 
+def test_visual_tower_does_not_depend_on_policy_implementations() -> None:
+    violations = sorted(
+        imported
+        for imported in _absolute_imports("models/visual_tower")
+        if imported.startswith("open_wam.models.policy_variants")
+    )
+
+    assert violations == []
+
+
+def test_mot_policy_does_not_depend_on_parallel_stream_implementation() -> None:
+    violations = sorted(
+        imported
+        for imported in _absolute_imports("models/policy_variants/mot")
+        if imported.startswith("open_wam.models.policy_variants.parallel_stream")
+    )
+
+    assert violations == []
+
+
 def test_core_packages_do_not_depend_on_optional_runtime_surfaces() -> None:
     forbidden_prefixes = (
         "open_wam.evals",
@@ -624,6 +644,43 @@ def test_shared_transformer_support_has_one_implementation_owner() -> None:
     assert {
         f"_{name}" for name in support_definitions if not name.startswith("Shared")
     }.isdisjoint(_top_level_definitions(replica_core_path))
+
+
+def test_exact_single_stream_runtime_has_one_implementation_owner() -> None:
+    exact_runtime_definitions = {
+        "build_reference_mesh_id",
+        "clear_exact_prediction_cache",
+        "initialize_exact_runtime_cache",
+        "prepare_exact_single_stream_forward_input",
+        "prepare_exact_single_stream_input",
+        "repeat_exact_single_stream_input_for_cfg",
+        "resolve_runtime_module_dtype",
+        "run_exact_single_stream_forward",
+    }
+    exact_runtime_path = PACKAGE_ROOT / "models" / "visual_tower" / "exact_runtime.py"
+    reference_runtime_path = (
+        PACKAGE_ROOT
+        / "models"
+        / "policy_variants"
+        / "parallel_stream"
+        / "reference_runtime.py"
+    )
+
+    assert exact_runtime_definitions <= _top_level_definitions(exact_runtime_path)
+    assert {
+        "_clear_exact_prediction_cache",
+        "get_mesh_id",
+        "initialize_reference_cache",
+        "prepare_reference_forward_input",
+        "prepare_reference_single_stream_input",
+        "reference_runtime_dtype",
+        "repeat_input_for_cfg",
+        "run_reference_single_stream_forward",
+    }.isdisjoint(_top_level_definitions(reference_runtime_path))
+    assert "unpatchify_video_sequence" in _top_level_definitions(
+        PACKAGE_ROOT / "models" / "common" / "video_geometry.py"
+    )
+    assert "data_seq_to_patch" not in _top_level_definitions(reference_runtime_path)
 
 
 def test_visual_runtime_tensor_transport_has_one_implementation_owner() -> None:

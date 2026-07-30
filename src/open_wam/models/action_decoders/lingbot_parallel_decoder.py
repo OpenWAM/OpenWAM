@@ -7,9 +7,9 @@ from einops import rearrange
 from open_wam.configs import JointDenoiseTrainingMode
 from open_wam.models.policy_variants.contracts import PolicyInferOutput, PolicyTrainBatch, PolicyTrainOutput
 from open_wam.models.common.metric_rollups import add_joint_conditioning_mode_metrics
+from open_wam.models.common.video_geometry import unpatchify_video_sequence
 
 from .base import ActionDecoder, ActionDecoderInferOutput, ActionDecoderTrainOutput, align_policy_features
-from open_wam.models.policy_variants.parallel_stream.reference_runtime import data_seq_to_patch
 
 
 class LingbotParallelActionDecoder(ActionDecoder):
@@ -57,7 +57,7 @@ class LingbotParallelActionDecoder(ActionDecoder):
             "b (f n) c -> b c f n 1",
             f=input_dict["action_dict"]["targets"].shape[-3],
         )
-        latent_pred_5d = data_seq_to_patch(
+        latent_pred_5d = unpatchify_video_sequence(
             policy_output.aux["patch_size"],
             latent_pred,
             input_dict["latent_dict"]["targets"].shape[-3],

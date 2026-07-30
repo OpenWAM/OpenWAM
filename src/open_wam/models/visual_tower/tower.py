@@ -8,10 +8,12 @@ from torch import nn
 from open_wam.configs import BackboneImplementation, ExportedRuntimeActionInitMode
 from open_wam.data.raw_video import ViewPlacement
 from open_wam.models.common import (
+    FlowMatchScheduler,
     RolloutCursor,
     clear_cache_backend_payload,
     init_cache_backend_payload,
     resolve_cache_backend_spec,
+    unpatchify_video_sequence,
 )
 from open_wam.configs.backbone import SharedVideoTransformerConfig, normalize_backbone_implementation
 from open_wam.models.video_backbone.contracts import AttentionCacheEntry, CacheState, CacheUpdateMetadata
@@ -25,6 +27,11 @@ from .exported_runtime_backbone import (
     is_open_wam_exported_runtime_backbone_dir,
     load_exported_runtime_backbone_into_replica_core,
     resolve_runtime_backbone_dir,
+)
+from .exact_runtime import (
+    prepare_exact_single_stream_input,
+    resolve_runtime_module_dtype,
+    run_exact_single_stream_forward,
 )
 from .frontend import SharedVideoFrontend
 from .grid_ids import build_mesh_id, build_video_grid_ids
@@ -215,11 +222,6 @@ class VisualTower(nn.Module):
     ) -> torch.Tensor:
         """Run the shared exact single-stream video path without variant-specific logic."""
 
-        from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
-            data_seq_to_patch,
-            reference_runtime_dtype,
-        )
-
         if noisy_latents.ndim != 5:
             raise ValueError(
                 "Expected `noisy_latents` with shape [B, C, T, H, W], "
@@ -231,7 +233,7 @@ class VisualTower(nn.Module):
                 "Video-flow prediction expects `timesteps` with shape [B, T], "
                 f"got {tuple(timesteps.shape)} for latents {tuple(noisy_latents.shape)}."
             )
-        model_dtype = reference_runtime_dtype(self.core)
+        model_dtype = resolve_runtime_module_dtype(self.core)
         if text_context is None:
             text_context = torch.zeros(
                 batch_size,
@@ -266,7 +268,7 @@ class VisualTower(nn.Module):
         )
         if step_output.tokens is None:
             raise ValueError("Exact single-stream runtime step did not return video flow tokens.")
-        return data_seq_to_patch(
+        return unpatchify_video_sequence(
             self.core.patch_size,
             step_output.tokens,
             num_frames,
@@ -288,8 +290,6 @@ class VisualTower(nn.Module):
     ) -> CacheState:
         """Materialize a single-stream video self-attention cache via shared runtime execution."""
 
-        from open_wam.models.policy_variants.parallel_stream.reference_runtime import reference_runtime_dtype
-
         if observed_prefix.ndim != 5:
             raise ValueError(
                 "Expected `observed_prefix` with shape [B, C, T, H, W], "
@@ -298,7 +298,7 @@ class VisualTower(nn.Module):
         batch_size, _, num_frames, latent_height, latent_width = observed_prefix.shape
         if num_frames <= 0:
             raise ValueError("Video cache prefill requires at least one observed frame.")
-        model_dtype = reference_runtime_dtype(self.core)
+        model_dtype = resolve_runtime_module_dtype(self.core)
         if text_context is None:
             text_context = torch.zeros(
                 batch_size,
@@ -377,11 +377,6 @@ class VisualTower(nn.Module):
     ) -> tuple[torch.Tensor, tuple[AttentionCacheEntry, ...]]:
         """Run an exact video forward and expose its self-attention K/V."""
 
-        from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
-            data_seq_to_patch,
-            reference_runtime_dtype,
-        )
-
         if video_latents.ndim != 5:
             raise ValueError(
                 "Expected `video_latents` with shape [B, C, T, H, W], "
@@ -420,7 +415,7 @@ class VisualTower(nn.Module):
                 f"latents={tuple(video_latents.shape)}, patch={(patch_t, patch_h, patch_w)}."
             )
 
-        model_dtype = reference_runtime_dtype(self.core)
+        model_dtype = resolve_runtime_module_dtype(self.core)
         if text_context is None:
             text_context = torch.zeros(
                 batch_size,
@@ -488,7 +483,7 @@ class VisualTower(nn.Module):
             raise ValueError("Packed exact video forward did not return video flow tokens.")
         if step_output.cache_state is None:
             raise ValueError("Packed exact video forward did not return a cache state.")
-        flow_pred = data_seq_to_patch(
+        flow_pred = unpatchify_video_sequence(
             self.core.patch_size,
             step_output.tokens,
             num_frames,
@@ -567,14 +562,6 @@ class VisualTower(nn.Module):
         loop itself.
         """
 
-        from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
-            FlowMatchScheduler,
-            data_seq_to_patch,
-            prepare_reference_single_stream_input,
-            reference_runtime_dtype,
-            run_reference_single_stream_forward,
-        )
-
         if observed_prefix.ndim != 5 or future_template.ndim != 5:
             raise ValueError(
                 "Expected observed_prefix and future_template with shape [B, C, T, H, W], "
@@ -589,7 +576,7 @@ class VisualTower(nn.Module):
             raise ValueError("Expected at least one future frame to generate.")
 
         transformer = self.core
-        model_dtype = reference_runtime_dtype(transformer)
+        model_dtype = resolve_runtime_module_dtype(transformer)
         batch_size, channels, future_num_frames, latent_height, latent_width = future_template.shape
         total_num_frames = observed_prefix.shape[2] + future_num_frames
         resolved_text_context = text_context
@@ -634,7 +621,7 @@ class VisualTower(nn.Module):
 
         with torch.inference_mode():
             for timestep in timesteps:
-                video_input = prepare_reference_single_stream_input(
+                video_input = prepare_exact_single_stream_input(
                     latents=latents,
                     timestep=timestep,
                     text_emb=resolved_text_context,
@@ -643,7 +630,7 @@ class VisualTower(nn.Module):
                     action_mode=False,
                     cond=observed_prefix,
                 )
-                video_noise_pred = run_reference_single_stream_forward(
+                video_noise_pred = run_exact_single_stream_forward(
                     transformer,
                     input_dict=video_input,
                     update_cache=0,
@@ -653,7 +640,7 @@ class VisualTower(nn.Module):
                     negative_text_emb=negative_text_context,
                     force_cfg_batch=False,
                 )
-                video_noise_pred = data_seq_to_patch(
+                video_noise_pred = unpatchify_video_sequence(
                     transformer.patch_size,
                     video_noise_pred,
                     total_num_frames,
