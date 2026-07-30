@@ -115,6 +115,10 @@ plain contracts:
   first-frame and full-window clean latent conditions. Generated decoder
   windows remain in `models.policy_variants.common.video_conditioning`;
   M5 text and proprio conditioning remain in `mot.conditioning`.
+- `parallel_stream.generalist_training` owns FSDP-coordinated GJD mode
+  selection and policy-local joint/FDM/IDM artifact mutation. Artifact
+  construction, model execution, caches, and decoder losses remain in their
+  existing runtime owners; generic flow schedulers remain in `models.common`.
 - `models.common.video_geometry` owns video token-grid and unpatchifying
   transforms used by visual execution, policy variants, and decoders.
 - `models.common.cache_backends` owns parameter-free attention-cache policy:

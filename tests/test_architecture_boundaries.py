@@ -832,6 +832,27 @@ def test_parallel_latent_conditioning_has_one_implementation_owner() -> None:
     }.isdisjoint(_top_level_definitions(reference_runtime_path))
 
 
+def test_parallel_generalist_training_has_one_implementation_owner() -> None:
+    training_definitions = {
+        "ParallelTrainArtifacts",
+        "apply_generalist_joint_denoise_training_mode",
+        "apply_generalist_legacy_prefix_joint_training_mode",
+        "sample_generalist_joint_denoise_training_mode",
+    }
+    parallel_stream_root = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
+    )
+    training_path = parallel_stream_root / "generalist_training.py"
+    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
+
+    assert training_definitions <= _top_level_definitions(training_path)
+    assert {
+        "_apply_generalist_joint_denoise_training_mode",
+        "_apply_generalist_legacy_prefix_joint_training_mode",
+        "_sample_joint_denoise_training_mode",
+    }.isdisjoint(_top_level_definitions(reference_runtime_path))
+
+
 def test_visual_runtime_tensor_transport_has_one_implementation_owner() -> None:
     transport_definitions = {
         "cached_attention_profile",
