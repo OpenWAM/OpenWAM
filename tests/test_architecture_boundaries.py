@@ -520,6 +520,34 @@ def test_mot_runtime_controls_have_role_owners() -> None:
     )
 
 
+def test_superseded_exact_runtime_helpers_are_retired() -> None:
+    mot_runtime_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "runtime.py"
+    )
+    parallel_runtime_definitions = _top_level_definitions(
+        PACKAGE_ROOT
+        / "models"
+        / "policy_variants"
+        / "parallel_stream"
+        / "reference_runtime.py"
+    )
+
+    assert {
+        "append_mot_video_cache",
+        "build_packed_video_self_attention_mask",
+        "forward_packed_action_with_video_cache",
+        "forward_packed_video_denoise",
+    }.isdisjoint(mot_runtime_definitions)
+    assert {
+        "_build_action_condition_volume",
+        "_build_next_exact_cache_state",
+        "_commit_joint_chunk_to_exact_cache",
+        "_expand_condition_video_latents",
+        "_sample_timestep_values",
+        "should_couple_action_to_video_timesteps",
+    }.isdisjoint(parallel_runtime_definitions)
+
+
 def test_mot_packed_inference_layout_has_one_owner() -> None:
     inference_layout_path = (
         PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "inference_layout.py"

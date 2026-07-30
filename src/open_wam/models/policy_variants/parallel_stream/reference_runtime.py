@@ -42,7 +42,6 @@ from open_wam.models.common.flow_noise_plan import (
     clean_timestep_values,
     sample_joint_denoise_timestep_values,
     sample_coupled_timestep_values as sample_shared_coupled_timestep_values,
-    sample_timestep_values as sample_shared_timestep_values,
 )
 from open_wam.models.common.joint_conditioning import (
     generalist_joint_conditioning_chunk_size,
@@ -311,17 +310,6 @@ def resolve_parallel_current_block_coupling(
     return CurrentBlockCoupling.VIDEO_THEN_ACTION
 
 
-def should_couple_action_to_video_timesteps(
-    policy_config: ParallelStreamPolicyConfig,
-) -> bool:
-    """Backward-compatible predicate for joint denoise modes with shared video clock."""
-
-    return resolve_parallel_joint_timestep_coupling(policy_config) in {
-        JointTimestepCoupling.MATCH_SIGMA,
-        JointTimestepCoupling.SHARED_VIDEO_SCHEDULE,
-    }
-
-
 def resolve_parallel_joint_timestep_coupling(
     policy_config: ParallelStreamPolicyConfig,
 ) -> JointTimestepCoupling:
@@ -524,19 +512,6 @@ def _sample_joint_denoise_training_mode(
         enum_cls=JointDenoiseTrainingMode,
         device=device,
         error_label="Generalist joint-denoise training mode",
-    )
-
-
-def _sample_timestep_values(
-    scheduler: FlowMatchScheduler,
-    *,
-    num_frames: int,
-    device: torch.device,
-) -> torch.Tensor:
-    return sample_shared_timestep_values(
-        scheduler,
-        num_frames=num_frames,
-        device=device,
     )
 
 
@@ -2185,33 +2160,6 @@ def _clear_exact_prediction_cache(transformer: torch.nn.Module, *, cache_name: s
         transformer.clear_pred_cache(cache_name)
 
 
-def _build_next_exact_cache_state(
-    *,
-    runtime_mode: str,
-    cache_context: ExactCacheContext,
-    infer_cache: dict[str, Any],
-    frame_start: int,
-    advance_frame_start: bool,
-    frame_chunk_size: int,
-    extra: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    next_cache = {
-        "runtime_mode": runtime_mode,
-        "cache_name": cache_context.cache_name,
-        "cache_backend_name": cache_context.cache_backend_name,
-        "cache_initialized": cache_context.cache_initialized,
-        "frame_start": int(frame_start + frame_chunk_size if advance_frame_start else frame_start),
-        "latent_height": cache_context.latent_height,
-        "latent_width": cache_context.latent_width,
-        "batch_size": cache_context.batch_size,
-        "step_index": int(infer_cache.get("step_index", 0) + 1),
-        "use_cfg": cache_context.use_cfg,
-    }
-    if extra:
-        next_cache.update(extra)
-    return next_cache
-
-
 def prepare_reference_single_stream_input(
     *,
     latents: torch.Tensor,
@@ -3793,38 +3741,6 @@ def _run_parallel_action_conditioned_forward(
     return combined_video_pred, combined_action_pred
 
 
-def _expand_condition_video_latents(
-    condition_latents: torch.Tensor,
-    *,
-    target_frames: int,
-) -> torch.Tensor:
-    if condition_latents.shape[2] >= target_frames:
-        return condition_latents[:, :, -target_frames:]
-    pad_frames = target_frames - condition_latents.shape[2]
-    pad = condition_latents[:, :, -1:].repeat(1, 1, pad_frames, 1, 1)
-    return torch.cat([condition_latents, pad], dim=2)
-
-
-def _build_action_condition_volume(
-    *,
-    batch_size: int,
-    action_dim: int,
-    frame_chunk_size: int,
-    action_per_frame: int,
-    device: torch.device,
-    dtype: torch.dtype,
-) -> torch.Tensor:
-    return torch.zeros(
-        batch_size,
-        action_dim,
-        frame_chunk_size,
-        action_per_frame,
-        1,
-        device=device,
-        dtype=dtype,
-    )
-
-
 def _build_joint_clean_cache_attention_mask(
     *,
     latents: torch.Tensor,
@@ -4326,55 +4242,6 @@ def _write_exact_cache_chunk(
                 )
         return
     raise ValueError(f"Unsupported exact cache write_mode: {cache_spec.write_mode!r}")
-
-
-def _commit_joint_chunk_to_exact_cache(
-    *,
-    transformer: torch.nn.Module,
-    backbone_config: SharedVideoTransformerConfig,
-    inference_config: InferenceConfig,
-    policy_config: ParallelStreamPolicyConfig | None = None,
-    cache_name: str,
-    frame_start: int,
-    latents: torch.Tensor,
-    actions: torch.Tensor,
-    text_emb: torch.Tensor,
-    negative_text_emb: torch.Tensor | None,
-    use_cfg: bool,
-    action_channel_mask: torch.Tensor | None,
-) -> None:
-    _write_joint_clean_tokens_to_exact_cache(
-        transformer=transformer,
-        cache_name=cache_name,
-        frame_start=frame_start,
-        latents=latents,
-        actions=actions,
-        text_emb=text_emb,
-        negative_text_emb=negative_text_emb,
-        use_cfg=use_cfg,
-        action_channel_mask=action_channel_mask,
-        update_cache=1,
-        backbone_config=backbone_config,
-        chunk_size=inference_config.frame_chunk_size,
-        window_size=(
-            int(policy_config.attn_window)
-            if policy_config is not None
-            else int(inference_config.frame_chunk_size)
-        ),
-        current_block_coupling=(
-            resolve_parallel_current_block_coupling(policy_config)
-            if policy_config is not None
-            else CurrentBlockCoupling.JOINT
-        ),
-        preserve_video_pretrain_history=bool(
-            getattr(policy_config, "preserve_video_pretrain_history", False)
-        )
-        if policy_config is not None
-        else False,
-        history_stream_visibility=(
-            resolve_parallel_history_stream_visibility(policy_config) if policy_config is not None else None
-        ),
-    )
 
 
 def _summarize_slot_pool_cache_state(
