@@ -32,6 +32,10 @@ from ..contracts import (
     PolicyTrainOutput,
     RolloutCursor,
 )
+from .anchored_action_rollout import (
+    run_parallel_current_frame_action_chunk_inference_rollout,
+    run_parallel_fastwam_first_frame_inference_rollout,
+)
 from .cache_lifecycle import run_parallel_exact_cache_warmup
 from .forward_execution import (
     run_parallel_action_conditioned_train,
@@ -39,10 +43,6 @@ from .forward_execution import (
     run_parallel_first_frame_conditioned_train,
 )
 from .packed_rollout import run_parallel_packed_inference_rollout
-from .reference_runtime import (
-    run_parallel_current_frame_action_chunk_inference_rollout,
-    run_parallel_fastwam_first_frame_inference_rollout,
-)
 from .staged_rollout import run_parallel_staged_inference_rollout
 from .training_artifacts import (
     prepare_parallel_action_conditioned_train_artifacts,
@@ -81,9 +81,9 @@ class ParallelStreamPolicyVariant(PolicyVariant):
     """LingBot-style parallel-stream policy variant.
 
     The canonical method-1 path is exact-runtime-only. Training and inference
-    semantics live in `reference_runtime.py` and execute on the shared runtime
-    backbone; this variant intentionally avoids maintaining a second local
-    packed-sequence implementation.
+    semantics live in role-owned parallel-stream modules and execute on the
+    shared runtime backbone; this variant intentionally avoids maintaining a
+    second local packed-sequence implementation.
     """
 
     def __init__(

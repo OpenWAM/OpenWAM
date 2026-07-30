@@ -558,8 +558,8 @@ def make_rollout_cursor(cursor, *, current_start_frame: int, block_index: int, c
 
 
 def run_parallel_action_conditioned_action_override_inference_rollout(**kwargs):
-    from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
-        run_parallel_action_conditioned_action_override_inference_rollout as run_impl,
+    from open_wam.models.policy_variants.parallel_stream.packed_rollout import (
+        run_parallel_packed_action_override_rollout,
     )
 
-    return run_impl(**kwargs)
+    return run_parallel_packed_action_override_rollout(**kwargs)

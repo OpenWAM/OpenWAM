@@ -840,14 +840,44 @@ def test_parallel_packed_rollout_has_one_implementation_owner() -> None:
 
     assert {
         "_run_parallel_packed_inference_rollout_impl",
+        "run_parallel_packed_action_override_rollout",
         "run_parallel_packed_inference_rollout",
     } <= _top_level_definitions(packed_rollout_path)
     assert {
         "_run_parallel_action_conditioned_inference_rollout_impl",
         "_run_parallel_packed_inference_rollout_impl",
+        "run_parallel_action_conditioned_action_override_inference_rollout",
+        "run_parallel_packed_action_override_rollout",
         "run_parallel_action_conditioned_inference_rollout",
         "run_parallel_packed_inference_rollout",
     }.isdisjoint(_top_level_definitions(reference_runtime_path))
+
+
+def test_parallel_anchored_action_rollout_has_one_implementation_owner() -> None:
+    parallel_stream_root = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
+    )
+    anchored_rollout_path = parallel_stream_root / "anchored_action_rollout.py"
+    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
+    owned_rollouts = {
+        "run_parallel_current_frame_action_chunk_inference_rollout",
+        "run_parallel_fastwam_first_frame_inference_rollout",
+    }
+
+    assert owned_rollouts <= _top_level_definitions(anchored_rollout_path)
+    assert owned_rollouts.isdisjoint(_top_level_definitions(reference_runtime_path))
+
+
+def test_parallel_reference_runtime_is_a_compatibility_only_facade() -> None:
+    reference_runtime_path = (
+        PACKAGE_ROOT
+        / "models"
+        / "policy_variants"
+        / "parallel_stream"
+        / "reference_runtime.py"
+    )
+
+    assert not _top_level_definitions(reference_runtime_path)
 
 
 def test_parallel_training_artifacts_have_one_implementation_owner() -> None:

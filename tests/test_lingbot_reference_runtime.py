@@ -51,6 +51,9 @@ from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
     run_parallel_fastwam_first_frame_train,
     run_reference_single_stream_forward,
 )
+from open_wam.models.policy_variants.parallel_stream import (
+    anchored_action_rollout as anchored_action_rollout_module,
+)
 from open_wam.models.policy_variants.parallel_stream import cache_execution as cache_execution_module
 from open_wam.models.policy_variants.parallel_stream import cache_lifecycle as cache_lifecycle_module
 from open_wam.models.policy_variants.parallel_stream import forward_execution as forward_execution_module
@@ -3066,7 +3069,7 @@ def test_current_frame_action_chunk_inference_rollout_is_action_only_no_cache(mo
         return video_pred, action_pred
 
     monkeypatch.setattr(
-        reference_runtime_module,
+        anchored_action_rollout_module,
         "_run_parallel_action_conditioned_forward",
         fake_action_conditioned_forward,
     )
@@ -5189,7 +5192,11 @@ def test_action_override_rollout_routes_per_chunk_proprio_state_to_hidden_contex
             debug={},
         )
 
-    monkeypatch.setattr(reference_runtime_module, "_run_parallel_action_conditioned_inference_rollout_impl", fake_impl)
+    monkeypatch.setattr(
+        packed_rollout_module,
+        "_run_parallel_packed_inference_rollout_impl",
+        fake_impl,
+    )
     proprio_state = torch.ones(1, 8)
     policy_config = ParallelStreamPolicyConfig(
         hidden_size=32,
@@ -5235,7 +5242,11 @@ def test_action_override_rollout_selects_anchor_from_3d_per_chunk_proprio_state(
             debug={},
         )
 
-    monkeypatch.setattr(reference_runtime_module, "_run_parallel_action_conditioned_inference_rollout_impl", fake_impl)
+    monkeypatch.setattr(
+        packed_rollout_module,
+        "_run_parallel_packed_inference_rollout_impl",
+        fake_impl,
+    )
     proprio_state = torch.arange(2 * 3 * 8, dtype=torch.float32).reshape(2, 3, 8)
     policy_config = ParallelStreamPolicyConfig(
         hidden_size=32,

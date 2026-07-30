@@ -16,6 +16,7 @@ from open_wam.configs.enums import (
     JointDenoiseTrainingMode,
     JointTimestepCoupling,
     ParallelExactCacheWriteMode,
+    ProprioContextMode,
 )
 from open_wam.configs.inference import InferenceConfig
 from open_wam.configs.policy_variant import ParallelStreamPolicyConfig
@@ -668,3 +669,68 @@ def run_parallel_packed_inference_rollout(
         proprio_state=proprio_state,
         hidden_proprio_state=hidden_proprio_state,
     )
+
+
+def run_parallel_packed_action_override_rollout(
+    *,
+    transformer: torch.nn.Module,
+    backbone_config: SharedVideoTransformerConfig,
+    policy_config: ParallelStreamPolicyConfig,
+    training_config: TrainingConfig,
+    inference_config: InferenceConfig,
+    action_dim: int,
+    condition_latents: torch.Tensor | None,
+    text_emb: torch.Tensor | None,
+    negative_text_emb: torch.Tensor | None,
+    action_channel_mask: torch.Tensor | None,
+    infer_cache: dict[str, Any],
+    advance_frame_start: bool,
+    forced_action_latents: torch.Tensor | None = None,
+    commit_action_latents: torch.Tensor | None = None,
+    forced_action_noise: torch.Tensor | None = None,
+    action_conditioning_mode: str = "forced_action_joint_fdm",
+    proprio_state: torch.Tensor | None = None,
+    hidden_proprio_state: torch.Tensor | None = None,
+) -> ParallelInferArtifacts:
+    """Run packed joint denoising with caller-owned action overrides.
+
+    For action-conditioned-video modes, `forced_action_latents` is exposed as a
+    clean current action condition. `commit_action_latents` only changes the
+    clean action tokens committed into history after the chunk is generated.
+    """
+
+    resolved_proprio_state = proprio_state
+    resolved_hidden_proprio_state = hidden_proprio_state
+    if ProprioContextMode(policy_config.proprio_context_mode) == ProprioContextMode.PER_CHUNK_ADDITIVE:
+        if resolved_hidden_proprio_state is None:
+            resolved_hidden_proprio_state = proprio_state
+        if isinstance(resolved_hidden_proprio_state, torch.Tensor) and resolved_hidden_proprio_state.ndim == 3:
+            resolved_hidden_proprio_state = resolved_hidden_proprio_state[:, -1, :]
+        resolved_proprio_state = None
+
+    return _run_parallel_packed_inference_rollout_impl(
+        transformer=transformer,
+        backbone_config=backbone_config,
+        policy_config=policy_config,
+        training_config=training_config,
+        inference_config=inference_config,
+        action_dim=action_dim,
+        condition_latents=condition_latents,
+        text_emb=text_emb,
+        negative_text_emb=negative_text_emb,
+        action_channel_mask=action_channel_mask,
+        infer_cache=infer_cache,
+        advance_frame_start=advance_frame_start,
+        forced_action_latents=forced_action_latents,
+        commit_action_latents=commit_action_latents,
+        forced_action_noise=forced_action_noise,
+        action_conditioning_mode=action_conditioning_mode,
+        proprio_state=resolved_proprio_state,
+        hidden_proprio_state=resolved_hidden_proprio_state,
+    )
+
+
+# Compatibility for callers that adopted the research-era function name.
+run_parallel_action_conditioned_action_override_inference_rollout = (
+    run_parallel_packed_action_override_rollout
+)
