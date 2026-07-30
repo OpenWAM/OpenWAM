@@ -562,9 +562,11 @@ def _build_tiny_generalist_pipeline(
 def test_forced_joint_training_respects_timestep_coupling_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import open_wam.models.policy_variants.mot.variant as mot_variant_module
+    import open_wam.models.policy_variants.mot.packed_training as mot_packed_training_module
 
-    original_build_action_artifacts = mot_variant_module.build_frame_aligned_action_flow_match_train_artifacts
+    original_build_action_artifacts = (
+        mot_packed_training_module.build_frame_aligned_action_flow_match_train_artifacts
+    )
     saw_action_coupling_inputs: list[tuple[bool, bool, bool]] = []
 
     def spy_build_action_artifacts(*args, **kwargs):
@@ -578,7 +580,7 @@ def test_forced_joint_training_respects_timestep_coupling_mode(
         return original_build_action_artifacts(*args, **kwargs)
 
     monkeypatch.setattr(
-        mot_variant_module,
+        mot_packed_training_module,
         "build_frame_aligned_action_flow_match_train_artifacts",
         spy_build_action_artifacts,
     )
@@ -633,9 +635,11 @@ def test_m5_generalist_mode_token_is_appended_in_train_path() -> None:
 def test_generalist_match_sigma_uses_video_clock_for_all_modes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import open_wam.models.policy_variants.mot.variant as mot_variant_module
+    import open_wam.models.policy_variants.mot.packed_training as mot_packed_training_module
 
-    original_build_action_artifacts = mot_variant_module.build_frame_aligned_action_flow_match_train_artifacts
+    original_build_action_artifacts = (
+        mot_packed_training_module.build_frame_aligned_action_flow_match_train_artifacts
+    )
     saw_action_coupling_inputs: list[tuple[bool, bool]] = []
 
     def spy_build_action_artifacts(*args, **kwargs):
@@ -648,7 +652,7 @@ def test_generalist_match_sigma_uses_video_clock_for_all_modes(
         return original_build_action_artifacts(*args, **kwargs)
 
     monkeypatch.setattr(
-        mot_variant_module,
+        mot_packed_training_module,
         "build_frame_aligned_action_flow_match_train_artifacts",
         spy_build_action_artifacts,
     )
@@ -878,9 +882,11 @@ def test_m5_gjd_idm_inference_matches_conditional_training_contract(
 def test_forced_joint_preserves_configured_noisy_video_condition_prob(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import open_wam.models.policy_variants.mot.variant as mot_variant_module
+    import open_wam.models.policy_variants.mot.packed_training as mot_packed_training_module
 
-    original_build_video_artifacts = mot_variant_module.build_video_flow_match_train_artifacts
+    original_build_video_artifacts = (
+        mot_packed_training_module.build_video_flow_match_train_artifacts
+    )
     observed_probs: list[float] = []
 
     def spy_build_video_artifacts(*args, **kwargs):
@@ -888,7 +894,7 @@ def test_forced_joint_preserves_configured_noisy_video_condition_prob(
         return original_build_video_artifacts(*args, **kwargs)
 
     monkeypatch.setattr(
-        mot_variant_module,
+        mot_packed_training_module,
         "build_video_flow_match_train_artifacts",
         spy_build_video_artifacts,
     )
@@ -904,9 +910,11 @@ def test_forced_joint_preserves_configured_noisy_video_condition_prob(
 def test_conditional_generalist_modes_force_clean_video_condition_prob(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import open_wam.models.policy_variants.mot.variant as mot_variant_module
+    import open_wam.models.policy_variants.mot.packed_training as mot_packed_training_module
 
-    original_build_video_artifacts = mot_variant_module.build_video_flow_match_train_artifacts
+    original_build_video_artifacts = (
+        mot_packed_training_module.build_video_flow_match_train_artifacts
+    )
     observed_probs: list[float] = []
 
     def spy_build_video_artifacts(*args, **kwargs):
@@ -914,7 +922,7 @@ def test_conditional_generalist_modes_force_clean_video_condition_prob(
         return original_build_video_artifacts(*args, **kwargs)
 
     monkeypatch.setattr(
-        mot_variant_module,
+        mot_packed_training_module,
         "build_video_flow_match_train_artifacts",
         spy_build_video_artifacts,
     )
@@ -1044,7 +1052,7 @@ def test_forced_action_conditioned_video_threads_resolved_text_to_m5_runtime(
     metadata: dict[str, bool] | None,
     expected_text_dropped: bool,
 ) -> None:
-    import open_wam.models.policy_variants.mot.variant as mot_variant_module
+    import open_wam.models.policy_variants.mot.packed_training as mot_packed_training_module
     from open_wam.models.policy_variants.mot.modules import MoTActionExpert
 
     pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
@@ -1068,7 +1076,7 @@ def test_forced_action_conditioned_video_threads_resolved_text_to_m5_runtime(
 
     monkeypatch.setattr(MoTActionExpert, "pre_dit", spy_pre_dit)
     monkeypatch.setattr(
-        mot_variant_module,
+        mot_packed_training_module,
         "forward_mot_packed_coupling_denoise",
         fake_forward_mot_packed_coupling_denoise,
     )
@@ -1086,7 +1094,7 @@ def test_forced_action_conditioned_video_threads_resolved_text_to_m5_runtime(
 def test_m5_per_chunk_additive_proprio_threads_hidden_context_to_packed_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import open_wam.models.policy_variants.mot.variant as mot_variant_module
+    import open_wam.models.policy_variants.mot.packed_training as mot_packed_training_module
     from open_wam.models.policy_variants.mot.modules import MoTActionExpert
 
     pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
@@ -1120,7 +1128,7 @@ def test_m5_per_chunk_additive_proprio_threads_hidden_context_to_packed_runtime(
 
     monkeypatch.setattr(MoTActionExpert, "pre_dit", spy_pre_dit)
     monkeypatch.setattr(
-        mot_variant_module,
+        mot_packed_training_module,
         "forward_mot_packed_coupling_denoise",
         fake_forward_mot_packed_coupling_denoise,
     )
@@ -1140,7 +1148,7 @@ def test_m5_per_chunk_additive_proprio_threads_hidden_context_to_packed_runtime(
 def test_m5_legacy_prefix_contract_prepends_video_only_condition(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import open_wam.models.policy_variants.mot.variant as mot_variant_module
+    import open_wam.models.policy_variants.mot.packed_training as mot_packed_training_module
 
     from open_wam.configs import (
         ActionSchemaConfig,
@@ -1222,7 +1230,7 @@ def test_m5_legacy_prefix_contract_prepends_video_only_condition(
         return torch.zeros_like(kwargs["noisy_video_latents"]), torch.zeros_like(kwargs["packed_action_pre"].tokens)
 
     monkeypatch.setattr(
-        mot_variant_module,
+        mot_packed_training_module,
         "forward_mot_packed_coupling_denoise",
         fake_forward_mot_packed_coupling_denoise,
     )
@@ -1248,7 +1256,7 @@ def test_m5_legacy_prefix_contract_prepends_video_only_condition(
 def test_m5_legacy_prefix_fdm_shifts_explicit_video_loss_range(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import open_wam.models.policy_variants.mot.variant as mot_variant_module
+    import open_wam.models.policy_variants.mot.packed_training as mot_packed_training_module
 
     from open_wam.configs import (
         ActionSchemaConfig,
@@ -1333,7 +1341,7 @@ def test_m5_legacy_prefix_fdm_shifts_explicit_video_loss_range(
         return torch.zeros_like(kwargs["noisy_video_latents"]), torch.zeros_like(kwargs["packed_action_pre"].tokens)
 
     monkeypatch.setattr(
-        mot_variant_module,
+        mot_packed_training_module,
         "forward_mot_packed_coupling_denoise",
         fake_forward_mot_packed_coupling_denoise,
     )

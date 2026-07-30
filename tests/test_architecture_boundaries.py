@@ -629,6 +629,36 @@ def test_mot_packed_inference_program_has_one_execution_owner() -> None:
     assert run_call.func.value.func.id == "MoTPackedInferenceProgram"
 
 
+def test_mot_packed_training_program_has_one_execution_owner() -> None:
+    packed_training_path = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "packed_training.py"
+    )
+    variant_path = PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "variant.py"
+
+    assert "MoTPackedTrainingProgram" in _top_level_definitions(
+        packed_training_path
+    )
+    assert "run" in _class_method_definitions(
+        packed_training_path,
+        "MoTPackedTrainingProgram",
+    )
+
+    delegate = _class_method(
+        variant_path,
+        "MoTPolicyVariant",
+        "_forward_train_packed_coupling",
+    )
+    assert len(delegate.body) == 1
+    assert isinstance(delegate.body[0], ast.Return)
+    run_call = delegate.body[0].value
+    assert isinstance(run_call, ast.Call)
+    assert isinstance(run_call.func, ast.Attribute)
+    assert run_call.func.attr == "run"
+    assert isinstance(run_call.func.value, ast.Call)
+    assert isinstance(run_call.func.value.func, ast.Name)
+    assert run_call.func.value.func.id == "MoTPackedTrainingProgram"
+
+
 def test_retired_ablations_namespace_is_not_packaged() -> None:
     assert not (PACKAGE_ROOT / "ablations").exists()
 
