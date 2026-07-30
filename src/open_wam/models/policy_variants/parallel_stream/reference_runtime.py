@@ -93,6 +93,11 @@ from .exact_cache import (
     set_slot_pool_layer_metadata as _set_slot_pool_layer_metadata,
     validate_existing_exact_cache_attention_window as _validate_existing_exact_cache_attn_window,
 )
+from .latent_conditioning import (
+    build_repeated_first_frame_condition as _build_clean_video_condition_from_anchor,
+    resolve_full_window_condition_latents as _resolve_full_condition_latents,
+    select_first_frame_condition_latents as _select_first_frame_condition_latents,
+)
 from .runtime_semantics import (
     attention_profile_name_for_current_block_coupling as _attention_profile_name_for_current_block_coupling,
     prefix_visibility_mode_for_policy as _prefix_visibility_mode_for_policy,
@@ -124,71 +129,6 @@ class LingbotParallelInferArtifacts:
     predicted_latents: torch.Tensor
     next_cache: dict[str, Any]
     debug: dict[str, Any]
-
-
-def _build_clean_video_condition_from_anchor(
-    video_latents: torch.Tensor,
-    *,
-    target_frames: int,
-) -> torch.Tensor:
-    first_frame_latents, _ = _select_first_frame_condition_latents(video_latents, label="Current-frame action chunks")
-    target_frames = int(target_frames)
-    if target_frames <= 0:
-        raise ValueError(f"Current-frame action chunks require positive target_frames, got {target_frames}.")
-    return first_frame_latents.repeat(1, 1, target_frames, 1, 1)
-
-
-def _select_first_frame_condition_latents(
-    video_latents: torch.Tensor,
-    *,
-    condition_latents: torch.Tensor | None = None,
-    label: str,
-) -> tuple[torch.Tensor, str]:
-    if video_latents.ndim != 5:
-        raise ValueError(f"Expected video latents shaped [B, C, F, H, W], got {tuple(video_latents.shape)}.")
-    if condition_latents is None:
-        return video_latents[:, :, :1], "video_latents"
-    if condition_latents.ndim != 5:
-        raise ValueError(
-            f"{label} condition_latents must have shape `[B, C, T, H, W]`, got {tuple(condition_latents.shape)}."
-        )
-    expected_prefix = (video_latents.shape[0], video_latents.shape[1])
-    if tuple(condition_latents.shape[:2]) != expected_prefix:
-        raise ValueError(
-            f"{label} condition_latents batch/channel dimensions must match video_latents, "
-            f"got condition={tuple(condition_latents.shape)}, video={tuple(video_latents.shape)}."
-        )
-    if condition_latents.shape[2] < 1:
-        raise ValueError(f"{label} condition_latents must contain at least one latent frame.")
-    if tuple(condition_latents.shape[-2:]) != tuple(video_latents.shape[-2:]):
-        raise ValueError(
-            f"{label} condition_latents spatial shape must match video_latents, "
-            f"got condition={tuple(condition_latents.shape)}, video={tuple(video_latents.shape)}."
-        )
-    return (
-        condition_latents[:, :, :1].to(device=video_latents.device, dtype=video_latents.dtype),
-        "condition_latents",
-    )
-
-
-def _resolve_full_condition_latents(
-    video_latents: torch.Tensor,
-    condition_latents: torch.Tensor | None,
-    *,
-    label: str,
-) -> tuple[torch.Tensor | None, str]:
-    if condition_latents is None:
-        return None, "video_latents"
-    if condition_latents.ndim != 5:
-        raise ValueError(
-            f"{label} condition_latents must have shape `[B, C, T, H, W]`, got {tuple(condition_latents.shape)}."
-        )
-    if tuple(condition_latents.shape) != tuple(video_latents.shape):
-        raise ValueError(
-            f"{label} condition_latents must match video_latents exactly for full-window conditioning, "
-            f"got condition={tuple(condition_latents.shape)}, video={tuple(video_latents.shape)}."
-        )
-    return condition_latents.to(device=video_latents.device, dtype=video_latents.dtype), "condition_latents"
 
 
 def _sample_joint_denoise_training_mode(
@@ -1130,32 +1070,11 @@ def prepare_parallel_fastwam_first_frame_train_artifacts(
             "FastWAM first-frame training was configured with `require_condition_latents=true`, "
             "but the latent batch did not provide `condition_latents`."
         )
-    condition_source = "video_latents"
-    first_frame_condition_latents = video_latents[:, :, :1]
-    if condition_latents is not None:
-        if condition_latents.ndim != 5:
-            raise ValueError(
-                "FastWAM condition_latents must have shape `[B, C, T, H, W]`, "
-                f"got {tuple(condition_latents.shape)}."
-            )
-        expected_prefix = (video_latents.shape[0], video_latents.shape[1])
-        if tuple(condition_latents.shape[:2]) != expected_prefix:
-            raise ValueError(
-                "FastWAM condition_latents batch/channel dimensions must match video_latents, "
-                f"got condition={tuple(condition_latents.shape)}, video={tuple(video_latents.shape)}."
-            )
-        if condition_latents.shape[2] < 1:
-            raise ValueError("FastWAM condition_latents must contain at least one latent frame.")
-        if tuple(condition_latents.shape[-2:]) != tuple(video_latents.shape[-2:]):
-            raise ValueError(
-                "FastWAM condition_latents spatial shape must match video_latents, "
-                f"got condition={tuple(condition_latents.shape)}, video={tuple(video_latents.shape)}."
-            )
-        first_frame_condition_latents = condition_latents[:, :, :1].to(
-            device=video_latents.device,
-            dtype=video_latents.dtype,
-        )
-        condition_source = "condition_latents"
+    first_frame_condition_latents, condition_source = _select_first_frame_condition_latents(
+        video_latents,
+        condition_latents=condition_latents,
+        label="FastWAM",
+    )
 
     selected_actions = actions[:, :required_action_steps]
     action_latents = rearrange(

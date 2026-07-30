@@ -812,6 +812,26 @@ def test_parallel_training_noise_has_one_implementation_owner() -> None:
     }.isdisjoint(_top_level_definitions(reference_runtime_path))
 
 
+def test_parallel_latent_conditioning_has_one_implementation_owner() -> None:
+    conditioning_definitions = {
+        "build_repeated_first_frame_condition",
+        "resolve_full_window_condition_latents",
+        "select_first_frame_condition_latents",
+    }
+    parallel_stream_root = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
+    )
+    conditioning_path = parallel_stream_root / "latent_conditioning.py"
+    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
+
+    assert conditioning_definitions <= _top_level_definitions(conditioning_path)
+    assert {
+        "_build_clean_video_condition_from_anchor",
+        "_resolve_full_condition_latents",
+        "_select_first_frame_condition_latents",
+    }.isdisjoint(_top_level_definitions(reference_runtime_path))
+
+
 def test_visual_runtime_tensor_transport_has_one_implementation_owner() -> None:
     transport_definitions = {
         "cached_attention_profile",

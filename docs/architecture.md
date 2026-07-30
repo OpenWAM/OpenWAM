@@ -111,6 +111,10 @@ plain contracts:
   scheduler-grid adaptation, and tuple layouts for coupled timestep plans. It
   consumes the generic flow-noise plan from `models.common`; model execution
   and generalist mode selection remain in the policy runtime.
+- `parallel_stream.latent_conditioning` owns validation and selection of
+  first-frame and full-window clean latent conditions. Generated decoder
+  windows remain in `models.policy_variants.common.video_conditioning`;
+  M5 text and proprio conditioning remain in `mot.conditioning`.
 - `models.common.video_geometry` owns video token-grid and unpatchifying
   transforms used by visual execution, policy variants, and decoders.
 - `models.common.cache_backends` owns parameter-free attention-cache policy:
