@@ -713,6 +713,38 @@ def test_parallel_exact_cache_contract_has_one_implementation_owner() -> None:
     }.isdisjoint(_top_level_definitions(reference_runtime_path))
 
 
+def test_parallel_runtime_semantics_have_one_implementation_owner() -> None:
+    semantics_definitions = {
+        "attention_profile_name_for_current_block_coupling",
+        "prefix_visibility_mode_for_policy",
+        "resolve_parallel_context_condition_latent_source",
+        "resolve_parallel_current_block_coupling",
+        "resolve_parallel_history_stream_visibility",
+        "resolve_parallel_joint_timestep_coupling",
+        "uses_legacy_prefix_per_chunk_proprio_contract",
+    }
+    parallel_stream_root = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
+    )
+    semantics_path = parallel_stream_root / "runtime_semantics.py"
+    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
+    dynamics_rollout_path = PACKAGE_ROOT / "evals" / "dynamics" / "rollout.py"
+
+    assert semantics_definitions <= _top_level_definitions(semantics_path)
+    assert {
+        "_attention_profile_name_for_current_block_coupling",
+        "_prefix_visibility_mode_for_policy",
+        "_uses_legacy_prefix_per_chunk_proprio_contract",
+        "resolve_parallel_context_condition_latent_source",
+        "resolve_parallel_current_block_coupling",
+        "resolve_parallel_history_stream_visibility",
+        "resolve_parallel_joint_timestep_coupling",
+    }.isdisjoint(_top_level_definitions(reference_runtime_path))
+    assert "_resolve_parallel_current_block_coupling" not in _top_level_definitions(
+        dynamics_rollout_path
+    )
+
+
 def test_visual_runtime_tensor_transport_has_one_implementation_owner() -> None:
     transport_definitions = {
         "cached_attention_profile",

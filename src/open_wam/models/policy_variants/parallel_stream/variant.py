@@ -38,7 +38,6 @@ from .reference_runtime import (
     prepare_parallel_exact_train_artifacts,
     prepare_parallel_fastwam_first_frame_train_artifacts,
     prepare_parallel_prefix_condition_exact_train_artifacts,
-    resolve_parallel_current_block_coupling,
     run_parallel_action_conditioned_inference_rollout,
     run_parallel_action_conditioned_train,
     run_parallel_current_frame_action_chunk_inference_rollout,
@@ -48,6 +47,7 @@ from .reference_runtime import (
     run_parallel_fastwam_first_frame_inference_rollout,
     run_parallel_fastwam_first_frame_train,
 )
+from .runtime_semantics import resolve_parallel_current_block_coupling
 from .action_adapter import LingbotActionAdapter, build_action_adapter_spec
 
 _PER_CHUNK_PROPRIO_GRANULARITY_CHUNK = "chunk"

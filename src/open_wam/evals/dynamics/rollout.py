@@ -6,10 +6,13 @@ from typing import Any
 
 import torch
 
-from open_wam.configs import ActionSpace, CurrentBlockCoupling, ParallelRuntimeMode, ProprioContextMode
+from open_wam.configs import ActionSpace, CurrentBlockCoupling, ProprioContextMode
 from open_wam.models.common import RolloutCursor
 from open_wam.models.policy_variants import PolicyInferContext, PolicyInferState
 from open_wam.models.policy_variants.mot.contracts import MoTRuntimeState
+from open_wam.models.policy_variants.parallel_stream.runtime_semantics import (
+    resolve_parallel_current_block_coupling,
+)
 
 from .types import FdmAblationMode
 
@@ -37,7 +40,7 @@ class JointDenoisingFdmRollout:
 
     def __init__(self, runner: Any) -> None:
         self.runner = runner
-        coupling = _resolve_parallel_current_block_coupling(runner.policy_variant.config)
+        coupling = resolve_parallel_current_block_coupling(runner.policy_variant.config)
         if coupling != CurrentBlockCoupling.JOINT:
             raise ValueError(
                 "JointDenoisingFdmRollout requires maintained M1.2 joint denoising, "
@@ -536,15 +539,6 @@ class MotGeneralistDenoisingFdmRollout:
             else None
         )
         return empty_text_context, empty_negative_text_context
-
-
-def _resolve_parallel_current_block_coupling(policy_config) -> CurrentBlockCoupling:
-    current_block_coupling = getattr(policy_config, "current_block_coupling", None)
-    if current_block_coupling is not None:
-        return CurrentBlockCoupling(current_block_coupling)
-    if getattr(policy_config, "runtime_mode", None) == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
-        return CurrentBlockCoupling.JOINT
-    return CurrentBlockCoupling.VIDEO_THEN_ACTION
 
 
 def make_rollout_cursor(cursor, *, current_start_frame: int, block_index: int, chunk_size: int):

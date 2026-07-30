@@ -15,8 +15,6 @@ from open_wam.configs.enums import (
     ParallelContextConditionLatentSource,
     ParallelExactCacheWriteMode,
     ParallelHistoryStreamVisibility,
-    ParallelRuntimeMode,
-    ParallelSequenceContract,
     ParallelStreamVariantProfile,
     ProprioContextMode,
 )
@@ -31,7 +29,6 @@ from open_wam.models.common import (
     SLOT_POOL_DEFER_EVICTION_UNTIL_AFTER_WRITE_ATTENTION,
     build_chunked_temporal_exact_attention_profile,
     cache_backend_uses_slot_pool,
-    chunked_temporal_exact_profile_name_for_coupling,
     materialize_cache_backend_entries,
 )
 from open_wam.models.common.attention_profiles import (
@@ -84,6 +81,15 @@ from .exact_cache import (
     resolve_exact_cache_context as _resolve_exact_cache_context,
     validate_existing_exact_cache_attention_window as _validate_existing_exact_cache_attn_window,
 )
+from .runtime_semantics import (
+    attention_profile_name_for_current_block_coupling as _attention_profile_name_for_current_block_coupling,
+    prefix_visibility_mode_for_policy as _prefix_visibility_mode_for_policy,
+    resolve_parallel_context_condition_latent_source,
+    resolve_parallel_current_block_coupling,
+    resolve_parallel_history_stream_visibility,
+    resolve_parallel_joint_timestep_coupling,
+    uses_legacy_prefix_per_chunk_proprio_contract as _uses_legacy_prefix_per_chunk_proprio_contract,
+)
 
 
 def sample_timestep_id(
@@ -97,50 +103,6 @@ def sample_timestep_id(
     u = torch.rand(size=[batch_size], device=device)
     u = u * (max_timestep_bd - min_timestep_bd) + min_timestep_bd
     return (u * num_train_timesteps).clamp(min=0, max=num_train_timesteps - 1).to(torch.int64)
-
-
-def _prefix_visibility_mode_for_policy(policy_config: ParallelStreamPolicyConfig) -> str:
-    history_visibility = resolve_parallel_history_stream_visibility(policy_config)
-    if history_visibility == ParallelHistoryStreamVisibility.VIDEO_ONLY:
-        return "video_history_only"
-    if history_visibility == ParallelHistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY:
-        return "preserve_video_pretrain_history"
-    return (
-        "preserve_video_pretrain_history"
-        if bool(getattr(policy_config, "preserve_video_pretrain_history", False))
-        else "full_history"
-    )
-
-
-def resolve_parallel_history_stream_visibility(
-    policy_config: ParallelStreamPolicyConfig,
-) -> ParallelHistoryStreamVisibility:
-    value = getattr(policy_config, "history_stream_visibility", ParallelHistoryStreamVisibility.FULL)
-    resolved = ParallelHistoryStreamVisibility(value)
-    if resolved == ParallelHistoryStreamVisibility.FULL and bool(
-        getattr(policy_config, "preserve_video_pretrain_history", False)
-    ):
-        return ParallelHistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
-    return resolved
-
-
-def _uses_legacy_prefix_per_chunk_proprio_contract(policy_config: ParallelStreamPolicyConfig) -> bool:
-    return (
-        ParallelSequenceContract(getattr(policy_config, "parallel_sequence_contract", ParallelSequenceContract.DEFAULT))
-        == ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
-    )
-
-
-def resolve_parallel_context_condition_latent_source(
-    policy_config: ParallelStreamPolicyConfig,
-) -> ParallelContextConditionLatentSource:
-    return ParallelContextConditionLatentSource(
-        getattr(
-            policy_config,
-            "context_condition_latent_source",
-            ParallelContextConditionLatentSource.VIDEO_LATENTS,
-        )
-    )
 
 
 def _stream_ids_for_exact_dual_stream_split(
@@ -230,38 +192,6 @@ class LingbotParallelInferArtifacts:
     predicted_latents: torch.Tensor
     next_cache: dict[str, Any]
     debug: dict[str, Any]
-
-
-def resolve_parallel_current_block_coupling(
-    policy_config: ParallelStreamPolicyConfig,
-) -> CurrentBlockCoupling:
-    """Resolve legacy M1 runtime knobs into an explicit current-block mode."""
-
-    if policy_config.current_block_coupling is not None:
-        return CurrentBlockCoupling(policy_config.current_block_coupling)
-    if policy_config.runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
-        return CurrentBlockCoupling.JOINT
-    return CurrentBlockCoupling.VIDEO_THEN_ACTION
-
-
-def resolve_parallel_joint_timestep_coupling(
-    policy_config: ParallelStreamPolicyConfig,
-) -> JointTimestepCoupling:
-    """Resolve how M1 joint-like programs synchronize video/action noise clocks."""
-
-    if resolve_parallel_current_block_coupling(policy_config) not in {
-        CurrentBlockCoupling.JOINT,
-        CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
-        CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
-    }:
-        return JointTimestepCoupling.INDEPENDENT
-    return JointTimestepCoupling(policy_config.joint_timestep_coupling)
-
-
-def _attention_profile_name_for_current_block_coupling(
-    coupling: CurrentBlockCoupling,
-) -> str:
-    return chunked_temporal_exact_profile_name_for_coupling(coupling.value)
 
 
 def _build_clean_video_condition_from_anchor(
