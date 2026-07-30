@@ -24,8 +24,11 @@ from open_wam.configs import (
     TrainingConfig,
 )
 from open_wam.models.common import (
+    checkpoint_unshard_context,
     expand_scalar_timestep,
     explicit_sigma_euler_step,
+    summon_full_parameters,
+    unshard_runtime_parameters,
     zero_terminal_next_sigma,
 )
 from open_wam.models.common.attention_profiles import build_chunked_temporal_exact_attention_profile
@@ -110,6 +113,12 @@ def test_mot_runtime_condition_and_flow_exports_are_compatibility_aliases() -> N
     assert mot_runtime.expand_mot_scalar_timestep is expand_scalar_timestep
     assert mot_runtime.mot_scheduler_next_sigma is zero_terminal_next_sigma
     assert mot_runtime.step_mot_flow_with_sigmas is explicit_sigma_euler_step
+
+
+def test_mot_runtime_sharding_exports_are_compatibility_aliases() -> None:
+    assert mot_runtime._checkpoint_summon_context is checkpoint_unshard_context
+    assert mot_runtime._summon_full_params is summon_full_parameters
+    assert mot_runtime._unshard_runtime_params is unshard_runtime_parameters
 
 
 def test_mot_action_expert_pre_and_post_shapes() -> None:

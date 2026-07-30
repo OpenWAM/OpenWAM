@@ -5,7 +5,7 @@ The legacy ``_packed_block_step`` closure inside
 and similar helpers that bypass FSDP's standard pre/post-forward hooks. Under
 FSDP2 with per-block ``fully_shard``, those helpers manually call
 ``param.full_tensor()``; the materialized view's storage is freed when the
-surrounding ``with _unshard_runtime_params(...)`` exits, so backward fails with
+surrounding ``with unshard_runtime_parameters(...)`` exits, so backward fails with
 ``setStorage: ... out of bounds for storage of size 0``.
 
 ``MoTPackedBlock`` wraps one ``(video_block, action_block)`` pair so that the

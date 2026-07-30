@@ -562,6 +562,32 @@ def test_mot_condition_latent_selection_has_one_owner() -> None:
     assert function_name not in _top_level_definitions(mot_root / "runtime.py")
 
 
+def test_sharded_execution_contexts_have_one_owner() -> None:
+    public_contexts = {
+        "checkpoint_unshard_context",
+        "summon_full_parameters",
+        "unshard_runtime_parameters",
+    }
+    retired_runtime_definitions = {
+        "_checkpoint_summon_context",
+        "_DummyCtx",
+        "_FSDP2UnshardCtx",
+        "_summon_full_params",
+        "_unshard_runtime_params",
+    }
+    common_root = PACKAGE_ROOT / "models" / "common"
+    mot_runtime = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "runtime.py"
+    )
+
+    assert public_contexts <= _top_level_definitions(
+        common_root / "sharded_execution.py"
+    )
+    assert (public_contexts | retired_runtime_definitions).isdisjoint(
+        _top_level_definitions(mot_runtime)
+    )
+
+
 def test_mot_cache_state_operations_have_one_owner() -> None:
     cache_operations = {
         "append_mot_action_cache",

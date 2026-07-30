@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-from contextlib import ExitStack
 
 import torch
 import torch.nn.functional as F
@@ -17,6 +16,11 @@ from open_wam.models.common.flow_matching import (
     expand_scalar_timestep as expand_mot_scalar_timestep,
     explicit_sigma_euler_step as step_mot_flow_with_sigmas,
     zero_terminal_next_sigma as mot_scheduler_next_sigma,
+)
+from open_wam.models.common.sharded_execution import (
+    checkpoint_unshard_context as _checkpoint_summon_context,
+    summon_full_parameters as _summon_full_params,
+    unshard_runtime_parameters as _unshard_runtime_params,
 )
 from open_wam.models.common.video_geometry import (
     unpatchify_video_sequence,
@@ -55,11 +59,6 @@ from .contracts import (
     MoTVideoLayerCache,
 )
 from .modules import MoTActionExpert, MoTActionPreprocessOutput
-
-try:  # pragma: no cover - import surface depends on torch build
-    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-except Exception:  # pragma: no cover - CPU-only or non-FSDP env
-    FSDP = None
 
 
 def _video_token_grid_for_latents(visual_tower, video_latents: torch.Tensor):
@@ -419,7 +418,7 @@ def forward_mot_packed_coupling_denoise(
         # FSDP-friendly path: each MoTPackedBlock owns its (video_block,
         # action_block) pair and is its own FSDP unit. Calling the wrapper's
         # forward triggers FSDP's standard pre/post-forward hooks; backward
-        # gather is also FSDP-managed. No manual `_summon_full_params` /
+        # gather is also FSDP-managed. No manual `summon_full_parameters` /
         # `linear_with_materialized_params` calls in the per-block path,
         # so backward no longer hits "setStorage out of bounds" from
         # resharded buffers. Both the dense (video/action_attention_mask) and
@@ -763,75 +762,3 @@ def forward_joint_video_action_denoise(
         batch_size=batch_size,
     )
     return video_flow, action_hidden_states
-
-
-class _DummyCtx:
-    """No-op context manager used when we want to skip ``summon_full_params``."""
-
-    def __enter__(self) -> "_DummyCtx":
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
-        return False
-
-
-def _summon_full_params(*modules):
-    stack = ExitStack()
-    if FSDP is None:
-        return stack
-    seen_ids: set[int] = set()
-    for module in modules:
-        fsdp_modules = tuple(FSDP.fsdp_modules(module, root_only=False))
-        if not fsdp_modules:
-            continue
-        for fsdp_module in fsdp_modules:
-            module_id = id(fsdp_module)
-            if module_id in seen_ids:
-                continue
-            seen_ids.add(module_id)
-            stack.enter_context(FSDP.summon_full_params(fsdp_module, recurse=False, writeback=False))
-    return stack
-
-
-class _FSDP2UnshardCtx:
-    def __init__(self, *modules) -> None:
-        self._modules = modules
-        self._unsharded: list[object] = []
-
-    def __enter__(self) -> "_FSDP2UnshardCtx":
-        seen_ids: set[int] = set()
-        for module in self._modules:
-            for submodule in module.modules():
-                module_id = id(submodule)
-                if module_id in seen_ids:
-                    continue
-                seen_ids.add(module_id)
-                unshard = getattr(submodule, "unshard", None)
-                reshard = getattr(submodule, "reshard", None)
-                if not callable(unshard) or not callable(reshard):
-                    continue
-                unshard()
-                self._unsharded.append(submodule)
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
-        for submodule in reversed(self._unsharded):
-            reshard = getattr(submodule, "reshard", None)
-            if callable(reshard):
-                reshard()
-        self._unsharded.clear()
-        return False
-
-
-def _unshard_runtime_params(*modules):
-    stack = ExitStack()
-    stack.enter_context(_summon_full_params(*modules))
-    stack.enter_context(_FSDP2UnshardCtx(*modules))
-    return stack
-
-
-def _checkpoint_summon_context(video_block, action_block):
-    return (
-        _unshard_runtime_params(video_block, action_block),
-        _unshard_runtime_params(video_block, action_block),
-    )

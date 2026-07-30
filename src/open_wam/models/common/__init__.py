@@ -86,6 +86,11 @@ from .runtime_controls import (
     should_update_cache_during_denoise,
 )
 from .rollout import RolloutCursor, advance_rollout_cursor
+from .sharded_execution import (
+    checkpoint_unshard_context,
+    summon_full_parameters,
+    unshard_runtime_parameters,
+)
 from .video_geometry import (
     slice_token_grid_frames,
     unpatchify_video_sequence,
@@ -117,6 +122,7 @@ __all__ = [
     "SlotPoolLayerState",
     "allocate_slot_pool_slots",
     "cache_backend_uses_slot_pool",
+    "checkpoint_unshard_context",
     "build_joint_video_timestep_grid",
     "apply_attention_backend",
     "build_chunked_temporal_exact_attention_profile",
@@ -169,10 +175,12 @@ __all__ = [
     "restore_slot_pool_slots",
     "retained_slot_pool_indices_for_current_write",
     "should_update_cache_during_denoise",
+    "summon_full_parameters",
     "init_cache_backend_payload",
     "update_slot_pool_layer_state",
     "unpatchify_video_tokens",
     "unpatchify_video_sequence",
+    "unshard_runtime_parameters",
     "video_token_grid_from_latent_shape",
     "zero_terminal_next_sigma",
 ]

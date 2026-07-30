@@ -104,7 +104,7 @@ def _apply_composable_fsdp_sharding(
     # core.blocks / action_expert.blocks into a MoTPackedBlockStack at
     # pipeline-build time. FSDP wraps each MoTPackedBlock as one unit so the
     # joint video+action attention runs through standard FSDP pre/post-forward
-    # hooks (no manual `_summon_full_params` / `linear_with_materialized_params`
+    # hooks (no manual `summon_full_parameters` / `linear_with_materialized_params`
     # bypass during forward, which was causing
     # `setStorage out of bounds for storage of size 0` during backward).
     packed_block_stack = getattr(policy_variant, "packed_block_stack", None)
