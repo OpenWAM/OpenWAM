@@ -698,7 +698,7 @@ def test_m5_gjd_rollout_mode_rejects_unknown_alias() -> None:
 def test_m5_gjd_fdm_inference_matches_conditional_training_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import open_wam.models.policy_variants.mot.variant as mot_variant_module
+    import open_wam.models.policy_variants.mot.packed_inference as mot_packed_inference_module
     from open_wam.models.common import RolloutCursor
     from open_wam.models.policy_variants.contracts import PolicyInferState
     from open_wam.models.policy_variants.mot.contracts import MoTRuntimeState
@@ -743,7 +743,7 @@ def test_m5_gjd_fdm_inference_matches_conditional_training_contract(
 
     monkeypatch.setattr(MoTActionExpert, "pre_dit", spy_pre_dit)
     monkeypatch.setattr(
-        mot_variant_module,
+        mot_packed_inference_module,
         "forward_mot_packed_coupling_denoise",
         fake_forward_mot_packed_coupling_denoise,
     )
@@ -783,7 +783,7 @@ def test_m5_gjd_fdm_inference_matches_conditional_training_contract(
 def test_m5_gjd_idm_inference_matches_conditional_training_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import open_wam.models.policy_variants.mot.variant as mot_variant_module
+    import open_wam.models.policy_variants.mot.packed_inference as mot_packed_inference_module
     from open_wam.models.common import RolloutCursor
     from open_wam.models.policy_variants.contracts import PolicyInferState
     from open_wam.models.policy_variants.mot.contracts import MoTRuntimeState
@@ -834,7 +834,7 @@ def test_m5_gjd_idm_inference_matches_conditional_training_contract(
 
     monkeypatch.setattr(MoTActionExpert, "pre_dit", spy_pre_dit)
     monkeypatch.setattr(
-        mot_variant_module,
+        mot_packed_inference_module,
         "forward_mot_packed_coupling_denoise",
         fake_forward_mot_packed_coupling_denoise,
     )
