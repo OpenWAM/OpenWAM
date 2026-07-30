@@ -203,6 +203,44 @@ class FlowMatchScheduler:
         return sample + model_output * (sigma_next - sigma)
 
 
+def zero_terminal_next_sigma(scheduler, step_index: int) -> torch.Tensor:
+    """Resolve the next integration sigma, ending the schedule at zero."""
+
+    if int(step_index) + 1 >= len(scheduler.sigmas):
+        return scheduler.sigmas.new_tensor(0.0)
+    return scheduler.sigmas[int(step_index) + 1]
+
+
+def explicit_sigma_euler_step(
+    sample: torch.Tensor,
+    flow_pred: torch.Tensor,
+    *,
+    sigma: torch.Tensor,
+    sigma_next: torch.Tensor,
+) -> torch.Tensor:
+    """Apply one explicit-sigma Euler flow step."""
+
+    return sample + flow_pred * (
+        sigma_next.to(device=sample.device, dtype=sample.dtype)
+        - sigma.to(device=sample.device, dtype=sample.dtype)
+    )
+
+
+def expand_scalar_timestep(
+    value: torch.Tensor | float,
+    *,
+    shape: tuple[int, ...],
+    device: torch.device,
+) -> torch.Tensor:
+    """Materialize a scalar timestep over a requested stream shape."""
+
+    if isinstance(value, torch.Tensor):
+        if value.numel() != 1:
+            raise ValueError(f"Expected scalar timestep value, got shape {tuple(value.shape)}.")
+        return value.to(device=device, dtype=torch.float32).reshape(()).expand(shape).clone()
+    return torch.full(shape, float(value), device=device, dtype=torch.float32)
+
+
 def sample_timestep_id(
     batch_size: int,
     *,

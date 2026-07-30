@@ -513,12 +513,19 @@ def test_mot_runtime_controls_have_role_owners() -> None:
         "resolve_mot_rollout_frame_chunk_size",
         "should_couple_mot_action_to_video_sigmas",
     }
-    tensor_runtime_functions = {
+    flow_runtime_functions = {
+        "expand_scalar_timestep",
+        "explicit_sigma_euler_step",
+        "zero_terminal_next_sigma",
+    }
+    flow_compatibility_names = {
         "expand_mot_scalar_timestep",
         "mot_scheduler_next_sigma",
         "step_mot_flow_with_sigmas",
     }
-    retired_variant_functions = routing_functions | tensor_runtime_functions | {
+    retired_variant_functions = (
+        routing_functions | flow_runtime_functions | flow_compatibility_names
+    ) | {
         "_expand_scalar_timestep",
         "_flow_step_with_sigmas",
         "_is_mot_same_step_coupling",
@@ -533,10 +540,26 @@ def test_mot_runtime_controls_have_role_owners() -> None:
     mot_root = PACKAGE_ROOT / "models" / "policy_variants" / "mot"
 
     assert routing_functions <= _top_level_definitions(mot_root / "runtime_routing.py")
-    assert tensor_runtime_functions <= _top_level_definitions(mot_root / "runtime.py")
+    assert flow_runtime_functions <= _top_level_definitions(
+        PACKAGE_ROOT / "models" / "common" / "flow_matching.py"
+    )
+    assert flow_runtime_functions.isdisjoint(
+        _top_level_definitions(mot_root / "runtime.py")
+    )
+    assert flow_compatibility_names.isdisjoint(
+        _top_level_definitions(mot_root / "runtime.py")
+    )
     assert retired_variant_functions.isdisjoint(
         _top_level_definitions(mot_root / "variant.py")
     )
+
+
+def test_mot_condition_latent_selection_has_one_owner() -> None:
+    function_name = "resolve_mot_condition_latents"
+    mot_root = PACKAGE_ROOT / "models" / "policy_variants" / "mot"
+
+    assert function_name in _top_level_definitions(mot_root / "conditioning.py")
+    assert function_name not in _top_level_definitions(mot_root / "runtime.py")
 
 
 def test_mot_cache_state_operations_have_one_owner() -> None:

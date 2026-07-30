@@ -15,7 +15,7 @@ from .cache_state import (
     trim_mot_action_cache_tail,
     trim_mot_video_cache_tail,
 )
-from .conditioning import MoTConditioning
+from .conditioning import MoTConditioning, resolve_mot_condition_latents
 from .generalist_modes import (
     apply_generalist_training_mode,
     generalist_forces_clean_video_condition,
@@ -66,6 +66,7 @@ __all__ = [
     "move_mot_action_cache",
     "move_mot_video_cache",
     "resolve_generalist_rollout_mode",
+    "resolve_mot_condition_latents",
     "resolve_mot_runtime_route",
     "resolve_generalist_training_metadata",
     "rewind_mot_runtime_action_cache_to_frame",

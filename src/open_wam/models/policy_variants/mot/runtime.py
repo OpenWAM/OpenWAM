@@ -8,11 +8,15 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 from einops import rearrange
 
-from open_wam.configs import MoTConditionMode
 from open_wam.models.common.attention_profiles import (
     PreparedAttentionProfile,
     apply_attention_backend,
     select_attention_profile_mask,
+)
+from open_wam.models.common.flow_matching import (
+    expand_scalar_timestep as expand_mot_scalar_timestep,
+    explicit_sigma_euler_step as step_mot_flow_with_sigmas,
+    zero_terminal_next_sigma as mot_scheduler_next_sigma,
 )
 from open_wam.models.common.video_geometry import (
     unpatchify_video_sequence,
@@ -43,6 +47,7 @@ from .cache_state import (
     trim_mot_action_cache_tail as trim_mot_action_cache_tail,
     trim_mot_video_cache_tail as trim_mot_video_cache_tail,
 )
+from .conditioning import resolve_mot_condition_latents as resolve_mot_condition_latents
 from .contracts import (
     MoTActionCache,
     MoTActionLayerCache,
@@ -118,82 +123,6 @@ def prefill_video_kv_cache(
     if not cache_layers:
         raise ValueError("MoT video prefill did not materialize any layer cache entries.")
     return MoTVideoCache(layers=tuple(cache_layers), video_seq_len=int(cache_layers[0].key.shape[2]))
-
-
-def resolve_mot_condition_latents(
-    *,
-    video_latents: torch.Tensor,
-    condition_mode: MoTConditionMode | str,
-    video_prefix_frames: int,
-    teacher_forcing_video_noise_prob: float,
-    training: bool,
-    scheduler=None,
-) -> torch.Tensor:
-    """Select the video branch used to condition the MoT action expert."""
-
-    resolved_mode = MoTConditionMode(condition_mode)
-    if resolved_mode == MoTConditionMode.FIRST_FRAME:
-        return video_latents[:, :, :1]
-    if resolved_mode == MoTConditionMode.FULL_VIDEO:
-        return video_latents
-    if resolved_mode == MoTConditionMode.TEACHER_FORCING_COND_VIDEO:
-        cond_latents = video_latents[:, :, : max(1, video_prefix_frames)].clone()
-        if (
-            training
-            and scheduler is not None
-            and teacher_forcing_video_noise_prob > 0.0
-            and torch.rand(1, device=video_latents.device).item() < teacher_forcing_video_noise_prob
-        ):
-            batch_size = cond_latents.shape[0]
-            timestep_ids = torch.randint(
-                low=0,
-                high=len(scheduler.timesteps),
-                size=(batch_size, cond_latents.shape[2]),
-                device=video_latents.device,
-            )
-            timesteps = scheduler.timesteps.to(device=video_latents.device)[timestep_ids]
-            noise = torch.randn_like(cond_latents)
-            cond_latents = scheduler.add_noise(cond_latents, noise, timesteps, t_dim=2)
-        return cond_latents
-    raise ValueError(f"Unsupported MoT condition mode {resolved_mode!r}.")
-
-
-def mot_scheduler_next_sigma(scheduler, step_index: int) -> torch.Tensor:
-    """Resolve the next MoT integration sigma, ending every schedule at zero."""
-
-    if int(step_index) + 1 >= len(scheduler.sigmas):
-        return scheduler.sigmas.new_tensor(0.0)
-    return scheduler.sigmas[int(step_index) + 1]
-
-
-def step_mot_flow_with_sigmas(
-    sample: torch.Tensor,
-    flow_pred: torch.Tensor,
-    *,
-    sigma: torch.Tensor,
-    sigma_next: torch.Tensor,
-) -> torch.Tensor:
-    """Apply one explicit-sigma Euler flow step."""
-
-    return sample + flow_pred * (
-        sigma_next.to(device=sample.device, dtype=sample.dtype)
-        - sigma.to(device=sample.device, dtype=sample.dtype)
-    )
-
-
-def expand_mot_scalar_timestep(
-    value: torch.Tensor | float,
-    *,
-    shape: tuple[int, ...],
-    device: torch.device,
-) -> torch.Tensor:
-    """Materialize a scalar timestep over a requested MoT stream shape."""
-
-    if isinstance(value, torch.Tensor):
-        if value.numel() != 1:
-            raise ValueError(f"Expected scalar timestep value, got shape {tuple(value.shape)}.")
-        return value.to(device=device, dtype=torch.float32).reshape(()).expand(shape).clone()
-    return torch.full(shape, float(value), device=device, dtype=torch.float32)
 
 
 def forward_action_with_video_and_action_cache(

@@ -23,6 +23,11 @@ from open_wam.configs import (
     RobotWinDataConfig,
     TrainingConfig,
 )
+from open_wam.models.common import (
+    expand_scalar_timestep,
+    explicit_sigma_euler_step,
+    zero_terminal_next_sigma,
+)
 from open_wam.models.common.attention_profiles import build_chunked_temporal_exact_attention_profile
 from open_wam.models.common.rollout_startup import build_strict_action_context_mask
 from open_wam.models.policy_variants import PolicyInferContext, PolicyInferState, PolicyTrainBatch, RolloutCursor
@@ -49,7 +54,10 @@ from open_wam.models.policy_variants.mot.cache_state import (
     trim_mot_action_cache_tail,
     trim_mot_video_cache_tail,
 )
-from open_wam.models.policy_variants.mot.conditioning import MoTConditioning
+from open_wam.models.policy_variants.mot.conditioning import (
+    MoTConditioning,
+    resolve_mot_condition_latents,
+)
 from open_wam.models.policy_variants.mot.modules import (
     MoTActionExpert,
     init_action_expert_from_video_core,
@@ -58,7 +66,6 @@ from open_wam.models.policy_variants.mot.packed_block import MoTPackedBlock
 from open_wam.models.policy_variants.mot.runtime import (
     expand_mot_scalar_timestep,
     mot_scheduler_next_sigma,
-    resolve_mot_condition_latents,
     step_mot_flow_with_sigmas,
 )
 from open_wam.models.policy_variants.mot.runtime_routing import (
@@ -96,6 +103,13 @@ def test_mot_runtime_cache_exports_are_compatibility_aliases() -> None:
     }
     for name, canonical_operation in canonical_operations.items():
         assert getattr(mot_runtime, name) is canonical_operation
+
+
+def test_mot_runtime_condition_and_flow_exports_are_compatibility_aliases() -> None:
+    assert mot_runtime.resolve_mot_condition_latents is resolve_mot_condition_latents
+    assert mot_runtime.expand_mot_scalar_timestep is expand_scalar_timestep
+    assert mot_runtime.mot_scheduler_next_sigma is zero_terminal_next_sigma
+    assert mot_runtime.step_mot_flow_with_sigmas is explicit_sigma_euler_step
 
 
 def test_mot_action_expert_pre_and_post_shapes() -> None:

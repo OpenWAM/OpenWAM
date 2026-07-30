@@ -51,10 +51,13 @@ from .flow_matching import (
     build_video_flow_match_train_artifacts,
     denoised_actions_from_flow,
     denoised_video_latents_from_flow,
+    expand_scalar_timestep,
+    explicit_sigma_euler_step,
     reduce_frame_aligned_action_flow_match_loss,
     reduce_slot_aligned_action_flow_match_loss,
     reduce_video_flow_match_loss,
     sample_timestep_id,
+    zero_terminal_next_sigma,
 )
 from .flow_unipc_multistep_scheduler import FlowUniPCMultistepScheduler
 from .packed_token_layout import (
@@ -145,6 +148,8 @@ __all__ = [
     "build_video_flow_match_train_artifacts",
     "denoised_actions_from_flow",
     "denoised_video_latents_from_flow",
+    "expand_scalar_timestep",
+    "explicit_sigma_euler_step",
     "advance_rollout_cursor",
     "reduce_frame_aligned_action_flow_match_loss",
     "reduce_slot_aligned_action_flow_match_loss",
@@ -169,4 +174,5 @@ __all__ = [
     "unpatchify_video_tokens",
     "unpatchify_video_sequence",
     "video_token_grid_from_latent_shape",
+    "zero_terminal_next_sigma",
 ]

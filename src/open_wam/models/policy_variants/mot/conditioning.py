@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import torch
 
 from open_wam.configs import (
+    MoTConditionMode,
     MoTGeneralistTrainingMode,
     MoTPolicyConfig,
     ParallelContextConditionLatentSource,
@@ -18,6 +19,44 @@ from open_wam.models.common.packed_token_layout import frame_chunk_ids_for_origi
 from open_wam.models.visual_tower import VisualTower
 
 from ..contracts import PolicyTrainBatch
+
+
+def resolve_mot_condition_latents(
+    *,
+    video_latents: torch.Tensor,
+    condition_mode: MoTConditionMode | str,
+    video_prefix_frames: int,
+    teacher_forcing_video_noise_prob: float,
+    training: bool,
+    scheduler=None,
+) -> torch.Tensor:
+    """Select the video branch used to condition the MoT action expert."""
+
+    resolved_mode = MoTConditionMode(condition_mode)
+    if resolved_mode == MoTConditionMode.FIRST_FRAME:
+        return video_latents[:, :, :1]
+    if resolved_mode == MoTConditionMode.FULL_VIDEO:
+        return video_latents
+    if resolved_mode == MoTConditionMode.TEACHER_FORCING_COND_VIDEO:
+        cond_latents = video_latents[:, :, : max(1, video_prefix_frames)].clone()
+        if (
+            training
+            and scheduler is not None
+            and teacher_forcing_video_noise_prob > 0.0
+            and torch.rand(1, device=video_latents.device).item() < teacher_forcing_video_noise_prob
+        ):
+            batch_size = cond_latents.shape[0]
+            timestep_ids = torch.randint(
+                low=0,
+                high=len(scheduler.timesteps),
+                size=(batch_size, cond_latents.shape[2]),
+                device=video_latents.device,
+            )
+            timesteps = scheduler.timesteps.to(device=video_latents.device)[timestep_ids]
+            noise = torch.randn_like(cond_latents)
+            cond_latents = scheduler.add_noise(cond_latents, noise, timesteps, t_dim=2)
+        return cond_latents
+    raise ValueError(f"Unsupported MoT condition mode {resolved_mode!r}.")
 
 
 @dataclass(frozen=True, slots=True)

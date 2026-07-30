@@ -16,7 +16,10 @@ from open_wam.configs import (
 from open_wam.models.common.flow_matching import (
     build_action_flow_match_inference_scheduler,
     build_video_flow_match_inference_scheduler,
+    expand_scalar_timestep as expand_mot_scalar_timestep,
+    explicit_sigma_euler_step as step_mot_flow_with_sigmas,
     timesteps_matching_sigmas,
+    zero_terminal_next_sigma as mot_scheduler_next_sigma,
 )
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
@@ -30,12 +33,7 @@ from .generalist_modes import (
     resolve_generalist_rollout_mode as _resolve_mot_generalist_rollout_mode,
 )
 from .modules import MoTActionExpert
-from .runtime import (
-    expand_mot_scalar_timestep,
-    forward_joint_video_action_denoise,
-    mot_scheduler_next_sigma,
-    step_mot_flow_with_sigmas,
-)
+from .runtime import forward_joint_video_action_denoise
 from .runtime_routing import (
     is_mot_same_step_coupling,
     resolve_mot_current_block_coupling,

@@ -21,7 +21,10 @@ from open_wam.models.common.attention_profiles import (
 from open_wam.models.common.flow_matching import (
     build_action_flow_match_inference_scheduler,
     build_video_flow_match_inference_scheduler,
+    expand_scalar_timestep as expand_mot_scalar_timestep,
+    explicit_sigma_euler_step as step_mot_flow_with_sigmas,
     timesteps_matching_sigmas,
+    zero_terminal_next_sigma as mot_scheduler_next_sigma,
 )
 from open_wam.models.common.joint_conditioning import (
     resolve_generalist_joint_conditioning_semantics,
@@ -44,12 +47,7 @@ from .generalist_modes import (
 from .inference_layout import MoTPackedHistory, MoTPackedInferenceLayout
 from .modules import MoTActionExpert
 from .packed_block import MoTPackedBlockStack
-from .runtime import (
-    expand_mot_scalar_timestep,
-    forward_mot_packed_coupling_denoise,
-    mot_scheduler_next_sigma,
-    step_mot_flow_with_sigmas,
-)
+from .runtime import forward_mot_packed_coupling_denoise
 from .runtime_routing import (
     resolve_mot_action_only_rollout,
     resolve_mot_current_block_coupling,

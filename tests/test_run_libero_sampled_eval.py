@@ -1336,6 +1336,7 @@ def test_build_child_env_uses_slurm_gpu_allocation_when_cuda_visibility_is_absen
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.delenv("SLURM_STEP_GPUS", raising=False)
     monkeypatch.setenv("SLURM_JOB_GPUS", "4,7")
     args = argparse.Namespace(
         local_paths=Path("configs/local_paths.yaml"),
