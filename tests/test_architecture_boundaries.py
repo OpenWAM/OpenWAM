@@ -747,6 +747,42 @@ def test_parallel_cache_execution_has_one_implementation_owner() -> None:
     }.isdisjoint(_top_level_definitions(reference_runtime_path))
 
 
+def test_parallel_cache_lifecycle_has_one_implementation_owner() -> None:
+    lifecycle_definitions = {
+        "commit_initial_observed_video_context",
+        "run_parallel_exact_cache_warmup",
+    }
+    parallel_stream_root = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
+    )
+    lifecycle_path = parallel_stream_root / "cache_lifecycle.py"
+    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
+
+    assert lifecycle_definitions <= _top_level_definitions(lifecycle_path)
+    assert {
+        "_maybe_commit_initial_observed_video_context",
+        "run_parallel_exact_cache_warmup",
+    }.isdisjoint(_top_level_definitions(reference_runtime_path))
+
+
+def test_parallel_inference_conditioning_has_one_implementation_owner() -> None:
+    conditioning_definitions = {
+        "append_generalist_mode_text_context",
+        "repeat_parallel_exact_input_for_cfg",
+    }
+    parallel_stream_root = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
+    )
+    conditioning_path = parallel_stream_root / "inference_conditioning.py"
+    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
+
+    assert conditioning_definitions <= _top_level_definitions(conditioning_path)
+    assert {
+        "_inject_generalist_mode_text_context",
+        "_repeat_joint_input_for_cfg",
+    }.isdisjoint(_top_level_definitions(reference_runtime_path))
+
+
 def test_parallel_training_artifacts_have_one_implementation_owner() -> None:
     artifact_definitions = {
         "LingbotParallelTrainArtifacts",

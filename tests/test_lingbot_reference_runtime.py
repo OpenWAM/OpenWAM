@@ -47,13 +47,19 @@ from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
     run_parallel_current_frame_action_chunk_inference_rollout,
     run_parallel_action_conditioned_action_override_inference_rollout,
     run_parallel_action_conditioned_inference_rollout,
-    run_parallel_exact_cache_warmup,
     run_parallel_exact_inference_rollout,
     run_parallel_fastwam_first_frame_train,
     run_reference_single_stream_forward,
 )
 from open_wam.models.policy_variants.parallel_stream import cache_execution as cache_execution_module
+from open_wam.models.policy_variants.parallel_stream import cache_lifecycle as cache_lifecycle_module
 from open_wam.models.policy_variants.parallel_stream import reference_runtime as reference_runtime_module
+from open_wam.models.policy_variants.parallel_stream.cache_lifecycle import (
+    run_parallel_exact_cache_warmup,
+)
+from open_wam.models.policy_variants.parallel_stream.inference_conditioning import (
+    append_generalist_mode_text_context,
+)
 from open_wam.models.policy_variants.parallel_stream.training_artifacts import (
     prepare_parallel_action_conditioned_train_artifacts,
     prepare_parallel_current_frame_action_chunk_train_artifacts,
@@ -292,7 +298,7 @@ def test_generalist_mode_context_injection_preserves_cfg_negative_branch() -> No
     text_emb = torch.randn(1, 4, 16)
     negative_text_emb = torch.randn(1, 4, 16)
 
-    appended, appended_negative = reference_runtime_module._inject_generalist_mode_text_context(
+    appended, appended_negative = append_generalist_mode_text_context(
         core,
         policy_config=policy_config,
         text_emb=text_emb,
@@ -461,7 +467,7 @@ def test_generalist_mode_context_requires_configured_encoder() -> None:
     )
 
     with pytest.raises(ValueError, match="append exactly one token"):
-        reference_runtime_module._inject_generalist_mode_text_context(
+        append_generalist_mode_text_context(
             core,
             policy_config=policy_config,
             text_emb=torch.randn(1, 4, 16),
@@ -3786,6 +3792,11 @@ def test_action_conditioned_override_after_warmup_uses_local_startup_window(monk
 
     monkeypatch.setattr(reference_runtime_module, "_write_exact_cache_chunk", fake_write_exact_cache_chunk)
     monkeypatch.setattr(
+        cache_lifecycle_module,
+        "_write_exact_cache_chunk",
+        fake_write_exact_cache_chunk,
+    )
+    monkeypatch.setattr(
         reference_runtime_module,
         "_run_parallel_action_conditioned_forward",
         fake_action_conditioned_forward,
@@ -4142,7 +4153,16 @@ def test_video_conditioned_action_returns_prediction_but_commits_clean_action_hi
             torch.zeros(batch_size, action_tokens, action_noisy.shape[1], device=action_noisy.device, dtype=action_noisy.dtype),
         )
 
-    monkeypatch.setattr(reference_runtime_module, "_write_exact_cache_chunk", fake_write_exact_cache_chunk)
+    monkeypatch.setattr(
+        cache_lifecycle_module,
+        "_write_exact_cache_chunk",
+        fake_write_exact_cache_chunk,
+    )
+    monkeypatch.setattr(
+        reference_runtime_module,
+        "_write_exact_cache_chunk",
+        fake_write_exact_cache_chunk,
+    )
     monkeypatch.setattr(
         reference_runtime_module,
         "_run_parallel_action_conditioned_forward",
@@ -4972,7 +4992,11 @@ def test_exact_cache_warmup_passes_per_chunk_hidden_context(monkeypatch) -> None
         captured["video"] = None if video_hidden_context is None else tuple(video_hidden_context.shape)
         captured["action"] = None if action_hidden_context is None else tuple(action_hidden_context.shape)
 
-    monkeypatch.setattr(reference_runtime_module, "_write_exact_cache_chunk", fake_write_exact_cache_chunk)
+    monkeypatch.setattr(
+        cache_lifecycle_module,
+        "_write_exact_cache_chunk",
+        fake_write_exact_cache_chunk,
+    )
 
     transformer = _FakeReferenceTransformer()
 
@@ -5053,6 +5077,11 @@ def test_action_conditioned_rollout_cache_commit_passes_per_chunk_hidden_context
         )
 
     monkeypatch.setattr(reference_runtime_module, "_write_exact_cache_chunk", fake_write_exact_cache_chunk)
+    monkeypatch.setattr(
+        cache_lifecycle_module,
+        "_write_exact_cache_chunk",
+        fake_write_exact_cache_chunk,
+    )
     monkeypatch.setattr(reference_runtime_module, "_run_parallel_action_conditioned_forward", fake_action_conditioned_forward)
 
     transformer = _FakeReferenceTransformer()

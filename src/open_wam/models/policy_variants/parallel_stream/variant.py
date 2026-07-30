@@ -32,11 +32,11 @@ from ..contracts import (
     PolicyTrainOutput,
     RolloutCursor,
 )
+from .cache_lifecycle import run_parallel_exact_cache_warmup
 from .reference_runtime import (
     run_parallel_action_conditioned_inference_rollout,
     run_parallel_action_conditioned_train,
     run_parallel_current_frame_action_chunk_inference_rollout,
-    run_parallel_exact_cache_warmup,
     run_parallel_exact_inference_rollout,
     run_parallel_exact_train,
     run_parallel_fastwam_first_frame_inference_rollout,
