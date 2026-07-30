@@ -94,6 +94,10 @@ plain contracts:
   preparation, CFG duplication, dtype selection, execution, and cache
   lifecycle. Policy runtimes may select when to use it but do not reimplement
   these backbone operations.
+- `parallel_stream.exact_cache` owns the typed policy-side cache context,
+  write-interface selection, text/CFG preparation, and attention-window
+  compatibility checks. It delegates allocation and tensor execution to
+  `visual_tower.exact_runtime`; it does not own backbone mechanics.
 - `models.common.video_geometry` owns video token-grid and unpatchifying
   transforms used by visual execution, policy variants, and decoders.
 - `models.common.cache_backends` owns parameter-free attention-cache policy:

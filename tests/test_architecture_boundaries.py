@@ -683,6 +683,36 @@ def test_exact_single_stream_runtime_has_one_implementation_owner() -> None:
     assert "data_seq_to_patch" not in _top_level_definitions(reference_runtime_path)
 
 
+def test_parallel_exact_cache_contract_has_one_implementation_owner() -> None:
+    cache_contract_definitions = {
+        "ExactCacheContext",
+        "ExactCacheInterfaceSpec",
+        "build_exact_cache_spec",
+        "ensure_exact_cache_initialized",
+        "ensure_exact_text_embeddings",
+        "existing_exact_cache_attention_window",
+        "resolve_exact_cache_context",
+        "validate_existing_exact_cache_attention_window",
+    }
+    parallel_stream_root = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
+    )
+    cache_contract_path = parallel_stream_root / "exact_cache.py"
+    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
+
+    assert cache_contract_definitions <= _top_level_definitions(cache_contract_path)
+    assert {
+        "ExactCacheContext",
+        "ExactCacheInterfaceSpec",
+        "_build_exact_cache_spec",
+        "_ensure_exact_cache_initialized",
+        "_existing_exact_cache_attn_window",
+        "_resolve_exact_cache_context",
+        "_validate_existing_exact_cache_attn_window",
+        "ensure_reference_text_embeddings",
+    }.isdisjoint(_top_level_definitions(reference_runtime_path))
+
+
 def test_visual_runtime_tensor_transport_has_one_implementation_owner() -> None:
     transport_definitions = {
         "cached_attention_profile",
