@@ -659,6 +659,48 @@ def test_mot_packed_training_program_has_one_execution_owner() -> None:
     assert run_call.func.value.func.id == "MoTPackedTrainingProgram"
 
 
+def test_mot_non_packed_inference_programs_have_one_execution_owner() -> None:
+    mot_root = PACKAGE_ROOT / "models" / "policy_variants" / "mot"
+    variant_path = mot_root / "variant.py"
+    program_owners = {
+        "MoTJointDenoiseInferenceProgram": mot_root / "joint_denoise_inference.py",
+        "MoTSplitCacheInferenceProgram": mot_root / "split_cache_inference.py",
+    }
+    for class_name, owner_path in program_owners.items():
+        assert class_name in _top_level_definitions(owner_path)
+        assert "run" in _class_method_definitions(owner_path, class_name)
+
+    dispatcher = _class_method(
+        variant_path,
+        "MoTPolicyVariant",
+        "forward_infer_step",
+    )
+    constructed_programs = {
+        node.func.value.func.id
+        for node in ast.walk(dispatcher)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "run"
+        and isinstance(node.func.value, ast.Call)
+        and isinstance(node.func.value.func, ast.Name)
+    }
+    assert constructed_programs == {
+        "MoTJointDenoiseInferenceProgram",
+        "MoTSplitCacheInferenceProgram",
+    }
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_forward_infer_packed_coupling"
+        for node in ast.walk(dispatcher)
+    )
+    assert not any(
+        isinstance(node, (ast.For, ast.While, ast.FunctionDef))
+        for statement in dispatcher.body
+        for node in ast.walk(statement)
+    )
+
+
 def test_retired_ablations_namespace_is_not_packaged() -> None:
     assert not (PACKAGE_ROOT / "ablations").exists()
 
