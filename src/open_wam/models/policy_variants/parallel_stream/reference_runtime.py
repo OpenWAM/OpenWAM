@@ -82,11 +82,16 @@ from .conditional_rollout import (
 from .exact_cache import (
     ExactCacheContext,
     ExactCacheInterfaceSpec,
+    build_clean_video_action_cache_stream_ids as _stream_ids_for_clean_video_action_tokens,
+    build_dual_stream_cache_stream_ids as _stream_ids_for_exact_dual_stream_split,
     build_exact_cache_spec as _build_exact_cache_spec,
+    count_single_stream_action_tokens as _single_stream_action_token_count,
     ensure_exact_cache_initialized as _ensure_exact_cache_initialized,
     ensure_exact_text_embeddings as ensure_reference_text_embeddings,
     existing_exact_cache_attention_window as _existing_exact_cache_attn_window,
+    restore_slot_pool_layer_metadata as _restore_slot_pool_layer_metadata,
     resolve_exact_cache_context as _resolve_exact_cache_context,
+    set_slot_pool_layer_metadata as _set_slot_pool_layer_metadata,
     validate_existing_exact_cache_attention_window as _validate_existing_exact_cache_attn_window,
 )
 from .runtime_semantics import (
@@ -111,80 +116,6 @@ def sample_timestep_id(
     u = torch.rand(size=[batch_size], device=device)
     u = u * (max_timestep_bd - min_timestep_bd) + min_timestep_bd
     return (u * num_train_timesteps).clamp(min=0, max=num_train_timesteps - 1).to(torch.int64)
-
-
-def _stream_ids_for_exact_dual_stream_split(
-    split_list: list[int] | tuple[int, ...],
-    *,
-    device: torch.device,
-) -> torch.Tensor:
-    return torch.cat(
-        [
-            torch.zeros(int(split_list[0]), device=device, dtype=torch.long),
-            torch.zeros(int(split_list[1]), device=device, dtype=torch.long),
-            torch.ones(int(split_list[2]), device=device, dtype=torch.long),
-            torch.ones(int(split_list[3]), device=device, dtype=torch.long),
-            torch.full((int(split_list[4]),), -1, device=device, dtype=torch.long),
-        ],
-        dim=0,
-    )
-
-
-def _stream_ids_for_clean_video_action_tokens(
-    *,
-    video_token_count: int,
-    action_token_count: int,
-    device: torch.device,
-) -> torch.Tensor:
-    return torch.cat(
-        [
-            torch.zeros(int(video_token_count), device=device, dtype=torch.long),
-            torch.ones(int(action_token_count), device=device, dtype=torch.long),
-        ],
-        dim=0,
-    )
-
-
-def _single_stream_action_token_count(actions: torch.Tensor) -> int:
-    if actions.ndim != 5:
-        raise ValueError(f"Expected action latents shaped [B, C, F, A, W], got {tuple(actions.shape)}.")
-    return int(actions.shape[2]) * int(actions.shape[3]) * int(actions.shape[4])
-
-
-def _set_slot_pool_layer_metadata(
-    transformer: torch.nn.Module,
-    *,
-    cache_name: str,
-    updates: dict[str, Any],
-) -> list[tuple[Any, dict[str, tuple[bool, Any]]]]:
-    if not updates or not hasattr(transformer, "_resolve_exact_cache_state"):
-        return []
-    cache_state = transformer._resolve_exact_cache_state(cache_name)
-    if cache_state is None or not cache_backend_uses_slot_pool(cache_state.backend_name):
-        return []
-    cache_payload = cache_state.backend_payload
-    layer_states = getattr(cache_payload, "layer_states", None)
-    if layer_states is None:
-        return []
-    previous: list[tuple[Any, dict[str, tuple[bool, Any]]]] = []
-    for layer_state in layer_states:
-        layer_previous: dict[str, tuple[bool, Any]] = {}
-        for key, value in updates.items():
-            layer_previous[key] = (key in layer_state.metadata, layer_state.metadata.get(key))
-            layer_state.metadata[key] = value
-        previous.append((layer_state, layer_previous))
-    return previous
-
-
-def _restore_slot_pool_layer_metadata(
-    previous: list[tuple[Any, dict[str, tuple[bool, Any]]]],
-) -> None:
-    for layer_state, layer_previous in previous:
-        for key, (was_present, value) in layer_previous.items():
-            if was_present:
-                layer_state.metadata[key] = value
-            else:
-                layer_state.metadata.pop(key, None)
 
 
 @dataclass

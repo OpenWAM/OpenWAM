@@ -95,8 +95,9 @@ plain contracts:
   lifecycle. Policy runtimes may select when to use it but do not reimplement
   these backbone operations.
 - `parallel_stream.exact_cache` owns the typed policy-side cache context,
-  write-interface selection, text/CFG preparation, and attention-window
-  compatibility checks. It delegates allocation and tensor execution to
+  write-interface selection, cache-token stream labels, scoped slot-pool
+  metadata, text/CFG preparation, and attention-window compatibility checks.
+  It delegates allocation and tensor execution to
   `visual_tower.exact_runtime`; it does not own backbone mechanics.
 - `parallel_stream.runtime_semantics` resolves enum-backed history visibility,
   condition-latent sources, block/timestep coupling, cache-prefix visibility,

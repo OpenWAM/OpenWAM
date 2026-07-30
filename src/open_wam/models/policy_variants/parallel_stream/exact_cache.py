@@ -9,6 +9,7 @@ from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.configs.enums import ParallelExactCacheWriteMode
 from open_wam.configs.inference import InferenceConfig
 from open_wam.configs.policy_variant import ParallelStreamPolicyConfig
+from open_wam.models.common import SlotPoolLayerState, cache_backend_uses_slot_pool
 from open_wam.models.visual_tower.exact_runtime import (
     initialize_exact_runtime_cache,
     resolve_runtime_module_dtype,
@@ -17,11 +18,16 @@ from open_wam.models.visual_tower.exact_runtime import (
 __all__ = [
     "ExactCacheContext",
     "ExactCacheInterfaceSpec",
+    "build_clean_video_action_cache_stream_ids",
+    "build_dual_stream_cache_stream_ids",
     "build_exact_cache_spec",
+    "count_single_stream_action_tokens",
     "ensure_exact_cache_initialized",
     "ensure_exact_text_embeddings",
     "existing_exact_cache_attention_window",
+    "restore_slot_pool_layer_metadata",
     "resolve_exact_cache_context",
+    "set_slot_pool_layer_metadata",
     "validate_existing_exact_cache_attention_window",
 ]
 
@@ -49,6 +55,100 @@ class ExactCacheContext:
     use_cfg: bool
     device: torch.device
     model_dtype: torch.dtype
+
+
+def build_dual_stream_cache_stream_ids(
+    split_list: list[int] | tuple[int, ...],
+    *,
+    device: torch.device,
+) -> torch.Tensor:
+    """Label packed video, action, and padding tokens for exact-cache writes."""
+
+    return torch.cat(
+        [
+            torch.zeros(int(split_list[0]), device=device, dtype=torch.long),
+            torch.zeros(int(split_list[1]), device=device, dtype=torch.long),
+            torch.ones(int(split_list[2]), device=device, dtype=torch.long),
+            torch.ones(int(split_list[3]), device=device, dtype=torch.long),
+            torch.full((int(split_list[4]),), -1, device=device, dtype=torch.long),
+        ],
+        dim=0,
+    )
+
+
+def build_clean_video_action_cache_stream_ids(
+    *,
+    video_token_count: int,
+    action_token_count: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """Label a clean video/action cache commit without padding tokens."""
+
+    return torch.cat(
+        [
+            torch.zeros(int(video_token_count), device=device, dtype=torch.long),
+            torch.ones(int(action_token_count), device=device, dtype=torch.long),
+        ],
+        dim=0,
+    )
+
+
+def count_single_stream_action_tokens(actions: torch.Tensor) -> int:
+    """Return the flattened token width of `[B, C, F, A, W]` action latents."""
+
+    if actions.ndim != 5:
+        raise ValueError(
+            f"Expected action latents shaped [B, C, F, A, W], got {tuple(actions.shape)}."
+        )
+    return int(actions.shape[2]) * int(actions.shape[3]) * int(actions.shape[4])
+
+
+SlotPoolLayerMetadataSnapshot = list[
+    tuple[SlotPoolLayerState, dict[str, tuple[bool, Any]]]
+]
+
+
+def set_slot_pool_layer_metadata(
+    transformer: torch.nn.Module,
+    *,
+    cache_name: str,
+    updates: dict[str, Any],
+) -> SlotPoolLayerMetadataSnapshot:
+    """Apply reversible per-layer metadata to an initialized slot-pool cache."""
+
+    if not updates or not hasattr(transformer, "_resolve_exact_cache_state"):
+        return []
+    cache_state = transformer._resolve_exact_cache_state(cache_name)
+    if cache_state is None or not cache_backend_uses_slot_pool(cache_state.backend_name):
+        return []
+    cache_payload = cache_state.backend_payload
+    layer_states = getattr(cache_payload, "layer_states", None)
+    if layer_states is None:
+        return []
+    previous: SlotPoolLayerMetadataSnapshot = []
+    for layer_state in layer_states:
+        layer_previous: dict[str, tuple[bool, Any]] = {}
+        for key, value in updates.items():
+            layer_previous[key] = (
+                key in layer_state.metadata,
+                layer_state.metadata.get(key),
+            )
+            layer_state.metadata[key] = value
+        previous.append((layer_state, layer_previous))
+    return previous
+
+
+def restore_slot_pool_layer_metadata(
+    previous: SlotPoolLayerMetadataSnapshot,
+) -> None:
+    """Restore metadata captured by :func:`set_slot_pool_layer_metadata`."""
+
+    for layer_state, layer_previous in previous:
+        for key, (was_present, value) in layer_previous.items():
+            if was_present:
+                layer_state.metadata[key] = value
+            else:
+                layer_state.metadata.pop(key, None)
 
 
 def ensure_exact_text_embeddings(

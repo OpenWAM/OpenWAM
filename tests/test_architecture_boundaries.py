@@ -687,11 +687,16 @@ def test_parallel_exact_cache_contract_has_one_implementation_owner() -> None:
     cache_contract_definitions = {
         "ExactCacheContext",
         "ExactCacheInterfaceSpec",
+        "build_clean_video_action_cache_stream_ids",
+        "build_dual_stream_cache_stream_ids",
         "build_exact_cache_spec",
+        "count_single_stream_action_tokens",
         "ensure_exact_cache_initialized",
         "ensure_exact_text_embeddings",
         "existing_exact_cache_attention_window",
+        "restore_slot_pool_layer_metadata",
         "resolve_exact_cache_context",
+        "set_slot_pool_layer_metadata",
         "validate_existing_exact_cache_attention_window",
     }
     parallel_stream_root = (
@@ -707,7 +712,12 @@ def test_parallel_exact_cache_contract_has_one_implementation_owner() -> None:
         "_build_exact_cache_spec",
         "_ensure_exact_cache_initialized",
         "_existing_exact_cache_attn_window",
+        "_restore_slot_pool_layer_metadata",
         "_resolve_exact_cache_context",
+        "_set_slot_pool_layer_metadata",
+        "_single_stream_action_token_count",
+        "_stream_ids_for_clean_video_action_tokens",
+        "_stream_ids_for_exact_dual_stream_split",
         "_validate_existing_exact_cache_attn_window",
         "ensure_reference_text_embeddings",
     }.isdisjoint(_top_level_definitions(reference_runtime_path))

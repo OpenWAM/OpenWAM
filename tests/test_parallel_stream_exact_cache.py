@@ -11,16 +11,22 @@ from open_wam.configs import (
     ParallelStreamPolicyConfig,
     SharedVideoTransformerConfig,
 )
+from open_wam.models.common import SlotPoolLayerState
 from open_wam.models.policy_variants.parallel_stream import exact_cache
 from open_wam.models.policy_variants.parallel_stream import reference_runtime
 from open_wam.models.policy_variants.parallel_stream.exact_cache import (
     ExactCacheContext,
     ExactCacheInterfaceSpec,
+    build_clean_video_action_cache_stream_ids,
+    build_dual_stream_cache_stream_ids,
     build_exact_cache_spec,
+    count_single_stream_action_tokens,
     ensure_exact_cache_initialized,
     ensure_exact_text_embeddings,
     existing_exact_cache_attention_window,
+    restore_slot_pool_layer_metadata,
     resolve_exact_cache_context,
+    set_slot_pool_layer_metadata,
     validate_existing_exact_cache_attention_window,
 )
 
@@ -28,7 +34,19 @@ from open_wam.models.policy_variants.parallel_stream.exact_cache import (
 def test_reference_runtime_exact_cache_names_alias_canonical_contract() -> None:
     assert reference_runtime.ExactCacheContext is ExactCacheContext
     assert reference_runtime.ExactCacheInterfaceSpec is ExactCacheInterfaceSpec
+    assert (
+        reference_runtime._stream_ids_for_clean_video_action_tokens
+        is build_clean_video_action_cache_stream_ids
+    )
+    assert (
+        reference_runtime._stream_ids_for_exact_dual_stream_split
+        is build_dual_stream_cache_stream_ids
+    )
     assert reference_runtime._build_exact_cache_spec is build_exact_cache_spec
+    assert (
+        reference_runtime._single_stream_action_token_count
+        is count_single_stream_action_tokens
+    )
     assert (
         reference_runtime._ensure_exact_cache_initialized
         is ensure_exact_cache_initialized
@@ -41,10 +59,125 @@ def test_reference_runtime_exact_cache_names_alias_canonical_contract() -> None:
         reference_runtime._existing_exact_cache_attn_window
         is existing_exact_cache_attention_window
     )
+    assert (
+        reference_runtime._restore_slot_pool_layer_metadata
+        is restore_slot_pool_layer_metadata
+    )
     assert reference_runtime._resolve_exact_cache_context is resolve_exact_cache_context
+    assert (
+        reference_runtime._set_slot_pool_layer_metadata
+        is set_slot_pool_layer_metadata
+    )
     assert (
         reference_runtime._validate_existing_exact_cache_attn_window
         is validate_existing_exact_cache_attention_window
+    )
+
+
+def test_build_dual_stream_cache_stream_ids_preserves_packed_split_order() -> None:
+    stream_ids = build_dual_stream_cache_stream_ids(
+        [2, 1, 3, 2, 2],
+        device=torch.device("cpu"),
+    )
+
+    assert stream_ids.dtype == torch.long
+    assert stream_ids.device == torch.device("cpu")
+    torch.testing.assert_close(
+        stream_ids,
+        torch.tensor([0, 0, 0, 1, 1, 1, 1, 1, -1, -1]),
+        rtol=0.0,
+        atol=0.0,
+    )
+
+
+def test_build_clean_video_action_cache_stream_ids_preserves_token_order() -> None:
+    stream_ids = build_clean_video_action_cache_stream_ids(
+        video_token_count=2,
+        action_token_count=3,
+        device=torch.device("cpu"),
+    )
+
+    assert stream_ids.dtype == torch.long
+    torch.testing.assert_close(
+        stream_ids,
+        torch.tensor([0, 0, 1, 1, 1]),
+        rtol=0.0,
+        atol=0.0,
+    )
+
+
+def test_count_single_stream_action_tokens_uses_frame_action_width() -> None:
+    actions = torch.zeros(2, 7, 3, 4, 2)
+
+    assert count_single_stream_action_tokens(actions) == 24
+
+    with pytest.raises(
+        ValueError,
+        match=r"Expected action latents shaped \[B, C, F, A, W\]",
+    ):
+        count_single_stream_action_tokens(torch.zeros(2, 3, 4, 5))
+
+
+def test_slot_pool_layer_metadata_round_trips_existing_and_new_keys() -> None:
+    layers = (
+        SlotPoolLayerState(metadata={"existing": "first", "untouched": 1}),
+        SlotPoolLayerState(metadata={"existing": "second"}),
+    )
+
+    class _Transformer(torch.nn.Module):
+        def _resolve_exact_cache_state(self, cache_name: str) -> object:
+            assert cache_name == "session"
+            return SimpleNamespace(
+                backend_name="slot_pool_exact",
+                backend_payload=SimpleNamespace(layer_states=layers),
+            )
+
+    previous = set_slot_pool_layer_metadata(
+        _Transformer(),
+        cache_name="session",
+        updates={"existing": "temporary", "added": True},
+    )
+
+    assert [layer.metadata for layer in layers] == [
+        {"existing": "temporary", "untouched": 1, "added": True},
+        {"existing": "temporary", "added": True},
+    ]
+    restore_slot_pool_layer_metadata(previous)
+    assert [layer.metadata for layer in layers] == [
+        {"existing": "first", "untouched": 1},
+        {"existing": "second"},
+    ]
+
+
+@pytest.mark.parametrize(
+    "transformer",
+    [
+        torch.nn.Identity(),
+        SimpleNamespace(_resolve_exact_cache_state=lambda _name: None),
+        SimpleNamespace(
+            _resolve_exact_cache_state=lambda _name: SimpleNamespace(
+                backend_name="merged_prefix",
+                backend_payload=SimpleNamespace(layer_states=()),
+            )
+        ),
+        SimpleNamespace(
+            _resolve_exact_cache_state=lambda _name: SimpleNamespace(
+                backend_name="slot_pool_exact",
+                backend_payload=SimpleNamespace(),
+            )
+        ),
+    ],
+)
+def test_slot_pool_layer_metadata_is_noop_without_compatible_cache(
+    transformer: object,
+) -> None:
+    assert (
+        set_slot_pool_layer_metadata(
+            transformer,
+            cache_name="session",
+            updates={"temporary": True},
+        )
+        == []
     )
 
 
