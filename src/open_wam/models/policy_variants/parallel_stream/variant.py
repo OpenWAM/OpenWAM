@@ -41,9 +41,9 @@ from .forward_execution import (
 from .reference_runtime import (
     run_parallel_action_conditioned_inference_rollout,
     run_parallel_current_frame_action_chunk_inference_rollout,
-    run_parallel_exact_inference_rollout,
     run_parallel_fastwam_first_frame_inference_rollout,
 )
+from .staged_rollout import run_parallel_staged_inference_rollout
 from .training_artifacts import (
     prepare_parallel_action_conditioned_train_artifacts,
     prepare_parallel_current_frame_action_chunk_train_artifacts,
@@ -1034,7 +1034,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 hidden_proprio_state=resolved_hidden_proprio_state,
             )
         else:
-            infer_artifacts = run_parallel_exact_inference_rollout(
+            infer_artifacts = run_parallel_staged_inference_rollout(
                 transformer=reference_transformer,
                 backbone_config=self.backbone_config,
                 policy_config=self.config,

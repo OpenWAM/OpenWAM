@@ -811,6 +811,26 @@ def test_parallel_forward_execution_has_one_implementation_owner() -> None:
     }.isdisjoint(_top_level_definitions(reference_runtime_path))
 
 
+def test_parallel_inference_artifacts_and_staged_rollout_have_one_owner() -> None:
+    parallel_stream_root = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
+    )
+    artifact_path = parallel_stream_root / "inference_artifacts.py"
+    staged_rollout_path = parallel_stream_root / "staged_rollout.py"
+    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
+
+    assert "ParallelInferArtifacts" in _top_level_definitions(artifact_path)
+    assert "run_parallel_staged_inference_rollout" in _top_level_definitions(
+        staged_rollout_path
+    )
+    assert {
+        "LingbotParallelInferArtifacts",
+        "ParallelInferArtifacts",
+        "run_parallel_exact_inference_rollout",
+        "run_parallel_staged_inference_rollout",
+    }.isdisjoint(_top_level_definitions(reference_runtime_path))
+
+
 def test_parallel_training_artifacts_have_one_implementation_owner() -> None:
     artifact_definitions = {
         "LingbotParallelTrainArtifacts",

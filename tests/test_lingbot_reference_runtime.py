@@ -55,6 +55,7 @@ from open_wam.models.policy_variants.parallel_stream import cache_execution as c
 from open_wam.models.policy_variants.parallel_stream import cache_lifecycle as cache_lifecycle_module
 from open_wam.models.policy_variants.parallel_stream import forward_execution as forward_execution_module
 from open_wam.models.policy_variants.parallel_stream import reference_runtime as reference_runtime_module
+from open_wam.models.policy_variants.parallel_stream import staged_rollout as staged_rollout_module
 from open_wam.models.policy_variants.parallel_stream.cache_lifecycle import (
     run_parallel_exact_cache_warmup,
 )
@@ -1008,8 +1009,8 @@ def test_staged_action_condition_only_zeros_absolute_frame_zero(monkeypatch) -> 
         )
 
     monkeypatch.setattr(
-        reference_runtime_module,
-        "run_reference_single_stream_forward",
+        staged_rollout_module,
+        "run_exact_single_stream_forward",
         fake_single_stream_forward,
     )
 
@@ -1337,8 +1338,8 @@ def test_staged_rollout_applies_hidden_proprio_to_video_and_action(monkeypatch) 
         )
 
     monkeypatch.setattr(
-        reference_runtime_module,
-        "run_reference_single_stream_forward",
+        staged_rollout_module,
+        "run_exact_single_stream_forward",
         fake_single_stream_forward,
     )
 
@@ -1429,8 +1430,8 @@ def test_action_then_video_skip_video_prediction_runs_action_only(monkeypatch) -
         )
 
     monkeypatch.setattr(
-        reference_runtime_module,
-        "run_reference_single_stream_forward",
+        staged_rollout_module,
+        "run_exact_single_stream_forward",
         fake_single_stream_forward,
     )
     monkeypatch.setattr(
