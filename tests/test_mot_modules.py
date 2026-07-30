@@ -40,6 +40,15 @@ from open_wam.models.policy_variants.mot.attention import (
     build_mot_packed_coupling_attention_profile,
     build_packed_action_attention_mask,
 )
+from open_wam.models.policy_variants.mot.cache_state import (
+    append_mot_action_cache,
+    move_mot_action_cache,
+    move_mot_video_cache,
+    rewind_mot_runtime_action_cache_to_frame,
+    trim_mot_action_cache_prefix,
+    trim_mot_action_cache_tail,
+    trim_mot_video_cache_tail,
+)
 from open_wam.models.policy_variants.mot.conditioning import MoTConditioning
 from open_wam.models.policy_variants.mot.modules import (
     MoTActionExpert,
@@ -49,10 +58,8 @@ from open_wam.models.policy_variants.mot.packed_block import MoTPackedBlock
 from open_wam.models.policy_variants.mot.runtime import (
     expand_mot_scalar_timestep,
     mot_scheduler_next_sigma,
-    rewind_mot_runtime_action_cache_to_frame,
     resolve_mot_condition_latents,
     step_mot_flow_with_sigmas,
-    trim_mot_action_cache_prefix,
 )
 from open_wam.models.policy_variants.mot.runtime_routing import (
     resolve_mot_rollout_cache_window_frames,
@@ -75,6 +82,20 @@ def test_mot_runtime_attention_exports_are_compatibility_aliases() -> None:
     }
     for name, canonical_builder in canonical_builders.items():
         assert getattr(mot_runtime, name) is canonical_builder
+
+
+def test_mot_runtime_cache_exports_are_compatibility_aliases() -> None:
+    canonical_operations = {
+        "append_mot_action_cache": append_mot_action_cache,
+        "move_mot_action_cache": move_mot_action_cache,
+        "move_mot_video_cache": move_mot_video_cache,
+        "rewind_mot_runtime_action_cache_to_frame": rewind_mot_runtime_action_cache_to_frame,
+        "trim_mot_action_cache_prefix": trim_mot_action_cache_prefix,
+        "trim_mot_action_cache_tail": trim_mot_action_cache_tail,
+        "trim_mot_video_cache_tail": trim_mot_video_cache_tail,
+    }
+    for name, canonical_operation in canonical_operations.items():
+        assert getattr(mot_runtime, name) is canonical_operation
 
 
 def test_mot_action_expert_pre_and_post_shapes() -> None:

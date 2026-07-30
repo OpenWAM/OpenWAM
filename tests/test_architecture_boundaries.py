@@ -516,7 +516,6 @@ def test_mot_runtime_controls_have_role_owners() -> None:
     tensor_runtime_functions = {
         "expand_mot_scalar_timestep",
         "mot_scheduler_next_sigma",
-        "rewind_mot_runtime_action_cache_to_frame",
         "step_mot_flow_with_sigmas",
     }
     retired_variant_functions = routing_functions | tensor_runtime_functions | {
@@ -537,6 +536,24 @@ def test_mot_runtime_controls_have_role_owners() -> None:
     assert tensor_runtime_functions <= _top_level_definitions(mot_root / "runtime.py")
     assert retired_variant_functions.isdisjoint(
         _top_level_definitions(mot_root / "variant.py")
+    )
+
+
+def test_mot_cache_state_operations_have_one_owner() -> None:
+    cache_operations = {
+        "append_mot_action_cache",
+        "move_mot_action_cache",
+        "move_mot_video_cache",
+        "rewind_mot_runtime_action_cache_to_frame",
+        "trim_mot_action_cache_prefix",
+        "trim_mot_action_cache_tail",
+        "trim_mot_video_cache_tail",
+    }
+    mot_root = PACKAGE_ROOT / "models" / "policy_variants" / "mot"
+
+    assert cache_operations <= _top_level_definitions(mot_root / "cache_state.py")
+    assert cache_operations.isdisjoint(
+        _top_level_definitions(mot_root / "runtime.py")
     )
 
 
