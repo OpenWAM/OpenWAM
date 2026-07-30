@@ -853,6 +853,26 @@ def test_parallel_generalist_training_has_one_implementation_owner() -> None:
     }.isdisjoint(_top_level_definitions(reference_runtime_path))
 
 
+def test_parallel_proprio_conditioning_has_one_implementation_owner() -> None:
+    conditioning_definitions = {
+        "apply_parallel_chunk_proprio_context",
+        "build_single_stream_hidden_proprio_context",
+        "inject_deprecated_proprio_text_context",
+    }
+    parallel_stream_root = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
+    )
+    conditioning_path = parallel_stream_root / "proprio_conditioning.py"
+    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
+
+    assert conditioning_definitions <= _top_level_definitions(conditioning_path)
+    assert {
+        "_apply_parallel_chunk_proprio_context",
+        "_inject_proprio_text_context",
+        "_single_stream_hidden_proprio_context",
+    }.isdisjoint(_top_level_definitions(reference_runtime_path))
+
+
 def test_visual_runtime_tensor_transport_has_one_implementation_owner() -> None:
     transport_definitions = {
         "cached_attention_profile",
