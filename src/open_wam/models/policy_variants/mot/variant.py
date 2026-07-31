@@ -62,6 +62,7 @@ from .packed_training import MoTPackedTrainingProgram
 from .runtime_routing import (
     MOT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS,
     ensure_mot_policy_variant_inference_backend,
+    is_mot_same_step_coupling,
     resolve_mot_current_block_coupling,
 )
 from .sequence_layout import MoTTrainingLayout, build_action_grid_ids_for_sequence

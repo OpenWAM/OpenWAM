@@ -82,6 +82,7 @@ from open_wam.models.policy_variants.mot.runtime import (
     step_mot_flow_with_sigmas,
 )
 from open_wam.models.policy_variants.mot.runtime_routing import (
+    is_mot_same_step_coupling,
     resolve_mot_rollout_cache_window_frames,
     resolve_mot_rollout_history_frames,
 )
@@ -155,6 +156,10 @@ def test_mot_runtime_dual_stream_exports_are_compatibility_aliases() -> None:
     assert (
         mot_variant.forward_joint_video_action_denoise
         is forward_joint_video_action_denoise
+    )
+    assert (
+        mot_variant.is_mot_same_step_coupling
+        is is_mot_same_step_coupling
     )
 
 
