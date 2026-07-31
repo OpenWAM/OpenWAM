@@ -80,15 +80,21 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "src" / "open_wam"
 
 
+def _absolute_imports_for_file(path: Path) -> set[str]:
+    imports: set[str] = set()
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imports.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imports.add(node.module)
+    return imports
+
+
 def _absolute_imports(package: str) -> set[str]:
     imports: set[str] = set()
     for path in (PACKAGE_ROOT / package).rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imports.update(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                imports.add(node.module)
+        imports.update(_absolute_imports_for_file(path))
     return imports
 
 
@@ -497,6 +503,52 @@ def test_lerobot_latent_segment_materialization_has_one_owner() -> None:
         and node.func.id == "plan_latent_segment_materialization"
     ]
     assert len(direct_plan_calls) == 1
+
+
+def test_mixed_video_catalog_has_one_owner() -> None:
+    from open_wam.data import MixedVideoCatalog as PublicMixedVideoCatalog
+    from open_wam.data.mixed_video import (
+        MixedVideoCatalog as LegacyMixedVideoCatalog,
+        MixedVideoEpisodeRecord as LegacyMixedVideoEpisodeRecord,
+        MixedVideoStreamRecord as LegacyMixedVideoStreamRecord,
+        load_mixed_video_catalog as legacy_load_mixed_video_catalog,
+        split_mixed_video_episodes as legacy_split_mixed_video_episodes,
+    )
+    from open_wam.data.mixed_video_catalog import (
+        MixedVideoCatalog,
+        MixedVideoEpisodeRecord,
+        MixedVideoStreamRecord,
+        load_mixed_video_catalog,
+        split_mixed_video_episodes,
+    )
+
+    canonical_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "data" / "mixed_video_catalog.py"
+    )
+    compatibility_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "data" / "mixed_video.py"
+    )
+    canonical_names = {
+        "MixedVideoCatalog",
+        "MixedVideoEpisodeRecord",
+        "MixedVideoStreamRecord",
+        "load_mixed_video_catalog",
+        "split_mixed_video_episodes",
+    }
+
+    assert canonical_names <= canonical_definitions
+    assert canonical_names.isdisjoint(compatibility_definitions)
+    assert PublicMixedVideoCatalog is MixedVideoCatalog
+    assert LegacyMixedVideoCatalog is MixedVideoCatalog
+    assert LegacyMixedVideoEpisodeRecord is MixedVideoEpisodeRecord
+    assert LegacyMixedVideoStreamRecord is MixedVideoStreamRecord
+    assert legacy_load_mixed_video_catalog is load_mixed_video_catalog
+    assert legacy_split_mixed_video_episodes is split_mixed_video_episodes
+
+    encoder_imports = _absolute_imports_for_file(
+        REPO_ROOT / "scripts" / "encode_mixed_video_latents.py"
+    )
+    assert "open_wam.data.mixed_video_catalog" in encoder_imports
 
 
 def test_lerobot_latent_supervision_assembly_has_one_owner() -> None:

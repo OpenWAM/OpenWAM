@@ -35,6 +35,7 @@ from open_wam.configs import (
 )
 from open_wam.configs import load_experiment_config
 from open_wam.data import (
+    MixedVideoCatalog as PublicMixedVideoCatalog,
     build_train_val_datasets,
     build_train_val_latent_datasets,
     collate_latent_wam_samples,
@@ -42,7 +43,10 @@ from open_wam.data import (
 )
 from open_wam.data.raw_video import build_canonical_video_preprocessor
 from open_wam.data.mixed_video import (
+    MixedVideoCatalog as LegacyMixedVideoCatalog,
+    MixedVideoEpisodeRecord as LegacyMixedVideoEpisodeRecord,
     MixedVideoLatentWindowDataset,
+    MixedVideoStreamRecord as LegacyMixedVideoStreamRecord,
     MixedVideoWindowDataset,
     assemble_mixed_video_latent_views,
     decode_video_frames,
@@ -52,6 +56,13 @@ from open_wam.data.mixed_video import (
     resample_video_frames_to_fps,
     split_mixed_video_episodes,
     transform_frame,
+)
+from open_wam.data.mixed_video_catalog import (
+    MixedVideoCatalog,
+    MixedVideoEpisodeRecord,
+    MixedVideoStreamRecord,
+    load_mixed_video_catalog as canonical_load_mixed_video_catalog,
+    split_mixed_video_episodes as canonical_split_mixed_video_episodes,
 )
 from open_wam.models.common.video_geometry import WAN_TEMPORAL_CHUNK_SIZE, wan_raw_frame_count_to_latent_count
 
@@ -63,6 +74,15 @@ def _write_video(path: Path, *, num_frames: int, height: int, width: int, offset
         for frame_index in range(num_frames)
     ]
     imageio.mimsave(path, frames, fps=10, macro_block_size=1)
+
+
+def test_mixed_video_catalog_legacy_imports_preserve_identity() -> None:
+    assert PublicMixedVideoCatalog is MixedVideoCatalog
+    assert LegacyMixedVideoCatalog is MixedVideoCatalog
+    assert LegacyMixedVideoEpisodeRecord is MixedVideoEpisodeRecord
+    assert LegacyMixedVideoStreamRecord is MixedVideoStreamRecord
+    assert load_mixed_video_catalog is canonical_load_mixed_video_catalog
+    assert split_mixed_video_episodes is canonical_split_mixed_video_episodes
 
 
 def _write_manifest(path: Path, rows: list[dict[str, object]]) -> None:
