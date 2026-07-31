@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Iterator
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from functools import partial
 import math
 import random
@@ -35,12 +35,6 @@ from .action_transforms import (
     build_absolute_joint_position_targets,
     expected_joint_position_target_dim,
     normalize_action_targets,
-)
-from .distributed_sampling import (
-    EpochOffsetDistributedSampler,
-    EpochOrderDistributedSampler,
-    WeightedReplacementDistributedSampler,
-    draw_hierarchical_sample_index,
 )
 from .latent_contracts import LatentWAMSample
 from .latent_segment_geometry import (
@@ -77,12 +71,27 @@ from .lerobot_v2_latent_storage import (
     scan_local_latent_windows,
     split_local_episode_indices as split_local_episode_indices,
 )
+from .lerobot_v2_latent_sampling import (
+    HierarchicalFixedSegmentSamplingPlan,
+    HierarchicalFixedSegmentTaskSpec as HierarchicalFixedSegmentTaskSpec,
+    HierarchicalFixedSegmentTrainSampler
+    as HierarchicalFixedSegmentTrainSampler,
+    HierarchicalFixedSegmentWindowSpec as HierarchicalFixedSegmentWindowSpec,
+    LocalLatentEpochOrderSampler as LocalLatentEpochOrderSampler,
+    LocalLatentWeightedTrainSampler as LocalLatentWeightedTrainSampler,
+    build_hierarchical_fixed_segment_task_specs,
+)
 from .replay_status import load_replay_status_records, split_episode_indices_by_replay_status
 from .row_action_targets import build_row_action_targets, resolve_row_key
 from .sequence_packing import pack_temporal_sequence
 
 _COMPATIBILITY_EXPORTS = (
     CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET,
+    HierarchicalFixedSegmentTaskSpec,
+    HierarchicalFixedSegmentTrainSampler,
+    HierarchicalFixedSegmentWindowSpec,
+    LocalLatentEpochOrderSampler,
+    LocalLatentWeightedTrainSampler,
     latent_anchor_positions,
     LocalRepoBundle,
     latent_filename,
@@ -99,31 +108,6 @@ _TRUNCATING_SEQUENCE_PACKER = partial(
     pack_temporal_sequence,
     truncate_to_target_length=True,
 )
-
-
-@dataclass(frozen=True)
-class HierarchicalFixedSegmentWindowSpec:
-    """One eligible trajectory/chunk geometry for hierarchical fixed-segment sampling."""
-
-    window_index: int
-    task_text: str
-    sampled_chunk_size: int
-    start_min: int
-    start_max: int
-    eligible_start_count: int
-    mass_within_task: float
-
-
-@dataclass(frozen=True)
-class HierarchicalFixedSegmentTaskSpec:
-    """Task-level sampling mass and trajectory candidates."""
-
-    task_text: str
-    eligible_start_count: int
-    demo_count: int
-    task_mass: float
-    windows: tuple[HierarchicalFixedSegmentWindowSpec, ...]
-    window_mass_total: float
 
 
 class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
@@ -790,51 +774,6 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             raw_frame_count=raw_frame_count,
             latent_num_frames=latent_num_frames,
             layout=latent_temporal_layout,
-        )
-
-
-class LocalLatentWeightedTrainSampler(WeightedReplacementDistributedSampler):
-    """Replacement train sampler for weighted local latent examples."""
-
-    def __init__(self, dataset: LocalLeRobotLatentWindowDataset, *, world_size: int = 1, rank: int = 0) -> None:
-        super().__init__(
-            dataset,
-            weights=dataset.sample_weights,
-            base_seed=int(dataset.data_config.split_seed),
-            world_size=world_size,
-            rank=rank,
-            empty_dataset_message="Weighted local latent sampling requires a non-empty dataset.",
-        )
-
-
-class LocalLatentEpochOrderSampler(EpochOrderDistributedSampler):
-    """Sampler backed by a dataset-provided epoch order."""
-
-    def __init__(self, dataset: "UniformSegmentLocalLeRobotLatentDataset", *, world_size: int = 1, rank: int = 0) -> None:
-        super().__init__(
-            dataset,
-            world_size=world_size,
-            rank=rank,
-            empty_dataset_message="Epoch-order local latent sampling requires a non-empty dataset.",
-            empty_order_message="Epoch-order local latent sampler received an empty order.",
-        )
-
-
-class HierarchicalFixedSegmentTrainSampler(EpochOffsetDistributedSampler):
-    """Deterministic step-wise sampler for hierarchical fixed-segment draw keys."""
-
-    def __init__(
-        self,
-        dataset: "HierarchicalFixedSegmentLocalLeRobotLatentDataset",
-        *,
-        world_size: int = 1,
-        rank: int = 0,
-    ) -> None:
-        super().__init__(
-            dataset,
-            world_size=world_size,
-            rank=rank,
-            empty_dataset_message="Hierarchical fixed-segment sampling requires a non-empty dataset.",
         )
 
 
@@ -1601,16 +1540,14 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
         self.segment_frames = int(sample_cfg.segment_frames)
         self._window_start_ranges_by_chunk = self._build_window_start_ranges_by_chunk()
         self._task_specs = self._build_task_specs()
-        self._task_weights = tuple(float(task.task_mass) for task in self._task_specs)
-        self._task_mass_total = float(sum(self._task_weights))
-        self._task_specs_by_text = {task.task_text: task for task in self._task_specs}
-        self._epoch_sample_count = sum(
-            int(window_spec.eligible_start_count)
-            for task_spec in self._task_specs
-            for window_spec in task_spec.windows
+        sampling_plan = HierarchicalFixedSegmentSamplingPlan.from_task_specs(
+            self._task_specs
         )
-        if self._epoch_sample_count <= 0:
-            raise ValueError("Hierarchical fixed-segment sampling requires at least one eligible start.")
+        self._task_weights = sampling_plan.task_weights
+        self._task_mass_total = sampling_plan.task_mass_total
+        self._task_specs_by_text = sampling_plan.task_specs_by_text
+        self._epoch_sample_count = sampling_plan.epoch_sample_count
+        self._hierarchical_sampling_plan = sampling_plan
 
     def __len__(self) -> int:
         return self._epoch_sample_count
@@ -1684,80 +1621,22 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
         return tuple(ranges_by_window)
 
     def _build_task_specs(self) -> tuple[HierarchicalFixedSegmentTaskSpec, ...]:
-        sample_cfg = self.data_config.sample_construction
-        window_specs_by_task: dict[str, list[HierarchicalFixedSegmentWindowSpec]] = {}
-        eligible_starts_by_task: Counter[str] = Counter()
-        for window_index, task_text in enumerate(self._window_task_texts):
-            for sampled_chunk_size, start_min, start_max, eligible_start_count in self._window_start_ranges_by_chunk[
-                window_index
-            ]:
-                if eligible_start_count <= 0:
-                    continue
-                trajectory_mass = float(eligible_start_count) ** float(sample_cfg.trajectory_start_power)
-                window_spec = HierarchicalFixedSegmentWindowSpec(
-                    window_index=window_index,
-                    task_text=task_text,
-                    sampled_chunk_size=int(sampled_chunk_size),
-                    start_min=int(start_min),
-                    start_max=int(start_max),
-                    eligible_start_count=int(eligible_start_count),
-                    mass_within_task=trajectory_mass,
-                )
-                window_specs_by_task.setdefault(task_text, []).append(window_spec)
-                eligible_starts_by_task[task_text] += int(eligible_start_count)
-
-        task_specs: list[HierarchicalFixedSegmentTaskSpec] = []
-        for task_text in sorted(window_specs_by_task):
-            eligible_start_count = int(eligible_starts_by_task[task_text])
-            demo_count = max(1, int(self._task_demo_counts[task_text]))
-            task_mass = (
-                float(eligible_start_count) ** float(sample_cfg.task_start_power)
-            ) * (float(demo_count) ** float(sample_cfg.demo_count_power))
-            if task_mass <= 0.0:
-                task_mass = 1.0
-            windows = tuple(window_specs_by_task[task_text])
-            window_mass_total = float(sum(window.mass_within_task for window in windows))
-            if window_mass_total <= 0.0:
-                windows = tuple(
-                    HierarchicalFixedSegmentWindowSpec(
-                        window_index=window.window_index,
-                        task_text=window.task_text,
-                        sampled_chunk_size=window.sampled_chunk_size,
-                        start_min=window.start_min,
-                        start_max=window.start_max,
-                        eligible_start_count=window.eligible_start_count,
-                        mass_within_task=1.0,
-                    )
-                    for window in windows
-                )
-                window_mass_total = float(len(windows))
-            task_specs.append(
-                HierarchicalFixedSegmentTaskSpec(
-                    task_text=task_text,
-                    eligible_start_count=eligible_start_count,
-                    demo_count=demo_count,
-                    task_mass=float(task_mass),
-                    windows=windows,
-                    window_mass_total=window_mass_total,
-                )
-            )
-        if not task_specs:
-            raise ValueError("Hierarchical fixed-segment sampling found no eligible task/window starts.")
-        return tuple(task_specs)
+        return build_hierarchical_fixed_segment_task_specs(
+            window_task_texts=self._window_task_texts,
+            window_start_ranges_by_chunk=self._window_start_ranges_by_chunk,
+            task_demo_counts=self._task_demo_counts,
+            sample_config=self.data_config.sample_construction,
+        )
 
     def _draw_hierarchical_sample(
         self,
         index: int,
     ) -> tuple[HierarchicalFixedSegmentTaskSpec, HierarchicalFixedSegmentWindowSpec, int, int]:
-        split_salt = 17 if self.data_config.split == DataSplit.TRAIN else 53
-        draw = draw_hierarchical_sample_index(
-            seed_values=(int(self.data_config.split_seed), split_salt, int(index)),
-            task_weights=self._task_weights,
-            task_specs=self._task_specs,
+        return self._hierarchical_sampling_plan.draw(
+            index=index,
+            split_seed=int(self.data_config.split_seed),
+            split=self.data_config.split,
         )
-        task_spec = self._task_specs[draw.task_index]
-        window_spec = task_spec.windows[draw.window_index]
-        return task_spec, window_spec, draw.start, int(window_spec.sampled_chunk_size)
 
     def resolve_hierarchical_sample_key(self, index: int) -> dict[str, Any]:
         """Resolve one sampler/dataloader index without loading tensors."""
@@ -1818,14 +1697,7 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
     def iter_hierarchical_eligible_start_keys(self) -> Iterator[tuple[int, int, int]]:
         """Yield every concrete trajectory/start/chunk key that must be reachable."""
 
-        for task_spec in self._task_specs:
-            for window_spec in task_spec.windows:
-                for latent_start in range(int(window_spec.start_min), int(window_spec.start_max) + 1):
-                    yield (
-                        int(window_spec.window_index),
-                        int(latent_start),
-                        int(window_spec.sampled_chunk_size),
-                    )
+        return self._hierarchical_sampling_plan.iter_eligible_start_keys()
 
     def _hierarchical_sample_metadata(
         self,
@@ -1834,37 +1706,12 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
         task_spec: HierarchicalFixedSegmentTaskSpec,
         window_spec: HierarchicalFixedSegmentWindowSpec,
     ) -> dict[str, Any]:
-        sample_cfg = self.data_config.sample_construction
-        task_probability = float(task_spec.task_mass) / max(1e-12, self._task_mass_total)
-        trajectory_probability = float(window_spec.mass_within_task) / max(1e-12, task_spec.window_mass_total)
-        return {
-            "hierarchical_global_sample_index": int(index),
-            "hierarchical_task_text": task_spec.task_text,
-            "hierarchical_task_start_power": float(sample_cfg.task_start_power),
-            "hierarchical_demo_count_power": float(sample_cfg.demo_count_power),
-            "hierarchical_trajectory_start_power": float(sample_cfg.trajectory_start_power),
-            "hierarchical_task_eligible_start_count": int(task_spec.eligible_start_count),
-            "hierarchical_task_demo_count": int(task_spec.demo_count),
-            "hierarchical_task_mass": float(task_spec.task_mass),
-            "hierarchical_task_probability": task_probability,
-            "hierarchical_trajectory_eligible_start_count": int(window_spec.eligible_start_count),
-            "hierarchical_trajectory_mass": float(window_spec.mass_within_task),
-            "hierarchical_trajectory_probability_within_task": trajectory_probability,
-            "hierarchical_start_min": int(window_spec.start_min),
-            "hierarchical_start_max": int(window_spec.start_max),
-            "hierarchical_start_count": int(window_spec.eligible_start_count),
-            "hierarchical_task_count": int(len(self._task_specs)),
-            "hierarchical_epoch_sample_count": int(self._epoch_sample_count),
-            "context_prefix_policy": str(sample_cfg.context_prefix_policy),
-            "context_prefix_config_frames": int(sample_cfg.context_prefix_frames),
-            "target_alignment": str(sample_cfg.target_alignment),
-            "rollout_context_policy": str(sample_cfg.rollout_context_policy),
-            "rollout_context_config_frames": (
-                None if sample_cfg.rollout_context_frames is None else int(sample_cfg.rollout_context_frames)
-            ),
-            "tail_padding_policy": str(sample_cfg.tail_padding_policy),
-            "padded_target_policy": str(sample_cfg.padded_target_policy),
-        }
+        return self._hierarchical_sampling_plan.sample_metadata(
+            index=index,
+            task_spec=task_spec,
+            window_spec=window_spec,
+            sample_config=self.data_config.sample_construction,
+        )
 
     def __getitem__(self, index: int) -> LatentWAMSample:
         task_spec, window_spec, latent_start, sampled_chunk_size = self._draw_hierarchical_sample(index)

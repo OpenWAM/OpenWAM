@@ -1037,9 +1037,29 @@ def test_hierarchical_fixed_segment_samples_padded_start_range_and_masks_targets
     )
 
     train_dataset, _ = build_train_val_latent_datasets(config.data)
+    sampling_plan = train_dataset._hierarchical_sampling_plan
 
     assert len(train_dataset) == 8
     assert train_dataset._window_start_ranges_by_chunk == (((1, -3, 4, 8),),)
+    assert train_dataset._task_specs is sampling_plan.task_specs
+    assert train_dataset._task_weights is sampling_plan.task_weights
+    assert train_dataset._task_mass_total == sampling_plan.task_mass_total
+    assert train_dataset._task_specs_by_text is sampling_plan.task_specs_by_text
+    assert train_dataset._epoch_sample_count == sampling_plan.epoch_sample_count
+    assert [
+        train_dataset._draw_hierarchical_sample(index)
+        for index in range(32)
+    ] == [
+        sampling_plan.draw(
+            index=index,
+            split_seed=config.data.split_seed,
+            split=config.data.split,
+        )
+        for index in range(32)
+    ]
+    assert list(train_dataset.iter_hierarchical_eligible_start_keys()) == list(
+        sampling_plan.iter_eligible_start_keys()
+    )
     tail_sample = next(
         train_dataset[index]
         for index in range(200)

@@ -197,10 +197,13 @@ local LeRobot latent adapter, `LocalLatentRepository` in
 per-camera latent I/O, condition-payload validation, canonical latent-canvas
 assembly, and bounded I/O caches;
 `latent_segment_geometry` owns pure eligible-start, materialized-bound, and
-loss-bound calculations; and `lerobot_v2_latent` owns sampling draws,
-action/state extraction, sample-mode semantics, and public `LatentWAMSample`
-construction. Historical dataset-private load helpers remain thin delegates
-for compatibility, but do not own a second implementation.
+loss-bound calculations; `lerobot_v2_latent_sampling` owns local
+task/trajectory mass tables, split-salted draw plans, sampling metadata, and
+the thin distributed-sampler adapters; and `lerobot_v2_latent` owns eligible
+range construction, action/state extraction, sample-mode semantics, and
+public `LatentWAMSample` construction. Historical dataset-private storage and
+sampling helpers remain thin delegates for compatibility, but do not own a
+second implementation.
 For row-oriented robot datasets, `row_action_targets` owns raw, relative-EEF,
 and absolute-joint target conversion, action mapping, normalization, and
 target metadata. `sequence_packing` owns the canonical float32 padded tensor

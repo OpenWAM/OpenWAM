@@ -351,6 +351,59 @@ def test_lerobot_latent_repository_io_has_one_storage_owner() -> None:
         assert isinstance(method.body[0].value, ast.Call)
 
 
+def test_lerobot_latent_sampling_policy_has_one_owner() -> None:
+    sampling_owned = {
+        "HierarchicalFixedSegmentSamplingPlan",
+        "HierarchicalFixedSegmentTaskSpec",
+        "HierarchicalFixedSegmentTrainSampler",
+        "HierarchicalFixedSegmentWindowSpec",
+        "LocalLatentEpochOrderSampler",
+        "LocalLatentWeightedTrainSampler",
+        "build_hierarchical_fixed_segment_task_specs",
+    }
+    sampling_path = (
+        PACKAGE_ROOT / "data" / "lerobot_v2_latent_sampling.py"
+    )
+    dataset_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent.py"
+
+    assert sampling_owned <= _top_level_definitions(sampling_path)
+    assert sampling_owned.isdisjoint(_top_level_definitions(dataset_path))
+    assert {
+        "draw",
+        "from_task_specs",
+        "iter_eligible_start_keys",
+        "sample_metadata",
+    } <= _class_method_definitions(
+        sampling_path,
+        "HierarchicalFixedSegmentSamplingPlan",
+    )
+
+    compatibility_methods = {
+        "_build_task_specs",
+        "_draw_hierarchical_sample",
+        "_hierarchical_sample_metadata",
+        "iter_hierarchical_eligible_start_keys",
+    }
+    for method_name in compatibility_methods:
+        method = _class_method(
+            dataset_path,
+            "HierarchicalFixedSegmentLocalLeRobotLatentDataset",
+            method_name,
+        )
+        executable_statements = [
+            statement
+            for statement in method.body
+            if not (
+                isinstance(statement, ast.Expr)
+                and isinstance(statement.value, ast.Constant)
+                and isinstance(statement.value.value, str)
+            )
+        ]
+        assert len(executable_statements) == 1
+        assert isinstance(executable_statements[0], ast.Return)
+        assert isinstance(executable_statements[0].value, ast.Call)
+
+
 def test_lerobot_latent_segment_geometry_has_one_owner() -> None:
     geometry_functions = {
         "compact_boundary_start_range",

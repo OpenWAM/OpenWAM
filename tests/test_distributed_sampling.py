@@ -29,7 +29,16 @@ from open_wam.data.distributed_sampling import (
 from open_wam.data.generalist_dynamics import GeneralistDynamicsMixtureTrainSampler
 from open_wam.data.lerobot_consortium import ConsortiumTrainSampler
 from open_wam.data.lerobot_v2_latent import (
+    HierarchicalFixedSegmentTaskSpec as LegacyHierarchicalTaskSpec,
+    HierarchicalFixedSegmentTrainSampler as LegacyHierarchicalTrainSampler,
+    HierarchicalFixedSegmentWindowSpec as LegacyHierarchicalWindowSpec,
+    LocalLatentEpochOrderSampler as LegacyLocalLatentEpochOrderSampler,
+    LocalLatentWeightedTrainSampler as LegacyLocalLatentWeightedTrainSampler,
+)
+from open_wam.data.lerobot_v2_latent_sampling import (
+    HierarchicalFixedSegmentTaskSpec,
     HierarchicalFixedSegmentTrainSampler,
+    HierarchicalFixedSegmentWindowSpec,
     LocalLatentEpochOrderSampler,
     LocalLatentWeightedTrainSampler,
 )
@@ -154,6 +163,14 @@ def test_dataset_samplers_are_thin_generic_contract_adapters() -> None:
     assert issubclass(MixedVideoTrainSampler, EpochOrderDistributedSampler)
     assert issubclass(ConsortiumTrainSampler, UnpaddedEpochOrderDistributedSampler)
     assert issubclass(GeneralistDynamicsMixtureTrainSampler, PaddedEpochOffsetDistributedSampler)
+
+
+def test_local_latent_sampling_compatibility_exports_preserve_identity() -> None:
+    assert LegacyHierarchicalTaskSpec is HierarchicalFixedSegmentTaskSpec
+    assert LegacyHierarchicalTrainSampler is HierarchicalFixedSegmentTrainSampler
+    assert LegacyHierarchicalWindowSpec is HierarchicalFixedSegmentWindowSpec
+    assert LegacyLocalLatentEpochOrderSampler is LocalLatentEpochOrderSampler
+    assert LegacyLocalLatentWeightedTrainSampler is LocalLatentWeightedTrainSampler
 
 
 def test_weighted_replacement_sampler_matches_global_torch_draw_and_rank_shards() -> None:
