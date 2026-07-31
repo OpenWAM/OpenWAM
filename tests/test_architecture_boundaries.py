@@ -2514,6 +2514,12 @@ def test_libero_mot_drivers_delegate_to_the_package_episode_runner() -> None:
     package_source = (
         PACKAGE_ROOT / "evals" / "libero_mot_rollout.py"
     ).read_text(encoding="utf-8")
+    artifact_source = (
+        PACKAGE_ROOT / "evals" / "libero_rollout_artifacts.py"
+    ).read_text(encoding="utf-8")
+    visualization_source = (
+        PACKAGE_ROOT / "evals" / "libero_visualization.py"
+    ).read_text(encoding="utf-8")
     observed_history_source = (
         PACKAGE_ROOT
         / "models"
@@ -2528,6 +2534,19 @@ def test_libero_mot_drivers_delegate_to_the_package_episode_runner() -> None:
     assert "mot_viz._" not in batch_source
     assert "._forward_infer_with_visual_outputs(" not in package_source
     assert "runner.reconcile_observed_history(" in package_source
+    assert "persist_libero_rollout_artifacts(" in package_source
+    for artifact_implementation in (
+        "imageio",
+        "ImageDraw",
+        "VideoProcessor",
+        "_actions.jsonl",
+        "_chunks.json",
+        "_decode_latent_video",
+    ):
+        assert artifact_implementation not in package_source
+        assert artifact_implementation in artifact_source
+    assert "def decode_imagined_video" not in visualization_source
+    assert "def build_comparison_video_frames" not in visualization_source
     for policy_state_field in (
         "past_clean_latents",
         "past_clean_actions",

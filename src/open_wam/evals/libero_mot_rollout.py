@@ -11,17 +11,14 @@ import copy
 import hashlib
 import json
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import imageio.v2 as imageio
 import numpy as np
-from PIL import Image, ImageDraw
 import torch
-from diffusers.video_processor import VideoProcessor
 
 from open_wam.configs import (
     ExperimentConfig,
@@ -30,11 +27,15 @@ from open_wam.configs import (
     read_yaml_with_local_paths,
 )
 from open_wam.data.latent_temporal import raw_window_frames_for_latents
-from open_wam.evals.libero_visualization import (
-    resolve_device as _resolve_device,
-    to_uint8 as _to_uint8,
-    with_title as _with_title,
+from open_wam.evals.libero_rollout_artifacts import (
+    LiberoRolloutArtifactIdentity,
+    LiberoRolloutArtifactOptions,
+    LiberoRolloutArtifactPayload,
+    append_predicted_latent_chunk,
+    extract_predicted_latents,
+    persist_libero_rollout_artifacts,
 )
+from open_wam.evals.libero_visualization import resolve_device as _resolve_device
 from open_wam.integrations import (
     LIBERO_ROLLOUT_VIEW_KEYS,
     LiberoTaskSpec,
@@ -630,7 +631,7 @@ def run_mot_libero_episode(
                     visual_outputs=visual_outputs,
                 )
                 infer_output = step_output.infer_output
-                route_predicted_latents = _extract_predicted_latents(infer_output)
+                route_predicted_latents = extract_predicted_latents(infer_output)
                 if args.mot_gjd_action_route == "joint_video_then_idm":
                     if args.mot_generalist_rollout_mode not in (
                         None,
@@ -706,11 +707,11 @@ def run_mot_libero_episode(
                 action_per_frame=action_per_frame,
             )
             frame_actions = actions.reshape(frame_chunk_size, action_per_frame, actions.shape[-1])
-            predicted_latents = _extract_predicted_latents(infer_output)
+            predicted_latents = extract_predicted_latents(infer_output)
             if args.mot_gjd_action_route == "joint_video_then_idm" and isinstance(route_predicted_latents, torch.Tensor):
                 predicted_latents = route_predicted_latents
             if not args.skip_comparison_video and isinstance(predicted_latents, torch.Tensor):
-                _append_predicted_latent_chunk(
+                append_predicted_latent_chunk(
                     predicted_latent_chunks,
                     predicted_latents,
                     max_imagined_latent_frames=args.max_imagined_latent_frames,
@@ -890,42 +891,6 @@ def run_mot_libero_episode(
 
             chunk_count += 1
 
-        output_path = _build_output_path(
-            root=Path(args.output_dir),
-            benchmark_name=args.benchmark,
-            task_id=task_id,
-            prompt=prompt,
-            episode_idx=episode_idx,
-            done=done,
-            suffix=args.suffix,
-        )
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        comparison_video_path = None
-        if not args.skip_comparison_video:
-            imagined_video = _decode_latent_video_chunks(
-                pipeline,
-                predicted_latent_chunks,
-                decode_device=resources.decode_device,
-                restore_vae=False,
-            )
-            _write_video_frames(
-                output_path,
-                _iter_comparison_video_frames(
-                    real_obs_list=rollout_frames,
-                    imagined_video=imagined_video,
-                ),
-                fps=args.video_fps,
-            )
-            comparison_video_path = str(output_path.resolve())
-        rollout_path = None
-        if args.save_rollout_video:
-            rollout_path = output_path.with_name(f"{output_path.stem}_rollout.mp4")
-            _write_video_frames(
-                rollout_path,
-                _iter_rollout_video_frames(real_obs_list=rollout_frames),
-                fps=args.video_fps,
-            )
-
         summary = {
             "benchmark": args.benchmark,
             "task_id": task_id,
@@ -936,9 +901,9 @@ def run_mot_libero_episode(
             "chunk_count": chunk_count,
             "env_timestep": int(env.env.timestep),
             "seed": seed,
-            "video_path": comparison_video_path,
-            "comparison_video_path": comparison_video_path,
-            "rollout_video_path": None if rollout_path is None else str(rollout_path.resolve()),
+            "video_path": None,
+            "comparison_video_path": None,
+            "rollout_video_path": None,
             "pipeline": "open_wam_mot",
             "runtime_mode": str(config.policy_variant.runtime_mode),
             "condition_mode": str(config.policy_variant.condition_mode),
@@ -953,25 +918,33 @@ def run_mot_libero_episode(
             "checkpoint_file": str(resources.checkpoint_path.resolve()),
             "mot_gjd_action_route": str(args.mot_gjd_action_route),
         }
-        summary_path = output_path.with_suffix(".json")
-        action_trace_path = output_path.with_name(f"{output_path.stem}_actions.jsonl")
-        summary["action_trace_path"] = str(action_trace_path.resolve())
-        summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-        with action_trace_path.open("w", encoding="utf-8") as handle:
-            for action_index, action in enumerate(action_trace):
-                handle.write(
-                    json.dumps(
-                        {
-                            "action_index": int(action_index),
-                            "action": np.asarray(action, dtype=np.float32).tolist(),
-                        }
-                    )
-                    + "\n"
-                )
-        chunk_log_path = output_path.with_name(f"{output_path.stem}_chunks.json")
-        chunk_log_path.write_text(json.dumps(chunk_logs, indent=2, default=str), encoding="utf-8")
-        load_report_path = output_path.with_name(f"{output_path.stem}_load_report.json")
-        load_report_path.write_text(json.dumps(resources.component_report, indent=2), encoding="utf-8")
+        artifact_output = persist_libero_rollout_artifacts(
+            pipeline=pipeline,
+            identity=LiberoRolloutArtifactIdentity(
+                benchmark=args.benchmark,
+                task_id=task_id,
+                prompt=prompt,
+                episode_idx=episode_idx,
+                success=bool(done),
+                suffix=args.suffix,
+            ),
+            options=LiberoRolloutArtifactOptions(
+                output_root=Path(args.output_dir),
+                video_fps=args.video_fps,
+                save_rollout_video=args.save_rollout_video,
+                skip_comparison_video=args.skip_comparison_video,
+            ),
+            payload=LiberoRolloutArtifactPayload(
+                real_observations=rollout_frames,
+                predicted_latent_chunks=predicted_latent_chunks,
+                action_trace=action_trace,
+                chunk_events=chunk_logs,
+                component_report=resources.component_report,
+            ),
+            summary=summary,
+            decode_device=resources.decode_device,
+        )
+        summary = artifact_output.summary
         print(json.dumps(summary, indent=2))
         return summary
     finally:
@@ -1253,20 +1226,6 @@ def _prepare_visual_outputs_offline(
     )
 
 
-def _build_output_path(
-    *,
-    root: Path,
-    benchmark_name: str,
-    task_id: int,
-    prompt: str,
-    episode_idx: int,
-    done: bool,
-    suffix: str,
-) -> Path:
-    safe_prompt = prompt.replace(" ", "_")
-    return root / benchmark_name / f"{task_id}_{safe_prompt}" / f"{episode_idx}_{done}_{suffix}.mp4"
-
-
 def _encode_video_window_offline(
     assets,
     *,
@@ -1294,190 +1253,6 @@ def _frame_chunk_size(config) -> int:
 
 def _action_per_frame(config) -> int:
     return max(1, int(config.data.action_schema.action_horizon) // _frame_chunk_size(config))
-
-
-def _append_predicted_latent_chunk(
-    predicted_latent_chunks: list[torch.Tensor],
-    predicted_latents: torch.Tensor,
-    *,
-    max_imagined_latent_frames: int | None,
-) -> None:
-    if predicted_latents.ndim != 5:
-        raise ValueError(
-            "Predicted latent chunks must have shape [B, C, T, H, W], "
-            f"got {tuple(predicted_latents.shape)}."
-        )
-    if max_imagined_latent_frames is not None:
-        cap = int(max_imagined_latent_frames)
-        if cap <= 0:
-            return
-        retained_frames = sum(int(chunk.shape[2]) for chunk in predicted_latent_chunks)
-        if retained_frames >= cap:
-            return
-        remaining_frames = cap - retained_frames
-        predicted_latents = predicted_latents[:, :, :remaining_frames]
-    if int(predicted_latents.shape[2]) <= 0:
-        return
-    predicted_latent_chunks.append(predicted_latents.detach().cpu())
-
-
-def _write_video_frames(
-    output_path: Path,
-    frames: Iterable[np.ndarray],
-    *,
-    fps: float,
-) -> None:
-    wrote_frame = False
-    with imageio.get_writer(output_path, fps=fps) as writer:
-        for frame in frames:
-            writer.append_data(np.ascontiguousarray(frame))
-            wrote_frame = True
-    if not wrote_frame:
-        raise ValueError(f"No frames were produced for video output {output_path}.")
-
-
-def _iter_rollout_video_frames(
-    *,
-    real_obs_list: list[dict[str, np.ndarray]],
-) -> Iterable[np.ndarray]:
-    for obs in real_obs_list:
-        agentview = np.ascontiguousarray(obs[LIBERO_OBS_KEYS[0]])
-        wrist = np.ascontiguousarray(obs[LIBERO_OBS_KEYS[1]])
-        row_real = np.hstack([agentview, wrist])
-        row_real = np.ascontiguousarray(row_real)
-        row_real = np.array(_with_title(Image.fromarray(row_real), "MoT Rollout (AgentView / Wrist)"), copy=True)
-        yield np.ascontiguousarray(row_real)
-
-
-def _iter_comparison_video_frames(
-    *,
-    real_obs_list: list[dict[str, np.ndarray]],
-    imagined_video: np.ndarray | None,
-) -> Iterable[np.ndarray]:
-    panel_height = 300
-    total = len(real_obs_list)
-    for frame_index in range(total):
-        real_obs = real_obs_list[frame_index]
-        imagined_frame = _imagined_frame_for_rollout_index(
-            imagined_video=imagined_video,
-            frame_index=frame_index,
-            target_length=total,
-        )
-        agentview = np.ascontiguousarray(real_obs[LIBERO_OBS_KEYS[0]])
-        wrist = np.ascontiguousarray(real_obs[LIBERO_OBS_KEYS[1]])
-        row_real = np.hstack([agentview, wrist])
-        row_real = np.ascontiguousarray(row_real)
-        row_real = np.array(
-            _with_title(Image.fromarray(row_real), f"Real Rollout Frame {frame_index}"),
-            copy=True,
-        )
-        target_width = row_real.shape[1]
-        if imagined_frame is None:
-            row_imagined = Image.new("RGB", (target_width, panel_height), color=(0, 0, 0))
-            draw = ImageDraw.Draw(row_imagined)
-            draw.text((10, panel_height // 2), "No imagined frame", fill=(120, 120, 120))
-        else:
-            image = Image.fromarray(_to_uint8(imagined_frame))
-            scale = min(target_width / image.width, panel_height / image.height)
-            resized = image.resize((max(1, int(image.width * scale)), max(1, int(image.height * scale))))
-            row_imagined = Image.new("RGB", (target_width, panel_height), color=(0, 0, 0))
-            row_imagined.paste(
-                resized,
-                ((target_width - resized.width) // 2, (panel_height - resized.height) // 2),
-            )
-        row_imagined = _with_title(
-            row_imagined,
-            f"Imagined Frame {frame_index}",
-        )
-        yield np.ascontiguousarray(np.vstack([row_real, np.array(row_imagined, copy=True)]))
-
-
-def _imagined_frame_for_rollout_index(
-    *,
-    imagined_video: np.ndarray | None,
-    frame_index: int,
-    target_length: int,
-) -> np.ndarray | None:
-    if imagined_video is None or target_length <= 0:
-        return None
-    imagined_frame_count = len(imagined_video)
-    if imagined_frame_count <= 0:
-        return None
-    if imagined_frame_count == 1 or target_length == 1:
-        imagined_index = 0
-    elif imagined_frame_count == target_length:
-        imagined_index = frame_index
-    else:
-        imagined_index = int(round(frame_index * (imagined_frame_count - 1) / (target_length - 1)))
-    imagined_index = max(0, min(imagined_frame_count - 1, imagined_index))
-    return np.array(imagined_video[imagined_index], copy=True)
-
-
-def _decode_latent_video_chunks(
-    pipeline,
-    latent_chunks: list[torch.Tensor],
-    *,
-    decode_device: torch.device,
-    restore_vae: bool = True,
-) -> np.ndarray | None:
-    if not latent_chunks:
-        return None
-    return _decode_latent_video(
-        pipeline,
-        torch.cat(latent_chunks, dim=2),
-        decode_device=decode_device,
-        restore_vae=restore_vae,
-    )
-
-
-def _extract_predicted_latents(infer_output) -> torch.Tensor | None:
-    predicted_latents = infer_output.decoder_output.aux.get("predicted_latents")
-    if not isinstance(predicted_latents, torch.Tensor):
-        predicted_latents = infer_output.policy_output.aux.get("predicted_latents")
-    return predicted_latents if isinstance(predicted_latents, torch.Tensor) else None
-
-
-def _decode_latent_video(
-    pipeline,
-    latents: torch.Tensor,
-    *,
-    decode_device: torch.device,
-    restore_vae: bool = True,
-) -> np.ndarray | None:
-    assets = pipeline.visual_tower.frontend.reference_assets
-    if not assets.has_vae:
-        return None
-    vae = assets.vae
-    video_processor = VideoProcessor(vae_scale_factor=1)
-    vae_param = next(vae.parameters())
-    original_device = vae_param.device
-    original_dtype = vae_param.dtype
-    target_dtype = torch.bfloat16 if decode_device.type == "cuda" else torch.float32
-    if original_device != decode_device or original_dtype != target_dtype:
-        vae = vae.to(device=decode_device, dtype=target_dtype)
-    latents = latents.to(device=decode_device, dtype=target_dtype)
-    latents_mean = (
-        torch.tensor(vae.config.latents_mean, device=latents.device, dtype=latents.dtype)
-        .view(1, vae.config.z_dim, 1, 1, 1)
-    )
-    latents_std = (
-        1.0
-        / torch.tensor(vae.config.latents_std, device=latents.device, dtype=latents.dtype)
-        .view(1, vae.config.z_dim, 1, 1, 1)
-    )
-    latents = latents / latents_std + latents_mean
-    with torch.no_grad():
-        decoded = vae.decode(latents, return_dict=False)[0]
-    imagined_video = video_processor.postprocess_video(decoded, output_type="np")[0]
-    if (
-        restore_vae
-        and (
-            next(assets.vae.parameters()).device != original_device
-            or next(assets.vae.parameters()).dtype != original_dtype
-        )
-    ):
-        assets.vae = assets.vae.to(device=original_device, dtype=original_dtype)
-    return imagined_video
 
 
 def _build_component_report(

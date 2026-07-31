@@ -242,35 +242,6 @@ def test_build_executed_action_history_returns_none_when_nothing_executed() -> N
     ) is None
 
 
-def test_append_predicted_latent_chunk_honors_frame_cap() -> None:
-    chunks: list[torch.Tensor] = []
-    mot_viz._append_predicted_latent_chunk(
-        chunks,
-        torch.ones(1, 2, 3, 4, 4),
-        max_imagined_latent_frames=5,
-    )
-    mot_viz._append_predicted_latent_chunk(
-        chunks,
-        torch.ones(1, 2, 4, 4, 4) * 2.0,
-        max_imagined_latent_frames=5,
-    )
-
-    assert [int(chunk.shape[2]) for chunk in chunks] == [3, 2]
-    assert torch.all(chunks[1] == 2.0)
-
-
-def test_append_predicted_latent_chunk_zero_cap_disables_collection() -> None:
-    chunks: list[torch.Tensor] = []
-
-    mot_viz._append_predicted_latent_chunk(
-        chunks,
-        torch.ones(1, 2, 3, 4, 4),
-        max_imagined_latent_frames=0,
-    )
-
-    assert chunks == []
-
-
 @pytest.mark.parametrize(
     ("current_block_coupling", "expected"),
     [
@@ -290,59 +261,6 @@ def test_should_use_mot_legacy_split_cache_inference_only_for_legacy_couplings(
     )
 
     assert should_use_mot_legacy_split_cache_inference(config) is expected
-
-
-def test_comparison_video_frame_builder_resamples_imagined_frames_without_materializing_alignment() -> None:
-    real_obs = [_obs(1), _obs(2), _obs(3)]
-    imagined_video = np.stack(
-        [
-            np.zeros((2, 2, 3), dtype=np.uint8),
-            np.full((2, 2, 3), 127, dtype=np.uint8),
-            np.full((2, 2, 3), 255, dtype=np.uint8),
-            np.full((2, 2, 3), 64, dtype=np.uint8),
-            np.full((2, 2, 3), 32, dtype=np.uint8),
-        ],
-        axis=0,
-    )
-
-    frames = list(
-        mot_viz._iter_comparison_video_frames(
-            real_obs_list=real_obs,
-            imagined_video=imagined_video,
-        )
-    )
-
-    assert len(frames) == len(real_obs)
-    assert all(frame.flags["C_CONTIGUOUS"] for frame in frames)
-
-
-def test_write_video_frames_streams_to_imageio_writer(monkeypatch, tmp_path) -> None:
-    written: list[np.ndarray] = []
-
-    class _Writer:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def append_data(self, frame):
-            written.append(np.array(frame, copy=True))
-
-    def _fake_get_writer(path, *, fps):
-        assert path == tmp_path / "out.mp4"
-        assert fps == 7.0
-        return _Writer()
-
-    monkeypatch.setattr(mot_viz.imageio, "get_writer", _fake_get_writer)
-
-    mot_viz._write_video_frames(
-        tmp_path / "out.mp4",
-        [np.zeros((2, 2, 3), dtype=np.uint8), np.ones((2, 2, 3), dtype=np.uint8)],
-        fps=7.0,
-    )
-
-    assert len(written) == 2
 
 
 def test_prepare_mot_visual_outputs_streaming_path_uses_run_frontend() -> None:

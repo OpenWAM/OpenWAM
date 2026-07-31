@@ -1,7 +1,8 @@
-"""LIBERO observation preparation and rollout-artifact helpers.
+"""LIBERO observation preparation for exact evaluation.
 
-This optional evaluation module owns simulator-facing visualization glue. It
-does not define policy, cache, or sequence semantics.
+This optional module owns simulator-facing observation and runtime-input glue.
+Legacy rendering helpers are identity aliases to the artifact owner; this
+module does not define policy, cache, or sequence semantics.
 """
 
 from __future__ import annotations
@@ -10,12 +11,14 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
-from PIL import Image, ImageDraw
 import torch
-from diffusers.video_processor import VideoProcessor
 
 from open_wam.configs import ProprioContextMode
 from open_wam.data.action_transforms import quaternion_to_axis_angle
+from open_wam.evals.libero_rollout_artifacts import (
+    to_uint8 as _artifact_to_uint8,
+    with_title as _artifact_with_title,
+)
 from open_wam.integrations import (
     LIBERO_ROLLOUT_VIEW_KEYS,
     LiberoTaskSpec,
@@ -24,6 +27,8 @@ from open_wam.integrations import (
 
 
 LIBERO_OBS_KEYS = LIBERO_ROLLOUT_VIEW_KEYS
+to_uint8 = _artifact_to_uint8
+with_title = _artifact_with_title
 
 
 def resolve_task_spec(benchmark_name: str, task_id: int) -> tuple[LiberoTaskSpec, str]:
@@ -201,138 +206,6 @@ def prepare_exact_runtime_inputs(
             )
         ),
     }
-
-
-def decode_imagined_video(
-    runner: Any,
-    predicted_latent_chunks: Sequence[torch.Tensor],
-    *,
-    decode_device: torch.device,
-) -> np.ndarray | None:
-    """Decode accumulated predicted latent chunks when a VAE is available."""
-
-    if not predicted_latent_chunks:
-        return None
-    assets = runner.pipeline.visual_tower.frontend.reference_assets
-    if not assets.has_vae:
-        return None
-
-    latents = torch.cat(tuple(predicted_latent_chunks), dim=2)
-    vae = assets.vae
-    video_processor = VideoProcessor(vae_scale_factor=1)
-    vae_param = next(vae.parameters())
-    original_device = vae_param.device
-    original_dtype = vae_param.dtype
-
-    target_dtype = torch.bfloat16 if decode_device.type == "cuda" else torch.float32
-    if original_device != decode_device or original_dtype != target_dtype:
-        vae = vae.to(device=decode_device, dtype=target_dtype)
-    latents = latents.to(device=decode_device, dtype=target_dtype)
-
-    latents_mean = torch.tensor(
-        vae.config.latents_mean,
-        device=latents.device,
-        dtype=latents.dtype,
-    ).view(1, vae.config.z_dim, 1, 1, 1)
-    latents_std = 1.0 / torch.tensor(
-        vae.config.latents_std,
-        device=latents.device,
-        dtype=latents.dtype,
-    ).view(1, vae.config.z_dim, 1, 1, 1)
-    latents = latents / latents_std + latents_mean
-    with torch.no_grad():
-        decoded = vae.decode(latents, return_dict=False)[0]
-    imagined_video = video_processor.postprocess_video(decoded, output_type="np")[0]
-
-    if (
-        next(assets.vae.parameters()).device != original_device
-        or next(assets.vae.parameters()).dtype != original_dtype
-    ):
-        assets.vae = assets.vae.to(device=original_device, dtype=original_dtype)
-    return imagined_video
-
-
-def build_comparison_video_frames(
-    *,
-    real_observations: Sequence[Mapping[str, np.ndarray]],
-    imagined_video: np.ndarray | None,
-) -> list[np.ndarray]:
-    """Build side-by-side real and imagined rollout artifact frames."""
-
-    final_frames: list[np.ndarray] = []
-    imagined_frames = [] if imagined_video is None else list(imagined_video)
-    panel_height = 300
-
-    for index, observation in enumerate(real_observations):
-        agentview = np.ascontiguousarray(observation[LIBERO_OBS_KEYS[0]])
-        wrist = np.ascontiguousarray(observation[LIBERO_OBS_KEYS[1]])
-        real_row = np.ascontiguousarray(np.hstack([agentview, wrist]))
-        real_row = np.array(
-            with_title(Image.fromarray(real_row), "Real (AgentView / Wrist)"),
-            copy=True,
-        )
-        target_width = real_row.shape[1]
-
-        if index < len(imagined_frames):
-            imagined = Image.fromarray(to_uint8(imagined_frames[index]))
-            scale = min(target_width / imagined.width, panel_height / imagined.height)
-            resized = imagined.resize(
-                (
-                    max(1, int(imagined.width * scale)),
-                    max(1, int(imagined.height * scale)),
-                )
-            )
-            imagined_row = Image.new(
-                "RGB", (target_width, panel_height), color=(0, 0, 0)
-            )
-            imagined_row.paste(
-                resized,
-                (
-                    (target_width - resized.width) // 2,
-                    (panel_height - resized.height) // 2,
-                ),
-            )
-        else:
-            imagined_row = Image.new(
-                "RGB", (target_width, panel_height), color=(0, 0, 0)
-            )
-            draw = ImageDraw.Draw(imagined_row)
-            draw.text(
-                (max(10, target_width // 2 - 140), 150),
-                "No imagined video",
-                fill=(120, 120, 120),
-            )
-        imagined_row = with_title(imagined_row, "Imagined (Open-WAM Exact)")
-        final_frames.append(
-            np.ascontiguousarray(
-                np.vstack([real_row, np.array(imagined_row, copy=True)])
-            )
-        )
-    return final_frames
-
-
-def with_title(image: Image.Image, title: str) -> Image.Image:
-    """Add a fixed-height title bar without resizing the source image."""
-
-    title_height = 36
-    canvas = Image.new(
-        "RGB", (image.width, image.height + title_height), color=(0, 0, 0)
-    )
-    canvas.paste(image, (0, title_height))
-    draw = ImageDraw.Draw(canvas)
-    draw.text((10, 10), title, fill=(255, 255, 255))
-    return canvas
-
-
-def to_uint8(frame: np.ndarray) -> np.ndarray:
-    """Normalize an RGB array to contiguous display-ready uint8 values."""
-
-    if frame.dtype == np.uint8:
-        return frame
-    frame = np.asarray(frame)
-    if float(frame.max()) <= 1.0001:
-        return (np.clip(frame, 0.0, 1.0) * 255.0).astype(np.uint8)
-    return np.clip(frame, 0.0, 255.0).astype(np.uint8)
 
 
 def resolve_device(
