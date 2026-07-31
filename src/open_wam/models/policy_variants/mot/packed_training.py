@@ -38,6 +38,7 @@ from .contracts import (
     MoTTrainArtifacts,
     MoTVideoTrainArtifacts,
 )
+from .dual_stream_execution import forward_mot_packed_coupling_denoise
 from .generalist_modes import (
     apply_generalist_training_mode as _apply_mot_generalist_training_mode,
     generalist_forces_clean_video_condition as _mot_generalist_forces_clean_video_condition,
@@ -46,7 +47,6 @@ from .generalist_modes import (
 )
 from .modules import MoTActionExpert
 from .packed_block import MoTPackedBlockStack
-from .runtime import forward_mot_packed_coupling_denoise
 from .runtime_routing import (
     resolve_mot_current_block_coupling,
     resolve_mot_joint_timestep_coupling,

@@ -46,6 +46,7 @@ from .contracts import (
     MoTTrainArtifacts,
     MoTVideoTrainArtifacts,
 )
+from .dual_stream_execution import forward_joint_video_action_denoise
 from .generalist_modes import (
     apply_generalist_training_mode as _apply_mot_generalist_training_mode,
     generalist_rollout_enabled as _mot_generalist_rollout_enabled,

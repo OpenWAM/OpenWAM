@@ -40,6 +40,7 @@ from open_wam.models.policy_variants.mot.contracts import (
     MoTRuntimeState,
 )
 from open_wam.models.policy_variants.mot import runtime as mot_runtime
+from open_wam.models.policy_variants.mot import variant as mot_variant
 from open_wam.models.policy_variants.mot.attention import (
     build_chunk_causal_video_mask,
     build_mot_attention_mask,
@@ -65,6 +66,10 @@ from open_wam.models.policy_variants.mot.cache_state import (
 from open_wam.models.policy_variants.mot.conditioning import (
     MoTConditioning,
     resolve_mot_condition_latents,
+)
+from open_wam.models.policy_variants.mot.dual_stream_execution import (
+    forward_joint_video_action_denoise,
+    forward_mot_packed_coupling_denoise,
 )
 from open_wam.models.policy_variants.mot.modules import (
     MoTActionExpert,
@@ -136,6 +141,21 @@ def test_mot_runtime_cache_execution_exports_are_compatibility_aliases() -> None
         is forward_action_with_video_cache
     )
     assert mot_runtime.prefill_video_kv_cache is prefill_video_kv_cache
+
+
+def test_mot_runtime_dual_stream_exports_are_compatibility_aliases() -> None:
+    assert (
+        mot_runtime.forward_joint_video_action_denoise
+        is forward_joint_video_action_denoise
+    )
+    assert (
+        mot_runtime.forward_mot_packed_coupling_denoise
+        is forward_mot_packed_coupling_denoise
+    )
+    assert (
+        mot_variant.forward_joint_video_action_denoise
+        is forward_joint_video_action_denoise
+    )
 
 
 def test_mot_action_expert_pre_and_post_shapes() -> None:

@@ -27,13 +27,13 @@ from ..contracts import PolicyInferContext, PolicyInferOutput, PolicyInferState
 from .attention import build_mot_attention_mask
 from .conditioning import MoTConditioning
 from .contracts import MoTInferArtifacts, MoTRuntimeState
+from .dual_stream_execution import forward_joint_video_action_denoise
 from .generalist_modes import (
     generalist_rollout_enabled as _mot_generalist_rollout_enabled,
     is_generalist_conditional_rollout as _is_mot_generalist_conditional_rollout,
     resolve_generalist_rollout_mode as _resolve_mot_generalist_rollout_mode,
 )
 from .modules import MoTActionExpert
-from .runtime import forward_joint_video_action_denoise
 from .runtime_routing import (
     is_mot_same_step_coupling,
     resolve_mot_current_block_coupling,

@@ -628,6 +628,30 @@ def test_mot_cache_execution_has_one_owner() -> None:
     ).read_text(encoding="utf-8")
 
 
+def test_mot_dual_stream_execution_has_one_owner() -> None:
+    execution_functions = {
+        "forward_joint_video_action_denoise",
+        "forward_mot_packed_coupling_denoise",
+    }
+    mot_root = PACKAGE_ROOT / "models" / "policy_variants" / "mot"
+
+    assert execution_functions <= _top_level_definitions(
+        mot_root / "dual_stream_execution.py"
+    )
+    assert execution_functions.isdisjoint(
+        _top_level_definitions(mot_root / "runtime.py")
+    )
+    for consumer_name in (
+        "joint_denoise_inference.py",
+        "packed_inference.py",
+        "packed_training.py",
+        "variant.py",
+    ):
+        assert "from .dual_stream_execution import" in (
+            mot_root / consumer_name
+        ).read_text(encoding="utf-8")
+
+
 def test_mot_attention_layouts_have_one_owner() -> None:
     attention_builders = {
         "build_chunk_causal_video_mask",

@@ -39,6 +39,7 @@ from ..contracts import PolicyInferContext, PolicyInferOutput, PolicyInferState
 from .attention import build_mot_packed_coupling_attention_profile
 from .conditioning import MoTConditioning
 from .contracts import MoTInferArtifacts, MoTRuntimeState
+from .dual_stream_execution import forward_mot_packed_coupling_denoise
 from .generalist_modes import (
     generalist_rollout_enabled as _mot_generalist_rollout_enabled,
     is_generalist_conditional_rollout as _is_mot_generalist_conditional_rollout,
@@ -47,7 +48,6 @@ from .generalist_modes import (
 from .inference_layout import MoTPackedHistory, MoTPackedInferenceLayout
 from .modules import MoTActionExpert
 from .packed_block import MoTPackedBlockStack
-from .runtime import forward_mot_packed_coupling_denoise
 from .runtime_routing import (
     resolve_mot_action_only_rollout,
     resolve_mot_current_block_coupling,
