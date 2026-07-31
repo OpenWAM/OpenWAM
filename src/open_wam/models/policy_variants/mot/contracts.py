@@ -61,8 +61,9 @@ class MoTRuntimeState:
     # gets from its joint video/action cache. Shape [B, T_action, D_action].
     past_clean_actions: torch.Tensor | None = None
     # Number of generated video frames appended to `past_clean_latents` by the
-    # last packed inference step. Driver warmup replaces exactly this tail with
-    # real env observations; action-only rollout sets it to zero.
+    # last packed inference step. Policy-owned observed-history reconciliation
+    # replaces exactly this tail with real observations; action-only rollout
+    # sets it to zero.
     pending_predicted_video_frames: int = 0
     video_tokens_per_frame: int | None = None
     next_condition_frame_start: int = 0

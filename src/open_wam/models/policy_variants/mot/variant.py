@@ -20,6 +20,8 @@ from ..contracts import (
     PolicyInferContext,
     PolicyInferOutput,
     PolicyInferState,
+    PolicyObservedHistory,
+    PolicyObservedHistoryOutput,
     PolicyPreparedInputs,
     PolicyTrainBatch,
     PolicyTrainOutput,
@@ -35,6 +37,7 @@ from .generalist_modes import (
 )
 from .joint_denoise_inference import MoTJointDenoiseInferenceProgram
 from .modules import MoTActionExpert, init_action_expert_from_video_core
+from .observed_history import reconcile_mot_observed_history
 from .packed_block import MoTPackedBlockStack
 from .packed_inference import MoTPackedInferenceProgram
 from .packed_training import MoTPackedTrainingProgram
@@ -202,6 +205,20 @@ class MoTPolicyVariant(PolicyVariant):
 
     def required_visual_stages(self) -> tuple[str, ...]:
         return ("frontend",)
+
+    def reconcile_observed_history(
+        self,
+        history: PolicyObservedHistory,
+        infer_state: PolicyInferState | None,
+    ) -> PolicyObservedHistoryOutput:
+        return reconcile_mot_observed_history(
+            policy_state=infer_state,
+            history=history,
+            default_inference_window_size=int(self.training_config.window_size),
+            default_frame_chunk_size=int(self.inference_config.frame_chunk_size),
+            action_horizon=int(self.action_horizon),
+            action_dim=int(self.action_dim),
+        )
 
     def prepare_train_inputs(
         self,

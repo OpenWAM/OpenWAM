@@ -89,6 +89,33 @@ class PolicyInferState:
     decoder_state: Any | None = None
 
 
+@dataclass(frozen=True)
+class PolicyObservedHistory:
+    """Canonical observations committed after executing one policy chunk.
+
+    ``video_latents`` and ``proprio_history`` describe only the newly observed
+    window, not the policy's full recurrent cache. ``action_history`` contains
+    the actions actually executed for this commit; a policy decides how much
+    speculative action history they replace. ``observation_frame_count`` is
+    the raw environment-frame count and can differ from latent time.
+    """
+
+    video_latents: torch.Tensor
+    observation_frame_count: int
+    action_history: torch.Tensor | None = None
+    proprio_history: torch.Tensor | None = None
+    inference_window_size: int | None = None
+    rollout_frame_chunk_size: int | None = None
+
+
+@dataclass(frozen=True)
+class PolicyObservedHistoryOutput:
+    """Policy state and diagnostics after reconciling real observations."""
+
+    next_state: PolicyInferState | None
+    debug: dict[str, Any] = field(default_factory=dict)
+
+
 @dataclass
 class PolicyInferContext:
     """Inputs required for one policy inference step."""

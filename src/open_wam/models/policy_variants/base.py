@@ -10,6 +10,8 @@ from .contracts import (
     PolicyInferContext,
     PolicyInferOutput,
     PolicyInferState,
+    PolicyObservedHistory,
+    PolicyObservedHistoryOutput,
     PolicyPreparedInputs,
     PolicyTrainBatch,
     PolicyTrainOutput,
@@ -36,6 +38,22 @@ class PolicyVariant(nn.Module, ABC):
         """Optionally request one shared visual-core readout capture."""
 
         return None
+
+    def reconcile_observed_history(
+        self,
+        history: PolicyObservedHistory,
+        infer_state: PolicyInferState | None,
+    ) -> PolicyObservedHistoryOutput:
+        """Optionally replace speculative rollout history with observations."""
+
+        del history
+        return PolicyObservedHistoryOutput(
+            next_state=infer_state,
+            debug={
+                "reconciliation_skipped": True,
+                "reason": "policy_does_not_reconcile_observed_history",
+            },
+        )
 
     @abstractmethod
     def prepare_train_inputs(

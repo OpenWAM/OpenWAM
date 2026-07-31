@@ -53,7 +53,6 @@ from open_wam.models.common.rollout_history import (
 from open_wam.models.policy_variants import PolicyInferContext
 from open_wam.models.policy_variants.mot.runtime_routing import (
     ensure_mot_inference_backend,
-    resolve_mot_rollout_cache_window_frames,
 )
 from open_wam.pipelines import (
     VariantPipeline,
@@ -846,31 +845,40 @@ def run_mot_libero_episode(
                 if use_lingbot_streaming_vae:
                     if streaming_next_visual_outputs is None or streaming_next_obs_window is None:
                         raise RuntimeError("Streaming VAE packed warmup expected pre-encoded next observations.")
-                    warmup_debug = _warmup_mot_packed_history_from_visual_outputs(
-                        pipeline,
-                        config=config,
-                        session=session,
-                        warmup_outputs=streaming_next_visual_outputs,
-                        obs_frame_count=len(streaming_next_obs_window),
-                        obs_list=streaming_next_obs_window,
-                        action_history=warmup_action_history,
-                        runtime_device=resources.runtime_device,
-                        mot_inference_window_size=args.mot_inference_window_size,
-                        mot_rollout_frame_chunk_size=args.mot_rollout_frame_chunk_size,
-                    )
+                    warmup_outputs = streaming_next_visual_outputs
+                    warmup_obs_window = streaming_next_obs_window
                 else:
-                    warmup_debug = _warmup_mot_packed_history_from_observations(
+                    warmup_obs_window = real_future_frames
+                    warmup_views = _obs_list_to_views(
+                        warmup_obs_window,
+                        device=resources.frontend_device,
+                    )
+                    warmup_outputs = _prepare_mot_visual_outputs(
                         pipeline,
-                        config=config,
-                        session=session,
-                        obs_list=real_future_frames,
-                        action_history=warmup_action_history,
+                        views=warmup_views,
                         task_text=(prompt,),
                         frontend_device=resources.frontend_device,
                         runtime_device=resources.runtime_device,
-                        mot_inference_window_size=args.mot_inference_window_size,
-                        mot_rollout_frame_chunk_size=args.mot_rollout_frame_chunk_size,
+                        use_streaming_frontend=False,
+                        text_context=session.text_context,
+                        negative_text_context=session.negative_text_context,
                     )
+                proprio_history = build_libero_state_history(
+                    warmup_obs_window,
+                    state_horizon=len(warmup_obs_window),
+                    state_encoding=config.data.action_target.state_encoding,
+                )
+                history_output = runner.reconcile_observed_history(
+                    session=session,
+                    visual_outputs=warmup_outputs,
+                    observation_frame_count=len(warmup_obs_window),
+                    action_history=warmup_action_history,
+                    proprio_history=proprio_history,
+                    inference_window_size=args.mot_inference_window_size,
+                    rollout_frame_chunk_size=args.mot_rollout_frame_chunk_size,
+                )
+                session = history_output.session
+                warmup_debug = history_output.debug
                 warmup_log = {
                     **log_coordinates,
                     "chunk_index": chunk_count,
@@ -1257,212 +1265,6 @@ def _build_output_path(
 ) -> Path:
     safe_prompt = prompt.replace(" ", "_")
     return root / benchmark_name / f"{task_id}_{safe_prompt}" / f"{episode_idx}_{done}_{suffix}.mp4"
-
-
-def _warmup_mot_packed_history_from_observations(
-    pipeline,
-    *,
-    config,
-    session,
-    obs_list: list[dict[str, np.ndarray]],
-    action_history: torch.Tensor | None,
-    task_text: tuple[str | None, ...] | None,
-    frontend_device: torch.device,
-    runtime_device: torch.device,
-    mot_inference_window_size: int | None,
-    mot_rollout_frame_chunk_size: int | None,
-) -> dict[str, object]:
-    if not obs_list:
-        return {"warmup_skipped": True, "reason": "empty_obs_list"}
-    policy_state = session.policy_state
-    runtime_state = getattr(policy_state, "variant_state", None) if policy_state is not None else None
-    if runtime_state is None or not hasattr(runtime_state, "past_clean_latents"):
-        return {"warmup_skipped": True, "reason": "no_mot_runtime_state"}
-
-    views = _obs_list_to_views(obs_list, device=frontend_device)
-    warmup_outputs = _prepare_mot_visual_outputs(
-        pipeline,
-        views=views,
-        task_text=task_text,
-        frontend_device=frontend_device,
-        runtime_device=runtime_device,
-        use_streaming_frontend=False,
-        text_context=session.text_context,
-        negative_text_context=session.negative_text_context,
-    )
-    return _warmup_mot_packed_history_from_visual_outputs(
-        pipeline,
-        config=config,
-        session=session,
-        warmup_outputs=warmup_outputs,
-        obs_frame_count=len(obs_list),
-        obs_list=obs_list,
-        action_history=action_history,
-        runtime_device=runtime_device,
-        mot_inference_window_size=mot_inference_window_size,
-        mot_rollout_frame_chunk_size=mot_rollout_frame_chunk_size,
-    )
-
-
-def _warmup_mot_packed_history_from_visual_outputs(
-    pipeline,
-    *,
-    config,
-    session,
-    warmup_outputs,
-    obs_frame_count: int,
-    obs_list: list[dict[str, np.ndarray]] | None,
-    action_history: torch.Tensor | None,
-    runtime_device: torch.device,
-    mot_inference_window_size: int | None,
-    mot_rollout_frame_chunk_size: int | None,
-) -> dict[str, object]:
-    policy_state = session.policy_state
-    runtime_state = getattr(policy_state, "variant_state", None) if policy_state is not None else None
-    if runtime_state is None or not hasattr(runtime_state, "past_clean_latents"):
-        return {"warmup_skipped": True, "reason": "no_mot_runtime_state"}
-
-    runtime_dtype = pipeline.visual_tower.core.patch_embedding_mlp.weight.dtype
-    real_latents = warmup_outputs.frontend.video_latents.to(device=runtime_device, dtype=runtime_dtype)
-    past_latents = runtime_state.past_clean_latents
-    past_hidden_proprio = getattr(runtime_state, "past_hidden_proprio_states", None)
-    frame_chunk_size = (
-        int(mot_rollout_frame_chunk_size)
-        if mot_rollout_frame_chunk_size is not None
-        else _frame_chunk_size(config)
-    )
-    history_window_size = (
-        int(mot_inference_window_size)
-        if mot_inference_window_size is not None
-        else int(getattr(pipeline.policy_variant.training_config, "window_size", real_latents.shape[2]))
-    )
-    if history_window_size <= 0:
-        raise ValueError(f"MoT packed warmup window size must be positive, got {history_window_size}.")
-    history_window_frames = max(
-        int(real_latents.shape[2]),
-        resolve_mot_rollout_cache_window_frames(
-            window_size=history_window_size,
-            frame_chunk_size=frame_chunk_size,
-        ),
-    )
-    dropped_pred_latent_frames = 0
-    pending_pred_latent_frames = int(
-        getattr(runtime_state, "pending_predicted_video_frames", frame_chunk_size)
-    )
-    if past_latents is None:
-        base_latents = None
-    else:
-        past_latents = past_latents.to(device=runtime_device, dtype=runtime_dtype)
-        dropped_pred_latent_frames = min(
-            max(0, pending_pred_latent_frames),
-            int(past_latents.shape[2]),
-        )
-        if dropped_pred_latent_frames <= 0:
-            base_latents = past_latents
-        elif int(getattr(policy_state, "step_index", 0)) <= 1 and dropped_pred_latent_frames >= int(past_latents.shape[2]):
-            # Chunk 0 keeps the single bootstrap observation; real_future_frames
-            # only contains frames collected after executing the first action
-            # chunk, mirroring M1's initial_latents + key_frame_latents warmup.
-            base_latents = past_latents[:, :, :1]
-            dropped_pred_latent_frames = max(0, int(past_latents.shape[2]) - 1)
-        else:
-            base_latents = past_latents[:, :, :-dropped_pred_latent_frames]
-    if base_latents is None or int(base_latents.shape[2]) == 0:
-        combined = real_latents
-    else:
-        combined = torch.cat([base_latents, real_latents], dim=2)
-    runtime_state.past_clean_latents = combined[:, :, -history_window_frames:].detach()
-    runtime_state.pending_predicted_video_frames = 0
-
-    appended_hidden_proprio_frames = 0
-    if (
-        obs_list is not None
-        and hasattr(runtime_state, "past_hidden_proprio_states")
-        and getattr(runtime_state, "past_hidden_proprio_states", None) is not None
-    ):
-        raw_state = build_libero_state_history(
-            obs_list,
-            state_horizon=len(obs_list),
-            state_encoding=config.data.action_target.state_encoding,
-        ).to(device=runtime_device, dtype=runtime_dtype)
-        if raw_state.ndim == 2 and int(raw_state.shape[0]) > 0 and int(real_latents.shape[2]) > 0:
-            if int(raw_state.shape[0]) >= int(real_latents.shape[2]):
-                latent_state = raw_state[-int(real_latents.shape[2]) :, :]
-            else:
-                pad_count = int(real_latents.shape[2]) - int(raw_state.shape[0])
-                latent_state = torch.cat(
-                    [
-                        raw_state,
-                        raw_state[-1:, :].expand(pad_count, -1),
-                    ],
-                    dim=0,
-                )
-            latent_state = latent_state.unsqueeze(0)
-            if past_hidden_proprio is None:
-                base_hidden = None
-            else:
-                past_hidden_proprio = past_hidden_proprio.to(device=runtime_device, dtype=runtime_dtype)
-                base_hidden = (
-                    past_hidden_proprio[:, :-dropped_pred_latent_frames]
-                    if dropped_pred_latent_frames > 0
-                    else past_hidden_proprio
-                )
-            if base_hidden is None or int(base_hidden.shape[1]) == 0:
-                combined_hidden = latent_state
-            else:
-                combined_hidden = torch.cat([base_hidden, latent_state], dim=1)
-            runtime_state.past_hidden_proprio_states = combined_hidden[:, -history_window_frames:].detach()
-            appended_hidden_proprio_frames = int(latent_state.shape[1])
-
-    appended_action_tokens = 0
-    dropped_pred_action_tokens = 0
-    if action_history is not None and hasattr(runtime_state, "past_clean_actions"):
-        action_dim = int(getattr(pipeline.policy_variant, "action_dim", action_history.shape[-1]))
-        if action_history.ndim != 3 or action_history.shape[-1] != action_dim:
-            raise ValueError(
-                "MoT packed warmup action history must be [B, T_action, D_action], "
-                f"got {tuple(action_history.shape)}, action_dim={action_dim}."
-            )
-        action_tokens_per_frame = _action_per_frame(config)
-        action_horizon = int(config.data.action_schema.action_horizon)
-        warm_actions = action_history[:, :action_horizon].to(device=runtime_device, dtype=runtime_dtype)
-        if warm_actions.shape[1] > 0:
-            past_actions = runtime_state.past_clean_actions
-            if past_actions is None:
-                base_actions = None
-            else:
-                past_actions = past_actions.to(device=runtime_device, dtype=runtime_dtype)
-                dropped_pred_action_tokens = min(int(action_horizon), int(past_actions.shape[1]))
-                base_actions = past_actions[:, :-dropped_pred_action_tokens] if dropped_pred_action_tokens > 0 else past_actions
-            if base_actions is None or int(base_actions.shape[1]) == 0:
-                combined_actions = warm_actions
-            else:
-                combined_actions = torch.cat([base_actions, warm_actions], dim=1)
-            max_action_history_tokens = int(history_window_frames) * int(action_tokens_per_frame)
-            runtime_state.past_clean_actions = combined_actions[:, -max_action_history_tokens:].detach()
-            appended_action_tokens = int(warm_actions.shape[1])
-    if warmup_outputs.frontend.conditioning.text_context is not None:
-        session.text_context = warmup_outputs.frontend.conditioning.text_context
-    if warmup_outputs.frontend.conditioning.negative_text_context is not None:
-        session.negative_text_context = warmup_outputs.frontend.conditioning.negative_text_context
-    return {
-        "warmup_skipped": False,
-        "real_obs_frames": int(obs_frame_count),
-        "real_latent_frames": int(real_latents.shape[2]),
-        "past_clean_latent_frames_after": int(runtime_state.past_clean_latents.shape[2]),
-        "past_clean_action_frames_after": (
-            0
-            if getattr(runtime_state, "past_clean_actions", None) is None
-            else int(runtime_state.past_clean_actions.shape[1] // _action_per_frame(config))
-        ),
-        "appended_action_tokens": int(appended_action_tokens),
-        "appended_hidden_proprio_frames": int(appended_hidden_proprio_frames),
-        "pending_pred_latent_frames_before": int(pending_pred_latent_frames),
-        "dropped_pred_latent_frames": int(dropped_pred_latent_frames),
-        "dropped_pred_action_tokens": int(dropped_pred_action_tokens),
-        "inference_window_size": int(history_window_size),
-        "history_window_frames": int(history_window_frames),
-    }
 
 
 def _encode_video_window_offline(

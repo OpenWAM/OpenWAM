@@ -2514,12 +2514,28 @@ def test_libero_mot_drivers_delegate_to_the_package_episode_runner() -> None:
     package_source = (
         PACKAGE_ROOT / "evals" / "libero_mot_rollout.py"
     ).read_text(encoding="utf-8")
+    observed_history_source = (
+        PACKAGE_ROOT
+        / "models"
+        / "policy_variants"
+        / "mot"
+        / "observed_history.py"
+    ).read_text(encoding="utf-8")
 
     assert "run_mot_libero_episode(" in single_source
     assert "run_mot_libero_episode(" in batch_source
     assert "importlib.util" not in batch_source
     assert "mot_viz._" not in batch_source
     assert "._forward_infer_with_visual_outputs(" not in package_source
+    assert "runner.reconcile_observed_history(" in package_source
+    for policy_state_field in (
+        "past_clean_latents",
+        "past_clean_actions",
+        "past_hidden_proprio_states",
+        "pending_predicted_video_frames",
+    ):
+        assert policy_state_field not in package_source
+        assert policy_state_field in observed_history_source
 
 
 def test_public_config_enums_are_declared_once() -> None:

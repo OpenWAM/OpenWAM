@@ -18,6 +18,8 @@ from open_wam.models.policy_variants import (
     PolicyInferContext,
     PolicyInferOutput,
     PolicyInferState,
+    PolicyObservedHistory,
+    PolicyObservedHistoryOutput,
     PolicyTrainBatch,
     PolicyTrainOutput,
     PolicyVariant,
@@ -72,6 +74,18 @@ class VariantPipeline(nn.Module):
         self.action_decoder.configure_action_sampler_mask(
             self._action_sampler_mask,
             inactive_value=self.action_sampler_inactive_value,
+        )
+
+    def reconcile_observed_history(
+        self,
+        history: PolicyObservedHistory,
+        infer_state: PolicyInferState | None,
+    ) -> PolicyObservedHistoryOutput:
+        """Delegate observed-history semantics to the active policy variant."""
+
+        return self.policy_variant.reconcile_observed_history(
+            history,
+            infer_state,
         )
 
     def canonicalize(self, views: Mapping[str, torch.Tensor]) -> CanonicalVideoBatch:

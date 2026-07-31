@@ -16,7 +16,7 @@ shared visual execution path for every experiment.
 | `ExperimentConfig` | Typed config boundary loaded from YAML. String choices are coerced into enums before runtime use. |
 | `VariantPipeline` | Orchestrates data batches, visual stages, policy-variant execution, and decoder loss/output calls. |
 | `VisualTower` | Owns visual preprocessing, shared frontend/core/decode hooks, and backbone-facing runtime outputs. |
-| `PolicyVariant` | Defines method semantics: required visual stages, train inputs, infer state, and rollout-step behavior. |
+| `PolicyVariant` | Defines method semantics: required visual stages, train inputs, infer state, rollout-step behavior, and reconciliation of executed observations with recurrent state. |
 | `ActionDecoder` | Converts variant outputs into supervised action predictions and losses. |
 
 ## Design Principles
@@ -93,6 +93,10 @@ plain contracts:
 - `MoTPackedInferenceLayout` validates current-chunk FDM/IDM tensor overrides.
   `MoTPackedHistory` selects one frame-aligned recurrent video/action/proprio
   window without owning or mutating policy state.
+- `mot.observed_history` owns replacement of speculative packed video/action/
+  proprio tails after an environment executes a chunk. Benchmark integrations
+  supply canonical observations through `VariantRolloutRunner`; they do not
+  mutate `MoTRuntimeState` fields.
 - `build_action_grid_ids_for_sequence` owns the frame-aligned action
   coordinates shared by training and recurrent inference.
 - `mot.generalist_modes` owns GJD mode selection and conditional tensor

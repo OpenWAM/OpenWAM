@@ -27,6 +27,7 @@ _EXPORTS: dict[str, str] = {
     "VariantPipelineInferOutput": "open_wam.pipelines.variant_pipeline",
     "VariantPipelineTrainOutput": "open_wam.pipelines.variant_pipeline",
     "VariantRolloutRunner": "open_wam.pipelines.rollout",
+    "VariantRolloutHistoryOutput": "open_wam.pipelines.rollout",
     "VariantRolloutSession": "open_wam.pipelines.rollout",
     "VariantRolloutStepOutput": "open_wam.pipelines.rollout",
     "build_action_decoder": "open_wam.pipelines.factory",

@@ -5,7 +5,11 @@ from typing import Mapping
 
 import torch
 
-from open_wam.models.policy_variants import PolicyInferContext, PolicyInferState
+from open_wam.models.policy_variants import (
+    PolicyInferContext,
+    PolicyInferState,
+    PolicyObservedHistory,
+)
 from open_wam.models.visual_tower import VisualStageOutputs
 
 from .variant_pipeline import VariantPipeline, VariantPipelineInferOutput
@@ -27,6 +31,14 @@ class VariantRolloutStepOutput:
 
     session: VariantRolloutSession
     infer_output: VariantPipelineInferOutput
+
+
+@dataclass
+class VariantRolloutHistoryOutput:
+    """Updated session and diagnostics after committing observed history."""
+
+    session: VariantRolloutSession
+    debug: dict[str, object]
 
 
 class VariantRolloutRunner:
@@ -101,6 +113,50 @@ class VariantRolloutRunner:
             session=session,
             resolved_context=resolved_context,
             infer_output=infer_output,
+        )
+
+    def reconcile_observed_history(
+        self,
+        *,
+        session: VariantRolloutSession,
+        visual_outputs: VisualStageOutputs,
+        observation_frame_count: int,
+        action_history: torch.Tensor | None = None,
+        proprio_history: torch.Tensor | None = None,
+        inference_window_size: int | None = None,
+        rollout_frame_chunk_size: int | None = None,
+    ) -> VariantRolloutHistoryOutput:
+        """Replace speculative policy history with newly observed execution."""
+
+        update = self.pipeline.reconcile_observed_history(
+            PolicyObservedHistory(
+                video_latents=visual_outputs.frontend.video_latents,
+                observation_frame_count=int(observation_frame_count),
+                action_history=action_history,
+                proprio_history=proprio_history,
+                inference_window_size=inference_window_size,
+                rollout_frame_chunk_size=rollout_frame_chunk_size,
+            ),
+            session.policy_state,
+        )
+        next_session = VariantRolloutSession(
+            policy_state=update.next_state,
+            task_text=session.task_text,
+            text_context=(
+                visual_outputs.frontend.conditioning.text_context
+                if visual_outputs.frontend.conditioning.text_context is not None
+                else session.text_context
+            ),
+            negative_text_context=(
+                visual_outputs.frontend.conditioning.negative_text_context
+                if visual_outputs.frontend.conditioning.negative_text_context
+                is not None
+                else session.negative_text_context
+            ),
+        )
+        return VariantRolloutHistoryOutput(
+            session=next_session,
+            debug=dict(update.debug),
         )
 
     @staticmethod
