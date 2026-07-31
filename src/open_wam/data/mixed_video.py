@@ -4,7 +4,6 @@ from collections import OrderedDict, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 import hashlib
-from pathlib import Path
 import random
 from typing import Any
 
@@ -45,6 +44,7 @@ from .mixed_video_decode import (
     resolve_mixed_video_observation_fps as resolve_mixed_video_observation_fps,
     transform_frame as transform_frame,
 )
+from .mixed_video_latent_storage import MixedVideoLatentRepository
 
 
 _MIXED_VIDEO_DECODE_COMPATIBILITY_EXPORTS = (
@@ -425,7 +425,8 @@ class MixedVideoLatentWindowDataset(MixedVideoWindowDataset):
     ) -> None:
         super().__init__(data_config, catalog=catalog, split=split, episode_keys=episode_keys)
         self._video_frame_cache.clear()
-        self._latent_cache: OrderedDict[tuple[str, str, str], torch.Tensor] = OrderedDict()
+        self._latent_repository = MixedVideoLatentRepository(data_config)
+        self._latent_cache = self._latent_repository.cache
 
     def _allowed_source_formats(self) -> frozenset[MixedVideoSourceFormat]:
         return frozenset({MixedVideoSourceFormat.LATENT, MixedVideoSourceFormat.RGB_AND_LATENT})
@@ -606,17 +607,7 @@ class MixedVideoLatentWindowDataset(MixedVideoWindowDataset):
         return torch.cat([latents, padding], dim=1).contiguous()
 
     def _load_stream_latents(self, stream: MixedVideoStreamRecord) -> torch.Tensor:
-        cache_key = (stream.source_id, _latent_stream_cache_key(stream), stream.latent_key)
-        if cache_key in self._latent_cache:
-            self._latent_cache.move_to_end(cache_key)
-            return self._latent_cache[cache_key]
-        path = _resolve_stream_latent_path(stream, cache_dir=self.data_config.cache_dir)
-        latents = _load_latent_tensor(path, key=stream.latent_key)
-        self._latent_cache[cache_key] = latents
-        max_entries = max(1, int(self.data_config.episode_cache_size) * max(1, len(self.data_config.camera_names)))
-        while len(self._latent_cache) > max_entries:
-            self._latent_cache.popitem(last=False)
-        return latents
+        return self._latent_repository.load(stream)
 
 
 def _latent_view_assembly_canvas_view_count(data_config: MixedVideoDataConfig) -> int:
@@ -708,46 +699,6 @@ def build_mixed_video_latent_train_val_datasets(
         MixedVideoLatentWindowDataset(data_config, catalog=catalog, split="train", episode_keys=train_keys),
         MixedVideoLatentWindowDataset(data_config, catalog=catalog, split="val", episode_keys=val_keys),
     )
-
-
-def _resolve_stream_latent_path(stream: MixedVideoStreamRecord, *, cache_dir: str | None) -> Path:
-    if stream.latent_path is not None:
-        if not stream.latent_path.exists():
-            raise FileNotFoundError(
-                f"Missing mixed-video latent file for source={stream.source_id}, "
-                f"episode={stream.episode_index}, stream={stream.stream_key}: {stream.latent_path}"
-            )
-        return stream.latent_path
-    if stream.repo_id is None or stream.latent_shard_relative_path is None:
-        raise FileNotFoundError(
-            f"Mixed-video stream has neither latent_path nor HF latent shard path: "
-            f"source={stream.source_id}, episode={stream.episode_index}, stream={stream.stream_key}."
-        )
-    try:
-        from huggingface_hub import hf_hub_download
-    except ImportError as exc:  # pragma: no cover - dependency exists in normal training envs.
-        raise ImportError("huggingface_hub is required for remote mixed-video latent manifests.") from exc
-    return Path(
-        hf_hub_download(
-            repo_id=stream.repo_id,
-            filename=stream.latent_shard_relative_path,
-            repo_type="dataset",
-            cache_dir=cache_dir,
-        )
-    )
-
-
-def _load_latent_tensor(path: Path, *, key: str) -> torch.Tensor:
-    payload = torch.load(path, map_location="cpu", weights_only=False)
-    if isinstance(payload, torch.Tensor):
-        tensor = payload
-    elif isinstance(payload, dict) and key in payload:
-        tensor = payload[key]
-    else:
-        raise ValueError(f"Expected latent tensor or key {key!r} in latent payload at {path}.")
-    if not isinstance(tensor, torch.Tensor) or tensor.ndim != 4:
-        raise ValueError(f"Expected latent tensor [C,T,H,W] at {path}, got {type(tensor)!r}.")
-    return tensor.to(dtype=torch.float32).contiguous()
 
 
 def _select_valid_causal_bucket(
@@ -866,9 +817,3 @@ def _video_stream_cache_key(stream: MixedVideoStreamRecord, data_config: MixedVi
     }
     payload = repr(sorted(signature.items()))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _latent_stream_cache_key(stream: MixedVideoStreamRecord) -> str:
-    if stream.latent_path is not None:
-        return str(stream.latent_path)
-    return f"{stream.repo_id}:{stream.latent_shard_relative_path}"

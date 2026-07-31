@@ -79,6 +79,9 @@ from open_wam.data.mixed_video_decode import (
     resample_video_frames_to_fps as canonical_resample_video_frames_to_fps,
     transform_frame as canonical_transform_frame,
 )
+from open_wam.data.mixed_video_latent_storage import (
+    MixedVideoLatentRepository,
+)
 from open_wam.models.common.video_geometry import WAN_TEMPORAL_CHUNK_SIZE, wan_raw_frame_count_to_latent_count
 
 
@@ -1159,6 +1162,11 @@ def test_mixed_video_latent_dataset_mixes_rgb_origin_and_latent_sources(tmp_path
     train_dataset, val_dataset = build_train_val_latent_datasets(config)
 
     assert isinstance(train_dataset, MixedVideoLatentWindowDataset)
+    assert isinstance(
+        train_dataset._latent_repository,
+        MixedVideoLatentRepository,
+    )
+    assert train_dataset._latent_cache is train_dataset._latent_repository.cache
     assert len(val_dataset) > 0
     source_ids = {
         train_dataset.episode_records[window.episode_key].source_id

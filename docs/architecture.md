@@ -234,9 +234,11 @@ parsing, stream and episode records, path/FPS normalization, target-slot
 validation, task merging, and physical-episode train/validation splits.
 `mixed_video_decode` owns video-file materialization, timestamp clipping,
 target-FPS interpolation, adaptive sizing, frame transforms, and imageio/decord
-backend selection. `mixed_video` owns RGB/latent window selection, cache policy,
-latent loading and assembly, and final sample construction. Historical catalog
-and decode imports from `mixed_video` remain identity aliases.
+backend selection. `mixed_video_latent_storage` owns latent-sidecar
+materialization, payload validation, and bounded LRU caching. `mixed_video`
+owns RGB/latent window selection, RGB frame-cache lifetime, latent view
+combination and assembly, and final sample construction. Historical catalog and
+decode imports from `mixed_video` remain identity aliases.
 `distributed_sampling` owns rank sharding and epoch coordination; adapters
 supply weights or deterministic global index orders without embedding
 distributed control flow. Equal-rank padded orders, intentionally unpadded

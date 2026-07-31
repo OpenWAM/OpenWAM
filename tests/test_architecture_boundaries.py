@@ -637,6 +637,38 @@ def test_mixed_video_decode_has_one_owner() -> None:
     assert len(full_stream_decode_calls) == 1
 
 
+def test_mixed_video_latent_repository_has_one_owner() -> None:
+    storage_path = (
+        PACKAGE_ROOT / "data" / "mixed_video_latent_storage.py"
+    )
+    dataset_path = PACKAGE_ROOT / "data" / "mixed_video.py"
+    storage_owned = {
+        "MixedVideoLatentRepository",
+        "load_mixed_video_latent_tensor",
+        "mixed_video_latent_cache_key",
+        "resolve_mixed_video_latent_path",
+    }
+
+    assert storage_owned <= _top_level_definitions(storage_path)
+    assert storage_owned.isdisjoint(_top_level_definitions(dataset_path))
+    assert {"cache_capacity", "load"} <= _class_method_definitions(
+        storage_path,
+        "MixedVideoLatentRepository",
+    )
+
+    compatibility_loader = _class_method(
+        dataset_path,
+        "MixedVideoLatentWindowDataset",
+        "_load_stream_latents",
+    )
+    assert len(compatibility_loader.body) == 1
+    assert isinstance(compatibility_loader.body[0], ast.Return)
+    delegated_call = compatibility_loader.body[0].value
+    assert isinstance(delegated_call, ast.Call)
+    assert isinstance(delegated_call.func, ast.Attribute)
+    assert delegated_call.func.attr == "load"
+
+
 def test_lerobot_latent_supervision_assembly_has_one_owner() -> None:
     supervision_path = (
         PACKAGE_ROOT / "data" / "lerobot_v2_latent_supervision.py"
