@@ -36,6 +36,8 @@ from open_wam.configs import (
 from open_wam.configs import load_experiment_config
 from open_wam.data import (
     MixedVideoCatalog as PublicMixedVideoCatalog,
+    MixedVideoWindowPlanner as PublicMixedVideoWindowPlanner,
+    MixedVideoWindowRecord as PublicMixedVideoWindowRecord,
     build_train_val_datasets,
     build_train_val_latent_datasets,
     collate_latent_wam_samples,
@@ -51,6 +53,7 @@ from open_wam.data.mixed_video import (
     MixedVideoResolvedDecodeSize as LegacyMixedVideoResolvedDecodeSize,
     MixedVideoStreamRecord as LegacyMixedVideoStreamRecord,
     MixedVideoWindowDataset,
+    MixedVideoWindowRecord as LegacyMixedVideoWindowRecord,
     assemble_mixed_video_latent_views,
     decode_mixed_video_stream_frame_chunk as legacy_decode_stream_frame_chunk,
     decode_video_frames,
@@ -82,6 +85,10 @@ from open_wam.data.mixed_video_decode import (
 from open_wam.data.mixed_video_latent_storage import (
     MixedVideoLatentRepository,
 )
+from open_wam.data.mixed_video_planning import (
+    MixedVideoWindowPlanner,
+    MixedVideoWindowRecord,
+)
 from open_wam.models.common.video_geometry import WAN_TEMPORAL_CHUNK_SIZE, wan_raw_frame_count_to_latent_count
 
 
@@ -101,6 +108,12 @@ def test_mixed_video_catalog_legacy_imports_preserve_identity() -> None:
     assert LegacyMixedVideoStreamRecord is MixedVideoStreamRecord
     assert load_mixed_video_catalog is canonical_load_mixed_video_catalog
     assert split_mixed_video_episodes is canonical_split_mixed_video_episodes
+
+
+def test_mixed_video_planning_imports_preserve_identity() -> None:
+    assert PublicMixedVideoWindowPlanner is MixedVideoWindowPlanner
+    assert PublicMixedVideoWindowRecord is MixedVideoWindowRecord
+    assert LegacyMixedVideoWindowRecord is MixedVideoWindowRecord
 
 
 def test_mixed_video_decode_legacy_imports_preserve_identity() -> None:
@@ -452,6 +465,15 @@ def test_mixed_video_dataset_decodes_multiple_sources_to_common_view_shape(tmp_p
     config = _mixed_video_fixture_config(tmp_path)
     train_dataset, val_dataset = build_train_val_datasets(config)
     assert isinstance(train_dataset, MixedVideoWindowDataset)
+    assert isinstance(train_dataset._window_planner, MixedVideoWindowPlanner)
+    assert (
+        train_dataset.sample_index
+        == train_dataset._window_planner.build_episode_windows(
+            episode_records=train_dataset.episode_records,
+            episode_keys=train_dataset.episode_keys,
+            episode_length_resolver=train_dataset._episode_window_length_frames,
+        )
+    )
     assert len(train_dataset) > 0
     assert len(val_dataset) > 0
 
@@ -1162,6 +1184,14 @@ def test_mixed_video_latent_dataset_mixes_rgb_origin_and_latent_sources(tmp_path
     train_dataset, val_dataset = build_train_val_latent_datasets(config)
 
     assert isinstance(train_dataset, MixedVideoLatentWindowDataset)
+    assert isinstance(train_dataset._window_planner, MixedVideoWindowPlanner)
+    assert (
+        train_dataset.sample_index
+        == train_dataset._window_planner.build_latent_view_windows(
+            episode_records=train_dataset.episode_records,
+            episode_keys=train_dataset.episode_keys,
+        )
+    )
     assert isinstance(
         train_dataset._latent_repository,
         MixedVideoLatentRepository,

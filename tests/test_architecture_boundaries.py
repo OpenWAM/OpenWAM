@@ -669,6 +669,62 @@ def test_mixed_video_latent_repository_has_one_owner() -> None:
     assert delegated_call.func.attr == "load"
 
 
+def test_mixed_video_window_planning_has_one_owner() -> None:
+    planning_path = (
+        PACKAGE_ROOT / "data" / "mixed_video_planning.py"
+    )
+    dataset_path = PACKAGE_ROOT / "data" / "mixed_video.py"
+
+    assert {
+        "MixedVideoWindowPlanner",
+        "MixedVideoWindowRecord",
+    } <= _top_level_definitions(planning_path)
+    assert {
+        "MixedVideoWindowPlanner",
+        "MixedVideoWindowRecord",
+    }.isdisjoint(_top_level_definitions(dataset_path))
+    assert {
+        "build_episode_windows",
+        "build_latent_view_windows",
+        "build_source_balanced_epoch_order",
+        "valid_latent_view_combinations",
+    } <= _class_method_definitions(
+        planning_path,
+        "MixedVideoWindowPlanner",
+    )
+    assert "torch" not in _absolute_imports_for_file(planning_path)
+
+    delegates = (
+        (
+            "MixedVideoWindowDataset",
+            "_build_sample_index",
+            "build_episode_windows",
+        ),
+        (
+            "MixedVideoLatentWindowDataset",
+            "_build_sample_index",
+            "build_latent_view_windows",
+        ),
+        (
+            "MixedVideoWindowDataset",
+            "build_epoch_index_order",
+            "build_source_balanced_epoch_order",
+        ),
+    )
+    for class_name, method_name, owner_method in delegates:
+        compatibility_method = _class_method(
+            dataset_path,
+            class_name,
+            method_name,
+        )
+        assert len(compatibility_method.body) == 1
+        assert isinstance(compatibility_method.body[0], ast.Return)
+        delegated_call = compatibility_method.body[0].value
+        assert isinstance(delegated_call, ast.Call)
+        assert isinstance(delegated_call.func, ast.Attribute)
+        assert delegated_call.func.attr == owner_method
+
+
 def test_lerobot_latent_supervision_assembly_has_one_owner() -> None:
     supervision_path = (
         PACKAGE_ROOT / "data" / "lerobot_v2_latent_supervision.py"
