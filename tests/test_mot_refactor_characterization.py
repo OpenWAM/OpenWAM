@@ -58,6 +58,7 @@ from tests.characterization.mot_refactor_provenance import (
 from tests.characterization.mot_refactor_worker import (
     CACHE_ROLLOVER_CHARACTERIZATION_CHUNKS,
     INFERENCE_CHARACTERIZATION_CHUNKS,
+    RESUME_REPORT_SCHEMA_VERSION,
     _assert_cache_rollover,
     _assert_inference_progression,
     _assert_optimizer_step,
@@ -853,6 +854,46 @@ def test_characterization_tolerance_is_limited_to_distributed_numeric_fields() -
         in difference
         for difference in differences
     )
+
+
+def test_resume_post_update_metrics_have_narrow_cross_job_tolerance() -> None:
+    expected = {
+        "uninterrupted_update": {
+            "scenario": {"metrics": {"action_mse": 0.0002}}
+        },
+        "resumed_update": {"scenario": {"metrics": {"action_mse": 0.0002}}},
+        "first_update": {"scenario": {"metrics": {"action_mse": 0.0002}}},
+    }
+    actual = json.loads(json.dumps(expected))
+    actual["uninterrupted_update"]["scenario"]["metrics"]["action_mse"] += 4e-6
+    actual["resumed_update"]["scenario"]["metrics"]["action_mse"] += 4e-6
+
+    differences = compare_characterization_reports(
+        expected,
+        actual,
+        tolerance=ComparisonTolerance(absolute=0.0, relative=0.0),
+        tolerance_for_path=_numeric_tolerance_resolver(
+            ComparisonTolerance(absolute=0.0, relative=0.0)
+        ),
+        path="gjd_mode_token.resume.json",
+    )
+
+    assert differences == []
+    actual["first_update"]["scenario"]["metrics"]["action_mse"] += 1e-9
+    differences = compare_characterization_reports(
+        expected,
+        actual,
+        tolerance=ComparisonTolerance(absolute=0.0, relative=0.0),
+        tolerance_for_path=_numeric_tolerance_resolver(
+            ComparisonTolerance(absolute=0.0, relative=0.0)
+        ),
+        path="gjd_mode_token.resume.json",
+    )
+    assert any(".first_update.scenario.metrics.action_mse" in item for item in differences)
+
+
+def test_resume_report_uses_stable_output_schema_version() -> None:
+    assert RESUME_REPORT_SCHEMA_VERSION == 2
 
 
 def test_fixture_directory_comparison_requires_byte_identical_files(

@@ -67,6 +67,7 @@ from .mot_refactor_provenance import (
 WORKER_SEED = 20260727
 INFERENCE_CHARACTERIZATION_CHUNKS = 3
 CACHE_ROLLOVER_CHARACTERIZATION_CHUNKS = 17
+RESUME_REPORT_SCHEMA_VERSION = 2
 TRAINED_MOT_KEY_PREFIXES = (
     "policy_variant.packed_block_stack.",
     "policy_variant.action_expert.",
@@ -447,7 +448,7 @@ def run_full_state_resume_characterization(
             write_json_atomic(
                 output_path,
                 {
-                    "schema_version": 1,
+                    "schema_version": RESUME_REPORT_SCHEMA_VERSION,
                     "phase": "resume",
                     "asset_id": method.asset_id,
                     "config_name": method.config_name,

@@ -1,5 +1,6 @@
 """Stage-aware visual tower shared across policy variants."""
 
+from .cache_lifecycle import RuntimeCacheLifecycle
 from .contracts import (
     DecodedFeatureLayout,
     VisualCoreInput,
@@ -62,6 +63,7 @@ __all__ = [
     "SharedTransformerRotaryPositionalEmbedding",
     "SharedTransformerTimeEmbedding",
     "RuntimeProgramSpec",
+    "RuntimeCacheLifecycle",
     "RuntimeStepInput",
     "RuntimeStepOutput",
     "apply_rotary_emb",

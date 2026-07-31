@@ -110,6 +110,52 @@ def test_visual_tower_does_not_depend_on_policy_implementations() -> None:
     assert violations == []
 
 
+def test_visual_tower_cache_lifecycle_has_one_policy_owner() -> None:
+    visual_root = PACKAGE_ROOT / "models" / "visual_tower"
+    lifecycle_path = visual_root / "cache_lifecycle.py"
+    tower_path = visual_root / "tower.py"
+    lifecycle_methods = {
+        "advance_state",
+        "build_update_metadata",
+        "clear_state",
+        "ensure_branches",
+        "init_state",
+        "resolve_state",
+        "truncate_state",
+        "_slice_attention_cache_entry",
+        "_truncate_attention_cache_entry",
+    }
+    facade_methods = {
+        "advance_runtime_cache_state",
+        "build_runtime_cache_update_metadata",
+        "clear_runtime_cache_state",
+        "ensure_runtime_cache_branches",
+        "init_runtime_cache_state",
+        "resolve_runtime_cache_state",
+        "truncate_runtime_cache_state",
+    }
+
+    assert lifecycle_methods <= _class_method_definitions(
+        lifecycle_path,
+        "RuntimeCacheLifecycle",
+    )
+    tower_methods = _class_method_definitions(tower_path, "VisualTower")
+    assert facade_methods <= tower_methods
+    assert {
+        "_slice_attention_cache_entry",
+        "_truncate_attention_cache_entry",
+    }.isdisjoint(tower_methods)
+
+    tower_source = tower_path.read_text(encoding="utf-8")
+    assert "from .cache_lifecycle import" in tower_source
+    for backend_helper in (
+        "clear_cache_backend_payload",
+        "init_cache_backend_payload",
+        "resolve_cache_backend_spec",
+    ):
+        assert backend_helper not in tower_source
+
+
 def test_mot_policy_does_not_depend_on_parallel_stream_implementation() -> None:
     violations = sorted(
         imported

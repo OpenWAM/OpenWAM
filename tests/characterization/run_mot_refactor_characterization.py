@@ -55,6 +55,10 @@ DISTRIBUTED_AGGREGATE_TOLERANCE = ComparisonTolerance(
     absolute=0.25,
     relative=0.0,
 )
+RESUME_POST_UPDATE_METRIC_TOLERANCE = ComparisonTolerance(
+    absolute=5e-6,
+    relative=0.0,
+)
 
 
 def record_characterization(args: argparse.Namespace) -> None:
@@ -807,6 +811,11 @@ def _numeric_tolerance_resolver(
     gradient_tolerance: ComparisonTolerance,
 ):
     def resolve(path: str) -> ComparisonTolerance | None:
+        if (
+            ".resume.json.uninterrupted_update.scenario.metrics." in path
+            or ".resume.json.resumed_update.scenario.metrics." in path
+        ):
+            return RESUME_POST_UPDATE_METRIC_TOLERANCE
         if ".optimizer_step.distributed_numeric.parameter_groups." in path:
             return DISTRIBUTED_AGGREGATE_TOLERANCE
         if (

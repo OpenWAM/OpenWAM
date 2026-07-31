@@ -81,9 +81,13 @@ plain contracts:
   modifying learned runtime execution.
 - `mot.cache_state` owns typed cache movement, append, retention, and
   speculative rewind without executing model parameters.
-- `mot.runtime` owns MoT learned tensor execution and model-dependent cache
-  prefill, including explicit-sigma flow integration. Its historical
-  attention/cache operation names remain compatibility aliases.
+- `mot.cache_execution` owns learned video-cache prefill and action execution
+  against video-only or combined video/action caches.
+- `mot.dual_stream_execution` owns learned packed coupling and simultaneous
+  joint video/action execution. `mot.unpacked_training` composes those
+  executors for non-packed training without owning model parameters.
+- `mot.runtime` is a compatibility facade for historical internal imports; new
+  code imports the role-specific owners directly.
 - common attention profiles own token visibility; the policy selects a profile
   and supplies its resolved layout.
 - `visual_tower.shared_transformer_support` owns the reusable learned
@@ -96,10 +100,15 @@ plain contracts:
 - `visual_tower.runtime_tensor_transport` owns parameter-free tensor,
   attention-profile, and slot-pool-state movement across block devices. The
   core binds model patch geometry but does not reimplement transport policy.
+- `visual_tower.cache_lifecycle` composes backend operations into the shared
+  `CacheState` lifecycle: initialization, named branches, retention, cursor
+  advancement, and reset. `VisualTower` keeps the stable public facade and
+  supplies its current capability and layer count; the lifecycle owns no
+  modules or tensors.
 - `visual_tower.exact_runtime` owns shared exact single-stream input
-  preparation, CFG duplication, dtype selection, execution, and cache
-  lifecycle. Policy runtimes may select when to use it but do not reimplement
-  these backbone operations.
+  preparation, CFG duplication, dtype selection, and execution. Policy
+  runtimes may select when to use it but do not reimplement these backbone
+  operations.
 - `parallel_stream.exact_cache` owns the typed policy-side cache context,
   write-interface selection, cache-token stream labels, scoped slot-pool
   metadata, text/CFG preparation, and attention-window compatibility checks.
@@ -129,8 +138,9 @@ plain contracts:
   transforms used by visual execution, policy variants, and decoders.
 - `models.common.cache_backends` owns parameter-free attention-cache policy:
   dense-mask normalization, cached-prefix visibility, packed sequence ids,
-  slot retention, and merged-prefix truncation. The shared transformer owns
-  projections and attention execution, not those retention rules.
+  slot retention, merged-prefix operations, and backend payloads. The visual
+  cache lifecycle applies those operations to runtime state; the shared
+  transformer owns projections and attention execution.
 
 The layout, conditioning, mode, and routing helpers are plain contracts, not
 model modules. They must not own parameters, buffers, visual execution, or

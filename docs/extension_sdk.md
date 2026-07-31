@@ -242,6 +242,14 @@ built-in cache formats can reuse:
 - `retained_slot_pool_indices_for_current_write`;
 - `merge_attention_cache_entries`.
 
+`open_wam.models.visual_tower.RuntimeCacheLifecycle` composes those backend
+operations into initialization, named-branch, retention, cursor-advance, and
+reset operations over the public `CacheState` contract. `VisualTower` exposes
+the same operations as its stable runtime facade and supplies the current
+backbone capability and layer count dynamically. The lifecycle is a frozen
+plain object, not an `nn.Module`, so using or replacing it cannot add
+checkpoint keys.
+
 Attention profiles decide which tokens may interact. Cache policy decides how
 already-computed keys and values are represented, retained, and prepended.
 Neither contract owns learned parameters. A new cache representation still
