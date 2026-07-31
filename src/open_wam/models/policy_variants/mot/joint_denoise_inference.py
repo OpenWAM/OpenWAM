@@ -129,6 +129,7 @@ class MoTJointDenoiseInferenceProgram:
             ],
             dim=2,
         )
+        rollout_video_frames = int(noisy_video_latents.shape[2])
         action_scheduler = build_action_flow_match_inference_scheduler(
             training_config=self.training_config,
             inference_config=self.inference_config,
@@ -175,11 +176,11 @@ class MoTJointDenoiseInferenceProgram:
         if hidden_proprio_state is not None:
             hidden_proprio_sequence = hidden_proprio_state.to(device=device, dtype=dtype)[:, None, :].expand(
                 -1,
-                int(video_latents.shape[2]),
+                rollout_video_frames,
                 -1,
             )
         attention_mask = build_mot_attention_mask(
-            video_seq_len=visual_outputs.frontend.token_grid.tokens_per_frame * video_latents.shape[2],
+            video_seq_len=visual_outputs.frontend.token_grid.tokens_per_frame * rollout_video_frames,
             action_seq_len=action_horizon,
             device=device,
             condition_mode=self.config.condition_mode,
@@ -211,7 +212,7 @@ class MoTJointDenoiseInferenceProgram:
                     action_timestep = video_timestep.to(device=device, dtype=torch.float32)
             dense_video_timestep = expand_mot_scalar_timestep(
                 video_timestep,
-                shape=(batch_size, video_latents.shape[2]),
+                shape=(batch_size, rollout_video_frames),
                 device=device,
             )
             dense_video_timestep[:, :observed_prefix_frames] = 0.0

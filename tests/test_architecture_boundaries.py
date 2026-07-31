@@ -620,12 +620,10 @@ def test_mot_cache_execution_has_one_owner() -> None:
     assert cache_execution_functions.isdisjoint(
         _top_level_definitions(mot_root / "runtime.py")
     )
-    assert "from .cache_execution import" in (
-        mot_root / "variant.py"
-    ).read_text(encoding="utf-8")
-    assert "from .cache_execution import" in (
-        mot_root / "split_cache_inference.py"
-    ).read_text(encoding="utf-8")
+    for consumer_name in ("split_cache_inference.py", "unpacked_training.py"):
+        assert "from .cache_execution import" in (
+            mot_root / consumer_name
+        ).read_text(encoding="utf-8")
 
 
 def test_mot_dual_stream_execution_has_one_owner() -> None:
@@ -645,11 +643,31 @@ def test_mot_dual_stream_execution_has_one_owner() -> None:
         "joint_denoise_inference.py",
         "packed_inference.py",
         "packed_training.py",
-        "variant.py",
+        "unpacked_training.py",
     ):
         assert "from .dual_stream_execution import" in (
             mot_root / consumer_name
         ).read_text(encoding="utf-8")
+
+
+def test_mot_unpacked_training_has_one_program_owner() -> None:
+    mot_root = PACKAGE_ROOT / "models" / "policy_variants" / "mot"
+    variant_path = mot_root / "variant.py"
+    unpacked_path = mot_root / "unpacked_training.py"
+
+    assert {
+        "_build_video_train_rollout",
+        "run_joint_denoise",
+        "run_prefill_action_denoise",
+    } <= _class_method_definitions(unpacked_path, "MoTUnpackedTrainingProgram")
+    assert {
+        "_build_video_train_rollout",
+        "_forward_train_joint_denoise",
+        "_forward_train_prefill_action_denoise",
+    }.isdisjoint(_class_method_definitions(variant_path, "MoTPolicyVariant"))
+    assert "from .unpacked_training import" in variant_path.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_mot_attention_layouts_have_one_owner() -> None:

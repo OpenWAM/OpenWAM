@@ -40,7 +40,7 @@ from open_wam.models.policy_variants.mot.contracts import (
     MoTRuntimeState,
 )
 from open_wam.models.policy_variants.mot import runtime as mot_runtime
-from open_wam.models.policy_variants.mot import variant as mot_variant
+from open_wam.models.policy_variants.mot import unpacked_training as mot_unpacked_training
 from open_wam.models.policy_variants.mot.attention import (
     build_chunk_causal_video_mask,
     build_mot_attention_mask,
@@ -154,11 +154,11 @@ def test_mot_runtime_dual_stream_exports_are_compatibility_aliases() -> None:
         is forward_mot_packed_coupling_denoise
     )
     assert (
-        mot_variant.forward_joint_video_action_denoise
+        mot_unpacked_training.forward_joint_video_action_denoise
         is forward_joint_video_action_denoise
     )
     assert (
-        mot_variant.is_mot_same_step_coupling
+        mot_unpacked_training.is_mot_same_step_coupling
         is is_mot_same_step_coupling
     )
 
@@ -1641,6 +1641,70 @@ def test_mot_variant_infer_from_latents_smoke(
     assert output.decoder_output.action_pred.shape == (1, 4, 4)
     assert torch.isfinite(output.decoder_output.action_pred).all()
     assert isinstance(output.policy_output.next_state.variant_state, MoTRuntimeState)
+
+
+def test_mot_legacy_joint_infer_uses_actual_rollout_video_length() -> None:
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(
+                action_dim=4,
+                action_horizon=4,
+                state_dim=4,
+                state_horizon=1,
+            ),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=MoTPolicyConfig(
+            hidden_size=32,
+            runtime_mode=MoTRuntimeMode.JOINT_DENOISE,
+            video_prefix_frames=1,
+            num_action_layers=1,
+        ),
+        action_decoder=MLPActionDecoderConfig(
+            hidden_size=32,
+            action_dim=4,
+            action_horizon=4,
+        ),
+        training=TrainingConfig(
+            chunk_size=2,
+            window_size=8,
+            action_loss_weight=1.0,
+            latent_loss_weight=1.0,
+        ),
+        inference=InferenceConfig(
+            frame_chunk_size=2,
+            video_num_inference_steps=2,
+            action_num_inference_steps=2,
+        ),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    video_latents = torch.randn(1, 48, 4, 8, 8)
+    visual_outputs = pipeline.prepare_visual_outputs_from_latents(
+        video_latents,
+        text_context=torch.randn(1, 5, 16),
+    )
+
+    output = pipeline._forward_infer_with_visual_outputs(
+        visual_outputs,
+        context=PolicyInferContext(),
+    )
+
+    predicted_latents = output.policy_output.aux["predicted_latents"]
+    assert predicted_latents.shape == (1, 48, 2, 8, 8)
+    assert output.decoder_output.action_pred.shape == (1, 4, 4)
 
 
 def test_mot_variant_train_from_latents_supports_joint_action_and_video_objectives() -> None:
