@@ -25,6 +25,8 @@ from open_wam.configs import (
     WindowSamplingMode,
 )
 from open_wam.data import (
+    LocalLatentSegment as PublicLocalLatentSegment,
+    LocalLatentSegmentAssembler as PublicLocalLatentSegmentAssembler,
     LocalLatentUniformSegmentSamplingPlan as PublicUniformSamplingPlan,
     build_train_val_latent_datasets,
     collate_latent_wam_samples,
@@ -55,6 +57,10 @@ from open_wam.data.lerobot_v2_latent_storage import (
 from open_wam.data.lerobot_v2_latent_sampling import (
     LocalLatentUniformSegmentSamplingPlan,
 )
+from open_wam.data.lerobot_v2_latent_segment import (
+    LocalLatentSegment,
+    LocalLatentSegmentAssembler,
+)
 from open_wam.data.lerobot_v2_latent_supervision import (
     LocalLatentSupervisionAssembler,
 )
@@ -76,6 +82,8 @@ def test_lerobot_latent_storage_owns_compatibility_exports() -> None:
         is CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET
     )
     assert PublicUniformSamplingPlan is LocalLatentUniformSegmentSamplingPlan
+    assert PublicLocalLatentSegment is LocalLatentSegment
+    assert PublicLocalLatentSegmentAssembler is LocalLatentSegmentAssembler
 
 
 def _disable_replay_status(data_config):
@@ -1059,6 +1067,126 @@ def test_uniform_segment_dataset_delegates_to_sampling_plan(
     assert sample.metadata["subwindow_latent_start"] == owner_geometry[1]
     assert sample.metadata["sampled_chunk_size"] == owner_attention[0]
     assert sample.metadata["sampled_window_size"] == owner_attention[1]
+
+
+def test_uniform_segment_uses_typed_assembler(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "robotwin_local_latent_typed_segment"
+    _build_local_robotwin_latent_repo(
+        repo_root,
+        total_rows=8,
+        latent_num_frames=8,
+        include_condition_latent=True,
+    )
+
+    config = load_experiment_config(
+        REPO_ROOT
+        / "configs/experiments/parallel_stream_robotwin_smoke.yaml"
+    )
+    config = replace(
+        config,
+        data=replace(
+            _disable_replay_status(config.data),
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.UNIFORM_SEGMENT,
+                segment_min_frames=4,
+                segment_max_frames=4,
+                segment_length_stride=1,
+                start_padding_frames=2,
+                require_full_segment=False,
+                randomize_segment_length=False,
+                randomize_segment_start=False,
+                randomize_geometry=False,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    assert isinstance(
+        train_dataset._segment_assembler,
+        LocalLatentSegmentAssembler,
+    )
+    assert (
+        train_dataset._segment_assembler.supervision_assembler
+        is train_dataset._supervision_assembler
+    )
+
+    index = next(
+        index
+        for index, (_, latent_start) in enumerate(
+            train_dataset._virtual_index
+        )
+        if latent_start == -1
+    )
+    window_index, latent_start = train_dataset._virtual_index[index]
+    window = train_dataset.windows[window_index]
+    repo_bundle = train_dataset._repo_bundles[str(window.repo_root)]
+    rows = train_dataset._latent_repository.load_episode_rows(
+        window.repo_root,
+        window.episode_index,
+        repo_bundle.metadata,
+    )
+    (
+        video_latents,
+        _,
+        primary_payload,
+        condition_latents,
+        _,
+    ) = train_dataset._latent_repository.load_canonical_window_latents(
+        window,
+        repo_bundle.metadata,
+    )
+    raw_frame_ids = [
+        int(value)
+        for value in list(primary_payload.get("frame_ids", []))
+    ] or list(window.observation_frame_indices)
+    start_padding_frames = (
+        train_dataset._uniform_segment_sampling_plan.resolve_start_padding_frames(
+            train_dataset.data_config,
+            window,
+        )
+    )
+    segment = train_dataset._segment_assembler.build(
+        video_latents=video_latents,
+        condition_latents=condition_latents,
+        rows=rows,
+        raw_frame_ids=raw_frame_ids,
+        window=window,
+        latent_start=latent_start,
+        segment_length=4,
+        start_padding_frames=start_padding_frames,
+    )
+    assert isinstance(segment, LocalLatentSegment)
+    assert segment.pre_start_frames == 2
+    assert segment.condition_latents is not None
+
+    sample = train_dataset[index]
+    torch.testing.assert_close(sample.video_latents, segment.video_latents)
+    torch.testing.assert_close(
+        sample.condition_latents,
+        segment.condition_latents,
+    )
+    torch.testing.assert_close(sample.actions, segment.actions)
+    torch.testing.assert_close(sample.action_mask, segment.action_mask)
+    torch.testing.assert_close(sample.state, segment.state)
+    torch.testing.assert_close(
+        sample.proprio_context_state,
+        segment.proprio_context_state,
+    )
+    assert sample.metadata["sample_start_frame"] == segment.sample_start_frame
+    assert sample.metadata["latent_loss_frame_start"] == segment.loss_frame_start
+    assert sample.metadata["observed_frame_ids"] == segment.observed_frame_ids
+    assert pickle.loads(pickle.dumps(segment)).boundary_metadata == (
+        segment.boundary_metadata
+    )
 
 
 def test_uniform_segment_start_padding_repeats_first_latent_and_masks_virtual_actions(tmp_path: Path) -> None:

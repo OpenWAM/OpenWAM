@@ -525,31 +525,22 @@ def test_lerobot_latent_segment_materialization_has_one_owner() -> None:
     materialization_path = (
         PACKAGE_ROOT / "data" / "latent_segment_materialization.py"
     )
+    segment_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent_segment.py"
     dataset_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent.py"
     assert {
         "LatentSegmentMaterializationPlan",
         "plan_latent_segment_materialization",
         "slice_latent_segment_with_zero_order_hold",
     } <= _top_level_definitions(materialization_path)
-
-    slice_facade = _class_method(
-        dataset_path,
-        "UniformSegmentLocalLeRobotLatentDataset",
-        "_slice_video_latents_with_zero_hold",
-    )
-    assert len(slice_facade.body) == 1
-    assert isinstance(slice_facade.body[0], ast.Return)
-    assert isinstance(slice_facade.body[0].value, ast.Call)
-    assert isinstance(slice_facade.body[0].value.func, ast.Name)
-    assert (
-        slice_facade.body[0].value.func.id
-        == "slice_latent_segment_with_zero_order_hold"
-    )
+    assert {
+        "LocalLatentSegment",
+        "LocalLatentSegmentAssembler",
+    } <= _top_level_definitions(segment_path)
 
     builder = _class_method(
-        dataset_path,
-        "UniformSegmentLocalLeRobotLatentDataset",
-        "_build_uniform_segment",
+        segment_path,
+        "LocalLatentSegmentAssembler",
+        "build",
     )
     direct_plan_calls = [
         node
@@ -559,6 +550,43 @@ def test_lerobot_latent_segment_materialization_has_one_owner() -> None:
         and node.func.id == "plan_latent_segment_materialization"
     ]
     assert len(direct_plan_calls) == 1
+    direct_slice_calls = [
+        node
+        for node in ast.walk(builder)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "slice_latent_segment_with_zero_order_hold"
+    ]
+    assert len(direct_slice_calls) == 2
+
+    retired_dataset_helpers = {
+        "_build_uniform_segment",
+        "_resolve_sample_state_anchor_frame",
+        "_segment_observed_frame_ids",
+        "_slice_video_latents_with_zero_hold",
+    }
+    assert retired_dataset_helpers.isdisjoint(
+        _class_method_definitions(
+            dataset_path,
+            "UniformSegmentLocalLeRobotLatentDataset",
+        )
+    )
+
+    for dataset_class in (
+        "UniformSegmentLocalLeRobotLatentDataset",
+        "HierarchicalFixedSegmentLocalLeRobotLatentDataset",
+    ):
+        getitem = _class_method(dataset_path, dataset_class, "__getitem__")
+        owner_calls = [
+            node
+            for node in ast.walk(getitem)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "build"
+            and isinstance(node.func.value, ast.Attribute)
+            and node.func.value.attr == "_segment_assembler"
+        ]
+        assert len(owner_calls) == 1
 
 
 def test_mixed_video_catalog_has_one_owner() -> None:
@@ -802,7 +830,10 @@ def test_lerobot_latent_supervision_assembly_has_one_owner() -> None:
     )
 
     compatibility_methods = {
-        f"_{method_name}" for method_name in assembler_methods
+        "_build_lingbot_window_action_targets",
+        "_build_standard_policy_window_action_targets",
+        "_extract_proprio_context_state_sequence",
+        "_extract_state_history_at_frame",
     }
     assert compatibility_methods <= _class_method_definitions(
         dataset_path,
@@ -817,6 +848,19 @@ def test_lerobot_latent_supervision_assembly_has_one_owner() -> None:
         assert len(method.body) == 1
         assert isinstance(method.body[0], ast.Return)
         assert isinstance(method.body[0].value, ast.Call)
+
+    retired_private_facades = {
+        "_build_action_targets",
+        "_extract_proprio_context_frames",
+        "_extract_sequence",
+        "_extract_state_at_frame",
+    }
+    assert retired_private_facades.isdisjoint(
+        _class_method_definitions(
+            dataset_path,
+            "LocalLeRobotLatentWindowDataset",
+        )
+    )
 
 
 def test_row_action_target_transform_has_one_owner() -> None:

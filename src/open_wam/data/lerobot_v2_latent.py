@@ -21,7 +21,6 @@ from open_wam.configs import (
     RolloutContextPolicy,
     SampleOrderMode,
     SampleWeightMode,
-    SampleStateAnchorMode,
     SampleTargetAlignment,
     SegmentContextPolicy,
     TailPaddingPolicy,
@@ -29,10 +28,6 @@ from open_wam.configs import (
 )
 
 from .latent_contracts import LatentWAMSample
-from .latent_segment_materialization import (
-    plan_latent_segment_materialization,
-    slice_latent_segment_with_zero_order_hold,
-)
 from .latent_segment_geometry import (
     compact_boundary_start_range,
     resolve_compact_boundary_segment,
@@ -78,6 +73,7 @@ from .lerobot_v2_latent_sampling import (
     LocalLatentWeightedTrainSampler as LocalLatentWeightedTrainSampler,
     build_hierarchical_fixed_segment_task_specs,
 )
+from .lerobot_v2_latent_segment import LocalLatentSegmentAssembler
 from .lerobot_v2_latent_supervision import LocalLatentSupervisionAssembler
 from .replay_status import load_replay_status_records, split_episode_indices_by_replay_status
 
@@ -115,6 +111,10 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
         self._latent_view_cache = repository.latent_view_cache
         self._latent_repository = repository
         self._supervision_assembler = LocalLatentSupervisionAssembler(data_config)
+        self._segment_assembler = LocalLatentSegmentAssembler(
+            data_config,
+            supervision_assembler=self._supervision_assembler,
+        )
 
         if not self.windows:
             raise ValueError(
@@ -461,34 +461,6 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             leading_zero_action_mask=leading_zero_action_mask,
         )
 
-    def _build_action_targets(
-        self,
-        *,
-        action_rows: list[dict[str, Any]],
-        target_state_rows: list[dict[str, Any]],
-    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
-        return self._supervision_assembler.build_action_targets(
-            action_rows=action_rows,
-            target_state_rows=target_state_rows,
-        )
-
-    def _extract_sequence(
-        self,
-        *,
-        rows: list[dict[str, Any]],
-        key: str,
-        target_dim: int,
-        target_length: int,
-        left_pad: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        return self._supervision_assembler.extract_sequence(
-            rows=rows,
-            key=key,
-            target_dim=target_dim,
-            target_length=target_length,
-            left_pad=left_pad,
-        )
-
     def _extract_state_history_at_frame(
         self,
         *,
@@ -500,17 +472,6 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             rows=rows,
             anchor_frame_index=anchor_frame_index,
             state_horizon=state_horizon,
-        )
-
-    def _extract_state_at_frame(
-        self,
-        *,
-        rows: list[dict[str, Any]],
-        frame_index: int,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        return self._supervision_assembler.extract_state_at_frame(
-            rows=rows,
-            frame_index=frame_index,
         )
 
     def _extract_proprio_context_state_sequence(
@@ -526,17 +487,6 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             observed_frame_ids=observed_frame_ids,
             chunk_size=chunk_size,
             loss_frame_start=loss_frame_start,
-        )
-
-    def _extract_proprio_context_frames(
-        self,
-        *,
-        rows: list[dict[str, Any]],
-        observed_frame_ids: list[int],
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        return self._supervision_assembler.extract_proprio_context_frames(
-            rows=rows,
-            observed_frame_ids=observed_frame_ids,
         )
 
     def _load_episode_rows(
@@ -644,17 +594,24 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
                 segment_length=segment_length
             )
         )
-        subwindow = self._build_uniform_segment(
+        raw_frame_ids = [
+            int(value)
+            for value in list(primary_payload.get("frame_ids", []))
+        ]
+        if not raw_frame_ids:
+            raw_frame_ids = list(window.observation_frame_indices)
+        segment = self._segment_assembler.build(
             video_latents=full_video_latents,
             condition_latents=full_condition_latents,
             rows=rows,
-            primary_payload=primary_payload,
+            raw_frame_ids=raw_frame_ids,
             window=window,
             latent_start=latent_start,
             segment_length=segment_length,
+            start_padding_frames=start_padding_frames,
         )
 
-        task_index = int(rows[min(subwindow["sample_start_frame"], len(rows) - 1)].get("task_index", 0)) if rows else 0
+        task_index = int(rows[min(segment.sample_start_frame, len(rows) - 1)].get("task_index", 0)) if rows else 0
         episode_record = repo_bundle.episodes_by_index.get(window.episode_index)
         task_text = repo_bundle.metadata.tasks_by_index.get(task_index)
         if task_text is None and episode_record is not None and episode_record.tasks:
@@ -668,44 +625,44 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
         negative_text_context = self.empty_text_embedding.clone() if self.empty_text_embedding is not None else None
 
         return LatentWAMSample(
-            video_latents=subwindow["video_latents"],
-            actions=subwindow["actions"],
-            action_mask=subwindow["action_mask"],
-            state=subwindow["state"],
-            state_mask=subwindow["state_mask"],
+            video_latents=segment.video_latents,
+            actions=segment.actions,
+            action_mask=segment.action_mask,
+            state=segment.state,
+            state_mask=segment.state_mask,
             task_text=task_text,
             text_context=text_context,
             negative_text_context=negative_text_context,
-            condition_latents=subwindow["condition_latents"],
-            proprio_context_state=subwindow["proprio_context_state"],
-            proprio_context_state_mask=subwindow["proprio_context_state_mask"],
-            proprio_context_frames=subwindow["proprio_context_frames"],
-            proprio_context_frames_mask=subwindow["proprio_context_frames_mask"],
+            condition_latents=segment.condition_latents,
+            proprio_context_state=segment.proprio_context_state,
+            proprio_context_state_mask=segment.proprio_context_state_mask,
+            proprio_context_frames=segment.proprio_context_frames,
+            proprio_context_frames_mask=segment.proprio_context_frames_mask,
             metadata={
                 "repo_root": str(window.repo_root),
                 "dataset_id": str(window.repo_root),
                 "episode_index": window.episode_index,
                 "segment_start_frame": window.start_frame,
                 "segment_end_frame": window.end_frame,
-                "sample_start_frame": subwindow["sample_start_frame"],
-                "sample_end_frame": subwindow["sample_end_frame"],
-                "observation_start": subwindow["sample_start_frame"],
-                "observation_frame_indices": subwindow["observed_frame_ids"],
+                "sample_start_frame": segment.sample_start_frame,
+                "sample_end_frame": segment.sample_end_frame,
+                "observation_start": segment.sample_start_frame,
+                "observation_frame_indices": segment.observed_frame_ids,
                 "window_sampling_mode": WindowSamplingMode.UNIFORM_SEGMENT,
-                "window_start_frame": subwindow["sample_start_frame"],
-                "window_end_frame": subwindow["sample_end_frame"],
-                "anchor_frame_index": subwindow["anchor_frame_index"],
-                "state_anchor_frame": subwindow["state_anchor_frame"],
-                "proprio_context_frame_index": subwindow["proprio_context_frame_index"],
-                "proprio_context_local_frame": subwindow["proprio_context_local_frame"],
-                "proprio_context_chunk_count": int(subwindow["proprio_context_state"].shape[0]),
-                "proprio_context_frame_count": int(subwindow["proprio_context_frames"].shape[0]),
-                "observed_frame_ids": subwindow["observed_frame_ids"],
-                "latent_temporal_layout": subwindow["latent_temporal_layout"],
+                "window_start_frame": segment.sample_start_frame,
+                "window_end_frame": segment.sample_end_frame,
+                "anchor_frame_index": segment.anchor_frame_index,
+                "state_anchor_frame": segment.state_anchor_frame,
+                "proprio_context_frame_index": segment.proprio_context_frame_index,
+                "proprio_context_local_frame": segment.proprio_context_local_frame,
+                "proprio_context_chunk_count": int(segment.proprio_context_state.shape[0]),
+                "proprio_context_frame_count": int(segment.proprio_context_frames.shape[0]),
+                "observed_frame_ids": segment.observed_frame_ids,
+                "latent_temporal_layout": segment.latent_temporal_layout,
                 "task_index": task_index,
                 "latent_layout": latent_layout_metadata,
                 "condition_latent_layout": condition_layout_metadata,
-                "has_condition_latents": subwindow["condition_latents"] is not None,
+                "has_condition_latents": segment.condition_latents is not None,
                 "state_source_key": self.data_config.action_target.pose_source_key,
                 "action_representation": self.data_config.action_target.representation,
                 "virtual_sample_index": index,
@@ -714,25 +671,25 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
                 "subwindow_latent_start": latent_start,
                 "subwindow_latent_end": latent_start + segment_length,
                 "segment_length_frames": segment_length,
-                "segment_valid_latent_frames": subwindow["valid_latent_frames"],
-                "segment_padded_latent_frames": subwindow["padded_latent_frames"],
-                "tail_padding_mode": "none" if subwindow["padded_latent_frames"] == 0 else "zero_hold",
-                "subwindow_action_start": subwindow["action_start_index"],
-                "subwindow_action_end": subwindow["action_end_index"],
+                "segment_valid_latent_frames": segment.valid_latent_frames,
+                "segment_padded_latent_frames": segment.padded_latent_frames,
+                "tail_padding_mode": "none" if segment.padded_latent_frames == 0 else "zero_hold",
+                "subwindow_action_start": segment.action_start_index,
+                "subwindow_action_end": segment.action_end_index,
                 **self._uniform_segment_attention_metadata(
                     latent_start=latent_start,
                     segment_length=segment_length,
-                    valid_latent_frames=subwindow["valid_latent_frames"],
-                    loss_frame_start=subwindow["loss_frame_start"],
-                    loss_frame_end=subwindow["loss_frame_end"],
-                    sample_start_frame=subwindow["sample_start_frame"],
-                    start_padding_frames=subwindow["start_padding_frames"],
-                    pre_start_frames=subwindow["pre_start_frames"],
+                    valid_latent_frames=segment.valid_latent_frames,
+                    loss_frame_start=segment.loss_frame_start,
+                    loss_frame_end=segment.loss_frame_end,
+                    sample_start_frame=segment.sample_start_frame,
+                    start_padding_frames=segment.start_padding_frames,
+                    pre_start_frames=segment.pre_start_frames,
                     sampled_chunk_size=sampled_chunk_size,
                     sampled_window_size=sampled_window_size,
                 ),
-                **subwindow["action_target_metadata"],
-                **self._action_loss_metadata(subwindow["action_mask"]),
+                **segment.action_target_metadata,
+                **self._action_loss_metadata(segment.action_mask),
                 **self._sample_weight_metadata(index),
             },
         )
@@ -785,200 +742,6 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
                 history_frames = int(math.ceil(window_size / 2.0)) * chunk_size
                 metadata["history_frames"] = max(1, min(history_frames, max(1, int(segment_length) - chunk_size)))
         return metadata
-
-    def _build_uniform_segment(
-        self,
-        *,
-        video_latents: torch.Tensor,
-        condition_latents: torch.Tensor | None = None,
-        rows: list[dict[str, Any]],
-        primary_payload: dict[str, Any],
-        window: LocalEpisodeWindow,
-        latent_start: int,
-        segment_length: int,
-        compact_boundary_padding: bool = False,
-        compact_boundary_chunk_size: int | None = None,
-        compact_boundary_context_prefix_frames: int = 0,
-        rollout_parity_target_alignment: bool = False,
-    ) -> dict[str, Any]:
-        source_latent_frames = int(video_latents.shape[1])
-        start_padding_frames = (
-            _LocalLatentUniformSegmentSamplingPlan.resolve_start_padding_frames(
-                self.data_config,
-                window,
-            )
-        )
-        raw_frame_ids = [int(value) for value in list(primary_payload.get("frame_ids", []))]
-        if not raw_frame_ids:
-            raw_frame_ids = list(window.observation_frame_indices)
-        materialization = plan_latent_segment_materialization(
-            source_latent_frames=source_latent_frames,
-            raw_frame_ids=raw_frame_ids,
-            latent_start=latent_start,
-            segment_length=segment_length,
-            latent_temporal_layout=self.data_config.latent_temporal_layout,
-            start_padding_frames=start_padding_frames,
-            compact_boundary_padding=compact_boundary_padding,
-            compact_boundary_chunk_size=(
-                compact_boundary_chunk_size
-                if compact_boundary_chunk_size is not None
-                else self.data_config.sample_construction.chunk_size
-            ),
-            compact_boundary_context_prefix_frames=compact_boundary_context_prefix_frames,
-            rollout_parity_target_alignment=rollout_parity_target_alignment,
-        )
-        tensor_latent_start = materialization.tensor_latent_start
-        tensor_segment_length = materialization.tensor_segment_length
-        valid_latent_frames = materialization.valid_latent_frames
-        padded_latent_frames = materialization.padded_latent_frames
-        pre_start_frames = materialization.pre_start_frames
-        loss_frame_start = materialization.loss_frame_start
-        loss_frame_end = materialization.loss_frame_end
-        sample_start_frame = materialization.sample_start_frame
-        sample_end_frame = materialization.sample_end_frame
-        anchor_frame_index = materialization.anchor_frame_index
-        observed_frame_ids = list(materialization.observed_frame_ids)
-        boundary = materialization.boundary_metadata
-        chunk_size_for_boundary = materialization.chunk_size_for_boundary
-
-        sampled_window = LocalEpisodeWindow(
-            repo_root=window.repo_root,
-            episode_index=window.episode_index,
-            start_frame=sample_start_frame,
-            end_frame=min(sample_end_frame, len(rows)),
-        )
-        actions, action_mask, action_target_metadata = self._build_lingbot_window_action_targets(
-            rows=rows,
-            window=sampled_window,
-            observed_frame_ids=observed_frame_ids,
-            latent_num_frames=tensor_segment_length,
-            leading_zero_action_frames=pre_start_frames if pre_start_frames > 0 else 1,
-            leading_zero_action_mask=(
-                0.0 if pre_start_frames > 0 or rollout_parity_target_alignment else 1.0
-            ),
-        )
-        proprio_context_local_frame = max(0, min(len(observed_frame_ids) - 1, int(loss_frame_start) - 1))
-        proprio_context_frame_index = observed_frame_ids[proprio_context_local_frame]
-        state_anchor_frame = self._resolve_sample_state_anchor_frame(
-            observed_frame_ids=observed_frame_ids,
-            sample_start_frame=sample_start_frame,
-            anchor_frame_index=anchor_frame_index,
-            proprio_context_frame_index=proprio_context_frame_index,
-        )
-        state, state_mask = self._extract_state_history_at_frame(
-            rows=rows,
-            anchor_frame_index=state_anchor_frame,
-        )
-        proprio_context_state, proprio_context_state_mask = self._extract_proprio_context_state_sequence(
-            rows=rows,
-            observed_frame_ids=observed_frame_ids,
-            chunk_size=(
-                int(chunk_size_for_boundary)
-                if compact_boundary_padding and chunk_size_for_boundary is not None
-                else max(1, int(self.data_config.sample_construction.chunk_size))
-            ),
-            loss_frame_start=loss_frame_start,
-        )
-        proprio_context_frames, proprio_context_frames_mask = self._extract_proprio_context_frames(
-            rows=rows,
-            observed_frame_ids=observed_frame_ids,
-        )
-        return {
-            "video_latents": self._slice_video_latents_with_zero_hold(
-                video_latents=video_latents,
-                latent_start=tensor_latent_start,
-                segment_length=tensor_segment_length,
-            ),
-            "condition_latents": (
-                self._slice_video_latents_with_zero_hold(
-                    video_latents=condition_latents,
-                    latent_start=tensor_latent_start,
-                    segment_length=tensor_segment_length,
-                )
-                if condition_latents is not None
-                else None
-            ),
-            "actions": actions,
-            "action_mask": action_mask,
-            "action_target_metadata": action_target_metadata,
-            "state": state,
-            "state_mask": state_mask,
-            "proprio_context_state": proprio_context_state,
-            "proprio_context_state_mask": proprio_context_state_mask,
-            "proprio_context_frames": proprio_context_frames,
-            "proprio_context_frames_mask": proprio_context_frames_mask,
-            "sample_start_frame": sample_start_frame,
-            "sample_end_frame": sample_end_frame,
-            "anchor_frame_index": anchor_frame_index,
-            "state_anchor_frame": state_anchor_frame,
-            "proprio_context_frame_index": proprio_context_frame_index,
-            "proprio_context_local_frame": proprio_context_local_frame,
-            "observed_frame_ids": observed_frame_ids,
-            "latent_temporal_layout": self.data_config.latent_temporal_layout,
-            "action_start_index": sample_start_frame,
-            "action_end_index": sample_start_frame + int(actions.shape[0]),
-            "valid_latent_frames": valid_latent_frames,
-            "padded_latent_frames": padded_latent_frames,
-            "loss_frame_start": loss_frame_start,
-            "loss_frame_end": loss_frame_end,
-            "start_padding_frames": start_padding_frames,
-            "pre_start_frames": pre_start_frames,
-            "boundary_metadata": boundary,
-        }
-
-    @staticmethod
-    def _segment_observed_frame_ids(
-        *,
-        raw_frame_ids: list[int],
-        source_latent_frames: int,
-        latent_start: int,
-        segment_length: int,
-        latent_temporal_layout: LatentTemporalLayout | str = LatentTemporalLayout.WAN_CAUSAL_STRIDE4,
-    ) -> list[int]:
-        return observed_frame_ids_for_latent_segment(
-            raw_frame_ids=raw_frame_ids,
-            source_latent_frames=source_latent_frames,
-            latent_start=latent_start,
-            segment_length=segment_length,
-            layout=latent_temporal_layout,
-        )
-
-    @staticmethod
-    def _slice_video_latents_with_zero_hold(
-        *,
-        video_latents: torch.Tensor,
-        latent_start: int,
-        segment_length: int,
-    ) -> torch.Tensor:
-        return slice_latent_segment_with_zero_order_hold(
-            video_latents=video_latents,
-            latent_start=latent_start,
-            segment_length=segment_length,
-        )
-
-    def _resolve_sample_state_anchor_frame(
-        self,
-        *,
-        observed_frame_ids: list[int],
-        sample_start_frame: int,
-        anchor_frame_index: int,
-        proprio_context_frame_index: int | None = None,
-    ) -> int:
-        mode = self.data_config.sample_construction.state_anchor_mode
-        if mode == SampleStateAnchorMode.PROPRIO_CONTEXT_FRAME:
-            if proprio_context_frame_index is None:
-                return int(anchor_frame_index)
-            return int(proprio_context_frame_index)
-        if mode == SampleStateAnchorMode.SAMPLE_START_FRAME:
-            return int(sample_start_frame)
-        if mode == SampleStateAnchorMode.FIRST_OBSERVED_FRAME:
-            if not observed_frame_ids:
-                raise ValueError("state_anchor_mode=first_observed_frame requires non-empty observed_frame_ids.")
-            return int(observed_frame_ids[0])
-        if mode == SampleStateAnchorMode.ANCHOR_FRAME:
-            return int(anchor_frame_index)
-        raise ValueError(f"Unsupported sample state_anchor_mode {mode!r}.")
-
 
 class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRobotLatentDataset):
     """Shared fixed-length hierarchical task/trajectory/start sampler."""
@@ -1200,14 +963,27 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
             window,
             repo_bundle.metadata,
         )
-        subwindow = self._build_uniform_segment(
+        raw_frame_ids = [
+            int(value)
+            for value in list(primary_payload.get("frame_ids", []))
+        ]
+        if not raw_frame_ids:
+            raw_frame_ids = list(window.observation_frame_indices)
+        start_padding_frames = (
+            _LocalLatentUniformSegmentSamplingPlan.resolve_start_padding_frames(
+                self.data_config,
+                window,
+            )
+        )
+        segment = self._segment_assembler.build(
             video_latents=full_video_latents,
             condition_latents=full_condition_latents,
             rows=rows,
-            primary_payload=primary_payload,
+            raw_frame_ids=raw_frame_ids,
             window=window,
             latent_start=latent_start,
             segment_length=self.segment_frames,
+            start_padding_frames=start_padding_frames,
             compact_boundary_padding=True,
             compact_boundary_chunk_size=sampled_chunk_size,
             compact_boundary_context_prefix_frames=self._hierarchical_context_prefix_frames(sampled_chunk_size),
@@ -1216,7 +992,7 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
             ),
         )
 
-        task_index = int(rows[min(subwindow["sample_start_frame"], len(rows) - 1)].get("task_index", 0)) if rows else 0
+        task_index = int(rows[min(segment.sample_start_frame, len(rows) - 1)].get("task_index", 0)) if rows else 0
         episode_record = repo_bundle.episodes_by_index.get(window.episode_index)
         task_text = repo_bundle.metadata.tasks_by_index.get(task_index)
         if task_text is None and episode_record is not None and episode_record.tasks:
@@ -1229,49 +1005,49 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
             text_context = None
         negative_text_context = self.empty_text_embedding.clone() if self.empty_text_embedding is not None else None
 
-        boundary_metadata = dict(subwindow["boundary_metadata"])
+        boundary_metadata = dict(segment.boundary_metadata)
         effective_latent_start = int(boundary_metadata.get("effective_frame_start", latent_start))
-        tail_padded_frame_count = int(boundary_metadata.get("tail_padded_frame_count", subwindow["padded_latent_frames"]))
+        tail_padded_frame_count = int(boundary_metadata.get("tail_padded_frame_count", segment.padded_latent_frames))
 
         return LatentWAMSample(
-            video_latents=subwindow["video_latents"],
-            actions=subwindow["actions"],
-            action_mask=subwindow["action_mask"],
-            state=subwindow["state"],
-            state_mask=subwindow["state_mask"],
+            video_latents=segment.video_latents,
+            actions=segment.actions,
+            action_mask=segment.action_mask,
+            state=segment.state,
+            state_mask=segment.state_mask,
             task_text=task_text,
             text_context=text_context,
             negative_text_context=negative_text_context,
-            condition_latents=subwindow["condition_latents"],
-            proprio_context_state=subwindow["proprio_context_state"],
-            proprio_context_state_mask=subwindow["proprio_context_state_mask"],
-            proprio_context_frames=subwindow["proprio_context_frames"],
-            proprio_context_frames_mask=subwindow["proprio_context_frames_mask"],
+            condition_latents=segment.condition_latents,
+            proprio_context_state=segment.proprio_context_state,
+            proprio_context_state_mask=segment.proprio_context_state_mask,
+            proprio_context_frames=segment.proprio_context_frames,
+            proprio_context_frames_mask=segment.proprio_context_frames_mask,
             metadata={
                 "repo_root": str(window.repo_root),
                 "dataset_id": str(window.repo_root),
                 "episode_index": window.episode_index,
                 "segment_start_frame": window.start_frame,
                 "segment_end_frame": window.end_frame,
-                "sample_start_frame": subwindow["sample_start_frame"],
-                "sample_end_frame": subwindow["sample_end_frame"],
-                "observation_start": subwindow["sample_start_frame"],
-                "observation_frame_indices": subwindow["observed_frame_ids"],
+                "sample_start_frame": segment.sample_start_frame,
+                "sample_end_frame": segment.sample_end_frame,
+                "observation_start": segment.sample_start_frame,
+                "observation_frame_indices": segment.observed_frame_ids,
                 "window_sampling_mode": WindowSamplingMode.HIERARCHICAL_FIXED_SEGMENT,
-                "window_start_frame": subwindow["sample_start_frame"],
-                "window_end_frame": subwindow["sample_end_frame"],
-                "anchor_frame_index": subwindow["anchor_frame_index"],
-                "state_anchor_frame": subwindow["state_anchor_frame"],
-                "proprio_context_frame_index": subwindow["proprio_context_frame_index"],
-                "proprio_context_local_frame": subwindow["proprio_context_local_frame"],
-                "proprio_context_chunk_count": int(subwindow["proprio_context_state"].shape[0]),
-                "proprio_context_frame_count": int(subwindow["proprio_context_frames"].shape[0]),
-                "observed_frame_ids": subwindow["observed_frame_ids"],
-                "latent_temporal_layout": subwindow["latent_temporal_layout"],
+                "window_start_frame": segment.sample_start_frame,
+                "window_end_frame": segment.sample_end_frame,
+                "anchor_frame_index": segment.anchor_frame_index,
+                "state_anchor_frame": segment.state_anchor_frame,
+                "proprio_context_frame_index": segment.proprio_context_frame_index,
+                "proprio_context_local_frame": segment.proprio_context_local_frame,
+                "proprio_context_chunk_count": int(segment.proprio_context_state.shape[0]),
+                "proprio_context_frame_count": int(segment.proprio_context_frames.shape[0]),
+                "observed_frame_ids": segment.observed_frame_ids,
+                "latent_temporal_layout": segment.latent_temporal_layout,
                 "task_index": task_index,
                 "latent_layout": latent_layout_metadata,
                 "condition_latent_layout": condition_layout_metadata,
-                "has_condition_latents": subwindow["condition_latents"] is not None,
+                "has_condition_latents": segment.condition_latents is not None,
                 "state_source_key": self.data_config.action_target.pose_source_key,
                 "action_representation": self.data_config.action_target.representation,
                 "virtual_sample_index": int(index),
@@ -1280,31 +1056,31 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
                 "subwindow_latent_start": latent_start,
                 "subwindow_latent_end": latent_start + self.segment_frames,
                 "segment_length_frames": self.segment_frames,
-                "segment_valid_latent_frames": subwindow["valid_latent_frames"],
-                "segment_padded_latent_frames": subwindow["padded_latent_frames"],
+                "segment_valid_latent_frames": segment.valid_latent_frames,
+                "segment_padded_latent_frames": segment.padded_latent_frames,
                 "tail_padding_mode": "none" if tail_padded_frame_count == 0 else "zero_order_hold",
-                "subwindow_action_start": subwindow["action_start_index"],
-                "subwindow_action_end": subwindow["action_end_index"],
+                "subwindow_action_start": segment.action_start_index,
+                "subwindow_action_end": segment.action_end_index,
                 **self._uniform_segment_attention_metadata(
                     latent_start=effective_latent_start,
                     segment_length=int(boundary_metadata.get("effective_segment_frames", self.segment_frames)),
-                    valid_latent_frames=subwindow["valid_latent_frames"],
-                    loss_frame_start=subwindow["loss_frame_start"],
-                    loss_frame_end=subwindow["loss_frame_end"],
-                    sample_start_frame=subwindow["sample_start_frame"],
-                    start_padding_frames=subwindow["start_padding_frames"],
-                    pre_start_frames=subwindow["pre_start_frames"],
+                    valid_latent_frames=segment.valid_latent_frames,
+                    loss_frame_start=segment.loss_frame_start,
+                    loss_frame_end=segment.loss_frame_end,
+                    sample_start_frame=segment.sample_start_frame,
+                    start_padding_frames=segment.start_padding_frames,
+                    pre_start_frames=segment.pre_start_frames,
                     emit_explicit_loss_ranges=True,
                     context_prefix_enabled=int(boundary_metadata.get("context_prefix_frames_requested", 0)) > 0,
                     sampled_chunk_size=sampled_chunk_size,
                     sampled_window_size=max(1, int(self.data_config.sample_construction.window_size)),
                 ),
                 **boundary_metadata,
-                **subwindow["action_target_metadata"],
+                **segment.action_target_metadata,
                 **self._action_loss_metadata(
-                    subwindow["action_mask"],
-                    loss_frame_start=subwindow["loss_frame_start"],
-                    loss_frame_end=subwindow["loss_frame_end"],
+                    segment.action_mask,
+                    loss_frame_start=segment.loss_frame_start,
+                    loss_frame_end=segment.loss_frame_end,
                     latent_num_frames=int(boundary_metadata.get("effective_segment_frames", self.segment_frames)),
                 ),
                 **self._hierarchical_sample_metadata(

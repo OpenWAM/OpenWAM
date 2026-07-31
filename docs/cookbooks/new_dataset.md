@@ -65,6 +65,14 @@ def register_open_wam() -> None:
 When pre-encoded samples are available, add a `latent_builder` returning
 datasets of `LatentWAMSample` under the same `dataset_type`.
 
+Build `LatentWAMSample` directly for a new storage contract. If the source
+already follows the local LeRobot episode-row plus per-camera latent contract,
+`open_wam.data.LocalLatentSegmentAssembler` can compose a selected latent
+range with aligned actions, state, and proprio into a typed
+`LocalLatentSegment`. The adapter still owns repository parsing, frame-ID
+fallback, sample selection, task/text resolution, and final metadata; the
+assembler does not impose those policies.
+
 For row-oriented robot data, reuse
 `open_wam.data.build_row_action_targets` and
 `open_wam.data.pack_temporal_sequence`. The adapter supplies
