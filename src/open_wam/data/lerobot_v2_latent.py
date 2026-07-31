@@ -15,23 +15,16 @@ from open_wam.configs import (
     DataSplit,
     LatentWindowProfile,
     PaddedTargetPolicy,
-    RolloutContextPolicy,
     SampleOrderMode,
     SampleWeightMode,
     SampleTargetAlignment,
-    SegmentContextPolicy,
     TailPaddingPolicy,
     WindowSamplingMode,
 )
 
 from .latent_causal_sampling import LatentCausalPrefixSuffixWindowPlanner
 from .latent_contracts import LatentWAMSample
-from .latent_segment_geometry import (
-    compact_boundary_start_range,
-    resolve_compact_boundary_segment,
-    resolve_rollout_parity_boundary_segment,
-    rollout_parity_start_range,
-)
+from .latent_hierarchical_sampling import LocalLatentHierarchicalSegmentPlan
 from .latent_temporal import (
     CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET
     as CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET,
@@ -76,11 +69,13 @@ from .lerobot_v2_latent_supervision import LocalLatentSupervisionAssembler
 
 _COMPATIBILITY_EXPORTS = (
     CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET,
+    HierarchicalFixedSegmentSamplingPlan,
     HierarchicalFixedSegmentTaskSpec,
     HierarchicalFixedSegmentTrainSampler,
     HierarchicalFixedSegmentWindowSpec,
     LocalLatentEpochOrderSampler,
     LocalLatentWeightedTrainSampler,
+    build_hierarchical_fixed_segment_task_specs,
     discover_local_lerobot_repo_bundles,
     latent_anchor_positions,
     LocalRepoBundle,
@@ -746,17 +741,24 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
                 "`data.train_batch_size <= 1` and `data.val_batch_size <= 1` because the latent collate "
                 "path stacks compact variable-length tensors directly."
             )
-        self.segment_frames = int(sample_cfg.segment_frames)
-        self._window_start_ranges_by_chunk = self._build_window_start_ranges_by_chunk()
-        self._task_specs = self._build_task_specs()
-        sampling_plan = HierarchicalFixedSegmentSamplingPlan.from_task_specs(
-            self._task_specs
+        hierarchical_plan = LocalLatentHierarchicalSegmentPlan.from_windows(
+            data_config=data_config,
+            windows=self.windows,
+            window_task_texts=self._window_task_texts,
+            task_demo_counts=self._task_demo_counts,
         )
+        sampling_plan = hierarchical_plan.sampling_plan
+        self.segment_frames = hierarchical_plan.segment_frames
+        self._window_start_ranges_by_chunk = (
+            hierarchical_plan.window_start_ranges_by_chunk
+        )
+        self._task_specs = sampling_plan.task_specs
         self._task_weights = sampling_plan.task_weights
         self._task_mass_total = sampling_plan.task_mass_total
         self._task_specs_by_text = sampling_plan.task_specs_by_text
         self._epoch_sample_count = sampling_plan.epoch_sample_count
         self._hierarchical_sampling_plan = sampling_plan
+        self._hierarchical_segment_plan = hierarchical_plan
 
     def __len__(self) -> int:
         return self._epoch_sample_count
@@ -764,176 +766,22 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
     def build_train_sampler(self, *, world_size: int = 1, rank: int = 0) -> Sampler[int]:
         return HierarchicalFixedSegmentTrainSampler(self, world_size=world_size, rank=rank)
 
-    def _hierarchical_chunk_size_candidates(self) -> tuple[int, ...]:
-        sample_cfg = self.data_config.sample_construction
-        max_chunk_size = max(1, int(sample_cfg.chunk_size))
-        if sample_cfg.target_alignment == SampleTargetAlignment.NEXT_AFTER_CONTEXT:
-            return (max_chunk_size,)
-        if bool(sample_cfg.randomize_geometry) and max_chunk_size > 1:
-            return tuple(range(1, max_chunk_size + 1))
-        return (max_chunk_size,)
-
-    def _hierarchical_context_prefix_frames(self, sampled_chunk_size: int) -> int:
-        sample_cfg = self.data_config.sample_construction
-        if sample_cfg.target_alignment == SampleTargetAlignment.NEXT_AFTER_CONTEXT:
-            if sample_cfg.rollout_context_frames is not None:
-                return max(1, int(sample_cfg.rollout_context_frames))
-            if sample_cfg.rollout_context_policy == RolloutContextPolicy.ONE_FRAME:
-                return 1
-            if sample_cfg.rollout_context_policy == RolloutContextPolicy.ROLLOUT_HISTORY:
-                chunk_size = max(1, int(sampled_chunk_size))
-                window_size = max(1, int(sample_cfg.window_size))
-                history_chunks = max(1, int(math.ceil(window_size / 2.0)))
-                return max(1, history_chunks * chunk_size)
-            raise ValueError(f"Unsupported rollout_context_policy: {sample_cfg.rollout_context_policy!r}")
-        policy = sample_cfg.context_prefix_policy
-        if policy == SegmentContextPolicy.NONE:
-            return 0
-        if policy == SegmentContextPolicy.FIXED:
-            return max(0, int(sample_cfg.context_prefix_frames))
-        if policy == SegmentContextPolicy.ROLLOUT_HISTORY:
-            chunk_size = max(1, int(sampled_chunk_size))
-            window_size = max(1, int(sample_cfg.window_size))
-            history_chunks = max(1, int(math.ceil(window_size / 2.0)))
-            return max(0, min(history_chunks * chunk_size, self.segment_frames - 1))
-        raise ValueError(f"Unsupported context_prefix_policy: {policy!r}")
-
-    def _build_window_start_ranges_by_chunk(self) -> tuple[tuple[tuple[int, int, int, int], ...], ...]:
-        ranges_by_window: list[tuple[tuple[int, int, int, int], ...]] = []
-        chunk_size_candidates = self._hierarchical_chunk_size_candidates()
-        for window in self.windows:
-            source_latent_frames = max(1, int(window.latent_num_frames))
-            window_ranges: list[tuple[int, int, int, int]] = []
-            for chunk_size in chunk_size_candidates:
-                if self.data_config.sample_construction.target_alignment == SampleTargetAlignment.NEXT_AFTER_CONTEXT:
-                    start_min, start_max, eligible_start_count = rollout_parity_start_range(
-                        source_latent_frames=source_latent_frames,
-                    )
-                else:
-                    start_min, start_max, eligible_start_count = compact_boundary_start_range(
-                        source_latent_frames=source_latent_frames,
-                        segment_length=self.segment_frames,
-                        start_padding_frames=(
-                            _LocalLatentUniformSegmentSamplingPlan.resolve_start_padding_frames(
-                                self.data_config,
-                                window,
-                            )
-                        ),
-                        chunk_size=chunk_size,
-                        context_prefix_frames=self._hierarchical_context_prefix_frames(chunk_size),
-                    )
-                if eligible_start_count > 0:
-                    window_ranges.append(
-                        (
-                            int(chunk_size),
-                            int(start_min),
-                            int(start_max),
-                            int(eligible_start_count),
-                        )
-                    )
-            ranges_by_window.append(tuple(window_ranges))
-        return tuple(ranges_by_window)
-
-    def _build_task_specs(self) -> tuple[HierarchicalFixedSegmentTaskSpec, ...]:
-        return build_hierarchical_fixed_segment_task_specs(
-            window_task_texts=self._window_task_texts,
-            window_start_ranges_by_chunk=self._window_start_ranges_by_chunk,
-            task_demo_counts=self._task_demo_counts,
-            sample_config=self.data_config.sample_construction,
-        )
-
-    def _draw_hierarchical_sample(
-        self,
-        index: int,
-    ) -> tuple[HierarchicalFixedSegmentTaskSpec, HierarchicalFixedSegmentWindowSpec, int, int]:
-        return self._hierarchical_sampling_plan.draw(
-            index=index,
-            split_seed=int(self.data_config.split_seed),
-            split=self.data_config.split,
-        )
-
     def resolve_hierarchical_sample_key(self, index: int) -> dict[str, Any]:
         """Resolve one sampler/dataloader index without loading tensors."""
 
-        epoch, epoch_index = divmod(int(index), len(self))
-        task_spec, window_spec, latent_start, sampled_chunk_size = self._draw_hierarchical_sample(index)
-        window = self.windows[int(window_spec.window_index)]
-        context_prefix_frames = self._hierarchical_context_prefix_frames(sampled_chunk_size)
-        if self.data_config.sample_construction.target_alignment == SampleTargetAlignment.NEXT_AFTER_CONTEXT:
-            boundary = resolve_rollout_parity_boundary_segment(
-                source_latent_frames=max(1, int(window.latent_num_frames)),
-                latent_start=latent_start,
-                target_frame_count=self.segment_frames,
-                context_frames=context_prefix_frames,
-                chunk_size=sampled_chunk_size,
-            )
-        else:
-            boundary = resolve_compact_boundary_segment(
-                source_latent_frames=max(1, int(window.latent_num_frames)),
-                latent_start=latent_start,
-                segment_length=self.segment_frames,
-                start_padding_frames=(
-                    _LocalLatentUniformSegmentSamplingPlan.resolve_start_padding_frames(
-                        self.data_config,
-                        window,
-                    )
-                ),
-                chunk_size=sampled_chunk_size,
-                context_prefix_frames=context_prefix_frames,
-            )
-        return {
-            "epoch": int(epoch),
-            "epoch_sample_index": int(epoch_index),
-            "task_text": task_spec.task_text,
-            "trajectory_window_index": int(window_spec.window_index),
-            "latent_start": int(latent_start),
-            "start_min": int(window_spec.start_min),
-            "start_max": int(window_spec.start_max),
-            "window_eligible_start_count": int(window_spec.eligible_start_count),
-            "logical_frame_start": int(boundary["logical_frame_start"]),
-            "logical_frame_end": int(boundary["logical_frame_end"]),
-            "effective_frame_start": int(boundary["effective_frame_start"]),
-            "effective_frame_end": int(boundary["effective_frame_end"]),
-            "effective_segment_frames": int(boundary["effective_segment_frames"]),
-            "supervised_frame_start": int(boundary["supervised_start"]),
-            "supervised_frame_end": int(boundary["supervised_end"]),
-            "loss_frame_start": int(boundary["loss_frame_start"]),
-            "loss_frame_end": int(boundary["loss_frame_end"]),
-            "head_padded_frame_count": int(boundary["head_padded_frame_count"]),
-            "tail_padded_frame_count": int(boundary["tail_padded_frame_count"]),
-            "context_prefix_policy": str(self.data_config.sample_construction.context_prefix_policy),
-            "target_alignment": str(self.data_config.sample_construction.target_alignment),
-            "rollout_context_policy": str(self.data_config.sample_construction.rollout_context_policy),
-            "context_prefix_frames_requested": int(boundary["context_prefix_frames_requested"]),
-            "context_prefix_frames_in_sample": int(boundary["context_prefix_frames_in_sample"]),
-            "context_prefix_real_frames": int(boundary["context_prefix_real_frames"]),
-            "context_prefix_truncated_frames": int(boundary["context_prefix_truncated_frames"]),
-            "chunk_size_for_boundary": int(boundary["chunk_size_for_boundary"]),
-            "sampled_chunk_size": int(sampled_chunk_size),
-            "sampled_window_size": max(1, int(self.data_config.sample_construction.window_size)),
-        }
+        return self._hierarchical_segment_plan.resolve_sample_key(
+            index
+        ).as_metadata()
 
     def iter_hierarchical_eligible_start_keys(self) -> Iterator[tuple[int, int, int]]:
         """Yield every concrete trajectory/start/chunk key that must be reachable."""
 
-        return self._hierarchical_sampling_plan.iter_eligible_start_keys()
-
-    def _hierarchical_sample_metadata(
-        self,
-        *,
-        index: int,
-        task_spec: HierarchicalFixedSegmentTaskSpec,
-        window_spec: HierarchicalFixedSegmentWindowSpec,
-    ) -> dict[str, Any]:
-        return self._hierarchical_sampling_plan.sample_metadata(
-            index=index,
-            task_spec=task_spec,
-            window_spec=window_spec,
-            sample_config=self.data_config.sample_construction,
-        )
+        return self._hierarchical_segment_plan.iter_eligible_start_keys()
 
     def __getitem__(self, index: int) -> LatentWAMSample:
-        task_spec, window_spec, latent_start, sampled_chunk_size = self._draw_hierarchical_sample(index)
+        task_spec, window_spec, latent_start, sampled_chunk_size = (
+            self._hierarchical_segment_plan.draw(index)
+        )
         window_index = int(window_spec.window_index)
         window = self.windows[window_index]
         repo_bundle = self._repo_bundles[str(window.repo_root)]
@@ -971,7 +819,11 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
             start_padding_frames=start_padding_frames,
             compact_boundary_padding=True,
             compact_boundary_chunk_size=sampled_chunk_size,
-            compact_boundary_context_prefix_frames=self._hierarchical_context_prefix_frames(sampled_chunk_size),
+            compact_boundary_context_prefix_frames=(
+                self._hierarchical_segment_plan.context_prefix_frames(
+                    sampled_chunk_size
+                )
+            ),
             rollout_parity_target_alignment=(
                 self.data_config.sample_construction.target_alignment == SampleTargetAlignment.NEXT_AFTER_CONTEXT
             ),
@@ -1068,7 +920,7 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
                     loss_frame_end=segment.loss_frame_end,
                     latent_num_frames=int(boundary_metadata.get("effective_segment_frames", self.segment_frames)),
                 ),
-                **self._hierarchical_sample_metadata(
+                **self._hierarchical_segment_plan.sample_metadata(
                     index=index,
                     task_spec=task_spec,
                     window_spec=window_spec,

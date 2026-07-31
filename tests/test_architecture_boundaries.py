@@ -474,13 +474,11 @@ def test_lerobot_latent_sampling_policy_has_one_owner() -> None:
         )
     )
 
-    compatibility_methods = {
-        "_build_task_specs",
-        "_draw_hierarchical_sample",
-        "_hierarchical_sample_metadata",
+    retained_diagnostic_methods = {
+        "resolve_hierarchical_sample_key",
         "iter_hierarchical_eligible_start_keys",
     }
-    for method_name in compatibility_methods:
+    for method_name in retained_diagnostic_methods:
         method = _class_method(
             dataset_path,
             "HierarchicalFixedSegmentLocalLeRobotLatentDataset",
@@ -497,7 +495,65 @@ def test_lerobot_latent_sampling_policy_has_one_owner() -> None:
         ]
         assert len(executable_statements) == 1
         assert isinstance(executable_statements[0], ast.Return)
-        assert isinstance(executable_statements[0].value, ast.Call)
+
+    retired_hierarchical_helpers = {
+        "_build_task_specs",
+        "_build_window_start_ranges_by_chunk",
+        "_draw_hierarchical_sample",
+        "_hierarchical_chunk_size_candidates",
+        "_hierarchical_context_prefix_frames",
+        "_hierarchical_sample_metadata",
+    }
+    assert retired_hierarchical_helpers.isdisjoint(
+        _class_method_definitions(
+            dataset_path,
+            "HierarchicalFixedSegmentLocalLeRobotLatentDataset",
+        )
+    )
+
+
+def test_lerobot_latent_hierarchical_segment_planning_has_one_owner() -> None:
+    planner_path = PACKAGE_ROOT / "data" / "latent_hierarchical_sampling.py"
+    dataset_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent.py"
+
+    assert {
+        "LocalLatentHierarchicalSampleKey",
+        "LocalLatentHierarchicalSegmentPlan",
+    } <= _top_level_definitions(planner_path)
+    assert {
+        "context_prefix_frames",
+        "draw",
+        "from_windows",
+        "iter_eligible_start_keys",
+        "resolve_chunk_size_candidates",
+        "resolve_context_prefix_frames",
+        "resolve_sample_key",
+        "sample_metadata",
+    } <= _class_method_definitions(
+        planner_path,
+        "LocalLatentHierarchicalSegmentPlan",
+    )
+    assert {"as_metadata"} <= _class_method_definitions(
+        planner_path,
+        "LocalLatentHierarchicalSampleKey",
+    )
+    assert not any(
+        imported == "torch" or imported.startswith("torch.")
+        for imported in _absolute_imports_for_file(planner_path)
+    )
+
+    dataset_methods = _class_method_definitions(
+        dataset_path,
+        "HierarchicalFixedSegmentLocalLeRobotLatentDataset",
+    )
+    assert {
+        "_build_task_specs",
+        "_build_window_start_ranges_by_chunk",
+        "_draw_hierarchical_sample",
+        "_hierarchical_chunk_size_candidates",
+        "_hierarchical_context_prefix_frames",
+        "_hierarchical_sample_metadata",
+    }.isdisjoint(dataset_methods)
 
 
 def test_lerobot_latent_segment_geometry_has_one_owner() -> None:

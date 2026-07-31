@@ -81,6 +81,13 @@ then owns latent slicing, padding, storage-specific metadata, and final sample
 construction. This keeps causal geometry and seeded draw semantics reusable
 without coupling a new repository format to the local LeRobot adapter.
 
+For fixed-segment hierarchical sampling over local latent trajectories, build
+an `open_wam.data.LocalLatentHierarchicalSegmentPlan` from discovered windows,
+their task labels, and task demo counts. It owns chunk candidates, rollout or
+legacy context geometry, eligible starts, deterministic hierarchy draws, and
+typed sample-key diagnostics. The adapter remains responsible for loading the
+selected window, assembling tensors, and adding storage-specific metadata.
+
 For repositories that reuse the local LeRobot storage layout,
 `open_wam.data.LocalLatentTrainValWindowPlanner` resolves train/validation
 windows under the configured replay-status, explicit validation-root, split,

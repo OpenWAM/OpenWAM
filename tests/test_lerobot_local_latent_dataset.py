@@ -28,6 +28,8 @@ from open_wam.data import (
     LatentCausalPrefixSuffixCandidate as PublicCausalCandidate,
     LatentCausalPrefixSuffixWindowPlan as PublicCausalWindowPlan,
     LatentCausalPrefixSuffixWindowPlanner as PublicCausalWindowPlanner,
+    LocalLatentHierarchicalSampleKey as PublicHierarchicalSampleKey,
+    LocalLatentHierarchicalSegmentPlan as PublicHierarchicalSegmentPlan,
     LocalLatentSegment as PublicLocalLatentSegment,
     LocalLatentSegmentAssembler as PublicLocalLatentSegmentAssembler,
     LocalLatentTrainValWindowPlan as PublicTrainValWindowPlan,
@@ -53,6 +55,10 @@ from open_wam.data.latent_causal_sampling import (
     LatentCausalPrefixSuffixCandidate,
     LatentCausalPrefixSuffixWindowPlan,
     LatentCausalPrefixSuffixWindowPlanner,
+)
+from open_wam.data.latent_hierarchical_sampling import (
+    LocalLatentHierarchicalSampleKey,
+    LocalLatentHierarchicalSegmentPlan,
 )
 from open_wam.data.latent_temporal import (
     CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET,
@@ -103,6 +109,8 @@ def test_lerobot_latent_storage_owns_compatibility_exports() -> None:
     assert PublicCausalCandidate is LatentCausalPrefixSuffixCandidate
     assert PublicCausalWindowPlan is LatentCausalPrefixSuffixWindowPlan
     assert PublicCausalWindowPlanner is LatentCausalPrefixSuffixWindowPlanner
+    assert PublicHierarchicalSampleKey is LocalLatentHierarchicalSampleKey
+    assert PublicHierarchicalSegmentPlan is LocalLatentHierarchicalSegmentPlan
     assert PublicTrainValWindowPlan is LocalLatentTrainValWindowPlan
     assert PublicTrainValWindowPlanner is LocalLatentTrainValWindowPlanner
     assert legacy_discover_repo_bundles is discover_storage_repo_bundles
@@ -1411,16 +1419,23 @@ def test_hierarchical_fixed_segment_samples_padded_start_range_and_masks_targets
 
     train_dataset, _ = build_train_val_latent_datasets(config.data)
     sampling_plan = train_dataset._hierarchical_sampling_plan
+    segment_plan = train_dataset._hierarchical_segment_plan
 
     assert len(train_dataset) == 8
+    assert isinstance(segment_plan, LocalLatentHierarchicalSegmentPlan)
+    assert segment_plan.sampling_plan is sampling_plan
+    assert pickle.loads(pickle.dumps(segment_plan)) == segment_plan
     assert train_dataset._window_start_ranges_by_chunk == (((1, -3, 4, 8),),)
+    assert segment_plan.window_start_ranges_by_chunk == (
+        train_dataset._window_start_ranges_by_chunk
+    )
     assert train_dataset._task_specs is sampling_plan.task_specs
     assert train_dataset._task_weights is sampling_plan.task_weights
     assert train_dataset._task_mass_total == sampling_plan.task_mass_total
     assert train_dataset._task_specs_by_text is sampling_plan.task_specs_by_text
     assert train_dataset._epoch_sample_count == sampling_plan.epoch_sample_count
     assert [
-        train_dataset._draw_hierarchical_sample(index)
+        segment_plan.draw(index)
         for index in range(32)
     ] == [
         sampling_plan.draw(
@@ -1430,6 +1445,10 @@ def test_hierarchical_fixed_segment_samples_padded_start_range_and_masks_targets
         )
         for index in range(32)
     ]
+    sample_key = segment_plan.resolve_sample_key(0)
+    assert isinstance(sample_key, LocalLatentHierarchicalSampleKey)
+    assert pickle.loads(pickle.dumps(sample_key)) == sample_key
+    assert sample_key.as_metadata() == train_dataset.resolve_hierarchical_sample_key(0)
     assert list(train_dataset.iter_hierarchical_eligible_start_keys()) == list(
         sampling_plan.iter_eligible_start_keys()
     )
