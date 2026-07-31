@@ -169,6 +169,21 @@ def test_visual_tower_runtime_backbone_policy_has_one_owner() -> None:
     }
 
     assert owner_functions <= _top_level_definitions(owner_path)
+    tower_methods = _class_method_definitions(tower_path, "VisualTower")
+    assert {
+        "ensure_runtime_backbone_device",
+        "get_runtime_backbone",
+        "reset_runtime_backbone_cache",
+    } <= tower_methods
+    assert {
+        "ensure_exact_runtime_transformer_device",
+        "ensure_lingbot_reference_transformer_device",
+        "get_exact_runtime_transformer",
+        "get_lingbot_reference_transformer",
+        "reset_exact_runtime_cache",
+        "reset_lingbot_reference_runtime",
+        "run_mot_packed_video_forward",
+    }.isdisjoint(tower_methods)
     tower_source = tower_path.read_text(encoding="utf-8")
     assert "from .runtime_backbone import" in tower_source
     for loading_helper in (

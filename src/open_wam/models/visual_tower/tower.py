@@ -489,52 +489,6 @@ class VisualTower(nn.Module):
         ).to(dtype=video_latents.dtype)
         return flow_pred, tuple(step_output.cache_state.self_attention_kv)
 
-    def run_mot_packed_video_forward(
-        self,
-        *,
-        noisy_video_latents: torch.Tensor,
-        clean_video_latents: torch.Tensor,
-        noisy_timesteps: torch.Tensor,
-        clean_timesteps: torch.Tensor | None,
-        text_context: torch.Tensor | None,
-        attention_mask: torch.Tensor,
-        frame_start: int = 0,
-        cache_name: str = "mot_packed_video_training",
-        use_activation_checkpointing: bool = False,
-    ) -> tuple[torch.Tensor, tuple[AttentionCacheEntry, ...]]:
-        """Compatibility entry point for Method-5 packed video training.
-
-        Method-5 historically called this helper with separate noisy and clean
-        video copies. The generic packed exact runtime now owns the actual
-        execution; this wrapper preserves the older Method-5 contract while
-        keeping the shared implementation in one place.
-        """
-
-        del use_activation_checkpointing  # Activation checkpointing is handled by the shared exact runtime.
-        if noisy_video_latents.shape != clean_video_latents.shape:
-            raise ValueError(
-                "MoT packed video forward expects matching noisy/clean video shapes, "
-                f"got noisy={tuple(noisy_video_latents.shape)}, clean={tuple(clean_video_latents.shape)}."
-            )
-        effective_clean_timesteps = (
-            torch.zeros_like(noisy_timesteps) if clean_timesteps is None else clean_timesteps
-        )
-        if noisy_timesteps.shape != effective_clean_timesteps.shape:
-            raise ValueError(
-                "MoT packed video forward expects matching noisy/clean timestep shapes, "
-                f"got noisy={tuple(noisy_timesteps.shape)}, clean={tuple(effective_clean_timesteps.shape)}."
-            )
-        return self.run_packed_exact_video_forward(
-            video_latents=torch.cat([noisy_video_latents, clean_video_latents], dim=2),
-            timesteps=torch.cat([noisy_timesteps, effective_clean_timesteps], dim=1),
-            text_context=text_context,
-            frame_start=frame_start,
-            attention_mask=attention_mask,
-            cache_name=cache_name,
-            packed_copies=2,
-            detach_cache=False,
-        )
-
     def generate_conditioned_future_latents(
         self,
         *,
@@ -919,24 +873,6 @@ class VisualTower(nn.Module):
         """Clear shared-backbone runtime cache state for a named session."""
         transformer = self.get_runtime_backbone(action_dim=action_dim)
         reset_runtime_module_cache(transformer, cache_name=cache_name)
-
-    def get_exact_runtime_transformer(self, *, action_dim: int) -> nn.Module:
-        return self.get_runtime_backbone(action_dim=action_dim)
-
-    def ensure_exact_runtime_transformer_device(self, *, action_dim: int, device) -> nn.Module:
-        return self.ensure_runtime_backbone_device(action_dim=action_dim, device=device)
-
-    def reset_exact_runtime_cache(self, *, action_dim: int, cache_name: str = "open_wam_exact") -> None:
-        self.reset_runtime_backbone_cache(action_dim=action_dim, cache_name=cache_name)
-
-    def get_lingbot_reference_transformer(self, *, action_dim: int) -> nn.Module:
-        return self.get_runtime_backbone(action_dim=action_dim)
-
-    def ensure_lingbot_reference_transformer_device(self, *, action_dim: int, device) -> nn.Module:
-        return self.ensure_runtime_backbone_device(action_dim=action_dim, device=device)
-
-    def reset_lingbot_reference_runtime(self, *, action_dim: int, cache_name: str = "open_wam_exact") -> None:
-        self.reset_runtime_backbone_cache(action_dim=action_dim, cache_name=cache_name)
 
     def forward_default(
         self,

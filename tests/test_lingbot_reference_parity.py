@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 import torch
 
 from open_wam.configs import ParallelStreamPolicyConfig, TrainingConfig
@@ -77,7 +76,7 @@ def test_exact_train_runtime_matches_reference_transformer_forward_train(tmp_pat
         ),
         action_dim=4,
     )
-    transformer = tower.get_lingbot_reference_transformer(action_dim=4).to(dtype=torch.bfloat16)
+    transformer = tower.get_runtime_backbone(action_dim=4).to(dtype=torch.bfloat16)
     policy_config = ParallelStreamPolicyConfig(
         hidden_size=32,
         runtime_mode="lingbot_exact",
