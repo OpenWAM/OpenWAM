@@ -5,7 +5,7 @@ from dataclasses import replace as dataclass_replace
 import torch
 
 from open_wam.configs import MoTGeneralistTrainingMode, MoTPolicyConfig
-from open_wam.data.sample_metadata import SampleConstructionMetadata
+from open_wam.contracts import SampleConstructionMetadata
 from open_wam.models.common.flow_matching import VideoFlowMatchTrainArtifacts
 from open_wam.models.common.joint_conditioning import (
     resolve_generalist_joint_conditioning_semantics,

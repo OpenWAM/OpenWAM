@@ -11,7 +11,7 @@ from open_wam.configs.enums import (
     ParallelHistoryStreamVisibility,
 )
 from open_wam.configs.policy_variant import ParallelStreamPolicyConfig
-from open_wam.configs.variant_semantics import GENERALIST_TRAINING_SOURCE_METADATA_KEY
+from open_wam.contracts import GENERALIST_TRAINING_SOURCE_METADATA_KEY
 from open_wam.models.common.attention_profiles import (
     CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
 )

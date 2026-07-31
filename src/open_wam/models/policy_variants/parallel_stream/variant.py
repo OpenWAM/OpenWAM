@@ -16,7 +16,7 @@ from open_wam.configs import (
     TemporalPositionMode,
     TrainingConfig,
 )
-from open_wam.data.sample_metadata import SampleConstructionMetadata
+from open_wam.contracts import SampleConstructionMetadata
 from open_wam.models.video_backbone.contracts import CacheState
 from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.models.policy_variants.common.layouts import expand_previous_action

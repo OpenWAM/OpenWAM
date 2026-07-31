@@ -6,7 +6,7 @@ import torch
 from torch import nn
 
 from open_wam.configs import BackboneImplementation
-from open_wam.data.raw_video import ViewPlacement
+from open_wam.contracts import ViewPlacement
 from open_wam.models.common import (
     FlowMatchScheduler,
     RolloutCursor,

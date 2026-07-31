@@ -20,6 +20,8 @@ from open_wam.configs import (
     PolicyVariantName,
 )
 from open_wam.contracts import (
+    SampleConstructionMetadata,
+    ViewPlacement,
     VideoFrameMapping,
     normalized_video_frame_count,
     resolve_video_source_fps,
@@ -263,6 +265,30 @@ def test_public_video_timeline_contracts_are_typed_and_deterministic() -> None:
         source_fps=30.0,
         target_fps=10.0,
     ) == 34
+
+
+@pytest.mark.unit
+def test_public_cross_layer_contracts_are_dependency_free() -> None:
+    placement = ViewPlacement(
+        source_name="wrist",
+        canonical_name="aux",
+        top=128,
+        left=0,
+        height=64,
+        width=64,
+    )
+    metadata = SampleConstructionMetadata.from_mapping(
+        {
+            "sampled_chunk_size": 4,
+            "loss_frame_start": 1,
+            "loss_frame_end": 5,
+        }
+    )
+
+    assert placement.width == 64
+    assert metadata is not None
+    assert metadata.sampled_chunk_size_for(2) == 2
+    assert metadata.frame_range_or_default(observed_num_frames=8) == (1, 5)
 
 
 @pytest.mark.unit

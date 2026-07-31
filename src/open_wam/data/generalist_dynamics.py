@@ -14,7 +14,7 @@ from open_wam.configs import (
     GeneralistDynamicsMixtureConfig,
     WindowSamplingMode,
 )
-from open_wam.configs.variant_semantics import (
+from open_wam.contracts import (
     GENERALIST_TRAINING_BUCKET_METADATA_KEY,
     GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY,
     GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY,

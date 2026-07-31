@@ -2,12 +2,40 @@ from __future__ import annotations
 
 import pytest
 
-from open_wam.configs.variant_semantics import (
+from open_wam.contracts import (
     GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY,
     GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY,
     GENERALIST_TRAINING_SOURCE_METADATA_KEY,
+    SampleConstructionMetadata,
+    single_sample_metadata_mapping,
 )
-from open_wam.data.sample_metadata import SampleConstructionMetadata, single_sample_metadata_mapping
+from open_wam.data.sample_metadata import (
+    GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY
+    as LegacyGeneralistTrainingDropTextMetadataKey,
+    GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY
+    as LegacyGeneralistTrainingModeOverrideMetadataKey,
+    GENERALIST_TRAINING_SOURCE_METADATA_KEY
+    as LegacyGeneralistTrainingSourceMetadataKey,
+    SampleConstructionMetadata as LegacySampleConstructionMetadata,
+    single_sample_metadata_mapping as legacy_single_sample_metadata_mapping,
+)
+
+
+def test_sample_metadata_legacy_imports_preserve_identity() -> None:
+    assert LegacySampleConstructionMetadata is SampleConstructionMetadata
+    assert legacy_single_sample_metadata_mapping is single_sample_metadata_mapping
+    assert (
+        LegacyGeneralistTrainingDropTextMetadataKey
+        is GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY
+    )
+    assert (
+        LegacyGeneralistTrainingModeOverrideMetadataKey
+        is GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY
+    )
+    assert (
+        LegacyGeneralistTrainingSourceMetadataKey
+        is GENERALIST_TRAINING_SOURCE_METADATA_KEY
+    )
 
 
 def test_sample_construction_metadata_parses_geometry_and_generalist_fields() -> None:

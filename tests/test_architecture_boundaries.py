@@ -10,21 +10,45 @@ from open_wam.configs import (
     read_yaml_with_local_paths,
 )
 from open_wam.contracts import (
+    GENERALIST_TRAINING_BUCKET_METADATA_KEY,
+    GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY,
+    GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY,
+    GENERALIST_TRAINING_SOURCE_METADATA_KEY,
     REPO_ROOT as ContractRepoRoot,
+    GeneralistTrainingSampleMetadata,
     ResolvedSourceFps,
     ResolvedVideoClip,
+    SampleConstructionMetadata,
+    ViewPlacement,
     VideoFrameMapping,
     WAN_TEMPORAL_CHUNK_SIZE,
     find_repo_root,
     normalized_video_frame_count,
     resolve_repo_path,
     resolve_video_source_fps,
+    single_sample_metadata_mapping,
     wan_fully_observed_latent_count,
     wan_raw_frame_count_to_latent_count,
     wan_safe_temporal_frame_count,
 )
 from open_wam.models.video_backbone.config import (
     SharedVideoTransformerConfig as LegacySharedVideoTransformerConfig,
+)
+from open_wam.configs.variant_semantics import (
+    GENERALIST_TRAINING_BUCKET_METADATA_KEY
+    as LegacyGeneralistTrainingBucketMetadataKey,
+    GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY
+    as LegacyGeneralistTrainingDropTextMetadataKey,
+    GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY
+    as LegacyGeneralistTrainingModeOverrideMetadataKey,
+    GENERALIST_TRAINING_SOURCE_METADATA_KEY
+    as LegacyGeneralistTrainingSourceMetadataKey,
+)
+from open_wam.data.raw_video import ViewPlacement as LegacyViewPlacement
+from open_wam.data.sample_metadata import (
+    GeneralistTrainingSampleMetadata as LegacyGeneralistTrainingSampleMetadata,
+    SampleConstructionMetadata as LegacySampleConstructionMetadata,
+    single_sample_metadata_mapping as legacy_single_sample_metadata_mapping,
 )
 from open_wam.runtime.paths import (
     REPO_ROOT as LegacyRepoRoot,
@@ -178,6 +202,16 @@ def test_visual_tower_does_not_depend_on_policy_implementations() -> None:
         imported
         for imported in _absolute_imports("models/visual_tower")
         if imported.startswith("open_wam.models.policy_variants")
+    )
+
+    assert violations == []
+
+
+def test_model_package_does_not_depend_on_data_implementations() -> None:
+    violations = sorted(
+        imported
+        for imported in _absolute_imports("models")
+        if imported.startswith("open_wam.data")
     )
 
     assert violations == []
@@ -770,6 +804,61 @@ def test_video_timeline_contracts_have_one_dependency_free_owner() -> None:
         is wan_raw_frame_count_to_latent_count
     )
     assert model_wan_safe_temporal_frame_count is wan_safe_temporal_frame_count
+
+
+def test_view_placement_has_one_dependency_free_owner() -> None:
+    canonical_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "contracts" / "video.py"
+    )
+    compatibility_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "data" / "raw_video.py"
+    )
+
+    assert "ViewPlacement" in canonical_definitions
+    assert "ViewPlacement" not in compatibility_definitions
+    assert LegacyViewPlacement is ViewPlacement
+
+
+def test_sample_metadata_has_one_dependency_free_owner() -> None:
+    canonical_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "contracts" / "sample_metadata.py"
+    )
+    compatibility_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "data" / "sample_metadata.py"
+    )
+    canonical_names = {
+        "GeneralistTrainingSampleMetadata",
+        "SampleConstructionMetadata",
+        "single_sample_metadata_mapping",
+    }
+
+    assert canonical_names <= canonical_definitions
+    assert canonical_names.isdisjoint(compatibility_definitions)
+    assert (
+        LegacyGeneralistTrainingSampleMetadata
+        is GeneralistTrainingSampleMetadata
+    )
+    assert LegacySampleConstructionMetadata is SampleConstructionMetadata
+    assert (
+        legacy_single_sample_metadata_mapping
+        is single_sample_metadata_mapping
+    )
+    assert (
+        LegacyGeneralistTrainingBucketMetadataKey
+        is GENERALIST_TRAINING_BUCKET_METADATA_KEY
+    )
+    assert (
+        LegacyGeneralistTrainingDropTextMetadataKey
+        is GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY
+    )
+    assert (
+        LegacyGeneralistTrainingModeOverrideMetadataKey
+        is GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY
+    )
+    assert (
+        LegacyGeneralistTrainingSourceMetadataKey
+        is GENERALIST_TRAINING_SOURCE_METADATA_KEY
+    )
 
 
 def test_typed_component_parsers_live_beside_their_contracts() -> None:

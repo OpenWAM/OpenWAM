@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from open_wam.data.raw_video import ViewPlacement
+from open_wam.contracts import ViewPlacement
 from open_wam.models.visual_tower import VisualTower
 
 from .config import SharedVideoTransformerConfig

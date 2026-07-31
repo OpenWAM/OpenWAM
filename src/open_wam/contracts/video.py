@@ -11,6 +11,18 @@ FpsSource = Literal["manifest", "container", "fallback"]
 
 
 @dataclass(frozen=True)
+class ViewPlacement:
+    """Placement of one resized camera view inside a canonical RGB canvas."""
+
+    source_name: str
+    canonical_name: str
+    top: int
+    left: int
+    height: int
+    width: int
+
+
+@dataclass(frozen=True)
 class ResolvedSourceFps:
     """Source FPS after applying manifest, container, then fallback precedence."""
 

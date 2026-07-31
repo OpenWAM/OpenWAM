@@ -8,18 +8,7 @@ import torch.nn.functional as F
 
 from open_wam.configs.data import DataConfig, ViewLayoutConfig
 from open_wam.configs.enums import MixedVideoDecodeSizeMode
-
-
-@dataclass(frozen=True)
-class ViewPlacement:
-    """Placement of a resized camera view inside the canonical canvas."""
-
-    source_name: str
-    canonical_name: str
-    top: int
-    left: int
-    height: int
-    width: int
+from open_wam.contracts import ViewPlacement
 
 
 @dataclass

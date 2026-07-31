@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from diffusers import AutoencoderKLWan
 
 from open_wam.configs import ReferenceAssetsDevicePolicy
-from open_wam.data.raw_video import ViewPlacement
+from open_wam.contracts import ViewPlacement
 from open_wam.models.common.video_geometry import WAN_TEMPORAL_CHUNK_SIZE, wan_safe_temporal_frame_count
 from open_wam.configs.backbone import LingbotCompatibleVideoBackboneConfig
 

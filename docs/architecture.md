@@ -38,14 +38,19 @@ contracts and deterministic transforms:
 - `contracts.paths` owns source-root discovery and repository-relative path
   resolution.
 - `contracts.video` owns WAN raw/latent temporal geometry, typed video timeline
-  records, frame mapping, and FPS normalization.
+  records, frame mapping, FPS normalization, and camera placement inside a
+  canonical RGB canvas.
+- `contracts.sample_metadata` owns serialized GJD metadata keys and the typed
+  runtime view of sample geometry, loss ranges, and generalist mode metadata.
 
 These contracts do not import another `open_wam` package. Higher layers may
 depend on them, but they must not depend back on configuration, datasets,
-models, or runtime implementations. Historical `runtime.paths`,
-`utils.video_timeline`, and `utils.wan_geometry` imports remain
-identity-preserving compatibility facades; new code imports
-`open_wam.contracts`.
+models, or runtime implementations. Model code therefore consumes view
+placement and sample metadata without importing dataset implementations.
+Historical `runtime.paths`, `utils.video_timeline`, `utils.wan_geometry`,
+`data.raw_video.ViewPlacement`, `data.sample_metadata`, and generalist metadata
+keys under `configs.variant_semantics` remain identity-preserving compatibility
+facades; new code imports `open_wam.contracts`.
 
 ## Configuration Contract
 
