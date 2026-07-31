@@ -4,6 +4,7 @@ from dataclasses import replace
 import json
 import math
 from pathlib import Path
+import pickle
 import random
 
 import pyarrow as pa
@@ -24,6 +25,7 @@ from open_wam.configs import (
     WindowSamplingMode,
 )
 from open_wam.data import (
+    LocalLatentUniformSegmentSamplingPlan as PublicUniformSamplingPlan,
     build_train_val_latent_datasets,
     collate_latent_wam_samples,
     discover_local_lerobot_repo_bundles,
@@ -50,6 +52,9 @@ from open_wam.data.lerobot_v2_latent_storage import (
     resolve_latent_root,
     scan_local_latent_windows,
 )
+from open_wam.data.lerobot_v2_latent_sampling import (
+    LocalLatentUniformSegmentSamplingPlan,
+)
 from open_wam.data.lerobot_v2_latent_supervision import (
     LocalLatentSupervisionAssembler,
 )
@@ -70,6 +75,7 @@ def test_lerobot_latent_storage_owns_compatibility_exports() -> None:
         LegacyConditionSourceFramePolicy
         is CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET
     )
+    assert PublicUniformSamplingPlan is LocalLatentUniformSegmentSamplingPlan
 
 
 def _disable_replay_status(data_config):
@@ -963,6 +969,96 @@ def test_uniform_segment_require_full_segment_drops_short_tail_starts(tmp_path: 
     assert sample.metadata["subwindow_latent_end"] == 6
     assert sample.metadata["segment_padded_latent_frames"] == 0
     assert sample.metadata["tail_padding_mode"] == "none"
+
+
+def test_uniform_segment_dataset_delegates_to_sampling_plan(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "robotwin_local_latent_uniform_segment_plan"
+    _build_local_robotwin_latent_repo(
+        repo_root,
+        total_rows=8,
+        latent_num_frames=8,
+    )
+
+    config = load_experiment_config(
+        REPO_ROOT
+        / "configs/experiments/parallel_stream_robotwin_smoke.yaml"
+    )
+    config = replace(
+        config,
+        data=replace(
+            _disable_replay_status(config.data),
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            split_seed=137,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+            sample_construction=replace(
+                config.data.sample_construction,
+                mode=WindowSamplingMode.UNIFORM_SEGMENT,
+                segment_min_frames=2,
+                segment_max_frames=6,
+                segment_length_stride=2,
+                segment_locality_block_size=2,
+                start_padding_frames=2,
+                sample_weight_mode=SampleWeightMode.VALID_ACTION_STEPS,
+                randomize_segment_length=True,
+                randomize_segment_start=True,
+                randomize_geometry=True,
+                chunk_size=4,
+                window_size=8,
+            ),
+        ),
+    )
+
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    plan = train_dataset._uniform_segment_sampling_plan
+
+    assert isinstance(plan, LocalLatentUniformSegmentSamplingPlan)
+    assert train_dataset._virtual_index is plan.virtual_index
+    assert train_dataset._virtual_indices_by_window == {
+        window_index: list(indices)
+        for window_index, indices in plan.virtual_indices_by_window.items()
+    }
+    assert train_dataset._task_virtual_start_counts == dict(
+        plan.task_virtual_start_counts
+    )
+    assert train_dataset.sample_weights is plan.sample_weights
+    assert train_dataset.build_epoch_index_order(epoch=7) == (
+        plan.build_epoch_index_order(epoch=7)
+    )
+    restored_plan = pickle.loads(pickle.dumps(plan))
+    assert restored_plan.virtual_index == plan.virtual_index
+    assert restored_plan.sample_weights == plan.sample_weights
+    assert restored_plan.build_epoch_index_order(epoch=7) == (
+        plan.build_epoch_index_order(epoch=7)
+    )
+
+    window_index, virtual_start = train_dataset._virtual_index[0]
+    window = train_dataset.windows[window_index]
+    start_padding_frames = plan.resolve_start_padding_frames(
+        train_dataset.data_config,
+        window,
+    )
+    random.seed(91)
+    owner_geometry = plan.sample_segment_geometry(
+        index=0,
+        source_latent_frames=window.latent_num_frames,
+        virtual_latent_start=virtual_start,
+        start_padding_frames=start_padding_frames,
+    )
+    owner_attention = plan.sample_attention_geometry(
+        segment_length=owner_geometry[0]
+    )
+    random.seed(91)
+    sample = train_dataset[0]
+    assert sample.metadata["segment_length_frames"] == owner_geometry[0]
+    assert sample.metadata["subwindow_latent_start"] == owner_geometry[1]
+    assert sample.metadata["sampled_chunk_size"] == owner_attention[0]
+    assert sample.metadata["sampled_window_size"] == owner_attention[1]
 
 
 def test_uniform_segment_start_padding_repeats_first_latent_and_masks_virtual_actions(tmp_path: Path) -> None:

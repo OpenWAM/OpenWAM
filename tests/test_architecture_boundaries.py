@@ -398,6 +398,7 @@ def test_lerobot_latent_sampling_policy_has_one_owner() -> None:
         "HierarchicalFixedSegmentTrainSampler",
         "HierarchicalFixedSegmentWindowSpec",
         "LocalLatentEpochOrderSampler",
+        "LocalLatentUniformSegmentSamplingPlan",
         "LocalLatentWeightedTrainSampler",
         "build_hierarchical_fixed_segment_task_specs",
     }
@@ -416,6 +417,61 @@ def test_lerobot_latent_sampling_policy_has_one_owner() -> None:
     } <= _class_method_definitions(
         sampling_path,
         "HierarchicalFixedSegmentSamplingPlan",
+    )
+
+    assert {
+        "build_epoch_index_order",
+        "build_sample_weights",
+        "build_virtual_index",
+        "eligible_segment_lengths",
+        "estimate_segment_valid_action_steps",
+        "estimate_virtual_valid_action_steps",
+        "from_windows",
+        "materialize_task_virtual_start_counts",
+        "materialize_virtual_indices_by_window",
+        "resolve_segment_length_candidates",
+        "resolve_start_padding_frames",
+        "sample_attention_geometry",
+        "sample_segment_geometry",
+        "sample_weight_metadata",
+    } <= _class_method_definitions(
+        sampling_path,
+        "LocalLatentUniformSegmentSamplingPlan",
+    )
+
+    uniform_compatibility_methods = {
+        "_sample_weight_metadata",
+        "build_epoch_index_order",
+    }
+    for method_name in uniform_compatibility_methods:
+        method = _class_method(
+            dataset_path,
+            "UniformSegmentLocalLeRobotLatentDataset",
+            method_name,
+        )
+        assert len(method.body) == 1
+        assert isinstance(method.body[0], ast.Return)
+
+    retired_uniform_helpers = {
+        "_build_virtual_index",
+        "_build_virtual_indices_by_window",
+        "_build_virtual_sample_weights",
+        "_eligible_segment_lengths",
+        "_estimate_mean_task_virtual_start_count",
+        "_estimate_segment_valid_action_steps",
+        "_estimate_task_virtual_start_counts",
+        "_estimate_virtual_mean_valid_action_steps",
+        "_estimate_virtual_valid_action_steps",
+        "_resolve_segment_length_candidates",
+        "_sample_segment_geometry",
+        "_sample_uniform_segment_attention_geometry",
+        "_window_start_padding_frames",
+    }
+    assert retired_uniform_helpers.isdisjoint(
+        _class_method_definitions(
+            dataset_path,
+            "UniformSegmentLocalLeRobotLatentDataset",
+        )
     )
 
     compatibility_methods = {

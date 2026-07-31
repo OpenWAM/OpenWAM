@@ -74,6 +74,7 @@ from .lerobot_v2_latent_sampling import (
     as HierarchicalFixedSegmentTrainSampler,
     HierarchicalFixedSegmentWindowSpec as HierarchicalFixedSegmentWindowSpec,
     LocalLatentEpochOrderSampler as LocalLatentEpochOrderSampler,
+    LocalLatentUniformSegmentSamplingPlan as _LocalLatentUniformSegmentSamplingPlan,
     LocalLatentWeightedTrainSampler as LocalLatentWeightedTrainSampler,
     build_hierarchical_fixed_segment_task_specs,
 )
@@ -569,15 +570,29 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
 
     def __init__(self, data_config: DataConfig, windows: list[LocalEpisodeWindow]) -> None:
         super().__init__(data_config, windows)
-        self._segment_length_candidates = self._resolve_segment_length_candidates()
-        self._virtual_index = self._build_virtual_index()
-        if not self._virtual_index:
-            raise ValueError("Uniform segment sampling requires at least one latent start.")
-        self._virtual_indices_by_window = self._build_virtual_indices_by_window()
-        self._task_virtual_start_counts = self._estimate_task_virtual_start_counts()
-        self.dataset_mean_task_virtual_start_count = self._estimate_mean_task_virtual_start_count()
-        self.dataset_mean_valid_action_steps = self._estimate_virtual_mean_valid_action_steps()
-        self.sample_weights = self._build_virtual_sample_weights()
+        plan = _LocalLatentUniformSegmentSamplingPlan.from_windows(
+            data_config=data_config,
+            windows=self.windows,
+            window_task_texts=self._window_task_texts,
+            task_demo_counts=self._task_demo_counts,
+            dataset_mean_task_demo_count=self.dataset_mean_task_demo_count,
+        )
+        self._uniform_segment_sampling_plan = plan
+        self._segment_length_candidates = plan.segment_length_candidates
+        self._virtual_index = plan.virtual_index
+        self._virtual_indices_by_window = (
+            plan.materialize_virtual_indices_by_window()
+        )
+        self._task_virtual_start_counts = (
+            plan.materialize_task_virtual_start_counts()
+        )
+        self.dataset_mean_task_virtual_start_count = (
+            plan.dataset_mean_task_virtual_start_count
+        )
+        self.dataset_mean_valid_action_steps = (
+            plan.dataset_mean_valid_action_steps
+        )
+        self.sample_weights = plan.sample_weights
 
     def __len__(self) -> int:
         return len(self._virtual_index)
@@ -588,207 +603,12 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
         return LocalLatentEpochOrderSampler(self, world_size=world_size, rank=rank)
 
     def build_epoch_index_order(self, *, epoch: int) -> list[int]:
-        rng = random.Random(self.data_config.split_seed + epoch * 1_000_003)
-        if self.data_config.sample_construction.sample_weight_mode == SampleWeightMode.UNIFORM:
-            per_window = {
-                window_index: list(indices)
-                for window_index, indices in self._virtual_indices_by_window.items()
-            }
-            for indices in per_window.values():
-                rng.shuffle(indices)
-        else:
-            weights = torch.tensor(self.sample_weights, dtype=torch.double)
-            if float(weights.sum().item()) <= 0:
-                weights = torch.ones(len(self), dtype=torch.double)
-            generator = torch.Generator()
-            generator.manual_seed((self.data_config.split_seed + epoch * 1_000_003) & 0x7FFF_FFFF_FFFF_FFFF)
-            sampled = torch.multinomial(weights, num_samples=len(self), replacement=True, generator=generator).tolist()
-            per_window: dict[int, list[int]] = {}
-            for virtual_index in sampled:
-                window_index, _ = self._virtual_index[int(virtual_index)]
-                per_window.setdefault(window_index, []).append(int(virtual_index))
-            for indices in per_window.values():
-                rng.shuffle(indices)
-
-        window_order = list(per_window)
-        rng.shuffle(window_order)
-        block_size = max(1, int(self.data_config.sample_construction.segment_locality_block_size))
-        ordered: list[int] = []
-        active = list(window_order)
-        while active:
-            next_active: list[int] = []
-            for window_index in active:
-                indices = per_window[window_index]
-                take = indices[:block_size]
-                del indices[:block_size]
-                ordered.extend(take)
-                if indices:
-                    next_active.append(window_index)
-            active = next_active
-        return ordered
-
-    def _resolve_segment_length_candidates(self) -> tuple[int, ...]:
-        sample_cfg = self.data_config.sample_construction
-        min_frames = int(sample_cfg.segment_min_frames or self.data_config.num_frames)
-        max_frames = int(sample_cfg.segment_max_frames or min_frames)
-        stride = max(1, int(sample_cfg.segment_length_stride))
-        if min_frames > max_frames:
-            raise ValueError(
-                "Uniform segment sampling requires segment_min_frames <= segment_max_frames, "
-                f"got min={min_frames}, max={max_frames}."
-            )
-        candidates = list(range(min_frames, max_frames + 1, stride))
-        if candidates[-1] != max_frames:
-            candidates.append(max_frames)
-        return tuple(candidates)
-
-    def _build_virtual_index(self) -> tuple[tuple[int, int], ...]:
-        virtual_index: list[tuple[int, int]] = []
-        min_segment_length = min(self._segment_length_candidates)
-        for window_index, window in enumerate(self.windows):
-            source_latent_frames = max(1, int(window.latent_num_frames))
-            start_padding_frames = self._window_start_padding_frames(window)
-            min_latent_start = -start_padding_frames
-            logical_source_frames = source_latent_frames + start_padding_frames
-            for latent_start in range(min_latent_start, source_latent_frames):
-                if self.data_config.sample_construction.require_full_segment:
-                    if logical_source_frames < min_segment_length and latent_start > min_latent_start:
-                        continue
-                    max_length_from_start = source_latent_frames - latent_start
-                    if logical_source_frames >= min_segment_length and max_length_from_start < min_segment_length:
-                        continue
-                virtual_index.append((window_index, latent_start))
-        return tuple(virtual_index)
-
-    def _window_start_padding_frames(self, window: LocalEpisodeWindow) -> int:
-        padding_frames = max(0, int(self.data_config.sample_construction.start_padding_frames))
-        if padding_frames <= 0:
-            return 0
-        return padding_frames if int(window.observation_start) == 0 else 0
-
-    def _build_virtual_indices_by_window(self) -> dict[int, list[int]]:
-        by_window: dict[int, list[int]] = {}
-        for virtual_index, (window_index, _) in enumerate(self._virtual_index):
-            by_window.setdefault(window_index, []).append(virtual_index)
-        return by_window
-
-    def _estimate_task_virtual_start_counts(self) -> dict[str, int]:
-        counts: dict[str, int] = {}
-        for window_index, _ in self._virtual_index:
-            task_text = self._window_task_texts[window_index]
-            counts[task_text] = counts.get(task_text, 0) + 1
-        return counts
-
-    def _estimate_mean_task_virtual_start_count(self) -> float:
-        positive = [count for count in self._task_virtual_start_counts.values() if count > 0]
-        if not positive:
-            return 1.0
-        return float(sum(positive) / len(positive))
-
-    def _estimate_virtual_mean_valid_action_steps(self) -> float:
-        estimates = [
-            self._estimate_virtual_valid_action_steps(virtual_index)
-            for virtual_index in range(len(self._virtual_index))
-        ]
-        positive = [value for value in estimates if value > 0]
-        if not positive:
-            return float(max(1, self.data_config.action_schema.action_horizon))
-        return float(sum(positive) / len(positive))
-
-    def _estimate_virtual_valid_action_steps(self, virtual_index: int) -> float:
-        window_index, latent_start = self._virtual_index[virtual_index]
-        window = self.windows[window_index]
-        source_latent_frames = int(window.latent_num_frames)
-        start_padding_frames = self._window_start_padding_frames(window)
-        estimates = [
-            self._estimate_segment_valid_action_steps(
-                window=window,
-                latent_start=latent_start,
-                segment_length=segment_length,
-            )
-            for segment_length in self._eligible_segment_lengths(
-                source_latent_frames=source_latent_frames,
-                start_padding_frames=start_padding_frames,
-            )
-        ]
-        return float(sum(estimates) / len(estimates))
-
-    def _estimate_segment_valid_action_steps(
-        self,
-        *,
-        window: LocalEpisodeWindow,
-        latent_start: int,
-        segment_length: int,
-    ) -> int:
-        raw_frame_ids = list(window.observation_frame_indices)
-        source_latent_frames = len(raw_frame_ids)
-        if not raw_frame_ids or source_latent_frames <= 0:
-            return 0
-        prefix_actions = int(self.data_config.action_schema.action_horizon // max(1, self.data_config.num_frames))
-        source_latent_start = max(0, latent_start)
-        valid_latent_end = min(source_latent_frames, max(0, latent_start + segment_length))
-        _, _, sample_start_frame, sample_end_frame = raw_span_for_latent_range(
-            raw_frame_ids=raw_frame_ids,
-            source_latent_frames=source_latent_frames,
-            latent_start=source_latent_start,
-            latent_end=valid_latent_end,
-            layout=self.data_config.latent_temporal_layout,
+        return self._uniform_segment_sampling_plan.build_epoch_index_order(
+            epoch=epoch
         )
-        raw_action_steps = max(0, sample_end_frame - sample_start_frame)
-        required_action_steps = max(1, segment_length * prefix_actions)
-        leading_valid_action_steps = prefix_actions
-        if self._window_start_padding_frames(window) > 0 and latent_start <= 0:
-            leading_valid_action_steps = 0
-        return min(required_action_steps, leading_valid_action_steps + raw_action_steps)
-
-    def _build_virtual_sample_weights(self) -> tuple[float, ...]:
-        mode = self.data_config.sample_construction.sample_weight_mode
-        if mode == SampleWeightMode.UNIFORM:
-            return tuple(1.0 for _ in self._virtual_index)
-        reference_steps = max(1.0, float(self.dataset_mean_valid_action_steps))
-        reference_task_count = max(1.0, float(self.dataset_mean_task_demo_count))
-        weights: list[float] = []
-        for virtual_index, (window_index, _) in enumerate(self._virtual_index):
-            weight = 1.0
-            if mode in {
-                SampleWeightMode.VALID_ACTION_STEPS,
-                SampleWeightMode.VALID_ACTION_STEPS_X_INVERSE_TASK_DEMO_COUNT,
-            }:
-                weight *= max(1.0, self._estimate_virtual_valid_action_steps(virtual_index)) / reference_steps
-            if mode in {
-                SampleWeightMode.INVERSE_TASK_DEMO_COUNT,
-                SampleWeightMode.VALID_ACTION_STEPS_X_INVERSE_TASK_DEMO_COUNT,
-            }:
-                task_text = self._window_task_texts[window_index]
-                task_count = max(1, self._task_demo_counts[task_text])
-                weight *= reference_task_count / float(task_count)
-            if mode == SampleWeightMode.TASK_VIRTUAL_START_COUNT_POWER:
-                task_text = self._window_task_texts[window_index]
-                task_start_count = max(1.0, float(self._task_virtual_start_counts[task_text]))
-                reference_start_count = max(1.0, float(self.dataset_mean_task_virtual_start_count))
-                power = float(self.data_config.sample_construction.sample_weight_length_power)
-                weight *= (task_start_count / reference_start_count) ** (power - 1.0)
-            if self.data_config.sample_construction.sample_weight_min is not None:
-                weight = max(float(self.data_config.sample_construction.sample_weight_min), weight)
-            if self.data_config.sample_construction.sample_weight_max is not None:
-                weight = min(float(self.data_config.sample_construction.sample_weight_max), weight)
-            weights.append(float(weight))
-        if not any(weight > 0 for weight in weights):
-            return tuple(1.0 for _ in self._virtual_index)
-        return tuple(weights)
 
     def _sample_weight_metadata(self, index: int) -> dict[str, Any]:
-        window_index, _ = self._virtual_index[index]
-        task_text = self._window_task_texts[window_index]
-        return {
-            "train_sample_weight": self.sample_weights[index],
-            "train_sample_weight_mode": self.data_config.sample_construction.sample_weight_mode,
-            "eligible_task_demo_count": self._task_demo_counts[task_text],
-            "dataset_mean_eligible_task_demo_count": self.dataset_mean_task_demo_count,
-            "eligible_task_virtual_start_count": self._task_virtual_start_counts[task_text],
-            "dataset_mean_eligible_task_virtual_start_count": self.dataset_mean_task_virtual_start_count,
-            "sample_weight_length_power": self.data_config.sample_construction.sample_weight_length_power,
-        }
+        return self._uniform_segment_sampling_plan.sample_weight_metadata(index)
 
     def __getitem__(self, index: int) -> LatentWAMSample:
         window_index, virtual_latent_start = self._virtual_index[index]
@@ -805,14 +625,24 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
             window,
             repo_bundle.metadata,
         )
-        segment_length, latent_start = self._sample_segment_geometry(
-            index=index,
-            source_latent_frames=int(full_video_latents.shape[1]),
-            virtual_latent_start=virtual_latent_start,
-            start_padding_frames=self._window_start_padding_frames(window),
+        start_padding_frames = (
+            self._uniform_segment_sampling_plan.resolve_start_padding_frames(
+                self.data_config,
+                window,
+            )
         )
-        sampled_chunk_size, sampled_window_size = self._sample_uniform_segment_attention_geometry(
-            segment_length=segment_length
+        segment_length, latent_start = (
+            self._uniform_segment_sampling_plan.sample_segment_geometry(
+                index=index,
+                source_latent_frames=int(full_video_latents.shape[1]),
+                virtual_latent_start=virtual_latent_start,
+                start_padding_frames=start_padding_frames,
+            )
+        )
+        sampled_chunk_size, sampled_window_size = (
+            self._uniform_segment_sampling_plan.sample_attention_geometry(
+                segment_length=segment_length
+            )
         )
         subwindow = self._build_uniform_segment(
             video_latents=full_video_latents,
@@ -956,91 +786,6 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
                 metadata["history_frames"] = max(1, min(history_frames, max(1, int(segment_length) - chunk_size)))
         return metadata
 
-    def _sample_uniform_segment_attention_geometry(self, *, segment_length: int) -> tuple[int, int]:
-        sample_cfg = self.data_config.sample_construction
-        max_chunk_size = max(1, min(int(sample_cfg.chunk_size), int(segment_length)))
-        if bool(sample_cfg.randomize_geometry) and max_chunk_size > 1:
-            sampled_chunk_size = int(random.randint(1, max_chunk_size))
-        else:
-            sampled_chunk_size = max_chunk_size
-
-        max_window_size = max(1, int(sample_cfg.window_size))
-        if bool(sample_cfg.randomize_geometry) and max_window_size >= 4:
-            sampled_window_size = int(random.randint(4, max_window_size))
-        else:
-            sampled_window_size = max_window_size
-
-        return sampled_chunk_size, sampled_window_size
-
-    def _sample_segment_geometry(
-        self,
-        *,
-        index: int,
-        source_latent_frames: int,
-        virtual_latent_start: int,
-        start_padding_frames: int = 0,
-    ) -> tuple[int, int]:
-        start_padding_frames = max(0, int(start_padding_frames))
-        candidates = self._eligible_segment_lengths(
-            source_latent_frames=source_latent_frames,
-            start_padding_frames=start_padding_frames,
-        )
-        if self.data_config.sample_construction.randomize_segment_length:
-            # Truly random per __getitem__ call: use the global random module
-            # which is auto-seeded per process / per worker. Same index across
-            # different calls/epochs draws different lengths.
-            segment_length = int(random.choice(candidates))
-        else:
-            split_salt = 17 if self.data_config.split == DataSplit.TRAIN else 53
-            seed = (
-                int(self.data_config.split_seed)
-                + split_salt
-                + 1_000_003 * int(index + 1)
-            ) & 0x7FFF_FFFF_FFFF_FFFF
-            rng = random.Random(seed)
-            segment_length = int(candidates[rng.randrange(len(candidates))])
-
-        if self.data_config.sample_construction.randomize_segment_start:
-            # With randomize_segment_start=True, virtual_latent_start is only
-            # a sampling-frequency slot: longer trajectories still contribute
-            # more virtual indices, while the actual segment start is drawn
-            # fresh for this __getitem__ call. By default, draw from the full
-            # padded logical timeline so startup and tail padding are both
-            # represented. require_full_segment keeps the old full-window bound.
-            min_start = -start_padding_frames
-            if self.data_config.sample_construction.require_full_segment:
-                max_start = max(min_start, int(source_latent_frames) - int(segment_length))
-            else:
-                max_start = max(min_start, int(source_latent_frames) - 1)
-            latent_start = int(random.randint(min_start, max_start))
-        else:
-            latent_start = int(virtual_latent_start)
-            if self.data_config.sample_construction.require_full_segment:
-                min_start = -start_padding_frames
-                max_start = max(min_start, int(source_latent_frames) - int(segment_length))
-                latent_start = min(max(latent_start, min_start), max_start)
-        return int(segment_length), int(latent_start)
-
-    def _eligible_segment_lengths(
-        self,
-        *,
-        source_latent_frames: int,
-        start_padding_frames: int = 0,
-    ) -> tuple[int, ...]:
-        if not self.data_config.sample_construction.require_full_segment:
-            return self._segment_length_candidates
-        logical_source_frames = int(source_latent_frames) + max(0, int(start_padding_frames))
-        candidates = tuple(length for length in self._segment_length_candidates if length <= logical_source_frames)
-        if not candidates and logical_source_frames > 0:
-            return (logical_source_frames,)
-        if not candidates:
-            raise ValueError(
-                "Uniform segment sampling with require_full_segment=True found no eligible segment length for "
-                f"source_latent_frames={source_latent_frames}; start_padding_frames={start_padding_frames}; "
-                f"minimum candidate={min(self._segment_length_candidates)}."
-            )
-        return candidates
-
     def _build_uniform_segment(
         self,
         *,
@@ -1057,7 +802,12 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
         rollout_parity_target_alignment: bool = False,
     ) -> dict[str, Any]:
         source_latent_frames = int(video_latents.shape[1])
-        start_padding_frames = self._window_start_padding_frames(window)
+        start_padding_frames = (
+            _LocalLatentUniformSegmentSamplingPlan.resolve_start_padding_frames(
+                self.data_config,
+                window,
+            )
+        )
         raw_frame_ids = [int(value) for value in list(primary_payload.get("frame_ids", []))]
         if not raw_frame_ids:
             raw_frame_ids = list(window.observation_frame_indices)
@@ -1315,7 +1065,12 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
                     start_min, start_max, eligible_start_count = compact_boundary_start_range(
                         source_latent_frames=source_latent_frames,
                         segment_length=self.segment_frames,
-                        start_padding_frames=self._window_start_padding_frames(window),
+                        start_padding_frames=(
+                            _LocalLatentUniformSegmentSamplingPlan.resolve_start_padding_frames(
+                                self.data_config,
+                                window,
+                            )
+                        ),
                         chunk_size=chunk_size,
                         context_prefix_frames=self._hierarchical_context_prefix_frames(chunk_size),
                     )
@@ -1369,7 +1124,12 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
                 source_latent_frames=max(1, int(window.latent_num_frames)),
                 latent_start=latent_start,
                 segment_length=self.segment_frames,
-                start_padding_frames=self._window_start_padding_frames(window),
+                start_padding_frames=(
+                    _LocalLatentUniformSegmentSamplingPlan.resolve_start_padding_frames(
+                        self.data_config,
+                        window,
+                    )
+                ),
                 chunk_size=sampled_chunk_size,
                 context_prefix_frames=context_prefix_frames,
             )
