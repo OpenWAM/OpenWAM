@@ -30,9 +30,16 @@ from .trainer import TrainerConfig, parse_trainer_config
 from .training import parse_training_config
 from .validation import parse_validation_config
 
-from open_wam.utils.video_timeline import VideoFrameMapping
+from open_wam.contracts import VideoFrameMapping
 
 from .local_paths import read_yaml_with_local_paths
+
+
+# These names were historically importable from this module.
+_SEQUENCE_CONTRACT_COMPATIBILITY_EXPORTS = (
+    validate_experiment_config_runtime_contract,
+    validate_parallel_sequence_contract_override_keys,
+)
 
 
 def _read_yaml(path: str | Path) -> dict[str, Any]:

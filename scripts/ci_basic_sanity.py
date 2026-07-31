@@ -284,7 +284,7 @@ def _check_no_merge_conflict_markers() -> None:
 
 def _check_static_source_contracts() -> None:
     source_checks = {
-        "src/open_wam/runtime/paths.py": ("def find_repo_root", "parents[3]"),
+        "src/open_wam/contracts/paths.py": ("def find_repo_root", "parents[3]"),
         "src/open_wam/runtime/results.py": ("RESERVED_RESULT_KEYS", "envelope.update(extra)"),
         "src/open_wam/pipelines/registries.py": ("BuilderRegistry[ActionDecoderName", "BuilderRegistry[object"),
         "src/open_wam/__init__.py": ("version(\"open-wam\")", "__version__ = \"0.1.0\""),

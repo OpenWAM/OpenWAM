@@ -40,16 +40,16 @@ from open_wam.configs import (
     MixedVideoViewCombinationConfig,
     MixedVideoWeightMode,
 )
+from open_wam.contracts import (
+    ResolvedVideoClip,
+    normalized_video_frame_count as _timeline_normalized_video_frame_count,
+    resolve_video_source_fps,
+)
 
 from .contracts import WAMSample
 from .distributed_sampling import EpochOrderDistributedSampler
 from .latent_contracts import LatentWAMSample
 from .latent_view_assembly import assemble_mixed_video_latent_views
-from open_wam.utils.video_timeline import (
-    ResolvedVideoClip,
-    normalized_video_frame_count as _timeline_normalized_video_frame_count,
-    resolve_video_source_fps,
-)
 
 
 _TIMESTAMP_BOUNDARY_EPSILON_SECONDS = 1e-4

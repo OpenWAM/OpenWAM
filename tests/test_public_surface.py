@@ -15,6 +15,11 @@ import open_wam.models.action_decoders as action_decoders
 import open_wam.models.policy_variants as policy_variants
 from open_wam.cli.inspect_config import build_arg_parser
 from open_wam.configs import ActionDecoderName, PolicyVariantName
+from open_wam.contracts import (
+    VideoFrameMapping,
+    normalized_video_frame_count,
+    resolve_video_source_fps,
+)
 from open_wam.pipelines import ACTION_DECODER_BUILDERS, POLICY_VARIANT_BUILDERS
 from open_wam.pipelines.factory import build_action_decoder, build_policy_variant
 from open_wam.runtime import (
@@ -100,7 +105,7 @@ def test_base_dependencies_stay_minimal_and_extras_are_explicit() -> None:
 def test_minimal_import_surfaces_do_not_import_torch_stack() -> None:
     code = (
         "import sys; "
-        "import open_wam, open_wam.configs, open_wam.extensions, open_wam.runtime, open_wam.utils, open_wam.pipelines, open_wam.simulators; "
+        "import open_wam, open_wam.configs, open_wam.contracts, open_wam.extensions, open_wam.runtime, open_wam.utils, open_wam.pipelines, open_wam.simulators; "
         "from open_wam.cli.train import build_arg_parser as train_parser; "
         "from open_wam.cli.eval import build_arg_parser as eval_parser; "
         "from open_wam.cli.sanity import build_arg_parser as sanity_parser; "
@@ -222,6 +227,29 @@ def test_repo_path_resolution_ignores_unrelated_git_roots(
     monkeypatch.chdir(fallback)
 
     assert find_repo_root(marker) == fallback.resolve()
+
+
+@pytest.mark.unit
+def test_public_video_timeline_contracts_are_typed_and_deterministic() -> None:
+    mapping = VideoFrameMapping.wan_causal_prefix_suffix(
+        raw_observed_frames=16,
+        raw_future_frames=32,
+    )
+
+    assert mapping.raw_total_frames == 48
+    assert mapping.observed_frames == 4
+    assert mapping.future_frames == 8
+    assert mapping.total_frames == 12
+    assert resolve_video_source_fps(
+        None,
+        container_fps=24.0,
+        missing_observation_fps=15.0,
+    ).source == "container"
+    assert normalized_video_frame_count(
+        101,
+        source_fps=30.0,
+        target_fps=10.0,
+    ) == 34
 
 
 @pytest.mark.unit

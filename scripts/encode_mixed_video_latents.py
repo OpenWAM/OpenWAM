@@ -36,6 +36,7 @@ from open_wam.configs import (  # noqa: E402
     ViewLayoutConfig,
 )
 from open_wam.configs.enums import serialize_enum_values  # noqa: E402
+from open_wam.contracts import VideoFrameMapping  # noqa: E402
 from open_wam.data.mixed_video import (  # noqa: E402
     MixedVideoEpisodeRecord,
     MixedVideoStreamRecord,
@@ -47,7 +48,6 @@ from open_wam.data.raw_video import build_canonical_video_preprocessor  # noqa: 
 from open_wam.models.common.video_geometry import wan_raw_frame_count_to_latent_count  # noqa: E402
 from open_wam.models.visual_tower.reference_assets import LingbotReferenceAssets  # noqa: E402
 from open_wam.configs import load_experiment_config  # noqa: E402
-from open_wam.utils.video_timeline import VideoFrameMapping  # noqa: E402
 
 
 LATENT_KEY = "video_latents"

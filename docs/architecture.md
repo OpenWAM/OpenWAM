@@ -29,11 +29,30 @@ shared visual execution path for every experiment.
 - Keep public finite choices enum-backed at the typed config boundary.
 - Do not add method-named infrastructure when the abstraction is generic.
 
+## Foundational Contracts
+
+`open_wam.contracts` is the dependency-free layer shared by configuration,
+data, models, and runtime code. It contains only standard-library value
+contracts and deterministic transforms:
+
+- `contracts.paths` owns source-root discovery and repository-relative path
+  resolution.
+- `contracts.video` owns WAN raw/latent temporal geometry, typed video timeline
+  records, frame mapping, and FPS normalization.
+
+These contracts do not import another `open_wam` package. Higher layers may
+depend on them, but they must not depend back on configuration, datasets,
+models, or runtime implementations. Historical `runtime.paths`,
+`utils.video_timeline`, and `utils.wan_geometry` imports remain
+identity-preserving compatibility facades; new code imports
+`open_wam.contracts`.
+
 ## Configuration Contract
 
 `open_wam.configs.load_experiment_config` is the public YAML-to-dataclass
 entrypoint, and `open_wam.configs.local_paths` owns machine-local path
-expansion. `open_wam.configs.coercion` owns reusable YAML/CLI-to-type conversion.
+expansion over the shared project-path contract.
+`open_wam.configs.coercion` owns reusable YAML/CLI-to-type conversion.
 `open_wam.configs.sequence_contracts` owns defaults and cross-section
 validation for sequence semantics. Each typed component module owns its
 mapping-to-dataclass parser; the larger data section is isolated in
@@ -138,8 +157,10 @@ plain contracts:
   selection and policy-local joint/FDM/IDM artifact mutation. Artifact
   construction, model execution, caches, and decoder losses remain in their
   existing runtime owners; generic flow schedulers remain in `models.common`.
-- `models.common.video_geometry` owns video token-grid and unpatchifying
-  transforms used by visual execution, policy variants, and decoders.
+- `open_wam.contracts.video` owns dependency-free WAN raw/latent temporal
+  mapping. `models.common.video_geometry` owns Torch-backed video token-grid
+  and unpatchifying transforms used by visual execution, policy variants, and
+  decoders.
 - `models.common.cache_backends` owns parameter-free attention-cache policy:
   dense-mask normalization, cached-prefix visibility, packed sequence ids,
   slot retention, merged-prefix operations, and backend payloads. The visual

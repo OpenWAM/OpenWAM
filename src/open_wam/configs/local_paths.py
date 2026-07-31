@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 import yaml
 
-from open_wam.runtime.paths import find_repo_root
+from open_wam.contracts import find_repo_root
 
 
 REPO_ROOT = find_repo_root(Path(__file__))

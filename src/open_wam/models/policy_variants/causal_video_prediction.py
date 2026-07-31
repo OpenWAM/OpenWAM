@@ -6,6 +6,7 @@ from typing import Any
 import torch
 
 from open_wam.configs import CausalVideoPredictionPolicyConfig, InferenceConfig, TrainingConfig
+from open_wam.contracts import VideoFrameMapping
 from open_wam.models.common.flow_matching import (
     FlowMatchScheduler,
     denoised_video_latents_from_flow,
@@ -13,7 +14,6 @@ from open_wam.models.common.flow_matching import (
 )
 from open_wam.models.video_backbone.contracts import TokenGridMetadata
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
-from open_wam.utils.video_timeline import VideoFrameMapping
 
 from .base import PolicyVariant
 from .common.rollout import advance_rollout_cursor

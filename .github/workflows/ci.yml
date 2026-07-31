@@ -48,6 +48,7 @@ jobs:
           import importlib.util
           import open_wam
           import open_wam.configs
+          import open_wam.contracts
           import open_wam.runtime
           import open_wam.pipelines
           assert importlib.util.find_spec("torch") is None

@@ -9,8 +9,27 @@ from open_wam.configs import (
     load_local_path_registry,
     read_yaml_with_local_paths,
 )
+from open_wam.contracts import (
+    REPO_ROOT as ContractRepoRoot,
+    ResolvedSourceFps,
+    ResolvedVideoClip,
+    VideoFrameMapping,
+    WAN_TEMPORAL_CHUNK_SIZE,
+    find_repo_root,
+    normalized_video_frame_count,
+    resolve_repo_path,
+    resolve_video_source_fps,
+    wan_fully_observed_latent_count,
+    wan_raw_frame_count_to_latent_count,
+    wan_safe_temporal_frame_count,
+)
 from open_wam.models.video_backbone.config import (
     SharedVideoTransformerConfig as LegacySharedVideoTransformerConfig,
+)
+from open_wam.runtime.paths import (
+    REPO_ROOT as LegacyRepoRoot,
+    find_repo_root as LegacyFindRepoRoot,
+    resolve_repo_path as LegacyResolveRepoPath,
 )
 from open_wam.utils.config_loader import (
     load_experiment_config as LegacyLoadExperimentConfig,
@@ -18,6 +37,19 @@ from open_wam.utils.config_loader import (
 from open_wam.utils.local_paths import (
     load_local_path_registry as LegacyLoadLocalPathRegistry,
     read_yaml_with_local_paths as LegacyReadYamlWithLocalPaths,
+)
+from open_wam.utils.video_timeline import (
+    ResolvedSourceFps as LegacyResolvedSourceFps,
+    ResolvedVideoClip as LegacyResolvedVideoClip,
+    VideoFrameMapping as LegacyVideoFrameMapping,
+    normalized_video_frame_count as legacy_normalized_video_frame_count,
+    resolve_video_source_fps as legacy_resolve_video_source_fps,
+)
+from open_wam.utils.wan_geometry import (
+    WAN_TEMPORAL_CHUNK_SIZE as LEGACY_WAN_TEMPORAL_CHUNK_SIZE,
+    wan_fully_observed_latent_count as legacy_wan_fully_observed_latent_count,
+    wan_raw_frame_count_to_latent_count as legacy_wan_raw_frame_count_to_latent_count,
+    wan_safe_temporal_frame_count as legacy_wan_safe_temporal_frame_count,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -73,18 +105,30 @@ def _class_method(path: Path, class_name: str, method_name: str) -> ast.Function
     )
 
 
-def test_config_package_does_not_depend_on_runtime_implementations() -> None:
+def test_config_package_does_not_depend_on_higher_or_compatibility_layers() -> None:
     forbidden_prefixes = (
         "open_wam.data",
         "open_wam.models",
         "open_wam.pipelines",
+        "open_wam.runtime",
         "open_wam.training",
+        "open_wam.utils",
     )
 
     violations = sorted(
         imported
         for imported in _absolute_imports("configs")
         if imported.startswith(forbidden_prefixes)
+    )
+
+    assert violations == []
+
+
+def test_foundational_contracts_are_dependency_free() -> None:
+    violations = sorted(
+        imported
+        for imported in _absolute_imports("contracts")
+        if imported.startswith("open_wam")
     )
 
     assert violations == []
@@ -409,6 +453,15 @@ def test_latent_view_assembly_has_one_owner() -> None:
 
 
 def test_sequence_contract_semantics_have_one_config_owner() -> None:
+    from open_wam.configs.loader import (
+        validate_experiment_config_runtime_contract as LoaderValidateRuntimeContract,
+        validate_parallel_sequence_contract_override_keys as LoaderValidateOverrideKeys,
+    )
+    from open_wam.configs.sequence_contracts import (
+        validate_experiment_config_runtime_contract as CanonicalValidateRuntimeContract,
+        validate_parallel_sequence_contract_override_keys as CanonicalValidateOverrideKeys,
+    )
+
     contract_functions = {
         "apply_parallel_sequence_contract",
         "expand_parallel_sequence_contract",
@@ -421,6 +474,8 @@ def test_sequence_contract_semantics_have_one_config_owner() -> None:
 
     assert contract_functions <= config_definitions
     assert contract_functions.isdisjoint(loader_definitions)
+    assert LoaderValidateRuntimeContract is CanonicalValidateRuntimeContract
+    assert LoaderValidateOverrideKeys is CanonicalValidateOverrideKeys
 
 
 def test_configuration_loading_has_one_package_owner() -> None:
@@ -442,6 +497,82 @@ def test_local_path_resolution_has_one_package_owner() -> None:
     )
     assert LegacyLoadLocalPathRegistry is load_local_path_registry
     assert LegacyReadYamlWithLocalPaths is read_yaml_with_local_paths
+
+
+def test_project_path_contracts_have_one_dependency_free_owner() -> None:
+    canonical_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "contracts" / "paths.py"
+    )
+    compatibility_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "runtime" / "paths.py"
+    )
+
+    assert {"find_repo_root", "resolve_repo_path"} <= canonical_definitions
+    assert {"find_repo_root", "resolve_repo_path"}.isdisjoint(
+        compatibility_definitions
+    )
+    assert LegacyRepoRoot is ContractRepoRoot
+    assert LegacyFindRepoRoot is find_repo_root
+    assert LegacyResolveRepoPath is resolve_repo_path
+
+
+def test_video_timeline_contracts_have_one_dependency_free_owner() -> None:
+    from open_wam.models.common.video_geometry import (
+        WAN_TEMPORAL_CHUNK_SIZE as MODEL_WAN_TEMPORAL_CHUNK_SIZE,
+        wan_fully_observed_latent_count as model_wan_fully_observed_latent_count,
+        wan_raw_frame_count_to_latent_count as model_wan_raw_frame_count_to_latent_count,
+        wan_safe_temporal_frame_count as model_wan_safe_temporal_frame_count,
+    )
+
+    canonical_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "contracts" / "video.py"
+    )
+    timeline_compatibility_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "utils" / "video_timeline.py"
+    )
+    geometry_compatibility_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "utils" / "wan_geometry.py"
+    )
+    canonical_names = {
+        "ResolvedSourceFps",
+        "ResolvedVideoClip",
+        "VideoFrameMapping",
+        "normalized_video_frame_count",
+        "resolve_video_source_fps",
+        "wan_fully_observed_latent_count",
+        "wan_raw_frame_count_to_latent_count",
+        "wan_safe_temporal_frame_count",
+    }
+
+    assert canonical_names <= canonical_definitions
+    assert canonical_names.isdisjoint(
+        timeline_compatibility_definitions | geometry_compatibility_definitions
+    )
+    assert LegacyResolvedSourceFps is ResolvedSourceFps
+    assert LegacyResolvedVideoClip is ResolvedVideoClip
+    assert LegacyVideoFrameMapping is VideoFrameMapping
+    assert legacy_normalized_video_frame_count is normalized_video_frame_count
+    assert legacy_resolve_video_source_fps is resolve_video_source_fps
+    assert LEGACY_WAN_TEMPORAL_CHUNK_SIZE == WAN_TEMPORAL_CHUNK_SIZE
+    assert (
+        legacy_wan_fully_observed_latent_count
+        is wan_fully_observed_latent_count
+    )
+    assert (
+        legacy_wan_raw_frame_count_to_latent_count
+        is wan_raw_frame_count_to_latent_count
+    )
+    assert legacy_wan_safe_temporal_frame_count is wan_safe_temporal_frame_count
+    assert MODEL_WAN_TEMPORAL_CHUNK_SIZE == WAN_TEMPORAL_CHUNK_SIZE
+    assert (
+        model_wan_fully_observed_latent_count
+        is wan_fully_observed_latent_count
+    )
+    assert (
+        model_wan_raw_frame_count_to_latent_count
+        is wan_raw_frame_count_to_latent_count
+    )
+    assert model_wan_safe_temporal_frame_count is wan_safe_temporal_frame_count
 
 
 def test_typed_component_parsers_live_beside_their_contracts() -> None:
