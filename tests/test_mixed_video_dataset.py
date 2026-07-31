@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 import torch
 
-import open_wam.data.mixed_video as mixed_video_module
+import open_wam.data.mixed_video_decode as mixed_video_decode_module
 from open_wam.configs import (
     ActionSchemaConfig,
     BatchAdapterName,
@@ -40,16 +40,21 @@ from open_wam.data import (
     build_train_val_latent_datasets,
     collate_latent_wam_samples,
     collate_wam_samples,
+    decode_video_frames as public_decode_video_frames,
+    transform_frame as public_transform_frame,
 )
 from open_wam.data.raw_video import build_canonical_video_preprocessor
 from open_wam.data.mixed_video import (
     MixedVideoCatalog as LegacyMixedVideoCatalog,
     MixedVideoEpisodeRecord as LegacyMixedVideoEpisodeRecord,
     MixedVideoLatentWindowDataset,
+    MixedVideoResolvedDecodeSize as LegacyMixedVideoResolvedDecodeSize,
     MixedVideoStreamRecord as LegacyMixedVideoStreamRecord,
     MixedVideoWindowDataset,
     assemble_mixed_video_latent_views,
+    decode_mixed_video_stream_frame_chunk as legacy_decode_stream_frame_chunk,
     decode_video_frames,
+    iter_mixed_video_stream_frame_chunks as legacy_iter_stream_frame_chunks,
     load_mixed_video_catalog,
     normalized_video_frame_count,
     resolve_mixed_video_decode_size,
@@ -63,6 +68,16 @@ from open_wam.data.mixed_video_catalog import (
     MixedVideoStreamRecord,
     load_mixed_video_catalog as canonical_load_mixed_video_catalog,
     split_mixed_video_episodes as canonical_split_mixed_video_episodes,
+)
+from open_wam.data.mixed_video_decode import (
+    MixedVideoResolvedDecodeSize,
+    decode_mixed_video_stream_frame_chunk,
+    decode_video_frames as canonical_decode_video_frames,
+    iter_mixed_video_stream_frame_chunks,
+    normalized_video_frame_count as canonical_normalized_video_frame_count,
+    resolve_mixed_video_decode_size as canonical_resolve_mixed_video_decode_size,
+    resample_video_frames_to_fps as canonical_resample_video_frames_to_fps,
+    transform_frame as canonical_transform_frame,
 )
 from open_wam.models.common.video_geometry import WAN_TEMPORAL_CHUNK_SIZE, wan_raw_frame_count_to_latent_count
 
@@ -83,6 +98,28 @@ def test_mixed_video_catalog_legacy_imports_preserve_identity() -> None:
     assert LegacyMixedVideoStreamRecord is MixedVideoStreamRecord
     assert load_mixed_video_catalog is canonical_load_mixed_video_catalog
     assert split_mixed_video_episodes is canonical_split_mixed_video_episodes
+
+
+def test_mixed_video_decode_legacy_imports_preserve_identity() -> None:
+    assert LegacyMixedVideoResolvedDecodeSize is MixedVideoResolvedDecodeSize
+    assert public_decode_video_frames is canonical_decode_video_frames
+    assert decode_video_frames is canonical_decode_video_frames
+    assert (
+        legacy_decode_stream_frame_chunk
+        is decode_mixed_video_stream_frame_chunk
+    )
+    assert legacy_iter_stream_frame_chunks is iter_mixed_video_stream_frame_chunks
+    assert normalized_video_frame_count is canonical_normalized_video_frame_count
+    assert (
+        resolve_mixed_video_decode_size
+        is canonical_resolve_mixed_video_decode_size
+    )
+    assert (
+        resample_video_frames_to_fps
+        is canonical_resample_video_frames_to_fps
+    )
+    assert public_transform_frame is canonical_transform_frame
+    assert transform_frame is canonical_transform_frame
 
 
 def _write_manifest(path: Path, rows: list[dict[str, object]]) -> None:
@@ -1442,13 +1479,21 @@ def test_mixed_video_decord_fallback_does_not_restart_after_partial_emit(
         imageio_calls.append(True)
         yield torch.ones(4, 8, 8, 3, dtype=torch.uint8)
 
-    monkeypatch.setattr(mixed_video_module, "_HAS_DECORD", True)
-    monkeypatch.setattr(mixed_video_module, "_iter_chunks_decord", partial_decord)
-    monkeypatch.setattr(mixed_video_module, "_iter_chunks_imageio", imageio_fallback)
+    monkeypatch.setattr(mixed_video_decode_module, "_HAS_DECORD", True)
+    monkeypatch.setattr(
+        mixed_video_decode_module,
+        "_iter_chunks_decord",
+        partial_decord,
+    )
+    monkeypatch.setattr(
+        mixed_video_decode_module,
+        "_iter_chunks_imageio",
+        imageio_fallback,
+    )
 
     with pytest.raises(RuntimeError, match="decord broke after yielding"):
         list(
-            mixed_video_module.iter_mixed_video_stream_frame_chunks(
+            mixed_video_decode_module.iter_mixed_video_stream_frame_chunks(
                 config,
                 stream,
                 raw_chunk_ranges=((0, 4), (4, 8)),
@@ -1484,13 +1529,17 @@ def test_mixed_video_latent_encoder_writes_manifest_compatible_sidecars(
     assets = _FakeLatentEncoderAssets()
     output_root = tmp_path / "encoded"
     reader_paths: list[object] = []
-    original_get_reader = mixed_video_module.imageio.get_reader
+    original_get_reader = mixed_video_decode_module.imageio.get_reader
 
     def counted_get_reader(*args, **kwargs):
         reader_paths.append(args[0])
         return original_get_reader(*args, **kwargs)
 
-    monkeypatch.setattr(mixed_video_module.imageio, "get_reader", counted_get_reader)
+    monkeypatch.setattr(
+        mixed_video_decode_module.imageio,
+        "get_reader",
+        counted_get_reader,
+    )
 
     report = encoder.encode_mixed_video_latent_sources(
         data_config=config,

@@ -551,6 +551,92 @@ def test_mixed_video_catalog_has_one_owner() -> None:
     assert "open_wam.data.mixed_video_catalog" in encoder_imports
 
 
+def test_mixed_video_decode_has_one_owner() -> None:
+    from open_wam.data import (
+        decode_video_frames as public_decode_video_frames,
+        transform_frame as public_transform_frame,
+    )
+    from open_wam.data.mixed_video import (
+        MixedVideoResolvedDecodeSize as LegacyMixedVideoResolvedDecodeSize,
+        decode_mixed_video_stream_frame_chunk as legacy_decode_stream_chunk,
+        decode_video_frames as legacy_decode_video_frames,
+        iter_mixed_video_stream_frame_chunks as legacy_iter_stream_chunks,
+        normalized_video_frame_count as legacy_normalized_frame_count,
+        resample_video_frames_to_fps as legacy_resample_frames,
+        resolve_mixed_video_decode_size as legacy_resolve_decode_size,
+        resolve_mixed_video_observation_fps as legacy_resolve_fps,
+        transform_frame as legacy_transform_frame,
+    )
+    from open_wam.data.mixed_video_decode import (
+        MixedVideoResolvedDecodeSize,
+        decode_mixed_video_stream_frame_chunk,
+        decode_mixed_video_stream_frames,
+        decode_video_frames,
+        iter_mixed_video_stream_frame_chunks,
+        normalized_video_frame_count,
+        resample_video_frames_to_fps,
+        resolve_mixed_video_decode_size,
+        resolve_mixed_video_observation_fps,
+        transform_frame,
+    )
+
+    canonical_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "data" / "mixed_video_decode.py"
+    )
+    compatibility_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "data" / "mixed_video.py"
+    )
+    canonical_names = {
+        "MixedVideoResolvedDecodeSize",
+        "decode_mixed_video_stream_frame_chunk",
+        "decode_mixed_video_stream_frames",
+        "decode_video_frames",
+        "iter_mixed_video_stream_frame_chunks",
+        "normalized_video_frame_count",
+        "resample_video_frames_to_fps",
+        "resolve_mixed_video_decode_size",
+        "resolve_mixed_video_observation_fps",
+        "transform_frame",
+    }
+
+    assert canonical_names <= canonical_definitions
+    assert canonical_names.isdisjoint(compatibility_definitions)
+    assert LegacyMixedVideoResolvedDecodeSize is MixedVideoResolvedDecodeSize
+    assert legacy_decode_stream_chunk is decode_mixed_video_stream_frame_chunk
+    assert legacy_decode_video_frames is decode_video_frames
+    assert legacy_iter_stream_chunks is iter_mixed_video_stream_frame_chunks
+    assert legacy_normalized_frame_count is normalized_video_frame_count
+    assert legacy_resample_frames is resample_video_frames_to_fps
+    assert legacy_resolve_decode_size is resolve_mixed_video_decode_size
+    assert legacy_resolve_fps is resolve_mixed_video_observation_fps
+    assert legacy_transform_frame is transform_frame
+    assert public_decode_video_frames is decode_video_frames
+    assert public_transform_frame is transform_frame
+    assert (
+        decode_mixed_video_stream_frames.__module__
+        == "open_wam.data.mixed_video_decode"
+    )
+
+    encoder_imports = _absolute_imports_for_file(
+        REPO_ROOT / "scripts" / "encode_mixed_video_latents.py"
+    )
+    assert "open_wam.data.mixed_video_decode" in encoder_imports
+
+    dataset_loader = _class_method(
+        PACKAGE_ROOT / "data" / "mixed_video.py",
+        "MixedVideoWindowDataset",
+        "_load_stream_frames",
+    )
+    full_stream_decode_calls = [
+        node
+        for node in ast.walk(dataset_loader)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "decode_mixed_video_stream_frames"
+    ]
+    assert len(full_stream_decode_calls) == 1
+
+
 def test_lerobot_latent_supervision_assembly_has_one_owner() -> None:
     supervision_path = (
         PACKAGE_ROOT / "data" / "lerobot_v2_latent_supervision.py"

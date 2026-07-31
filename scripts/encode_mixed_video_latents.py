@@ -37,7 +37,7 @@ from open_wam.configs import (  # noqa: E402
 )
 from open_wam.configs.enums import serialize_enum_values  # noqa: E402
 from open_wam.contracts import VideoFrameMapping  # noqa: E402
-from open_wam.data.mixed_video import (  # noqa: E402
+from open_wam.data.mixed_video_decode import (  # noqa: E402
     iter_mixed_video_stream_frame_chunks,
 )
 from open_wam.data.mixed_video_catalog import (  # noqa: E402

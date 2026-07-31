@@ -232,9 +232,11 @@ canvas contract. Dataset adapters choose slots and sampling weights, then call
 For manifest-backed video pretraining, `mixed_video_catalog` owns source CSV
 parsing, stream and episode records, path/FPS normalization, target-slot
 validation, task merging, and physical-episode train/validation splits.
-`mixed_video` owns RGB/latent window selection, decoding, resizing, caching,
-and final sample assembly; historical catalog imports from that module remain
-identity aliases.
+`mixed_video_decode` owns video-file materialization, timestamp clipping,
+target-FPS interpolation, adaptive sizing, frame transforms, and imageio/decord
+backend selection. `mixed_video` owns RGB/latent window selection, cache policy,
+latent loading and assembly, and final sample construction. Historical catalog
+and decode imports from `mixed_video` remain identity aliases.
 `distributed_sampling` owns rank sharding and epoch coordination; adapters
 supply weights or deterministic global index orders without embedding
 distributed control flow. Equal-rank padded orders, intentionally unpadded
