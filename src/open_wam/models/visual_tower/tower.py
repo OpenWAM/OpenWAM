@@ -5,7 +5,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from open_wam.configs import BackboneImplementation, ExportedRuntimeActionInitMode
+from open_wam.configs import BackboneImplementation
 from open_wam.data.raw_video import ViewPlacement
 from open_wam.models.common import (
     FlowMatchScheduler,
@@ -19,12 +19,6 @@ from .cache_lifecycle import RuntimeCacheLifecycle, _MAX_CACHED_FRAMES_UNSET
 from .contracts import VisualCoreInput, VisualReadoutRequest, VisualStageOutputs
 from .core import PackedSequenceVisualCore
 from .decoder import VisualFeatureDecoder
-from .exported_runtime_backbone import (
-    is_allowed_runtime_missing_key,
-    is_open_wam_exported_runtime_backbone_dir,
-    load_exported_runtime_backbone_into_replica_core,
-    resolve_runtime_backbone_dir,
-)
 from .exact_runtime import (
     prepare_exact_single_stream_input,
     resolve_runtime_module_dtype,
@@ -32,9 +26,15 @@ from .exact_runtime import (
 )
 from .frontend import SharedVideoFrontend
 from .grid_ids import build_mesh_id, build_video_grid_ids
-from .reference_core_weights import BackboneLoadReport, load_reference_weights_into_replica_core
+from .reference_core_weights import BackboneLoadReport
 from .replica_core import SharedVideoTransformerCore
-from .reference_transformer import preferred_reference_dtype
+from .runtime_backbone import (
+    ensure_runtime_module_device,
+    initialize_runtime_backbone,
+    log_runtime_backbone_missing_keys,
+    reset_runtime_module_cache,
+    validate_runtime_backbone_request,
+)
 from .runtime_programs import (
     RuntimeStepInput,
     RuntimeStepOutput,
@@ -871,43 +871,12 @@ class VisualTower(nn.Module):
         )
 
     def _ensure_runtime_backbone_initialized(self) -> None:
-        if self.reference_core_load_report is not None:
-            return
-        if self.config.pretrained_model_name_or_path is None:
-            return
-        runtime_backbone_dir = resolve_runtime_backbone_dir(self.config)
-        is_exported_runtime_dir = is_open_wam_exported_runtime_backbone_dir(runtime_backbone_dir)
-        print(
-            "[runtime_backbone_load] "
-            f"resolved_dir={runtime_backbone_dir} "
-            f"is_exported_runtime_dir={is_exported_runtime_dir}",
-            flush=True,
-        )
-        if is_exported_runtime_dir:
-            self.reference_core_load_report = load_exported_runtime_backbone_into_replica_core(
-                self.core,
-                backbone_config=self.config,
-            )
-            print(
-                "[runtime_backbone_load] "
-                f"mode=exported_runtime loaded_keys={len(self.reference_core_load_report.loaded_keys)} "
-                f"missing_keys={len(self.reference_core_load_report.missing_reference_keys)}",
-                flush=True,
-            )
-            self._log_runtime_backbone_missing_keys(self.reference_core_load_report, config=self.config)
-            return
-        self.reference_core_load_report = load_reference_weights_into_replica_core(
-            self.core,
-            backbone_config=self.config,
+        self.reference_core_load_report = initialize_runtime_backbone(
+            current_report=self.reference_core_load_report,
+            core=self.core,
+            config=self.config,
             action_dim=self.action_dim,
         )
-        print(
-            "[runtime_backbone_load] "
-            f"mode=reference loaded_keys={len(self.reference_core_load_report.loaded_keys)} "
-            f"missing_keys={len(self.reference_core_load_report.missing_reference_keys)}",
-            flush=True,
-        )
-        self._log_runtime_backbone_missing_keys(self.reference_core_load_report, config=self.config)
 
     @staticmethod
     def _log_runtime_backbone_missing_keys(
@@ -915,33 +884,7 @@ class VisualTower(nn.Module):
         *,
         config: SharedVideoTransformerConfig,
     ) -> None:
-        if report is None or not report.missing_reference_keys:
-            return
-        allow_random_action = config.exported_runtime_action_init_mode == ExportedRuntimeActionInitMode.RANDOM
-        allowed = tuple(
-            key
-            for key in report.missing_reference_keys
-            if is_allowed_runtime_missing_key(key, allow_random_action=allow_random_action)
-        )
-        unexpected = tuple(
-            key
-            for key in report.missing_reference_keys
-            if not is_allowed_runtime_missing_key(key, allow_random_action=allow_random_action)
-        )
-        if allowed:
-            print(
-                "[runtime_backbone_load] "
-                f"allowed_missing_keys={list(allowed)}",
-                flush=True,
-            )
-        if unexpected:
-            preview = list(unexpected[:20])
-            print(
-                "[runtime_backbone_load] "
-                f"unexpected_missing_keys_count={len(unexpected)} "
-                f"unexpected_missing_keys_preview={preview}",
-                flush=True,
-            )
+        log_runtime_backbone_missing_keys(report, config=config)
 
     def get_runtime_backbone(self, *, action_dim: int) -> nn.Module:
         """Return the shared transformer backbone for runtime-driven variants.
@@ -951,42 +894,18 @@ class VisualTower(nn.Module):
         point. This keeps that access generic and avoids method-1-specific
         naming at the tower boundary.
         """
-        if normalize_backbone_implementation(self.config.implementation) != "shared_transformer":
-            raise ValueError("Runtime backbone access requires `backbone.implementation = shared_transformer`.")
-        if self.action_dim is None:
-            raise ValueError("VisualTower runtime backbone access requires a configured action_dim.")
-        if int(action_dim) != int(self.action_dim):
-            raise ValueError(
-                "Shared video-transformer backbone was constructed for a different action_dim, "
-                f"requested={action_dim}, tower_action_dim={self.action_dim}."
-            )
+        validate_runtime_backbone_request(
+            config=self.config,
+            configured_action_dim=self.action_dim,
+            requested_action_dim=action_dim,
+        )
         self._ensure_runtime_backbone_initialized()
         return self.core
 
     def ensure_runtime_backbone_device(self, *, action_dim: int, device) -> nn.Module:
         """Move the shared runtime backbone onto the requested device/dtype."""
         transformer = self.get_runtime_backbone(action_dim=action_dim)
-        device = torch.device(device)
-        target_dtype = preferred_reference_dtype(device)
-        needs_move = False
-        for parameter in transformer.parameters():
-            if parameter.device != device:
-                needs_move = True
-                break
-            if parameter.is_floating_point() and parameter.dtype != target_dtype:
-                needs_move = True
-                break
-        if not needs_move:
-            for buffer in transformer.buffers():
-                if buffer.device != device:
-                    needs_move = True
-                    break
-                if buffer.is_floating_point() and buffer.dtype != target_dtype:
-                    needs_move = True
-                    break
-        if needs_move:
-            transformer.to(device=device, dtype=target_dtype)
-        return transformer
+        return ensure_runtime_module_device(transformer, device=device)
 
     def _ensure_frontend_runtime_device(self, device) -> None:
         device = torch.device(device)
@@ -999,24 +918,7 @@ class VisualTower(nn.Module):
     def reset_runtime_backbone_cache(self, *, action_dim: int, cache_name: str = "open_wam_exact") -> None:
         """Clear shared-backbone runtime cache state for a named session."""
         transformer = self.get_runtime_backbone(action_dim=action_dim)
-        try:
-            transformer.clear_runtime_prediction_cache(cache_name)
-        except KeyError:
-            pass
-        except AttributeError:
-            try:
-                transformer.clear_pred_cache(cache_name)
-            except KeyError:
-                pass
-        try:
-            transformer.clear_runtime_cache_state(cache_name)
-        except KeyError:
-            pass
-        except AttributeError:
-            try:
-                transformer.clear_cache(cache_name)
-            except KeyError:
-                pass
+        reset_runtime_module_cache(transformer, cache_name=cache_name)
 
     def get_exact_runtime_transformer(self, *, action_dim: int) -> nn.Module:
         return self.get_runtime_backbone(action_dim=action_dim)

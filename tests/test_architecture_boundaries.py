@@ -156,6 +156,32 @@ def test_visual_tower_cache_lifecycle_has_one_policy_owner() -> None:
         assert backend_helper not in tower_source
 
 
+def test_visual_tower_runtime_backbone_policy_has_one_owner() -> None:
+    visual_root = PACKAGE_ROOT / "models" / "visual_tower"
+    owner_path = visual_root / "runtime_backbone.py"
+    tower_path = visual_root / "tower.py"
+    owner_functions = {
+        "ensure_runtime_module_device",
+        "initialize_runtime_backbone",
+        "log_runtime_backbone_missing_keys",
+        "reset_runtime_module_cache",
+        "validate_runtime_backbone_request",
+    }
+
+    assert owner_functions <= _top_level_definitions(owner_path)
+    tower_source = tower_path.read_text(encoding="utf-8")
+    assert "from .runtime_backbone import" in tower_source
+    for loading_helper in (
+        "is_allowed_runtime_missing_key",
+        "is_open_wam_exported_runtime_backbone_dir",
+        "load_exported_runtime_backbone_into_replica_core",
+        "load_reference_weights_into_replica_core",
+        "preferred_reference_dtype",
+        "resolve_runtime_backbone_dir",
+    ):
+        assert loading_helper not in tower_source
+
+
 def test_mot_policy_does_not_depend_on_parallel_stream_implementation() -> None:
     violations = sorted(
         imported

@@ -105,6 +105,10 @@ plain contracts:
   advancement, and reset. `VisualTower` keeps the stable public facade and
   supplies its current capability and layer count; the lifecycle owns no
   modules or tensors.
+- `visual_tower.runtime_backbone` owns checkpoint-source selection, one-time
+  loading diagnostics, action-dimension access validation, runtime
+  device/dtype normalization, and current/legacy cache reset. It borrows the
+  tower-owned module for each operation and cannot register checkpoint state.
 - `visual_tower.exact_runtime` owns shared exact single-stream input
   preparation, CFG duplication, dtype selection, and execution. Policy
   runtimes may select when to use it but do not reimplement these backbone

@@ -250,6 +250,12 @@ backbone capability and layer count dynamically. The lifecycle is a frozen
 plain object, not an `nn.Module`, so using or replacing it cannot add
 checkpoint keys.
 
+Runtime-backbone checkpoint selection and operational compatibility live in
+`open_wam.models.visual_tower.runtime_backbone`. These helpers borrow the
+tower-owned module rather than wrapping it, so custom runtime programs can
+reuse access validation, device normalization, and cache reset without
+creating a second parameter owner.
+
 Attention profiles decide which tokens may interact. Cache policy decides how
 already-computed keys and values are represented, retained, and prepended.
 Neither contract owns learned parameters. A new cache representation still
