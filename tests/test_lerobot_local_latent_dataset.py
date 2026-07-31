@@ -50,6 +50,9 @@ from open_wam.data.lerobot_v2_latent_storage import (
     resolve_latent_root,
     scan_local_latent_windows,
 )
+from open_wam.data.lerobot_v2_latent_supervision import (
+    LocalLatentSupervisionAssembler,
+)
 from open_wam.training import TrainingRuntime
 from open_wam.configs import load_experiment_config
 
@@ -349,6 +352,84 @@ def test_local_lerobot_latent_dataset_builds_canonical_latents(tmp_path: Path) -
     assert sample.metadata["observation_frame_indices"] == [0, 1, 2, 3]
     assert sample.metadata["valid_action_steps"] == 6
     assert sample.metadata["dataset_mean_valid_action_steps"] == pytest.approx(6.0)
+
+
+def test_local_latent_supervision_dataset_delegates_match_owner(tmp_path: Path) -> None:
+    repo_root = tmp_path / "robotwin_local_latent_supervision"
+    _build_local_robotwin_latent_repo(repo_root)
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
+    config = replace(
+        config,
+        data=replace(
+            _disable_replay_status(config.data),
+            dataset_type="lerobot_v2_latent_local",
+            local_root=str(repo_root),
+            train_fraction=1.0,
+            num_workers=0,
+            train_batch_size=1,
+            val_batch_size=1,
+        ),
+    )
+    train_dataset, _ = build_train_val_latent_datasets(config.data)
+    assembler = train_dataset._supervision_assembler
+    assert isinstance(assembler, LocalLatentSupervisionAssembler)
+    assert assembler.data_config is train_dataset.data_config
+
+    window = train_dataset.windows[0]
+    metadata = train_dataset._repo_bundles[str(window.repo_root)].metadata
+    rows = train_dataset._load_episode_rows(
+        window.repo_root,
+        window.episode_index,
+        metadata,
+    )
+    observed_frame_ids = [0, 1, 2, 3]
+    delegate_targets = train_dataset._build_lingbot_window_action_targets(
+        rows=rows,
+        window=window,
+        observed_frame_ids=observed_frame_ids,
+        latent_num_frames=4,
+        leading_zero_action_frames=1,
+        leading_zero_action_mask=0.0,
+    )
+    owner_targets = assembler.build_lingbot_window_action_targets(
+        rows=rows,
+        window=window,
+        observed_frame_ids=observed_frame_ids,
+        latent_num_frames=4,
+        leading_zero_action_frames=1,
+        leading_zero_action_mask=0.0,
+    )
+    assert torch.equal(delegate_targets[0], owner_targets[0])
+    assert torch.equal(delegate_targets[1], owner_targets[1])
+    assert delegate_targets[2] == owner_targets[2]
+
+    delegate_state = train_dataset._extract_state_history_at_frame(
+        rows=rows,
+        anchor_frame_index=3,
+        state_horizon=3,
+    )
+    owner_state = assembler.extract_state_history_at_frame(
+        rows=rows,
+        anchor_frame_index=3,
+        state_horizon=3,
+    )
+    assert torch.equal(delegate_state[0], owner_state[0])
+    assert torch.equal(delegate_state[1], owner_state[1])
+
+    delegate_proprio = train_dataset._extract_proprio_context_state_sequence(
+        rows=rows,
+        observed_frame_ids=observed_frame_ids,
+        chunk_size=2,
+        loss_frame_start=1,
+    )
+    owner_proprio = assembler.extract_proprio_context_state_sequence(
+        rows=rows,
+        observed_frame_ids=observed_frame_ids,
+        chunk_size=2,
+        loss_frame_start=1,
+    )
+    assert torch.equal(delegate_proprio[0], owner_proprio[0])
+    assert torch.equal(delegate_proprio[1], owner_proprio[1])
 
 
 def test_scan_local_latent_windows_requires_complete_multicamera_latents(tmp_path: Path) -> None:

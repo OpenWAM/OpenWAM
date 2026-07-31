@@ -425,21 +425,63 @@ def test_lerobot_latent_segment_geometry_has_one_owner() -> None:
     }.isdisjoint(dataset_methods)
 
 
+def test_lerobot_latent_supervision_assembly_has_one_owner() -> None:
+    supervision_path = (
+        PACKAGE_ROOT / "data" / "lerobot_v2_latent_supervision.py"
+    )
+    dataset_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent.py"
+    assembler_methods = {
+        "build_action_targets",
+        "build_lingbot_window_action_targets",
+        "build_standard_policy_window_action_targets",
+        "extract_proprio_context_frames",
+        "extract_proprio_context_state_sequence",
+        "extract_sequence",
+        "extract_state_at_frame",
+        "extract_state_history_at_frame",
+    }
+    assert assembler_methods <= _class_method_definitions(
+        supervision_path,
+        "LocalLatentSupervisionAssembler",
+    )
+
+    compatibility_methods = {
+        f"_{method_name}" for method_name in assembler_methods
+    }
+    assert compatibility_methods <= _class_method_definitions(
+        dataset_path,
+        "LocalLeRobotLatentWindowDataset",
+    )
+    for method_name in compatibility_methods:
+        method = _class_method(
+            dataset_path,
+            "LocalLeRobotLatentWindowDataset",
+            method_name,
+        )
+        assert len(method.body) == 1
+        assert isinstance(method.body[0], ast.Return)
+        assert isinstance(method.body[0].value, ast.Call)
+
+
 def test_row_action_target_transform_has_one_owner() -> None:
     transform_path = PACKAGE_ROOT / "data" / "row_action_targets.py"
     transform_definitions = _top_level_definitions(transform_path)
     assert {"build_row_action_targets", "resolve_row_key"} <= transform_definitions
 
-    adapter_classes = {
-        "lerobot_v2.py": "LeRobotV2WindowDataset",
-        "lerobot_v2_latent.py": "LocalLeRobotLatentWindowDataset",
-        "lerobot_consortium.py": "LeRobotConsortiumWindowDataset",
-    }
-    for filename, class_name in adapter_classes.items():
+    adapter_methods = (
+        ("lerobot_v2.py", "LeRobotV2WindowDataset", "_build_action_targets"),
+        (
+            "lerobot_v2_latent_supervision.py",
+            "LocalLatentSupervisionAssembler",
+            "build_action_targets",
+        ),
+        ("lerobot_consortium.py", "LeRobotConsortiumWindowDataset", "_build_action_targets"),
+    )
+    for filename, class_name, method_name in adapter_methods:
         method = _class_method(
             PACKAGE_ROOT / "data" / filename,
             class_name,
-            "_build_action_targets",
+            method_name,
         )
         assert len(method.body) == 1
         assert isinstance(method.body[0], ast.Return)
@@ -450,7 +492,7 @@ def test_row_action_target_transform_has_one_owner() -> None:
         packer_keywords = [
             keyword for keyword in call.keywords if keyword.arg == "pack_sequence"
         ]
-        if filename == "lerobot_v2_latent.py":
+        if filename == "lerobot_v2_latent_supervision.py":
             assert len(packer_keywords) == 1
             assert isinstance(packer_keywords[0].value, ast.Name)
             assert packer_keywords[0].value.id == "_TRUNCATING_SEQUENCE_PACKER"
