@@ -425,6 +425,46 @@ def test_lerobot_latent_segment_geometry_has_one_owner() -> None:
     }.isdisjoint(dataset_methods)
 
 
+def test_lerobot_latent_segment_materialization_has_one_owner() -> None:
+    materialization_path = (
+        PACKAGE_ROOT / "data" / "latent_segment_materialization.py"
+    )
+    dataset_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent.py"
+    assert {
+        "LatentSegmentMaterializationPlan",
+        "plan_latent_segment_materialization",
+        "slice_latent_segment_with_zero_order_hold",
+    } <= _top_level_definitions(materialization_path)
+
+    slice_facade = _class_method(
+        dataset_path,
+        "UniformSegmentLocalLeRobotLatentDataset",
+        "_slice_video_latents_with_zero_hold",
+    )
+    assert len(slice_facade.body) == 1
+    assert isinstance(slice_facade.body[0], ast.Return)
+    assert isinstance(slice_facade.body[0].value, ast.Call)
+    assert isinstance(slice_facade.body[0].value.func, ast.Name)
+    assert (
+        slice_facade.body[0].value.func.id
+        == "slice_latent_segment_with_zero_order_hold"
+    )
+
+    builder = _class_method(
+        dataset_path,
+        "UniformSegmentLocalLeRobotLatentDataset",
+        "_build_uniform_segment",
+    )
+    direct_plan_calls = [
+        node
+        for node in ast.walk(builder)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "plan_latent_segment_materialization"
+    ]
+    assert len(direct_plan_calls) == 1
+
+
 def test_lerobot_latent_supervision_assembly_has_one_owner() -> None:
     supervision_path = (
         PACKAGE_ROOT / "data" / "lerobot_v2_latent_supervision.py"

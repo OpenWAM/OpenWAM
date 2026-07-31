@@ -54,6 +54,11 @@ from .latent_segment_geometry import (
     resolve_rollout_parity_boundary_segment,
     rollout_parity_start_range,
 )
+from .latent_segment_materialization import (
+    LatentSegmentMaterializationPlan,
+    plan_latent_segment_materialization,
+    slice_latent_segment_with_zero_order_hold,
+)
 from .latent_view_assembly import assemble_latent_views
 from .row_action_targets import (
     RowSequenceExtractor,
@@ -194,6 +199,7 @@ __all__ = [
     "LiberoOfflineWindowDataset",
     "LatentDatasetPairBuilder",
     "LatentSegmentBoundary",
+    "LatentSegmentMaterializationPlan",
     "LatentWAMBatch",
     "LatentWAMSample",
     "LeRobotConsortiumWindowDataset",
@@ -274,6 +280,7 @@ __all__ = [
     "normalize_action_targets",
     "normalize_joint_positions",
     "pack_temporal_sequence",
+    "plan_latent_segment_materialization",
     "project_real_conditional_sample_to_target_only",
     "move_latent_wam_batch_to_device",
     "move_wam_batch_to_device",
@@ -293,6 +300,7 @@ __all__ = [
     "rollout_parity_start_range",
     "state_sequence_to_pose_sequence",
     "split_mixed_video_episodes",
+    "slice_latent_segment_with_zero_order_hold",
     "transform_frame",
     "validate_action_mapping_preflight",
     "write_lerobot_consortium_contract_catalog",

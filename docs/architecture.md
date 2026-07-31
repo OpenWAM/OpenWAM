@@ -197,7 +197,9 @@ local LeRobot latent adapter, `LocalLatentRepository` in
 per-camera latent I/O, condition-payload validation, canonical latent-canvas
 assembly, and bounded I/O caches;
 `latent_segment_geometry` owns pure eligible-start, materialized-bound, and
-loss-bound calculations; `lerobot_v2_latent_sampling` owns local
+loss-bound calculations; `latent_segment_materialization` combines those
+bounds with raw-frame anchors and zero-order-hold latent slicing through a
+public typed plan; `lerobot_v2_latent_sampling` owns local
 task/trajectory mass tables, split-salted draw plans, sampling metadata, and
 the thin distributed-sampler adapters;
 `lerobot_v2_latent_supervision` owns deterministic local row alignment,
