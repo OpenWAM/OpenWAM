@@ -34,6 +34,10 @@ from ..contracts import (
     PolicyTrainOutput,
 )
 from .attention import build_chunk_causal_video_mask, build_mot_attention_mask
+from .cache_execution import (
+    forward_action_with_video_cache,
+    prefill_video_kv_cache,
+)
 from .conditioning import MoTConditioning
 from .contracts import (
     MoTActionLayerCache,
@@ -54,10 +58,6 @@ from .modules import MoTActionExpert, init_action_expert_from_video_core
 from .packed_block import MoTPackedBlock, MoTPackedBlockStack
 from .packed_inference import MoTPackedInferenceProgram
 from .packed_training import MoTPackedTrainingProgram
-from .runtime import (
-    forward_action_with_video_cache,
-    prefill_video_kv_cache,
-)
 from .runtime_routing import (
     MOT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS,
     ensure_mot_policy_variant_inference_backend,

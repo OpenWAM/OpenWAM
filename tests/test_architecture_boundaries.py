@@ -606,6 +606,28 @@ def test_mot_cache_state_operations_have_one_owner() -> None:
     )
 
 
+def test_mot_cache_execution_has_one_owner() -> None:
+    cache_execution_functions = {
+        "forward_action_with_video_and_action_cache",
+        "forward_action_with_video_cache",
+        "prefill_video_kv_cache",
+    }
+    mot_root = PACKAGE_ROOT / "models" / "policy_variants" / "mot"
+
+    assert cache_execution_functions <= _top_level_definitions(
+        mot_root / "cache_execution.py"
+    )
+    assert cache_execution_functions.isdisjoint(
+        _top_level_definitions(mot_root / "runtime.py")
+    )
+    assert "from .cache_execution import" in (
+        mot_root / "variant.py"
+    ).read_text(encoding="utf-8")
+    assert "from .cache_execution import" in (
+        mot_root / "split_cache_inference.py"
+    ).read_text(encoding="utf-8")
+
+
 def test_mot_attention_layouts_have_one_owner() -> None:
     attention_builders = {
         "build_chunk_causal_video_mask",

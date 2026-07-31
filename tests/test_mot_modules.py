@@ -48,6 +48,11 @@ from open_wam.models.policy_variants.mot.attention import (
     build_mot_packed_coupling_attention_profile,
     build_packed_action_attention_mask,
 )
+from open_wam.models.policy_variants.mot.cache_execution import (
+    forward_action_with_video_and_action_cache,
+    forward_action_with_video_cache,
+    prefill_video_kv_cache,
+)
 from open_wam.models.policy_variants.mot.cache_state import (
     append_mot_action_cache,
     move_mot_action_cache,
@@ -119,6 +124,18 @@ def test_mot_runtime_sharding_exports_are_compatibility_aliases() -> None:
     assert mot_runtime._checkpoint_summon_context is checkpoint_unshard_context
     assert mot_runtime._summon_full_params is summon_full_parameters
     assert mot_runtime._unshard_runtime_params is unshard_runtime_parameters
+
+
+def test_mot_runtime_cache_execution_exports_are_compatibility_aliases() -> None:
+    assert (
+        mot_runtime.forward_action_with_video_and_action_cache
+        is forward_action_with_video_and_action_cache
+    )
+    assert (
+        mot_runtime.forward_action_with_video_cache
+        is forward_action_with_video_cache
+    )
+    assert mot_runtime.prefill_video_kv_cache is prefill_video_kv_cache
 
 
 def test_mot_action_expert_pre_and_post_shapes() -> None:

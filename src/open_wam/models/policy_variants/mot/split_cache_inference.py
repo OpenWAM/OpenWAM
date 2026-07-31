@@ -34,6 +34,7 @@ from open_wam.models.visual_tower.exact_runtime import (
 
 from ..contracts import PolicyInferContext, PolicyInferOutput, PolicyInferState
 from .attention import build_mot_inference_action_attention_mask
+from .cache_execution import forward_action_with_video_and_action_cache
 from .cache_state import (
     append_mot_action_cache,
     move_mot_action_cache,
@@ -56,7 +57,6 @@ from .generalist_modes import (
     resolve_generalist_rollout_mode as _resolve_mot_generalist_rollout_mode,
 )
 from .modules import MoTActionExpert
-from .runtime import forward_action_with_video_and_action_cache
 from .runtime_routing import (
     MOT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS,
     resolve_mot_action_only_rollout,
