@@ -253,6 +253,14 @@ global orders. `mixed_video` owns RGB frame-cache lifetime, RGB/latent tensor
 selection and padding, latent view assembly, and final sample construction.
 Historical catalog, decode, and window-record imports from `mixed_video` remain
 identity aliases.
+For heterogeneous LeRobot consortium training,
+`ConsortiumEpochOrderPlan` freezes member index groups, per-member weights,
+the typed weight/random modes, and the sampling seed. It owns fixed-length
+largest-remainder allocation, member-local seeded shuffling, and deterministic
+global interleaving. `lerobot_consortium` owns discovery, source caching,
+catalog/split construction, channel adaptation, row decoding, and final sample
+construction. This policy is intentionally distinct from mixed-video source
+balancing, whose rounded target counts may change epoch length.
 `distributed_sampling` owns rank sharding and epoch coordination; adapters
 supply weights or deterministic global index orders without embedding
 distributed control flow. Equal-rank padded orders, intentionally unpadded

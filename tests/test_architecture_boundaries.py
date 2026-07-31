@@ -556,6 +556,52 @@ def test_lerobot_latent_hierarchical_segment_planning_has_one_owner() -> None:
     }.isdisjoint(dataset_methods)
 
 
+def test_lerobot_consortium_epoch_order_planning_has_one_owner() -> None:
+    planning_path = (
+        PACKAGE_ROOT / "data" / "lerobot_consortium_sampling.py"
+    )
+    dataset_path = PACKAGE_ROOT / "data" / "lerobot_consortium.py"
+
+    assert {"ConsortiumEpochOrderPlan"} <= _top_level_definitions(
+        planning_path
+    )
+    assert {
+        "build_epoch_index_order",
+        "from_member_indices",
+    } <= _class_method_definitions(
+        planning_path,
+        "ConsortiumEpochOrderPlan",
+    )
+    assert not any(
+        imported == "torch" or imported.startswith("torch.")
+        for imported in _absolute_imports_for_file(planning_path)
+    )
+    assert {
+        "_build_weighted_round_robin_schedule",
+        "_cycle_take",
+        "_largest_remainder_counts",
+        "_resolve_per_dataset_target_counts",
+        "_seeded_shuffle",
+        "_stable_int_seed",
+    }.isdisjoint(_top_level_definitions(dataset_path))
+
+    compatibility_method = _class_method(
+        dataset_path,
+        "LeRobotConsortiumWindowDataset",
+        "build_epoch_index_order",
+    )
+    assert len(compatibility_method.body) == 1
+    assert isinstance(compatibility_method.body[0], ast.Return)
+    delegated_call = compatibility_method.body[0].value
+    assert isinstance(delegated_call, ast.Call)
+    assert isinstance(delegated_call.func, ast.Name)
+    assert delegated_call.func.id == "list"
+    owner_call = delegated_call.args[0]
+    assert isinstance(owner_call, ast.Call)
+    assert isinstance(owner_call.func, ast.Attribute)
+    assert owner_call.func.attr == "build_epoch_index_order"
+
+
 def test_lerobot_latent_segment_geometry_has_one_owner() -> None:
     geometry_functions = {
         "compact_boundary_start_range",

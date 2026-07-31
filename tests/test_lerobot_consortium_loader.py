@@ -32,6 +32,7 @@ from open_wam.configs import (
 )
 from open_wam.data import (
     DatasetLoaderSpec,
+    ConsortiumEpochOrderPlan,
     LeRobotConsortiumInventoryRow,
     build_lerobot_consortium_catalog,
     build_lerobot_consortium_report,
@@ -864,6 +865,10 @@ def test_consortium_train_sampler_respects_weight_and_random_modes(tmp_path: Pat
     epoch0_repeat = train_dataset.build_epoch_index_order(epoch=0)
     epoch1 = train_dataset.build_epoch_index_order(epoch=1)
 
+    assert isinstance(train_dataset.epoch_order_plan, ConsortiumEpochOrderPlan)
+    assert epoch0 == list(
+        train_dataset.epoch_order_plan.build_epoch_index_order(epoch=0)
+    )
     assert epoch0 == epoch0_repeat
     assert epoch0 != epoch1
 
