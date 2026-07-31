@@ -2557,6 +2557,27 @@ def test_libero_mot_drivers_delegate_to_the_package_episode_runner() -> None:
         assert policy_state_field in observed_history_source
 
 
+def test_libero_task_discovery_has_one_integration_owner() -> None:
+    task_path = PACKAGE_ROOT / "integrations" / "libero_tasks.py"
+    env_path = PACKAGE_ROOT / "integrations" / "libero_env.py"
+    task_definitions = _top_level_definitions(task_path)
+    env_definitions = _top_level_definitions(env_path)
+    task_contract = {
+        "LiberoTaskSpec",
+        "ensure_local_libero_config",
+        "infer_task_local_episode_rank",
+        "load_libero_task_init_states",
+        "resolve_libero_task",
+        "resolve_libero_task_by_id",
+    }
+
+    assert task_contract <= task_definitions
+    assert task_contract.isdisjoint(env_definitions)
+    assert "open_wam.integrations.libero_tasks" in _absolute_imports_for_file(
+        env_path
+    )
+
+
 def test_public_config_enums_are_declared_once() -> None:
     path = PACKAGE_ROOT / "configs" / "enums.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

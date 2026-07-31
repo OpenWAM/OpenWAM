@@ -53,9 +53,24 @@ def test_package_exposes_version_without_importing_integrations() -> None:
         "assert open_wam.__version__ == sys.argv[1]; "
         "assert 'open_wam.integrations.calvin_env' not in sys.modules; "
         "assert 'open_wam.integrations.robotwin_env' not in sys.modules; "
-        "assert 'open_wam.integrations.libero_env' not in sys.modules"
+        "assert 'open_wam.integrations.libero_env' not in sys.modules; "
+        "assert 'open_wam.integrations.libero_tasks' not in sys.modules"
     )
     subprocess.run([sys.executable, "-c", code, _project_version()], check=True)
+
+
+@pytest.mark.unit
+def test_libero_task_contract_does_not_load_control_or_torch_stacks() -> None:
+    code = (
+        "import sys; "
+        "from open_wam.integrations import LiberoTaskSpec; "
+        "assert LiberoTaskSpec.__module__ == 'open_wam.integrations.libero_tasks'; "
+        "assert 'open_wam.integrations.libero_tasks' in sys.modules; "
+        "assert 'open_wam.integrations.libero_env' not in sys.modules; "
+        "assert 'torch' not in sys.modules; "
+        "assert 'numpy' not in sys.modules"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
 
 
 @pytest.mark.unit
