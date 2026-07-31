@@ -29,13 +29,25 @@ from open_wam.data import (
     discover_local_lerobot_repo_bundles,
 )
 from open_wam.data.lerobot_v2_latent import (
+    CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET
+    as LegacyConditionSourceFramePolicy,
     LocalEpisodeWindow as LegacyLocalEpisodeWindow,
     LocalLatentEpochOrderSampler,
     LocalLatentWeightedTrainSampler,
+    latent_filename as legacy_latent_filename,
+    reshape_latent_payload as legacy_reshape_latent_payload,
+    resolve_latent_root as legacy_resolve_latent_root,
+)
+from open_wam.data.latent_temporal import (
+    CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET,
 )
 from open_wam.data.lerobot_v2_latent_storage import (
     LocalEpisodeWindow,
+    LocalLatentRepository,
     discover_local_lerobot_repo_bundles as discover_storage_repo_bundles,
+    latent_filename,
+    reshape_latent_payload,
+    resolve_latent_root,
     scan_local_latent_windows,
 )
 from open_wam.training import TrainingRuntime
@@ -48,6 +60,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def test_lerobot_latent_storage_owns_compatibility_exports() -> None:
     assert LegacyLocalEpisodeWindow is LocalEpisodeWindow
     assert discover_local_lerobot_repo_bundles is discover_storage_repo_bundles
+    assert legacy_latent_filename is latent_filename
+    assert legacy_reshape_latent_payload is reshape_latent_payload
+    assert legacy_resolve_latent_root is resolve_latent_root
+    assert (
+        LegacyConditionSourceFramePolicy
+        is CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET
+    )
 
 
 def _disable_replay_status(data_config):
@@ -288,6 +307,35 @@ def test_local_lerobot_latent_dataset_builds_canonical_latents(tmp_path: Path) -
     )
 
     train_dataset, val_dataset = build_train_val_latent_datasets(config.data)
+    repository = train_dataset._latent_repository
+    assert isinstance(repository, LocalLatentRepository)
+    assert train_dataset._repo_bundles is repository.repo_bundles
+    assert train_dataset._episode_cache is repository.episode_cache
+    assert train_dataset._latent_view_cache is repository.latent_view_cache
+
+    window = train_dataset.windows[0]
+    metadata = train_dataset._repo_bundles[str(window.repo_root)].metadata
+    rows_from_dataset = train_dataset._load_episode_rows(
+        window.repo_root,
+        window.episode_index,
+        metadata,
+    )
+    rows_from_repository = repository.load_episode_rows(
+        window.repo_root,
+        window.episode_index,
+        metadata,
+    )
+    assert rows_from_dataset is rows_from_repository
+    latents_from_dataset = train_dataset._load_canonical_window_latents(
+        window,
+        metadata,
+    )
+    latents_from_repository = repository.load_canonical_window_latents(
+        window,
+        metadata,
+    )
+    assert latents_from_dataset is latents_from_repository
+
     sample = train_dataset[0]
 
     assert len(train_dataset) == 1

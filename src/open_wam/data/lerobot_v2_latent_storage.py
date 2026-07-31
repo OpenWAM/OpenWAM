@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -9,19 +10,27 @@ import random
 from typing import Any
 
 from einops import rearrange
+import pyarrow.parquet as pq
 import torch
 
 from open_wam.configs import DataConfig
 from open_wam.utils.latent_filenames import match_latent_window_filename
 
+from .latent_temporal import (
+    CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET,
+)
 from .lerobot_v2 import LeRobotEpisodeRecord, LeRobotV2Metadata
 
 
 __all__ = [
     "LocalEpisodeWindow",
+    "LocalLatentRepository",
     "LocalRepoBundle",
+    "assemble_canonical_latents",
+    "condition_latent_offset_mismatches",
     "discover_local_lerobot_repo_bundles",
     "latent_filename",
+    "load_empty_text_embedding",
     "load_lerobot_v2_local_metadata",
     "read_json_local",
     "read_jsonl_local",
@@ -69,6 +78,306 @@ class LocalRepoBundle:
     root: Path
     metadata: LeRobotV2Metadata
     episodes_by_index: dict[int, LeRobotEpisodeRecord]
+
+
+CanonicalLatentWindowPayload = tuple[
+    torch.Tensor,
+    dict[str, dict[str, int]],
+    dict[str, Any],
+    torch.Tensor | None,
+    dict[str, dict[str, int]],
+]
+
+
+class LocalLatentRepository:
+    """Cached repository access for one local latent dataset configuration."""
+
+    def __init__(self, data_config: DataConfig) -> None:
+        if data_config.local_root is None:
+            raise ValueError(
+                "Local latent repositories require `data.local_root` in the experiment config."
+            )
+        self.data_config = data_config
+        repo_roots = [data_config.local_root]
+        if data_config.val_local_root and data_config.val_local_root not in repo_roots:
+            repo_roots.append(data_config.val_local_root)
+        self.repo_bundles = {
+            str(bundle.root): bundle
+            for repo_root in repo_roots
+            for bundle in discover_local_lerobot_repo_bundles(repo_root)
+        }
+        self.episode_cache: OrderedDict[
+            tuple[str, int],
+            list[dict[str, Any]],
+        ] = OrderedDict()
+        self.latent_view_cache: OrderedDict[
+            tuple[str, int, int, int],
+            CanonicalLatentWindowPayload,
+        ] = OrderedDict()
+
+    def load_episode_rows(
+        self,
+        repo_root: Path,
+        episode_index: int,
+        metadata: LeRobotV2Metadata,
+    ) -> list[dict[str, Any]]:
+        cache_key = (str(repo_root), episode_index)
+        if cache_key in self.episode_cache:
+            self.episode_cache.move_to_end(cache_key)
+            return self.episode_cache[cache_key]
+
+        path = repo_root / metadata.data_path_template.format(
+            episode_chunk=episode_index // metadata.chunk_size,
+            episode_index=episode_index,
+        )
+        rows = pq.read_table(path).to_pylist()
+        self.episode_cache[cache_key] = rows
+        while len(self.episode_cache) > self.data_config.episode_cache_size:
+            self.episode_cache.popitem(last=False)
+        return rows
+
+    def load_window_latents(
+        self,
+        window: LocalEpisodeWindow,
+        metadata: LeRobotV2Metadata,
+    ) -> dict[str, dict[str, Any]]:
+        latent_root = resolve_latent_root(window.repo_root, self.data_config)
+        chunk_dir = (
+            latent_root
+            / f"chunk-{window.episode_index // metadata.chunk_size:03d}"
+        )
+        payloads: dict[str, dict[str, Any]] = {}
+        for camera_name in self.data_config.latent_camera_names:
+            latent_path = chunk_dir / camera_name / latent_filename(
+                episode_index=window.episode_index,
+                start_frame=window.start_frame,
+                end_frame=window.end_frame,
+            )
+            payload = torch.load(
+                latent_path,
+                map_location="cpu",
+                weights_only=False,
+            )
+            if not isinstance(payload, dict):
+                raise ValueError(
+                    f"Expected latent payload mapping at {latent_path}, "
+                    f"got {type(payload).__name__}."
+                )
+            payloads[camera_name] = payload
+        return payloads
+
+    def load_canonical_window_latents(
+        self,
+        window: LocalEpisodeWindow,
+        metadata: LeRobotV2Metadata,
+    ) -> CanonicalLatentWindowPayload:
+        cache_key = (
+            str(window.repo_root),
+            window.episode_index,
+            window.start_frame,
+            window.end_frame,
+        )
+        if cache_key in self.latent_view_cache:
+            self.latent_view_cache.move_to_end(cache_key)
+            return self.latent_view_cache[cache_key]
+
+        latent_payloads = self.load_window_latents(window, metadata)
+        video_latents, latent_layout_metadata = assemble_canonical_latents(
+            self.data_config,
+            latent_payloads,
+        )
+        assert video_latents is not None
+        condition_latents, condition_layout_metadata = assemble_canonical_latents(
+            self.data_config,
+            latent_payloads,
+            payload_key="condition_latent",
+            require_payload_key=False,
+        )
+        if condition_latents is not None:
+            expected_offset = int(
+                self.data_config.sample_construction.condition_source_frame_offset
+            )
+            mismatches = condition_latent_offset_mismatches(
+                self.data_config,
+                latent_payloads,
+                expected_offset=expected_offset,
+            )
+            if mismatches:
+                if expected_offset == 0:
+                    condition_latents = None
+                    condition_layout_metadata = {}
+                else:
+                    preview = "; ".join(mismatches[:4])
+                    raise ValueError(
+                        "Latent payload condition_source_frame_offset/policy does not match "
+                        f"`sample_construction.condition_source_frame_offset={expected_offset}`. "
+                        "Re-run scripts/augment_lerobot_latents_with_single_frame_condition.py "
+                        f"with --source-frame-offset {expected_offset} --overwrite. "
+                        f"Mismatches: {preview}"
+                    )
+        primary_payload = dict(
+            latent_payloads[self.data_config.latent_camera_names[0]]
+        )
+        payload = (
+            video_latents,
+            latent_layout_metadata,
+            primary_payload,
+            condition_latents,
+            condition_layout_metadata,
+        )
+        self.latent_view_cache[cache_key] = payload
+        while len(self.latent_view_cache) > max(
+            1,
+            int(self.data_config.episode_cache_size),
+        ):
+            self.latent_view_cache.popitem(last=False)
+        return payload
+
+
+def load_empty_text_embedding(data_config: DataConfig) -> torch.Tensor | None:
+    """Load the configured or repository-local empty-text embedding."""
+
+    configured_path = data_config.empty_text_embedding_path
+    if configured_path is not None:
+        configured_candidate = Path(configured_path)
+        if not configured_candidate.exists():
+            raise FileNotFoundError(
+                "Configured `data.empty_text_embedding_path` does not exist: "
+                f"{configured_candidate}"
+            )
+        candidate_path = configured_candidate
+    else:
+        if data_config.local_root is None:
+            raise ValueError(
+                "Local latent repositories require `data.local_root` to resolve `empty_emb.pt`."
+            )
+        candidate_path = Path(data_config.local_root) / "empty_emb.pt"
+        if not candidate_path.exists():
+            return None
+    payload = torch.load(candidate_path, map_location="cpu", weights_only=False)
+    if not isinstance(payload, torch.Tensor):
+        raise TypeError(
+            "Expected `empty_text_embedding_path` to point at a tensor checkpoint, "
+            f"got {type(payload)!r} from {candidate_path}"
+        )
+    if payload.ndim == 3 and payload.shape[0] == 1:
+        payload = payload.squeeze(0)
+    return payload.to(dtype=torch.float32).contiguous()
+
+
+def assemble_canonical_latents(
+    data_config: DataConfig,
+    latent_payloads: dict[str, dict[str, Any]],
+    *,
+    payload_key: str = "latent",
+    require_payload_key: bool = True,
+) -> tuple[torch.Tensor | None, dict[str, dict[str, int]]]:
+    """Place per-camera payloads into the configured canonical latent canvas."""
+
+    canonical_latents = None
+    metadata: dict[str, dict[str, int]] = {}
+    for view_layout, camera_name in zip(
+        data_config.view_layout,
+        data_config.latent_camera_names,
+        strict=True,
+    ):
+        payload = latent_payloads[camera_name]
+        if payload_key not in payload:
+            if require_payload_key:
+                raise KeyError(
+                    f"Expected key {payload_key!r} in latent payload for camera "
+                    f"{camera_name!r}."
+                )
+            return None, {}
+        view_latents = reshape_latent_payload(payload, payload_key=payload_key)
+        latent_height = int(view_latents.shape[1])
+        latent_width = int(view_latents.shape[2])
+        stride_h = max(1, view_layout.height // latent_height)
+        stride_w = max(1, view_layout.width // latent_width)
+        top = view_layout.top // stride_h
+        left = view_layout.left // stride_w
+        full_height = data_config.canonical_height // stride_h
+        full_width = data_config.canonical_width // stride_w
+
+        if canonical_latents is None:
+            frames = int(view_latents.shape[0])
+            channels = int(view_latents.shape[-1])
+            canonical_latents = torch.zeros(
+                frames,
+                full_height,
+                full_width,
+                channels,
+                dtype=view_latents.dtype,
+            )
+        canonical_latents[
+            :,
+            top : top + latent_height,
+            left : left + latent_width,
+            :,
+        ] = view_latents
+        metadata[camera_name] = {
+            "latent_height": latent_height,
+            "latent_width": latent_width,
+            "top": top,
+            "left": left,
+        }
+
+    if canonical_latents is None:
+        raise ValueError("Expected at least one latent camera payload.")
+    return (
+        canonical_latents.permute(3, 0, 1, 2)
+        .contiguous()
+        .to(dtype=torch.float32),
+        metadata,
+    )
+
+
+def condition_latent_offset_mismatches(
+    data_config: DataConfig,
+    latent_payloads: dict[str, dict[str, Any]],
+    *,
+    expected_offset: int,
+) -> list[str]:
+    """Report payloads that violate the configured condition-frame contract."""
+
+    mismatches: list[str] = []
+    for camera_name in data_config.latent_camera_names:
+        payload = latent_payloads[camera_name]
+        if "condition_latent" not in payload:
+            continue
+        payload_offset = payload.get("condition_source_frame_offset")
+        if payload_offset is None:
+            if int(expected_offset) == 0:
+                # Legacy optional condition payloads predate explicit source
+                # metadata; only the unshifted contract can consume them.
+                continue
+            mismatches.append(
+                f"{camera_name}: missing condition_source_frame_offset"
+            )
+            continue
+        if int(payload_offset) != int(expected_offset):
+            mismatches.append(
+                f"{camera_name}: payload={int(payload_offset)} "
+                f"expected={int(expected_offset)}"
+            )
+            continue
+        payload_policy = payload.get("condition_source_frame_policy")
+        if payload_policy is None:
+            if int(expected_offset) == 0:
+                continue
+            mismatches.append(
+                f"{camera_name}: missing condition_source_frame_policy"
+            )
+            continue
+        if (
+            payload_policy
+            != CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET
+        ):
+            mismatches.append(
+                f"{camera_name}: condition_source_frame_policy={payload_policy!r} "
+                f"expected {CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET!r}"
+            )
+    return mismatches
 
 
 def discover_local_lerobot_repo_bundles(local_root: str | Path) -> list[LocalRepoBundle]:

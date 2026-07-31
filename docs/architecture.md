@@ -192,12 +192,15 @@ This lets LIBERO, RoboTwin, CALVIN, synthetic fixtures, and future datasets use
 the same train/eval/runtime stack.
 
 Dataset storage and sample semantics are separate responsibilities. For the
-local LeRobot latent adapter, `lerobot_v2_latent_storage` owns repository
-discovery, metadata, filenames, and payload reshaping;
+local LeRobot latent adapter, `LocalLatentRepository` in
+`lerobot_v2_latent_storage` owns repository discovery, episode-row and
+per-camera latent I/O, condition-payload validation, canonical latent-canvas
+assembly, and bounded I/O caches;
 `latent_segment_geometry` owns pure eligible-start, materialized-bound, and
 loss-bound calculations; and `lerobot_v2_latent` owns sampling draws,
-action/state extraction, tensor assembly, and public `LatentWAMSample`
-construction.
+action/state extraction, sample-mode semantics, and public `LatentWAMSample`
+construction. Historical dataset-private load helpers remain thin delegates
+for compatibility, but do not own a second implementation.
 For row-oriented robot datasets, `row_action_targets` owns raw, relative-EEF,
 and absolute-joint target conversion, action mapping, normalization, and
 target metadata. `sequence_packing` owns the canonical float32 padded tensor

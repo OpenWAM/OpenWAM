@@ -304,18 +304,51 @@ def test_core_packages_do_not_depend_on_optional_runtime_surfaces() -> None:
 def test_lerobot_latent_repository_io_has_one_storage_owner() -> None:
     storage_owned = {
         "LocalEpisodeWindow",
+        "LocalLatentRepository",
         "LocalRepoBundle",
+        "assemble_canonical_latents",
+        "condition_latent_offset_mismatches",
         "discover_local_lerobot_repo_bundles",
+        "load_empty_text_embedding",
         "scan_local_latent_windows",
         "load_lerobot_v2_local_metadata",
         "resolve_latent_root",
         "reshape_latent_payload",
     }
-    storage_definitions = _top_level_definitions(PACKAGE_ROOT / "data" / "lerobot_v2_latent_storage.py")
-    dataset_definitions = _top_level_definitions(PACKAGE_ROOT / "data" / "lerobot_v2_latent.py")
+    storage_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent_storage.py"
+    dataset_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent.py"
+    storage_definitions = _top_level_definitions(storage_path)
+    dataset_definitions = _top_level_definitions(dataset_path)
 
     assert storage_owned <= storage_definitions
     assert storage_owned.isdisjoint(dataset_definitions)
+    assert {
+        "load_episode_rows",
+        "load_window_latents",
+        "load_canonical_window_latents",
+    } <= _class_method_definitions(storage_path, "LocalLatentRepository")
+
+    compatibility_methods = {
+        "_load_empty_text_embedding",
+        "_load_window_latents",
+        "_assemble_canonical_latents",
+        "_condition_latent_offset_mismatches",
+        "_load_canonical_window_latents",
+        "_load_episode_rows",
+    }
+    assert compatibility_methods <= _class_method_definitions(
+        dataset_path,
+        "LocalLeRobotLatentWindowDataset",
+    )
+    for method_name in compatibility_methods:
+        method = _class_method(
+            dataset_path,
+            "LocalLeRobotLatentWindowDataset",
+            method_name,
+        )
+        assert len(method.body) == 1
+        assert isinstance(method.body[0], ast.Return)
+        assert isinstance(method.body[0].value, ast.Call)
 
 
 def test_lerobot_latent_segment_geometry_has_one_owner() -> None:
