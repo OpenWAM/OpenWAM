@@ -47,7 +47,6 @@ def main() -> None:
         info = json.load(f)
 
     fps = info["fps"]
-    total_episodes = info["total_episodes"]
     chunks_size = info.get("chunks_size", 1000)
     video_path_template = info.get("video_path", "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4")
 

@@ -71,6 +71,20 @@ from .shared_transformer_support import (
     select_split_segments as _select_split_segments,
 )
 
+_COMPATIBILITY_EXPORTS = (
+    _packed_slot_pool_query_sequence_ids,
+    _prepend_cached_prefix_mask,
+    _prepare_sdpa_mask,
+    _resolve_slot_pool_prefix_visibility,
+    _retained_slot_pool_indices_for_current_write,
+    _apply_rotary_emb,
+    _feed_forward_with_materialized_params,
+    _layer_norm_with_materialized_params,
+    _linear_with_materialized_params,
+    _materialize_runtime_parameter,
+    _rms_norm_with_materialized_weight,
+)
+
 
 class SharedVideoTransformerCore(nn.Module):
     """Shared Wan-style transformer core for all policy variants."""

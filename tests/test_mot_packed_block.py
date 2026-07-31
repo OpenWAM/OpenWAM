@@ -17,9 +17,8 @@ from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
-import pytest
 
-import open_wam.configs  # ensure typed-config + backbone modules import order
+import open_wam.configs  # Complete config initialization before policy imports.
 from open_wam.models.policy_variants.mot.modules import MoTActionExpert
 from open_wam.models.policy_variants.mot.packed_block import (
     MoTPackedBlock,
@@ -27,6 +26,8 @@ from open_wam.models.policy_variants.mot.packed_block import (
 )
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore
+
+_CONFIG_INITIALIZATION = open_wam.configs
 
 
 # --- shared fixture builders -------------------------------------------------

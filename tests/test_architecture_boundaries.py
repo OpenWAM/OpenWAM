@@ -77,6 +77,35 @@ def _top_level_definitions(path: Path) -> set[str]:
     }
 
 
+def _top_level_import_names(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            names.update(alias.asname or alias.name.split(".", 1)[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module != "__future__":
+            names.update(alias.asname or alias.name for alias in node.names)
+    return names
+
+
+def _compatibility_export_names(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    names: list[str] = []
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id.endswith("_COMPATIBILITY_EXPORTS")
+            for target in node.targets
+        ):
+            continue
+        assert isinstance(node.value, ast.Tuple)
+        assert all(isinstance(element, ast.Name) for element in node.value.elts)
+        names.extend(element.id for element in node.value.elts if isinstance(element, ast.Name))
+    assert len(names) == len(set(names))
+    return set(names)
+
+
 def _class_method_definitions(path: Path, class_name: str) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     class_node = next(
@@ -1345,6 +1374,34 @@ def test_parallel_reference_runtime_is_a_compatibility_only_facade() -> None:
     )
 
     assert not _top_level_definitions(reference_runtime_path)
+
+
+def test_compatibility_export_anchors_only_reference_imported_symbols() -> None:
+    anchored_modules = tuple(
+        path
+        for path in PACKAGE_ROOT.rglob("*.py")
+        if "_COMPATIBILITY_EXPORTS" in path.read_text(encoding="utf-8")
+    )
+
+    assert anchored_modules
+    for path in anchored_modules:
+        export_names = _compatibility_export_names(path)
+        assert export_names
+        assert export_names <= _top_level_import_names(path)
+
+
+def test_runtime_compatibility_facades_anchor_every_import() -> None:
+    facade_paths = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "runtime.py",
+        PACKAGE_ROOT
+        / "models"
+        / "policy_variants"
+        / "parallel_stream"
+        / "reference_runtime.py",
+    )
+
+    for path in facade_paths:
+        assert _compatibility_export_names(path) == _top_level_import_names(path)
 
 
 def test_parallel_training_artifacts_have_one_implementation_owner() -> None:

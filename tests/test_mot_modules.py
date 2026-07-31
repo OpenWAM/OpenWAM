@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-import open_wam.configs  # Ensure config/video-backbone modules finish initialization before policy-variant imports.
+import open_wam.configs  # Complete config initialization before policy imports.
 from open_wam.configs import (
     ActionSchemaConfig,
     CurrentBlockCoupling,
@@ -90,6 +90,8 @@ from open_wam.models.policy_variants.mot.variant import MoTPolicyVariant
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore
 from open_wam.pipelines import build_variant_pipeline_from_config
+
+_CONFIG_INITIALIZATION = open_wam.configs
 
 
 def test_mot_runtime_attention_exports_are_compatibility_aliases() -> None:

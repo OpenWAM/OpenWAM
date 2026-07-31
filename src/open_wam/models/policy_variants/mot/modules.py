@@ -7,6 +7,11 @@ from open_wam.models.action_decoders.video_conditioned_expert import (
     init_conditioned_action_expert_from_video_core,
 )
 
+_COMPATIBILITY_EXPORTS = (
+    MoTActionPreprocessOutput,
+    MoTActionTransformerBlock,
+)
+
 
 def init_action_expert_from_video_core(
     *,

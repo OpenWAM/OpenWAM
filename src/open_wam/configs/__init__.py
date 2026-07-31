@@ -268,6 +268,7 @@ __all__ = [
     "LatentWindowProfile",
     "LingbotCompatibleVideoBackboneConfig",
     "LingbotParallelActionDecoderConfig",
+    "LiberoAbsoluteJointExecutionMode",
     "LiberoDataConfig",
     "LoopPolicyName",
     "MixedVideoDecodeSizeMode",

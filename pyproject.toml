@@ -163,6 +163,7 @@ full = [
 
 [dependency-groups]
 dev = [
+    "pyflakes==3.4.0",
     "pytest>=8.3",
 ]
 

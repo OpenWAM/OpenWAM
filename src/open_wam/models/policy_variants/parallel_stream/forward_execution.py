@@ -58,7 +58,6 @@ def run_parallel_exact_dual_stream_forward(
         ),
         rope=transformer.rope,
     )
-    batch_size = prepared.batch_size
     hidden_states = prepared.hidden_states
     text_hidden_states = prepared.text_hidden_states
     rotary_emb = prepared.rotary_emb

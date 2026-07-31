@@ -47,6 +47,12 @@ from .sequence_layout import MoTTrainingLayout
 from .split_cache_inference import MoTSplitCacheInferenceProgram
 from .unpacked_training import MoTUnpackedTrainingProgram
 
+_GENERALIST_MODE_COMPATIBILITY_EXPORTS = (
+    _apply_mot_generalist_training_mode,
+    _mot_generalist_rollout_mode_from_value,
+    _sample_mot_generalist_training_mode,
+)
+
 
 class MoTPolicyVariant(PolicyVariant):
     """Own M5 modules and route execution through policy-local programs."""

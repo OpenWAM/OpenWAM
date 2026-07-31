@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import math
-
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
-from einops import rearrange
 
 from open_wam.models.common.attention_profiles import (
     PreparedAttentionProfile,

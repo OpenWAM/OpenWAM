@@ -25,7 +25,18 @@ checkouts.
 
 Tier 0 checks package metadata, entrypoint declarations, public config
 references, artifact manifest shape, local path sample hygiene, duplicate
-optional dependencies, and source contracts that should remain import-safe.
+optional dependencies, source contracts that should remain import-safe, and
+production-core Pyflakes over `src`, `scripts`, `tests`, `baselines`, and
+`templates`. Pyflakes runs in an isolated `uv --no-project` environment; it
+does not install Open-WAM or its runtime dependencies. The separate
+`deployment` hardware/ROS workspace is not part of the installed package or
+this gate; change it only with its hardware-specific tests.
+
+Run that static lint locally with the pinned development dependency:
+
+```bash
+uv run python -m pyflakes src scripts tests baselines templates
+```
 
 The default PR workflow also includes two dependency-light companion jobs:
 

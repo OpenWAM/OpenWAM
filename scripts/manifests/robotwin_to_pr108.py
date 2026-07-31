@@ -81,7 +81,6 @@ def main() -> None:
             info = json.load(f)
 
         fps = info.get("fps", 50)
-        total_episodes = info.get("total_episodes", 0)
         chunks_size = info.get("chunks_size", 1000)
         # WHY video_path uses episode_chunk/episode_index: RobotTwin v2.1 format
         # differs from standard v3.0 packed-bundle. Per-episode MP4 files.

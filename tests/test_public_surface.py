@@ -14,7 +14,11 @@ import open_wam.configs as open_wam_configs
 import open_wam.models.action_decoders as action_decoders
 import open_wam.models.policy_variants as policy_variants
 from open_wam.cli.inspect_config import build_arg_parser
-from open_wam.configs import ActionDecoderName, PolicyVariantName
+from open_wam.configs import (
+    ActionDecoderName,
+    LiberoAbsoluteJointExecutionMode,
+    PolicyVariantName,
+)
 from open_wam.contracts import (
     VideoFrameMapping,
     normalized_video_frame_count,
@@ -99,6 +103,15 @@ def test_base_dependencies_stay_minimal_and_extras_are_explicit() -> None:
         "docs",
         "full",
     }.issubset(extras)
+
+
+@pytest.mark.unit
+def test_public_config_exports_include_libero_execution_mode() -> None:
+    assert "LiberoAbsoluteJointExecutionMode" in open_wam_configs.__all__
+    assert (
+        open_wam_configs.LiberoAbsoluteJointExecutionMode
+        is LiberoAbsoluteJointExecutionMode
+    )
 
 
 @pytest.mark.unit

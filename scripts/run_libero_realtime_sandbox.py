@@ -2522,7 +2522,7 @@ def _run_sequence_policy_realtime_rollout(
         raise ValueError(
             f"{rollout_label} realtime rollout requires a full checkpoint via `--checkpoint` or config-backed inference."
         )
-    mot_runtime_route = _validate_mot_startup_open_loop_support(
+    _validate_mot_startup_open_loop_support(
         config=config,
         startup_open_loop_chunks=startup_open_loop_chunks,
     )
@@ -2609,7 +2609,6 @@ def _run_sequence_policy_realtime_rollout(
 
     action_period_s = 1.0 / float(target_action_hz)
     deadline_tolerance_s = float(deadline_tolerance_ms) / 1000.0
-    action_horizon = int(config.data.action_schema.action_horizon)
     raw_window_frames = raw_window_frames_for_latents(int(config.data.num_frames))
     startup_env_init_frames = _sequence_startup_env_init_frames(
         config,
@@ -2683,8 +2682,6 @@ def _run_sequence_policy_realtime_rollout(
         session = startup["session"]
         next_generation_action_start = int(startup["next_generation_action_start"])
         mot_non_joint_sequence = _is_mot_non_joint_two_stream(config)
-        sequence_snapshot_device = None
-        sequence_runtime_session_device = None
         history_base_session = session if mot_non_joint_sequence else _clone_sequence_session(session)
         history_base_cache_snapshot = startup.get("runtime_cache_snapshot")
         history_generation_action_start = int(next_generation_action_start)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 
@@ -15,6 +15,9 @@ from open_wam.models.policy_variants.parallel_stream.runtime_semantics import (
 )
 
 from .types import FdmAblationMode
+
+if TYPE_CHECKING:
+    from open_wam.pipelines.lingbot_exact import LingbotExactSession
 
 
 @dataclass

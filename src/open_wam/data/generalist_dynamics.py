@@ -34,6 +34,14 @@ from .counterfactual_dynamics_dataset import (
 from .distributed_sampling import PaddedEpochOffsetDistributedSampler
 from .latent_contracts import LatentWAMSample
 
+_COUNTERFACTUAL_COMPATIBILITY_EXPORTS = (
+    COUNTERFACTUAL_CONDITION_SOURCE_FRAME_POLICY,
+    COUNTERFACTUAL_CONTRACT_T0_PLUS_FUTURE,
+    COUNTERFACTUAL_CONTRACT_TARGET_ONLY_T0_PLUS_FUTURE,
+    COUNTERFACTUAL_STATE_KEY,
+    _balanced_counterfactual_source_indices,
+)
+
 
 REAL_DEMO_SOURCE = "real_demo"
 COUNTERFACTUAL_DYNAMICS_SOURCE = "counterfactual_dynamics"

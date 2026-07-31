@@ -61,7 +61,6 @@ def main() -> None:
     if tasks_path.exists():
         try:
             import pyarrow.parquet as pq
-            import pyarrow.compute as pc
             tasks_table = pq.read_table(tasks_path)
             for i in range(len(tasks_table)):
                 task_idx = tasks_table.column("task_index")[i].as_py()
@@ -109,10 +108,10 @@ def main() -> None:
             print(f"info.json video_path is null; found videos at {fallback}")
         else:
             print(
-                f"ERROR: info.json video_path is null and --video-dir not provided.\n"
-                f"LIBERO-10 stores frames as images, not videos. Convert episodes to\n"
-                f"per-episode MP4s first, then pass --video-dir <directory>.\n"
-                f"Expected files: episode_000000.mp4, episode_000001.mp4, ...",
+                "ERROR: info.json video_path is null and --video-dir not provided.\n"
+                "LIBERO-10 stores frames as images, not videos. Convert episodes to\n"
+                "per-episode MP4s first, then pass --video-dir <directory>.\n"
+                "Expected files: episode_000000.mp4, episode_000001.mp4, ...",
                 file=sys.stderr,
             )
             sys.exit(1)

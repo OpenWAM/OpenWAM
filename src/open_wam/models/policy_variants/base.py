@@ -24,11 +24,6 @@ class PolicyVariant(nn.Module, ABC):
 
         del visual_tower
 
-    def requested_visual_readout(self) -> VisualReadoutRequest | None:
-        """Return an optional visual-readout capture request for the shared core."""
-
-        return None
-
     @abstractmethod
     def attach_site(self) -> str:
         """Return the declared attachment site."""

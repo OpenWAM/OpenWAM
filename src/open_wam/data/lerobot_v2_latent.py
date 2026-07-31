@@ -77,6 +77,15 @@ from .replay_status import load_replay_status_records, split_episode_indices_by_
 from .row_action_targets import build_row_action_targets, resolve_row_key
 from .sequence_packing import pack_temporal_sequence
 
+_COMPATIBILITY_EXPORTS = (
+    latent_anchor_positions,
+    LocalRepoBundle,
+    load_lerobot_v2_local_metadata,
+    read_json_local,
+    read_jsonl_local,
+    split_local_episode_indices,
+)
+
 
 _TRUNCATING_SEQUENCE_PACKER = partial(
     pack_temporal_sequence,
@@ -174,9 +183,6 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             and self.data_config.latent_window_profile == LatentWindowProfile.EXACT_CHUNKED_WINDOW
         ):
             observed_frame_ids = window.observation_frame_indices
-            frame_stride = 1
-            if len(observed_frame_ids) > 1:
-                frame_stride = max(1, int(observed_frame_ids[1] - observed_frame_ids[0]))
             prefix_actions = int(self.data_config.action_schema.action_horizon // max(1, self.data_config.num_frames))
             window_span = max(0, window.end_frame - window.start_frame)
             raw_action_steps = max(len(observed_frame_ids), window_span)
@@ -1133,16 +1139,6 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
         source_latent_frames = len(raw_frame_ids)
         if not raw_frame_ids or source_latent_frames <= 0:
             return 0
-        observed_frame_ids = self._segment_observed_frame_ids(
-            raw_frame_ids=raw_frame_ids,
-            source_latent_frames=source_latent_frames,
-            latent_start=latent_start,
-            segment_length=segment_length,
-            latent_temporal_layout=self.data_config.latent_temporal_layout,
-        )
-        frame_stride = 1
-        if len(observed_frame_ids) > 1:
-            frame_stride = max(1, int(observed_frame_ids[1] - observed_frame_ids[0]))
         prefix_actions = int(self.data_config.action_schema.action_horizon // max(1, self.data_config.num_frames))
         source_latent_start = max(0, latent_start)
         valid_latent_end = min(source_latent_frames, max(0, latent_start + segment_length))

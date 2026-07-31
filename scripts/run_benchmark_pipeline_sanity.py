@@ -17,9 +17,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from open_wam.data import (  # noqa: E402
     LatentWAMBatch,
-    LatentWAMSample,
     WAMBatch,
-    WAMSample,
     build_canonical_video_preprocessor,
     build_train_val_datasets,
     build_train_val_latent_datasets,

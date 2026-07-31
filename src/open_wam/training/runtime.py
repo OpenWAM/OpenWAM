@@ -20,7 +20,6 @@ from open_wam.configs.enums import (
     AuxiliaryValidationSource,
     DataSplit,
     GeneralistTrainingParadigm,
-    SampleOrderMode,
     SampleWeightMode,
     serialize_enum_values,
 )

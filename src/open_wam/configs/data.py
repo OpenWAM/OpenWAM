@@ -43,7 +43,6 @@ from .enums import (
     SampleWeightMode,
     SegmentContextPolicy,
     TailPaddingPolicy,
-    TemporalPositionMode,
     WindowSamplingMode,
     coerce_fields,
 )

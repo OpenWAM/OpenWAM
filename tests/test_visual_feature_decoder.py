@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import torch
 
-import open_wam.configs  # noqa: F401
+import open_wam.configs  # Complete config initialization before visual imports.
 from open_wam.models.video_backbone.contracts import CacheState, ChunkMetadata, ConditioningState, TokenGridMetadata
 from open_wam.models.visual_tower.contracts import VisualCoreOutput, VisualFrontendOutput
 from open_wam.models.visual_tower.decoder import VisualFeatureDecoder
+
+_CONFIG_INITIALIZATION = open_wam.configs
 
 
 def _build_frontend_output(*, num_frames: int, tokens_per_frame: int, sequence_length: int) -> VisualFrontendOutput:
