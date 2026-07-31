@@ -2504,6 +2504,24 @@ def test_private_gjd_conditioning_study_driver_is_retired() -> None:
     assert "attention_diagnostics" not in packed_runtime
 
 
+def test_libero_mot_drivers_delegate_to_the_package_episode_runner() -> None:
+    single_source = (
+        REPO_ROOT / "scripts" / "run_libero_mot_visualization.py"
+    ).read_text(encoding="utf-8")
+    batch_source = (
+        REPO_ROOT / "scripts" / "run_libero_mot_batch_visualization.py"
+    ).read_text(encoding="utf-8")
+    package_source = (
+        PACKAGE_ROOT / "evals" / "libero_mot_rollout.py"
+    ).read_text(encoding="utf-8")
+
+    assert "run_mot_libero_episode(" in single_source
+    assert "run_mot_libero_episode(" in batch_source
+    assert "importlib.util" not in batch_source
+    assert "mot_viz._" not in batch_source
+    assert "._forward_infer_with_visual_outputs(" not in package_source
+
+
 def test_public_config_enums_are_declared_once() -> None:
     path = PACKAGE_ROOT / "configs" / "enums.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

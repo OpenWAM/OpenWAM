@@ -1635,7 +1635,7 @@ def test_mot_variant_infer_from_latents_smoke(
         video_latents,
         text_context=text_context,
     )
-    output = pipeline._forward_infer_with_visual_outputs(
+    output = pipeline.forward_infer_step_from_visual_outputs(
         visual_outputs,
         context=PolicyInferContext(),
     )
@@ -1699,7 +1699,7 @@ def test_mot_legacy_joint_infer_uses_actual_rollout_video_length() -> None:
         text_context=torch.randn(1, 5, 16),
     )
 
-    output = pipeline._forward_infer_with_visual_outputs(
+    output = pipeline.forward_infer_step_from_visual_outputs(
         visual_outputs,
         context=PolicyInferContext(),
     )
@@ -1869,7 +1869,10 @@ def test_mot_joint_denoise_infer_supports_same_step_couplings(
     text_context = torch.randn(1, 5, 16)
     visual_outputs = pipeline.prepare_visual_outputs_from_latents(video_latents, text_context=text_context)
 
-    output = pipeline._forward_infer_with_visual_outputs(visual_outputs, context=PolicyInferContext())
+    output = pipeline.forward_infer_step_from_visual_outputs(
+        visual_outputs,
+        context=PolicyInferContext(),
+    )
 
     assert output.decoder_output.action_pred.shape == (1, 4, 4)
     assert output.policy_output.aux["current_block_coupling"] == current_block_coupling.value

@@ -433,23 +433,27 @@ class VariantPipeline(nn.Module):
             views,
             task_text=context.extra.get("task_text"),
         )
-        return self._forward_infer_with_visual_outputs(
+        return self.forward_infer_step_from_visual_outputs(
             visual_outputs,
             context=context,
             infer_state=infer_state,
         )
 
-    def _forward_infer_with_visual_outputs(
+    def forward_infer_step_from_visual_outputs(
         self,
         visual_outputs: VisualStageOutputs,
         *,
         context: PolicyInferContext,
         infer_state: PolicyInferState | None = None,
     ) -> VariantPipelineInferOutput:
-        # Views and latents should share the exact same policy/decode
-        # orchestration once `VisualStageOutputs` already exist. Keep this
-        # helper as the single infer-side execution body so rollout behavior
-        # does not drift between RGB-driven and latent-driven evaluation paths.
+        """Run policy and decoder inference from prepared visual stages.
+
+        Runtime integrations that manage frontend/cache execution separately
+        can use this entry point without reaching into pipeline internals.
+        RGB- and latent-driven inference delegate here after preparing the same
+        :class:`VisualStageOutputs` contract.
+        """
+
         context = self._prepare_infer_context_for_decoder(context)
         resolved_state = self.policy_variant.prepare_infer_state(
             visual_tower=self.visual_tower,
@@ -507,7 +511,7 @@ class VariantPipeline(nn.Module):
             negative_text_context=negative_text_context,
             canonical_video=canonical_video,
         )
-        return self._forward_infer_with_visual_outputs(
+        return self.forward_infer_step_from_visual_outputs(
             visual_outputs,
             context=context,
             infer_state=infer_state,

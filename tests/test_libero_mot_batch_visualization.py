@@ -79,12 +79,14 @@ def test_acquire_rollout_env_reuses_env_within_task_and_closes_on_task_switch() 
     helpers = _load_functions("_acquire_rollout_env", "_close_reused_env")
     constructed: list[_FakeEnv] = []
 
-    def _construct_single_env(task_spec):
+    def construct_mot_libero_env(task_spec):
         env = _FakeEnv(str(task_spec))
         constructed.append(env)
         return env
 
-    helpers._acquire_rollout_env.__globals__["mot_viz"] = SimpleNamespace(_construct_single_env=_construct_single_env)
+    helpers._acquire_rollout_env.__globals__["mot_viz"] = SimpleNamespace(
+        construct_mot_libero_env=construct_mot_libero_env
+    )
     args = SimpleNamespace(reuse_env_per_task=True)
     resources = SimpleNamespace(reused_env=None, reused_env_task_id=None)
 
@@ -107,12 +109,14 @@ def test_acquire_rollout_env_does_not_reuse_when_disabled() -> None:
     helpers = _load_functions("_acquire_rollout_env", "_close_reused_env")
     constructed: list[_FakeEnv] = []
 
-    def _construct_single_env(task_spec):
+    def construct_mot_libero_env(task_spec):
         env = _FakeEnv(str(task_spec))
         constructed.append(env)
         return env
 
-    helpers._acquire_rollout_env.__globals__["mot_viz"] = SimpleNamespace(_construct_single_env=_construct_single_env)
+    helpers._acquire_rollout_env.__globals__["mot_viz"] = SimpleNamespace(
+        construct_mot_libero_env=construct_mot_libero_env
+    )
     args = SimpleNamespace(reuse_env_per_task=False)
     resources = SimpleNamespace(reused_env=None, reused_env_task_id=None)
 
@@ -122,6 +126,65 @@ def test_acquire_rollout_env_does_not_reuse_when_disabled() -> None:
     assert env0 is not env1
     assert (close0, close1) == (True, True)
     assert resources.reused_env is None
+
+
+def test_loaded_rollout_forwards_policy_and_execution_chunk_overrides() -> None:
+    helpers = _load_functions("_run_one_loaded_rollout")
+    captured: dict[str, object] = {}
+
+    def episode_options(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(**kwargs)
+
+    helpers._run_one_loaded_rollout.__globals__.update(
+        {
+            "seed_everywhere": lambda seed: captured.setdefault("seeded", seed),
+            "_resolve_task": lambda resources, benchmark, task_id: SimpleNamespace(
+                task_spec="task-spec"
+            ),
+            "_acquire_rollout_env": lambda *args, **kwargs: ("env", True),
+            "mot_viz": SimpleNamespace(
+                MotLiberoEpisodeOptions=episode_options,
+                run_mot_libero_episode=lambda *args, **kwargs: {
+                    "episode": args[0]
+                },
+            ),
+        }
+    )
+    args = SimpleNamespace(
+        benchmark="libero_10",
+        max_timestep=64,
+        max_chunks=3,
+        execute_action_steps=8,
+        execute_frame_chunk_size=None,
+        mot_rollout_frame_chunk_size=2,
+        mot_inference_window_size=30,
+        mot_action_only_rollout=False,
+        mot_gjd_action_route="joint",
+        reset_policy_state_each_chunk=False,
+        max_imagined_latent_frames=12,
+        output_dir="outputs",
+        suffix="test",
+        video_fps=15.0,
+        save_rollout_video=False,
+        skip_comparison_video=True,
+    )
+    resources = SimpleNamespace(runtime="runtime")
+
+    result = helpers._run_one_loaded_rollout(
+        args,
+        resources,
+        task_id=4,
+        episode_idx=7,
+        seed=11,
+    )
+
+    assert captured["seeded"] == 11
+    assert captured["mot_rollout_frame_chunk_size"] == 2
+    assert captured["execute_action_steps"] == 8
+    assert captured["mot_inference_window_size"] == 30
+    assert result["episode"].task_id == 4
+    assert result["episode"].episode_idx == 7
 
 
 def test_resolve_execute_action_steps_defaults_to_full_horizon() -> None:

@@ -459,6 +459,13 @@ uv run python -m tests.characterization.run_mot_refactor_characterization \
   --golden-root /path/to/rollout_goldens
 ```
 
+The single-episode and loaded-once batch CLIs both delegate model loading and
+episode execution to `open_wam.evals.libero_mot_rollout`. Prepared visual
+stages advance through `VariantRolloutRunner.infer_prepared_step`; benchmark
+scripts must not call private `VariantPipeline` methods or carry a second copy
+of the model loop. The batch driver may differ only in task/episode/seed and
+environment-reuse scheduling plus coordinate-rich logs.
+
 For a shorter wiring check, select one `--asset-id` and pass
 `--max-timestep 64 --max-chunks 3`. This still exercises startup, recurrent
 policy state, streaming VAE updates, simulator actions, packed-history warmup,

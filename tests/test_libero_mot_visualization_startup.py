@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts import run_libero_mot_visualization as mot_viz
+from open_wam.evals import libero_mot_rollout as mot_viz
 from open_wam.models.policy_variants.mot.runtime_routing import (
     should_use_mot_legacy_split_cache_inference,
 )

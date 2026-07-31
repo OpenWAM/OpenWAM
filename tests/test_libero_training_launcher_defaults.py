@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import os
 from pathlib import Path
 import json
@@ -152,13 +151,9 @@ def _launcher_realtime_result(
 
 
 def _load_mot_visualization_module():
-    module_path = REPO_ROOT / "scripts/run_libero_mot_visualization.py"
-    spec = importlib.util.spec_from_file_location("open_wam_test_mot_visualization", module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Failed to import {module_path}.")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    from open_wam.evals import libero_mot_rollout
+
+    return libero_mot_rollout
 
 
 def _set_override_tokens(argv: list[str]) -> list[str]:

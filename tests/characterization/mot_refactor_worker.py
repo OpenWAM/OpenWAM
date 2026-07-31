@@ -886,7 +886,7 @@ def _run_inference_scenario(
                 action_conditioning=action_conditioning,
                 video_conditioning=video_conditioning,
             )
-            infer_output = pipeline._forward_infer_with_visual_outputs(
+            infer_output = pipeline.forward_infer_step_from_visual_outputs(
                 visual_outputs,
                 context=PolicyInferContext(state=state, extra=extra),
                 infer_state=infer_state,

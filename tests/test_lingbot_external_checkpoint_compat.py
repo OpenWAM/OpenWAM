@@ -33,7 +33,7 @@ def _build_small_transformer(*, attn_mode: str) -> WanTransformer3DModel:
 def _assert_loaded_matches(
     *,
     checkpoint_root: Path,
-    expected_model: WanTransformer3DModel,
+    expected_weight: torch.Tensor,
     expected_attn_mode: str,
 ) -> None:
     backbone_config = LingbotCompatibleVideoBackboneConfig(
@@ -43,7 +43,6 @@ def _assert_loaded_matches(
     loaded = build_reference_transformer(backbone_config, action_dim=30)
     assert loaded.config.attn_mode == expected_attn_mode
 
-    expected_weight = expected_model.state_dict()["patch_embedding_mlp.weight"]
     actual_weight = loaded.state_dict()["patch_embedding_mlp.weight"]
     assert torch.equal(actual_weight, expected_weight.to(dtype=actual_weight.dtype))
 
@@ -70,7 +69,7 @@ def test_open_wam_loads_single_file_external_trainer_checkpoint_layout(tmp_path:
 
     _assert_loaded_matches(
         checkpoint_root=checkpoint_root,
-        expected_model=model,
+        expected_weight=state_dict_bf16["patch_embedding_mlp.weight"],
         expected_attn_mode="flashattn",
     )
 
@@ -83,6 +82,6 @@ def test_open_wam_loads_sharded_external_base_model_layout(tmp_path: Path) -> No
 
     _assert_loaded_matches(
         checkpoint_root=checkpoint_root,
-        expected_model=model,
+        expected_weight=model.state_dict()["patch_embedding_mlp.weight"],
         expected_attn_mode="flex",
     )

@@ -274,7 +274,7 @@ def build_comparison_video_frames(
         target_width = real_row.shape[1]
 
         if index < len(imagined_frames):
-            imagined = Image.fromarray(_to_uint8(imagined_frames[index]))
+            imagined = Image.fromarray(to_uint8(imagined_frames[index]))
             scale = min(target_width / imagined.width, panel_height / imagined.height)
             resized = imagined.resize(
                 (
@@ -324,7 +324,9 @@ def with_title(image: Image.Image, title: str) -> Image.Image:
     return canvas
 
 
-def _to_uint8(frame: np.ndarray) -> np.ndarray:
+def to_uint8(frame: np.ndarray) -> np.ndarray:
+    """Normalize an RGB array to contiguous display-ready uint8 values."""
+
     if frame.dtype == np.uint8:
         return frame
     frame = np.asarray(frame)

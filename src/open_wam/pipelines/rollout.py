@@ -6,6 +6,7 @@ from typing import Mapping
 import torch
 
 from open_wam.models.policy_variants import PolicyInferContext, PolicyInferState
+from open_wam.models.visual_tower import VisualStageOutputs
 
 from .variant_pipeline import VariantPipeline, VariantPipelineInferOutput
 
@@ -57,14 +58,7 @@ class VariantRolloutRunner:
         video_latents: torch.Tensor | None = None,
         canonical_video: torch.Tensor | None = None,
     ) -> VariantRolloutStepOutput:
-        resolved_context = PolicyInferContext(
-            state=context.state,
-            previous_action=context.previous_action,
-            extra={
-                **context.extra,
-                "task_text": context.extra.get("task_text", session.task_text),
-            },
-        )
+        resolved_context = self._resolve_context(session, context)
         if video_latents is not None:
             infer_output = self.pipeline.forward_infer_step_from_latents(
                 video_latents,
@@ -82,6 +76,54 @@ class VariantRolloutRunner:
                 resolved_context,
                 infer_state=session.policy_state,
             )
+        return self._build_step_output(
+            session=session,
+            resolved_context=resolved_context,
+            infer_output=infer_output,
+        )
+
+    def infer_prepared_step(
+        self,
+        *,
+        session: VariantRolloutSession,
+        context: PolicyInferContext,
+        visual_outputs: VisualStageOutputs,
+    ) -> VariantRolloutStepOutput:
+        """Advance a session from visual stages prepared by a runtime integration."""
+
+        resolved_context = self._resolve_context(session, context)
+        infer_output = self.pipeline.forward_infer_step_from_visual_outputs(
+            visual_outputs,
+            context=resolved_context,
+            infer_state=session.policy_state,
+        )
+        return self._build_step_output(
+            session=session,
+            resolved_context=resolved_context,
+            infer_output=infer_output,
+        )
+
+    @staticmethod
+    def _resolve_context(
+        session: VariantRolloutSession,
+        context: PolicyInferContext,
+    ) -> PolicyInferContext:
+        return PolicyInferContext(
+            state=context.state,
+            previous_action=context.previous_action,
+            extra={
+                **context.extra,
+                "task_text": context.extra.get("task_text", session.task_text),
+            },
+        )
+
+    @staticmethod
+    def _build_step_output(
+        *,
+        session: VariantRolloutSession,
+        resolved_context: PolicyInferContext,
+        infer_output: VariantPipelineInferOutput,
+    ) -> VariantRolloutStepOutput:
         next_session = VariantRolloutSession(
             policy_state=infer_output.policy_output.next_state,
             task_text=resolved_context.extra.get("task_text", session.task_text),
