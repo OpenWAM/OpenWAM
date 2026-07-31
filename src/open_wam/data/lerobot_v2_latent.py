@@ -15,7 +15,6 @@ from open_wam.configs import (
     DataSplit,
     LatentWindowProfile,
     PaddedTargetPolicy,
-    ReplayStatusPolicy,
     RolloutContextPolicy,
     SampleOrderMode,
     SampleWeightMode,
@@ -72,8 +71,8 @@ from .lerobot_v2_latent_sampling import (
     build_hierarchical_fixed_segment_task_specs,
 )
 from .lerobot_v2_latent_segment import LocalLatentSegmentAssembler
+from .lerobot_v2_latent_split import LocalLatentTrainValWindowPlanner
 from .lerobot_v2_latent_supervision import LocalLatentSupervisionAssembler
-from .replay_status import load_replay_status_records, split_episode_indices_by_replay_status
 
 _COMPATIBILITY_EXPORTS = (
     CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET,
@@ -82,6 +81,7 @@ _COMPATIBILITY_EXPORTS = (
     HierarchicalFixedSegmentWindowSpec,
     LocalLatentEpochOrderSampler,
     LocalLatentWeightedTrainSampler,
+    discover_local_lerobot_repo_bundles,
     latent_anchor_positions,
     LocalRepoBundle,
     latent_filename,
@@ -90,6 +90,7 @@ _COMPATIBILITY_EXPORTS = (
     read_jsonl_local,
     reshape_latent_payload,
     resolve_latent_root,
+    scan_local_latent_windows,
     split_local_episode_indices,
 )
 
@@ -1205,105 +1206,9 @@ class CausalPrefixSuffixLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDatase
 def build_local_lerobot_latent_train_val_datasets(
     data_config: DataConfig,
 ) -> tuple[Dataset[LatentWAMSample], Dataset[LatentWAMSample]]:
-    train_windows: list[LocalEpisodeWindow] = []
-    val_windows: list[LocalEpisodeWindow] = []
-    use_config_replay_status_path = object()
-
-    def _filtered_windows_for_bundles(
-        local_root: str,
-        *,
-        max_episodes: int | None = None,
-        configured_replay_status_path: str | None | object = use_config_replay_status_path,
-        replay_status_policy: ReplayStatusPolicy | None = None,
-        require_replay_status: bool | None = None,
-    ) -> list[LocalEpisodeWindow]:
-        windows: list[LocalEpisodeWindow] = []
-        for bundle in discover_local_lerobot_repo_bundles(local_root):
-            repo_windows = scan_local_latent_windows(bundle.root, data_config)
-            repo_episodes = [episode.episode_index for episode in bundle.metadata.episodes]
-            replay_status_records, replay_status_path = load_replay_status_records(
-                bundle.root,
-                replay_status_path=(
-                    data_config.replay_status_path
-                    if configured_replay_status_path is use_config_replay_status_path
-                    else configured_replay_status_path
-                ),
-                require=data_config.require_replay_status
-                if require_replay_status is None
-                else bool(require_replay_status),
-            )
-            split = split_episode_indices_by_replay_status(
-                repo_episodes,
-                replay_status_records=replay_status_records,
-                replay_status_path=replay_status_path,
-                replay_status_policy=replay_status_policy or data_config.replay_status_policy,
-                require_replay_status=(
-                    data_config.require_replay_status
-                    if require_replay_status is None
-                    else bool(require_replay_status)
-                ),
-                val_replay_status_policy=None,
-                val_require_replay_status=None,
-                train_fraction=1.0,
-                split_seed=data_config.split_seed,
-                max_train_episodes=max_episodes,
-                max_val_episodes=None,
-            )
-            episode_set = set(split.train_episodes)
-            windows.extend(window for window in repo_windows if window.episode_index in episode_set)
-        return windows
-
-    if data_config.val_local_root:
-        val_replay_status_path = data_config.val_replay_status_path
-        if val_replay_status_path is None and data_config.replay_status_path is not None:
-            train_status_path = Path(data_config.replay_status_path).expanduser()
-            val_replay_status_path = None if train_status_path.is_absolute() else data_config.replay_status_path
-        train_windows = _filtered_windows_for_bundles(
-            data_config.local_root or "",
-            max_episodes=data_config.max_train_episodes,
-        )
-        val_windows = _filtered_windows_for_bundles(
-            data_config.val_local_root,
-            max_episodes=data_config.max_val_episodes,
-            configured_replay_status_path=val_replay_status_path,
-            replay_status_policy=data_config.val_replay_status_policy or data_config.replay_status_policy,
-            require_replay_status=(
-                data_config.require_replay_status
-                if data_config.val_require_replay_status is None
-                else data_config.val_require_replay_status
-            ),
-        )
-    else:
-        bundles = discover_local_lerobot_repo_bundles(data_config.local_root or "")
-        for bundle in bundles:
-            repo_windows = scan_local_latent_windows(bundle.root, data_config)
-            repo_episodes = [episode.episode_index for episode in bundle.metadata.episodes]
-            replay_status_records, replay_status_path = load_replay_status_records(
-                bundle.root,
-                replay_status_path=data_config.replay_status_path,
-                require=data_config.require_replay_status,
-            )
-            split = split_episode_indices_by_replay_status(
-                repo_episodes,
-                replay_status_records=replay_status_records,
-                replay_status_path=replay_status_path,
-                replay_status_policy=data_config.replay_status_policy,
-                require_replay_status=data_config.require_replay_status,
-                val_replay_status_policy=data_config.val_replay_status_policy,
-                val_require_replay_status=data_config.val_require_replay_status,
-                train_fraction=data_config.train_fraction,
-                split_seed=data_config.split_seed,
-                max_train_episodes=data_config.max_train_episodes,
-                max_val_episodes=data_config.max_val_episodes,
-            )
-            train_episode_set = set(split.train_episodes)
-            val_episode_set = set(split.val_episodes)
-            repo_train_windows = [window for window in repo_windows if window.episode_index in train_episode_set]
-            repo_val_windows = [window for window in repo_windows if window.episode_index in val_episode_set]
-            if not split.used_explicit_val_policy and not repo_val_windows and repo_train_windows:
-                repo_val_windows = repo_train_windows[:1]
-            train_windows.extend(repo_train_windows)
-            val_windows.extend(repo_val_windows)
+    window_plan = LocalLatentTrainValWindowPlanner(data_config).plan()
+    train_windows = list(window_plan.train_windows)
+    val_windows = list(window_plan.val_windows)
 
     dataset_cls: type[Dataset[LatentWAMSample]]
     if data_config.sample_construction.mode == WindowSamplingMode.FULL_SEGMENT:

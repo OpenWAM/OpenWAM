@@ -30,6 +30,8 @@ from open_wam.data import (
     LatentCausalPrefixSuffixWindowPlanner as PublicCausalWindowPlanner,
     LocalLatentSegment as PublicLocalLatentSegment,
     LocalLatentSegmentAssembler as PublicLocalLatentSegmentAssembler,
+    LocalLatentTrainValWindowPlan as PublicTrainValWindowPlan,
+    LocalLatentTrainValWindowPlanner as PublicTrainValWindowPlanner,
     LocalLatentUniformSegmentSamplingPlan as PublicUniformSamplingPlan,
     build_train_val_latent_datasets,
     collate_latent_wam_samples,
@@ -41,9 +43,11 @@ from open_wam.data.lerobot_v2_latent import (
     LocalEpisodeWindow as LegacyLocalEpisodeWindow,
     LocalLatentEpochOrderSampler,
     LocalLatentWeightedTrainSampler,
+    discover_local_lerobot_repo_bundles as legacy_discover_repo_bundles,
     latent_filename as legacy_latent_filename,
     reshape_latent_payload as legacy_reshape_latent_payload,
     resolve_latent_root as legacy_resolve_latent_root,
+    scan_local_latent_windows as legacy_scan_local_latent_windows,
 )
 from open_wam.data.latent_causal_sampling import (
     LatentCausalPrefixSuffixCandidate,
@@ -68,6 +72,10 @@ from open_wam.data.lerobot_v2_latent_sampling import (
 from open_wam.data.lerobot_v2_latent_segment import (
     LocalLatentSegment,
     LocalLatentSegmentAssembler,
+)
+from open_wam.data.lerobot_v2_latent_split import (
+    LocalLatentTrainValWindowPlan,
+    LocalLatentTrainValWindowPlanner,
 )
 from open_wam.data.lerobot_v2_latent_supervision import (
     LocalLatentSupervisionAssembler,
@@ -95,6 +103,10 @@ def test_lerobot_latent_storage_owns_compatibility_exports() -> None:
     assert PublicCausalCandidate is LatentCausalPrefixSuffixCandidate
     assert PublicCausalWindowPlan is LatentCausalPrefixSuffixWindowPlan
     assert PublicCausalWindowPlanner is LatentCausalPrefixSuffixWindowPlanner
+    assert PublicTrainValWindowPlan is LocalLatentTrainValWindowPlan
+    assert PublicTrainValWindowPlanner is LocalLatentTrainValWindowPlanner
+    assert legacy_discover_repo_bundles is discover_storage_repo_bundles
+    assert legacy_scan_local_latent_windows is scan_local_latent_windows
 
 
 def _disable_replay_status(data_config):
@@ -550,6 +562,51 @@ def test_local_lerobot_latent_dataset_uses_unused_failed_replay_rows_for_val(tmp
 
     assert {window.episode_index for window in train_dataset.windows} == {0}
     assert {window.episode_index for window in val_dataset.windows} == {1}
+
+
+def test_local_latent_train_val_window_planner_matches_dataset_builder(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "robotwin_local_latent"
+    _build_local_robotwin_latent_repo(repo_root)
+    _append_second_latent_episode(repo_root)
+    _write_jsonl(
+        repo_root / "meta" / "replay_status.jsonl",
+        [
+            {"dataset_episode_index": 0, "replay_status": "success"},
+            {"dataset_episode_index": 1, "replay_status": "failure"},
+        ],
+    )
+
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml"
+    )
+    data_config = replace(
+        _disable_replay_status(config.data),
+        dataset_type="lerobot_v2_latent_local",
+        local_root=str(repo_root),
+        train_fraction=1.0,
+        replay_status_policy=ReplayStatusPolicy.SUCCESSFUL_ONLY,
+        require_replay_status=True,
+        val_replay_status_policy=ReplayStatusPolicy.FAILURE_ONLY,
+        num_workers=0,
+        train_batch_size=1,
+        val_batch_size=1,
+    )
+
+    planner = LocalLatentTrainValWindowPlanner(data_config)
+    plan = planner.plan()
+    train_dataset, val_dataset = build_train_val_latent_datasets(data_config)
+
+    assert isinstance(plan, LocalLatentTrainValWindowPlan)
+    assert isinstance(plan.train_windows, tuple)
+    assert isinstance(plan.val_windows, tuple)
+    assert pickle.loads(pickle.dumps(planner)) == planner
+    assert pickle.loads(pickle.dumps(plan)) == plan
+    assert plan.train_windows == tuple(train_dataset.windows)
+    assert plan.val_windows == tuple(val_dataset.windows)
+    assert {window.episode_index for window in plan.train_windows} == {0}
+    assert {window.episode_index for window in plan.val_windows} == {1}
 
 
 def test_val_local_root_dataset_uses_val_split_semantics(tmp_path: Path) -> None:

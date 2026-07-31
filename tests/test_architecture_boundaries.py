@@ -641,6 +641,59 @@ def test_lerobot_latent_causal_sampling_has_one_owner() -> None:
     assert len(planner_calls) == 1
 
 
+def test_lerobot_latent_train_val_window_planning_has_one_owner() -> None:
+    planner_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent_split.py"
+    dataset_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent.py"
+
+    assert {
+        "LocalLatentTrainValWindowPlan",
+        "LocalLatentTrainValWindowPlanner",
+    } <= _top_level_definitions(planner_path)
+    assert {
+        "_filtered_windows_for_roots",
+        "_plan_explicit_roots",
+        "_plan_shared_roots",
+        "plan",
+    } <= _class_method_definitions(
+        planner_path,
+        "LocalLatentTrainValWindowPlanner",
+    )
+    assert not any(
+        imported == "torch" or imported.startswith("torch.")
+        for imported in _absolute_imports_for_file(planner_path)
+    )
+
+    builder = next(
+        node
+        for node in ast.parse(dataset_path.read_text(encoding="utf-8")).body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "build_local_lerobot_latent_train_val_datasets"
+    )
+    planner_calls = [
+        node
+        for node in ast.walk(builder)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "plan"
+        and isinstance(node.func.value, ast.Call)
+        and isinstance(node.func.value.func, ast.Name)
+        and node.func.value.func.id == "LocalLatentTrainValWindowPlanner"
+    ]
+    assert len(planner_calls) == 1
+    assert {
+        "discover_local_lerobot_repo_bundles",
+        "load_replay_status_records",
+        "scan_local_latent_windows",
+        "split_episode_indices_by_replay_status",
+    }.isdisjoint(
+        {
+            node.id
+            for node in ast.walk(builder)
+            if isinstance(node, ast.Name)
+        }
+    )
+
+
 def test_mixed_video_catalog_has_one_owner() -> None:
     from open_wam.data import MixedVideoCatalog as PublicMixedVideoCatalog
     from open_wam.data.mixed_video import (

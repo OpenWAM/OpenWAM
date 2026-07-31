@@ -81,6 +81,13 @@ then owns latent slicing, padding, storage-specific metadata, and final sample
 construction. This keeps causal geometry and seeded draw semantics reusable
 without coupling a new repository format to the local LeRobot adapter.
 
+For repositories that reuse the local LeRobot storage layout,
+`open_wam.data.LocalLatentTrainValWindowPlanner` resolves train/validation
+windows under the configured replay-status, explicit validation-root, split,
+seed, and episode-limit policy. It returns a typed plan and does not choose a
+dataset class, mutate split config, or load tensors, so an adapter can reuse
+window membership independently from its sample representation.
+
 For row-oriented robot data, reuse
 `open_wam.data.build_row_action_targets` and
 `open_wam.data.pack_temporal_sequence`. The adapter supplies
