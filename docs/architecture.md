@@ -208,13 +208,16 @@ public typed plan; `lerobot_v2_latent_sampling` owns local
 uniform-segment eligibility and ordering, task/trajectory mass tables,
 split-salted draw plans, sampling metadata, and the thin distributed-sampler
 adapters;
+`latent_causal_sampling` owns tensor-free causal prefix/suffix candidate
+geometry, split-aware draw order, and typed raw/latent window plans;
 `lerobot_v2_latent_supervision` owns deterministic local row alignment,
 LingBot action-sequence assembly, adapter-specific sequence extraction, state
 history, and per-frame/per-chunk proprio assembly;
 `lerobot_v2_latent_segment` combines one selected materialization with those
 latent and supervision tensors through `LocalLatentSegment`; and
 `lerobot_v2_latent` owns source-payload frame-ID parsing, profile/sample-mode
-orchestration, metadata, and public `LatentWAMSample` construction. Required
+orchestration, tensor materialization, metadata, and public `LatentWAMSample`
+construction. Required
 dataset-private compatibility helpers are thin delegates to these owners;
 unreachable private facades are removed rather than maintained as a second
 API.

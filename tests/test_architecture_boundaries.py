@@ -589,6 +589,58 @@ def test_lerobot_latent_segment_materialization_has_one_owner() -> None:
         assert len(owner_calls) == 1
 
 
+def test_lerobot_latent_causal_sampling_has_one_owner() -> None:
+    planner_path = PACKAGE_ROOT / "data" / "latent_causal_sampling.py"
+    dataset_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent.py"
+
+    assert {
+        "LatentCausalPrefixSuffixCandidate",
+        "LatentCausalPrefixSuffixWindowPlan",
+        "LatentCausalPrefixSuffixWindowPlanner",
+    } <= _top_level_definitions(planner_path)
+    assert {
+        "build_candidates",
+        "from_data_config",
+        "plan",
+        "select_candidate",
+    } <= _class_method_definitions(
+        planner_path,
+        "LatentCausalPrefixSuffixWindowPlanner",
+    )
+    assert not any(
+        imported == "torch" or imported.startswith("torch.")
+        for imported in _absolute_imports_for_file(planner_path)
+    )
+
+    assert "_build_raw_bucket_boundaries" not in _class_method_definitions(
+        dataset_path,
+        "LocalLeRobotLatentWindowDataset",
+    )
+    assert (
+        "_sample_causal_prefix_suffix_subwindow"
+        not in _class_method_definitions(
+            dataset_path,
+            "CausalPrefixSuffixLocalLeRobotLatentDataset",
+        )
+    )
+
+    getitem = _class_method(
+        dataset_path,
+        "CausalPrefixSuffixLocalLeRobotLatentDataset",
+        "__getitem__",
+    )
+    planner_calls = [
+        node
+        for node in ast.walk(getitem)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "plan"
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "_causal_sampling_planner"
+    ]
+    assert len(planner_calls) == 1
+
+
 def test_mixed_video_catalog_has_one_owner() -> None:
     from open_wam.data import MixedVideoCatalog as PublicMixedVideoCatalog
     from open_wam.data.mixed_video import (

@@ -73,6 +73,14 @@ range with aligned actions, state, and proprio into a typed
 fallback, sample selection, task/text resolution, and final metadata; the
 assembler does not impose those policies.
 
+For an encoded causal-video adapter, use
+`open_wam.data.LatentCausalPrefixSuffixWindowPlanner` to enumerate eligible
+configured buckets and resolve a split-aware `LatentCausalPrefixSuffixWindowPlan`.
+The planner is tensor-free: the adapter supplies source frame IDs and lengths,
+then owns latent slicing, padding, storage-specific metadata, and final sample
+construction. This keeps causal geometry and seeded draw semantics reusable
+without coupling a new repository format to the local LeRobot adapter.
+
 For row-oriented robot data, reuse
 `open_wam.data.build_row_action_targets` and
 `open_wam.data.pack_temporal_sequence`. The adapter supplies

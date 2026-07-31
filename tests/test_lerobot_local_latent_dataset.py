@@ -25,6 +25,9 @@ from open_wam.configs import (
     WindowSamplingMode,
 )
 from open_wam.data import (
+    LatentCausalPrefixSuffixCandidate as PublicCausalCandidate,
+    LatentCausalPrefixSuffixWindowPlan as PublicCausalWindowPlan,
+    LatentCausalPrefixSuffixWindowPlanner as PublicCausalWindowPlanner,
     LocalLatentSegment as PublicLocalLatentSegment,
     LocalLatentSegmentAssembler as PublicLocalLatentSegmentAssembler,
     LocalLatentUniformSegmentSamplingPlan as PublicUniformSamplingPlan,
@@ -41,6 +44,11 @@ from open_wam.data.lerobot_v2_latent import (
     latent_filename as legacy_latent_filename,
     reshape_latent_payload as legacy_reshape_latent_payload,
     resolve_latent_root as legacy_resolve_latent_root,
+)
+from open_wam.data.latent_causal_sampling import (
+    LatentCausalPrefixSuffixCandidate,
+    LatentCausalPrefixSuffixWindowPlan,
+    LatentCausalPrefixSuffixWindowPlanner,
 )
 from open_wam.data.latent_temporal import (
     CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET,
@@ -84,6 +92,9 @@ def test_lerobot_latent_storage_owns_compatibility_exports() -> None:
     assert PublicUniformSamplingPlan is LocalLatentUniformSegmentSamplingPlan
     assert PublicLocalLatentSegment is LocalLatentSegment
     assert PublicLocalLatentSegmentAssembler is LocalLatentSegmentAssembler
+    assert PublicCausalCandidate is LatentCausalPrefixSuffixCandidate
+    assert PublicCausalWindowPlan is LatentCausalPrefixSuffixWindowPlan
+    assert PublicCausalWindowPlanner is LatentCausalPrefixSuffixWindowPlanner
 
 
 def _disable_replay_status(data_config):
@@ -2540,7 +2551,50 @@ def test_local_lerobot_latent_dataset_supports_causal_prefix_suffix_sampling(tmp
     )
 
     train_dataset, _ = build_train_val_latent_datasets(config.data)
-    sample = train_dataset[0]
+    planner = train_dataset._causal_sampling_planner
+    assert isinstance(planner, LatentCausalPrefixSuffixWindowPlanner)
+    assert planner.sample_config is config.data.sample_construction
+    assert isinstance(
+        pickle.loads(pickle.dumps(planner)),
+        LatentCausalPrefixSuffixWindowPlanner,
+    )
+
+    candidates = planner.build_candidates(
+        raw_frame_ids=tuple(range(10)),
+        source_latent_frames=10,
+        row_count=48,
+    )
+    assert candidates
+    assert all(
+        isinstance(candidate, LatentCausalPrefixSuffixCandidate)
+        for candidate in candidates
+    )
+
+    previous_rng_state = random.getstate()
+    try:
+        random.seed(1458)
+        plan = planner.plan(
+            raw_frame_ids=tuple(range(10)),
+            source_latent_frames=10,
+            row_count=48,
+            sample_index=0,
+        )
+        planner_next_random = random.random()
+
+        random.seed(1458)
+        sample = train_dataset[0]
+        dataset_next_random = random.random()
+    finally:
+        random.setstate(previous_rng_state)
+
+    assert isinstance(plan, LatentCausalPrefixSuffixWindowPlan)
+    assert pickle.loads(pickle.dumps(plan)) == plan
+    assert dataset_next_random == planner_next_random
+    assert sample.metadata["subwindow_latent_start"] == plan.latent_start
+    assert sample.metadata["subwindow_latent_end"] == plan.latent_end
+    assert sample.metadata["sample_start_frame"] == plan.sample_start_frame
+    assert sample.metadata["sample_end_frame"] == plan.sample_end_frame
+    assert sample.metadata["observed_frame_ids"] == list(plan.observed_frame_ids)
 
     assert sample.video_latents.shape == (48, 8, 8, 16)
     assert sample.actions.shape == (0, 7)

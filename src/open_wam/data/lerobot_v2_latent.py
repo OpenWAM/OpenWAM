@@ -4,7 +4,6 @@ from collections import Counter
 from collections.abc import Iterator
 from dataclasses import replace
 import math
-import random
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +13,6 @@ from torch.utils.data import Dataset, Sampler
 from open_wam.configs import (
     DataConfig,
     DataSplit,
-    LatentTemporalLayout,
     LatentWindowProfile,
     PaddedTargetPolicy,
     ReplayStatusPolicy,
@@ -27,6 +25,7 @@ from open_wam.configs import (
     WindowSamplingMode,
 )
 
+from .latent_causal_sampling import LatentCausalPrefixSuffixWindowPlanner
 from .latent_contracts import LatentWAMSample
 from .latent_segment_geometry import (
     compact_boundary_start_range,
@@ -38,7 +37,6 @@ from .latent_temporal import (
     CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET
     as CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET,
     latent_anchor_positions,
-    latent_raw_boundaries,
     observed_frame_ids_for_latent_segment,
     raw_span_for_latent_range,
 )
@@ -500,20 +498,6 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             episode_index,
             metadata,
         )
-
-    @staticmethod
-    def _build_raw_bucket_boundaries(
-        *,
-        raw_frame_count: int,
-        latent_num_frames: int,
-        latent_temporal_layout: LatentTemporalLayout | str = LatentTemporalLayout.WAN_CAUSAL_STRIDE4,
-    ) -> list[int]:
-        return latent_raw_boundaries(
-            raw_frame_count=raw_frame_count,
-            latent_num_frames=latent_num_frames,
-            layout=latent_temporal_layout,
-        )
-
 
 class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
     """Uniform latent-start segment sampler over all eligible trajectories."""
@@ -1103,6 +1087,16 @@ class FullSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
 class CausalPrefixSuffixLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
     """Bucketed causal prefix/suffix video-only samples over local latent exports."""
 
+    def __init__(
+        self,
+        data_config: DataConfig,
+        windows: list[LocalEpisodeWindow],
+    ) -> None:
+        super().__init__(data_config, windows)
+        self._causal_sampling_planner = (
+            LatentCausalPrefixSuffixWindowPlanner.from_data_config(data_config)
+        )
+
     def __getitem__(self, index: int) -> LatentWAMSample:
         window = self.windows[index]
         repo_bundle = self._repo_bundles[str(window.repo_root)]
@@ -1110,15 +1104,52 @@ class CausalPrefixSuffixLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDatase
         latent_payloads = self._load_window_latents(window, repo_bundle.metadata)
         full_video_latents, latent_layout_metadata = self._assemble_canonical_latents(latent_payloads)
         primary_payload = latent_payloads[self.data_config.latent_camera_names[0]]
-
-        subwindow = self._sample_causal_prefix_suffix_subwindow(
-            video_latents=full_video_latents,
-            rows=rows,
-            primary_payload=primary_payload,
-            window=window,
-            index=index,
+        raw_frame_ids = [
+            int(value)
+            for value in list(primary_payload.get("frame_ids", []))
+        ]
+        if not raw_frame_ids:
+            raw_frame_ids = list(window.observation_frame_indices)
+        plan = self._causal_sampling_planner.plan(
+            raw_frame_ids=raw_frame_ids,
+            source_latent_frames=int(full_video_latents.shape[1]),
+            row_count=len(rows),
+            sample_index=index,
         )
-        task_index = int(rows[min(subwindow["sample_start_frame"], len(rows) - 1)].get("task_index", 0)) if rows else 0
+        if plan is None:
+            buckets = self._causal_sampling_planner.buckets
+            raise ValueError(
+                "No valid causal prefix/suffix sample could be drawn from the local latent segment. "
+                f"episode_index={window.episode_index}, latent_frames={full_video_latents.shape[1]}, "
+                f"configured_buckets={[(bucket.observed_frames, bucket.future_frames) for bucket in buckets]}."
+            )
+
+        padded_latents = torch.zeros(
+            full_video_latents.shape[0],
+            plan.padded_video_frames,
+            full_video_latents.shape[2],
+            full_video_latents.shape[3],
+            dtype=full_video_latents.dtype,
+        )
+        padded_latents[:, : plan.valid_video_frames] = full_video_latents[
+            :, plan.latent_start : plan.latent_end
+        ]
+        video_latents = padded_latents.contiguous()
+        actions = torch.zeros(
+            self.data_config.action_schema.action_horizon,
+            self.data_config.action_schema.action_dim,
+            dtype=torch.float32,
+        )
+        action_mask = torch.zeros_like(actions)
+        state = torch.zeros(
+            self.data_config.action_schema.state_horizon,
+            self.data_config.action_schema.state_dim,
+            dtype=torch.float32,
+        )
+        state_mask = torch.zeros_like(state)
+        observed_frame_ids = list(plan.observed_frame_ids)
+
+        task_index = int(rows[min(plan.sample_start_frame, len(rows) - 1)].get("task_index", 0)) if rows else 0
         episode_record = repo_bundle.episodes_by_index.get(window.episode_index)
         task_text = repo_bundle.metadata.tasks_by_index.get(task_index)
         if task_text is None and episode_record is not None and episode_record.tasks:
@@ -1132,11 +1163,11 @@ class CausalPrefixSuffixLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDatase
         negative_text_context = self.empty_text_embedding.clone() if self.empty_text_embedding is not None else None
 
         return LatentWAMSample(
-            video_latents=subwindow["video_latents"],
-            actions=subwindow["actions"],
-            action_mask=subwindow["action_mask"],
-            state=subwindow["state"],
-            state_mask=subwindow["state_mask"],
+            video_latents=video_latents,
+            actions=actions,
+            action_mask=action_mask,
+            state=state,
+            state_mask=state_mask,
             task_text=task_text,
             text_context=text_context,
             negative_text_context=negative_text_context,
@@ -1146,135 +1177,29 @@ class CausalPrefixSuffixLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDatase
                 "episode_index": window.episode_index,
                 "segment_start_frame": window.start_frame,
                 "segment_end_frame": window.end_frame,
-                "sample_start_frame": subwindow["sample_start_frame"],
-                "sample_end_frame": subwindow["sample_end_frame"],
-                "observation_start": subwindow["sample_start_frame"],
-                "observation_frame_indices": subwindow["observed_frame_ids"],
+                "sample_start_frame": plan.sample_start_frame,
+                "sample_end_frame": plan.sample_end_frame,
+                "observation_start": plan.sample_start_frame,
+                "observation_frame_indices": observed_frame_ids,
                 "window_sampling_mode": WindowSamplingMode.CAUSAL_PREFIX_SUFFIX,
-                "window_start_frame": subwindow["sample_start_frame"],
-                "window_end_frame": subwindow["sample_end_frame"],
-                "anchor_frame_index": subwindow["sample_start_frame"],
-                "observed_frame_ids": subwindow["observed_frame_ids"],
-                "latent_temporal_layout": subwindow["latent_temporal_layout"],
+                "window_start_frame": plan.sample_start_frame,
+                "window_end_frame": plan.sample_end_frame,
+                "anchor_frame_index": plan.sample_start_frame,
+                "observed_frame_ids": observed_frame_ids,
+                "latent_temporal_layout": plan.latent_temporal_layout,
                 "task_index": task_index,
                 "latent_layout": latent_layout_metadata,
                 "action_representation": self.data_config.action_target.representation,
-                "subwindow_latent_start": subwindow["latent_start_index"],
-                "subwindow_latent_end": subwindow["latent_end_index"],
-                "observed_prefix_frames": subwindow["observed_prefix_frames"],
-                "future_suffix_frames": subwindow["future_suffix_frames"],
-                "valid_video_frames": subwindow["valid_video_frames"],
-                "padded_video_frames": int(subwindow["video_latents"].shape[1]),
-                **self._action_loss_metadata(subwindow["action_mask"]),
+                "subwindow_latent_start": plan.latent_start,
+                "subwindow_latent_end": plan.latent_end,
+                "observed_prefix_frames": plan.observed_prefix_frames,
+                "future_suffix_frames": plan.future_suffix_frames,
+                "valid_video_frames": plan.valid_video_frames,
+                "padded_video_frames": int(video_latents.shape[1]),
+                **self._action_loss_metadata(action_mask),
                 **self._sample_weight_metadata(index),
             },
         )
-
-    def _sample_causal_prefix_suffix_subwindow(
-        self,
-        *,
-        video_latents: torch.Tensor,
-        rows: list[dict[str, Any]],
-        primary_payload: dict[str, Any],
-        window: LocalEpisodeWindow,
-        index: int,
-    ) -> dict[str, Any]:
-        sample_cfg = self.data_config.sample_construction
-        padded_num_frames = int(sample_cfg.num_frames)
-        buckets = tuple(sample_cfg.causal_prefix_suffix_buckets)
-        if not buckets:
-            raise ValueError(
-                "Causal prefix/suffix sampling requires non-empty `sample_construction.causal_prefix_suffix_buckets`."
-            )
-        raw_frame_ids = [int(value) for value in list(primary_payload.get("frame_ids", []))]
-        if not raw_frame_ids:
-            raw_frame_ids = list(window.observation_frame_indices)
-        raw_bucket_boundaries = self._build_raw_bucket_boundaries(
-            raw_frame_count=len(raw_frame_ids),
-            latent_num_frames=int(video_latents.shape[1]),
-            latent_temporal_layout=self.data_config.latent_temporal_layout,
-        )
-        valid_candidates: list[tuple[int, int]] = []
-        for bucket_index, bucket in enumerate(buckets):
-            total_frames = int(bucket.total_frames)
-            if total_frames > int(video_latents.shape[1]):
-                continue
-            max_latent_start = int(video_latents.shape[1]) - total_frames
-            for latent_start in range(max_latent_start + 1):
-                latent_end = latent_start + total_frames
-                raw_start_position = raw_bucket_boundaries[latent_start]
-                raw_end_position = raw_bucket_boundaries[latent_end]
-                if raw_start_position >= len(raw_frame_ids) or raw_end_position <= raw_start_position:
-                    continue
-                sample_end_frame = raw_frame_ids[max(raw_start_position, raw_end_position - 1)] + 1
-                if sample_end_frame > len(rows):
-                    continue
-                valid_candidates.append((latent_start, bucket_index))
-        if not valid_candidates:
-            raise ValueError(
-                "No valid causal prefix/suffix sample could be drawn from the local latent segment. "
-                f"episode_index={window.episode_index}, latent_frames={video_latents.shape[1]}, "
-                f"configured_buckets={[(bucket.observed_frames, bucket.future_frames) for bucket in buckets]}."
-            )
-
-        if self.data_config.split == DataSplit.TRAIN:
-            rng = random.Random(random.randrange(1 << 30) + index)
-        else:
-            rng = random.Random(self.data_config.split_seed + index)
-        latent_start, bucket_index = valid_candidates[rng.randrange(len(valid_candidates))]
-        bucket = buckets[bucket_index]
-        total_frames = int(bucket.total_frames)
-        latent_end = latent_start + total_frames
-        raw_start_position, raw_end_position, sample_start_frame, sample_end_frame = raw_span_for_latent_range(
-            raw_frame_ids=raw_frame_ids,
-            source_latent_frames=int(video_latents.shape[1]),
-            latent_start=latent_start,
-            latent_end=latent_end,
-            layout=self.data_config.latent_temporal_layout,
-        )
-        observed_frame_ids = observed_frame_ids_for_latent_segment(
-            raw_frame_ids=raw_frame_ids,
-            source_latent_frames=int(video_latents.shape[1]),
-            latent_start=latent_start,
-            segment_length=total_frames,
-            layout=self.data_config.latent_temporal_layout,
-        )
-        padded_latents = torch.zeros(
-            video_latents.shape[0],
-            padded_num_frames,
-            video_latents.shape[2],
-            video_latents.shape[3],
-            dtype=video_latents.dtype,
-        )
-        padded_latents[:, :total_frames] = video_latents[:, latent_start:latent_end]
-        actions = torch.zeros(
-            self.data_config.action_schema.action_horizon,
-            self.data_config.action_schema.action_dim,
-            dtype=torch.float32,
-        )
-        action_mask = torch.zeros_like(actions)
-        state = torch.zeros(
-            self.data_config.action_schema.state_horizon,
-            self.data_config.action_schema.state_dim,
-            dtype=torch.float32,
-        )
-        state_mask = torch.zeros_like(state)
-        return {
-            "video_latents": padded_latents.contiguous(),
-            "actions": actions,
-            "action_mask": action_mask,
-            "state": state,
-            "state_mask": state_mask,
-            "sample_start_frame": sample_start_frame,
-            "sample_end_frame": sample_end_frame,
-            "observed_frame_ids": observed_frame_ids,
-            "latent_temporal_layout": self.data_config.latent_temporal_layout,
-            "latent_start_index": latent_start,
-            "latent_end_index": latent_end,
-            "observed_prefix_frames": int(bucket.observed_frames),
-            "future_suffix_frames": int(bucket.future_frames),
-            "valid_video_frames": total_frames,
-        }
 
 
 def build_local_lerobot_latent_train_val_datasets(
