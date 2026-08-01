@@ -2661,6 +2661,9 @@ def test_action_decoder_rollout_plan_has_one_model_owner() -> None:
     decoder_exports_path = PACKAGE_ROOT / "models" / "action_decoders" / "__init__.py"
     rollout_path = PACKAGE_ROOT / "pipelines" / "rollout.py"
     runner_source = runner_path.read_text(encoding="utf-8")
+    realtime_runtime_source = (
+        PACKAGE_ROOT / "evals" / "libero_realtime_runtime.py"
+    ).read_text(encoding="utf-8")
     decoder_exports = decoder_exports_path.read_text(encoding="utf-8")
     retired_runner_helpers = {
         "_advance_decoder_state_to_rollout_commit",
@@ -2680,8 +2683,10 @@ def test_action_decoder_rollout_plan_has_one_model_owner() -> None:
         "commit_action_rollout_plan",
     } <= _class_method_definitions(rollout_path, "VariantRolloutRunner")
     assert retired_runner_helpers.isdisjoint(_top_level_definitions(runner_path))
-    assert "runner.build_action_rollout_plan(" in runner_source
-    assert "runner.commit_action_rollout_plan(" in runner_source
+    assert "runner.build_action_rollout_plan(" in realtime_runtime_source
+    assert "runner.commit_action_rollout_plan(" in realtime_runtime_source
+    assert "runner.build_action_rollout_plan(" not in runner_source
+    assert "runner.commit_action_rollout_plan(" not in runner_source
     assert "ActionDecoderRolloutPlan" in decoder_exports
 
 
@@ -2690,23 +2695,74 @@ def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
     runtime_path = PACKAGE_ROOT / "evals" / "libero_realtime_runtime.py"
     runner_source = runner_path.read_text(encoding="utf-8")
     public_runtime_contracts = {
+        "SequenceReplanJobOptions",
+        "SequenceReplanJobResult",
         "apply_inference_overrides",
         "build_fallback_frame_actions",
+        "build_sequence_startup_observation_window",
+        "collect_decoder_runtime_metadata",
         "copy_history_record_for_worker",
         "isolated_torch_rng",
         "job_seed_for_session",
+        "materialize_sequence_control_action",
+        "resolve_observation_conditioned_replan_session",
+        "resolve_sequence_action_cache_rewind_frame",
+        "resolve_sequence_actions_per_frame",
+        "resolve_sequence_condition_frame_start",
+        "resolve_sequence_execution_action_offset",
+        "resolve_sequence_model_observation_window_frames",
+        "resolve_sequence_startup_environment_frames",
         "resolve_exact_startup_sessions",
         "resolve_next_exact_history_base_session",
         "run_extension_job",
         "run_replan_job",
+        "run_sequence_replan_job",
+        "sequence_buffer_tail_ready_for_history_promotion",
+        "sequence_chunk_to_planned_steps",
+        "sequence_history_replan_ready",
+        "should_use_sequence_open_loop_extension",
         "submit_planner_job_with_snapshot",
         "synchronize_devices",
+        "uses_mot_split_cache_sequence",
+        "uses_strict_mot_one_frame_history",
+        "uses_strict_mot_split_cache_startup",
+        "validate_sequence_startup_inputs",
+        "validate_sequence_startup_open_loop_support",
+    }
+    retired_sequence_runner_helpers = {
+        "_collect_decoder_runtime_metadata",
+        "_is_mot_non_joint_two_stream",
+        "_materialize_sequence_control_action",
+        "_mot_action_cache_rewind_for_sequence_submit",
+        "_mot_condition_frame_start_for_generation",
+        "_mot_history_replan_ready",
+        "_resolve_observation_conditioned_replan_session",
+        "_run_sequence_replan_job",
+        "_sequence_actions_per_frame",
+        "_sequence_buffer_tail_ready_for_history_promotion",
+        "_sequence_chunk_to_planned_steps",
+        "_sequence_execution_action_offset",
+        "_sequence_model_obs_window_frames",
+        "_sequence_startup_env_init_frames",
+        "_sequence_startup_model_obs_window",
+        "_should_use_mot_open_loop_extension",
+        "_uses_strict_mot_one_frame_history",
+        "_uses_strict_mot_split_cache_startup",
+        "_validate_mot_startup_open_loop_support",
+        "_validate_strict_mot_split_cache_startup_inputs",
     }
 
     assert not (REPO_ROOT / "scripts" / "libero_exact_realtime_common.py").exists()
     assert "from open_wam.evals import libero_realtime_runtime as realtime_runtime" in runner_source
     assert "realtime_runtime._" not in runner_source
     assert public_runtime_contracts <= _top_level_definitions(runtime_path)
+    assert public_runtime_contracts <= _module_all_names(runtime_path)
+    assert retired_sequence_runner_helpers.isdisjoint(
+        _top_level_definitions(runner_path)
+    )
+    assert "realtime_runtime.SequenceReplanJobOptions(" in runner_source
+    assert "realtime_runtime.run_sequence_replan_job(" in runner_source
+    assert "PolicyInferContext" not in runner_source
     assert {
         "maybe_submit_planner_job",
         "should_submit_planner_job",

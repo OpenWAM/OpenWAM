@@ -67,8 +67,10 @@ installed package. Research tools must require machine-local checkpoints and
 datasets explicitly rather than embedding private defaults.
 
 The maintained LIBERO realtime runner follows the same boundary. Package code
-in `libero_realtime_runtime` executes planner jobs and owns encoded-history
-preparation, session continuity, and fallback action generation. The
+in `libero_realtime_runtime` executes both frame-grouped and action-sequence
+planner jobs and owns encoded-history preparation, session continuity,
+route-aware sequence startup, typed replan options/results, decoder-plan
+conversion, LIBERO action materialization, and fallback action generation. The
 benchmark-independent
 `realtime_history` contract owns copied observation windows, fallback
 quarantine and washout, model-timeline advancement, and proprio normalization;
@@ -82,7 +84,9 @@ tensor/action-grid fingerprints. The checkout script owns CLI composition and
 the benchmark-specific simulator control loop; it passes typed diagnostic
 metadata and payloads to the artifact owner instead of implementing a second
 serialization contract, and it does not import another checkout helper or call
-private package runtime functions.
+private package runtime functions. Its remaining control loops compose the
+typed package operations with wall-clock scheduling and simulator stepping;
+they do not encode policy-route or model-output semantics.
 
 ## Configuration Contract
 

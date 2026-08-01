@@ -7,7 +7,7 @@ import math
 import sys
 import time
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 import numpy as np
 import torch
@@ -25,7 +25,7 @@ def _prepend_import_path(path: Path) -> None:
 
 _prepend_import_path(SRC_ROOT)
 
-from open_wam.configs import ActionTargetRepresentation, ParallelRuntimeMode  # noqa: E402
+from open_wam.configs import ParallelRuntimeMode  # noqa: E402
 from open_wam.configs.enums import (  # noqa: E402
     DeadlineMissPolicy,
     FallbackHistoryPolicy,
@@ -34,11 +34,9 @@ from open_wam.configs.enums import (  # noqa: E402
     RealtimeSchedulerProfile,
     RolloutArtifactProfile,
 )
-from open_wam.data.action_transforms import PoseSequence  # noqa: E402
 from open_wam.data.latent_temporal import raw_window_frames_for_latents  # noqa: E402
 from open_wam.integrations import (  # noqa: E402
     LiberoControlConfig,
-    compute_osc_pose_action,
     ensure_local_libero_config,
     load_libero_task_init_states,
     resolve_libero_task_by_id,
@@ -67,14 +65,9 @@ from open_wam.evals import libero_visualization as exact_viz  # noqa: E402
 from open_wam.evals import realtime_history  # noqa: E402
 from open_wam.evals import realtime_speculation  # noqa: E402
 from open_wam.models.common.rollout_startup import require_strict_startup_generation_frame  # noqa: E402
-from open_wam.models.policy_variants import PolicyInferContext  # noqa: E402
 from open_wam.models.visual_tower import VisualRuntimeStateSnapshot  # noqa: E402
 from open_wam.models.policy_variants.mot.runtime_routing import (  # noqa: E402
     ensure_mot_inference_backend,
-    mot_config_uses_strict_rollout_parity,
-    resolve_mot_sequence_actions_per_frame,
-    resolve_mot_sequence_execution_action_offset,
-    resolve_mot_runtime_route,
 )
 from open_wam.pipelines import LingbotExactRunner, VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
 from open_wam.runtime import checkpoints as runtime_checkpoints  # noqa: E402
@@ -102,17 +95,6 @@ EVAL_PROFILE_DEFAULTS: dict[str, dict[str, object]] = {
         "deadline_miss_policy": DeadlineMissPolicy.HOLD_STATE.value,
     },
 }
-
-
-class _RolloutRunnerLike(Protocol):
-    def reset(
-        self,
-        *,
-        task_text: tuple[str | None, ...] | None = None,
-        text_context: torch.Tensor | None = None,
-        negative_text_context: torch.Tensor | None = None,
-    ):
-        ...
 
 
 def _apply_realtime_cli_profiles(args: argparse.Namespace, argv: list[str]) -> None:
@@ -659,45 +641,6 @@ def _resolve_exact_startup_bootstrap_padding(
     if cli_value is not None:
         return False
     return False
-
-
-def _is_mot_non_joint_two_stream(config) -> bool:
-    # Historical helper name retained for call-site locality: this means the
-    # Method-1-style split-cache MoT route, not every non-joint packed coupling.
-    return resolve_mot_runtime_route(config).uses_split_cache_rollout
-
-
-def _uses_strict_mot_split_cache_startup(config) -> bool:
-    route = resolve_mot_runtime_route(config)
-    return bool(route.uses_split_cache_rollout and mot_config_uses_strict_rollout_parity(config))
-
-
-def _uses_strict_mot_one_frame_history(config) -> bool:
-    route = resolve_mot_runtime_route(config)
-    return bool(route.is_mot and mot_config_uses_strict_rollout_parity(config))
-
-
-def _sequence_startup_model_obs_window(
-    config,
-    initial_obs_window: list[dict[str, np.ndarray]],
-) -> list[dict[str, np.ndarray]]:
-    if not initial_obs_window:
-        raise ValueError("Cannot build sequence startup observation window from an empty initial window.")
-    if _uses_strict_mot_one_frame_history(config):
-        return [realtime_history.copy_observation(initial_obs_window[-1])]
-    return realtime_history.copy_observation_window(initial_obs_window)
-
-
-def _sequence_model_obs_window_frames(config, *, raw_window_frames: int) -> int:
-    if _uses_strict_mot_one_frame_history(config):
-        return 1
-    return int(raw_window_frames)
-
-
-def _sequence_startup_env_init_frames(config, *, raw_window_frames: int) -> int:
-    if _uses_strict_mot_one_frame_history(config):
-        return 1
-    return int(raw_window_frames)
 
 
 def _resolve_checkpoint_path_for_config(*, config, checkpoint_arg: str | None) -> Path | None:
@@ -1881,7 +1824,7 @@ def _run_sequence_policy_realtime_rollout(
         raise ValueError(
             f"{rollout_label} realtime rollout requires a full checkpoint via `--checkpoint` or config-backed inference."
         )
-    _validate_mot_startup_open_loop_support(
+    realtime_runtime.validate_sequence_startup_open_loop_support(
         config=config,
         startup_open_loop_chunks=startup_open_loop_chunks,
     )
@@ -1948,9 +1891,9 @@ def _run_sequence_policy_realtime_rollout(
         "sequence_buffer_threshold": int(sequence_buffer_threshold),
         "startup_open_loop_chunks": int(startup_open_loop_chunks),
         "replan_low_watermark_actions": int(replan_low_watermark_actions),
-        "strict_mot_split_cache_startup": bool(_uses_strict_mot_split_cache_startup(config)),
-        "strict_mot_one_frame_history": bool(_uses_strict_mot_one_frame_history(config)),
-        "decoder_runtime": _collect_decoder_runtime_metadata(pipeline, config),
+        "strict_mot_split_cache_startup": bool(realtime_runtime.uses_strict_mot_split_cache_startup(config)),
+        "strict_mot_one_frame_history": bool(realtime_runtime.uses_strict_mot_one_frame_history(config)),
+        "decoder_runtime": realtime_runtime.collect_decoder_runtime_metadata(pipeline, config),
     }
     if mot_inference_backend is not None:
         load_report["mot_inference_backend"] = mot_inference_backend
@@ -1969,11 +1912,11 @@ def _run_sequence_policy_realtime_rollout(
     action_period_s = 1.0 / float(target_action_hz)
     deadline_tolerance_s = float(deadline_tolerance_ms) / 1000.0
     raw_window_frames = raw_window_frames_for_latents(int(config.data.num_frames))
-    startup_env_init_frames = _sequence_startup_env_init_frames(
+    startup_env_init_frames = realtime_runtime.resolve_sequence_startup_environment_frames(
         config,
         raw_window_frames=raw_window_frames,
     )
-    model_obs_window_frames = _sequence_model_obs_window_frames(
+    model_obs_window_frames = realtime_runtime.resolve_sequence_model_observation_window_frames(
         config,
         raw_window_frames=raw_window_frames,
     )
@@ -1990,7 +1933,7 @@ def _run_sequence_policy_realtime_rollout(
                 num_frames=startup_env_init_frames,
             )
             _print_stage(f"{rollout_label}_init_env_done", initial_window=len(initial_obs_window))
-            startup_model_obs_window = _sequence_startup_model_obs_window(config, initial_obs_window)
+            startup_model_obs_window = realtime_runtime.build_sequence_startup_observation_window(config, initial_obs_window)
             startup_prepare_t0 = time.perf_counter()
             initial_inputs = rollout_runtime.prepare_rollout_observation_inputs(
                 pipeline,
@@ -2011,24 +1954,26 @@ def _run_sequence_policy_realtime_rollout(
                 negative_text_context=initial_inputs["negative_text_context"],
             )
             startup_infer_t0 = time.perf_counter()
-            startup = _run_sequence_replan_job(
+            startup = realtime_runtime.run_sequence_replan_job(
                 runner=runner,
                 session=session,
                 obs_window=realtime_history.copy_observation_window(startup_model_obs_window),
-                prompt=prompt,
-                task_id=int(task_id),
-                episode_idx=int(episode_idx),
                 config=config,
-                frontend_device=frontend_device,
-                runtime_device=runtime_device,
-                generation_action_start=rollout_runtime.resolve_initial_generation_action_start(
-                    initial_obs_window,
-                    initial_generation_action_start=initial_generation_action_start,
-                    rollout_starts_at_action_zero=rollout_runtime.uses_zero_based_generation_start(
-                        config
+                options=realtime_runtime.SequenceReplanJobOptions(
+                    prompt=prompt,
+                    task_id=int(task_id),
+                    episode_idx=int(episode_idx),
+                    frontend_device=frontend_device,
+                    runtime_device=runtime_device,
+                    generation_action_start=rollout_runtime.resolve_initial_generation_action_start(
+                        initial_obs_window,
+                        initial_generation_action_start=initial_generation_action_start,
+                        rollout_starts_at_action_zero=rollout_runtime.uses_zero_based_generation_start(
+                            config
+                        ),
                     ),
+                    source="startup_plan",
                 ),
-                source="startup_plan",
             )
             realtime_runtime.synchronize_devices(runtime_device)
             startup_infer_s = time.perf_counter() - startup_infer_t0
@@ -2038,19 +1983,23 @@ def _run_sequence_policy_realtime_rollout(
                 startup_infer_s=float(startup_infer_s),
             )
 
-        session = startup["session"]
-        next_generation_action_start = int(startup["next_generation_action_start"])
-        mot_non_joint_sequence = _is_mot_non_joint_two_stream(config)
+        session = startup.session
+        next_generation_action_start = int(startup.next_generation_action_start)
+        mot_non_joint_sequence = realtime_runtime.uses_mot_split_cache_sequence(config)
         history_base_session = session if mot_non_joint_sequence else realtime_speculation.clone_session(session)
-        history_base_cache_snapshot = startup.get("runtime_cache_snapshot")
+        history_base_cache_snapshot = startup.runtime_cache_snapshot
         history_generation_action_start = int(next_generation_action_start)
         buffer_tail_session = session if mot_non_joint_sequence else realtime_speculation.clone_session(session)
-        buffer_tail_cache_snapshot = startup.get("runtime_cache_snapshot")
+        buffer_tail_cache_snapshot = startup.runtime_cache_snapshot
         buffer_tail_generation_action_start = int(next_generation_action_start)
-        plan_by_action = merge_future_control_steps({}, startup["planned_steps"], next_action_to_execute=0)
+        plan_by_action = merge_future_control_steps(
+            {},
+            startup.planned_steps,
+            next_action_to_execute=0,
+        )
         current_obs = realtime_history.copy_observation(initial_obs_window[-1])
         obs_window = realtime_history.copy_observation_window(initial_obs_window)
-        model_obs_window = _sequence_startup_model_obs_window(config, initial_obs_window)
+        model_obs_window = realtime_runtime.build_sequence_startup_observation_window(config, initial_obs_window)
         sequence_fallback_state = realtime_history.ActionFallbackHistoryState(policy=fallback_history_policy)
         sequence_clean_actions_required = max(1, int(config.data.action_schema.action_horizon))
         extension_records: list[dict[str, Any]] = []
@@ -2058,7 +2007,7 @@ def _run_sequence_policy_realtime_rollout(
         if startup_open_loop_chunks > 0:
             startup_open_loop_t0 = time.perf_counter()
             for _ in range(int(startup_open_loop_chunks)):
-                extension = _run_sequence_replan_job(
+                extension = realtime_runtime.run_sequence_replan_job(
                     runner=runner,
                     session=(
                         buffer_tail_session
@@ -2066,27 +2015,31 @@ def _run_sequence_policy_realtime_rollout(
                         else realtime_speculation.clone_session(buffer_tail_session)
                     ),
                     obs_window=realtime_history.copy_observation_window(model_obs_window),
-                    prompt=prompt,
-                    task_id=int(task_id),
-                    episode_idx=int(episode_idx),
                     config=config,
-                    frontend_device=frontend_device,
-                    runtime_device=runtime_device,
-                    generation_action_start=buffer_tail_generation_action_start,
-                    source="open_loop_extension",
-                    reset_observation_conditioned_session=False,
-                    use_observation_update=False,
-                    runtime_cache_snapshot=buffer_tail_cache_snapshot,
-                    preserve_rng_state=True,
+                    options=realtime_runtime.SequenceReplanJobOptions(
+                        prompt=prompt,
+                        task_id=int(task_id),
+                        episode_idx=int(episode_idx),
+                        frontend_device=frontend_device,
+                        runtime_device=runtime_device,
+                        generation_action_start=buffer_tail_generation_action_start,
+                        source="open_loop_extension",
+                        reset_observation_conditioned_session=False,
+                        use_observation_update=False,
+                        runtime_cache_snapshot=buffer_tail_cache_snapshot,
+                        preserve_rng_state=True,
+                    ),
                 )
-                extension_records.append(extension["trace"])
+                extension_records.append(extension.trace)
                 buffer_tail_session = (
-                    extension["session"]
+                    extension.session
                     if mot_non_joint_sequence
-                    else realtime_speculation.clone_session(extension["session"])
+                    else realtime_speculation.clone_session(extension.session)
                 )
-                buffer_tail_cache_snapshot = extension.get("runtime_cache_snapshot")
-                buffer_tail_generation_action_start = int(extension["next_generation_action_start"])
+                buffer_tail_cache_snapshot = extension.runtime_cache_snapshot
+                buffer_tail_generation_action_start = int(
+                    extension.next_generation_action_start
+                )
                 session = (
                     buffer_tail_session
                     if mot_non_joint_sequence
@@ -2095,7 +2048,7 @@ def _run_sequence_policy_realtime_rollout(
                 next_generation_action_start = int(buffer_tail_generation_action_start)
                 plan_by_action = merge_future_control_steps(
                     plan_by_action,
-                    extension["planned_steps"],
+                    extension.planned_steps,
                     next_action_to_execute=0,
                 )
             startup_open_loop_s = time.perf_counter() - startup_open_loop_t0
@@ -2120,42 +2073,44 @@ def _run_sequence_policy_realtime_rollout(
         schedule_pause_s = 0.0
 
         with ThreadPoolExecutor(max_workers=1) as executor:
-            replan_future: Future[dict[str, Any]] | None = None
+            replan_future: Future[
+                realtime_runtime.SequenceReplanJobResult
+            ] | None = None
             while executed_action_index < max_actions and not done:
                 if replan_future is not None and replan_future.done():
                     result = replan_future.result()
-                    if _is_mot_non_joint_two_stream(config):
+                    if realtime_runtime.uses_mot_split_cache_sequence(config):
                         future_steps = _annotate_sequence_planner_acceptance(
                             result,
                             next_action_to_execute=next_action_index,
                         )
-                        replan_records.append(result["trace"])
+                        replan_records.append(result.trace)
                         if future_steps:
-                            if bool(result["trace"].get("use_observation_update", True)):
+                            if bool(result.trace.get("use_observation_update", True)):
                                 replace_from_action = min(int(step.absolute_action_index) for step in future_steps)
                                 plan_by_action = drop_control_steps_from(
                                     plan_by_action,
                                     replace_from_action=replace_from_action,
                                 )
                                 history_base_session = realtime_speculation.session_reference(
-                                    result["session"],
+                                    result.session,
                                     share_session=mot_non_joint_sequence,
                                 )
-                                history_base_cache_snapshot = result.get("runtime_cache_snapshot")
-                                history_generation_action_start = int(result["next_generation_action_start"])
+                                history_base_cache_snapshot = result.runtime_cache_snapshot
+                                history_generation_action_start = int(result.next_generation_action_start)
                                 buffer_tail_session = realtime_speculation.session_reference(
-                                    result["session"],
+                                    result.session,
                                     share_session=mot_non_joint_sequence,
                                 )
-                                buffer_tail_cache_snapshot = result.get("runtime_cache_snapshot")
-                                buffer_tail_generation_action_start = int(result["next_generation_action_start"])
+                                buffer_tail_cache_snapshot = result.runtime_cache_snapshot
+                                buffer_tail_generation_action_start = int(result.next_generation_action_start)
                             else:
                                 buffer_tail_session = realtime_speculation.session_reference(
-                                    result["session"],
+                                    result.session,
                                     share_session=mot_non_joint_sequence,
                                 )
-                                buffer_tail_cache_snapshot = result.get("runtime_cache_snapshot")
-                                buffer_tail_generation_action_start = int(result["next_generation_action_start"])
+                                buffer_tail_cache_snapshot = result.runtime_cache_snapshot
+                                buffer_tail_generation_action_start = int(result.next_generation_action_start)
                             plan_by_action = merge_future_control_steps(
                                 plan_by_action,
                                 future_steps,
@@ -2167,12 +2122,12 @@ def _run_sequence_policy_realtime_rollout(
                             )
                             next_generation_action_start = int(buffer_tail_generation_action_start)
                     else:
-                        replan_records.append(result["trace"])
-                        session = result["session"]
-                        next_generation_action_start = int(result["next_generation_action_start"])
+                        replan_records.append(result.trace)
+                        session = result.session
+                        next_generation_action_start = int(result.next_generation_action_start)
                         plan_by_action = merge_future_control_steps(
                             plan_by_action,
-                            result["planned_steps"],
+                            result.planned_steps,
                             next_action_to_execute=next_action_index,
                         )
                     replan_future = None
@@ -2184,10 +2139,10 @@ def _run_sequence_policy_realtime_rollout(
                         wait_t0 = time.perf_counter()
                         if replan_future is None:
                             blocking_replan_count += 1
-                            if _is_mot_non_joint_two_stream(config):
+                            if realtime_runtime.uses_mot_split_cache_sequence(config):
                                 if (
                                     buffer_tail_session is not None
-                                    and _sequence_buffer_tail_ready_for_history_promotion(
+                                    and realtime_runtime.sequence_buffer_tail_ready_for_history_promotion(
                                         config=config,
                                         next_action_index=next_action_index,
                                         buffer_tail_generation_action_start=buffer_tail_generation_action_start,
@@ -2206,7 +2161,7 @@ def _run_sequence_policy_realtime_rollout(
                                 )
                                 blocking_generation_action_start = int(history_generation_action_start)
                                 blocking_cache_snapshot = history_base_cache_snapshot
-                                blocking_condition_frame_start = _mot_condition_frame_start_for_generation(
+                                blocking_condition_frame_start = realtime_runtime.resolve_sequence_condition_frame_start(
                                     config=config,
                                     generation_action_start=blocking_generation_action_start,
                                 )
@@ -2218,20 +2173,24 @@ def _run_sequence_policy_realtime_rollout(
                             # The restored history snapshot already contains
                             # the correct MoT action-cache prefix. Rewinding
                             # here mutates chunk-by-chunk parity.
-                            result = _run_sequence_replan_job(
+                            result = realtime_runtime.run_sequence_replan_job(
                                 runner=runner,
                                 session=blocking_session,
                                 obs_window=realtime_history.copy_observation_window(model_obs_window),
-                                prompt=prompt,
-                                task_id=int(task_id),
-                                episode_idx=int(episode_idx),
                                 config=config,
-                                frontend_device=frontend_device,
-                                runtime_device=runtime_device,
-                                generation_action_start=blocking_generation_action_start,
-                                source="blocking_replan",
-                                runtime_cache_snapshot=blocking_cache_snapshot,
-                                mot_condition_frame_start=blocking_condition_frame_start,
+                                options=realtime_runtime.SequenceReplanJobOptions(
+                                    prompt=prompt,
+                                    task_id=int(task_id),
+                                    episode_idx=int(episode_idx),
+                                    frontend_device=frontend_device,
+                                    runtime_device=runtime_device,
+                                    generation_action_start=blocking_generation_action_start,
+                                    source="blocking_replan",
+                                    runtime_cache_snapshot=blocking_cache_snapshot,
+                                    mot_condition_frame_start=(
+                                        blocking_condition_frame_start
+                                    ),
+                                ),
                             )
                         else:
                             result = replan_future.result()
@@ -2239,14 +2198,14 @@ def _run_sequence_policy_realtime_rollout(
                         wait_for_plan_s = time.perf_counter() - wait_t0
                         wait_for_plan_count += 1
                         wait_for_plan_total_s += wait_for_plan_s
-                        result["trace"]["blocking_wait_action_index"] = int(next_action_index)
-                        result["trace"]["blocking_wait_s"] = float(wait_for_plan_s)
-                        if _is_mot_non_joint_two_stream(config):
+                        result.trace["blocking_wait_action_index"] = int(next_action_index)
+                        result.trace["blocking_wait_s"] = float(wait_for_plan_s)
+                        if realtime_runtime.uses_mot_split_cache_sequence(config):
                             future_steps = _annotate_sequence_planner_acceptance(
                                 result,
                                 next_action_to_execute=next_action_index,
                             )
-                            replan_records.append(result["trace"])
+                            replan_records.append(result.trace)
                             if future_steps:
                                 replace_from_action = min(int(step.absolute_action_index) for step in future_steps)
                                 plan_by_action = drop_control_steps_from(
@@ -2254,17 +2213,17 @@ def _run_sequence_policy_realtime_rollout(
                                     replace_from_action=replace_from_action,
                                 )
                                 history_base_session = realtime_speculation.session_reference(
-                                    result["session"],
+                                    result.session,
                                     share_session=mot_non_joint_sequence,
                                 )
-                                history_base_cache_snapshot = result.get("runtime_cache_snapshot")
-                                history_generation_action_start = int(result["next_generation_action_start"])
+                                history_base_cache_snapshot = result.runtime_cache_snapshot
+                                history_generation_action_start = int(result.next_generation_action_start)
                                 buffer_tail_session = realtime_speculation.session_reference(
-                                    result["session"],
+                                    result.session,
                                     share_session=mot_non_joint_sequence,
                                 )
-                                buffer_tail_cache_snapshot = result.get("runtime_cache_snapshot")
-                                buffer_tail_generation_action_start = int(result["next_generation_action_start"])
+                                buffer_tail_cache_snapshot = result.runtime_cache_snapshot
+                                buffer_tail_generation_action_start = int(result.next_generation_action_start)
                                 plan_by_action = merge_future_control_steps(
                                     plan_by_action,
                                     future_steps,
@@ -2302,7 +2261,7 @@ def _run_sequence_policy_realtime_rollout(
                     else:
                         raise ValueError(f"Unsupported sequence_empty_plan_policy={sequence_empty_plan_policy!r}.")
                 if planned_step is not None:
-                    action = _materialize_sequence_control_action(
+                    action = realtime_runtime.materialize_sequence_control_action(
                         planned_step,
                         current_obs=current_obs,
                         control_config=control_config,
@@ -2410,38 +2369,38 @@ def _run_sequence_policy_realtime_rollout(
 
                 if replan_future is not None and replan_future.done():
                     result = replan_future.result()
-                    if _is_mot_non_joint_two_stream(config):
+                    if realtime_runtime.uses_mot_split_cache_sequence(config):
                         future_steps = _annotate_sequence_planner_acceptance(
                             result,
                             next_action_to_execute=next_action_index,
                         )
-                        replan_records.append(result["trace"])
+                        replan_records.append(result.trace)
                         if future_steps:
-                            if bool(result["trace"].get("use_observation_update", True)):
+                            if bool(result.trace.get("use_observation_update", True)):
                                 replace_from_action = min(int(step.absolute_action_index) for step in future_steps)
                                 plan_by_action = drop_control_steps_from(
                                     plan_by_action,
                                     replace_from_action=replace_from_action,
                                 )
                                 history_base_session = realtime_speculation.session_reference(
-                                    result["session"],
+                                    result.session,
                                     share_session=mot_non_joint_sequence,
                                 )
-                                history_base_cache_snapshot = result.get("runtime_cache_snapshot")
-                                history_generation_action_start = int(result["next_generation_action_start"])
+                                history_base_cache_snapshot = result.runtime_cache_snapshot
+                                history_generation_action_start = int(result.next_generation_action_start)
                                 buffer_tail_session = realtime_speculation.session_reference(
-                                    result["session"],
+                                    result.session,
                                     share_session=mot_non_joint_sequence,
                                 )
-                                buffer_tail_cache_snapshot = result.get("runtime_cache_snapshot")
-                                buffer_tail_generation_action_start = int(result["next_generation_action_start"])
+                                buffer_tail_cache_snapshot = result.runtime_cache_snapshot
+                                buffer_tail_generation_action_start = int(result.next_generation_action_start)
                             else:
                                 buffer_tail_session = realtime_speculation.session_reference(
-                                    result["session"],
+                                    result.session,
                                     share_session=mot_non_joint_sequence,
                                 )
-                                buffer_tail_cache_snapshot = result.get("runtime_cache_snapshot")
-                                buffer_tail_generation_action_start = int(result["next_generation_action_start"])
+                                buffer_tail_cache_snapshot = result.runtime_cache_snapshot
+                                buffer_tail_generation_action_start = int(result.next_generation_action_start)
                             plan_by_action = merge_future_control_steps(
                                 plan_by_action,
                                 future_steps,
@@ -2453,12 +2412,12 @@ def _run_sequence_policy_realtime_rollout(
                             )
                             next_generation_action_start = int(buffer_tail_generation_action_start)
                     else:
-                        replan_records.append(result["trace"])
-                        session = result["session"]
-                        next_generation_action_start = int(result["next_generation_action_start"])
+                        replan_records.append(result.trace)
+                        session = result.session
+                        next_generation_action_start = int(result.next_generation_action_start)
                         plan_by_action = merge_future_control_steps(
                             plan_by_action,
-                            result["planned_steps"],
+                            result.planned_steps,
                             next_action_to_execute=next_action_index,
                         )
                     replan_future = None
@@ -2473,10 +2432,10 @@ def _run_sequence_policy_realtime_rollout(
                 )
                 if replan_future is None and should_submit:
                     obs_snapshot = realtime_history.copy_observation_window(model_obs_window)
-                    if _is_mot_non_joint_two_stream(config):
+                    if realtime_runtime.uses_mot_split_cache_sequence(config):
                         if (
                             buffer_tail_session is not None
-                            and _sequence_buffer_tail_ready_for_history_promotion(
+                            and realtime_runtime.sequence_buffer_tail_ready_for_history_promotion(
                                 config=config,
                                 next_action_index=next_action_index,
                                 buffer_tail_generation_action_start=buffer_tail_generation_action_start,
@@ -2489,7 +2448,7 @@ def _run_sequence_policy_realtime_rollout(
                             )
                             history_base_cache_snapshot = buffer_tail_cache_snapshot
                             history_generation_action_start = int(buffer_tail_generation_action_start)
-                        history_ready = _mot_history_replan_ready(
+                        history_ready = realtime_runtime.sequence_history_replan_ready(
                             config=config,
                             next_action_index=next_action_index,
                             generation_action_start=history_generation_action_start,
@@ -2512,7 +2471,7 @@ def _run_sequence_policy_realtime_rollout(
                             )
                             submit_generation_action_start = int(history_generation_action_start)
                             submit_cache_snapshot = history_base_cache_snapshot
-                            submit_condition_frame_start = _mot_condition_frame_start_for_generation(
+                            submit_condition_frame_start = realtime_runtime.resolve_sequence_condition_frame_start(
                                 config=config,
                                 generation_action_start=submit_generation_action_start,
                             )
@@ -2525,7 +2484,7 @@ def _run_sequence_policy_realtime_rollout(
                             submit_cache_snapshot = buffer_tail_cache_snapshot
                             submit_condition_frame_start = None
                     else:
-                        use_observation_update = not _should_use_mot_open_loop_extension(
+                        use_observation_update = not realtime_runtime.should_use_sequence_open_loop_extension(
                             config=config,
                             planner_mode=planner_mode,
                             remaining_buffer_actions=remaining_buffer,
@@ -2535,46 +2494,58 @@ def _run_sequence_policy_realtime_rollout(
                         submit_cache_snapshot = None
                         submit_condition_frame_start = None
                     replan_future = executor.submit(
-                        _run_sequence_replan_job,
+                        realtime_runtime.run_sequence_replan_job,
                         runner=runner,
                         session=submit_session,
                         obs_window=obs_snapshot,
-                        prompt=prompt,
-                        task_id=int(task_id),
-                        episode_idx=int(episode_idx),
                         config=config,
-                        frontend_device=frontend_device,
-                        runtime_device=runtime_device,
-                        generation_action_start=submit_generation_action_start,
-                        source="history_replan" if use_observation_update else "open_loop_extension",
-                        reset_observation_conditioned_session=use_observation_update,
-                        use_observation_update=use_observation_update,
-                        runtime_cache_snapshot=submit_cache_snapshot,
-                        mot_condition_frame_start=submit_condition_frame_start,
-                        # Async observation-conditioned MoT replans can be
-                        # launched from a speculative buffer-tail session.
-                        # Trim that future action K/V suffix to the chunk
-                        # being replaced; blocking/history-only replans keep
-                        # their accepted cache prefix untouched for parity.
-                        mot_action_cache_rewind_frame_start=_mot_action_cache_rewind_for_sequence_submit(
-                            config=config,
-                            planner_mode=planner_mode,
+                        options=realtime_runtime.SequenceReplanJobOptions(
+                            prompt=prompt,
+                            task_id=int(task_id),
+                            episode_idx=int(episode_idx),
+                            frontend_device=frontend_device,
+                            runtime_device=runtime_device,
+                            generation_action_start=submit_generation_action_start,
+                            source=(
+                                "history_replan"
+                                if use_observation_update
+                                else "open_loop_extension"
+                            ),
+                            reset_observation_conditioned_session=(
+                                use_observation_update
+                            ),
                             use_observation_update=use_observation_update,
-                            condition_frame_start=submit_condition_frame_start,
+                            runtime_cache_snapshot=submit_cache_snapshot,
+                            mot_condition_frame_start=submit_condition_frame_start,
+                            # Async observation-conditioned MoT replans can be
+                            # launched from a speculative buffer-tail session.
+                            # Trim that future action K/V suffix to the chunk
+                            # being replaced; blocking/history-only replans keep
+                            # their accepted cache prefix untouched for parity.
+                            mot_action_cache_rewind_frame_start=(
+                                realtime_runtime.resolve_sequence_action_cache_rewind_frame(
+                                    config=config,
+                                    planner_mode=planner_mode,
+                                    use_observation_update=use_observation_update,
+                                    condition_frame_start=(
+                                        submit_condition_frame_start
+                                    ),
+                                )
+                            ),
+                            preserve_rng_state=not bool(use_observation_update),
                         ),
-                        preserve_rng_state=not bool(use_observation_update),
                     )
                 elif replan_future is not None:
                     skipped_replan_submissions += 1
 
             if replan_future is not None and replan_future.done():
                 result = replan_future.result()
-                if _is_mot_non_joint_two_stream(config):
+                if realtime_runtime.uses_mot_split_cache_sequence(config):
                     future_steps = _annotate_sequence_planner_acceptance(
                         result,
                         next_action_to_execute=next_action_index,
                     )
-                    replan_records.append(result["trace"])
+                    replan_records.append(result.trace)
                     if future_steps:
                         plan_by_action = merge_future_control_steps(
                             plan_by_action,
@@ -2582,12 +2553,12 @@ def _run_sequence_policy_realtime_rollout(
                             next_action_to_execute=next_action_index,
                         )
                 else:
-                    replan_records.append(result["trace"])
-                    session = result["session"]
-                    next_generation_action_start = int(result["next_generation_action_start"])
+                    replan_records.append(result.trace)
+                    session = result.session
+                    next_generation_action_start = int(result.next_generation_action_start)
                     plan_by_action = merge_future_control_steps(
                         plan_by_action,
-                        result["planned_steps"],
+                        result.planned_steps,
                         next_action_to_execute=next_action_index,
                     )
 
@@ -2630,7 +2601,7 @@ def _run_sequence_policy_realtime_rollout(
                 "raw_window_frames": int(raw_window_frames),
                 "startup_env_init_frames": int(startup_env_init_frames),
                 "model_obs_window_frames": int(model_obs_window_frames),
-                "strict_mot_one_frame_history": bool(_uses_strict_mot_one_frame_history(config)),
+                "strict_mot_one_frame_history": bool(realtime_runtime.uses_strict_mot_one_frame_history(config)),
                 "planner_mode": planner_mode.value,
                 "sequence_buffer_threshold": int(sequence_buffer_threshold),
                 "sequence_empty_plan_policy": sequence_empty_plan_policy.value,
@@ -2652,7 +2623,7 @@ def _run_sequence_policy_realtime_rollout(
                 "hidden_washout_history_actions": int(sequence_fallback_state.hidden_washout_actions),
                 "hidden_history_actions": int(sequence_fallback_state.hidden_history_actions),
                 "policy_variant": str(config.policy_variant.name),
-                "startup_plan_trace": startup["trace"],
+                "startup_plan_trace": startup.trace,
             }
         )
         return _finalize_rollout_outputs(
@@ -2677,504 +2648,42 @@ def _run_sequence_policy_realtime_rollout(
         env.close()
 
 
-def _validate_strict_mot_split_cache_startup_inputs(
-    *,
-    config,
-    source: str,
-    generation_action_start: int,
-    video_latents: object,
-) -> None:
-    if not _uses_strict_mot_split_cache_startup(config) or str(source) != "startup_plan":
-        return
-    if int(generation_action_start) != 0:
-        raise ValueError(
-            "M5 strict split-cache startup expects generation_action_start=0 so executable "
-            f"actions start at action index 0; got {generation_action_start}."
-        )
-    if not isinstance(video_latents, torch.Tensor) or video_latents.ndim != 5:
-        raise ValueError(
-            "M5 strict split-cache startup expects tensor video_latents with shape [B, C, T, H, W], "
-            f"got {type(video_latents).__name__}."
-        )
-    latent_context_frames = int(video_latents.shape[2])
-    if latent_context_frames != 1:
-        raise ValueError(
-            "M5 strict split-cache startup expects exactly one latent context frame before "
-            f"the first generated chunk; got {latent_context_frames}. This would break "
-            "target_alignment=next_after_context parity."
-        )
-
-
-def _run_sequence_replan_job(
-    *,
-    runner: VariantRolloutRunner,
-    session,
-    obs_window: list[dict[str, np.ndarray]],
-    prompt: str,
-    task_id: int,
-    episode_idx: int,
-    config,
-    frontend_device: torch.device,
-    runtime_device: torch.device,
-    generation_action_start: int,
-    source: str,
-    reset_observation_conditioned_session: bool = True,
-    use_observation_update: bool = True,
-    runtime_cache_snapshot: VisualRuntimeStateSnapshot | None = None,
-    mot_condition_frame_start: int | None = None,
-    mot_action_cache_rewind_frame_start: int | None = None,
-    preserve_rng_state: bool = False,
-) -> dict[str, Any]:
-    rng_snapshot = realtime_speculation.snapshot_rng_state() if preserve_rng_state else None
-    with torch.inference_mode():
-        if runtime_cache_snapshot is not None:
-            realtime_speculation.restore_visual_runtime(
-                runner=runner,
-                snapshot=runtime_cache_snapshot,
-            )
-        prepare_t0 = time.perf_counter()
-        rollout_inputs = rollout_runtime.prepare_rollout_observation_inputs(
-            runner.pipeline,
-            views=libero_rollout.libero_observation_window_to_views(
-                obs_window,
-                device=frontend_device,
-            ),
-            task_text=(prompt,),
-            frontend_device=frontend_device,
-            runtime_device=runtime_device,
-            text_context=session.text_context,
-            negative_text_context=session.negative_text_context,
-        )
-        realtime_runtime.synchronize_devices(frontend_device, runtime_device)
-        prepare_s = time.perf_counter() - prepare_t0
-        _validate_strict_mot_split_cache_startup_inputs(
-            config=config,
-            source=source,
-            generation_action_start=int(generation_action_start),
-            video_latents=rollout_inputs.get("video_latents"),
-        )
-
-        infer_t0 = time.perf_counter()
-        inference_session = (
-            _resolve_observation_conditioned_replan_session(
-                runner=runner,
-                session=session,
-                config=config,
-            )
-            if reset_observation_conditioned_session
-            else session
-        )
-        reset_session_for_replan = inference_session is not session
-        infer_extra = rollout_runtime.build_sequence_rollout_infer_extra(
-            config=config,
-            prompt=prompt,
-            generation_action_start=int(generation_action_start),
-            runtime_device=runtime_device,
-            task_id=int(task_id),
-            episode_idx=int(episode_idx),
-        )
-        mot_runtime_route = resolve_mot_runtime_route(config)
-        if mot_runtime_route.is_mot and mot_runtime_route.supports_realtime_history_controls:
-            infer_extra["mot_skip_observation_update"] = not bool(use_observation_update)
-            if mot_condition_frame_start is not None:
-                infer_extra["mot_condition_frame_start"] = int(mot_condition_frame_start)
-            if mot_action_cache_rewind_frame_start is not None:
-                infer_extra["mot_action_cache_rewind_frame_start"] = int(mot_action_cache_rewind_frame_start)
-        elif mot_runtime_route.is_mot and not bool(use_observation_update):
-            raise ValueError(
-                "M5 runtime route does not support split-cache open-loop controls: "
-                f"{mot_runtime_route.to_report()}"
-            )
-        step_output = runner.infer_step(
-            session=inference_session,
-            context=PolicyInferContext(
-                state=libero_rollout.build_libero_state_history(
-                    obs_window,
-                    state_horizon=int(config.data.action_schema.state_horizon),
-                    state_encoding=config.data.action_target.state_encoding,
-                ).unsqueeze(0).to(device=runtime_device),
-                extra=infer_extra,
-            ),
-            video_latents=rollout_inputs["video_latents"],
-            canonical_video=None,
-        )
-        realtime_runtime.synchronize_devices(runtime_device)
-        infer_s = time.perf_counter() - infer_t0
-        output_runtime_cache_snapshot = realtime_speculation.snapshot_sequence_visual_runtime(
-            runner=runner,
-            config=config,
-            session=step_output.session,
-        )
-
-    policy_aux = step_output.infer_output.policy_output.aux
-    mot_cache_debug = policy_aux.get("mot_cache_debug")
-    if not isinstance(mot_cache_debug, dict):
-        mot_cache_debug = {}
-    sequence_context = step_output.infer_output.policy_output.decoder_sequence_context
-    video_condition_window = None if sequence_context is None else sequence_context.video_condition_window
-    video_condition_metadata = {} if video_condition_window is None else dict(video_condition_window.metadata)
-    predicted_latents = policy_aux.get("predicted_latents")
-    action_plan = runner.build_action_rollout_plan(
-        step_output.infer_output.decoder_output
-    )
-    action_pred = action_plan.actions.numpy()
-    action_plan_metadata = action_plan.to_metadata()
-    runner.commit_action_rollout_plan(
-        session=step_output.session,
-        plan=action_plan,
-    )
-    ready_monotonic_s = time.perf_counter()
-    planned_steps = _sequence_chunk_to_planned_steps(
-        action_pred=action_pred,
-        reference_obs=obs_window[-1],
-        generation_action_start=generation_action_start,
-        execution_action_offset=_sequence_execution_action_offset(config),
-        source=source,
-        planner_step_index=(
-            None
-            if step_output.session.policy_state is None
-            else int(step_output.session.policy_state.step_index)
-        ),
-        ready_monotonic_s=ready_monotonic_s,
-        action_target_representation=config.data.action_target.representation,
-        rotation_representation=str(config.data.action_target.rotation_representation),
-    )
-    next_generation_action_start = generation_action_start + int(action_pred.shape[0])
-    job_result = {
-        "session": step_output.session,
-        "runtime_cache_snapshot": output_runtime_cache_snapshot,
-        "planned_steps": planned_steps,
-        "next_generation_action_start": int(next_generation_action_start),
-        "trace": {
-            "job_kind": "history_replan",
-            "source": str(source),
-            "reset_observation_conditioned_session": bool(reset_session_for_replan),
-            "use_observation_update": bool(use_observation_update),
-            "observed_action_index": int(max(-1, generation_action_start - 1)),
-            "history_frame_count": int(len(obs_window)),
-            "generation_action_start": int(generation_action_start),
-            "execution_action_offset": int(_sequence_execution_action_offset(config)),
-            "mot_condition_frame_start": mot_condition_frame_start,
-            "mot_action_cache_rewind_frame_start": mot_action_cache_rewind_frame_start,
-            "mot_runtime_route": mot_runtime_route.to_report() if mot_runtime_route.is_mot else None,
-            "model_generation_frame_start": _json_scalar_from_tensor(policy_aux.get("generation_frame_start")),
-            "mot_chunk_origin_frame": _json_scalar_from_tensor(mot_cache_debug.get("chunk_origin_frame")),
-            "mot_current_action_frame_start": _json_scalar_from_tensor(
-                mot_cache_debug.get("current_action_frame_start")
-            ),
-            "preserve_rng_state": bool(preserve_rng_state),
-            "planned_action_ids": [int(plan.absolute_action_index) for plan in planned_steps],
-            "prepare_s": float(prepare_s),
-            "warmup_s": 0.0,
-            "infer_s": float(infer_s),
-            "total_latency_s": float(prepare_s + infer_s),
-            "ready_monotonic_s": float(ready_monotonic_s),
-            "video_condition_source": policy_aux.get("video_condition_source"),
-            "video_condition_uses_future_ground_truth": policy_aux.get("video_condition_uses_future_ground_truth"),
-            "video_condition_frame_start": video_condition_metadata.get("frame_start"),
-            "video_condition_sample_seed": video_condition_metadata.get("sample_seed"),
-            "video_condition_observed_prefix_anchor": video_condition_metadata.get("observed_prefix_anchor"),
-            "video_condition_observed_prefix_start_index": video_condition_metadata.get("observed_prefix_start_index"),
-            "predicted_video_latents_shape": (
-                list(predicted_latents.shape)
-                if isinstance(predicted_latents, torch.Tensor)
-                else None
-            ),
-            **_collect_decoder_runtime_metadata(runner.pipeline, config),
-            **action_plan_metadata,
-            "decoder_sampled_new_chunk": _json_scalar_from_tensor(
-                step_output.infer_output.decoder_output.aux.get("sampled_new_chunk")
-            ),
-            "decoder_num_inference_steps": _json_scalar_from_tensor(
-                step_output.infer_output.decoder_output.aux.get("num_inference_steps")
-            ),
-            "decoder_current_action_index": _json_scalar_from_tensor(
-                step_output.infer_output.decoder_output.aux.get("current_action_index")
-            ),
-        },
-    }
-    realtime_speculation.restore_rng_state(rng_snapshot)
-    return job_result
-
-
-def _resolve_observation_conditioned_replan_session(
-    *,
-    runner: _RolloutRunnerLike,
-    session,
-    config,
-):
-    mot_runtime_route = resolve_mot_runtime_route(config)
-    if not mot_runtime_route.is_mot:
-        return session
-    if mot_runtime_route.uses_split_cache_rollout:
-        # The split-cache route owns a Method-1-style rollout cache. Live
-        # replans write the real observation window into that cache, so the
-        # session is the continuity boundary.
-        return session
-    if mot_runtime_route.uses_native_packed_rollout:
-        # Native packed inference carries history in PolicyInferState rather
-        # than the shared transformer's slot-pool cache.
-        return session
-    # Older MoT video-prefill-style modes tie the cache directly to the
-    # current observation window, so rebuild them for each live replan.
-    return runner.reset(
-        task_text=session.task_text,
-        text_context=session.text_context,
-        negative_text_context=session.negative_text_context,
-    )
-
-
-def _should_use_mot_open_loop_extension(
-    *,
-    config,
-    planner_mode: RealtimePlannerMode | str,
-    remaining_buffer_actions: int,
-) -> bool:
-    if not resolve_mot_runtime_route(config).supports_realtime_history_controls:
-        return False
-    mode = RealtimePlannerMode(planner_mode)
-    if mode not in {
-        RealtimePlannerMode.ASYNC_BUFFER,
-        RealtimePlannerMode.ASYNC_MIX,
-        RealtimePlannerMode.ASYNC_HISTORY_FIRST,
-    }:
-        return False
-    return int(remaining_buffer_actions) > 0
-
-
-def _validate_mot_startup_open_loop_support(*, config, startup_open_loop_chunks: int):
-    mot_runtime_route = resolve_mot_runtime_route(config)
-    if (
-        mot_runtime_route.is_mot
-        and int(startup_open_loop_chunks) > 0
-        and not mot_runtime_route.supports_realtime_history_controls
-    ):
-        raise ValueError(
-            "M5 runtime route does not support startup open-loop extension because "
-            "it has no split-cache observation-skip/rewind controls. Use "
-            "`startup_open_loop_chunks=0`, or a split-cache M5 route such as "
-            "`video_then_action` / `decoupled_same_step`. Runtime route: "
-            f"{mot_runtime_route.to_report()}"
-        )
-    return mot_runtime_route
-
-
-def _mot_action_cache_rewind_for_sequence_submit(
-    *,
-    config,
-    planner_mode: RealtimePlannerMode | str,
-    use_observation_update: bool,
-    condition_frame_start: int | None,
-) -> int | None:
-    if condition_frame_start is None:
-        return None
-    if not bool(use_observation_update):
-        return None
-    if not resolve_mot_runtime_route(config).supports_realtime_history_controls:
-        return None
-    if RealtimePlannerMode(planner_mode) not in {
-        RealtimePlannerMode.ASYNC_MIX,
-        RealtimePlannerMode.ASYNC_HISTORY_FIRST,
-    }:
-        return None
-    return int(condition_frame_start)
-
 
 def _apply_sequence_replan_result(
     *,
-    result: dict[str, Any],
+    result: realtime_runtime.SequenceReplanJobResult,
     replan_records: list[dict[str, Any]],
     plan_by_action: dict[int, PlannedControlStep],
     next_action_to_execute: int,
 ) -> tuple[Any, int, dict[int, PlannedControlStep]]:
-    replan_records.append(result["trace"])
+    replan_records.append(result.trace)
     return (
-        result["session"],
-        int(result["next_generation_action_start"]),
+        result.session,
+        int(result.next_generation_action_start),
         merge_future_control_steps(
             plan_by_action,
-            result["planned_steps"],
+            result.planned_steps,
             next_action_to_execute=next_action_to_execute,
         ),
     )
 
 
 def _annotate_sequence_planner_acceptance(
-    result: dict[str, Any],
+    result: realtime_runtime.SequenceReplanJobResult,
     *,
     next_action_to_execute: int,
 ) -> list[PlannedControlStep]:
     future_steps = future_control_steps(
-        result["planned_steps"],
+        result.planned_steps,
         next_action_to_execute=next_action_to_execute,
     )
-    result["trace"]["future_planned_actions"] = int(len(future_steps))
-    result["trace"]["stale_planned_actions"] = int(
-        len(result["planned_steps"]) - len(future_steps)
+    result.trace["future_planned_actions"] = int(len(future_steps))
+    result.trace["stale_planned_actions"] = int(
+        len(result.planned_steps) - len(future_steps)
     )
-    result["trace"]["accepted_chunk"] = bool(future_steps)
+    result.trace["accepted_chunk"] = bool(future_steps)
     return future_steps
 
-
-def _mot_history_replan_ready(
-    *,
-    config,
-    next_action_index: int,
-    generation_action_start: int,
-) -> bool:
-    execution_start = int(generation_action_start) - _sequence_execution_action_offset(config)
-    return int(next_action_index) >= int(execution_start)
-
-
-def _sequence_buffer_tail_ready_for_history_promotion(
-    *,
-    config,
-    next_action_index: int,
-    buffer_tail_generation_action_start: int,
-    history_generation_action_start: int,
-) -> bool:
-    if int(buffer_tail_generation_action_start) <= int(history_generation_action_start):
-        return False
-    execution_start = int(buffer_tail_generation_action_start) - _sequence_execution_action_offset(config)
-    return int(next_action_index) >= int(execution_start)
-
-
-def _mot_condition_frame_start_for_generation(*, config, generation_action_start: int) -> int:
-    action_per_frame = _sequence_actions_per_frame(config)
-    return int(generation_action_start) // int(action_per_frame)
-
-
-def _json_scalar_from_tensor(value) -> Any:
-    if isinstance(value, torch.Tensor):
-        if value.numel() == 1:
-            return value.detach().cpu().item()
-        return value.detach().cpu().tolist()
-    return value
-
-
-def _collect_decoder_runtime_metadata(pipeline, config) -> dict[str, Any]:
-    decoder = getattr(pipeline, "action_decoder", None)
-    generation_backend = getattr(decoder, "generation_backend", None)
-    return {
-        "action_decoder_class": None if decoder is None else decoder.__class__.__name__,
-        "config_action_num_inference_steps": int(config.inference.action_num_inference_steps),
-        "config_video_num_inference_steps": int(config.inference.video_num_inference_steps),
-        "decoder_generation_num_sampling_steps": (
-            None
-            if generation_backend is None
-            else int(getattr(generation_backend, "num_sampling_steps", 0) or 0)
-        ),
-        "decoder_rollout_chunk_steps": (
-            None
-            if decoder is None or not hasattr(decoder, "rollout_chunk_steps")
-            else int(getattr(decoder, "rollout_chunk_steps"))
-        ),
-    }
-
-
-def _sequence_chunk_to_planned_steps(
-    *,
-    action_pred: np.ndarray,
-    reference_obs: dict[str, np.ndarray],
-    generation_action_start: int,
-    execution_action_offset: int = 0,
-    source: str,
-    planner_step_index: int | None,
-    ready_monotonic_s: float,
-    action_target_representation: ActionTargetRepresentation | str,
-    rotation_representation: str,
-) -> list[PlannedControlStep]:
-    representation = ActionTargetRepresentation(action_target_representation)
-    planned_steps: list[PlannedControlStep] = []
-    execution_start = int(generation_action_start) - max(0, int(execution_action_offset))
-    if representation == ActionTargetRepresentation.RAW:
-        for action_offset in range(action_pred.shape[0]):
-            planned_steps.append(
-                PlannedControlStep(
-                    absolute_action_index=int(execution_start + action_offset),
-                    generation_action_start=int(generation_action_start),
-                    source=str(source),
-                    planner_step_index=planner_step_index,
-                    ready_monotonic_s=ready_monotonic_s,
-                    raw_action=np.asarray(action_pred[action_offset], dtype=np.float32).copy(),
-                    desired_position=None,
-                    desired_quaternion=None,
-                    desired_gripper=None,
-                )
-            )
-        return planned_steps
-
-    if representation != ActionTargetRepresentation.EEF_POSE_RELATIVE_TO_REFERENCE:
-        raise ValueError(f"Unsupported action target representation for sequence rollout: {representation!r}.")
-
-    desired_pose_targets = libero_rollout.reconstruct_libero_pose_targets(
-        action_pred,
-        reference_observation=reference_obs,
-        rotation_representation=rotation_representation,
-    )
-    for action_offset in range(action_pred.shape[0]):
-        desired_gripper = None
-        if desired_pose_targets.gripper is not None:
-            desired_gripper = desired_pose_targets.gripper[action_offset].detach().to(dtype=torch.float32).cpu().numpy()
-        planned_steps.append(
-            PlannedControlStep(
-                absolute_action_index=int(execution_start + action_offset),
-                generation_action_start=int(generation_action_start),
-                source=str(source),
-                planner_step_index=planner_step_index,
-                ready_monotonic_s=ready_monotonic_s,
-                raw_action=None,
-                desired_position=desired_pose_targets.position[action_offset].detach().to(dtype=torch.float32).cpu().numpy(),
-                desired_quaternion=desired_pose_targets.quaternion[action_offset].detach().to(dtype=torch.float32).cpu().numpy(),
-                desired_gripper=desired_gripper,
-            )
-        )
-    return planned_steps
-
-
-def _sequence_execution_action_offset(config) -> int:
-    if str(config.policy_variant.name) != "mot":
-        return 0
-    return resolve_mot_sequence_execution_action_offset(
-        config,
-        action_horizon=int(config.data.action_schema.action_horizon),
-        frame_chunk_size=int(config.inference.frame_chunk_size),
-    )
-
-
-def _sequence_actions_per_frame(config) -> int:
-    return resolve_mot_sequence_actions_per_frame(
-        action_horizon=int(config.data.action_schema.action_horizon),
-        frame_chunk_size=int(config.inference.frame_chunk_size),
-    )
-
-
-def _materialize_sequence_control_action(
-    planned_step: PlannedControlStep,
-    *,
-    current_obs: dict[str, np.ndarray],
-    control_config: LiberoControlConfig,
-    gripper_representation: str,
-) -> np.ndarray:
-    if planned_step.raw_action is not None:
-        return np.clip(np.asarray(planned_step.raw_action, dtype=np.float32), -1.0, 1.0)
-    if planned_step.desired_position is None or planned_step.desired_quaternion is None:
-        raise RuntimeError("Sequence rollout step is missing absolute pose targets.")
-    desired_pose = PoseSequence(
-        position=torch.from_numpy(np.asarray(planned_step.desired_position, dtype=np.float32)),
-        quaternion=torch.from_numpy(np.asarray(planned_step.desired_quaternion, dtype=np.float32)),
-        gripper=(
-            None
-            if planned_step.desired_gripper is None
-            else torch.from_numpy(np.asarray(planned_step.desired_gripper, dtype=np.float32))
-        ),
-    )
-    return compute_osc_pose_action(
-        current_pose=libero_rollout.pose_from_libero_observation(current_obs),
-        desired_pose=desired_pose,
-        control_config=control_config,
-        gripper_representation=gripper_representation,
-    ).astype(np.float32)
 
 
 def _finalize_rollout_outputs(

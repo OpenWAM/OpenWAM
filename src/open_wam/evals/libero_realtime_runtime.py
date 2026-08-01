@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 import time
 from typing import Any
 
@@ -11,15 +12,20 @@ import numpy as np
 import torch
 from einops import rearrange
 
-from open_wam.configs import ParallelRuntimeMode
+from open_wam.configs import ActionTargetRepresentation, ExperimentConfig, ParallelRuntimeMode
 from open_wam.configs.enums import (
     DeadlineMissPolicy,
     RealtimePlannerJob,
     RealtimePlannerMode,
 )
 from open_wam.evals import libero_visualization as exact_viz
+from open_wam.evals import realtime_history
 from open_wam.evals import realtime_speculation
+from open_wam.data.action_transforms import PoseSequence
+from open_wam.integrations import LiberoControlConfig, compute_osc_pose_action
+from open_wam.integrations import libero_rollout
 from open_wam.integrations.realtime_control import (
+    PlannedControlStep,
     PlannedFrameAction,
     make_planned_frame_actions,
     select_realtime_planner_job,
@@ -27,24 +33,89 @@ from open_wam.integrations.realtime_control import (
 from open_wam.models.common.rollout_startup import (
     require_strict_startup_generation_frame,
 )
-from open_wam.models.policy_variants import PolicyInferState, RolloutCursor
+from open_wam.models.policy_variants import (
+    PolicyInferContext,
+    PolicyInferState,
+    RolloutCursor,
+)
+from open_wam.models.policy_variants.mot.runtime_routing import (
+    MoTRuntimeRoute,
+    mot_config_uses_strict_rollout_parity,
+    resolve_mot_runtime_route,
+    resolve_mot_sequence_actions_per_frame,
+    resolve_mot_sequence_execution_action_offset,
+)
 from open_wam.models.visual_tower import VisualRuntimeStateSnapshot
+from open_wam.pipelines import VariantRolloutRunner, VariantRolloutSession
+from open_wam.runtime import rollout as rollout_runtime
 from open_wam.utils import validate_positive_step_override
 
 
 __all__ = [
+    "SequenceReplanJobOptions",
+    "SequenceReplanJobResult",
     "apply_inference_overrides",
+    "build_sequence_startup_observation_window",
     "build_fallback_frame_actions",
+    "collect_decoder_runtime_metadata",
     "copy_history_record_for_worker",
     "isolated_torch_rng",
     "job_seed_for_session",
+    "materialize_sequence_control_action",
+    "resolve_observation_conditioned_replan_session",
+    "resolve_sequence_action_cache_rewind_frame",
+    "resolve_sequence_actions_per_frame",
+    "resolve_sequence_condition_frame_start",
+    "resolve_sequence_execution_action_offset",
+    "resolve_sequence_model_observation_window_frames",
+    "resolve_sequence_startup_environment_frames",
     "resolve_exact_startup_sessions",
     "resolve_next_exact_history_base_session",
     "run_extension_job",
     "run_replan_job",
+    "run_sequence_replan_job",
+    "sequence_buffer_tail_ready_for_history_promotion",
+    "sequence_chunk_to_planned_steps",
+    "sequence_history_replan_ready",
+    "should_use_sequence_open_loop_extension",
     "submit_planner_job_with_snapshot",
     "synchronize_devices",
+    "uses_mot_split_cache_sequence",
+    "uses_strict_mot_split_cache_startup",
+    "uses_strict_mot_one_frame_history",
+    "validate_sequence_startup_inputs",
+    "validate_sequence_startup_open_loop_support",
 ]
+
+
+@dataclass(frozen=True)
+class SequenceReplanJobOptions:
+    """One observation-conditioned or open-loop sequence planner request."""
+
+    prompt: str
+    task_id: int
+    episode_idx: int
+    frontend_device: torch.device
+    runtime_device: torch.device
+    generation_action_start: int
+    source: str
+    reset_observation_conditioned_session: bool = True
+    use_observation_update: bool = True
+    runtime_cache_snapshot: VisualRuntimeStateSnapshot | None = None
+    mot_condition_frame_start: int | None = None
+    mot_action_cache_rewind_frame_start: int | None = None
+    preserve_rng_state: bool = False
+
+
+@dataclass(frozen=True)
+class SequenceReplanJobResult:
+    """Typed sequence plan, next runtime state, and stable trace metadata."""
+
+    session: VariantRolloutSession
+    runtime_cache_snapshot: VisualRuntimeStateSnapshot | None
+    planned_steps: list[PlannedControlStep]
+    next_generation_action_start: int
+    trace: dict[str, Any]
 
 
 @contextmanager
@@ -101,6 +172,657 @@ def apply_inference_overrides(
             "action_guidance_scale",
             float(action_guidance_scale),
         )
+
+
+def uses_mot_split_cache_sequence(config: ExperimentConfig) -> bool:
+    """Return whether the sequence route shares the Method-1-style cache."""
+
+    return resolve_mot_runtime_route(config).uses_split_cache_rollout
+
+
+def uses_strict_mot_split_cache_startup(config: ExperimentConfig) -> bool:
+    route = resolve_mot_runtime_route(config)
+    return bool(
+        route.uses_split_cache_rollout
+        and mot_config_uses_strict_rollout_parity(config)
+    )
+
+
+def uses_strict_mot_one_frame_history(config: ExperimentConfig) -> bool:
+    route = resolve_mot_runtime_route(config)
+    return bool(route.is_mot and mot_config_uses_strict_rollout_parity(config))
+
+
+def build_sequence_startup_observation_window(
+    config: ExperimentConfig,
+    initial_observation_window: list[dict[str, np.ndarray]],
+) -> list[dict[str, np.ndarray]]:
+    """Select and copy the observed frames visible to sequence startup."""
+
+    if not initial_observation_window:
+        raise ValueError(
+            "Cannot build sequence startup observation window from an empty "
+            "initial window."
+        )
+    if uses_strict_mot_one_frame_history(config):
+        return [
+            realtime_history.copy_observation(initial_observation_window[-1])
+        ]
+    return realtime_history.copy_observation_window(initial_observation_window)
+
+
+def resolve_sequence_model_observation_window_frames(
+    config: ExperimentConfig,
+    *,
+    raw_window_frames: int,
+) -> int:
+    if uses_strict_mot_one_frame_history(config):
+        return 1
+    return int(raw_window_frames)
+
+
+def resolve_sequence_startup_environment_frames(
+    config: ExperimentConfig,
+    *,
+    raw_window_frames: int,
+) -> int:
+    if uses_strict_mot_one_frame_history(config):
+        return 1
+    return int(raw_window_frames)
+
+
+def validate_sequence_startup_inputs(
+    *,
+    config: ExperimentConfig,
+    source: str,
+    generation_action_start: int,
+    video_latents: object,
+) -> None:
+    """Fail when strict split-cache startup cannot match rollout parity."""
+
+    if (
+        not uses_strict_mot_split_cache_startup(config)
+        or str(source) != "startup_plan"
+    ):
+        return
+    if int(generation_action_start) != 0:
+        raise ValueError(
+            "M5 strict split-cache startup expects generation_action_start=0 so "
+            "executable actions start at action index 0; "
+            f"got {generation_action_start}."
+        )
+    if not isinstance(video_latents, torch.Tensor) or video_latents.ndim != 5:
+        raise ValueError(
+            "M5 strict split-cache startup expects tensor video_latents with shape "
+            "[B, C, T, H, W], "
+            f"got {type(video_latents).__name__}."
+        )
+    latent_context_frames = int(video_latents.shape[2])
+    if latent_context_frames != 1:
+        raise ValueError(
+            "M5 strict split-cache startup expects exactly one latent context frame "
+            f"before the first generated chunk; got {latent_context_frames}. This "
+            "would break target_alignment=next_after_context parity."
+        )
+
+
+def resolve_observation_conditioned_replan_session(
+    *,
+    runner: VariantRolloutRunner,
+    session: VariantRolloutSession,
+    config: ExperimentConfig,
+) -> VariantRolloutSession:
+    """Resolve cache continuity for a newly observed sequence window."""
+
+    mot_runtime_route = resolve_mot_runtime_route(config)
+    if not mot_runtime_route.is_mot:
+        return session
+    if mot_runtime_route.uses_split_cache_rollout:
+        return session
+    if mot_runtime_route.uses_native_packed_rollout:
+        return session
+    return runner.reset(
+        task_text=session.task_text,
+        text_context=session.text_context,
+        negative_text_context=session.negative_text_context,
+    )
+
+
+def should_use_sequence_open_loop_extension(
+    *,
+    config: ExperimentConfig,
+    planner_mode: RealtimePlannerMode | str,
+    remaining_buffer_actions: int,
+) -> bool:
+    """Gate sequence extension on route capability, mode, and buffered work."""
+
+    if not resolve_mot_runtime_route(config).supports_realtime_history_controls:
+        return False
+    mode = RealtimePlannerMode(planner_mode)
+    if mode not in {
+        RealtimePlannerMode.ASYNC_BUFFER,
+        RealtimePlannerMode.ASYNC_MIX,
+        RealtimePlannerMode.ASYNC_HISTORY_FIRST,
+    }:
+        return False
+    return int(remaining_buffer_actions) > 0
+
+
+def validate_sequence_startup_open_loop_support(
+    *,
+    config: ExperimentConfig,
+    startup_open_loop_chunks: int,
+) -> MoTRuntimeRoute:
+    """Reject open-loop startup when the selected policy route cannot support it."""
+
+    mot_runtime_route = resolve_mot_runtime_route(config)
+    if (
+        mot_runtime_route.is_mot
+        and int(startup_open_loop_chunks) > 0
+        and not mot_runtime_route.supports_realtime_history_controls
+    ):
+        raise ValueError(
+            "M5 runtime route does not support startup open-loop extension because "
+            "it has no split-cache observation-skip/rewind controls. Use "
+            "`startup_open_loop_chunks=0`, or a split-cache M5 route such as "
+            "`video_then_action` / `decoupled_same_step`. Runtime route: "
+            f"{mot_runtime_route.to_report()}"
+        )
+    return mot_runtime_route
+
+
+def resolve_sequence_action_cache_rewind_frame(
+    *,
+    config: ExperimentConfig,
+    planner_mode: RealtimePlannerMode | str,
+    use_observation_update: bool,
+    condition_frame_start: int | None,
+) -> int | None:
+    """Resolve the speculative action-cache suffix replaced by a live replan."""
+
+    if condition_frame_start is None:
+        return None
+    if not bool(use_observation_update):
+        return None
+    if not resolve_mot_runtime_route(config).supports_realtime_history_controls:
+        return None
+    if RealtimePlannerMode(planner_mode) not in {
+        RealtimePlannerMode.ASYNC_MIX,
+        RealtimePlannerMode.ASYNC_HISTORY_FIRST,
+    }:
+        return None
+    return int(condition_frame_start)
+
+
+def sequence_history_replan_ready(
+    *,
+    config: ExperimentConfig,
+    next_action_index: int,
+    generation_action_start: int,
+) -> bool:
+    execution_start = int(generation_action_start) - (
+        resolve_sequence_execution_action_offset(config)
+    )
+    return int(next_action_index) >= int(execution_start)
+
+
+def sequence_buffer_tail_ready_for_history_promotion(
+    *,
+    config: ExperimentConfig,
+    next_action_index: int,
+    buffer_tail_generation_action_start: int,
+    history_generation_action_start: int,
+) -> bool:
+    if int(buffer_tail_generation_action_start) <= int(
+        history_generation_action_start
+    ):
+        return False
+    execution_start = int(buffer_tail_generation_action_start) - (
+        resolve_sequence_execution_action_offset(config)
+    )
+    return int(next_action_index) >= int(execution_start)
+
+
+def resolve_sequence_condition_frame_start(
+    *,
+    config: ExperimentConfig,
+    generation_action_start: int,
+) -> int:
+    action_per_frame = resolve_sequence_actions_per_frame(config)
+    return int(generation_action_start) // int(action_per_frame)
+
+
+def collect_decoder_runtime_metadata(
+    pipeline,
+    config: ExperimentConfig,
+) -> dict[str, Any]:
+    """Collect stable decoder/runtime fields for load and replan traces."""
+
+    decoder = getattr(pipeline, "action_decoder", None)
+    generation_backend = getattr(decoder, "generation_backend", None)
+    return {
+        "action_decoder_class": (
+            None if decoder is None else decoder.__class__.__name__
+        ),
+        "config_action_num_inference_steps": int(
+            config.inference.action_num_inference_steps
+        ),
+        "config_video_num_inference_steps": int(
+            config.inference.video_num_inference_steps
+        ),
+        "decoder_generation_num_sampling_steps": (
+            None
+            if generation_backend is None
+            else int(getattr(generation_backend, "num_sampling_steps", 0) or 0)
+        ),
+        "decoder_rollout_chunk_steps": (
+            None
+            if decoder is None or not hasattr(decoder, "rollout_chunk_steps")
+            else int(getattr(decoder, "rollout_chunk_steps"))
+        ),
+    }
+
+
+def sequence_chunk_to_planned_steps(
+    *,
+    action_pred: np.ndarray,
+    reference_obs: dict[str, np.ndarray],
+    generation_action_start: int,
+    execution_action_offset: int = 0,
+    source: str,
+    planner_step_index: int | None,
+    ready_monotonic_s: float,
+    action_target_representation: ActionTargetRepresentation | str,
+    rotation_representation: str,
+) -> list[PlannedControlStep]:
+    """Project model-space sequence actions into typed LIBERO plan steps."""
+
+    representation = ActionTargetRepresentation(action_target_representation)
+    planned_steps: list[PlannedControlStep] = []
+    execution_start = int(generation_action_start) - max(
+        0,
+        int(execution_action_offset),
+    )
+    if representation == ActionTargetRepresentation.RAW:
+        for action_offset in range(action_pred.shape[0]):
+            planned_steps.append(
+                PlannedControlStep(
+                    absolute_action_index=int(execution_start + action_offset),
+                    generation_action_start=int(generation_action_start),
+                    source=str(source),
+                    planner_step_index=planner_step_index,
+                    ready_monotonic_s=ready_monotonic_s,
+                    raw_action=np.asarray(
+                        action_pred[action_offset],
+                        dtype=np.float32,
+                    ).copy(),
+                    desired_position=None,
+                    desired_quaternion=None,
+                    desired_gripper=None,
+                )
+            )
+        return planned_steps
+
+    if representation != ActionTargetRepresentation.EEF_POSE_RELATIVE_TO_REFERENCE:
+        raise ValueError(
+            "Unsupported action target representation for sequence rollout: "
+            f"{representation!r}."
+        )
+
+    desired_pose_targets = libero_rollout.reconstruct_libero_pose_targets(
+        action_pred,
+        reference_observation=reference_obs,
+        rotation_representation=rotation_representation,
+    )
+    for action_offset in range(action_pred.shape[0]):
+        desired_gripper = None
+        if desired_pose_targets.gripper is not None:
+            desired_gripper = (
+                desired_pose_targets.gripper[action_offset]
+                .detach()
+                .to(dtype=torch.float32)
+                .cpu()
+                .numpy()
+            )
+        planned_steps.append(
+            PlannedControlStep(
+                absolute_action_index=int(execution_start + action_offset),
+                generation_action_start=int(generation_action_start),
+                source=str(source),
+                planner_step_index=planner_step_index,
+                ready_monotonic_s=ready_monotonic_s,
+                raw_action=None,
+                desired_position=(
+                    desired_pose_targets.position[action_offset]
+                    .detach()
+                    .to(dtype=torch.float32)
+                    .cpu()
+                    .numpy()
+                ),
+                desired_quaternion=(
+                    desired_pose_targets.quaternion[action_offset]
+                    .detach()
+                    .to(dtype=torch.float32)
+                    .cpu()
+                    .numpy()
+                ),
+                desired_gripper=desired_gripper,
+            )
+        )
+    return planned_steps
+
+
+def resolve_sequence_execution_action_offset(config: ExperimentConfig) -> int:
+    if str(config.policy_variant.name) != "mot":
+        return 0
+    return resolve_mot_sequence_execution_action_offset(
+        config,
+        action_horizon=int(config.data.action_schema.action_horizon),
+        frame_chunk_size=int(config.inference.frame_chunk_size),
+    )
+
+
+def resolve_sequence_actions_per_frame(config: ExperimentConfig) -> int:
+    return resolve_mot_sequence_actions_per_frame(
+        action_horizon=int(config.data.action_schema.action_horizon),
+        frame_chunk_size=int(config.inference.frame_chunk_size),
+    )
+
+
+def materialize_sequence_control_action(
+    planned_step: PlannedControlStep,
+    *,
+    current_obs: dict[str, np.ndarray],
+    control_config: LiberoControlConfig,
+    gripper_representation: str,
+) -> np.ndarray:
+    """Convert a typed raw or absolute-pose plan step to one LIBERO action."""
+
+    if planned_step.raw_action is not None:
+        return np.clip(
+            np.asarray(planned_step.raw_action, dtype=np.float32),
+            -1.0,
+            1.0,
+        )
+    if (
+        planned_step.desired_position is None
+        or planned_step.desired_quaternion is None
+    ):
+        raise RuntimeError("Sequence rollout step is missing absolute pose targets.")
+    desired_pose = PoseSequence(
+        position=torch.from_numpy(
+            np.asarray(planned_step.desired_position, dtype=np.float32)
+        ),
+        quaternion=torch.from_numpy(
+            np.asarray(planned_step.desired_quaternion, dtype=np.float32)
+        ),
+        gripper=(
+            None
+            if planned_step.desired_gripper is None
+            else torch.from_numpy(
+                np.asarray(planned_step.desired_gripper, dtype=np.float32)
+            )
+        ),
+    )
+    return compute_osc_pose_action(
+        current_pose=libero_rollout.pose_from_libero_observation(current_obs),
+        desired_pose=desired_pose,
+        control_config=control_config,
+        gripper_representation=gripper_representation,
+    ).astype(np.float32)
+
+
+def run_sequence_replan_job(
+    *,
+    runner: VariantRolloutRunner,
+    session: VariantRolloutSession,
+    obs_window: list[dict[str, np.ndarray]],
+    config: ExperimentConfig,
+    options: SequenceReplanJobOptions,
+) -> SequenceReplanJobResult:
+    """Run one sequence-policy planner job from observed or cached history."""
+
+    rng_snapshot = (
+        realtime_speculation.snapshot_rng_state()
+        if options.preserve_rng_state
+        else None
+    )
+    with torch.inference_mode():
+        if options.runtime_cache_snapshot is not None:
+            realtime_speculation.restore_visual_runtime(
+                runner=runner,
+                snapshot=options.runtime_cache_snapshot,
+            )
+        prepare_t0 = time.perf_counter()
+        rollout_inputs = rollout_runtime.prepare_rollout_observation_inputs(
+            runner.pipeline,
+            views=libero_rollout.libero_observation_window_to_views(
+                obs_window,
+                device=options.frontend_device,
+            ),
+            task_text=(options.prompt,),
+            frontend_device=options.frontend_device,
+            runtime_device=options.runtime_device,
+            text_context=session.text_context,
+            negative_text_context=session.negative_text_context,
+        )
+        synchronize_devices(options.frontend_device, options.runtime_device)
+        prepare_s = time.perf_counter() - prepare_t0
+        validate_sequence_startup_inputs(
+            config=config,
+            source=options.source,
+            generation_action_start=int(options.generation_action_start),
+            video_latents=rollout_inputs.get("video_latents"),
+        )
+
+        infer_t0 = time.perf_counter()
+        inference_session = (
+            resolve_observation_conditioned_replan_session(
+                runner=runner,
+                session=session,
+                config=config,
+            )
+            if options.reset_observation_conditioned_session
+            else session
+        )
+        reset_session_for_replan = inference_session is not session
+        infer_extra = rollout_runtime.build_sequence_rollout_infer_extra(
+            config=config,
+            prompt=options.prompt,
+            generation_action_start=int(options.generation_action_start),
+            runtime_device=options.runtime_device,
+            task_id=int(options.task_id),
+            episode_idx=int(options.episode_idx),
+        )
+        mot_runtime_route = resolve_mot_runtime_route(config)
+        if (
+            mot_runtime_route.is_mot
+            and mot_runtime_route.supports_realtime_history_controls
+        ):
+            infer_extra["mot_skip_observation_update"] = not bool(
+                options.use_observation_update
+            )
+            if options.mot_condition_frame_start is not None:
+                infer_extra["mot_condition_frame_start"] = int(
+                    options.mot_condition_frame_start
+                )
+            if options.mot_action_cache_rewind_frame_start is not None:
+                infer_extra["mot_action_cache_rewind_frame_start"] = int(
+                    options.mot_action_cache_rewind_frame_start
+                )
+        elif mot_runtime_route.is_mot and not bool(options.use_observation_update):
+            raise ValueError(
+                "M5 runtime route does not support split-cache open-loop controls: "
+                f"{mot_runtime_route.to_report()}"
+            )
+        step_output = runner.infer_step(
+            session=inference_session,
+            context=PolicyInferContext(
+                state=libero_rollout.build_libero_state_history(
+                    obs_window,
+                    state_horizon=int(config.data.action_schema.state_horizon),
+                    state_encoding=config.data.action_target.state_encoding,
+                )
+                .unsqueeze(0)
+                .to(device=options.runtime_device),
+                extra=infer_extra,
+            ),
+            video_latents=rollout_inputs["video_latents"],
+            canonical_video=None,
+        )
+        synchronize_devices(options.runtime_device)
+        infer_s = time.perf_counter() - infer_t0
+        output_runtime_cache_snapshot = (
+            realtime_speculation.snapshot_sequence_visual_runtime(
+                runner=runner,
+                config=config,
+                session=step_output.session,
+            )
+        )
+
+    policy_aux = step_output.infer_output.policy_output.aux
+    mot_cache_debug = policy_aux.get("mot_cache_debug")
+    if not isinstance(mot_cache_debug, dict):
+        mot_cache_debug = {}
+    sequence_context = (
+        step_output.infer_output.policy_output.decoder_sequence_context
+    )
+    video_condition_window = (
+        None
+        if sequence_context is None
+        else sequence_context.video_condition_window
+    )
+    video_condition_metadata = (
+        {}
+        if video_condition_window is None
+        else dict(video_condition_window.metadata)
+    )
+    predicted_latents = policy_aux.get("predicted_latents")
+    action_plan = runner.build_action_rollout_plan(
+        step_output.infer_output.decoder_output
+    )
+    action_pred = action_plan.actions.numpy()
+    action_plan_metadata = action_plan.to_metadata()
+    runner.commit_action_rollout_plan(
+        session=step_output.session,
+        plan=action_plan,
+    )
+    ready_monotonic_s = time.perf_counter()
+    planned_steps = sequence_chunk_to_planned_steps(
+        action_pred=action_pred,
+        reference_obs=obs_window[-1],
+        generation_action_start=options.generation_action_start,
+        execution_action_offset=resolve_sequence_execution_action_offset(config),
+        source=options.source,
+        planner_step_index=(
+            None
+            if step_output.session.policy_state is None
+            else int(step_output.session.policy_state.step_index)
+        ),
+        ready_monotonic_s=ready_monotonic_s,
+        action_target_representation=config.data.action_target.representation,
+        rotation_representation=str(
+            config.data.action_target.rotation_representation
+        ),
+    )
+    next_generation_action_start = int(options.generation_action_start) + int(
+        action_pred.shape[0]
+    )
+    result = SequenceReplanJobResult(
+        session=step_output.session,
+        runtime_cache_snapshot=output_runtime_cache_snapshot,
+        planned_steps=planned_steps,
+        next_generation_action_start=int(next_generation_action_start),
+        trace={
+            "job_kind": "history_replan",
+            "source": str(options.source),
+            "reset_observation_conditioned_session": bool(
+                reset_session_for_replan
+            ),
+            "use_observation_update": bool(options.use_observation_update),
+            "observed_action_index": int(
+                max(-1, int(options.generation_action_start) - 1)
+            ),
+            "history_frame_count": int(len(obs_window)),
+            "generation_action_start": int(options.generation_action_start),
+            "execution_action_offset": int(
+                resolve_sequence_execution_action_offset(config)
+            ),
+            "mot_condition_frame_start": options.mot_condition_frame_start,
+            "mot_action_cache_rewind_frame_start": (
+                options.mot_action_cache_rewind_frame_start
+            ),
+            "mot_runtime_route": (
+                mot_runtime_route.to_report() if mot_runtime_route.is_mot else None
+            ),
+            "model_generation_frame_start": _json_scalar_from_tensor(
+                policy_aux.get("generation_frame_start")
+            ),
+            "mot_chunk_origin_frame": _json_scalar_from_tensor(
+                mot_cache_debug.get("chunk_origin_frame")
+            ),
+            "mot_current_action_frame_start": _json_scalar_from_tensor(
+                mot_cache_debug.get("current_action_frame_start")
+            ),
+            "preserve_rng_state": bool(options.preserve_rng_state),
+            "planned_action_ids": [
+                int(plan.absolute_action_index) for plan in planned_steps
+            ],
+            "prepare_s": float(prepare_s),
+            "warmup_s": 0.0,
+            "infer_s": float(infer_s),
+            "total_latency_s": float(prepare_s + infer_s),
+            "ready_monotonic_s": float(ready_monotonic_s),
+            "video_condition_source": policy_aux.get("video_condition_source"),
+            "video_condition_uses_future_ground_truth": policy_aux.get(
+                "video_condition_uses_future_ground_truth"
+            ),
+            "video_condition_frame_start": video_condition_metadata.get(
+                "frame_start"
+            ),
+            "video_condition_sample_seed": video_condition_metadata.get(
+                "sample_seed"
+            ),
+            "video_condition_observed_prefix_anchor": (
+                video_condition_metadata.get("observed_prefix_anchor")
+            ),
+            "video_condition_observed_prefix_start_index": (
+                video_condition_metadata.get("observed_prefix_start_index")
+            ),
+            "predicted_video_latents_shape": (
+                list(predicted_latents.shape)
+                if isinstance(predicted_latents, torch.Tensor)
+                else None
+            ),
+            **collect_decoder_runtime_metadata(runner.pipeline, config),
+            **action_plan_metadata,
+            "decoder_sampled_new_chunk": _json_scalar_from_tensor(
+                step_output.infer_output.decoder_output.aux.get(
+                    "sampled_new_chunk"
+                )
+            ),
+            "decoder_num_inference_steps": _json_scalar_from_tensor(
+                step_output.infer_output.decoder_output.aux.get(
+                    "num_inference_steps"
+                )
+            ),
+            "decoder_current_action_index": _json_scalar_from_tensor(
+                step_output.infer_output.decoder_output.aux.get(
+                    "current_action_index"
+                )
+            ),
+        },
+    )
+    realtime_speculation.restore_rng_state(rng_snapshot)
+    return result
+
+
+def _json_scalar_from_tensor(value) -> Any:
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 1:
+            return value.detach().cpu().item()
+        return value.detach().cpu().tolist()
+    return value
 
 
 def _chunk_to_planned_frames(

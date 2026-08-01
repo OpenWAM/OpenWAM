@@ -10,6 +10,7 @@ import uuid
 import numpy as np
 import pytest
 
+from open_wam.configs import ActionTargetRepresentation
 from open_wam.models.action_decoders import ActionDecoder
 
 
@@ -91,7 +92,7 @@ def _strict_split_cache_mot_config(
             ),
             action_target=SimpleNamespace(
                 state_encoding="eef_pos_axisangle_gripper_2d",
-                representation=sandbox.ActionTargetRepresentation.RAW,
+                representation=ActionTargetRepresentation.RAW,
                 rotation_representation="axis_angle",
                 gripper_representation="action_command",
             ),
@@ -423,19 +424,19 @@ def test_sequence_buffer_tail_promotes_after_prebuffer_actions_are_consumed() ->
         action_schema=SimpleNamespace(action_horizon=16),
     ), inference=SimpleNamespace(frame_chunk_size=4))
 
-    assert not sandbox._sequence_buffer_tail_ready_for_history_promotion(
+    assert not sandbox.realtime_runtime.sequence_buffer_tail_ready_for_history_promotion(
         config=config,
         next_action_index=27,
         buffer_tail_generation_action_start=32,
         history_generation_action_start=16,
     )
-    assert sandbox._sequence_buffer_tail_ready_for_history_promotion(
+    assert sandbox.realtime_runtime.sequence_buffer_tail_ready_for_history_promotion(
         config=config,
         next_action_index=28,
         buffer_tail_generation_action_start=32,
         history_generation_action_start=16,
     )
-    assert not sandbox._sequence_buffer_tail_ready_for_history_promotion(
+    assert not sandbox.realtime_runtime.sequence_buffer_tail_ready_for_history_promotion(
         config=config,
         next_action_index=28,
         buffer_tail_generation_action_start=32,
@@ -453,7 +454,7 @@ def test_mot_async_history_submit_rewinds_speculative_action_tail_only() -> None
     )
 
     assert (
-        sandbox._mot_action_cache_rewind_for_sequence_submit(
+        sandbox.realtime_runtime.resolve_sequence_action_cache_rewind_frame(
             config=mot_config,
             planner_mode="async_history_first",
             use_observation_update=True,
@@ -462,7 +463,7 @@ def test_mot_async_history_submit_rewinds_speculative_action_tail_only() -> None
         == 8
     )
     assert (
-        sandbox._mot_action_cache_rewind_for_sequence_submit(
+        sandbox.realtime_runtime.resolve_sequence_action_cache_rewind_frame(
             config=mot_config,
             planner_mode="history_only",
             use_observation_update=True,
@@ -471,7 +472,7 @@ def test_mot_async_history_submit_rewinds_speculative_action_tail_only() -> None
         is None
     )
     assert (
-        sandbox._mot_action_cache_rewind_for_sequence_submit(
+        sandbox.realtime_runtime.resolve_sequence_action_cache_rewind_frame(
             config=mot_config,
             planner_mode="async_history_first",
             use_observation_update=False,
@@ -480,7 +481,7 @@ def test_mot_async_history_submit_rewinds_speculative_action_tail_only() -> None
         is None
     )
     assert (
-        sandbox._mot_action_cache_rewind_for_sequence_submit(
+        sandbox.realtime_runtime.resolve_sequence_action_cache_rewind_frame(
             config=non_mot_config,
             planner_mode="async_history_first",
             use_observation_update=True,
@@ -1358,16 +1359,17 @@ def test_apply_sequence_replan_result_records_trace_and_merges_future_steps() ->
         1: step_cls(absolute_action_index=1, generation_action_start=0, source="old"),
         2: step_cls(absolute_action_index=2, generation_action_start=0, source="old"),
     }
-    result = {
-        "session": "session",
-        "next_generation_action_start": 5,
-        "planned_steps": [
+    result = sandbox.realtime_runtime.SequenceReplanJobResult(
+        session="session",
+        runtime_cache_snapshot=None,
+        next_generation_action_start=5,
+        planned_steps=[
             step_cls(absolute_action_index=0, generation_action_start=0, source="stale"),
             step_cls(absolute_action_index=2, generation_action_start=2, source="new"),
             step_cls(absolute_action_index=3, generation_action_start=2, source="new"),
         ],
-        "trace": {"job_kind": "history_replan"},
-    }
+        trace={"job_kind": "history_replan"},
+    )
 
     session, next_start, merged = sandbox._apply_sequence_replan_result(
         result=result,
@@ -1510,7 +1512,7 @@ def test_mot_non_joint_realtime_replan_preserves_observation_conditioned_session
     )
     method4_config = SimpleNamespace(policy_variant=SimpleNamespace(name="post_latent"))
 
-    resolved = sandbox._resolve_observation_conditioned_replan_session(
+    resolved = sandbox.realtime_runtime.resolve_observation_conditioned_replan_session(
         runner=Runner(),
         session=session,
         config=mot_config,
@@ -1518,15 +1520,15 @@ def test_mot_non_joint_realtime_replan_preserves_observation_conditioned_session
 
     assert resolved is session
     assert calls == []
-    assert sandbox._is_mot_non_joint_two_stream(mot_config)
-    assert not sandbox._is_mot_non_joint_two_stream(mot_native_packed_config)
-    assert not sandbox._should_use_mot_open_loop_extension(
+    assert sandbox.realtime_runtime.uses_mot_split_cache_sequence(mot_config)
+    assert not sandbox.realtime_runtime.uses_mot_split_cache_sequence(mot_native_packed_config)
+    assert not sandbox.realtime_runtime.should_use_sequence_open_loop_extension(
         config=mot_native_packed_config,
         planner_mode="async_history_first",
         remaining_buffer_actions=4,
     )
     assert (
-        sandbox._mot_action_cache_rewind_for_sequence_submit(
+        sandbox.realtime_runtime.resolve_sequence_action_cache_rewind_frame(
             config=mot_native_packed_config,
             planner_mode="async_history_first",
             use_observation_update=True,
@@ -1535,7 +1537,7 @@ def test_mot_non_joint_realtime_replan_preserves_observation_conditioned_session
         is None
     )
 
-    resolved_native = sandbox._resolve_observation_conditioned_replan_session(
+    resolved_native = sandbox.realtime_runtime.resolve_observation_conditioned_replan_session(
         runner=Runner(),
         session=session,
         config=mot_native_packed_config,
@@ -1544,7 +1546,7 @@ def test_mot_non_joint_realtime_replan_preserves_observation_conditioned_session
     assert resolved_native is session
     assert calls == []
 
-    resolved_prefill = sandbox._resolve_observation_conditioned_replan_session(
+    resolved_prefill = sandbox.realtime_runtime.resolve_observation_conditioned_replan_session(
         runner=Runner(),
         session=session,
         config=mot_prefill_config,
@@ -1559,7 +1561,7 @@ def test_mot_non_joint_realtime_replan_preserves_observation_conditioned_session
         }
     ]
     assert (
-        sandbox._resolve_observation_conditioned_replan_session(
+        sandbox.realtime_runtime.resolve_observation_conditioned_replan_session(
             runner=Runner(),
             session=session,
             config=method4_config,
@@ -1585,20 +1587,20 @@ def test_mot_startup_open_loop_requires_history_control_route() -> None:
     )
 
     assert (
-        sandbox._validate_mot_startup_open_loop_support(
+        sandbox.realtime_runtime.validate_sequence_startup_open_loop_support(
             config=mot_split_cache_config,
             startup_open_loop_chunks=1,
         ).supports_realtime_history_controls
         is True
     )
-    sandbox._validate_mot_startup_open_loop_support(
+    sandbox.realtime_runtime.validate_sequence_startup_open_loop_support(
         config=mot_native_packed_config,
         startup_open_loop_chunks=0,
     )
 
     for config in (mot_native_packed_config, mot_prefill_config):
         with pytest.raises(ValueError, match="does not support startup open-loop extension"):
-            sandbox._validate_mot_startup_open_loop_support(
+            sandbox.realtime_runtime.validate_sequence_startup_open_loop_support(
                 config=config,
                 startup_open_loop_chunks=1,
             )
@@ -1721,7 +1723,7 @@ def test_method4_realtime_replan_uses_absolute_action_start_for_video_condition(
             action_schema=SimpleNamespace(state_horizon=1),
             action_target=SimpleNamespace(
                 state_encoding="eef_pos_axisangle_gripper_2d",
-                representation=sandbox.ActionTargetRepresentation.RAW,
+                representation=ActionTargetRepresentation.RAW,
                 rotation_representation="axis_angle",
             ),
         ),
@@ -1735,18 +1737,20 @@ def test_method4_realtime_replan_uses_absolute_action_start_for_video_condition(
         }
     ]
 
-    result = sandbox._run_sequence_replan_job(
+    result = sandbox.realtime_runtime.run_sequence_replan_job(
         runner=Runner(),
         session=SimpleNamespace(text_context=None, negative_text_context=None, task_text=("task",)),
         obs_window=obs_window,
-        prompt="task",
-        task_id=1,
-        episode_idx=7,
         config=config,
-        frontend_device=sandbox.torch.device("cpu"),
-        runtime_device=sandbox.torch.device("cpu"),
-        generation_action_start=42,
-        source="test",
+        options=sandbox.realtime_runtime.SequenceReplanJobOptions(
+            prompt="task",
+            task_id=1,
+            episode_idx=7,
+            frontend_device=sandbox.torch.device("cpu"),
+            runtime_device=sandbox.torch.device("cpu"),
+            generation_action_start=42,
+            source="test",
+        ),
     )
 
     assert captured_extra["video_condition_observed_prefix_anchor"] == "end"
@@ -1759,9 +1763,9 @@ def test_method4_realtime_replan_uses_absolute_action_start_for_video_condition(
             "action_start_index": 42,
         }
     )
-    assert result["trace"]["video_condition_frame_start"] == 42
-    assert result["trace"]["video_condition_sample_seed"] == captured_extra["video_condition_sample_seed"]
-    assert [step.absolute_action_index for step in result["planned_steps"]] == [42, 43]
+    assert result.trace["video_condition_frame_start"] == 42
+    assert result.trace["video_condition_sample_seed"] == captured_extra["video_condition_sample_seed"]
+    assert [step.absolute_action_index for step in result.planned_steps] == [42, 43]
 
 
 def test_sequence_rollout_infer_extra_matches_sandbox_and_viz_contract() -> None:
@@ -1813,17 +1817,17 @@ def test_sequence_raw_action_targets_materialize_without_pose_conversion() -> No
         dtype=np.float32,
     )
 
-    planned_steps = sandbox._sequence_chunk_to_planned_steps(
+    planned_steps = sandbox.realtime_runtime.sequence_chunk_to_planned_steps(
         action_pred=action_pred,
         reference_obs={},
         generation_action_start=7,
         source="test_plan",
         planner_step_index=3,
         ready_monotonic_s=12.5,
-        action_target_representation=sandbox.ActionTargetRepresentation.RAW,
+        action_target_representation=ActionTargetRepresentation.RAW,
         rotation_representation="axis_angle",
     )
-    materialized = sandbox._materialize_sequence_control_action(
+    materialized = sandbox.realtime_runtime.materialize_sequence_control_action(
         planned_steps[0],
         current_obs={},
         control_config=sandbox.LiberoControlConfig(),
@@ -1851,15 +1855,15 @@ def test_native_packed_mot_realtime_does_not_drop_startup_actions() -> None:
     )
     action_pred = np.arange(4, dtype=np.float32).reshape(4, 1)
 
-    planned_steps = sandbox._sequence_chunk_to_planned_steps(
+    planned_steps = sandbox.realtime_runtime.sequence_chunk_to_planned_steps(
         action_pred=action_pred,
         reference_obs={},
         generation_action_start=0,
-        execution_action_offset=sandbox._sequence_execution_action_offset(config),
+        execution_action_offset=sandbox.realtime_runtime.resolve_sequence_execution_action_offset(config),
         source="native_packed_startup",
         planner_step_index=0,
         ready_monotonic_s=1.0,
-        action_target_representation=sandbox.ActionTargetRepresentation.RAW,
+        action_target_representation=ActionTargetRepresentation.RAW,
         rotation_representation="axis_angle",
     )
     merged = sandbox.merge_future_control_steps(
@@ -1868,11 +1872,11 @@ def test_native_packed_mot_realtime_does_not_drop_startup_actions() -> None:
         next_action_to_execute=0,
     )
 
-    assert sandbox._sequence_actions_per_frame(config) == 2
-    assert sandbox._sequence_execution_action_offset(config) == 0
+    assert sandbox.realtime_runtime.resolve_sequence_actions_per_frame(config) == 2
+    assert sandbox.realtime_runtime.resolve_sequence_execution_action_offset(config) == 0
     assert [step.absolute_action_index for step in planned_steps] == [0, 1, 2, 3]
     assert sorted(merged) == [0, 1, 2, 3]
-    assert sandbox._mot_condition_frame_start_for_generation(config=config, generation_action_start=2) == 1
+    assert sandbox.realtime_runtime.resolve_sequence_condition_frame_start(config=config, generation_action_start=2) == 1
 
 
 def test_strict_split_cache_mot_realtime_does_not_drop_startup_actions() -> None:
@@ -1880,15 +1884,15 @@ def test_strict_split_cache_mot_realtime_does_not_drop_startup_actions() -> None
     config = _strict_split_cache_mot_config(sandbox, action_horizon=16, frame_chunk_size=4)
     action_pred = np.arange(16, dtype=np.float32).reshape(16, 1)
 
-    planned_steps = sandbox._sequence_chunk_to_planned_steps(
+    planned_steps = sandbox.realtime_runtime.sequence_chunk_to_planned_steps(
         action_pred=action_pred,
         reference_obs={},
         generation_action_start=0,
-        execution_action_offset=sandbox._sequence_execution_action_offset(config),
+        execution_action_offset=sandbox.realtime_runtime.resolve_sequence_execution_action_offset(config),
         source="strict_split_cache_startup",
         planner_step_index=0,
         ready_monotonic_s=1.0,
-        action_target_representation=sandbox.ActionTargetRepresentation.RAW,
+        action_target_representation=ActionTargetRepresentation.RAW,
         rotation_representation="axis_angle",
     )
     merged = sandbox.merge_future_control_steps(
@@ -1897,8 +1901,8 @@ def test_strict_split_cache_mot_realtime_does_not_drop_startup_actions() -> None
         next_action_to_execute=0,
     )
 
-    assert sandbox._sequence_actions_per_frame(config) == 4
-    assert sandbox._sequence_execution_action_offset(config) == 0
+    assert sandbox.realtime_runtime.resolve_sequence_actions_per_frame(config) == 4
+    assert sandbox.realtime_runtime.resolve_sequence_execution_action_offset(config) == 0
     assert [step.absolute_action_index for step in planned_steps] == list(range(16))
     assert sorted(merged) == list(range(16))
 
@@ -1915,9 +1919,9 @@ def test_legacy_split_cache_mot_realtime_keeps_one_frame_execution_offset() -> N
         inference=SimpleNamespace(frame_chunk_size=2),
     )
 
-    assert sandbox._sequence_actions_per_frame(config) == 2
-    assert sandbox._sequence_execution_action_offset(config) == 2
-    assert sandbox._mot_condition_frame_start_for_generation(config=config, generation_action_start=2) == 1
+    assert sandbox.realtime_runtime.resolve_sequence_actions_per_frame(config) == 2
+    assert sandbox.realtime_runtime.resolve_sequence_execution_action_offset(config) == 2
+    assert sandbox.realtime_runtime.resolve_sequence_condition_frame_start(config=config, generation_action_start=2) == 1
 
 
 def test_strict_split_cache_mot_startup_uses_one_model_observation() -> None:
@@ -1925,7 +1929,7 @@ def test_strict_split_cache_mot_startup_uses_one_model_observation() -> None:
     config = _strict_split_cache_mot_config(sandbox)
     initial_obs_window = [_minimal_obs_record(float(index)) for index in range(13)]
 
-    startup_window = sandbox._sequence_startup_model_obs_window(config, initial_obs_window)
+    startup_window = sandbox.realtime_runtime.build_sequence_startup_observation_window(config, initial_obs_window)
 
     assert len(startup_window) == 1
     np.testing.assert_allclose(startup_window[0]["robot0_eef_pos"], initial_obs_window[-1]["robot0_eef_pos"])
@@ -1936,10 +1940,10 @@ def test_strict_split_cache_mot_startup_env_init_uses_single_frame() -> None:
     sandbox = _load_sandbox_module()
     config = _strict_split_cache_mot_config(sandbox)
 
-    assert sandbox._uses_strict_mot_split_cache_startup(config)
-    assert sandbox._uses_strict_mot_one_frame_history(config)
-    assert sandbox._sequence_startup_env_init_frames(config, raw_window_frames=13) == 1
-    assert sandbox._sequence_model_obs_window_frames(config, raw_window_frames=13) == 1
+    assert sandbox.realtime_runtime.uses_strict_mot_split_cache_startup(config)
+    assert sandbox.realtime_runtime.uses_strict_mot_one_frame_history(config)
+    assert sandbox.realtime_runtime.resolve_sequence_startup_environment_frames(config, raw_window_frames=13) == 1
+    assert sandbox.realtime_runtime.resolve_sequence_model_observation_window_frames(config, raw_window_frames=13) == 1
 
 
 def test_strict_native_packed_mot_startup_env_init_uses_single_frame() -> None:
@@ -1947,12 +1951,12 @@ def test_strict_native_packed_mot_startup_env_init_uses_single_frame() -> None:
     config = _strict_split_cache_mot_config(sandbox, current_block_coupling="joint")
     initial_obs_window = [_minimal_obs_record(float(index)) for index in range(13)]
 
-    assert not sandbox._uses_strict_mot_split_cache_startup(config)
-    assert sandbox._uses_strict_mot_one_frame_history(config)
-    assert sandbox._sequence_startup_env_init_frames(config, raw_window_frames=13) == 1
-    assert sandbox._sequence_model_obs_window_frames(config, raw_window_frames=13) == 1
+    assert not sandbox.realtime_runtime.uses_strict_mot_split_cache_startup(config)
+    assert sandbox.realtime_runtime.uses_strict_mot_one_frame_history(config)
+    assert sandbox.realtime_runtime.resolve_sequence_startup_environment_frames(config, raw_window_frames=13) == 1
+    assert sandbox.realtime_runtime.resolve_sequence_model_observation_window_frames(config, raw_window_frames=13) == 1
 
-    startup_window = sandbox._sequence_startup_model_obs_window(config, initial_obs_window)
+    startup_window = sandbox.realtime_runtime.build_sequence_startup_observation_window(config, initial_obs_window)
     assert len(startup_window) == 1
     np.testing.assert_allclose(startup_window[0]["robot0_eef_pos"], initial_obs_window[-1]["robot0_eef_pos"])
 
@@ -1960,7 +1964,7 @@ def test_strict_native_packed_mot_startup_env_init_uses_single_frame() -> None:
 def test_strict_split_cache_mot_model_history_keeps_latest_observation() -> None:
     sandbox = _load_sandbox_module()
     config = _strict_split_cache_mot_config(sandbox, action_horizon=16, frame_chunk_size=4)
-    model_obs_window = sandbox._sequence_startup_model_obs_window(
+    model_obs_window = sandbox.realtime_runtime.build_sequence_startup_observation_window(
         config,
         [_minimal_obs_record(float(index)) for index in range(4)],
     )
@@ -1976,14 +1980,14 @@ def test_strict_split_cache_mot_model_history_keeps_latest_observation() -> None
             current_obs=_minimal_obs_record(4.0),
             action_source="startup_plan",
             clean_actions_required=16,
-            max_window_frames=sandbox._sequence_model_obs_window_frames(config, raw_window_frames=13),
+            max_window_frames=sandbox.realtime_runtime.resolve_sequence_model_observation_window_frames(config, raw_window_frames=13),
         )
         == "included"
     )
 
     assert len(model_obs_window) == 1
     np.testing.assert_allclose(model_obs_window[0]["robot0_eef_pos"], [4.0, 4.0, 4.0])
-    condition_frame_start = sandbox._mot_condition_frame_start_for_generation(
+    condition_frame_start = sandbox.realtime_runtime.resolve_sequence_condition_frame_start(
         config=config,
         generation_action_start=16,
     )
@@ -2046,13 +2050,13 @@ def test_strict_split_cache_mot_realtime_init_calls_env_with_single_frame(monkey
 
     def fake_replan_job(**kwargs):
         replan_obs_lengths.append(len(kwargs["obs_window"]))
-        return {
-            "session": kwargs["session"],
-            "runtime_cache_snapshot": None,
-            "planned_steps": [],
-            "next_generation_action_start": 16,
-            "trace": {"job_kind": "startup_plan"},
-        }
+        return sandbox.realtime_runtime.SequenceReplanJobResult(
+            session=kwargs["session"],
+            runtime_cache_snapshot=None,
+            planned_steps=[],
+            next_generation_action_start=16,
+            trace={"job_kind": "startup_plan"},
+        )
 
     monkeypatch.setattr(sandbox, "_print_stage", lambda *args, **kwargs: None)
     monkeypatch.setattr(sandbox, "build_variant_pipeline_from_config", lambda cfg: FakePipeline())
@@ -2098,7 +2102,11 @@ def test_strict_split_cache_mot_realtime_init_calls_env_with_single_frame(monkey
         },
     )
     monkeypatch.setattr(sandbox.realtime_runtime, "synchronize_devices", lambda *args, **kwargs: None)
-    monkeypatch.setattr(sandbox, "_run_sequence_replan_job", fake_replan_job)
+    monkeypatch.setattr(
+        sandbox.realtime_runtime,
+        "run_sequence_replan_job",
+        fake_replan_job,
+    )
     monkeypatch.setattr(sandbox, "build_live_rollout_summary", lambda **kwargs: {"summary": True})
     monkeypatch.setattr(sandbox, "_finalize_rollout_outputs", lambda **kwargs: kwargs["summary"])
 
@@ -2156,12 +2164,12 @@ def test_legacy_split_cache_mot_startup_keeps_full_model_observation_window() ->
     )
     initial_obs_window = [_minimal_obs_record(float(index)) for index in range(13)]
 
-    startup_window = sandbox._sequence_startup_model_obs_window(config, initial_obs_window)
+    startup_window = sandbox.realtime_runtime.build_sequence_startup_observation_window(config, initial_obs_window)
 
     assert len(startup_window) == len(initial_obs_window)
     np.testing.assert_allclose(startup_window[0]["robot0_eef_pos"], initial_obs_window[0]["robot0_eef_pos"])
     assert startup_window[0]["robot0_eef_pos"] is not initial_obs_window[0]["robot0_eef_pos"]
-    assert sandbox._sequence_startup_env_init_frames(config, raw_window_frames=13) == 13
+    assert sandbox.realtime_runtime.resolve_sequence_startup_environment_frames(config, raw_window_frames=13) == 13
 
 
 def test_strict_split_cache_mot_startup_rejects_multi_latent_context() -> None:
@@ -2169,7 +2177,7 @@ def test_strict_split_cache_mot_startup_rejects_multi_latent_context() -> None:
     config = _strict_split_cache_mot_config(sandbox)
 
     with pytest.raises(ValueError, match="exactly one latent context frame"):
-        sandbox._validate_strict_mot_split_cache_startup_inputs(
+        sandbox.realtime_runtime.validate_sequence_startup_inputs(
             config=config,
             source="startup_plan",
             generation_action_start=0,
@@ -2232,27 +2240,29 @@ def test_strict_split_cache_mot_startup_replan_trace_reports_origin(monkeypatch)
                 ),
             )
 
-    result = sandbox._run_sequence_replan_job(
+    result = sandbox.realtime_runtime.run_sequence_replan_job(
         runner=Runner(),
         session=SimpleNamespace(text_context=None, negative_text_context=None, task_text=("task",)),
         obs_window=[_minimal_obs_record(0.0)],
-        prompt="task",
-        task_id=0,
-        episode_idx=0,
         config=config,
-        frontend_device=sandbox.torch.device("cpu"),
-        runtime_device=sandbox.torch.device("cpu"),
-        generation_action_start=0,
-        source="startup_plan",
+        options=sandbox.realtime_runtime.SequenceReplanJobOptions(
+            prompt="task",
+            task_id=0,
+            episode_idx=0,
+            frontend_device=sandbox.torch.device("cpu"),
+            runtime_device=sandbox.torch.device("cpu"),
+            generation_action_start=0,
+            source="startup_plan",
+        ),
     )
 
     assert captured_video_latents["shape"][2] == 1
-    assert result["trace"]["execution_action_offset"] == 0
-    assert result["trace"]["model_generation_frame_start"] == 1
-    assert result["trace"]["mot_chunk_origin_frame"] == 1
-    assert result["trace"]["mot_current_action_frame_start"] == 1
-    assert result["trace"]["planned_action_ids"] == list(range(16))
-    assert [step.absolute_action_index for step in result["planned_steps"]] == list(range(16))
+    assert result.trace["execution_action_offset"] == 0
+    assert result.trace["model_generation_frame_start"] == 1
+    assert result.trace["mot_chunk_origin_frame"] == 1
+    assert result.trace["mot_current_action_frame_start"] == 1
+    assert result.trace["planned_action_ids"] == list(range(16))
+    assert [step.absolute_action_index for step in result.planned_steps] == list(range(16))
 
 
 def test_realtime_common_inference_overrides_preserve_config_values_by_default() -> None:
