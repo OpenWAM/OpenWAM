@@ -345,10 +345,16 @@ backend selection. `mixed_video_latent_storage` owns latent-sidecar
 materialization, payload validation, and bounded LRU caching.
 `mixed_video_planning` owns deterministic causal-window geometry, latent-view
 eligibility and repetition, source weighting, epoch RNG, and source-balanced
-global orders. `mixed_video` owns RGB frame-cache lifetime, RGB/latent tensor
-selection and padding, latent view assembly, and final sample construction. It
-calls the latent repository and window planner directly rather than exposing
-dataset-private storage/cache compatibility facades.
+global orders. `mixed_video_encoding` owns the reusable offline RGB-to-latent
+boundary: typed episode selection, canonical/per-view target planning,
+streaming VAE calls, deterministic sidecars, resume validation, latent
+manifests, and generated training configs. It accepts a
+`MixedVideoLatentEncoder` capability and does not construct model assets,
+parse command-line arguments, or launch processes. `mixed_video` owns RGB
+frame-cache lifetime, RGB/latent tensor selection and padding, latent view
+assembly, and final sample construction. It calls the latent repository and
+window planner directly rather than exposing dataset-private storage/cache
+compatibility facades.
 Historical catalog, decode, and window-record imports from `mixed_video` remain
 identity aliases.
 For heterogeneous LeRobot consortium training,

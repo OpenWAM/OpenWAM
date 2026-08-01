@@ -1001,7 +1001,7 @@ def test_mixed_video_catalog_has_one_owner() -> None:
     assert legacy_split_mixed_video_episodes is split_mixed_video_episodes
 
     encoder_imports = _absolute_imports_for_file(
-        REPO_ROOT / "scripts" / "encode_mixed_video_latents.py"
+        PACKAGE_ROOT / "data" / "mixed_video_encoding.py"
     )
     assert "open_wam.data.mixed_video_catalog" in encoder_imports
 
@@ -1073,7 +1073,7 @@ def test_mixed_video_decode_has_one_owner() -> None:
     )
 
     encoder_imports = _absolute_imports_for_file(
-        REPO_ROOT / "scripts" / "encode_mixed_video_latents.py"
+        PACKAGE_ROOT / "data" / "mixed_video_encoding.py"
     )
     assert "open_wam.data.mixed_video_decode" in encoder_imports
 
@@ -1090,6 +1090,85 @@ def test_mixed_video_decode_has_one_owner() -> None:
         and node.func.id == "decode_mixed_video_stream_frames"
     ]
     assert len(full_stream_decode_calls) == 1
+
+
+def test_mixed_video_encoding_has_one_package_owner() -> None:
+    from open_wam.configs import MixedVideoEncodingSplit
+    from open_wam.data import (
+        MixedVideoEncodedEpisode as PublicMixedVideoEncodedEpisode,
+        MixedVideoEncodingReport as PublicMixedVideoEncodingReport,
+        MixedVideoEncodingSelection as PublicMixedVideoEncodingSelection,
+        MixedVideoEncodingTarget as PublicMixedVideoEncodingTarget,
+        MixedVideoLatentEncoder as PublicMixedVideoLatentEncoder,
+        encode_mixed_video_latent_sources as public_encode_mixed_video_latent_sources,
+        plan_mixed_video_episode_encoding_targets as public_plan_encoding_targets,
+        plan_mixed_video_streaming_chunks as public_plan_streaming_chunks,
+        preflight_mixed_video_encoding_outputs as public_preflight_encoding_outputs,
+        resolve_existing_mixed_video_encoding_target as public_resolve_existing_target,
+        resolve_mixed_video_encoding_config as public_resolve_encoding_config,
+        select_mixed_video_encoding_episodes as public_select_encoding_episodes,
+    )
+    from open_wam.data import mixed_video_encoding
+
+    owner_path = PACKAGE_ROOT / "data" / "mixed_video_encoding.py"
+    command_path = REPO_ROOT / "scripts" / "encode_mixed_video_latents.py"
+    owner_definitions = _top_level_definitions(owner_path)
+    command_definitions = _top_level_definitions(command_path)
+    public_names = {
+        "MixedVideoEncodedEpisode",
+        "MixedVideoEncodingReport",
+        "MixedVideoEncodingSelection",
+        "MixedVideoEncodingTarget",
+        "MixedVideoLatentEncoder",
+        "encode_mixed_video_latent_sources",
+        "plan_mixed_video_episode_encoding_targets",
+        "plan_mixed_video_streaming_chunks",
+        "preflight_mixed_video_encoding_outputs",
+        "resolve_existing_mixed_video_encoding_target",
+        "resolve_mixed_video_encoding_config",
+        "select_mixed_video_encoding_episodes",
+    }
+
+    assert public_names == _module_all_names(owner_path)
+    assert {
+        "MixedVideoEncodedEpisode",
+        "MixedVideoEncodingReport",
+        "MixedVideoEncodingSelection",
+        "MixedVideoEncodingTarget",
+        "MixedVideoLatentEncoder",
+        "encode_mixed_video_latent_sources",
+        "resolve_mixed_video_encoding_config",
+    } <= owner_definitions
+    assert "encode_mixed_video_latent_sources" not in command_definitions
+    assert {
+        "launch_parallel_mixed_video_encoding",
+        "main",
+        "parse_args",
+        "resolve_encoder_data_config",
+    } <= command_definitions
+    assert "open_wam.data.mixed_video_encoding" in _absolute_imports_for_file(command_path)
+    assert {
+        "argparse",
+        "subprocess",
+        "open_wam.models.visual_tower.reference_assets",
+    }.isdisjoint(_absolute_imports_for_file(owner_path))
+
+    assert PublicMixedVideoEncodedEpisode is mixed_video_encoding.MixedVideoEncodedEpisode
+    assert PublicMixedVideoEncodingReport is mixed_video_encoding.MixedVideoEncodingReport
+    assert PublicMixedVideoEncodingSelection is mixed_video_encoding.MixedVideoEncodingSelection
+    assert PublicMixedVideoEncodingTarget is mixed_video_encoding.MixedVideoEncodingTarget
+    assert PublicMixedVideoLatentEncoder is mixed_video_encoding.MixedVideoLatentEncoder
+    assert public_encode_mixed_video_latent_sources is mixed_video_encoding.encode_mixed_video_latent_sources
+    assert public_plan_encoding_targets is mixed_video_encoding.plan_mixed_video_episode_encoding_targets
+    assert public_plan_streaming_chunks is mixed_video_encoding.plan_mixed_video_streaming_chunks
+    assert public_preflight_encoding_outputs is mixed_video_encoding.preflight_mixed_video_encoding_outputs
+    assert public_resolve_existing_target is mixed_video_encoding.resolve_existing_mixed_video_encoding_target
+    assert public_resolve_encoding_config is mixed_video_encoding.resolve_mixed_video_encoding_config
+    assert public_select_encoding_episodes is mixed_video_encoding.select_mixed_video_encoding_episodes
+    assert (
+        PublicMixedVideoEncodingSelection(split="train").split
+        == MixedVideoEncodingSplit.TRAIN
+    )
 
 
 def test_mixed_video_latent_repository_has_one_owner() -> None:
@@ -3529,7 +3608,7 @@ def test_data_public_facade_is_fully_lazy() -> None:
 
     assert relative_imports == []
     assert set(lazy_exports) == _module_all_names(path)
-    assert len(lazy_exports) == 163
+    assert len(lazy_exports) == 175
     assert lazy_exports["WAMSample"] == "contracts"
     assert lazy_exports["ReplayStatusFilterReport"] == "replay_status"
     assert lazy_exports["pack_temporal_sequence"] == "sequence_packing"

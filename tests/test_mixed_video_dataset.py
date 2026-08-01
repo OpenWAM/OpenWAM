@@ -4,7 +4,9 @@ import csv
 from collections import Counter
 from concurrent.futures import Future
 from dataclasses import replace as _dataclass_replace
+import hashlib
 import importlib.util
+import json
 import math
 from pathlib import Path
 import sys
@@ -15,6 +17,7 @@ import pytest
 import torch
 
 import open_wam.data.mixed_video_decode as mixed_video_decode_module
+import open_wam.data.mixed_video_encoding as mixed_video_encoding_module
 from open_wam.configs import (
     ActionSchemaConfig,
     BatchAdapterName,
@@ -136,6 +139,66 @@ def test_mixed_video_decode_legacy_imports_preserve_identity() -> None:
     )
     assert public_transform_frame is canonical_transform_frame
     assert transform_frame is canonical_transform_frame
+
+
+def test_mixed_video_encoding_public_contracts_coerce_finite_values(
+    tmp_path: Path,
+) -> None:
+    selection = mixed_video_encoding_module.MixedVideoEncodingSelection(
+        split="train",
+        source_ids=["source_a"],
+        episode_indices=[3],
+        max_episodes="4",
+        shard_count="2",
+        shard_index="1",
+    )
+    target = mixed_video_encoding_module.MixedVideoEncodingTarget(
+        name="front",
+        mode="per_view",
+        target_slot="front",
+        source_slots="front",
+        latent_path=str(tmp_path / "front.pt"),
+    )
+    record = mixed_video_encoding_module.MixedVideoEncodedEpisode(
+        source_id="source_a",
+        dataset_id="dataset_a",
+        episode_index="3",
+        clip_id="default",
+        latent_path=str(tmp_path / "front.pt"),
+        latent_shape=[48, 2, 2, 2],
+        raw_length_frames="8",
+        latent_length_frames="2",
+        tasks="task",
+        encoded_slots="front",
+        encoding_mode="per_view",
+    )
+
+    assert selection.split.value == "train"
+    assert selection.source_ids == ("source_a",)
+    assert selection.episode_indices == (3,)
+    assert (
+        selection.max_episodes,
+        selection.shard_count,
+        selection.shard_index,
+    ) == (4, 2, 1)
+    assert target.mode == MixedVideoLatentEncodingMode.PER_VIEW
+    assert target.source_slots == ("front",)
+    assert record.latent_shape == (48, 2, 2, 2)
+    assert record.tasks == ("task",)
+    assert record.encoded_slots == ("front",)
+
+    with pytest.raises(ValueError, match=r"\[C, T, H, W\]"):
+        mixed_video_encoding_module.MixedVideoEncodedEpisode(
+            source_id="source_a",
+            dataset_id="dataset_a",
+            episode_index=0,
+            clip_id="default",
+            latent_path=tmp_path / "bad.pt",
+            latent_shape=(48, 2, 2),
+            raw_length_frames=8,
+            latent_length_frames=2,
+            tasks=(),
+        )
 
 
 def _write_manifest(path: Path, rows: list[dict[str, object]]) -> None:
@@ -459,6 +522,47 @@ class _FakeLatentEncoderAssets:
             )
             self.cache_initialized = True
         return torch.ones(batch, 48, latent_frames, 2, 2, dtype=torch.float32)
+
+
+def _mixed_video_encoding_artifact_fingerprint(
+    output_root: Path,
+    *,
+    temporary_root: Path,
+) -> tuple[int, str]:
+    def normalize(value):
+        if isinstance(value, dict):
+            return {
+                str(key): normalize(item)
+                for key, item in sorted(value.items(), key=lambda item: str(item[0]))
+            }
+        if isinstance(value, (list, tuple)):
+            return [normalize(item) for item in value]
+        if isinstance(value, str):
+            return value.replace(str(temporary_root), "<TMP>")
+        return value
+
+    artifacts: dict[str, object] = {}
+    for path in sorted(candidate for candidate in output_root.rglob("*") if candidate.is_file()):
+        relative_path = path.relative_to(output_root).as_posix()
+        if path.suffix != ".pt":
+            artifacts[relative_path] = path.read_text(encoding="utf-8").replace(
+                str(temporary_root),
+                "<TMP>",
+            )
+            continue
+        payload = torch.load(path, map_location="cpu")
+        latents = payload["video_latents"].contiguous()
+        artifacts[relative_path] = {
+            "dtype": str(latents.dtype),
+            "shape": list(latents.shape),
+            "tensor_sha256": hashlib.sha256(
+                latents.view(torch.uint8).numpy().tobytes()
+            ).hexdigest(),
+            "metadata": normalize(payload["metadata"]),
+        }
+
+    encoded = json.dumps(artifacts, sort_keys=True, separators=(",", ":")).encode()
+    return len(encoded), hashlib.sha256(encoded).hexdigest()
 
 
 def test_mixed_video_dataset_decodes_multiple_sources_to_common_view_shape(tmp_path: Path) -> None:
@@ -1544,16 +1648,7 @@ def test_mixed_video_latent_encoder_writes_manifest_compatible_sidecars(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    script_path = Path(__file__).resolve().parents[1] / "scripts" / "encode_mixed_video_latents.py"
-    spec = importlib.util.spec_from_file_location("encode_mixed_video_latents_test", script_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Failed to load module spec for {script_path}.")
-    encoder = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = encoder
-    try:
-        spec.loader.exec_module(encoder)
-    finally:
-        sys.modules.pop(spec.name, None)
+    encoder = mixed_video_encoding_module
 
     assert encoder._streaming_chunk_ranges(70, max_chunk_frames=65) == ((0, 65), (65, 69))
 
@@ -2007,6 +2102,13 @@ def test_mixed_video_latent_encoder_canonical_and_per_view_manifest_is_trainable
     train_dataset, _ = build_train_val_latent_datasets(latent_training_config.data)
     sample = train_dataset[0]
     assert sample.video_latents.shape == (48, 2, 2, 4)
+    assert _mixed_video_encoding_artifact_fingerprint(
+        output_root,
+        temporary_root=tmp_path,
+    ) == (
+        19006,
+        "2d684204918f6f4fce9efcbfcabfd56d8dadc5d4b0ed0f759db9d0d702a40424",
+    )
 
 
 def test_mixed_video_per_view_encoder_reuses_existing_single_view_sidecar(tmp_path: Path) -> None:

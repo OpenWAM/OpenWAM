@@ -280,6 +280,14 @@ class MixedVideoLatentEncodingMode(StrEnum):
     CANONICAL_AND_PER_VIEW = "canonical_and_per_view"
 
 
+class MixedVideoEncodingSplit(StrEnum):
+    """Episode split selected by the offline mixed-video encoder."""
+
+    ALL = "all"
+    TRAIN = "train"
+    VAL = "val"
+
+
 class MixedVideoSourceFormat(StrEnum):
     """Which media representations one mixed-video source can provide."""
 
