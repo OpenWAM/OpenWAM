@@ -1446,19 +1446,62 @@ def test_conditional_dynamics_layout_has_one_owner() -> None:
 
 
 def test_counterfactual_dataset_and_mixture_have_separate_owners() -> None:
+    from typing import get_type_hints
+
+    from open_wam.data import counterfactual_dynamics_dataset as dataset_facade
+    from open_wam.data import counterfactual_dynamics_materialization as materialization
+    from open_wam.data import counterfactual_source_order as source_order
+
     dataset_path = PACKAGE_ROOT / "data" / "counterfactual_dynamics_dataset.py"
+    materialization_path = (
+        PACKAGE_ROOT / "data" / "counterfactual_dynamics_materialization.py"
+    )
+    source_order_path = PACKAGE_ROOT / "data" / "counterfactual_source_order.py"
     mixture_path = PACKAGE_ROOT / "data" / "generalist_dynamics.py"
     dataset_definitions = _top_level_definitions(dataset_path)
+    materialization_definitions = _top_level_definitions(materialization_path)
+    source_order_definitions = _top_level_definitions(source_order_path)
     mixture_definitions = _top_level_definitions(mixture_path)
 
-    assert "EncodedCounterfactualDynamicsLatentDataset" in dataset_definitions
-    assert {
+    assert dataset_definitions == {
         "EncodedCounterfactualDynamicsLatentDataset",
+        "_CounterfactualTaskSpec",
+        "_CounterfactualWindowSpec",
+        "_context_key",
+        "_counterfactual_raw_root_from_manifest",
+        "_latent_frame_count_from_row_or_payload",
+        "_read_json",
+        "_read_jsonl",
+    }
+    assert materialization_definitions == {
         "_build_counterfactual_fixed_segment",
+        "_configured_action_steps_per_latent_frame",
         "_counterfactual_action_steps_per_frame",
+        "_counterfactual_condition_latents_from_source",
         "_counterfactual_latent_state_frames",
+        "_counterfactual_observed_frame_ids",
+        "_counterfactual_state_history_from_frames",
+        "_counterfactual_target_only_condition_latents_from_payload",
+        "_load_empty_text_embedding",
         "_load_latent_payload",
-    }.isdisjoint(mixture_definitions)
+        "_optional_counterfactual_condition_latents",
+        "_pack_actions",
+        "_pack_state",
+        "_payload_latents",
+        "_sample_counterfactual_attention_geometry",
+        "_slice_counterfactual_frame_tensor_with_edge_hold",
+        "_slice_counterfactual_latents_with_edge_hold",
+        "_validate_counterfactual_condition_latent_manifest",
+    }
+    assert source_order_definitions == {
+        "_balanced_counterfactual_source_indices",
+        "_counterfactual_source_branch_key",
+        "_counterfactual_source_task_key",
+        "_source_view_label_sort_key",
+    }
+    assert (
+        dataset_definitions | materialization_definitions | source_order_definitions
+    ).isdisjoint(mixture_definitions)
     assert {
         "GeneralistDynamicsMixtureDataset",
         "GeneralistDynamicsSourceViewDataset",
@@ -1477,6 +1520,53 @@ def test_counterfactual_dataset_and_mixture_have_separate_owners() -> None:
 
     assert PublicDataset is CanonicalDataset
     assert LegacyDataset is CanonicalDataset
+
+    materialization_names = materialization_definitions
+    source_order_names = source_order_definitions
+    for name in materialization_names:
+        assert getattr(dataset_facade, name) is getattr(materialization, name)
+        assert get_type_hints(getattr(materialization, name))
+    for name in source_order_names:
+        assert getattr(dataset_facade, name) is getattr(source_order, name)
+        assert get_type_hints(getattr(source_order, name))
+
+    public_constants = {
+        "COUNTERFACTUAL_CONDITION_SOURCE_FRAME_POLICY",
+        "COUNTERFACTUAL_CONTRACT_T0_PLUS_FUTURE",
+        "COUNTERFACTUAL_CONTRACT_TARGET_ONLY_T0_PLUS_FUTURE",
+        "COUNTERFACTUAL_STATE_KEY",
+    }
+    assert _module_all_names(materialization_path) == public_constants
+    assert _module_all_names(dataset_path) == {
+        *public_constants,
+        "EncodedCounterfactualDynamicsLatentDataset",
+    }
+    from open_wam.data import generalist_dynamics as mixture
+
+    for name in public_constants:
+        assert getattr(dataset_facade, name) is getattr(materialization, name)
+        assert getattr(mixture, name) is getattr(materialization, name)
+    assert (
+        mixture._balanced_counterfactual_source_indices
+        is source_order._balanced_counterfactual_source_indices
+    )
+
+    dataset_imports = _absolute_imports_for_file(dataset_path)
+    materialization_imports = _absolute_imports_for_file(materialization_path)
+    source_order_imports = _absolute_imports_for_file(source_order_path)
+    mixture_imports = _absolute_imports_for_file(mixture_path)
+    assert {
+        "counterfactual_dynamics_materialization",
+        "counterfactual_source_order",
+    } <= dataset_imports
+    assert "counterfactual_dynamics_dataset" not in materialization_imports
+    assert "counterfactual_dynamics_dataset" not in source_order_imports
+    assert "counterfactual_dynamics_materialization" not in source_order_imports
+    assert {
+        "counterfactual_dynamics_dataset",
+        "counterfactual_dynamics_materialization",
+        "counterfactual_source_order",
+    } <= mixture_imports
 
 
 def test_latent_view_assembly_has_one_owner() -> None:

@@ -23,14 +23,14 @@ from open_wam.contracts import (
 
 from .conditional_dynamics_layout import project_real_conditional_sample_to_target_only
 # Compatibility re-exports preserve the historical mixture-module import path.
-from .counterfactual_dynamics_dataset import (
+from .counterfactual_dynamics_dataset import EncodedCounterfactualDynamicsLatentDataset
+from .counterfactual_dynamics_materialization import (
     COUNTERFACTUAL_CONDITION_SOURCE_FRAME_POLICY,
     COUNTERFACTUAL_CONTRACT_T0_PLUS_FUTURE,
     COUNTERFACTUAL_CONTRACT_TARGET_ONLY_T0_PLUS_FUTURE,
     COUNTERFACTUAL_STATE_KEY,
-    EncodedCounterfactualDynamicsLatentDataset,
-    _balanced_counterfactual_source_indices,
 )
+from .counterfactual_source_order import _balanced_counterfactual_source_indices
 from .distributed_sampling import PaddedEpochOffsetDistributedSampler
 from .latent_contracts import LatentWAMSample
 

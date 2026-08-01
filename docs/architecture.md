@@ -348,12 +348,16 @@ target metadata. `sequence_packing` owns the canonical float32 padded tensor
 and validity-mask layout. Each adapter still owns row decoding, empty-input
 policy, and whether an overlong source sequence may be truncated.
 For mixed conditional-dynamics training, `counterfactual_dynamics_dataset`
-owns encoded counterfactual manifests, payload I/O, hierarchical sampling, and
-target-only sample assembly. `generalist_dynamics` owns source sampling and
-FDM/IDM mode routing, while `conditional_dynamics_layout` owns the
-parameter-free projection of real demonstrations to the rollout-style
-`t0 + future` tensor and metadata contract. Joint samples bypass that
-projection.
+owns encoded source resolution, hierarchical draws, final metadata, and
+`LatentWAMSample` construction. `counterfactual_dynamics_materialization` owns
+payload tensors, raw-state/action packing, condition shifts, edge-hold
+padding, attention geometry, and the counterfactual target-only
+`t0 + future` segment contract. `counterfactual_source_order` owns
+deterministic task/branch-balanced source traversal. `generalist_dynamics`
+owns source-mixture sampling and FDM/IDM mode routing, while
+`conditional_dynamics_layout` owns the parameter-free projection of real
+demonstrations to the same rollout-style tensor and metadata contract. Joint
+samples bypass that projection.
 `latent_view_assembly` owns the public, dataset-independent 1-4-view latent
 canvas contract. Dataset adapters choose slots and sampling weights, then call
 `assemble_latent_views`; backbones receive only the assembled canonical tensor.
