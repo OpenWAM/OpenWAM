@@ -3302,5 +3302,37 @@ def test_public_config_enums_are_declared_once() -> None:
     assert duplicates == []
 
 
+def test_sampled_eval_reporting_has_one_package_owner() -> None:
+    runner_path = REPO_ROOT / "scripts" / "run_libero_sampled_eval.py"
+    reporting_path = PACKAGE_ROOT / "evals" / "sampled_eval_reporting.py"
+    runner_definitions = _top_level_definitions(runner_path)
+    reporting_definitions = _top_level_definitions(reporting_path)
+    reporting_contract = {
+        "SampledEvalCaseReport",
+        "build_sampled_eval_paired_rows",
+        "build_sampled_eval_summary",
+        "collect_sampled_eval_run",
+        "find_case_summary_paths",
+        "write_json_atomic",
+        "write_sampled_eval_queue_note",
+        "write_sampled_eval_results_csv",
+        "write_sampled_eval_summary_markdown",
+    }
+
+    assert reporting_contract <= reporting_definitions
+    assert reporting_contract == _module_all_names(reporting_path)
+    assert {
+        "collect_run",
+        "build_summary_payload",
+        "build_paired_rows",
+        "write_results_csv",
+        "write_summary_md",
+        "write_status_note",
+    }.isdisjoint(runner_definitions)
+    assert "open_wam.evals.sampled_eval_reporting" in _absolute_imports_for_file(
+        runner_path
+    )
+
+
 def test_legacy_backbone_config_import_is_identity_preserving() -> None:
     assert LegacySharedVideoTransformerConfig is SharedVideoTransformerConfig

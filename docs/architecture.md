@@ -93,6 +93,16 @@ private package runtime functions. Its remaining control loops compose the
 typed package operations with wall-clock scheduling and simulator stepping;
 they do not encode policy-route or model-output semantics.
 
+Multi-checkpoint sampled evaluation follows the same installed/checkout split.
+`open_wam.evals.sampled_eval_reporting` owns the JSON-native case-report
+contract, status/rollout joins, aggregate metrics, summary discovery, and
+deterministic JSON, CSV, and Markdown artifacts. The checkout-only
+`run_libero_sampled_eval.py` command owns target planning, benchmark sampling,
+process claims, worker scheduling, and child environments. Process status is
+created by that runner because it records live subprocess state; completed
+status and rollout summaries cross into the package as data records, not as
+script imports or benchmark objects.
+
 ## Configuration Contract
 
 `open_wam.configs.load_experiment_config` is the public YAML-to-dataclass
