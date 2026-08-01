@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
 import random
@@ -54,15 +54,13 @@ class MixedVideoWindowPlanner:
         *,
         episode_records: Mapping[str, MixedVideoEpisodeRecord],
         episode_keys: Sequence[str],
-        episode_length_resolver: Callable[[MixedVideoEpisodeRecord], int] | None = None,
     ) -> tuple[MixedVideoWindowRecord, ...]:
         """Plan windows against each episode's canonical frame timeline."""
 
-        resolve_length = episode_length_resolver or (lambda episode: int(episode.length_frames))
         windows: list[MixedVideoWindowRecord] = []
         for episode_key in episode_keys:
             episode = episode_records[episode_key]
-            episode_length = int(resolve_length(episode))
+            episode_length = int(episode.length_frames)
             if episode_length <= 0:
                 continue
             for start in range(0, episode_length, self.data_config.sample_stride):

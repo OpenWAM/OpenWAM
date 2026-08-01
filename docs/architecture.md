@@ -258,7 +258,9 @@ materialization, payload validation, and bounded LRU caching.
 `mixed_video_planning` owns deterministic causal-window geometry, latent-view
 eligibility and repetition, source weighting, epoch RNG, and source-balanced
 global orders. `mixed_video` owns RGB frame-cache lifetime, RGB/latent tensor
-selection and padding, latent view assembly, and final sample construction.
+selection and padding, latent view assembly, and final sample construction. It
+calls the latent repository and window planner directly rather than exposing
+dataset-private storage/cache compatibility facades.
 Historical catalog, decode, and window-record imports from `mixed_video` remain
 identity aliases.
 For heterogeneous LeRobot consortium training,

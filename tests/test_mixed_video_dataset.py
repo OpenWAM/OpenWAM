@@ -471,7 +471,6 @@ def test_mixed_video_dataset_decodes_multiple_sources_to_common_view_shape(tmp_p
         == train_dataset._window_planner.build_episode_windows(
             episode_records=train_dataset.episode_records,
             episode_keys=train_dataset.episode_keys,
-            episode_length_resolver=train_dataset._episode_window_length_frames,
         )
     )
     assert len(train_dataset) > 0
@@ -1196,7 +1195,7 @@ def test_mixed_video_latent_dataset_mixes_rgb_origin_and_latent_sources(tmp_path
         train_dataset._latent_repository,
         MixedVideoLatentRepository,
     )
-    assert train_dataset._latent_cache is train_dataset._latent_repository.cache
+    assert not train_dataset._latent_repository.cache
     assert len(val_dataset) > 0
     source_ids = {
         train_dataset.episode_records[window.episode_key].source_id

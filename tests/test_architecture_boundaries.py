@@ -1041,17 +1041,23 @@ def test_mixed_video_latent_repository_has_one_owner() -> None:
         "MixedVideoLatentRepository",
     )
 
-    compatibility_loader = _class_method(
+    assert "_load_stream_latents" not in _class_method_definitions(
         dataset_path,
         "MixedVideoLatentWindowDataset",
-        "_load_stream_latents",
     )
-    assert len(compatibility_loader.body) == 1
-    assert isinstance(compatibility_loader.body[0], ast.Return)
-    delegated_call = compatibility_loader.body[0].value
-    assert isinstance(delegated_call, ast.Call)
-    assert isinstance(delegated_call.func, ast.Attribute)
-    assert delegated_call.func.attr == "load"
+    latent_builder = _class_method(
+        dataset_path,
+        "MixedVideoLatentWindowDataset",
+        "_build_latents",
+    )
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "load"
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "_latent_repository"
+        for node in ast.walk(latent_builder)
+    )
 
 
 def test_mixed_video_window_planning_has_one_owner() -> None:
@@ -1078,6 +1084,10 @@ def test_mixed_video_window_planning_has_one_owner() -> None:
         "MixedVideoWindowPlanner",
     )
     assert "torch" not in _absolute_imports_for_file(planning_path)
+    assert "_episode_window_length_frames" not in _class_method_definitions(
+        dataset_path,
+        "MixedVideoWindowDataset",
+    )
 
     delegates = (
         (

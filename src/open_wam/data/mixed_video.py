@@ -114,9 +114,6 @@ class MixedVideoWindowDataset(Dataset[WAMSample]):
                 f"sample_stride={data_config.sample_stride}, and selected episodes={len(episode_keys)}."
             )
 
-    def _episode_window_length_frames(self, episode: MixedVideoEpisodeRecord) -> int:
-        return int(episode.length_frames)
-
     def _allowed_source_formats(self) -> frozenset[MixedVideoSourceFormat]:
         return frozenset({MixedVideoSourceFormat.RGB, MixedVideoSourceFormat.RGB_AND_LATENT})
 
@@ -336,7 +333,6 @@ class MixedVideoWindowDataset(Dataset[WAMSample]):
         return self._window_planner.build_episode_windows(
             episode_records=self.episode_records,
             episode_keys=self.episode_keys,
-            episode_length_resolver=self._episode_window_length_frames,
         )
 
 
@@ -360,7 +356,6 @@ class MixedVideoLatentWindowDataset(MixedVideoWindowDataset):
         super().__init__(data_config, catalog=catalog, split=split, episode_keys=episode_keys)
         self._video_frame_cache.clear()
         self._latent_repository = MixedVideoLatentRepository(data_config)
-        self._latent_cache = self._latent_repository.cache
 
     def _allowed_source_formats(self) -> frozenset[MixedVideoSourceFormat]:
         return frozenset({MixedVideoSourceFormat.LATENT, MixedVideoSourceFormat.RGB_AND_LATENT})
@@ -477,7 +472,7 @@ class MixedVideoLatentWindowDataset(MixedVideoWindowDataset):
                     "and has no latent sidecar for trainer.batch_adapter=latents. Encode this source first or "
                     "set source_format=rgb_and_latent/latent."
                 )
-            latents = self._load_stream_latents(stream)
+            latents = self._latent_repository.load(stream)
             if index_tensor.numel() and int(index_tensor.max().item()) >= int(latents.shape[1]):
                 raise IndexError(
                     f"Mixed-video sample requested latent frame {int(index_tensor.max().item())} from "
@@ -517,10 +512,6 @@ class MixedVideoLatentWindowDataset(MixedVideoWindowDataset):
             device=latents.device,
         )
         return torch.cat([latents, padding], dim=1).contiguous()
-
-    def _load_stream_latents(self, stream: MixedVideoStreamRecord) -> torch.Tensor:
-        return self._latent_repository.load(stream)
-
 
 def _latent_view_assembly_canvas_view_count(data_config: MixedVideoDataConfig) -> int:
     enabled = [combo for combo in data_config.latent_view_combinations if combo.enabled]
