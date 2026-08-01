@@ -368,7 +368,7 @@ def test_lerobot_latent_repository_io_has_one_storage_owner() -> None:
         "load_canonical_window_latents",
     } <= _class_method_definitions(storage_path, "LocalLatentRepository")
 
-    compatibility_methods = {
+    retired_private_facades = {
         "_load_empty_text_embedding",
         "_load_window_latents",
         "_assemble_canonical_latents",
@@ -376,19 +376,12 @@ def test_lerobot_latent_repository_io_has_one_storage_owner() -> None:
         "_load_canonical_window_latents",
         "_load_episode_rows",
     }
-    assert compatibility_methods <= _class_method_definitions(
-        dataset_path,
-        "LocalLeRobotLatentWindowDataset",
-    )
-    for method_name in compatibility_methods:
-        method = _class_method(
+    assert retired_private_facades.isdisjoint(
+        _class_method_definitions(
             dataset_path,
             "LocalLeRobotLatentWindowDataset",
-            method_name,
         )
-        assert len(method.body) == 1
-        assert isinstance(method.body[0], ast.Return)
-        assert isinstance(method.body[0].value, ast.Call)
+    )
 
 
 def test_lerobot_latent_sampling_policy_has_one_owner() -> None:
@@ -1137,27 +1130,11 @@ def test_lerobot_latent_supervision_assembly_has_one_owner() -> None:
         "LocalLatentSupervisionAssembler",
     )
 
-    compatibility_methods = {
+    retired_private_facades = {
         "_build_lingbot_window_action_targets",
         "_build_standard_policy_window_action_targets",
         "_extract_proprio_context_state_sequence",
         "_extract_state_history_at_frame",
-    }
-    assert compatibility_methods <= _class_method_definitions(
-        dataset_path,
-        "LocalLeRobotLatentWindowDataset",
-    )
-    for method_name in compatibility_methods:
-        method = _class_method(
-            dataset_path,
-            "LocalLeRobotLatentWindowDataset",
-            method_name,
-        )
-        assert len(method.body) == 1
-        assert isinstance(method.body[0], ast.Return)
-        assert isinstance(method.body[0].value, ast.Call)
-
-    retired_private_facades = {
         "_build_action_targets",
         "_extract_proprio_context_frames",
         "_extract_sequence",
@@ -1169,6 +1146,21 @@ def test_lerobot_latent_supervision_assembly_has_one_owner() -> None:
             "LocalLeRobotLatentWindowDataset",
         )
     )
+
+    full_segment_builder = _class_method(
+        dataset_path,
+        "LocalLeRobotLatentWindowDataset",
+        "_build_full_segment_action_targets",
+    )
+    delegated_methods = {
+        node.func.attr
+        for node in ast.walk(full_segment_builder)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert {
+        "build_lingbot_window_action_targets",
+        "build_standard_policy_window_action_targets",
+    } <= delegated_methods
 
 
 def test_row_action_target_transform_has_one_owner() -> None:

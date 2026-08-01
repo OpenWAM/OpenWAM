@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import replace
 import math
-from pathlib import Path
 from typing import Any
 
 import torch
@@ -31,15 +30,15 @@ from .latent_temporal import (
     observed_frame_ids_for_latent_segment,
     raw_span_for_latent_range,
 )
-from .lerobot_v2 import LeRobotV2Metadata
+
 # Keep storage symbols importable from this historical module while ownership
 # lives in the repository adapter.
 from .lerobot_v2_latent_storage import (
     LocalEpisodeWindow,
     LocalLatentRepository,
     LocalRepoBundle as LocalRepoBundle,
-    assemble_canonical_latents,
-    condition_latent_offset_mismatches,
+    assemble_canonical_latents as assemble_canonical_latents,
+    condition_latent_offset_mismatches as condition_latent_offset_mismatches,
     discover_local_lerobot_repo_bundles,
     latent_filename as latent_filename,
     load_empty_text_embedding,
@@ -79,11 +78,14 @@ _COMPATIBILITY_EXPORTS = (
     HierarchicalFixedSegmentWindowSpec,
     LocalLatentEpochOrderSampler,
     LocalLatentWeightedTrainSampler,
+    assemble_canonical_latents,
     build_hierarchical_fixed_segment_task_specs,
+    condition_latent_offset_mismatches,
     discover_local_lerobot_repo_bundles,
     latent_anchor_positions,
     LocalRepoBundle,
     latent_filename,
+    load_empty_text_embedding,
     load_lerobot_v2_local_metadata,
     read_json_local,
     read_jsonl_local,
@@ -102,7 +104,7 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             raise ValueError("Local latent datasets require `data.local_root` in the experiment config.")
         self.data_config = data_config
         self.windows = list(windows)
-        self.empty_text_embedding = self._load_empty_text_embedding()
+        self.empty_text_embedding = load_empty_text_embedding(data_config)
         repository = LocalLatentRepository(data_config)
         self._repo_bundles = repository.repo_bundles
         self._episode_cache = repository.episode_cache
@@ -241,15 +243,17 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             observed_frame_ids=observed_frame_ids,
             latent_num_frames=int(video_latents.shape[1]),
         )
-        state, state_mask = self._extract_state_history_at_frame(
+        state, state_mask = self._supervision_assembler.extract_state_history_at_frame(
             rows=rows,
             anchor_frame_index=anchor_frame_index,
         )
-        proprio_context_state, proprio_context_state_mask = self._extract_proprio_context_state_sequence(
-            rows=rows,
-            observed_frame_ids=observed_frame_ids,
-            chunk_size=1,
-            loss_frame_start=0,
+        proprio_context_state, proprio_context_state_mask = (
+            self._supervision_assembler.extract_proprio_context_state_sequence(
+                rows=rows,
+                observed_frame_ids=observed_frame_ids,
+                chunk_size=1,
+                loss_frame_start=0,
+            )
         )
 
         conditioning = source.conditioning_for_frame(
@@ -304,140 +308,19 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
         latent_num_frames: int,
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
         if self.data_config.latent_window_profile == LatentWindowProfile.EXACT_CHUNKED_WINDOW:
-            return self._build_lingbot_window_action_targets(
+            return self._supervision_assembler.build_lingbot_window_action_targets(
                 rows=rows,
                 window=window,
                 observed_frame_ids=observed_frame_ids,
                 latent_num_frames=latent_num_frames,
             )
         if self.data_config.latent_window_profile == LatentWindowProfile.STANDARD_POLICY_WINDOW:
-            return self._build_standard_policy_window_action_targets(
+            return self._supervision_assembler.build_standard_policy_window_action_targets(
                 rows=rows,
                 observation_start=int(observed_frame_ids[0]),
             )
         raise ValueError(f"Unsupported latent_window_profile: {self.data_config.latent_window_profile!r}")
 
-    def _build_standard_policy_window_action_targets(
-        self,
-        *,
-        rows: list[dict[str, Any]],
-        observation_start: int,
-    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
-        return self._supervision_assembler.build_standard_policy_window_action_targets(
-            rows=rows,
-            observation_start=observation_start,
-        )
-
-    def _load_empty_text_embedding(self) -> torch.Tensor | None:
-        return load_empty_text_embedding(self.data_config)
-
-    def _load_window_latents(
-        self,
-        window: LocalEpisodeWindow,
-        metadata: LeRobotV2Metadata,
-    ) -> dict[str, dict[str, Any]]:
-        return self._latent_repository.load_window_latents(window, metadata)
-
-    def _assemble_canonical_latents(
-        self,
-        latent_payloads: dict[str, dict[str, Any]],
-        *,
-        payload_key: str = "latent",
-        require_payload_key: bool = True,
-    ) -> tuple[torch.Tensor | None, dict[str, dict[str, int]]]:
-        return assemble_canonical_latents(
-            self.data_config,
-            latent_payloads,
-            payload_key=payload_key,
-            require_payload_key=require_payload_key,
-        )
-
-    def _condition_latent_offset_mismatches(
-        self,
-        latent_payloads: dict[str, dict[str, Any]],
-        *,
-        expected_offset: int,
-    ) -> list[str]:
-        return condition_latent_offset_mismatches(
-            self.data_config,
-            latent_payloads,
-            expected_offset=expected_offset,
-        )
-
-    def _load_canonical_window_latents(
-        self,
-        window: LocalEpisodeWindow,
-        metadata: LeRobotV2Metadata,
-    ) -> tuple[
-        torch.Tensor,
-        dict[str, dict[str, int]],
-        dict[str, Any],
-        torch.Tensor | None,
-        dict[str, dict[str, int]],
-    ]:
-        return self._latent_repository.load_canonical_window_latents(
-            window,
-            metadata,
-        )
-
-    def _build_lingbot_window_action_targets(
-        self,
-        *,
-        rows: list[dict[str, Any]],
-        window: LocalEpisodeWindow,
-        observed_frame_ids: list[int],
-        latent_num_frames: int,
-        leading_zero_action_frames: int = 1,
-        leading_zero_action_mask: float = 1.0,
-    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
-        return self._supervision_assembler.build_lingbot_window_action_targets(
-            rows=rows,
-            window=window,
-            observed_frame_ids=observed_frame_ids,
-            latent_num_frames=latent_num_frames,
-            leading_zero_action_frames=leading_zero_action_frames,
-            leading_zero_action_mask=leading_zero_action_mask,
-        )
-
-    def _extract_state_history_at_frame(
-        self,
-        *,
-        rows: list[dict[str, Any]],
-        anchor_frame_index: int,
-        state_horizon: int | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        return self._supervision_assembler.extract_state_history_at_frame(
-            rows=rows,
-            anchor_frame_index=anchor_frame_index,
-            state_horizon=state_horizon,
-        )
-
-    def _extract_proprio_context_state_sequence(
-        self,
-        *,
-        rows: list[dict[str, Any]],
-        observed_frame_ids: list[int],
-        chunk_size: int,
-        loss_frame_start: int = 0,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        return self._supervision_assembler.extract_proprio_context_state_sequence(
-            rows=rows,
-            observed_frame_ids=observed_frame_ids,
-            chunk_size=chunk_size,
-            loss_frame_start=loss_frame_start,
-        )
-
-    def _load_episode_rows(
-        self,
-        repo_root: Path,
-        episode_index: int,
-        metadata: LeRobotV2Metadata,
-    ) -> list[dict[str, Any]]:
-        return self._latent_repository.load_episode_rows(
-            repo_root,
-            episode_index,
-            metadata,
-        )
 
 class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
     """Uniform latent-start segment sampler over all eligible trajectories."""

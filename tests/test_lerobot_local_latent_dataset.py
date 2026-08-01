@@ -52,8 +52,11 @@ from open_wam.data.lerobot_v2_latent import (
     LocalEpisodeWindow as LegacyLocalEpisodeWindow,
     LocalLatentEpochOrderSampler,
     LocalLatentWeightedTrainSampler,
+    assemble_canonical_latents as legacy_assemble_canonical_latents,
+    condition_latent_offset_mismatches as legacy_condition_offset_mismatches,
     discover_local_lerobot_repo_bundles as legacy_discover_repo_bundles,
     latent_filename as legacy_latent_filename,
+    load_empty_text_embedding as legacy_load_empty_text_embedding,
     reshape_latent_payload as legacy_reshape_latent_payload,
     resolve_latent_root as legacy_resolve_latent_root,
     scan_local_latent_windows as legacy_scan_local_latent_windows,
@@ -74,8 +77,11 @@ from open_wam.data.lerobot_v2_latent_storage import (
     LocalEpisodeWindow,
     LocalLatentRepository,
     LocalRepoBundle,
+    assemble_canonical_latents,
+    condition_latent_offset_mismatches,
     discover_local_lerobot_repo_bundles as discover_storage_repo_bundles,
     latent_filename,
+    load_empty_text_embedding,
     reshape_latent_payload,
     resolve_latent_root,
     scan_local_latent_windows,
@@ -114,6 +120,9 @@ def test_lerobot_latent_storage_owns_compatibility_exports() -> None:
     assert PublicRepoBundle is LocalRepoBundle
     assert discover_local_lerobot_repo_bundles is discover_storage_repo_bundles
     assert legacy_latent_filename is latent_filename
+    assert legacy_assemble_canonical_latents is assemble_canonical_latents
+    assert legacy_condition_offset_mismatches is condition_latent_offset_mismatches
+    assert legacy_load_empty_text_embedding is load_empty_text_embedding
     assert legacy_reshape_latent_payload is reshape_latent_payload
     assert legacy_resolve_latent_root is resolve_latent_root
     assert (
@@ -384,26 +393,26 @@ def test_local_lerobot_latent_dataset_builds_canonical_latents(tmp_path: Path) -
 
     window = train_dataset.windows[0]
     metadata = train_dataset._repo_bundles[str(window.repo_root)].metadata
-    rows_from_dataset = train_dataset._load_episode_rows(
-        window.repo_root,
-        window.episode_index,
-        metadata,
-    )
     rows_from_repository = repository.load_episode_rows(
         window.repo_root,
         window.episode_index,
         metadata,
     )
-    assert rows_from_dataset is rows_from_repository
-    latents_from_dataset = train_dataset._load_canonical_window_latents(
-        window,
+    rows_from_cache = repository.load_episode_rows(
+        window.repo_root,
+        window.episode_index,
         metadata,
     )
+    assert rows_from_cache is rows_from_repository
     latents_from_repository = repository.load_canonical_window_latents(
         window,
         metadata,
     )
-    assert latents_from_dataset is latents_from_repository
+    latents_from_cache = repository.load_canonical_window_latents(
+        window,
+        metadata,
+    )
+    assert latents_from_cache is latents_from_repository
 
     sample = train_dataset[0]
 
@@ -420,7 +429,7 @@ def test_local_lerobot_latent_dataset_builds_canonical_latents(tmp_path: Path) -
     assert sample.metadata["dataset_mean_valid_action_steps"] == pytest.approx(6.0)
 
 
-def test_local_latent_supervision_dataset_delegates_match_owner(tmp_path: Path) -> None:
+def test_local_latent_supervision_owner_builds_expected_sequences(tmp_path: Path) -> None:
     repo_root = tmp_path / "robotwin_local_latent_supervision"
     _build_local_robotwin_latent_repo(repo_root)
     config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml")
@@ -443,20 +452,12 @@ def test_local_latent_supervision_dataset_delegates_match_owner(tmp_path: Path) 
 
     window = train_dataset.windows[0]
     metadata = train_dataset._repo_bundles[str(window.repo_root)].metadata
-    rows = train_dataset._load_episode_rows(
+    rows = train_dataset._latent_repository.load_episode_rows(
         window.repo_root,
         window.episode_index,
         metadata,
     )
     observed_frame_ids = [0, 1, 2, 3]
-    delegate_targets = train_dataset._build_lingbot_window_action_targets(
-        rows=rows,
-        window=window,
-        observed_frame_ids=observed_frame_ids,
-        latent_num_frames=4,
-        leading_zero_action_frames=1,
-        leading_zero_action_mask=0.0,
-    )
     owner_targets = assembler.build_lingbot_window_action_targets(
         rows=rows,
         window=window,
@@ -465,37 +466,37 @@ def test_local_latent_supervision_dataset_delegates_match_owner(tmp_path: Path) 
         leading_zero_action_frames=1,
         leading_zero_action_mask=0.0,
     )
-    assert torch.equal(delegate_targets[0], owner_targets[0])
-    assert torch.equal(delegate_targets[1], owner_targets[1])
-    assert delegate_targets[2] == owner_targets[2]
+    assert owner_targets[0].shape == (8, 30)
+    assert torch.count_nonzero(owner_targets[0][:2]) == 0
+    assert torch.count_nonzero(owner_targets[1][:2]) == 0
+    assert torch.all(owner_targets[1][2:6] == 1)
+    assert torch.count_nonzero(owner_targets[1][6:]) == 0
+    assert owner_targets[2]["lingbot_window_action_alignment"][
+        "required_action_num"
+    ] == 8
 
-    delegate_state = train_dataset._extract_state_history_at_frame(
-        rows=rows,
-        anchor_frame_index=3,
-        state_horizon=3,
-    )
     owner_state = assembler.extract_state_history_at_frame(
         rows=rows,
         anchor_frame_index=3,
         state_horizon=3,
     )
-    assert torch.equal(delegate_state[0], owner_state[0])
-    assert torch.equal(delegate_state[1], owner_state[1])
-
-    delegate_proprio = train_dataset._extract_proprio_context_state_sequence(
-        rows=rows,
-        observed_frame_ids=observed_frame_ids,
-        chunk_size=2,
-        loss_frame_start=1,
+    expected_state = torch.tensor(
+        [[float(frame_index)] * 30 for frame_index in (1, 2, 3)]
     )
+    torch.testing.assert_close(owner_state[0], expected_state)
+    assert torch.all(owner_state[1] == 1)
+
     owner_proprio = assembler.extract_proprio_context_state_sequence(
         rows=rows,
         observed_frame_ids=observed_frame_ids,
         chunk_size=2,
         loss_frame_start=1,
     )
-    assert torch.equal(delegate_proprio[0], owner_proprio[0])
-    assert torch.equal(delegate_proprio[1], owner_proprio[1])
+    expected_proprio = torch.tensor(
+        [[float(frame_index)] * 30 for frame_index in (0, 2)]
+    )
+    torch.testing.assert_close(owner_proprio[0], expected_proprio)
+    assert torch.all(owner_proprio[1] == 1)
 
 
 def test_scan_local_latent_windows_requires_complete_multicamera_latents(tmp_path: Path) -> None:
