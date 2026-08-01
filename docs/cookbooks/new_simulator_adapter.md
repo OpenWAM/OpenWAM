@@ -5,11 +5,13 @@ loop.
 
 ## Files To Touch
 
-- `src/open_wam/integrations/`: add an adapter behind lazy imports.
-- `src/open_wam/integrations/contracts.py`: extend shared metadata only when
-  the existing contract is insufficient.
-- `scripts/run_sim_realtime_sandbox.py`: add CLI wiring only if the benchmark
-  needs user-facing flags.
+- `src/open_wam/integrations/`: add a benchmark-specific adapter behind lazy
+  imports.
+- `src/open_wam/simulators/contracts.py`: extend the generic backend contract
+  only when the existing protocol is insufficient.
+- `src/open_wam/evals/sim_rollout.py`: add built-in adapter construction only
+  when the benchmark needs user-facing command flags. The repository script
+  is a compatibility wrapper and must stay thin.
 - `configs/examples/`: add a tiny config or documented template.
 - `docs/cards/`: add a simulator card.
 - `tests/`: add fake-adapter contract tests; keep real simulator tests gated.

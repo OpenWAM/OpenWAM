@@ -220,6 +220,16 @@ class RobotwinBenchmarkAdapter:
                 envs_module = importlib.import_module(f"envs.{task_name}")
                 env_class = getattr(envs_module, task_name)
                 return env_class()
+            except ModuleNotFoundError as exc:
+                if installed_stub:
+                    _cleanup_curobo_import_stub()
+                    self._installed_curobo_stub = False
+                missing = exc.name or f"envs.{task_name}"
+                raise ImportError(
+                    f"RoboTwin task {task_name!r} could not be imported because "
+                    f"module {missing!r} is unavailable. Install `open-wam[robotwin]` "
+                    "plus the upstream RoboTwin runtime and verify --robotwin-root."
+                ) from exc
             except Exception:
                 if installed_stub:
                     _cleanup_curobo_import_stub()

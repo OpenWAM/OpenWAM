@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 from pathlib import Path
 import sys
 import types
@@ -7,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
+import pytest
 import torch
 
 from open_wam.configs import (
@@ -39,6 +41,7 @@ from open_wam.integrations.robotwin_env import (
     RobotwinEnvConfig,
     _install_ee_skip_topp_planner_patch,
 )
+import open_wam.integrations.robotwin_env as robotwin_env_module
 from open_wam.simulators import (
     EpisodeSpec,
     SimStepResult,
@@ -247,6 +250,23 @@ def test_calvin_adapter_inverse_maps_sparse_30d_to_native_7d(tmp_path: Path) -> 
     assert env_action[6] == 1.0
 
 
+def test_calvin_adapter_reports_missing_benchmark_runtime(monkeypatch, tmp_path: Path) -> None:
+    adapter = CalvinBenchmarkAdapter(
+        CalvinEnvConfig(calvin_root=str(tmp_path), dataset_root=str(tmp_path))
+    )
+    real_import = builtins.__import__
+
+    def fail_calvin_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "calvin_env" or name.startswith("calvin_env."):
+            raise ModuleNotFoundError("No module named 'calvin_env'", name="calvin_env")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fail_calvin_import)
+
+    with pytest.raises(ImportError, match=r"open-wam\[calvin\].*--calvin-root"):
+        adapter._build_env()
+
+
 def test_robotwin_adapter_inverse_maps_sparse_30d_and_normalizes_quaternions(tmp_path: Path) -> None:
     mapping = ActionMappingConfig(
         mode="sparse_canvas",
@@ -276,6 +296,24 @@ def test_robotwin_adapter_inverse_maps_sparse_30d_and_normalizes_quaternions(tmp
     np.testing.assert_allclose(env_action[11:15], np.asarray([0.0, 0.0, 0.0, 1.0], dtype=np.float32))
     assert env_action[7] == source[0, 7].item()
     assert env_action[15] == source[0, 15].item()
+
+
+def test_robotwin_adapter_reports_missing_benchmark_runtime(monkeypatch, tmp_path: Path) -> None:
+    adapter = RobotwinBenchmarkAdapter(
+        RobotwinEnvConfig(
+            robotwin_root=str(tmp_path),
+            task_name="dummy_task",
+            task_config="dummy_task",
+        )
+    )
+
+    def fail_task_import(name: str):
+        raise ModuleNotFoundError(f"No module named {name!r}", name="sapien")
+
+    monkeypatch.setattr(robotwin_env_module.importlib, "import_module", fail_task_import)
+
+    with pytest.raises(ImportError, match=r"open-wam\[robotwin\].*--robotwin-root"):
+        adapter._build_task_env("dummy_task")
 
 
 def test_robotwin_qpos_adapter_drops_eef_quaternion_padding(tmp_path: Path) -> None:

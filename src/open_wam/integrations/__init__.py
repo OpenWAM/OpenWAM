@@ -12,9 +12,6 @@ from typing import Any
 
 
 _EXPORTS: dict[str, str] = {
-    "BenchmarkActionSchema": "open_wam.integrations.contracts",
-    "BenchmarkAdapterContract": "open_wam.integrations.contracts",
-    "BenchmarkObservationSchema": "open_wam.integrations.contracts",
     "CalvinBenchmarkAdapter": "open_wam.integrations.calvin_env",
     "CalvinEnvConfig": "open_wam.integrations.calvin_env",
     "OpenWAMCalvinCustomModel": "open_wam.integrations.calvin_env",
@@ -50,18 +47,6 @@ _EXPORTS: dict[str, str] = {
     "track_relative_targets_in_libero_env": "open_wam.integrations.libero_tracking",
     "RobotwinBenchmarkAdapter": "open_wam.integrations.robotwin_env",
     "RobotwinEnvConfig": "open_wam.integrations.robotwin_env",
-    "SimBenchmarkAdapter": "open_wam.integrations.sim_benchmark",
-    "SimRolloutResult": "open_wam.integrations.sim_benchmark",
-    "SimStepResult": "open_wam.integrations.sim_benchmark",
-    "SimulatorBackend": "open_wam.simulators",
-    "SimulatorCapabilities": "open_wam.simulators",
-    "SimulatorObservation": "open_wam.simulators",
-    "SimulatorStepResult": "open_wam.simulators",
-    "build_state_history_tensor": "open_wam.integrations.sim_benchmark",
-    "build_view_history_batch": "open_wam.integrations.sim_benchmark",
-    "run_closed_loop_sim_rollout": "open_wam.integrations.sim_benchmark",
-    "source_action_from_model_action": "open_wam.integrations.sim_benchmark",
-    "summarize_sim_rollout": "open_wam.integrations.sim_benchmark",
 }
 
 __all__ = sorted(_EXPORTS)

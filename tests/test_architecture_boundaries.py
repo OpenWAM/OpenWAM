@@ -2743,6 +2743,41 @@ def test_libero_mot_drivers_delegate_to_the_package_episode_runner() -> None:
         assert policy_state_field in observed_history_source
 
 
+def test_simulator_rollout_command_has_one_package_owner() -> None:
+    cli_source = (PACKAGE_ROOT / "cli" / "sim_rollout.py").read_text(encoding="utf-8")
+    runtime_source = (PACKAGE_ROOT / "evals" / "sim_rollout.py").read_text(encoding="utf-8")
+    script_source = (REPO_ROOT / "scripts" / "run_sim_realtime_sandbox.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "run_legacy_script" not in cli_source
+    assert "from open_wam.evals.sim_rollout import run_simulator_rollout_command" in cli_source
+    assert "from open_wam.cli.sim_rollout import main" in script_source
+    for implementation in (
+        "_ZeroActionRolloutRunner",
+        "_build_adapter",
+        "build_result_envelope",
+        "run_closed_loop_sim_rollout",
+    ):
+        assert implementation in runtime_source
+        assert implementation not in script_source
+    assert "resolve_repo_path(args.config)" in runtime_source
+    assert "def _resolve_repo_path" not in runtime_source
+
+    assert not (PACKAGE_ROOT / "integrations" / "contracts.py").exists()
+    assert not (PACKAGE_ROOT / "integrations" / "sim_benchmark.py").exists()
+    integration_exports = (PACKAGE_ROOT / "integrations" / "__init__.py").read_text(
+        encoding="utf-8"
+    )
+    for simulator_owned_name in (
+        "BenchmarkAdapterContract",
+        "SimBenchmarkAdapter",
+        "SimulatorBackend",
+        "run_closed_loop_sim_rollout",
+    ):
+        assert simulator_owned_name not in integration_exports
+
+
 def test_libero_mot_runtime_loading_has_one_owner() -> None:
     runtime_path = PACKAGE_ROOT / "evals" / "libero_mot_runtime.py"
     rollout_path = PACKAGE_ROOT / "evals" / "libero_mot_rollout.py"

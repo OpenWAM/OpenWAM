@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import argparse
-import sys
-
-from ._legacy_script import run_legacy_script
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run a shared closed-loop Open-WAM simulator rollout for RoboTwin or CALVIN."
+        description=(
+            "Run one Open-WAM policy in a benchmark simulator through the shared "
+            "closed-loop realtime adapter. Supports RoboTwin and CALVIN when the "
+            "external simulator packages are installed locally."
+        )
     )
     parser.add_argument("--cfg", "--config", dest="config", required=True)
     parser.add_argument("--checkpoint", type=str, default=None)
@@ -21,18 +22,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--action-commit-mode",
         choices=("first_action", "full_chunk"),
         default="first_action",
+        help="Commit only the first predicted action per replan, or blockingly execute the full predicted chunk.",
     )
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--output-dir", type=str, default="outputs/sim_realtime")
     parser.add_argument("--suffix", type=str, default="rollout")
     parser.add_argument("--video-fps", type=float, default=15.0)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--zero-policy", action="store_true")
+    parser.add_argument(
+        "--zero-policy",
+        action="store_true",
+        help="Step the simulator with zero model-space actions. Useful for env wiring dry runs.",
+    )
     parser.add_argument("--robotwin-root", type=str, default=None)
     parser.add_argument("--robotwin-task-name", type=str, default=None)
     parser.add_argument("--robotwin-task-config", type=str, default=None)
     parser.add_argument("--robotwin-action-type", type=str, default="ee")
-    parser.add_argument("--robotwin-expert-precheck", action="store_true")
+    parser.add_argument(
+        "--robotwin-expert-precheck",
+        action="store_true",
+        help="Run RoboTwin's expert play_once/check_success path and generate the episode instruction before reset.",
+    )
     parser.add_argument("--robotwin-instruction-type", type=str, default="seen")
     parser.add_argument("--instruction", type=str, default=None)
     parser.add_argument("--calvin-root", type=str, default=None)
@@ -44,17 +54,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    resolved_argv = sys.argv[1:] if argv is None else argv
-    build_arg_parser().parse_args(resolved_argv)
-    if argv is None:
-        run_legacy_script("run_sim_realtime_sandbox.py")
-        return
-    old_argv = sys.argv
-    sys.argv = [old_argv[0], *argv]
+    args = build_arg_parser().parse_args(argv)
     try:
-        run_legacy_script("run_sim_realtime_sandbox.py")
-    finally:
-        sys.argv = old_argv
+        from open_wam.evals.sim_rollout import run_simulator_rollout_command
+    except ModuleNotFoundError as error:
+        if error.name and error.name.startswith("open_wam"):
+            raise
+        missing = error.name or "an optional runtime module"
+        raise SystemExit(
+            "Simulator dependencies are not installed. Install with "
+            "`pip install 'open-wam[sim]'` or `uv sync --extra sim`. "
+            f"Missing module: {missing}."
+        ) from error
+
+    run_simulator_rollout_command(args)
 
 
 if __name__ == "__main__":

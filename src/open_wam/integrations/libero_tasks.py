@@ -296,8 +296,8 @@ def _resolve_libero_paths() -> tuple[Path, Path]:
             return paths
 
     raise ImportError(
-        "LIBERO could not be imported. Either install an importable LIBERO "
-        "package into the uv environment or set LIBERO_REPO_ROOT to a "
+        "LIBERO could not be imported. Install `open-wam[libero]` plus an "
+        "importable upstream LIBERO package, or set LIBERO_REPO_ROOT to a "
         "checkout whose structure contains `libero/libero/__init__.py`."
     ) from import_error
 

@@ -145,10 +145,12 @@ class CalvinBenchmarkAdapter:
         try:
             from calvin_env.envs.play_table_env import get_env  # type: ignore
             import calvin_env  # type: ignore
-        except Exception as exc:
+        except ImportError as exc:
+            missing = getattr(exc, "name", None) or "calvin_env"
             raise ImportError(
-                "Could not import `calvin_env.envs.play_table_env.get_env`. "
-                "Install CALVIN or pass --calvin-root pointing at a CALVIN checkout."
+                f"CALVIN runtime module {missing!r} is unavailable. Install "
+                "`open-wam[calvin]` plus the upstream CALVIN environment, or "
+                "pass --calvin-root pointing at a compatible checkout."
             ) from exc
         if getattr(calvin_env, "__file__", None) is None and self.root is not None:
             calvin_env.__file__ = str(self.root / "calvin_env" / "calvin_env" / "__init__.py")
