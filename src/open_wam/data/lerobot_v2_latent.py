@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import Counter
 from collections.abc import Iterator
 from dataclasses import replace
 import math
@@ -60,6 +59,7 @@ from .lerobot_v2_latent_sampling import (
     HierarchicalFixedSegmentWindowSpec as HierarchicalFixedSegmentWindowSpec,
     LocalLatentEpochOrderSampler as LocalLatentEpochOrderSampler,
     LocalLatentUniformSegmentSamplingPlan as _LocalLatentUniformSegmentSamplingPlan,
+    LocalLatentWindowWeightPlan,
     LocalLatentWeightedTrainSampler as LocalLatentWeightedTrainSampler,
     build_hierarchical_fixed_segment_task_specs,
 )
@@ -115,12 +115,22 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
                 "No valid latent windows were constructed. "
                 f"Check local_root={data_config.local_root!r} and latent_camera_names={data_config.latent_camera_names!r}."
             )
-        self._window_valid_action_steps = tuple(self._estimate_window_valid_action_steps(window) for window in self.windows)
-        self.dataset_mean_valid_action_steps = self._estimate_mean_valid_action_steps()
-        self._window_task_texts = tuple(self._window_task_text(window) for window in self.windows)
-        self._task_demo_counts = self._estimate_task_demo_counts()
-        self.dataset_mean_task_demo_count = self._estimate_mean_task_demo_count()
-        self.sample_weights = self._build_sample_weights()
+        weight_plan = LocalLatentWindowWeightPlan.from_windows(
+            data_config=data_config,
+            windows=self.windows,
+            repo_bundles=self._repo_bundles,
+        )
+        self._window_weight_plan = weight_plan
+        self._window_valid_action_steps = weight_plan.window_valid_action_steps
+        self.dataset_mean_valid_action_steps = (
+            weight_plan.dataset_mean_valid_action_steps
+        )
+        self._window_task_texts = weight_plan.window_task_texts
+        self._task_demo_counts = weight_plan.task_demo_counts
+        self.dataset_mean_task_demo_count = (
+            weight_plan.dataset_mean_task_demo_count
+        )
+        self.sample_weights = weight_plan.sample_weights
 
     def __len__(self) -> int:
         return len(self.windows)
@@ -134,84 +144,13 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             return None
         return LocalLatentWeightedTrainSampler(self, world_size=world_size, rank=rank)
 
-    def _estimate_mean_valid_action_steps(self) -> float:
-        positive_estimates = [value for value in self._window_valid_action_steps if value > 0]
-        if not positive_estimates:
-            return float(max(1, self.data_config.action_schema.action_horizon))
-        return float(sum(positive_estimates) / len(positive_estimates))
-
-    def _estimate_window_valid_action_steps(self, window: LocalEpisodeWindow) -> int:
-        if (
-            self.data_config.sample_construction.mode == WindowSamplingMode.FULL_SEGMENT
-            and self.data_config.latent_window_profile == LatentWindowProfile.EXACT_CHUNKED_WINDOW
-        ):
-            observed_frame_ids = window.observation_frame_indices
-            prefix_actions = int(self.data_config.action_schema.action_horizon // max(1, self.data_config.num_frames))
-            window_span = max(0, window.end_frame - window.start_frame)
-            raw_action_steps = max(len(observed_frame_ids), window_span)
-            return max(0, int(prefix_actions + raw_action_steps))
-        if self.data_config.sample_construction.mode == WindowSamplingMode.CAUSAL_PREFIX_SUFFIX:
-            return 0
-        return max(0, int(self.data_config.action_schema.action_horizon))
-
-    def _window_task_text(self, window: LocalEpisodeWindow) -> str:
-        repo_bundle = self._repo_bundles.get(str(window.repo_root))
-        if repo_bundle is not None:
-            episode_record = repo_bundle.episodes_by_index.get(window.episode_index)
-            if episode_record is not None and episode_record.tasks:
-                return str(episode_record.tasks[0])
-        return f"{window.repo_root}:episode:{window.episode_index}"
-
-    def _estimate_task_demo_counts(self) -> Counter[str]:
-        demo_keys_by_task: dict[str, set[tuple[str, int]]] = {}
-        for window, task_text in zip(self.windows, self._window_task_texts, strict=True):
-            demo_keys_by_task.setdefault(task_text, set()).add((str(window.repo_root), int(window.episode_index)))
-        return Counter({task_text: len(demo_keys) for task_text, demo_keys in demo_keys_by_task.items()})
-
-    def _estimate_mean_task_demo_count(self) -> float:
-        if not self._task_demo_counts:
-            return 1.0
-        return float(sum(self._task_demo_counts.values()) / len(self._task_demo_counts))
-
-    def _build_sample_weights(self) -> tuple[float, ...]:
-        mode = self.data_config.sample_construction.sample_weight_mode
-        if mode == SampleWeightMode.UNIFORM:
-            return tuple(1.0 for _ in self.windows)
-
-        reference_steps = max(1.0, float(self.dataset_mean_valid_action_steps))
-        reference_task_count = max(1.0, float(self.dataset_mean_task_demo_count))
-        weights: list[float] = []
-        for index, valid_steps in enumerate(self._window_valid_action_steps):
-            weight = 1.0
-            if mode in {
-                SampleWeightMode.VALID_ACTION_STEPS,
-                SampleWeightMode.VALID_ACTION_STEPS_X_INVERSE_TASK_DEMO_COUNT,
-            }:
-                weight *= max(1.0, float(valid_steps)) / reference_steps
-            if mode in {
-                SampleWeightMode.INVERSE_TASK_DEMO_COUNT,
-                SampleWeightMode.VALID_ACTION_STEPS_X_INVERSE_TASK_DEMO_COUNT,
-            }:
-                task_count = max(1, self._task_demo_counts[self._window_task_texts[index]])
-                weight *= reference_task_count / float(task_count)
-            if self.data_config.sample_construction.sample_weight_min is not None:
-                weight = max(float(self.data_config.sample_construction.sample_weight_min), weight)
-            if self.data_config.sample_construction.sample_weight_max is not None:
-                weight = min(float(self.data_config.sample_construction.sample_weight_max), weight)
-            weights.append(float(weight))
-
-        if not any(weight > 0 for weight in weights):
-            return tuple(1.0 for _ in self.windows)
-        return tuple(weights)
-
     def _sample_weight_metadata(self, index: int) -> dict[str, Any]:
-        task_text = self._window_task_texts[index]
-        return {
-            "train_sample_weight": self.sample_weights[index],
-            "train_sample_weight_mode": self.data_config.sample_construction.sample_weight_mode,
-            "eligible_task_demo_count": self._task_demo_counts[task_text],
-            "dataset_mean_eligible_task_demo_count": self.dataset_mean_task_demo_count,
-        }
+        return self._window_weight_plan.sample_weight_metadata(index)
+
+    def task_text_for_window_index(self, index: int) -> str:
+        """Return the resolved task label for one physical window."""
+
+        return self._window_weight_plan.task_text_for_window_index(index)
 
     def _action_loss_metadata(
         self,

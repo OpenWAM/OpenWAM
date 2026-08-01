@@ -123,8 +123,12 @@ class DummyDataset:
             DummyWindow("repo", 3, 0, 95, tuple(range(95)), "task b"),
         ]
 
+    def task_text_for_window_index(self, index: int) -> str:
+        return self.windows[index].task_text
+
     def _window_task_text(self, window: DummyWindow) -> str:
-        return window.task_text
+        del window
+        raise AssertionError("The explicit indexed task contract should win.")
 
 
 class _FakeMotVisualTower:

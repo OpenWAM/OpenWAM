@@ -35,6 +35,7 @@ from open_wam.data import (
     LocalLatentTrainValWindowPlan as PublicTrainValWindowPlan,
     LocalLatentTrainValWindowPlanner as PublicTrainValWindowPlanner,
     LocalLatentUniformSegmentSamplingPlan as PublicUniformSamplingPlan,
+    LocalLatentWindowWeightPlan as PublicWindowWeightPlan,
     build_train_val_latent_datasets,
     collate_latent_wam_samples,
     discover_local_lerobot_repo_bundles,
@@ -74,6 +75,7 @@ from open_wam.data.lerobot_v2_latent_storage import (
 )
 from open_wam.data.lerobot_v2_latent_sampling import (
     LocalLatentUniformSegmentSamplingPlan,
+    LocalLatentWindowWeightPlan,
 )
 from open_wam.data.lerobot_v2_latent_segment import (
     LocalLatentSegment,
@@ -104,6 +106,7 @@ def test_lerobot_latent_storage_owns_compatibility_exports() -> None:
         is CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET
     )
     assert PublicUniformSamplingPlan is LocalLatentUniformSegmentSamplingPlan
+    assert PublicWindowWeightPlan is LocalLatentWindowWeightPlan
     assert PublicLocalLatentSegment is LocalLatentSegment
     assert PublicLocalLatentSegmentAssembler is LocalLatentSegmentAssembler
     assert PublicCausalCandidate is LatentCausalPrefixSuffixCandidate
@@ -720,11 +723,21 @@ def test_local_lerobot_latent_dataset_weights_long_depleted_tasks(tmp_path: Path
     )
 
     train_dataset, _ = build_train_val_latent_datasets(config.data)
+    weight_plan = train_dataset._window_weight_plan
     weights_by_episode = {
         window.episode_index: train_dataset.sample_weights[index]
         for index, window in enumerate(train_dataset.windows)
     }
 
+    assert isinstance(weight_plan, LocalLatentWindowWeightPlan)
+    assert train_dataset._window_valid_action_steps is (
+        weight_plan.window_valid_action_steps
+    )
+    assert train_dataset._window_task_texts is weight_plan.window_task_texts
+    assert train_dataset._task_demo_counts is weight_plan.task_demo_counts
+    assert train_dataset.sample_weights is weight_plan.sample_weights
+    assert train_dataset.task_text_for_window_index(2) == "assemble the long task"
+    assert weight_plan.task_text_for_window_index(2) == "assemble the long task"
     assert train_dataset.dataset_mean_valid_action_steps == pytest.approx(18.0)
     assert train_dataset.dataset_mean_task_demo_count == pytest.approx(1.5)
     assert weights_by_episode[0] == pytest.approx(0.25)
@@ -736,6 +749,11 @@ def test_local_lerobot_latent_dataset_weights_long_depleted_tasks(tmp_path: Path
     assert sample.metadata["train_sample_weight"] == pytest.approx(weights_by_episode[2])
     assert sample.metadata["eligible_task_demo_count"] == 1
     assert sample.metadata["dataset_mean_eligible_task_demo_count"] == pytest.approx(1.5)
+    restored_plan = pickle.loads(pickle.dumps(weight_plan))
+    assert restored_plan.sample_weights == weight_plan.sample_weights
+    assert restored_plan.sample_weight_metadata(2) == (
+        weight_plan.sample_weight_metadata(2)
+    )
 
 
 def test_inverse_task_demo_count_counts_unique_demos_not_windows(tmp_path: Path) -> None:

@@ -399,6 +399,7 @@ def test_lerobot_latent_sampling_policy_has_one_owner() -> None:
         "HierarchicalFixedSegmentWindowSpec",
         "LocalLatentEpochOrderSampler",
         "LocalLatentUniformSegmentSamplingPlan",
+        "LocalLatentWindowWeightPlan",
         "LocalLatentWeightedTrainSampler",
         "build_hierarchical_fixed_segment_task_specs",
     }
@@ -417,6 +418,47 @@ def test_lerobot_latent_sampling_policy_has_one_owner() -> None:
     } <= _class_method_definitions(
         sampling_path,
         "HierarchicalFixedSegmentSamplingPlan",
+    )
+
+    assert {
+        "from_windows",
+        "sample_weight_metadata",
+        "task_text_for_window_index",
+    } <= _class_method_definitions(
+        sampling_path,
+        "LocalLatentWindowWeightPlan",
+    )
+
+    base_weight_delegate = _class_method(
+        dataset_path,
+        "LocalLeRobotLatentWindowDataset",
+        "_sample_weight_metadata",
+    )
+    assert len(base_weight_delegate.body) == 1
+    assert isinstance(base_weight_delegate.body[0], ast.Return)
+    assert isinstance(base_weight_delegate.body[0].value, ast.Call)
+
+    task_text_delegate = _class_method(
+        dataset_path,
+        "LocalLeRobotLatentWindowDataset",
+        "task_text_for_window_index",
+    )
+    assert ast.get_docstring(task_text_delegate)
+    assert len(task_text_delegate.body) == 2
+    assert isinstance(task_text_delegate.body[1], ast.Return)
+    assert isinstance(task_text_delegate.body[1].value, ast.Call)
+    assert {
+        "_build_sample_weights",
+        "_estimate_mean_task_demo_count",
+        "_estimate_mean_valid_action_steps",
+        "_estimate_task_demo_counts",
+        "_estimate_window_valid_action_steps",
+        "_window_task_text",
+    }.isdisjoint(
+        _class_method_definitions(
+            dataset_path,
+            "LocalLeRobotLatentWindowDataset",
+        )
     )
 
     assert {

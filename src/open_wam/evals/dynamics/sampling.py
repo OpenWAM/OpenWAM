@@ -203,7 +203,11 @@ def select_early_middle_windows(
         total_video_frames = _window_frame_count(window, action_per_frame=action_per_frame)
         if total_video_frames < min_context_frames + fit_target_start_offset_frames + generated_frames + 1:
             continue
-        task_key = _window_task_key(dataset, window)
+        task_key = _window_task_key(
+            dataset,
+            window,
+            dataset_index=dataset_index,
+        )
         grouped[task_key].append((dataset_index, window))
 
     selections: list[FdmWindowSelection] = []
@@ -341,7 +345,15 @@ def _window_frame_count(window: Any, *, action_per_frame: int = 1) -> int:
     return raw_span
 
 
-def _window_task_key(dataset: Dataset[LatentWAMSample], window: Any) -> str:
+def _window_task_key(
+    dataset: Dataset[LatentWAMSample],
+    window: Any,
+    *,
+    dataset_index: int,
+) -> str:
+    task_text_for_index = getattr(dataset, "task_text_for_window_index", None)
+    if callable(task_text_for_index):
+        return str(task_text_for_index(dataset_index))
     task_getter = getattr(dataset, "_window_task_text", None)
     if callable(task_getter):
         return str(task_getter(window))
