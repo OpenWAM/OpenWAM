@@ -174,6 +174,25 @@ def test_runtime_entrypoints_accept_ordered_extensions() -> None:
 
 
 @pytest.mark.unit
+def test_public_train_parser_advertises_resume_and_step_controls() -> None:
+    from open_wam.cli.train import build_arg_parser as train_parser
+
+    args = train_parser().parse_args(
+        [
+            "--cfg",
+            "experiment.yaml",
+            "--checkpoint-root",
+            "runs/example/checkpoints/checkpoint_step_100",
+            "--num-steps",
+            "200",
+        ]
+    )
+
+    assert args.checkpoint_root.endswith("checkpoint_step_100")
+    assert args.num_steps == 200
+
+
+@pytest.mark.unit
 def test_inspect_config_cli_accepts_legacy_and_new_config_flags() -> None:
     parser = build_arg_parser()
 

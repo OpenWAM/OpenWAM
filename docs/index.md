@@ -11,7 +11,8 @@ engineering notes are not published as part of this site.
 - [Architecture](architecture.md): the stable runtime boundary and core abstractions.
 - [Method Families](method_families.md): how the current policy variants fit together.
 - [Benchmarks and Data](benchmarks.md): LIBERO, RoboTwin, CALVIN, and synthetic fixtures.
-- [Running Experiments](running_experiments.md): train, eval, sanity, and rollout workflows.
+- [Training and Inference](running_experiments.md): maintained train, resume,
+  eval, sanity, and rollout commands.
 
 ## Research Extension
 

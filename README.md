@@ -483,6 +483,7 @@ target is now supported by:
 
 Start here for collaborator-facing context:
 
+- [docs/running_experiments.md](docs/running_experiments.md)
 - [notes/README.md](notes/README.md)
 - [notes/collaboration_guide.md](notes/collaboration_guide.md)
 - [notes/architecture.md](notes/architecture.md)

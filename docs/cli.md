@@ -24,6 +24,11 @@ must remain callable until they have:
 3. a documented deprecation warning
 4. a later explicit removal PR
 
+For complete train, full-state resume, offline evaluation, and benchmark
+rollout examples, use [Training and Inference](running_experiments.md). It is
+the canonical operator guide; archived engineering notes are not command
+references.
+
 ## Command Examples
 
 Installed extensions load before experiment construction. Repeat

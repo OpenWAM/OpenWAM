@@ -13,7 +13,7 @@ nav:
   - Getting Started:
       - Quickstart: quickstart.md
       - CLI Reference: cli.md
-      - Running Experiments: running_experiments.md
+      - Training And Inference: running_experiments.md
   - Concepts:
       - Architecture: architecture.md
       - Method Families: method_families.md
