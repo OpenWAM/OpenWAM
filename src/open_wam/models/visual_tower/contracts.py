@@ -22,6 +22,16 @@ class VisualReadoutRequest:
     capture_layer_indices: tuple[int, ...] = field(default_factory=tuple)
 
 
+@dataclass(frozen=True)
+class VisualRuntimeStateSnapshot:
+    """Copied frontend and named-backbone state for speculative execution."""
+
+    frontend_state: object | None = None
+    runtime_cache_name: str | None = None
+    runtime_cache_existed: bool = False
+    runtime_cache_state: CacheState | None = None
+
+
 @dataclass
 class VisualIntermediateReadout:
     """One captured intermediate visual-core layer output."""

@@ -16,7 +16,12 @@ from open_wam.configs.backbone import SharedVideoTransformerConfig, normalize_ba
 from open_wam.models.video_backbone.contracts import AttentionCacheEntry, CacheState, CacheUpdateMetadata
 
 from .cache_lifecycle import RuntimeCacheLifecycle, _MAX_CACHED_FRAMES_UNSET
-from .contracts import VisualCoreInput, VisualReadoutRequest, VisualStageOutputs
+from .contracts import (
+    VisualCoreInput,
+    VisualReadoutRequest,
+    VisualRuntimeStateSnapshot,
+    VisualStageOutputs,
+)
 from .core import PackedSequenceVisualCore
 from .decoder import VisualFeatureDecoder
 from .exact_runtime import (
@@ -141,6 +146,68 @@ class VisualTower(nn.Module):
 
     def reset_runtime_state(self) -> None:
         self.frontend.reset_runtime_state()
+
+    def snapshot_runtime_state(
+        self,
+        *,
+        cache_name: str | None = None,
+    ) -> VisualRuntimeStateSnapshot | None:
+        """Copy causal frontend and named backbone state for speculation."""
+
+        frontend_state = self.frontend.snapshot_runtime_state()
+        if cache_name is None:
+            if frontend_state is None:
+                return None
+            return VisualRuntimeStateSnapshot(frontend_state=frontend_state)
+
+        transformer = self.get_runtime_backbone(
+            action_dim=self._runtime_state_action_dim()
+        )
+        snapshot_cache = getattr(transformer, "snapshot_runtime_cache_state", None)
+        if not callable(snapshot_cache):
+            raise TypeError(
+                "The runtime backbone does not expose `snapshot_runtime_cache_state`."
+            )
+        cache_existed, cache_state = snapshot_cache(str(cache_name))
+        return VisualRuntimeStateSnapshot(
+            frontend_state=frontend_state,
+            runtime_cache_name=str(cache_name),
+            runtime_cache_existed=bool(cache_existed),
+            runtime_cache_state=cache_state,
+        )
+
+    def restore_runtime_state(
+        self,
+        snapshot: VisualRuntimeStateSnapshot | None,
+    ) -> None:
+        """Restore a visual runtime snapshot after rejected speculation."""
+
+        if snapshot is None:
+            return
+        self.frontend.restore_runtime_state(snapshot.frontend_state)
+        if snapshot.runtime_cache_name is None:
+            return
+        transformer = self.get_runtime_backbone(
+            action_dim=self._runtime_state_action_dim()
+        )
+        restore_cache = getattr(transformer, "restore_runtime_cache_state", None)
+        if not callable(restore_cache):
+            raise TypeError(
+                "The runtime backbone does not expose `restore_runtime_cache_state`."
+            )
+        restore_cache(
+            snapshot.runtime_cache_name,
+            existed=bool(snapshot.runtime_cache_existed),
+            cache_state=snapshot.runtime_cache_state,
+        )
+
+    def _runtime_state_action_dim(self) -> int:
+        if self.action_dim is None:
+            raise ValueError(
+                "VisualTower runtime-state snapshots require a configured "
+                "action_dim when a named backbone cache is requested."
+            )
+        return int(self.action_dim)
 
     def run_core(self, core_input: VisualCoreInput):
         core_output = self.core(core_input)

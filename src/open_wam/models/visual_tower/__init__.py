@@ -9,6 +9,7 @@ from .contracts import (
     VisualFrontendOutput,
     VisualIntermediateReadout,
     VisualReadoutRequest,
+    VisualRuntimeStateSnapshot,
     VisualSequenceMetadata,
     VisualStageOutputs,
 )
@@ -86,6 +87,7 @@ __all__ = [
     "VisualFrontendOutput",
     "VisualIntermediateReadout",
     "VisualReadoutRequest",
+    "VisualRuntimeStateSnapshot",
     "VisualSequenceMetadata",
     "VisualStageOutputs",
     "VisualTower",

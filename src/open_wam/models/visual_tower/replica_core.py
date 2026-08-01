@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import math
 import torch
 from diffusers.models.embeddings import PixArtAlphaTextProjection
@@ -382,6 +383,34 @@ class SharedVideoTransformerCore(nn.Module):
 
     def clear_cache(self, cache_name: str) -> None:
         self._exact_runtime_caches.pop(cache_name, None)
+
+    def snapshot_runtime_cache_state(
+        self,
+        cache_name: str,
+    ) -> tuple[bool, CacheState | None]:
+        """Copy one named exact-runtime cache without exposing cache storage."""
+
+        if cache_name not in self._exact_runtime_caches:
+            return False, None
+        return True, copy.deepcopy(self._exact_runtime_caches[cache_name])
+
+    def restore_runtime_cache_state(
+        self,
+        cache_name: str,
+        *,
+        existed: bool,
+        cache_state: CacheState | None,
+    ) -> None:
+        """Restore or remove one named exact-runtime cache snapshot."""
+
+        if not existed:
+            self._exact_runtime_caches.pop(cache_name, None)
+            return
+        if cache_state is None:
+            raise ValueError(
+                "An existing exact-runtime cache snapshot requires cache state."
+            )
+        self._exact_runtime_caches[cache_name] = copy.deepcopy(cache_state)
 
     def clear_pred_cache(self, cache_name: str) -> None:
         cache_state = self._exact_runtime_caches.get(cache_name)

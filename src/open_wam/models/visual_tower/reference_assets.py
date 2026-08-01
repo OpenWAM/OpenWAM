@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -116,6 +117,16 @@ class WanVAEStreamingWrapper:
     def clear_cache(self) -> None:
         self.feat_cache = [None] * self.enc_conv_num
 
+    def snapshot_cache(self) -> list[Any]:
+        """Copy causal encoder features for speculative execution."""
+
+        return copy.deepcopy(self.feat_cache)
+
+    def restore_cache(self, snapshot: list[Any]) -> None:
+        """Restore a previously copied causal encoder cache."""
+
+        self.feat_cache = copy.deepcopy(snapshot)
+
     def encode_chunk(self, x_chunk: torch.Tensor) -> torch.Tensor:
         if x_chunk.ndim != 5:
             raise ValueError(f"Expected Wan VAE input [B,C,T,H,W], got {tuple(x_chunk.shape)}.")
@@ -152,6 +163,14 @@ class WanVAEStreamingWrapper:
             for start in range(1, consumed_frames, WAN_TEMPORAL_CHUNK_SIZE)
         )
         return tuple(ranges)
+
+
+@dataclass(frozen=True)
+class ReferenceAssetsRuntimeSnapshot:
+    """Streaming frontend state copied independently of model parameters."""
+
+    default_streaming_vae_cache: list[Any] | None = None
+    keyed_streaming_vae_caches: dict[str, list[Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -239,6 +258,48 @@ class LingbotReferenceAssets:
             self.streaming_vae.clear_cache()
         for streaming_vae in self.streaming_vae_by_key.values():
             streaming_vae.clear_cache()
+
+    def snapshot_runtime_state(self) -> ReferenceAssetsRuntimeSnapshot | None:
+        default_cache = (
+            None
+            if self.streaming_vae is None
+            else self.streaming_vae.snapshot_cache()
+        )
+        keyed_caches = {
+            str(cache_key): streaming_vae.snapshot_cache()
+            for cache_key, streaming_vae in self.streaming_vae_by_key.items()
+        }
+        if default_cache is None and not keyed_caches:
+            return None
+        return ReferenceAssetsRuntimeSnapshot(
+            default_streaming_vae_cache=default_cache,
+            keyed_streaming_vae_caches=keyed_caches,
+        )
+
+    def restore_runtime_state(
+        self,
+        snapshot: ReferenceAssetsRuntimeSnapshot | None,
+    ) -> None:
+        if snapshot is None:
+            return
+        if snapshot.default_streaming_vae_cache is not None:
+            if self.streaming_vae is None and self.vae is not None:
+                self.streaming_vae = WanVAEStreamingWrapper(self.vae)
+            if self.streaming_vae is not None:
+                self.streaming_vae.restore_cache(snapshot.default_streaming_vae_cache)
+        elif self.streaming_vae is not None:
+            self.streaming_vae.clear_cache()
+
+        snapshot_keys = set(snapshot.keyed_streaming_vae_caches)
+        for cache_key in set(self.streaming_vae_by_key) - snapshot_keys:
+            self.streaming_vae_by_key.pop(cache_key)
+        for cache_key, cache_snapshot in snapshot.keyed_streaming_vae_caches.items():
+            streaming_vae = self.streaming_vae_by_key.get(cache_key)
+            if streaming_vae is None and self.vae is not None:
+                streaming_vae = WanVAEStreamingWrapper(self.vae)
+                self.streaming_vae_by_key[cache_key] = streaming_vae
+            if streaming_vae is not None:
+                streaming_vae.restore_cache(cache_snapshot)
 
     def encode_text(
         self,

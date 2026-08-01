@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import replace
 
 import pytest
@@ -11,6 +12,8 @@ from open_wam.configs import (
     SharedVideoTransformerConfig,
 )
 from open_wam.models.visual_tower.reference_core_weights import BackboneLoadReport
+from open_wam.models.video_backbone.contracts import CacheState
+from open_wam.models.visual_tower import VisualTower
 from open_wam.models.visual_tower.runtime_backbone import (
     ensure_runtime_module_device,
     initialize_runtime_backbone,
@@ -174,3 +177,65 @@ def test_runtime_backbone_missing_key_diagnostics_classify_gaps(capsys) -> None:
         "[runtime_backbone_load] unexpected_missing_keys_count=1 "
         "unexpected_missing_keys_preview=['blocks.0.attn1.to_q.weight']",
     ]
+
+
+def test_visual_tower_owns_copied_frontend_and_named_cache_snapshots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tower = VisualTower(_backbone_config(), action_dim=4)
+    frontend_state = [torch.tensor([2.0])]
+
+    monkeypatch.setattr(
+        tower.frontend,
+        "snapshot_runtime_state",
+        lambda: copy.deepcopy(frontend_state),
+    )
+
+    def restore_frontend(snapshot) -> None:
+        frontend_state[:] = copy.deepcopy(snapshot)
+
+    monkeypatch.setattr(tower.frontend, "restore_runtime_state", restore_frontend)
+    tower.core._exact_runtime_caches["planner"] = CacheState(
+        supported=True,
+        current_start_frame=1,
+        cached_frames=2,
+        chunk_size=1,
+        payload={"value": torch.tensor([1.0])},
+    )
+
+    snapshot = tower.snapshot_runtime_state(cache_name="planner")
+    assert snapshot is not None
+    frontend_state[0][0] = 8.0
+    tower.core._exact_runtime_caches["planner"].payload["value"][0] = 9.0
+
+    tower.restore_runtime_state(snapshot)
+
+    assert float(frontend_state[0][0]) == 2.0
+    assert float(
+        tower.core._exact_runtime_caches["planner"].payload["value"][0]
+    ) == 1.0
+
+
+def test_visual_tower_snapshot_removes_cache_created_by_speculation() -> None:
+    tower = VisualTower(_backbone_config(), action_dim=4)
+
+    snapshot = tower.snapshot_runtime_state(cache_name="new_planner")
+    assert snapshot is not None
+    assert not snapshot.runtime_cache_existed
+    tower.core._exact_runtime_caches["new_planner"] = CacheState(
+        supported=True,
+        current_start_frame=1,
+        cached_frames=1,
+        chunk_size=1,
+    )
+
+    tower.restore_runtime_state(snapshot)
+
+    assert "new_planner" not in tower.core._exact_runtime_caches
+
+
+def test_visual_tower_named_cache_snapshot_requires_action_dimension() -> None:
+    tower = VisualTower(_backbone_config(), action_dim=None)
+
+    with pytest.raises(ValueError, match="require a configured action_dim"):
+        tower.snapshot_runtime_state(cache_name="planner")

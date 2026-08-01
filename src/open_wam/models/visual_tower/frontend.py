@@ -12,7 +12,7 @@ from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.models.video_backbone.contracts import ChunkMetadata, ConditioningState, TokenGridMetadata
 
 from .contracts import VisualFrontendOutput
-from .reference_assets import LingbotReferenceAssets
+from .reference_assets import LingbotReferenceAssets, ReferenceAssetsRuntimeSnapshot
 
 
 class SharedVideoFrontend(nn.Module):
@@ -130,6 +130,19 @@ class SharedVideoFrontend(nn.Module):
 
     def reset_runtime_state(self) -> None:
         self.reference_assets.reset_runtime_state()
+
+    def snapshot_runtime_state(self) -> ReferenceAssetsRuntimeSnapshot | None:
+        """Copy frontend-only causal state for speculative execution."""
+
+        return self.reference_assets.snapshot_runtime_state()
+
+    def restore_runtime_state(
+        self,
+        snapshot: ReferenceAssetsRuntimeSnapshot | None,
+    ) -> None:
+        """Restore frontend-only causal state after rejected execution."""
+
+        self.reference_assets.restore_runtime_state(snapshot)
 
     def _build_output(
         self,

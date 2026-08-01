@@ -101,6 +101,33 @@ def test_wan_streaming_wrapper_uses_only_complete_existing_cache_groups() -> Non
     assert torch.equal(encoded_input, video[:, :, :4])
 
 
+def test_reference_assets_runtime_snapshot_restores_default_and_keyed_caches() -> None:
+    default_wrapper, _ = _recording_wan_wrapper()
+    keyed_wrapper, _ = _recording_wan_wrapper()
+    new_wrapper, _ = _recording_wan_wrapper()
+    default_wrapper.feat_cache[0] = torch.tensor([1.0])
+    keyed_wrapper.feat_cache[0] = torch.tensor([2.0])
+    assets = LingbotReferenceAssets(
+        config=LingbotCompatibleVideoBackboneConfig(),
+        vae=default_wrapper.vae,
+        streaming_vae=default_wrapper,
+        streaming_vae_by_key={"camera:a": keyed_wrapper},
+    )
+
+    snapshot = assets.snapshot_runtime_state()
+    assert snapshot is not None
+    default_wrapper.feat_cache[0][0] = 9.0
+    keyed_wrapper.feat_cache[0][0] = 8.0
+    new_wrapper.feat_cache[0] = torch.tensor([7.0])
+    assets.streaming_vae_by_key["camera:new"] = new_wrapper
+
+    assets.restore_runtime_state(snapshot)
+
+    assert float(default_wrapper.feat_cache[0][0]) == 1.0
+    assert float(keyed_wrapper.feat_cache[0][0]) == 2.0
+    assert "camera:new" not in assets.streaming_vae_by_key
+
+
 def test_libero_layout_encodes_views_separately_and_concatenates_latents() -> None:
     assets = LingbotReferenceAssets(
         config=LingbotCompatibleVideoBackboneConfig(),

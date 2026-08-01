@@ -14,6 +14,7 @@ from einops import rearrange
 from open_wam.configs import ParallelRuntimeMode
 from open_wam.configs.enums import DeadlineMissPolicy
 from open_wam.evals import libero_visualization as exact_viz
+from open_wam.evals import realtime_speculation
 from open_wam.integrations.realtime_control import (
     PlannedFrameAction,
     make_planned_frame_actions,
@@ -22,6 +23,7 @@ from open_wam.models.common.rollout_startup import (
     require_strict_startup_generation_frame,
 )
 from open_wam.models.policy_variants import PolicyInferState, RolloutCursor
+from open_wam.models.visual_tower import VisualRuntimeStateSnapshot
 from open_wam.utils import validate_positive_step_override
 
 
@@ -37,6 +39,7 @@ __all__ = [
     "run_extension_job",
     "run_replan_job",
     "should_submit_planner_job",
+    "submit_planner_job_with_snapshot",
     "synchronize_devices",
 ]
 
@@ -298,6 +301,56 @@ def maybe_submit_planner_job(
             )
         return None
     raise ValueError(f"Unsupported planner_mode={planner_mode!r}.")
+
+
+def submit_planner_job_with_snapshot(
+    *,
+    executor: ThreadPoolExecutor,
+    planner_mode: str,
+    pending_history: list[dict[str, Any]],
+    future_buffer_depth: int,
+    runner,
+    history_base_session,
+    current_chunk_session,
+    prompt: str,
+    config,
+    frontend_device: torch.device,
+    runtime_device: torch.device,
+    buffer_tail_session,
+    seed_base: int | None,
+) -> tuple[Future[dict[str, Any]] | None, VisualRuntimeStateSnapshot | None]:
+    """Submit a planner branch with a rollback point for shared visual state."""
+
+    if not should_submit_planner_job(
+        planner_mode=planner_mode,
+        has_history=bool(pending_history),
+        future_buffer_depth=future_buffer_depth,
+        has_buffer_tail_session=buffer_tail_session is not None,
+    ):
+        return None, None
+    snapshot = realtime_speculation.snapshot_visual_runtime(
+        runner=runner,
+        config=config,
+        session=current_chunk_session,
+    )
+    submitted_future = maybe_submit_planner_job(
+        executor=executor,
+        planner_mode=planner_mode,
+        pending_history=pending_history,
+        future_buffer_depth=future_buffer_depth,
+        runner=runner,
+        history_base_session=history_base_session,
+        current_chunk_session=current_chunk_session,
+        prompt=prompt,
+        config=config,
+        frontend_device=frontend_device,
+        runtime_device=runtime_device,
+        buffer_tail_session=buffer_tail_session,
+        seed_base=seed_base,
+    )
+    if submitted_future is None:
+        return None, None
+    return submitted_future, snapshot
 
 
 def copy_history_record_for_worker(record: dict[str, Any]) -> dict[str, Any]:

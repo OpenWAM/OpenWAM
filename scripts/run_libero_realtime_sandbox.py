@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import argparse
-import copy
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 import hashlib
 import json
 import math
-import random
 import sys
 import time
 from pathlib import Path
@@ -50,8 +48,10 @@ from open_wam.evals import libero_rollout_artifacts as rollout_artifacts  # noqa
 from open_wam.evals import libero_realtime_runtime as realtime_runtime  # noqa: E402
 from open_wam.evals import libero_visualization as exact_viz  # noqa: E402
 from open_wam.evals import realtime_history  # noqa: E402
+from open_wam.evals import realtime_speculation  # noqa: E402
 from open_wam.models.common.rollout_startup import require_strict_startup_generation_frame  # noqa: E402
 from open_wam.models.policy_variants import PolicyInferContext  # noqa: E402
+from open_wam.models.visual_tower import VisualRuntimeStateSnapshot  # noqa: E402
 from open_wam.models.policy_variants.mot.runtime_routing import (  # noqa: E402
     ensure_mot_inference_backend,
     mot_config_uses_strict_rollout_parity,
@@ -773,206 +773,6 @@ def _apply_common_inference_overrides(
         object.__setattr__(config.inference, "action_guidance_scale", float(action_guidance_scale))
 
 
-def _exact_runtime_cache_name(session) -> str | None:
-    cache = getattr(getattr(session, "policy_state", None), "cache", None)
-    if not isinstance(cache, dict):
-        return None
-    cache_name = cache.get("cache_name")
-    return None if cache_name is None else str(cache_name)
-
-
-def _runtime_cache_name_for_session(*, config, session) -> str | None:
-    cache_name = _exact_runtime_cache_name(session)
-    if cache_name is not None:
-        return cache_name
-    if resolve_mot_runtime_route(config).uses_split_cache_rollout:
-        return "mot_non_joint_two_stream_cache"
-    return None
-
-
-def _exact_runtime_transformer(runner, config):
-    pipeline = getattr(runner, "pipeline", None)
-    visual_tower = getattr(pipeline, "visual_tower", None)
-    if visual_tower is None or not hasattr(visual_tower, "get_runtime_backbone"):
-        return None
-    policy_variant = getattr(runner, "policy_variant", None)
-    action_dim = getattr(policy_variant, "action_dim", None)
-    if action_dim is None:
-        action_dim = int(config.data.action_schema.action_dim)
-    return visual_tower.get_runtime_backbone(action_dim=int(action_dim))
-
-
-def _exact_runtime_streaming_vae(runner):
-    pipeline = getattr(runner, "pipeline", None)
-    visual_tower = getattr(pipeline, "visual_tower", None)
-    frontend = getattr(visual_tower, "frontend", None)
-    reference_assets = getattr(frontend, "reference_assets", None)
-    return getattr(reference_assets, "streaming_vae", None)
-
-
-def _snapshot_exact_runtime_cache(
-    *,
-    runner,
-    config,
-    session,
-) -> dict[str, Any] | None:
-    snapshot: dict[str, Any] = {}
-    streaming_vae = _exact_runtime_streaming_vae(runner)
-    if streaming_vae is not None and hasattr(streaming_vae, "feat_cache"):
-        snapshot["streaming_vae_feat_cache"] = copy.deepcopy(streaming_vae.feat_cache)
-
-    cache_name = _runtime_cache_name_for_session(config=config, session=session)
-    transformer = _exact_runtime_transformer(runner, config)
-    caches = getattr(transformer, "_exact_runtime_caches", None)
-    if cache_name is None or not isinstance(caches, dict):
-        return snapshot or None
-    if cache_name not in caches:
-        snapshot.update({"cache_name": cache_name, "exists": False})
-        return snapshot
-    snapshot.update(
-        {
-            "cache_name": cache_name,
-            "exists": True,
-            "cache_state": copy.deepcopy(caches[cache_name]),
-        }
-    )
-    return snapshot
-
-
-def _restore_exact_runtime_cache_snapshot(
-    *,
-    runner,
-    config,
-    snapshot: dict[str, Any] | None,
-) -> None:
-    if snapshot is None:
-        return
-    streaming_vae = _exact_runtime_streaming_vae(runner)
-    if streaming_vae is not None and "streaming_vae_feat_cache" in snapshot:
-        streaming_vae.feat_cache = copy.deepcopy(snapshot["streaming_vae_feat_cache"])
-
-    if "cache_name" not in snapshot:
-        return
-    transformer = _exact_runtime_transformer(runner, config)
-    caches = getattr(transformer, "_exact_runtime_caches", None)
-    if not isinstance(caches, dict):
-        return
-    cache_name = str(snapshot["cache_name"])
-    if bool(snapshot.get("exists", False)):
-        caches[cache_name] = copy.deepcopy(snapshot["cache_state"])
-    else:
-        caches.pop(cache_name, None)
-
-
-def _restore_exact_runtime_cache_if_rejected(
-    result: dict[str, Any],
-    *,
-    runner,
-    config,
-    snapshot: dict[str, Any] | None,
-) -> None:
-    if bool(result.get("trace", {}).get("accepted_chunk", False)):
-        return
-    _restore_exact_runtime_cache_snapshot(runner=runner, config=config, snapshot=snapshot)
-
-
-def _clone_sequence_session(session):
-    return copy.deepcopy(session)
-
-
-def _sequence_session_ref(session, *, share_session: bool):
-    return session if share_session else _clone_sequence_session(session)
-
-
-def _snapshot_sequence_runtime_cache(*, runner, config, session) -> dict[str, Any] | None:
-    if resolve_mot_runtime_route(config).uses_stateful_realtime_session:
-        return None
-    return _snapshot_exact_runtime_cache(runner=runner, config=config, session=session)
-
-
-def _snapshot_rng_state() -> dict[str, Any]:
-    return {
-        "python": random.getstate(),
-        "numpy": np.random.get_state(),
-        "torch_cpu": torch.get_rng_state(),
-        "torch_cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
-    }
-
-
-def _restore_rng_state(snapshot: dict[str, Any] | None) -> None:
-    if snapshot is None:
-        return
-    random.setstate(snapshot["python"])
-    np.random.set_state(snapshot["numpy"])
-    torch.set_rng_state(snapshot["torch_cpu"])
-    cuda_state = snapshot.get("torch_cuda")
-    if cuda_state is not None and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all(cuda_state)
-
-
-def _resolve_exact_planner_future_result(
-    future: Future[dict[str, Any]],
-    *,
-    runner,
-    config,
-    snapshot: dict[str, Any] | None,
-) -> dict[str, Any]:
-    try:
-        return future.result()
-    except BaseException:
-        _restore_exact_runtime_cache_snapshot(runner=runner, config=config, snapshot=snapshot)
-        raise
-
-
-def _maybe_submit_exact_planner_job_with_cache_snapshot(
-    *,
-    executor: ThreadPoolExecutor,
-    planner_mode: str,
-    pending_history: list[dict[str, Any]],
-    future_buffer_depth: int,
-    runner,
-    history_base_session,
-    current_chunk_session,
-    prompt: str,
-    config,
-    frontend_device: torch.device,
-    runtime_device: torch.device,
-    buffer_tail_session,
-    seed_base: int | None,
-) -> tuple[Future[dict[str, Any]] | None, dict[str, Any] | None]:
-    if not realtime_runtime.should_submit_planner_job(
-        planner_mode=planner_mode,
-        has_history=bool(pending_history),
-        future_buffer_depth=future_buffer_depth,
-        has_buffer_tail_session=buffer_tail_session is not None,
-    ):
-        return None, None
-    # Keep expensive runtime-cache snapshots on the path that will launch a planner job.
-    snapshot = _snapshot_exact_runtime_cache(
-        runner=runner,
-        config=config,
-        session=current_chunk_session,
-    )
-    submitted_future = realtime_runtime.maybe_submit_planner_job(
-        executor=executor,
-        planner_mode=planner_mode,
-        pending_history=pending_history,
-        future_buffer_depth=future_buffer_depth,
-        runner=runner,
-        history_base_session=history_base_session,
-        current_chunk_session=current_chunk_session,
-        prompt=prompt,
-        config=config,
-        frontend_device=frontend_device,
-        runtime_device=runtime_device,
-        buffer_tail_session=buffer_tail_session,
-        seed_base=seed_base,
-    )
-    if submitted_future is None:
-        return None, None
-    return submitted_future, snapshot
-
-
 def _construct_realtime_libero_env(task_spec, *, env_horizon: int | None):
     ensure_local_libero_config(REPO_ROOT)
     from libero.libero.envs import OffScreenRenderEnv  # type: ignore
@@ -1267,15 +1067,14 @@ def _run_exact_like_realtime_rollout(
 
         with ThreadPoolExecutor(max_workers=1) as executor:
             replan_future: Future[dict[str, Any]] | None = None
-            replan_future_cache_snapshot: dict[str, Any] | None = None
+            replan_future_cache_snapshot: VisualRuntimeStateSnapshot | None = None
             next_frame_to_execute = 1
             next_real_frame_to_execute = 1
             while next_real_frame_to_execute <= max_frames and executed_action_index < max_actions and not done:
                 if replan_future is not None and replan_future.done():
-                    replan_result = _resolve_exact_planner_future_result(
+                    replan_result = realtime_speculation.resolve_future_result(
                         replan_future,
                         runner=runner,
-                        config=config,
                         snapshot=replan_future_cache_snapshot,
                     )
                     (
@@ -1297,10 +1096,9 @@ def _run_exact_like_realtime_rollout(
                         extension_records=extension_records,
                         min_future_actions_to_accept_stale_chunk=replan_low_watermark_actions,
                     )
-                    _restore_exact_runtime_cache_if_rejected(
+                    realtime_speculation.restore_visual_runtime_if_rejected(
                         replan_result,
                         runner=runner,
-                        config=config,
                         snapshot=replan_future_cache_snapshot,
                     )
                     replan_future = None
@@ -1341,7 +1139,7 @@ def _run_exact_like_realtime_rollout(
                             (
                                 replan_future,
                                 replan_future_cache_snapshot,
-                            ) = _maybe_submit_exact_planner_job_with_cache_snapshot(
+                            ) = realtime_runtime.submit_planner_job_with_snapshot(
                                 executor=executor,
                                 planner_mode=_resolve_exact_realtime_planner_mode(
                                     planner_mode=planner_mode,
@@ -1360,9 +1158,9 @@ def _run_exact_like_realtime_rollout(
                                 buffer_tail_session=buffer_tail_session,
                                 seed_base=seed,
                             )
-                        result_cache_snapshot: dict[str, Any] | None = None
+                        result_cache_snapshot: VisualRuntimeStateSnapshot | None = None
                         if replan_future is None:
-                            result_cache_snapshot = _snapshot_exact_runtime_cache(
+                            result_cache_snapshot = realtime_speculation.snapshot_visual_runtime(
                                 runner=runner,
                                 config=config,
                                 session=current_chunk_session,
@@ -1384,9 +1182,8 @@ def _run_exact_like_realtime_rollout(
                                         job_seed=realtime_runtime.job_seed_for_session(seed, current_chunk_session),
                                     )
                                 except BaseException:
-                                    _restore_exact_runtime_cache_snapshot(
+                                    realtime_speculation.restore_visual_runtime(
                                         runner=runner,
-                                        config=config,
                                         snapshot=result_cache_snapshot,
                                     )
                                     raise
@@ -1400,9 +1197,8 @@ def _run_exact_like_realtime_rollout(
                                         job_seed=realtime_runtime.job_seed_for_session(seed, buffer_tail_session),
                                     )
                                 except BaseException:
-                                    _restore_exact_runtime_cache_snapshot(
+                                    realtime_speculation.restore_visual_runtime(
                                         runner=runner,
-                                        config=config,
                                         snapshot=result_cache_snapshot,
                                     )
                                     raise
@@ -1412,10 +1208,9 @@ def _run_exact_like_realtime_rollout(
                                     f"session for required actions {required_action_indices}."
                                 )
                         else:
-                            result = _resolve_exact_planner_future_result(
+                            result = realtime_speculation.resolve_future_result(
                                 replan_future,
                                 runner=runner,
-                                config=config,
                                 snapshot=replan_future_cache_snapshot,
                             )
                             replan_future = None
@@ -1444,10 +1239,9 @@ def _run_exact_like_realtime_rollout(
                             extension_records=extension_records,
                             min_future_actions_to_accept_stale_chunk=replan_low_watermark_actions,
                         )
-                        _restore_exact_runtime_cache_if_rejected(
+                        realtime_speculation.restore_visual_runtime_if_rejected(
                             result,
                             runner=runner,
-                            config=config,
                             snapshot=result_cache_snapshot,
                         )
                     wait_for_plan_count += 1
@@ -1638,10 +1432,9 @@ def _run_exact_like_realtime_rollout(
                     buffer_tail_session = None
 
                 if replan_future is not None and replan_future.done():
-                    replan_result = _resolve_exact_planner_future_result(
+                    replan_result = realtime_speculation.resolve_future_result(
                         replan_future,
                         runner=runner,
-                        config=config,
                         snapshot=replan_future_cache_snapshot,
                     )
                     (
@@ -1663,10 +1456,9 @@ def _run_exact_like_realtime_rollout(
                         extension_records=extension_records,
                         min_future_actions_to_accept_stale_chunk=replan_low_watermark_actions,
                     )
-                    _restore_exact_runtime_cache_if_rejected(
+                    realtime_speculation.restore_visual_runtime_if_rejected(
                         replan_result,
                         runner=runner,
-                        config=config,
                         snapshot=replan_future_cache_snapshot,
                     )
                     replan_future = None
@@ -1692,7 +1484,7 @@ def _run_exact_like_realtime_rollout(
                     (
                         replan_future,
                         replan_future_cache_snapshot,
-                    ) = _maybe_submit_exact_planner_job_with_cache_snapshot(
+                    ) = realtime_runtime.submit_planner_job_with_snapshot(
                         executor=executor,
                         planner_mode=_resolve_exact_realtime_planner_mode(
                             planner_mode=planner_mode,
@@ -1721,10 +1513,9 @@ def _run_exact_like_realtime_rollout(
                     next_frame_to_execute += 1
 
             if replan_future is not None and replan_future.done():
-                replan_result = _resolve_exact_planner_future_result(
+                replan_result = realtime_speculation.resolve_future_result(
                     replan_future,
                     runner=runner,
-                    config=config,
                     snapshot=replan_future_cache_snapshot,
                 )
                 (
@@ -1746,10 +1537,9 @@ def _run_exact_like_realtime_rollout(
                     extension_records=extension_records,
                     min_future_actions_to_accept_stale_chunk=replan_low_watermark_actions,
                 )
-                _restore_exact_runtime_cache_if_rejected(
+                realtime_speculation.restore_visual_runtime_if_rejected(
                     replan_result,
                     runner=runner,
-                    config=config,
                     snapshot=replan_future_cache_snapshot,
                 )
 
@@ -2348,10 +2138,10 @@ def _run_sequence_policy_realtime_rollout(
         session = startup["session"]
         next_generation_action_start = int(startup["next_generation_action_start"])
         mot_non_joint_sequence = _is_mot_non_joint_two_stream(config)
-        history_base_session = session if mot_non_joint_sequence else _clone_sequence_session(session)
+        history_base_session = session if mot_non_joint_sequence else realtime_speculation.clone_session(session)
         history_base_cache_snapshot = startup.get("runtime_cache_snapshot")
         history_generation_action_start = int(next_generation_action_start)
-        buffer_tail_session = session if mot_non_joint_sequence else _clone_sequence_session(session)
+        buffer_tail_session = session if mot_non_joint_sequence else realtime_speculation.clone_session(session)
         buffer_tail_cache_snapshot = startup.get("runtime_cache_snapshot")
         buffer_tail_generation_action_start = int(next_generation_action_start)
         plan_by_action = _merge_future_step_actions({}, startup["planned_steps"], next_action_to_execute=0)
@@ -2370,7 +2160,7 @@ def _run_sequence_policy_realtime_rollout(
                     session=(
                         buffer_tail_session
                         if mot_non_joint_sequence
-                        else _clone_sequence_session(buffer_tail_session)
+                        else realtime_speculation.clone_session(buffer_tail_session)
                     ),
                     obs_window=realtime_history.copy_observation_window(model_obs_window),
                     prompt=prompt,
@@ -2390,14 +2180,14 @@ def _run_sequence_policy_realtime_rollout(
                 buffer_tail_session = (
                     extension["session"]
                     if mot_non_joint_sequence
-                    else _clone_sequence_session(extension["session"])
+                    else realtime_speculation.clone_session(extension["session"])
                 )
                 buffer_tail_cache_snapshot = extension.get("runtime_cache_snapshot")
                 buffer_tail_generation_action_start = int(extension["next_generation_action_start"])
                 session = (
                     buffer_tail_session
                     if mot_non_joint_sequence
-                    else _clone_sequence_session(buffer_tail_session)
+                    else realtime_speculation.clone_session(buffer_tail_session)
                 )
                 next_generation_action_start = int(buffer_tail_generation_action_start)
                 plan_by_action = _merge_future_step_actions(
@@ -2444,20 +2234,20 @@ def _run_sequence_policy_realtime_rollout(
                                     plan_by_action,
                                     replace_from_action=replace_from_action,
                                 )
-                                history_base_session = _sequence_session_ref(
+                                history_base_session = realtime_speculation.session_reference(
                                     result["session"],
                                     share_session=mot_non_joint_sequence,
                                 )
                                 history_base_cache_snapshot = result.get("runtime_cache_snapshot")
                                 history_generation_action_start = int(result["next_generation_action_start"])
-                                buffer_tail_session = _sequence_session_ref(
+                                buffer_tail_session = realtime_speculation.session_reference(
                                     result["session"],
                                     share_session=mot_non_joint_sequence,
                                 )
                                 buffer_tail_cache_snapshot = result.get("runtime_cache_snapshot")
                                 buffer_tail_generation_action_start = int(result["next_generation_action_start"])
                             else:
-                                buffer_tail_session = _sequence_session_ref(
+                                buffer_tail_session = realtime_speculation.session_reference(
                                     result["session"],
                                     share_session=mot_non_joint_sequence,
                                 )
@@ -2468,7 +2258,7 @@ def _run_sequence_policy_realtime_rollout(
                                 future_steps,
                                 next_action_to_execute=next_action_index,
                             )
-                            session = _sequence_session_ref(
+                            session = realtime_speculation.session_reference(
                                 buffer_tail_session,
                                 share_session=mot_non_joint_sequence,
                             )
@@ -2501,13 +2291,13 @@ def _run_sequence_policy_realtime_rollout(
                                         history_generation_action_start=history_generation_action_start,
                                     )
                                 ):
-                                    history_base_session = _sequence_session_ref(
+                                    history_base_session = realtime_speculation.session_reference(
                                         buffer_tail_session,
                                         share_session=mot_non_joint_sequence,
                                     )
                                     history_base_cache_snapshot = buffer_tail_cache_snapshot
                                     history_generation_action_start = int(buffer_tail_generation_action_start)
-                                blocking_session = _sequence_session_ref(
+                                blocking_session = realtime_speculation.session_reference(
                                     history_base_session,
                                     share_session=mot_non_joint_sequence,
                                 )
@@ -2560,13 +2350,13 @@ def _run_sequence_policy_realtime_rollout(
                                     plan_by_action,
                                     replace_from_action=replace_from_action,
                                 )
-                                history_base_session = _sequence_session_ref(
+                                history_base_session = realtime_speculation.session_reference(
                                     result["session"],
                                     share_session=mot_non_joint_sequence,
                                 )
                                 history_base_cache_snapshot = result.get("runtime_cache_snapshot")
                                 history_generation_action_start = int(result["next_generation_action_start"])
-                                buffer_tail_session = _sequence_session_ref(
+                                buffer_tail_session = realtime_speculation.session_reference(
                                     result["session"],
                                     share_session=mot_non_joint_sequence,
                                 )
@@ -2577,7 +2367,7 @@ def _run_sequence_policy_realtime_rollout(
                                     future_steps,
                                     next_action_to_execute=next_action_index,
                                 )
-                                session = _sequence_session_ref(
+                                session = realtime_speculation.session_reference(
                                     buffer_tail_session,
                                     share_session=mot_non_joint_sequence,
                                 )
@@ -2730,20 +2520,20 @@ def _run_sequence_policy_realtime_rollout(
                                     plan_by_action,
                                     replace_from_action=replace_from_action,
                                 )
-                                history_base_session = _sequence_session_ref(
+                                history_base_session = realtime_speculation.session_reference(
                                     result["session"],
                                     share_session=mot_non_joint_sequence,
                                 )
                                 history_base_cache_snapshot = result.get("runtime_cache_snapshot")
                                 history_generation_action_start = int(result["next_generation_action_start"])
-                                buffer_tail_session = _sequence_session_ref(
+                                buffer_tail_session = realtime_speculation.session_reference(
                                     result["session"],
                                     share_session=mot_non_joint_sequence,
                                 )
                                 buffer_tail_cache_snapshot = result.get("runtime_cache_snapshot")
                                 buffer_tail_generation_action_start = int(result["next_generation_action_start"])
                             else:
-                                buffer_tail_session = _sequence_session_ref(
+                                buffer_tail_session = realtime_speculation.session_reference(
                                     result["session"],
                                     share_session=mot_non_joint_sequence,
                                 )
@@ -2754,7 +2544,7 @@ def _run_sequence_policy_realtime_rollout(
                                 future_steps,
                                 next_action_to_execute=next_action_index,
                             )
-                            session = _sequence_session_ref(
+                            session = realtime_speculation.session_reference(
                                 buffer_tail_session,
                                 share_session=mot_non_joint_sequence,
                             )
@@ -2792,7 +2582,7 @@ def _run_sequence_policy_realtime_rollout(
                                 history_generation_action_start=history_generation_action_start,
                             )
                         ):
-                            history_base_session = _sequence_session_ref(
+                            history_base_session = realtime_speculation.session_reference(
                                 buffer_tail_session,
                                 share_session=mot_non_joint_sequence,
                             )
@@ -2808,7 +2598,7 @@ def _run_sequence_policy_realtime_rollout(
                             or (planner_mode in {"async_mix", "async_history_first"} and history_ready)
                         )
                         if use_observation_update:
-                            submit_session = _sequence_session_ref(
+                            submit_session = realtime_speculation.session_reference(
                                 history_base_session,
                                 share_session=mot_non_joint_sequence,
                             )
@@ -2819,7 +2609,7 @@ def _run_sequence_policy_realtime_rollout(
                                 generation_action_start=submit_generation_action_start,
                             )
                         else:
-                            submit_session = _sequence_session_ref(
+                            submit_session = realtime_speculation.session_reference(
                                 buffer_tail_session,
                                 share_session=mot_non_joint_sequence,
                             )
@@ -3022,17 +2812,16 @@ def _run_sequence_replan_job(
     source: str,
     reset_observation_conditioned_session: bool = True,
     use_observation_update: bool = True,
-    runtime_cache_snapshot: dict[str, Any] | None = None,
+    runtime_cache_snapshot: VisualRuntimeStateSnapshot | None = None,
     mot_condition_frame_start: int | None = None,
     mot_action_cache_rewind_frame_start: int | None = None,
     preserve_rng_state: bool = False,
 ) -> dict[str, Any]:
-    rng_snapshot = _snapshot_rng_state() if preserve_rng_state else None
+    rng_snapshot = realtime_speculation.snapshot_rng_state() if preserve_rng_state else None
     with torch.inference_mode():
         if runtime_cache_snapshot is not None:
-            _restore_exact_runtime_cache_snapshot(
+            realtime_speculation.restore_visual_runtime(
                 runner=runner,
-                config=config,
                 snapshot=runtime_cache_snapshot,
             )
         prepare_t0 = time.perf_counter()
@@ -3103,7 +2892,7 @@ def _run_sequence_replan_job(
         )
         realtime_runtime.synchronize_devices(runtime_device)
         infer_s = time.perf_counter() - infer_t0
-        output_runtime_cache_snapshot = _snapshot_sequence_runtime_cache(
+        output_runtime_cache_snapshot = realtime_speculation.snapshot_sequence_visual_runtime(
             runner=runner,
             config=config,
             session=step_output.session,
@@ -3191,7 +2980,7 @@ def _run_sequence_replan_job(
             ),
         },
     }
-    _restore_rng_state(rng_snapshot)
+    realtime_speculation.restore_rng_state(rng_snapshot)
     return job_result
 
 

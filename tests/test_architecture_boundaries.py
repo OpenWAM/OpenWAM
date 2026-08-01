@@ -2656,6 +2656,7 @@ def test_libero_realtime_scheduler_has_one_package_owner() -> None:
         "run_extension_job",
         "run_replan_job",
         "should_submit_planner_job",
+        "submit_planner_job_with_snapshot",
         "synchronize_devices",
     }
 
@@ -2663,6 +2664,60 @@ def test_libero_realtime_scheduler_has_one_package_owner() -> None:
     assert "from open_wam.evals import libero_realtime_runtime as realtime_runtime" in runner_source
     assert "realtime_runtime._" not in runner_source
     assert public_runtime_contracts <= _top_level_definitions(runtime_path)
+
+
+def test_realtime_speculation_has_one_package_owner() -> None:
+    runner_path = REPO_ROOT / "scripts" / "run_libero_realtime_sandbox.py"
+    speculation_path = PACKAGE_ROOT / "evals" / "realtime_speculation.py"
+    tower_path = PACKAGE_ROOT / "models" / "visual_tower" / "tower.py"
+    runner_source = runner_path.read_text(encoding="utf-8")
+    speculation_source = speculation_path.read_text(encoding="utf-8")
+    tower_source = tower_path.read_text(encoding="utf-8")
+    retired_runner_contracts = {
+        "_clone_sequence_session",
+        "_exact_runtime_cache_name",
+        "_exact_runtime_streaming_vae",
+        "_exact_runtime_transformer",
+        "_maybe_submit_exact_planner_job_with_cache_snapshot",
+        "_resolve_exact_planner_future_result",
+        "_restore_exact_runtime_cache_if_rejected",
+        "_restore_exact_runtime_cache_snapshot",
+        "_restore_rng_state",
+        "_runtime_cache_name_for_session",
+        "_sequence_session_ref",
+        "_snapshot_exact_runtime_cache",
+        "_snapshot_rng_state",
+        "_snapshot_sequence_runtime_cache",
+    }
+    public_speculation_contracts = {
+        "RuntimeRngSnapshot",
+        "clone_session",
+        "resolve_future_result",
+        "restore_rng_state",
+        "restore_visual_runtime",
+        "restore_visual_runtime_if_rejected",
+        "session_reference",
+        "snapshot_rng_state",
+        "snapshot_sequence_visual_runtime",
+        "snapshot_visual_runtime",
+        "visual_runtime_cache_name_for_session",
+    }
+
+    assert speculation_path.exists()
+    assert "from open_wam.evals import realtime_speculation" in runner_source
+    assert "realtime_speculation._" not in runner_source
+    assert retired_runner_contracts.isdisjoint(_top_level_definitions(runner_path))
+    assert public_speculation_contracts <= _top_level_definitions(speculation_path)
+    assert "def snapshot_runtime_state(" in tower_source
+    assert "def restore_runtime_state(" in tower_source
+    for private_visual_state in (
+        "_exact_runtime_caches",
+        "feat_cache",
+        "frontend.reference_assets",
+        "get_runtime_backbone",
+    ):
+        assert private_visual_state not in runner_source
+        assert private_visual_state not in speculation_source
 
 
 def test_realtime_fallback_history_has_one_package_owner() -> None:

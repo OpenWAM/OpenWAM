@@ -742,9 +742,13 @@ def test_exact_planner_no_submit_does_not_snapshot_runtime_cache(monkeypatch: py
     def fail_snapshot(**_: object) -> None:
         raise AssertionError("cache snapshot should not be taken when no planner job can be submitted")
 
-    monkeypatch.setattr(sandbox, "_snapshot_exact_runtime_cache", fail_snapshot)
+    monkeypatch.setattr(
+        sandbox.realtime_speculation,
+        "snapshot_visual_runtime",
+        fail_snapshot,
+    )
 
-    future, snapshot = sandbox._maybe_submit_exact_planner_job_with_cache_snapshot(
+    future, snapshot = sandbox.realtime_runtime.submit_planner_job_with_snapshot(
         executor=None,
         planner_mode="history_only",
         pending_history=[],
@@ -835,46 +839,43 @@ def test_fallback_absolute_tail_start_skips_action_command_gripper() -> None:
 
 def test_exact_runtime_cache_snapshot_restores_rejected_speculation() -> None:
     sandbox = _load_sandbox_module()
-    transformer = SimpleNamespace(
-        _exact_runtime_caches={
-            "open_wam_exact": {"value": sandbox.torch.tensor([1.0])},
-        }
+    snapshot = sandbox.VisualRuntimeStateSnapshot(
+        frontend_state=[sandbox.torch.tensor([2.0])],
     )
-    streaming_vae = SimpleNamespace(feat_cache=[sandbox.torch.tensor([2.0])])
+
+    class FakeVisualTower:
+        def __init__(self) -> None:
+            self.state = [sandbox.torch.tensor([9.0])]
+
+        def snapshot_runtime_state(self, *, cache_name=None):
+            assert cache_name == "open_wam_exact"
+            return snapshot
+
+        def restore_runtime_state(self, restored_snapshot) -> None:
+            assert restored_snapshot is snapshot
+            self.state = [value.clone() for value in restored_snapshot.frontend_state]
+
+    visual_tower = FakeVisualTower()
     runner = SimpleNamespace(
-        pipeline=SimpleNamespace(
-            visual_tower=SimpleNamespace(
-                frontend=SimpleNamespace(
-                    reference_assets=SimpleNamespace(streaming_vae=streaming_vae),
-                ),
-                get_runtime_backbone=lambda *, action_dim: transformer,
-            )
-        )
-    )
-    config = SimpleNamespace(
-        data=SimpleNamespace(action_schema=SimpleNamespace(action_dim=7)),
+        pipeline=SimpleNamespace(visual_tower=visual_tower)
     )
     session = SimpleNamespace(
         policy_state=SimpleNamespace(cache={"cache_name": "open_wam_exact"}),
     )
 
-    snapshot = sandbox._snapshot_exact_runtime_cache(
+    captured = sandbox.realtime_speculation.snapshot_visual_runtime(
         runner=runner,
-        config=config,
+        config=SimpleNamespace(),
         session=session,
     )
-    transformer._exact_runtime_caches["open_wam_exact"]["value"][0] = 9.0
-    streaming_vae.feat_cache[0][0] = 10.0
 
-    sandbox._restore_exact_runtime_cache_if_rejected(
+    sandbox.realtime_speculation.restore_visual_runtime_if_rejected(
         {"trace": {"accepted_chunk": False}},
         runner=runner,
-        config=config,
-        snapshot=snapshot,
+        snapshot=captured,
     )
 
-    assert float(transformer._exact_runtime_caches["open_wam_exact"]["value"][0]) == 1.0
-    assert float(streaming_vae.feat_cache[0][0]) == 2.0
+    assert float(visual_tower.state[0][0]) == 2.0
 
 
 def test_exact_fallback_hold_last_repeats_full_raw_action() -> None:
@@ -1875,7 +1876,12 @@ def test_method4_realtime_replan_uses_absolute_action_start_for_video_condition(
     monkeypatch.setattr(sandbox.realtime_runtime, "synchronize_devices", lambda *args, **kwargs: None)
 
     class Runner:
-        pipeline = SimpleNamespace(action_decoder=SimpleNamespace(rollout_chunk_steps=6))
+        pipeline = SimpleNamespace(
+            action_decoder=SimpleNamespace(rollout_chunk_steps=6),
+            visual_tower=SimpleNamespace(
+                snapshot_runtime_state=lambda *, cache_name=None: None,
+            ),
+        )
 
         def infer_step(self, *, session, context, video_latents, canonical_video=None):
             del video_latents, canonical_video
