@@ -3238,7 +3238,9 @@ def test_libero_integration_roles_have_one_owner() -> None:
         "LiberoTaskSpec",
         "ensure_local_libero_config",
         "infer_task_local_episode_rank",
+        "load_libero_benchmark_init_state_counts",
         "load_libero_task_init_states",
+        "resolve_libero_benchmark_tasks",
         "resolve_libero_task",
         "resolve_libero_task_by_id",
     }
@@ -3291,6 +3293,13 @@ def test_libero_integration_roles_have_one_owner() -> None:
         "open_wam.integrations.libero_tasks",
         "open_wam.integrations.libero_tracking",
     } <= _absolute_imports_for_file(env_path)
+
+    sampled_runner = REPO_ROOT / "scripts" / "run_libero_sampled_eval.py"
+    sampled_source = sampled_runner.read_text(encoding="utf-8")
+    assert "load_libero_benchmark_init_state_counts" in sampled_source
+    assert "LiberoTaskSpec(" not in sampled_source
+    assert "from libero.libero import benchmark" not in sampled_source
+    assert "import yaml" not in sampled_source
 
 
 def test_public_config_enums_are_declared_once() -> None:

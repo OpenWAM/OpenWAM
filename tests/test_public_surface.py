@@ -65,8 +65,10 @@ def test_package_exposes_version_without_importing_integrations() -> None:
 def test_libero_task_contract_does_not_load_control_or_torch_stacks() -> None:
     code = (
         "import sys; "
-        "from open_wam.integrations import LiberoTaskSpec; "
+        "from open_wam.integrations import LiberoTaskSpec, load_libero_benchmark_init_state_counts, resolve_libero_benchmark_tasks; "
         "assert LiberoTaskSpec.__module__ == 'open_wam.integrations.libero_tasks'; "
+        "assert load_libero_benchmark_init_state_counts.__module__ == 'open_wam.integrations.libero_tasks'; "
+        "assert resolve_libero_benchmark_tasks.__module__ == 'open_wam.integrations.libero_tasks'; "
         "assert 'open_wam.integrations.libero_tasks' in sys.modules; "
         "assert 'open_wam.integrations.libero_env' not in sys.modules; "
         "assert 'torch' not in sys.modules; "

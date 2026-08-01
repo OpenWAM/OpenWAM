@@ -7,7 +7,7 @@ import importlib
 import os
 from pathlib import Path
 import sys
-from typing import Any
+from typing import Any, Sequence
 
 import yaml
 
@@ -16,8 +16,10 @@ __all__ = [
     "LiberoTaskSpec",
     "ensure_local_libero_config",
     "infer_task_local_episode_rank",
+    "load_libero_benchmark_init_state_counts",
     "load_libero_task_init_states",
     "normalize_libero_task_text",
+    "resolve_libero_benchmark_tasks",
     "resolve_libero_task",
     "resolve_libero_task_by_id",
 ]
@@ -85,6 +87,7 @@ def resolve_libero_task(
     from libero.libero import benchmark  # type: ignore
 
     normalized_task_text = normalize_libero_task_text(task_text)
+    init_states_root: Path | None = None
     matches: list[LiberoTaskSpec] = []
     benchmark_classes = benchmark.get_benchmark_dict()
     if benchmark_name is not None:
@@ -116,20 +119,16 @@ def resolve_libero_task(
                 != normalized_task_text
             ):
                 continue
+            if init_states_root is None:
+                init_states_root = Path(
+                    _read_local_libero_config()["init_states"]
+                )
             matches.append(
-                LiberoTaskSpec(
+                _build_libero_task_spec(
                     benchmark_name=current_benchmark_name,
+                    benchmark_instance=benchmark_instance,
                     task_id=task_id,
-                    task_name=task.name,
-                    task_language=task.language,
-                    problem_folder=task.problem_folder,
-                    bddl_file_path=(
-                        benchmark_instance.get_task_bddl_file_path(task_id)
-                    ),
-                    init_states_path=os.path.join(
-                        os.environ["LIBERO_CONFIG_PATH"],
-                        "..",
-                    ),  # overwritten below for clarity
+                    init_states_root=init_states_root,
                 )
             )
 
@@ -142,21 +141,7 @@ def resolve_libero_task(
             f"Matches: {[match.task_name for match in matches]}"
         )
 
-    match = matches[0]
-    config = _read_local_libero_config()
-    return LiberoTaskSpec(
-        benchmark_name=match.benchmark_name,
-        task_id=match.task_id,
-        task_name=match.task_name,
-        task_language=match.task_language,
-        problem_folder=match.problem_folder,
-        bddl_file_path=match.bddl_file_path,
-        init_states_path=str(
-            Path(config["init_states"])
-            / match.problem_folder
-            / f"{match.task_name}.pruned_init"
-        ),
-    )
+    return matches[0]
 
 
 def resolve_libero_task_by_id(
@@ -166,36 +151,131 @@ def resolve_libero_task_by_id(
 ) -> LiberoTaskSpec:
     """Resolve one LIBERO benchmark/task-id pair into a task spec."""
 
+    benchmark_instance, task_count, init_states_root = _resolve_libero_benchmark(
+        benchmark_name,
+        project_root,
+    )
+    task_id = int(task_id)
+    if task_id < 0 or task_id >= task_count:
+        raise ValueError(
+            f"task_id={task_id} is outside benchmark {benchmark_name!r} "
+            f"with {task_count} tasks."
+        )
+    return _build_libero_task_spec(
+        benchmark_name=benchmark_name,
+        benchmark_instance=benchmark_instance,
+        task_id=task_id,
+        init_states_root=init_states_root,
+    )
+
+
+def resolve_libero_benchmark_tasks(
+    benchmark_name: str,
+    project_root: Path | None = None,
+) -> tuple[LiberoTaskSpec, ...]:
+    """Resolve the ordered task inventory for one upstream LIBERO suite."""
+
+    benchmark_instance, task_count, init_states_root = _resolve_libero_benchmark(
+        benchmark_name,
+        project_root,
+    )
+    return tuple(
+        _build_libero_task_spec(
+            benchmark_name=benchmark_name,
+            benchmark_instance=benchmark_instance,
+            task_id=task_id,
+            init_states_root=init_states_root,
+        )
+        for task_id in range(task_count)
+    )
+
+
+def load_libero_benchmark_init_state_counts(
+    benchmark_name: str,
+    *,
+    task_ids: Sequence[int] | None = None,
+    project_root: Path | None = None,
+) -> dict[int, int]:
+    """Count init states for all or selected tasks in one LIBERO suite."""
+
+    benchmark_instance, task_count, init_states_root = _resolve_libero_benchmark(
+        benchmark_name,
+        project_root,
+    )
+    selected_task_ids = (
+        list(range(task_count)) if task_ids is None else list(task_ids)
+    )
+    invalid_task_ids = [
+        task_id
+        for task_id in selected_task_ids
+        if task_id < 0 or task_id >= task_count
+    ]
+    if invalid_task_ids:
+        raise ValueError(
+            f"Requested task ids exceed benchmark {benchmark_name!r} task count "
+            f"{task_count}: {invalid_task_ids}"
+        )
+    init_counts: dict[int, int] = {}
+    for task_id in selected_task_ids:
+        task_spec = _build_libero_task_spec(
+            benchmark_name=benchmark_name,
+            benchmark_instance=benchmark_instance,
+            task_id=int(task_id),
+            init_states_root=init_states_root,
+        )
+        init_states = load_libero_task_init_states(task_spec, project_root)
+        init_counts[int(task_id)] = int(len(init_states))
+    return init_counts
+
+
+def _resolve_libero_benchmark(
+    benchmark_name: str,
+    project_root: Path | None,
+) -> tuple[Any, int, Path]:
     ensure_local_libero_config(project_root)
     from libero.libero import benchmark  # type: ignore
 
     benchmark_classes = benchmark.get_benchmark_dict()
-    if benchmark_name not in benchmark_classes:
+    try:
+        benchmark_class = benchmark_classes[benchmark_name]
+    except KeyError as exc:
         available = ", ".join(sorted(benchmark_classes))
         raise ValueError(
             f"Unknown LIBERO benchmark {benchmark_name!r}; "
             f"available benchmarks: {available}"
+        ) from exc
+    benchmark_instance = benchmark_class()
+    get_num_tasks = getattr(benchmark_instance, "get_num_tasks", None)
+    if callable(get_num_tasks):
+        task_count = int(get_num_tasks())
+    else:
+        raw_task_count = getattr(benchmark_instance, "n_tasks", None)
+        task_count = (
+            int(raw_task_count)
+            if raw_task_count is not None
+            else len(benchmark_instance.tasks)
         )
-    benchmark_instance = benchmark_classes[benchmark_name]()
-    task_id = int(task_id)
-    if task_id < 0 or task_id >= benchmark_instance.get_num_tasks():
-        raise ValueError(
-            f"task_id={task_id} is outside benchmark {benchmark_name!r} "
-            f"with {benchmark_instance.get_num_tasks()} tasks."
-        )
+    init_states_root = Path(_read_local_libero_config()["init_states"])
+    return benchmark_instance, task_count, init_states_root
+
+
+def _build_libero_task_spec(
+    *,
+    benchmark_name: str,
+    benchmark_instance: Any,
+    task_id: int,
+    init_states_root: Path,
+) -> LiberoTaskSpec:
     task = benchmark_instance.get_task(task_id)
-    config = _read_local_libero_config()
     return LiberoTaskSpec(
         benchmark_name=benchmark_name,
-        task_id=task_id,
-        task_name=task.name,
-        task_language=task.language,
-        problem_folder=task.problem_folder,
-        bddl_file_path=benchmark_instance.get_task_bddl_file_path(task_id),
+        task_id=int(task_id),
+        task_name=str(task.name),
+        task_language=str(task.language),
+        problem_folder=str(task.problem_folder),
+        bddl_file_path=str(benchmark_instance.get_task_bddl_file_path(task_id)),
         init_states_path=str(
-            Path(config["init_states"])
-            / task.problem_folder
-            / f"{task.name}.pruned_init"
+            init_states_root / task.problem_folder / f"{task.name}.pruned_init"
         ),
     )
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import json
@@ -13,7 +14,7 @@ import re
 import subprocess
 import sys
 import time
-from typing import Any
+from typing import Any, Iterator
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -940,6 +941,34 @@ def use_replay_resolved_init_ids(args: argparse.Namespace) -> bool:
     )
 
 
+@contextmanager
+def _libero_path_overrides(
+    *,
+    libero_repo_root: Path | None,
+    local_paths: Path | None,
+) -> Iterator[None]:
+    """Temporarily apply command-level LIBERO discovery overrides."""
+
+    overrides: dict[str, str] = {}
+    if libero_repo_root is not None:
+        overrides["LIBERO_REPO_ROOT"] = str(libero_repo_root)
+    if local_paths is not None:
+        resolved_local_paths = (
+            local_paths if local_paths.is_absolute() else REPO_ROOT / local_paths
+        )
+        overrides["OPEN_WAM_LOCAL_PATHS"] = str(resolved_local_paths)
+    previous = {name: os.environ.get(name) for name in overrides}
+    try:
+        os.environ.update(overrides)
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
 def resolve_task_ids(
     task_text_to_index: dict[str, int],
     *,
@@ -961,17 +990,10 @@ def resolve_task_ids(
             [warning],
         )
 
-    old_libero_repo_root = os.environ.get("LIBERO_REPO_ROOT")
-    old_local_paths = os.environ.get("OPEN_WAM_LOCAL_PATHS")
-    override_libero_repo_root = libero_repo_root is not None
-    override_local_paths = local_paths is not None
-    if override_libero_repo_root:
-        os.environ["LIBERO_REPO_ROOT"] = str(libero_repo_root)
-    if override_local_paths:
-        resolved_local_paths = local_paths if local_paths.is_absolute() else REPO_ROOT / local_paths
-        os.environ["OPEN_WAM_LOCAL_PATHS"] = str(resolved_local_paths)
-
-    try:
+    with _libero_path_overrides(
+        libero_repo_root=libero_repo_root,
+        local_paths=local_paths,
+    ):
         try:
             from open_wam.integrations.libero_tasks import resolve_libero_task
         except Exception as exc:
@@ -1001,17 +1023,6 @@ def resolve_task_ids(
             task_ids[task_text] = int(task_spec.task_id)
             task_names[task_text] = str(task_spec.task_name)
         return task_ids, task_names, warnings
-    finally:
-        if override_libero_repo_root:
-            if old_libero_repo_root is None:
-                os.environ.pop("LIBERO_REPO_ROOT", None)
-            else:
-                os.environ["LIBERO_REPO_ROOT"] = old_libero_repo_root
-        if override_local_paths:
-            if old_local_paths is None:
-                os.environ.pop("OPEN_WAM_LOCAL_PATHS", None)
-            else:
-                os.environ["OPEN_WAM_LOCAL_PATHS"] = old_local_paths
 
 
 def resolve_libero_init_counts(
@@ -1021,80 +1032,21 @@ def resolve_libero_init_counts(
     libero_repo_root: Path | None = None,
     local_paths: Path | None = None,
 ) -> dict[int, int]:
-    old_libero_repo_root = os.environ.get("LIBERO_REPO_ROOT")
-    old_local_paths = os.environ.get("OPEN_WAM_LOCAL_PATHS")
-    override_libero_repo_root = libero_repo_root is not None
-    override_local_paths = local_paths is not None
-    if override_libero_repo_root:
-        os.environ["LIBERO_REPO_ROOT"] = str(libero_repo_root)
-    if override_local_paths:
-        resolved_local_paths = local_paths if local_paths.is_absolute() else REPO_ROOT / local_paths
-        os.environ["OPEN_WAM_LOCAL_PATHS"] = str(resolved_local_paths)
-
-    try:
+    with _libero_path_overrides(
+        libero_repo_root=libero_repo_root,
+        local_paths=local_paths,
+    ):
         try:
             from open_wam.integrations.libero_tasks import (
-                LiberoTaskSpec,
-                ensure_local_libero_config,
-                load_libero_task_init_states,
+                load_libero_benchmark_init_state_counts,
             )
         except Exception as exc:
             raise RuntimeError("Could not import the LIBERO config bootstrap helper.") from exc
-
-        config_path = ensure_local_libero_config(REPO_ROOT)
-        import yaml
-
-        with config_path.open("r", encoding="utf-8") as handle:
-            libero_config = yaml.safe_load(handle)
-        from libero.libero import benchmark as libero_benchmark  # type: ignore
-
-        benchmark_classes = libero_benchmark.get_benchmark_dict()
-        try:
-            benchmark_instance = benchmark_classes[benchmark]()
-        except KeyError as exc:
-            available = ", ".join(sorted(benchmark_classes))
-            raise ValueError(f"Unknown LIBERO benchmark {benchmark!r}; available benchmarks: {available}") from exc
-
-        get_num_tasks = getattr(benchmark_instance, "get_num_tasks", None)
-        if callable(get_num_tasks):
-            task_count = int(get_num_tasks())
-        else:
-            n_tasks = getattr(benchmark_instance, "n_tasks", None)
-            task_count = int(n_tasks) if n_tasks is not None else len(benchmark_instance.tasks)
-        selected_task_ids = task_ids if task_ids is not None else list(range(task_count))
-        invalid_task_ids = [task_id for task_id in selected_task_ids if task_id < 0 or task_id >= task_count]
-        if invalid_task_ids:
-            raise ValueError(
-                f"Requested task ids exceed benchmark {benchmark!r} task count {task_count}: {invalid_task_ids}"
-            )
-
-        init_counts: dict[int, int] = {}
-        for task_id in selected_task_ids:
-            task = benchmark_instance.get_task(int(task_id))
-            task_spec = LiberoTaskSpec(
-                benchmark_name=benchmark,
-                task_id=int(task_id),
-                task_name=task.name,
-                task_language=task.language,
-                problem_folder=task.problem_folder,
-                bddl_file_path=benchmark_instance.get_task_bddl_file_path(int(task_id)),
-                init_states_path=str(
-                    Path(libero_config["init_states"]) / task.problem_folder / f"{task.name}.pruned_init"
-                ),
-            )
-            init_counts[int(task_id)] = int(len(load_libero_task_init_states(task_spec, REPO_ROOT)))
-        return init_counts
-    finally:
-        if override_libero_repo_root:
-            if old_libero_repo_root is None:
-                os.environ.pop("LIBERO_REPO_ROOT", None)
-            else:
-                os.environ["LIBERO_REPO_ROOT"] = old_libero_repo_root
-        if override_local_paths:
-            if old_local_paths is None:
-                os.environ.pop("OPEN_WAM_LOCAL_PATHS", None)
-            else:
-                os.environ["OPEN_WAM_LOCAL_PATHS"] = old_local_paths
+        return load_libero_benchmark_init_state_counts(
+            benchmark,
+            task_ids=task_ids,
+            project_root=REPO_ROOT,
+        )
 
 
 def append_optional_arg(

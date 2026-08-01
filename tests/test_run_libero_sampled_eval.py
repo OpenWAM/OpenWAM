@@ -341,6 +341,78 @@ def test_resolve_task_ids_local_paths_overrides_stale_environment(monkeypatch, t
     assert os.environ["OPEN_WAM_LOCAL_PATHS"] == "/stale/local_paths.yaml"
 
 
+def test_resolve_libero_init_counts_delegates_with_temporary_path_overrides(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[dict[str, object]] = []
+    fake_module = types.ModuleType("open_wam.integrations.libero_tasks")
+
+    def fake_load_counts(benchmark, *, task_ids=None, project_root=None):
+        calls.append(
+            {
+                "benchmark": benchmark,
+                "task_ids": task_ids,
+                "project_root": project_root,
+                "libero_repo_root": os.environ.get("LIBERO_REPO_ROOT"),
+                "local_paths": os.environ.get("OPEN_WAM_LOCAL_PATHS"),
+            }
+        )
+        return {2: 50}
+
+    fake_module.load_libero_benchmark_init_state_counts = fake_load_counts
+    monkeypatch.setitem(sys.modules, "open_wam.integrations.libero_tasks", fake_module)
+    monkeypatch.setenv("LIBERO_REPO_ROOT", "/stale/libero")
+    monkeypatch.setenv("OPEN_WAM_LOCAL_PATHS", "/stale/local_paths.yaml")
+
+    result = sampled_eval.resolve_libero_init_counts(
+        benchmark="libero_10",
+        task_ids=[2],
+        libero_repo_root=tmp_path / "LIBERO",
+        local_paths=Path("configs/local_paths.yaml"),
+    )
+
+    assert result == {2: 50}
+    assert calls == [
+        {
+            "benchmark": "libero_10",
+            "task_ids": [2],
+            "project_root": sampled_eval.REPO_ROOT,
+            "libero_repo_root": str(tmp_path / "LIBERO"),
+            "local_paths": str(sampled_eval.REPO_ROOT / "configs/local_paths.yaml"),
+        }
+    ]
+    assert os.environ["LIBERO_REPO_ROOT"] == "/stale/libero"
+    assert os.environ["OPEN_WAM_LOCAL_PATHS"] == "/stale/local_paths.yaml"
+
+
+def test_resolve_libero_init_counts_restores_overrides_after_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    fake_module = types.ModuleType("open_wam.integrations.libero_tasks")
+
+    def fake_load_counts(*args, **kwargs):
+        del args, kwargs
+        raise ValueError("invalid init axis")
+
+    fake_module.load_libero_benchmark_init_state_counts = fake_load_counts
+    monkeypatch.setitem(sys.modules, "open_wam.integrations.libero_tasks", fake_module)
+    monkeypatch.delenv("LIBERO_REPO_ROOT", raising=False)
+    monkeypatch.delenv("OPEN_WAM_LOCAL_PATHS", raising=False)
+
+    with pytest.raises(ValueError, match="invalid init axis"):
+        sampled_eval.resolve_libero_init_counts(
+            benchmark="libero_10",
+            task_ids=[20],
+            libero_repo_root=tmp_path / "LIBERO",
+            local_paths=tmp_path / "local_paths.yaml",
+        )
+
+    assert "LIBERO_REPO_ROOT" not in os.environ
+    assert "OPEN_WAM_LOCAL_PATHS" not in os.environ
+
+
 def test_sample_episodes_by_task_distribution_is_deterministic() -> None:
     episodes = [
         sampled_eval.DatasetEpisode(

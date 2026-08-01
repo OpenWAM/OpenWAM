@@ -74,6 +74,13 @@ Torch. `open_wam.runtime.checkpoints` composes that contract with tensor
 deserialization, state-dict normalization, and runtime-config restoration; it
 does not implement a second checkpoint directory search.
 
+`open_wam.integrations.libero_tasks` owns non-interactive LIBERO installation
+bootstrap, typed task specs, ordered benchmark inventories, task-text and
+task-id resolution, and init-state loading/counting. Callers choose benchmark
+and task IDs but do not instantiate upstream benchmark classes or reconstruct
+init-state paths themselves. The integration remains lazy: importing the core
+package does not import LIBERO or Torch.
+
 The maintained LIBERO realtime runner follows the same boundary. Package code
 in `libero_realtime_runtime` executes both frame-grouped and action-sequence
 planner jobs and owns encoded-history preparation, session continuity,
@@ -111,12 +118,13 @@ ranking, replay-status attachment/filtering, proportional allocation, explicit
 selector parsing, and distribution/task-axis/full-grid selection. It accepts
 resolved metadata and does not import CLI or simulator integrations. The
 checkout-only `run_libero_sampled_eval.py` command owns LeRobot filesystem
-loading, LIBERO task/init resolution, target and case planning, process claims,
-worker scheduling, and child environments; it delegates checkpoint artifact
-discovery to the installed runtime contract. Process status is created by that
-runner because it records live subprocess state; completed status and rollout
-summaries cross into the package as data records, not as script imports or
-benchmark objects.
+loading, metadata-versus-upstream task-ID safety policy, temporary machine-path
+overrides, target and case planning, process claims, worker scheduling, and
+child environments. It delegates checkpoint discovery to the runtime artifact
+contract and benchmark inventory/init counting to the LIBERO integration.
+Process status is created by that runner because it records live subprocess
+state; completed status and rollout summaries cross into the package as data
+records, not as script imports or benchmark objects.
 
 ## Configuration Contract
 
