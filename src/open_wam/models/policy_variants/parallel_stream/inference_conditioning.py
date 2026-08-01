@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 
 from open_wam.configs.enums import JointDenoiseTrainingMode
-from open_wam.configs.policy_variant import ParallelStreamPolicyConfig
+from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 
 
 def append_generalist_mode_text_context(

@@ -12,9 +12,9 @@ from open_wam.configs import (
     CurrentBlockCoupling,
     InferenceConfig,
     MoTGeneralistTrainingMode,
-    MoTPolicyConfig,
     TrainingConfig,
 )
+from open_wam.configs.policy_mot import MoTPolicyConfig
 from open_wam.models.common.flow_matching import (
     FlowMatchScheduler,
     build_action_flow_match_inference_scheduler,

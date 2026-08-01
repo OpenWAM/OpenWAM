@@ -7,7 +7,7 @@ from einops import rearrange
 
 from open_wam.configs import ActionNormMethod, ActionSpace
 from open_wam.configs.enums import coerce_enum_value
-from open_wam.configs.policy_variant import ParallelStreamPolicyConfig
+from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 
 from .reference_profile import LingbotReferenceProfile, load_reference_profile
 

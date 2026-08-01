@@ -5,8 +5,10 @@ from typing import Callable
 
 from torch import nn
 
-from open_wam.configs import MoTPolicyConfig, ParallelStreamPolicyConfig, TrainingConfig
+from open_wam.configs import TrainingConfig
 from open_wam.configs.enums import ProprioContextMode, TrainingComponentSelector, TrainingObjective
+from open_wam.configs.policy_mot import MoTPolicyConfig
+from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.configs.training import normalize_enabled_objectives
 
 COMPONENT_ALIASES = {

@@ -18,7 +18,7 @@ from open_wam.configs.enums import (
     ParallelContextConditionLatentSource,
     ParallelStreamVariantProfile,
 )
-from open_wam.configs.policy_variant import ParallelStreamPolicyConfig
+from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.configs.training import TrainingConfig
 from open_wam.models.common.flow_matching import FlowMatchScheduler
 from open_wam.models.common.flow_noise_plan import (

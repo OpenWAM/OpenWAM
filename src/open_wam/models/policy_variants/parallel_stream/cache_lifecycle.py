@@ -14,7 +14,7 @@ from open_wam.configs.enums import (
     ParallelHistoryStreamVisibility,
 )
 from open_wam.configs.inference import InferenceConfig
-from open_wam.configs.policy_variant import ParallelStreamPolicyConfig
+from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.models.common.rollout_startup import resolve_strict_startup_plan
 from open_wam.models.visual_tower.exact_runtime import (
     clear_exact_prediction_cache as _clear_exact_prediction_cache,

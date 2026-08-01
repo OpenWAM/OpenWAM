@@ -16,12 +16,12 @@ from .enums import (
     VideoConditionTrainMode,
     coerce_fields,
 )
-from .policy_variant import (
-    ParallelStreamPolicyConfig,
+from .policy_contracts import (
     PolicyVariantConfig,
     PostDecodedPolicyConfig,
     PostLatentPolicyConfig,
 )
+from .policy_parallel_stream import ParallelStreamPolicyConfig
 
 
 @dataclass(frozen=True)

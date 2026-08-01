@@ -7,11 +7,11 @@ from typing import Any, Mapping, Protocol
 from open_wam.configs import (
     CurrentBlockCoupling,
     JointTimestepCoupling,
-    MoTPolicyConfig,
     MoTRuntimeMode,
     PolicyVariantName,
 )
 from open_wam.configs.enums import RolloutContextPolicy, SampleTargetAlignment
+from open_wam.configs.policy_mot import MoTPolicyConfig
 
 
 class MoTRuntimeRouteKind(str, Enum):

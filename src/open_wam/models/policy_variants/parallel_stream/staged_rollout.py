@@ -15,7 +15,7 @@ from open_wam.configs.enums import (
     ParallelExactCacheWriteMode,
 )
 from open_wam.configs.inference import InferenceConfig
-from open_wam.configs.policy_variant import ParallelStreamPolicyConfig
+from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.configs.training import TrainingConfig
 from open_wam.models.common import (
     SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS,

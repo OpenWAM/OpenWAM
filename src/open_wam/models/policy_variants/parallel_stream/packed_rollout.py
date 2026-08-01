@@ -19,7 +19,7 @@ from open_wam.configs.enums import (
     ProprioContextMode,
 )
 from open_wam.configs.inference import InferenceConfig
-from open_wam.configs.policy_variant import ParallelStreamPolicyConfig
+from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.configs.training import TrainingConfig
 from open_wam.models.common.flow_matching import FlowMatchScheduler
 from open_wam.models.common.video_geometry import unpatchify_video_sequence

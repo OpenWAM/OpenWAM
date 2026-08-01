@@ -5,11 +5,11 @@ import torch
 from open_wam.configs import (
     InferenceConfig,
     MoTGeneralistTrainingMode,
-    MoTPolicyConfig,
     MoTRuntimeMode,
     TrainingConfig,
 )
 from open_wam.configs.backbone import SharedVideoTransformerConfig
+from open_wam.configs.policy_mot import MoTPolicyConfig
 from open_wam.models.common.joint_conditioning import (
     resolve_generalist_joint_conditioning_semantics,
 )

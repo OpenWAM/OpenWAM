@@ -5,21 +5,23 @@ from open_wam.configs import (
     ActionNormalizationMode,
     BackboneImplementation,
     BatchAdapterName,
-    CausalVideoPredictionPolicyConfig,
     ExperimentConfig,
     ExtensionActionDecoderConfig,
-    ExtensionPolicyConfig,
-    MoTPolicyConfig,
     MoTRuntimeMode,
     ParallelRuntimeMode,
-    ParallelStreamPolicyConfig,
-    PostDecodedPolicyConfig,
-    PostLatentPolicyConfig,
     ProprioContextMode,
     VideoConditionInputSpace,
     VideoConditionSource,
     VideoConditionTrainMode,
 )
+from open_wam.configs.policy_contracts import (
+    CausalVideoPredictionPolicyConfig,
+    ExtensionPolicyConfig,
+    PostDecodedPolicyConfig,
+    PostLatentPolicyConfig,
+)
+from open_wam.configs.policy_mot import MoTPolicyConfig
+from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.data import build_canonical_video_preprocessor
 from open_wam.data.action_mapping import (
     build_action_sampler_mask,

@@ -5,11 +5,11 @@ from torch import nn
 
 from open_wam.configs import (
     InferenceConfig,
-    PostDecodedPolicyConfig,
     TrainingConfig,
     VideoConditionSource,
     VisualReadoutSourceFamily,
 )
+from open_wam.configs.policy_contracts import PostDecodedPolicyConfig
 from open_wam.models.visual_tower import VisualReadoutRequest, VisualStageOutputs, VisualTower
 
 from .base import PolicyVariant

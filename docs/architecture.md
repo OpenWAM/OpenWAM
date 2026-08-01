@@ -148,11 +148,16 @@ live in `open_wam.configs.data_contracts`; direct benchmark presets live in
 `data_benchmarks`; heterogeneous consortium and manifest-backed video choices
 live in `data_consortium` and `data_mixed_video`. The established
 `open_wam.configs.data` path is an import-only facade over those acyclic
-owners. Each typed component module owns its mapping-to-dataclass parser; the
-larger data section is isolated in `open_wam.configs.data_parsing`. The root
-loader only reads YAML, composes those parsers, and runs explicit cross-section
-checks. Historical `open_wam.utils` loader/path imports are compatibility
-aliases only. Configuration parsing does not own policy runtime behavior.
+owners. Shared and attachment-specific policy envelopes live in
+`policy_contracts`; M5/MoT and M1/parallel-stream choices live in `policy_mot`
+and `policy_parallel_stream`; and `policy_parsing` alone composes raw mappings
+with data, backbone, training, and inference defaults. The established
+`open_wam.configs.policy_variant` path is an import-only compatibility facade.
+Each typed component module owns its mapping-to-dataclass parser; the larger
+data and policy sections use explicit parser owners. The root loader only reads
+YAML, composes those parsers, and runs cross-section checks. Historical
+`open_wam.utils` loader/path imports are compatibility aliases only.
+Configuration parsing does not own policy runtime behavior.
 
 ## Visual Tower Contract
 

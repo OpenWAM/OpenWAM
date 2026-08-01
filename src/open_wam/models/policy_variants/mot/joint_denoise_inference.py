@@ -10,9 +10,9 @@ from open_wam.configs import (
     InferenceConfig,
     JointTimestepCoupling,
     MoTGeneralistTrainingMode,
-    MoTPolicyConfig,
     TrainingConfig,
 )
+from open_wam.configs.policy_mot import MoTPolicyConfig
 from open_wam.models.common.flow_matching import (
     build_action_flow_match_inference_scheduler,
     build_video_flow_match_inference_scheduler,

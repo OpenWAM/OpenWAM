@@ -15,11 +15,8 @@ from .data_mixed_video import MixedVideoDataConfig
 from .data_parsing import parse_data_config
 from .experiment import ExperimentConfig
 from .inference import parse_inference_config
-from .policy_variant import (
-    CausalVideoPredictionPolicyConfig,
-    PolicyVariantConfig,
-    parse_policy_variant_config,
-)
+from .policy_contracts import CausalVideoPredictionPolicyConfig, PolicyVariantConfig
+from .policy_parsing import parse_policy_variant_config
 from .sequence_contracts import (
     apply_parallel_sequence_contract,
     expand_parallel_sequence_contract as _apply_parallel_sequence_contract,

@@ -6,7 +6,7 @@ from open_wam.configs.enums import (
     JointDenoiseTrainingMode,
     ParallelHistoryStreamVisibility,
 )
-from open_wam.configs.policy_variant import ParallelStreamPolicyConfig
+from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.models.common.joint_conditioning import (
     generalist_joint_conditioning_chunk_size,
     generalist_joint_conditioning_window_size,

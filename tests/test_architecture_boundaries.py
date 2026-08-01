@@ -1668,6 +1668,157 @@ def test_data_configuration_contracts_have_role_specific_owners() -> None:
         assert "open_wam.configs.data" not in imports
 
 
+def test_policy_configuration_contracts_have_role_specific_owners() -> None:
+    import pickle
+    from typing import get_type_hints
+
+    import open_wam.configs as public_configs
+    from open_wam.configs import policy_variant as policy_facade
+    from open_wam.configs import (
+        policy_contracts,
+        policy_mot,
+        policy_parallel_stream,
+        policy_parsing,
+    )
+
+    owner_names = {
+        "policy_contracts.py": {
+            "CausalVideoPredictionPolicyConfig",
+            "ExtensionPolicyConfig",
+            "PolicyVariantConfig",
+            "PostDecodedPolicyConfig",
+            "PostLatentPolicyConfig",
+        },
+        "policy_mot.py": {"MoTPolicyConfig"},
+        "policy_parallel_stream.py": {"ParallelStreamPolicyConfig"},
+        "policy_parsing.py": {"parse_policy_variant_config"},
+    }
+    owner_modules = {
+        "policy_contracts.py": policy_contracts,
+        "policy_mot.py": policy_mot,
+        "policy_parallel_stream.py": policy_parallel_stream,
+        "policy_parsing.py": policy_parsing,
+    }
+    compatibility_names = {
+        "ActionChunkAnchorMode",
+        "ActionNormMethod",
+        "AttachSite",
+        "CurrentBlockCoupling",
+        "DataConfig",
+        "DecodeFeatureMode",
+        "GeneralistTrainingParadigm",
+        "InferenceConfig",
+        "JointDenoiseTrainingMode",
+        "JointTimestepCoupling",
+        "MoTActionExpertInitMode",
+        "MoTConditionMode",
+        "MoTGeneralistTrainingMode",
+        "MoTPreset",
+        "MoTRuntimeMode",
+        "ParallelActionAttentionScope",
+        "ParallelActionConditionSource",
+        "ParallelCacheMode",
+        "ParallelContextConditionLatentSource",
+        "ParallelHistoryStreamVisibility",
+        "ParallelMaskMode",
+        "ParallelRuntimeMode",
+        "ParallelSequenceComponent",
+        "ParallelSequenceContract",
+        "ParallelStreamVariantProfile",
+        "PolicyVariantName",
+        "PoolingMode",
+        "ProprioContextMode",
+        "SharedVideoTransformerConfig",
+        "TemporalPositionMode",
+        "TemporalProjection",
+        "TrainingConfig",
+        "VideoConditionInputSpace",
+        "VideoConditionSource",
+        "VisualReadoutConfig",
+        "coerce_fields",
+        "coerce_probability_map",
+        "default_video_action_conditioning_mode_probs",
+        "parse_visual_readout_config",
+        "_coerce_joint_denoise_training_mode_probs",
+        "_coerce_mot_generalist_training_mode_probs",
+        "_default_joint_denoise_training_mode_probs",
+    }
+    facade_path = PACKAGE_ROOT / "configs" / "policy_variant.py"
+    all_public_names = set().union(*owner_names.values())
+
+    assert not _top_level_definitions(facade_path)
+    assert _module_all_names(facade_path) == all_public_names
+    assert _compatibility_export_names(facade_path) == compatibility_names
+    for filename, public_names in owner_names.items():
+        owner_path = PACKAGE_ROOT / "configs" / filename
+        assert _module_all_names(owner_path) == public_names
+        assert public_names <= _top_level_definitions(owner_path)
+        for name in public_names:
+            owner_value = getattr(owner_modules[filename], name)
+            assert getattr(policy_facade, name) is owner_value
+            assert getattr(public_configs, name) is owner_value
+            assert get_type_hints(owner_value)
+
+    enum_compatibility_names = compatibility_names & set(vars(public_configs.enums))
+    for name in enum_compatibility_names:
+        assert getattr(policy_facade, name) is getattr(public_configs.enums, name)
+    assert policy_facade.DataConfig is public_configs.DataConfig
+    assert policy_facade.SharedVideoTransformerConfig is public_configs.SharedVideoTransformerConfig
+    assert policy_facade.InferenceConfig is public_configs.InferenceConfig
+    assert policy_facade.TrainingConfig is public_configs.TrainingConfig
+    assert policy_facade.VisualReadoutConfig is public_configs.VisualReadoutConfig
+    assert (
+        policy_facade._coerce_mot_generalist_training_mode_probs
+        is policy_mot._coerce_mot_generalist_training_mode_probs
+    )
+    assert (
+        policy_facade._coerce_joint_denoise_training_mode_probs
+        is policy_parallel_stream._coerce_joint_denoise_training_mode_probs
+    )
+    assert (
+        policy_facade._default_joint_denoise_training_mode_probs
+        is policy_parallel_stream._default_joint_denoise_training_mode_probs
+    )
+
+    old_global = b"copen_wam.configs.policy_variant\nMoTPolicyConfig\n."
+    assert pickle.loads(old_global) is policy_mot.MoTPolicyConfig
+
+    contract_imports = _absolute_imports_for_file(
+        PACKAGE_ROOT / "configs" / "policy_contracts.py"
+    )
+    mot_imports = _absolute_imports_for_file(PACKAGE_ROOT / "configs" / "policy_mot.py")
+    parallel_imports = _absolute_imports_for_file(
+        PACKAGE_ROOT / "configs" / "policy_parallel_stream.py"
+    )
+    parser_imports = _absolute_imports_for_file(
+        PACKAGE_ROOT / "configs" / "policy_parsing.py"
+    )
+    owner_imports = contract_imports | mot_imports | parallel_imports | parser_imports
+    assert "policy_variant" not in owner_imports
+    assert "policy_contracts" not in contract_imports
+    assert "policy_contracts" in mot_imports
+    assert "policy_contracts" in parallel_imports
+    assert {"policy_contracts", "policy_mot", "policy_parallel_stream"} <= parser_imports
+    assert "policy_parsing" not in contract_imports | mot_imports | parallel_imports
+
+    allowed_facade_consumers = {
+        PACKAGE_ROOT / "configs" / "__init__.py",
+        facade_path,
+    }
+    for consumer_path in PACKAGE_ROOT.rglob("*.py"):
+        if consumer_path in allowed_facade_consumers:
+            continue
+        imports = _absolute_imports_for_file(consumer_path)
+        assert "policy_variant" not in imports, consumer_path
+        assert "open_wam.configs.policy_variant" not in imports, consumer_path
+        tree = ast.parse(consumer_path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom) or node.module != "open_wam.configs":
+                continue
+            imported_names = {alias.name for alias in node.names}
+            assert imported_names.isdisjoint(all_public_names), consumer_path
+
+
 def test_configuration_loading_has_one_package_owner() -> None:
     canonical_definitions = _top_level_definitions(PACKAGE_ROOT / "configs" / "loader.py")
     compatibility_definitions = _top_level_definitions(PACKAGE_ROOT / "utils" / "config_loader.py")
@@ -1829,7 +1980,7 @@ def test_typed_component_parsers_live_beside_their_contracts() -> None:
         "parse_trainer_config": "trainer.py",
         "parse_validation_config": "validation.py",
         "parse_visual_readout_config": "visual_readout.py",
-        "parse_policy_variant_config": "policy_variant.py",
+        "parse_policy_variant_config": "policy_parsing.py",
         "parse_action_decoder_config": "action_decoder.py",
     }
     loader_definitions = _top_level_definitions(PACKAGE_ROOT / "configs" / "loader.py")

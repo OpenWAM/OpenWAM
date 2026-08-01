@@ -10,11 +10,9 @@ from . import enums
 from .coercion import coerce_enum, coerce_strict_chunk_size, raw_enum_value
 from .data_contracts import DataConfig
 from .experiment import ExperimentConfig
-from .policy_variant import (
-    MoTPolicyConfig,
-    ParallelStreamPolicyConfig,
-    PolicyVariantConfig,
-)
+from .policy_contracts import PolicyVariantConfig
+from .policy_mot import MoTPolicyConfig
+from .policy_parallel_stream import ParallelStreamPolicyConfig
 
 
 __all__ = [

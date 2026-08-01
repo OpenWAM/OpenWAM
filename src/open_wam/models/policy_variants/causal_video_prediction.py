@@ -5,7 +5,8 @@ from typing import Any
 
 import torch
 
-from open_wam.configs import CausalVideoPredictionPolicyConfig, InferenceConfig, TrainingConfig
+from open_wam.configs import InferenceConfig, TrainingConfig
+from open_wam.configs.policy_contracts import CausalVideoPredictionPolicyConfig
 from open_wam.contracts import VideoFrameMapping
 from open_wam.models.common.flow_matching import (
     FlowMatchScheduler,

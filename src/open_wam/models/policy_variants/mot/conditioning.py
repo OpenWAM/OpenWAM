@@ -7,11 +7,11 @@ import torch
 from open_wam.configs import (
     MoTConditionMode,
     MoTGeneralistTrainingMode,
-    MoTPolicyConfig,
     ParallelContextConditionLatentSource,
     ParallelSequenceContract,
     ProprioContextMode,
 )
+from open_wam.configs.policy_mot import MoTPolicyConfig
 from open_wam.models.common.attention_profiles import (
     build_chunked_text_context_cross_attention_mask,
 )

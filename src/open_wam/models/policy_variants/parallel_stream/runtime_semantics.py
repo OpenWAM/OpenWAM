@@ -8,7 +8,7 @@ from open_wam.configs.enums import (
     ParallelRuntimeMode,
     ParallelSequenceContract,
 )
-from open_wam.configs.policy_variant import ParallelStreamPolicyConfig
+from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.models.common import (
     chunked_temporal_exact_profile_name_for_coupling,
 )
