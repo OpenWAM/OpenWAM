@@ -36,6 +36,34 @@ class ActionDecoderInferOutput:
     aux: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ActionDecoderRolloutPlan:
+    """Decoder-owned model-space actions committed by one rollout step.
+
+    `actions` is a detached float32 CPU tensor with shape `[steps, action_dim]`.
+    The optional commit range lets a sequence decoder advance cached state past
+    every action released to the environment, not merely the action sampled by
+    the latest decoder call.
+    """
+
+    actions: torch.Tensor
+    source: str
+    rollout_chunk_steps: int | None = None
+    commit_start_index: int | None = None
+    commit_end_index: int | None = None
+
+    def to_metadata(self) -> dict[str, Any]:
+        """Serialize the stable rollout trace fields used by integrations."""
+
+        return {
+            "action_plan_source": str(self.source),
+            "decoder_rollout_chunk_steps": self.rollout_chunk_steps,
+            "decoder_rollout_commit_start_index": self.commit_start_index,
+            "decoder_rollout_commit_end_index": self.commit_end_index,
+            "decoder_rollout_committed_actions": int(self.actions.shape[0]),
+        }
+
+
 @dataclass
 class DecoderRolloutState:
     """Reusable decoder-owned inference state.
@@ -81,6 +109,66 @@ def align_policy_features(policy_features: torch.Tensor, target_length: int) -> 
 
 class ActionDecoder(nn.Module, ABC):
     """Action decoder interface shared across policy variants."""
+
+    def build_rollout_plan(
+        self,
+        output: ActionDecoderInferOutput,
+    ) -> ActionDecoderRolloutPlan:
+        """Project one inference output into actions released to a rollout.
+
+        The default handles both full-horizon decoders and sequence decoders
+        that expose a cached `current_action`. A custom decoder can override
+        this method without adding method-specific logic to an integration.
+        """
+
+        action_chunk = output.action_pred[0].detach().to(dtype=torch.float32).cpu()
+        current_action = output.aux.get("current_action")
+        if not isinstance(current_action, torch.Tensor):
+            return ActionDecoderRolloutPlan(
+                actions=action_chunk,
+                source="decoder_action_chunk",
+            )
+
+        current_action_index = _resolve_current_action_index(output)
+        rollout_chunk_steps = _resolve_rollout_chunk_steps(output)
+        if current_action_index < 0:
+            raise ValueError(
+                "Decoder current action index must be non-negative, "
+                f"got {current_action_index}."
+            )
+        commit_end_index = min(
+            int(action_chunk.shape[0]),
+            max(int(current_action_index) + 1, int(rollout_chunk_steps)),
+        )
+        planned_chunk = action_chunk[int(current_action_index) : commit_end_index]
+        source = "decoder_current_action_rollout_chunk"
+        if int(planned_chunk.shape[0]) == 0:
+            planned_chunk = _current_action_tensor_to_chunk(current_action)
+            commit_end_index = int(current_action_index) + int(planned_chunk.shape[0])
+            source = "decoder_current_action"
+        return ActionDecoderRolloutPlan(
+            actions=planned_chunk,
+            source=source,
+            rollout_chunk_steps=int(rollout_chunk_steps),
+            commit_start_index=int(current_action_index),
+            commit_end_index=int(commit_end_index),
+        )
+
+    def commit_rollout_plan(
+        self,
+        state: Any | None,
+        plan: ActionDecoderRolloutPlan,
+    ) -> None:
+        """Advance decoder-owned state past actions released by `plan`."""
+
+        if plan.commit_end_index is None:
+            return
+        if state is None or not hasattr(state, "step_within_chunk"):
+            return
+        state.step_within_chunk = max(
+            int(state.step_within_chunk),
+            int(plan.commit_end_index),
+        )
 
     def configure_action_sampler_mask(
         self,
@@ -148,9 +236,54 @@ class ActionDecoder(nn.Module, ABC):
         direct_inputs: DirectActionDecoderTrainInputs,
         batch: PolicyTrainBatch,
     ) -> ActionDecoderTrainOutput:
+        del direct_inputs, batch
         raise NotImplementedError(
             f"{self.__class__.__name__} does not implement direct train-time conditioning inputs."
         )
+
+
+def _current_action_tensor_to_chunk(current_action: torch.Tensor) -> torch.Tensor:
+    current_action = current_action.detach().to(dtype=torch.float32).cpu()
+    if current_action.ndim == 1:
+        return current_action.unsqueeze(0)
+    if current_action.ndim == 2:
+        return current_action[:1]
+    raise ValueError(
+        "Expected current_action shape [D] or [B, D], "
+        f"got {tuple(current_action.shape)}."
+    )
+
+
+def _resolve_current_action_index(output: ActionDecoderInferOutput) -> int:
+    current_action_index = output.aux.get("current_action_index")
+    if current_action_index is not None:
+        return int(_python_value(current_action_index))
+    next_state = output.next_state
+    if next_state is not None and hasattr(next_state, "step_within_chunk"):
+        return max(0, int(next_state.step_within_chunk) - 1)
+    return 0
+
+
+def _resolve_rollout_chunk_steps(output: ActionDecoderInferOutput) -> int:
+    rollout_chunk_steps = output.aux.get("rollout_chunk_steps")
+    if rollout_chunk_steps is None:
+        next_state = output.next_state
+        rollout_chunk_steps = (
+            getattr(next_state, "aux", {}).get("rollout_chunk_steps")
+            if next_state is not None
+            else None
+        )
+    if rollout_chunk_steps is None:
+        return 1
+    return max(1, int(_python_value(rollout_chunk_steps)))
+
+
+def _python_value(value: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 1:
+            return value.detach().cpu().item()
+        return value.detach().cpu().tolist()
+    return value
 
 
 class LinearActionDecoder(ActionDecoder):

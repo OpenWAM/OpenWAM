@@ -2,8 +2,14 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 
+from open_wam.models.action_decoders import (
+    ActionDecoder,
+    ActionDecoderInferOutput,
+    ActionDecoderRolloutPlan,
+)
 from open_wam.models.policy_variants import (
     PolicyInferContext,
     PolicyInferState,
@@ -49,6 +55,20 @@ class _ObservedHistoryTarget:
             next_state=PolicyInferState(step_index=9),
             debug={"committed": True},
         )
+
+
+class _RolloutPlanDecoder(ActionDecoder):
+    def forward_train(self, policy_output, batch):
+        raise NotImplementedError
+
+    def forward_infer(self, policy_output, previous_state=None):
+        raise NotImplementedError
+
+
+def _rollout_plan_runner() -> tuple[VariantRolloutRunner, _RolloutPlanDecoder]:
+    decoder = _RolloutPlanDecoder()
+    pipeline = SimpleNamespace(action_decoder=decoder)
+    return VariantRolloutRunner(pipeline), decoder  # type: ignore[arg-type]
 
 
 def test_prepared_rollout_step_forwards_state_and_updates_conditioning() -> None:
@@ -167,3 +187,142 @@ def test_pipeline_delegates_observed_history_to_policy_owner() -> None:
     assert result.next_state is not None
     assert result.next_state.step_index == 9
     assert result.debug == {"committed": True}
+
+
+def test_action_decoder_rollout_plan_uses_full_action_chunk_by_default() -> None:
+    runner, _ = _rollout_plan_runner()
+    output = ActionDecoderInferOutput(
+        action_pred=torch.tensor([[[1.0, 2.0], [3.0, 4.0]]], dtype=torch.float64),
+    )
+
+    plan = runner.build_action_rollout_plan(output)
+
+    assert isinstance(plan, ActionDecoderRolloutPlan)
+    assert plan.actions.dtype == torch.float32
+    assert plan.actions.device.type == "cpu"
+    torch.testing.assert_close(
+        plan.actions,
+        torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
+    )
+    assert plan.to_metadata() == {
+        "action_plan_source": "decoder_action_chunk",
+        "decoder_rollout_chunk_steps": None,
+        "decoder_rollout_commit_start_index": None,
+        "decoder_rollout_commit_end_index": None,
+        "decoder_rollout_committed_actions": 2,
+    }
+
+
+def test_action_decoder_rollout_plan_commits_configured_cached_chunk() -> None:
+    runner, _ = _rollout_plan_runner()
+    decoder_state = SimpleNamespace(step_within_chunk=1)
+    session = runner.reset()
+    session.policy_state = PolicyInferState(decoder_state=decoder_state)
+    output = ActionDecoderInferOutput(
+        action_pred=torch.arange(6, dtype=torch.float32).view(1, 6, 1),
+        next_state=SimpleNamespace(
+            step_within_chunk=1,
+            aux={"rollout_chunk_steps": 6},
+        ),
+        aux={
+            "current_action": torch.tensor([0.0]),
+            "current_action_index": torch.tensor(0.0),
+            "rollout_chunk_steps": torch.tensor(6.0),
+        },
+    )
+
+    plan = runner.build_action_rollout_plan(output)
+    runner.commit_action_rollout_plan(session=session, plan=plan)
+
+    torch.testing.assert_close(plan.actions[:, 0], torch.arange(6, dtype=torch.float32))
+    assert plan.to_metadata()["decoder_rollout_commit_end_index"] == 6
+    assert decoder_state.step_within_chunk == 6
+
+
+def test_action_decoder_rollout_plan_uses_remaining_cached_actions() -> None:
+    runner, _ = _rollout_plan_runner()
+    output = ActionDecoderInferOutput(
+        action_pred=torch.tensor([[[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]]),
+        next_state=SimpleNamespace(
+            step_within_chunk=2,
+            aux={"rollout_chunk_steps": 2},
+        ),
+        aux={"current_action": torch.tensor([[3.0, 4.0]])},
+    )
+
+    plan = runner.build_action_rollout_plan(output)
+
+    assert plan.source == "decoder_current_action_rollout_chunk"
+    assert plan.commit_start_index == 1
+    assert plan.commit_end_index == 2
+    torch.testing.assert_close(plan.actions, torch.tensor([[3.0, 4.0]]))
+
+
+def test_action_decoder_rollout_plan_falls_back_to_current_action_after_horizon() -> None:
+    runner, _ = _rollout_plan_runner()
+    output = ActionDecoderInferOutput(
+        action_pred=torch.tensor([[[1.0, 2.0], [3.0, 4.0]]]),
+        aux={
+            "current_action": torch.tensor([9.0, 10.0]),
+            "current_action_index": 8,
+            "rollout_chunk_steps": 2,
+        },
+    )
+
+    plan = runner.build_action_rollout_plan(output)
+
+    assert plan.source == "decoder_current_action"
+    assert plan.commit_start_index == 8
+    assert plan.commit_end_index == 9
+    torch.testing.assert_close(plan.actions, torch.tensor([[9.0, 10.0]]))
+
+
+def test_action_decoder_rollout_plan_rejects_negative_current_action_index() -> None:
+    runner, _ = _rollout_plan_runner()
+    output = ActionDecoderInferOutput(
+        action_pred=torch.tensor([[[1.0, 2.0]]]),
+        aux={
+            "current_action": torch.tensor([1.0, 2.0]),
+            "current_action_index": -1,
+        },
+    )
+
+    with pytest.raises(ValueError, match="must be non-negative"):
+        runner.build_action_rollout_plan(output)
+
+
+def test_variant_rollout_runner_delegates_custom_decoder_plan_and_commit() -> None:
+    class CustomPlanDecoder(_RolloutPlanDecoder):
+        def build_rollout_plan(self, output):
+            del output
+            return ActionDecoderRolloutPlan(
+                actions=torch.tensor([[42.0]], dtype=torch.float32),
+                source="custom_decoder",
+                commit_start_index=4,
+                commit_end_index=5,
+            )
+
+        def commit_rollout_plan(self, state, plan):
+            state.committed_source = plan.source
+
+    decoder = CustomPlanDecoder()
+    runner = VariantRolloutRunner(SimpleNamespace(action_decoder=decoder))  # type: ignore[arg-type]
+    decoder_state = SimpleNamespace(committed_source=None)
+    session = runner.reset()
+    session.policy_state = PolicyInferState(decoder_state=decoder_state)
+
+    plan = runner.build_action_rollout_plan(
+        ActionDecoderInferOutput(action_pred=torch.zeros(1, 1, 1)),
+    )
+    runner.commit_action_rollout_plan(session=session, plan=plan)
+
+    assert plan.source == "custom_decoder"
+    assert plan.actions.item() == 42.0
+    assert decoder_state.committed_source == "custom_decoder"
+
+
+def test_base_action_decoder_rejects_unsupported_direct_train_inputs() -> None:
+    decoder = _RolloutPlanDecoder()
+
+    with pytest.raises(NotImplementedError, match="does not implement direct train-time"):
+        decoder.forward_train_direct(None, None)  # type: ignore[arg-type]

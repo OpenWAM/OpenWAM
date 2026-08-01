@@ -5,6 +5,10 @@ from typing import Mapping
 
 import torch
 
+from open_wam.models.action_decoders import (
+    ActionDecoderInferOutput,
+    ActionDecoderRolloutPlan,
+)
 from open_wam.models.policy_variants import (
     PolicyInferContext,
     PolicyInferState,
@@ -60,6 +64,26 @@ class VariantRolloutRunner:
             text_context=text_context,
             negative_text_context=negative_text_context,
         )
+
+    def build_action_rollout_plan(
+        self,
+        output: ActionDecoderInferOutput,
+    ) -> ActionDecoderRolloutPlan:
+        """Delegate model-space rollout slicing to the configured decoder."""
+
+        return self.pipeline.action_decoder.build_rollout_plan(output)
+
+    def commit_action_rollout_plan(
+        self,
+        *,
+        session: VariantRolloutSession,
+        plan: ActionDecoderRolloutPlan,
+    ) -> None:
+        """Commit every action released by `plan` to decoder-owned state."""
+
+        policy_state = session.policy_state
+        decoder_state = None if policy_state is None else policy_state.decoder_state
+        self.pipeline.action_decoder.commit_rollout_plan(decoder_state, plan)
 
     def infer_step(
         self,

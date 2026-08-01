@@ -10,6 +10,20 @@ import uuid
 import numpy as np
 import pytest
 
+from open_wam.models.action_decoders import ActionDecoder
+
+
+class _RealtimeTestActionDecoder(ActionDecoder):
+    def __init__(self, *, rollout_chunk_steps: int) -> None:
+        super().__init__()
+        self.rollout_chunk_steps = int(rollout_chunk_steps)
+
+    def forward_train(self, policy_output, batch):
+        raise NotImplementedError
+
+    def forward_infer(self, policy_output, previous_state=None):
+        raise NotImplementedError
+
 
 def _load_sandbox_module():
     module_path = Path(__file__).resolve().parents[1] / "scripts" / "run_libero_realtime_sandbox.py"
@@ -1371,37 +1385,6 @@ def test_apply_sequence_replan_result_records_trace_and_merges_future_steps() ->
     assert merged[3].source == "new"
 
 
-def test_realtime_sandbox_commits_full_decoder_chunk() -> None:
-    sandbox = _load_sandbox_module()
-    decoder_output = SimpleNamespace(
-        action_pred=sandbox.torch.arange(6, dtype=sandbox.torch.float32).view(1, 6, 1),
-        aux={
-            "current_action": sandbox.torch.tensor([0.0], dtype=sandbox.torch.float32),
-            "current_action_index": sandbox.torch.tensor(0.0),
-            "rollout_chunk_steps": sandbox.torch.tensor(6.0),
-        },
-        next_state=SimpleNamespace(
-            step_within_chunk=1,
-            aux={"rollout_chunk_steps": 6},
-        ),
-    )
-
-    planned_chunk, metadata = sandbox._decoder_output_to_rollout_action_plan(
-        decoder_output
-    )
-
-    assert planned_chunk.shape == (6, 1)
-    np.testing.assert_allclose(planned_chunk[:, 0], np.arange(6, dtype=np.float32))
-    assert metadata["decoder_rollout_commit_end_index"] == 6
-    session = SimpleNamespace(
-        policy_state=SimpleNamespace(
-            decoder_state=SimpleNamespace(step_within_chunk=1),
-        )
-    )
-    sandbox._advance_decoder_state_to_rollout_commit(session, metadata)
-    assert session.policy_state.decoder_state.step_within_chunk == 6
-
-
 def test_realtime_sandbox_can_override_rollout_chunk_steps() -> None:
     sandbox = _load_sandbox_module()
     config = SimpleNamespace(action_decoder=SimpleNamespace(rollout_chunk_steps=6))
@@ -1694,13 +1677,16 @@ def test_method4_realtime_replan_uses_absolute_action_start_for_video_condition(
     )
     monkeypatch.setattr(sandbox.realtime_runtime, "synchronize_devices", lambda *args, **kwargs: None)
 
-    class Runner:
-        pipeline = SimpleNamespace(
-            action_decoder=SimpleNamespace(rollout_chunk_steps=6),
-            visual_tower=SimpleNamespace(
-                snapshot_runtime_state=lambda *, cache_name=None: None,
-            ),
-        )
+    class Runner(sandbox.VariantRolloutRunner):
+        def __init__(self) -> None:
+            super().__init__(
+                SimpleNamespace(
+                    action_decoder=_RealtimeTestActionDecoder(rollout_chunk_steps=6),
+                    visual_tower=SimpleNamespace(
+                        snapshot_runtime_state=lambda *, cache_name=None: None,
+                    ),
+                )
+            )
 
         def infer_step(self, *, session, context, video_latents, canonical_video=None):
             del video_latents, canonical_video
@@ -2212,8 +2198,13 @@ def test_strict_split_cache_mot_startup_replan_trace_reports_origin(monkeypatch)
     )
     monkeypatch.setattr(sandbox.realtime_runtime, "synchronize_devices", lambda *args, **kwargs: None)
 
-    class Runner:
-        pipeline = SimpleNamespace(action_decoder=SimpleNamespace(rollout_chunk_steps=16))
+    class Runner(sandbox.VariantRolloutRunner):
+        def __init__(self) -> None:
+            super().__init__(
+                SimpleNamespace(
+                    action_decoder=_RealtimeTestActionDecoder(rollout_chunk_steps=16),
+                )
+            )
 
         def infer_step(self, *, session, context, video_latents, canonical_video=None):
             del context, canonical_video
@@ -2262,72 +2253,6 @@ def test_strict_split_cache_mot_startup_replan_trace_reports_origin(monkeypatch)
     assert result["trace"]["mot_current_action_frame_start"] == 1
     assert result["trace"]["planned_action_ids"] == list(range(16))
     assert [step.absolute_action_index for step in result["planned_steps"]] == list(range(16))
-
-
-def test_decoder_current_action_commits_configured_rollout_chunk() -> None:
-    sandbox = _load_sandbox_module()
-    decoder_output = SimpleNamespace(
-        action_pred=sandbox.torch.tensor([[[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]]),
-        next_state=SimpleNamespace(step_within_chunk=1, aux={"rollout_chunk_steps": 2}),
-        aux={"current_action": sandbox.torch.tensor([[1.0, 2.0]])},
-    )
-
-    planned, metadata = sandbox._decoder_output_to_rollout_action_plan(decoder_output)
-
-    assert metadata["action_plan_source"] == "decoder_current_action_rollout_chunk"
-    assert metadata["decoder_rollout_commit_start_index"] == 0
-    assert metadata["decoder_rollout_commit_end_index"] == 2
-    assert metadata["decoder_rollout_committed_actions"] == 2
-    assert planned.shape == (2, 2)
-    np.testing.assert_allclose(planned, np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32))
-
-
-def test_decoder_cached_current_action_commits_remaining_rollout_chunk() -> None:
-    sandbox = _load_sandbox_module()
-    decoder_output = SimpleNamespace(
-        action_pred=sandbox.torch.tensor([[[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]]),
-        next_state=SimpleNamespace(step_within_chunk=2, aux={"rollout_chunk_steps": 2}),
-        aux={"current_action": sandbox.torch.tensor([[3.0, 4.0]])},
-    )
-
-    planned, metadata = sandbox._decoder_output_to_rollout_action_plan(decoder_output)
-
-    assert metadata["action_plan_source"] == "decoder_current_action_rollout_chunk"
-    assert metadata["decoder_rollout_commit_start_index"] == 1
-    assert metadata["decoder_rollout_commit_end_index"] == 2
-    assert metadata["decoder_rollout_committed_actions"] == 1
-    assert planned.shape == (1, 2)
-    np.testing.assert_allclose(planned, np.array([[3.0, 4.0]], dtype=np.float32))
-
-
-def test_advance_decoder_state_to_rollout_commit_marks_planned_actions_consumed() -> None:
-    sandbox = _load_sandbox_module()
-    decoder_state = SimpleNamespace(step_within_chunk=1)
-    session = SimpleNamespace(policy_state=SimpleNamespace(decoder_state=decoder_state))
-
-    sandbox._advance_decoder_state_to_rollout_commit(
-        session,
-        {
-            "decoder_rollout_commit_end_index": 2,
-        },
-    )
-
-    assert decoder_state.step_within_chunk == 2
-
-
-def test_decoder_rollout_plan_falls_back_to_full_chunk_without_current_action() -> None:
-    sandbox = _load_sandbox_module()
-    decoder_output = SimpleNamespace(
-        action_pred=sandbox.torch.tensor([[[1.0, 2.0], [3.0, 4.0]]]),
-        aux={},
-    )
-
-    planned, metadata = sandbox._decoder_output_to_rollout_action_plan(decoder_output)
-
-    assert metadata["action_plan_source"] == "decoder_action_chunk"
-    assert metadata["decoder_rollout_committed_actions"] == 2
-    assert planned.shape == (2, 2)
-    np.testing.assert_allclose(planned, np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32))
 
 
 def test_realtime_common_inference_overrides_preserve_config_values_by_default() -> None:

@@ -2640,6 +2640,36 @@ def test_deprecated_realtime_startup_bootstrap_has_no_runtime_implementation() -
     assert retired_helpers.isdisjoint(_top_level_definitions(runtime_path))
 
 
+def test_action_decoder_rollout_plan_has_one_model_owner() -> None:
+    runner_path = REPO_ROOT / "scripts" / "run_libero_realtime_sandbox.py"
+    decoder_path = PACKAGE_ROOT / "models" / "action_decoders" / "base.py"
+    decoder_exports_path = PACKAGE_ROOT / "models" / "action_decoders" / "__init__.py"
+    rollout_path = PACKAGE_ROOT / "pipelines" / "rollout.py"
+    runner_source = runner_path.read_text(encoding="utf-8")
+    decoder_exports = decoder_exports_path.read_text(encoding="utf-8")
+    retired_runner_helpers = {
+        "_advance_decoder_state_to_rollout_commit",
+        "_current_action_tensor_to_chunk",
+        "_decoder_output_to_rollout_action_plan",
+        "_resolve_decoder_current_action_index",
+        "_resolve_decoder_rollout_chunk_steps",
+    }
+
+    assert "ActionDecoderRolloutPlan" in _top_level_definitions(decoder_path)
+    assert {
+        "build_rollout_plan",
+        "commit_rollout_plan",
+    } <= _class_method_definitions(decoder_path, "ActionDecoder")
+    assert {
+        "build_action_rollout_plan",
+        "commit_action_rollout_plan",
+    } <= _class_method_definitions(rollout_path, "VariantRolloutRunner")
+    assert retired_runner_helpers.isdisjoint(_top_level_definitions(runner_path))
+    assert "runner.build_action_rollout_plan(" in runner_source
+    assert "runner.commit_action_rollout_plan(" in runner_source
+    assert "ActionDecoderRolloutPlan" in decoder_exports
+
+
 def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
     runner_path = REPO_ROOT / "scripts" / "run_libero_realtime_sandbox.py"
     runtime_path = PACKAGE_ROOT / "evals" / "libero_realtime_runtime.py"

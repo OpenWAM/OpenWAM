@@ -3,6 +3,7 @@
 from .base import (
     ActionDecoder,
     ActionDecoderInferOutput,
+    ActionDecoderRolloutPlan,
     ActionDecoderTrainOutput,
     DecoderRolloutState,
     DirectActionDecoderTrainInputs,
@@ -19,6 +20,7 @@ from .video_conditioned_expert import VideoConditionedActionExpert
 __all__ = [
     "ActionDecoder",
     "ActionDecoderInferOutput",
+    "ActionDecoderRolloutPlan",
     "ActionDecoderTrainOutput",
     "DecoderRolloutState",
     "DirectActionDecoderTrainInputs",

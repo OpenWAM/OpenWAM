@@ -17,7 +17,7 @@ shared visual execution path for every experiment.
 | `VariantPipeline` | Orchestrates data batches, visual stages, policy-variant execution, and decoder loss/output calls. |
 | `VisualTower` | Owns visual preprocessing, shared frontend/core/decode hooks, and backbone-facing runtime outputs. |
 | `PolicyVariant` | Defines method semantics: required visual stages, train inputs, infer state, rollout-step behavior, and reconciliation of executed observations with recurrent state. |
-| `ActionDecoder` | Converts variant outputs into supervised action predictions and losses. |
+| `ActionDecoder` | Converts variant outputs into supervised action predictions and losses, then owns model-space rollout-plan slicing and decoder-state commit. |
 
 ## Design Principles
 

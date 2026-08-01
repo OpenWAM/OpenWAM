@@ -2783,10 +2783,15 @@ def _run_sequence_replan_job(
     video_condition_window = None if sequence_context is None else sequence_context.video_condition_window
     video_condition_metadata = {} if video_condition_window is None else dict(video_condition_window.metadata)
     predicted_latents = policy_aux.get("predicted_latents")
-    action_pred, action_plan_metadata = _decoder_output_to_rollout_action_plan(
+    action_plan = runner.build_action_rollout_plan(
         step_output.infer_output.decoder_output
     )
-    _advance_decoder_state_to_rollout_commit(step_output.session, action_plan_metadata)
+    action_pred = action_plan.actions.numpy()
+    action_plan_metadata = action_plan.to_metadata()
+    runner.commit_action_rollout_plan(
+        session=step_output.session,
+        plan=action_plan,
+    )
     ready_monotonic_s = time.perf_counter()
     planned_steps = _sequence_chunk_to_planned_steps(
         action_pred=action_pred,
@@ -3006,87 +3011,6 @@ def _sequence_buffer_tail_ready_for_history_promotion(
 def _mot_condition_frame_start_for_generation(*, config, generation_action_start: int) -> int:
     action_per_frame = _sequence_actions_per_frame(config)
     return int(generation_action_start) // int(action_per_frame)
-
-
-def _decoder_output_to_rollout_action_plan(decoder_output) -> tuple[np.ndarray, dict[str, Any]]:
-    action_chunk = decoder_output.action_pred[0].detach().to(dtype=torch.float32).cpu()
-    current_action = decoder_output.aux.get("current_action")
-    if isinstance(current_action, torch.Tensor):
-        current_action_index = _resolve_decoder_current_action_index(decoder_output)
-        rollout_chunk_steps = _resolve_decoder_rollout_chunk_steps(decoder_output)
-        if current_action_index < 0:
-            raise ValueError(f"Decoder current action index must be non-negative, got {current_action_index}.")
-        commit_end_index = min(
-            int(action_chunk.shape[0]),
-            max(int(current_action_index) + 1, int(rollout_chunk_steps)),
-        )
-        planned_chunk = action_chunk[int(current_action_index) : commit_end_index]
-        source = "decoder_current_action_rollout_chunk"
-        if int(planned_chunk.shape[0]) == 0:
-            planned_chunk = _current_action_tensor_to_chunk(current_action)
-            commit_end_index = int(current_action_index) + int(planned_chunk.shape[0])
-            source = "decoder_current_action"
-        return planned_chunk.numpy(), {
-            "action_plan_source": source,
-            "decoder_rollout_chunk_steps": int(rollout_chunk_steps),
-            "decoder_rollout_commit_start_index": int(current_action_index),
-            "decoder_rollout_commit_end_index": int(commit_end_index),
-            "decoder_rollout_committed_actions": int(planned_chunk.shape[0]),
-        }
-    return (
-        action_chunk.numpy(),
-        {
-            "action_plan_source": "decoder_action_chunk",
-            "decoder_rollout_chunk_steps": None,
-            "decoder_rollout_commit_start_index": None,
-            "decoder_rollout_commit_end_index": None,
-            "decoder_rollout_committed_actions": int(action_chunk.shape[0]),
-        },
-    )
-
-
-def _current_action_tensor_to_chunk(current_action: torch.Tensor) -> torch.Tensor:
-    current_action = current_action.detach().to(dtype=torch.float32).cpu()
-    if current_action.ndim == 1:
-        return current_action.unsqueeze(0)
-    if current_action.ndim == 2:
-        return current_action[:1]
-    raise ValueError(f"Expected current_action shape [D] or [B, D], got {tuple(current_action.shape)}.")
-
-
-def _resolve_decoder_current_action_index(decoder_output) -> int:
-    current_action_index = decoder_output.aux.get("current_action_index")
-    if current_action_index is not None:
-        return int(_json_scalar_from_tensor(current_action_index))
-    next_state = getattr(decoder_output, "next_state", None)
-    if next_state is not None and hasattr(next_state, "step_within_chunk"):
-        return max(0, int(next_state.step_within_chunk) - 1)
-    return 0
-
-
-def _resolve_decoder_rollout_chunk_steps(decoder_output) -> int:
-    rollout_chunk_steps = decoder_output.aux.get("rollout_chunk_steps")
-    if rollout_chunk_steps is None:
-        next_state = getattr(decoder_output, "next_state", None)
-        rollout_chunk_steps = (
-            getattr(next_state, "aux", {}).get("rollout_chunk_steps")
-            if next_state is not None
-            else None
-        )
-    if rollout_chunk_steps is None:
-        return 1
-    return max(1, int(_json_scalar_from_tensor(rollout_chunk_steps)))
-
-
-def _advance_decoder_state_to_rollout_commit(session, action_plan_metadata: dict[str, Any]) -> None:
-    commit_end_index = action_plan_metadata.get("decoder_rollout_commit_end_index")
-    if commit_end_index is None:
-        return
-    policy_state = getattr(session, "policy_state", None)
-    decoder_state = getattr(policy_state, "decoder_state", None)
-    if decoder_state is None or not hasattr(decoder_state, "step_within_chunk"):
-        return
-    decoder_state.step_within_chunk = max(int(decoder_state.step_within_chunk), int(commit_end_index))
 
 
 def _json_scalar_from_tensor(value) -> Any:
