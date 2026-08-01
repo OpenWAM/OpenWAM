@@ -11,7 +11,6 @@ from typing import Any
 
 import numpy as np
 import torch
-from einops import rearrange
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -46,13 +45,10 @@ from open_wam.integrations.realtime_control import (  # noqa: E402
     PlannedControlStep,
     build_live_rollout_summary,
     drop_control_steps_from,
-    drop_partial_stale_control_chunk,
     frame_index_to_action_start,
     future_control_depth,
-    future_control_steps,
     merge_future_control_steps,
     missing_control_action_indices,
-    planned_frame_actions_to_control_steps,
     required_control_action_indices,
     resolve_realtime_planner_mode,
     resolve_realtime_scheduler_defaults,
@@ -64,7 +60,6 @@ from open_wam.evals import libero_realtime_runtime as realtime_runtime  # noqa: 
 from open_wam.evals import libero_visualization as exact_viz  # noqa: E402
 from open_wam.evals import realtime_history  # noqa: E402
 from open_wam.evals import realtime_speculation  # noqa: E402
-from open_wam.models.common.rollout_startup import require_strict_startup_generation_frame  # noqa: E402
 from open_wam.models.visual_tower import VisualRuntimeStateSnapshot  # noqa: E402
 from open_wam.models.policy_variants.mot.runtime_routing import (  # noqa: E402
     ensure_mot_inference_backend,
@@ -941,7 +936,7 @@ def _run_exact_like_realtime_rollout(
         )
         plan_by_action: dict[int, PlannedControlStep] = merge_future_control_steps(
             {},
-            _exact_chunk_to_planned_steps(
+            realtime_runtime.exact_chunk_to_planned_steps(
                 chunk=first_chunk,
                 action_per_frame=action_per_frame,
                 frame_chunk_size=int(config.inference.frame_chunk_size),
@@ -951,7 +946,7 @@ def _run_exact_like_realtime_rollout(
             next_action_to_execute=0,
         )
         pending_history: list[dict[str, Any]] = [
-            _exact_startup_conditioning_history_record(
+            realtime_runtime.build_exact_startup_conditioning_history_record(
                 chunk=first_chunk,
                 initial_video_latents=(
                     startup_history_video_latents
@@ -989,13 +984,7 @@ def _run_exact_like_realtime_rollout(
                     runtime_device=runtime_device,
                     job_seed=realtime_runtime.job_seed_for_session(seed, buffer_tail_session),
                 )
-                (
-                    history_base_session,
-                    current_chunk_session,
-                    buffer_tail_session,
-                    plan_by_action,
-                    pending_history,
-                ) = _consume_exact_future_result(
+                application = realtime_runtime.apply_frame_planner_result(
                     extension_result,
                     config=config,
                     plan_by_action=plan_by_action,
@@ -1008,6 +997,11 @@ def _run_exact_like_realtime_rollout(
                     extension_records=extension_records,
                     min_future_actions_to_accept_stale_chunk=replan_low_watermark_actions,
                 )
+                history_base_session = application.history_base_session
+                current_chunk_session = application.current_chunk_session
+                buffer_tail_session = application.buffer_tail_session
+                plan_by_action = application.plan_by_action
+                pending_history = application.pending_history
             startup_open_loop_s = time.perf_counter() - startup_open_loop_t0
             startup_infer_s += startup_open_loop_s
         startup_infer_s += startup_warmup_s
@@ -1031,7 +1025,9 @@ def _run_exact_like_realtime_rollout(
         periodic_replan_submit_count = 0
 
         with ThreadPoolExecutor(max_workers=1) as executor:
-            replan_future: Future[dict[str, Any]] | None = None
+            replan_future: Future[
+                realtime_runtime.FramePlannerJobResult
+            ] | None = None
             replan_future_cache_snapshot: VisualRuntimeStateSnapshot | None = None
             next_frame_to_execute = 1
             next_real_frame_to_execute = 1
@@ -1042,13 +1038,7 @@ def _run_exact_like_realtime_rollout(
                         runner=runner,
                         snapshot=replan_future_cache_snapshot,
                     )
-                    (
-                        history_base_session,
-                        current_chunk_session,
-                        buffer_tail_session,
-                        plan_by_action,
-                        pending_history,
-                    ) = _consume_exact_future_result(
+                    application = realtime_runtime.apply_frame_planner_result(
                         replan_result,
                         config=config,
                         plan_by_action=plan_by_action,
@@ -1061,6 +1051,11 @@ def _run_exact_like_realtime_rollout(
                         extension_records=extension_records,
                         min_future_actions_to_accept_stale_chunk=replan_low_watermark_actions,
                     )
+                    history_base_session = application.history_base_session
+                    current_chunk_session = application.current_chunk_session
+                    buffer_tail_session = application.buffer_tail_session
+                    plan_by_action = application.plan_by_action
+                    pending_history = application.pending_history
                     realtime_speculation.restore_visual_runtime_if_rejected(
                         replan_result,
                         runner=runner,
@@ -1182,16 +1177,14 @@ def _run_exact_like_realtime_rollout(
                             result_cache_snapshot = replan_future_cache_snapshot
                             replan_future_cache_snapshot = None
                         wait_for_plan_s = time.perf_counter() - wait_t0
-                        result["trace"]["blocking_wait_action_index"] = int(next_action_index)
-                        result["trace"]["blocking_wait_frame_index"] = int(next_frame_to_execute)
-                        result["trace"]["blocking_wait_s"] = float(wait_for_plan_s)
-                        (
-                            history_base_session,
-                            current_chunk_session,
-                            buffer_tail_session,
-                            plan_by_action,
-                            pending_history,
-                        ) = _consume_exact_future_result(
+                        result.trace["blocking_wait_action_index"] = int(
+                            next_action_index
+                        )
+                        result.trace["blocking_wait_frame_index"] = int(
+                            next_frame_to_execute
+                        )
+                        result.trace["blocking_wait_s"] = float(wait_for_plan_s)
+                        application = realtime_runtime.apply_frame_planner_result(
                             result,
                             config=config,
                             plan_by_action=plan_by_action,
@@ -1204,6 +1197,11 @@ def _run_exact_like_realtime_rollout(
                             extension_records=extension_records,
                             min_future_actions_to_accept_stale_chunk=replan_low_watermark_actions,
                         )
+                        history_base_session = application.history_base_session
+                        current_chunk_session = application.current_chunk_session
+                        buffer_tail_session = application.buffer_tail_session
+                        plan_by_action = application.plan_by_action
+                        pending_history = application.pending_history
                         realtime_speculation.restore_visual_runtime_if_rejected(
                             result,
                             runner=runner,
@@ -1405,13 +1403,7 @@ def _run_exact_like_realtime_rollout(
                         runner=runner,
                         snapshot=replan_future_cache_snapshot,
                     )
-                    (
-                        history_base_session,
-                        current_chunk_session,
-                        buffer_tail_session,
-                        plan_by_action,
-                        pending_history,
-                    ) = _consume_exact_future_result(
+                    application = realtime_runtime.apply_frame_planner_result(
                         replan_result,
                         config=config,
                         plan_by_action=plan_by_action,
@@ -1424,6 +1416,11 @@ def _run_exact_like_realtime_rollout(
                         extension_records=extension_records,
                         min_future_actions_to_accept_stale_chunk=replan_low_watermark_actions,
                     )
+                    history_base_session = application.history_base_session
+                    current_chunk_session = application.current_chunk_session
+                    buffer_tail_session = application.buffer_tail_session
+                    plan_by_action = application.plan_by_action
+                    pending_history = application.pending_history
                     realtime_speculation.restore_visual_runtime_if_rejected(
                         replan_result,
                         runner=runner,
@@ -1486,13 +1483,7 @@ def _run_exact_like_realtime_rollout(
                     runner=runner,
                     snapshot=replan_future_cache_snapshot,
                 )
-                (
-                    history_base_session,
-                    current_chunk_session,
-                    buffer_tail_session,
-                    plan_by_action,
-                    pending_history,
-                ) = _consume_exact_future_result(
+                application = realtime_runtime.apply_frame_planner_result(
                     replan_result,
                     config=config,
                     plan_by_action=plan_by_action,
@@ -1505,6 +1496,11 @@ def _run_exact_like_realtime_rollout(
                     extension_records=extension_records,
                     min_future_actions_to_accept_stale_chunk=replan_low_watermark_actions,
                 )
+                history_base_session = application.history_base_session
+                current_chunk_session = application.current_chunk_session
+                buffer_tail_session = application.buffer_tail_session
+                plan_by_action = application.plan_by_action
+                pending_history = application.pending_history
                 realtime_speculation.restore_visual_runtime_if_rejected(
                     replan_result,
                     runner=runner,
@@ -1615,163 +1611,6 @@ def _run_exact_like_realtime_rollout(
         )
     finally:
         env.close()
-
-
-def _consume_exact_future_result(
-    result: dict[str, Any],
-    *,
-    config,
-    plan_by_action: dict[int, PlannedControlStep],
-    next_action_to_execute: int,
-    pending_history: list[dict[str, Any]],
-    history_base_session,
-    current_chunk_session,
-    buffer_tail_session,
-    replan_records: list[dict[str, Any]],
-    extension_records: list[dict[str, Any]],
-    min_future_actions_to_accept_stale_chunk: int = 0,
-):
-    planned_steps = planned_frame_actions_to_control_steps(result["planned_frames"])
-    (
-        mergeable_planned_steps,
-        chunk_boundary_dropped_actions,
-        partial_stale_chunk_accepted_actions,
-    ) = drop_partial_stale_control_chunk(
-        planned_steps,
-        next_action_to_execute=next_action_to_execute,
-        min_future_actions_to_accept_stale_chunk=min_future_actions_to_accept_stale_chunk,
-    )
-    future_planned_steps = [
-        step
-        for step in mergeable_planned_steps
-        if int(step.absolute_action_index) >= int(next_action_to_execute)
-    ]
-    chunk_accepted = bool(future_planned_steps)
-    result["trace"]["planned_action_indices"] = [
-        int(step.absolute_action_index)
-        for step in planned_steps
-    ]
-    result["trace"]["future_planned_actions"] = int(len(future_planned_steps))
-    result["trace"]["stale_planned_actions"] = int(len(planned_steps) - len(future_planned_steps))
-    result["trace"]["chunk_boundary_dropped_actions"] = int(chunk_boundary_dropped_actions)
-    result["trace"]["partial_stale_chunk_accepted_actions"] = int(partial_stale_chunk_accepted_actions)
-    result["trace"]["accepted_chunk"] = bool(chunk_accepted)
-    if result["job_kind"] == "history_replan":
-        replan_records.append(result["trace"])
-        if chunk_accepted:
-            submitted_through_frame = int(result["submitted_through_frame"])
-            pending_history = [
-                record for record in pending_history if int(record["absolute_frame_index"]) > submitted_through_frame
-            ]
-            current_chunk_session = result["session"]
-            history_base_session = realtime_runtime.resolve_next_exact_history_base_session(
-                config=config,
-                result=result,
-                history_base_session=history_base_session,
-            )
-            buffer_tail_session = result["buffer_tail_session"]
-    else:
-        extension_records.append(result["trace"])
-        if chunk_accepted:
-            buffer_tail_session = result["buffer_tail_session"]
-        else:
-            buffer_tail_session = None
-    plan_by_action = merge_future_control_steps(
-        plan_by_action,
-        mergeable_planned_steps,
-        next_action_to_execute=next_action_to_execute,
-    )
-    return history_base_session, current_chunk_session, buffer_tail_session, plan_by_action, pending_history
-
-
-def _exact_chunk_to_planned_steps(
-    *,
-    chunk,
-    action_per_frame: int,
-    frame_chunk_size: int,
-    source: str,
-    ready_monotonic_s: float,
-) -> list[PlannedControlStep]:
-    if chunk.raw_chunk_action_pred is None:
-        raise RuntimeError("Exact runner did not produce raw 7D LIBERO actions.")
-    raw_actions = rearrange(
-        chunk.raw_chunk_action_pred[0],
-        "(f a) c -> f a c",
-        f=frame_chunk_size,
-        a=action_per_frame,
-    )
-    generation_frame_start = int(chunk.debug.get("generation_frame_start", 1))
-    require_strict_startup_generation_frame(generation_frame_start)
-    generation_action_start = frame_index_to_action_start(generation_frame_start, action_per_frame)
-    planned_steps: list[PlannedControlStep] = []
-    for frame_offset in range(raw_actions.shape[0]):
-        absolute_frame_index = generation_frame_start + frame_offset
-        for action_offset in range(raw_actions.shape[1]):
-            absolute_action_index = frame_index_to_action_start(
-                absolute_frame_index,
-                action_per_frame,
-            ) + action_offset
-            planned_steps.append(
-                PlannedControlStep(
-                    absolute_action_index=int(absolute_action_index),
-                    generation_action_start=int(generation_action_start),
-                    generation_frame_start=int(generation_frame_start),
-                    source=str(source),
-                    planner_step_index=int(chunk.session.policy_state.step_index),
-                    ready_monotonic_s=ready_monotonic_s,
-                    raw_action=raw_actions[frame_offset, action_offset].detach().to(dtype=torch.float32).cpu().numpy(),
-                )
-            )
-    return planned_steps
-
-
-def _exact_startup_conditioning_history_record(
-    *,
-    chunk,
-    initial_video_latents: torch.Tensor,
-    initial_obs: dict[str, np.ndarray],
-    action_per_frame: int,
-    frame_chunk_size: int,
-    conditioning_frame_index: int | None = None,
-    raw_actions_override: np.ndarray | None = None,
-    proprio_state: np.ndarray | torch.Tensor | None = None,
-) -> dict[str, Any]:
-    if chunk.raw_chunk_action_pred is None:
-        raise RuntimeError("Exact runner did not produce raw 7D LIBERO actions.")
-    raw_actions = rearrange(
-        chunk.raw_chunk_action_pred[0],
-        "(f a) c -> f a c",
-        f=frame_chunk_size,
-        a=action_per_frame,
-    )
-    resolved_conditioning_frame_index = (
-        int(chunk.debug.get("generation_frame_start", 0))
-        if conditioning_frame_index is None
-        else int(conditioning_frame_index)
-    )
-    generation_frame_start = int(chunk.debug.get("generation_frame_start", resolved_conditioning_frame_index))
-    require_strict_startup_generation_frame(generation_frame_start)
-    resolved_raw_actions = (
-        raw_actions[0].detach().to(dtype=torch.float32).cpu().numpy()
-        if raw_actions_override is None
-        else np.asarray(raw_actions_override, dtype=np.float32)
-    )
-    raw_actions_valid = generation_frame_start <= resolved_conditioning_frame_index
-    if not raw_actions_valid:
-        resolved_raw_actions = np.zeros((0, int(raw_actions.shape[-1])), dtype=np.float32)
-    record = {
-        "absolute_frame_index": int(resolved_conditioning_frame_index),
-        "obs": {key: np.array(value, copy=True) for key, value in initial_obs.items()},
-        "obs_sequence": [],
-        "raw_actions": resolved_raw_actions,
-        "raw_actions_valid": bool(raw_actions_valid),
-        "raw_action_dim": int(raw_actions.shape[-1]),
-        "video_latents": initial_video_latents.detach(),
-        "source": "startup_conditioning_frame",
-    }
-    if proprio_state is not None:
-        record["proprio_state"] = realtime_history.proprio_state_to_numpy(proprio_state)
-    return record
 
 
 def _run_sequence_policy_realtime_rollout(
@@ -2080,7 +1919,7 @@ def _run_sequence_policy_realtime_rollout(
                 if replan_future is not None and replan_future.done():
                     result = replan_future.result()
                     if realtime_runtime.uses_mot_split_cache_sequence(config):
-                        future_steps = _annotate_sequence_planner_acceptance(
+                        future_steps = realtime_runtime.annotate_sequence_planner_acceptance(
                             result,
                             next_action_to_execute=next_action_index,
                         )
@@ -2201,7 +2040,7 @@ def _run_sequence_policy_realtime_rollout(
                         result.trace["blocking_wait_action_index"] = int(next_action_index)
                         result.trace["blocking_wait_s"] = float(wait_for_plan_s)
                         if realtime_runtime.uses_mot_split_cache_sequence(config):
-                            future_steps = _annotate_sequence_planner_acceptance(
+                            future_steps = realtime_runtime.annotate_sequence_planner_acceptance(
                                 result,
                                 next_action_to_execute=next_action_index,
                             )
@@ -2235,7 +2074,11 @@ def _run_sequence_policy_realtime_rollout(
                                 )
                                 next_generation_action_start = int(buffer_tail_generation_action_start)
                         else:
-                            session, next_generation_action_start, plan_by_action = _apply_sequence_replan_result(
+                            (
+                                session,
+                                next_generation_action_start,
+                                plan_by_action,
+                            ) = realtime_runtime.apply_sequence_replan_result(
                                 result=result,
                                 replan_records=replan_records,
                                 plan_by_action=plan_by_action,
@@ -2370,7 +2213,7 @@ def _run_sequence_policy_realtime_rollout(
                 if replan_future is not None and replan_future.done():
                     result = replan_future.result()
                     if realtime_runtime.uses_mot_split_cache_sequence(config):
-                        future_steps = _annotate_sequence_planner_acceptance(
+                        future_steps = realtime_runtime.annotate_sequence_planner_acceptance(
                             result,
                             next_action_to_execute=next_action_index,
                         )
@@ -2541,7 +2384,7 @@ def _run_sequence_policy_realtime_rollout(
             if replan_future is not None and replan_future.done():
                 result = replan_future.result()
                 if realtime_runtime.uses_mot_split_cache_sequence(config):
-                    future_steps = _annotate_sequence_planner_acceptance(
+                    future_steps = realtime_runtime.annotate_sequence_planner_acceptance(
                         result,
                         next_action_to_execute=next_action_index,
                     )
@@ -2646,43 +2489,6 @@ def _run_sequence_policy_realtime_rollout(
         )
     finally:
         env.close()
-
-
-
-def _apply_sequence_replan_result(
-    *,
-    result: realtime_runtime.SequenceReplanJobResult,
-    replan_records: list[dict[str, Any]],
-    plan_by_action: dict[int, PlannedControlStep],
-    next_action_to_execute: int,
-) -> tuple[Any, int, dict[int, PlannedControlStep]]:
-    replan_records.append(result.trace)
-    return (
-        result.session,
-        int(result.next_generation_action_start),
-        merge_future_control_steps(
-            plan_by_action,
-            result.planned_steps,
-            next_action_to_execute=next_action_to_execute,
-        ),
-    )
-
-
-def _annotate_sequence_planner_acceptance(
-    result: realtime_runtime.SequenceReplanJobResult,
-    *,
-    next_action_to_execute: int,
-) -> list[PlannedControlStep]:
-    future_steps = future_control_steps(
-        result.planned_steps,
-        next_action_to_execute=next_action_to_execute,
-    )
-    result.trace["future_planned_actions"] = int(len(future_steps))
-    result.trace["stale_planned_actions"] = int(
-        len(result.planned_steps) - len(future_steps)
-    )
-    result.trace["accepted_chunk"] = bool(future_steps)
-    return future_steps
 
 
 

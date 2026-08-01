@@ -69,8 +69,13 @@ datasets explicitly rather than embedding private defaults.
 The maintained LIBERO realtime runner follows the same boundary. Package code
 in `libero_realtime_runtime` executes both frame-grouped and action-sequence
 planner jobs and owns encoded-history preparation, session continuity,
-route-aware sequence startup, typed replan options/results, decoder-plan
-conversion, LIBERO action materialization, and fallback action generation. The
+route-aware sequence startup, typed planner results and result application,
+decoder-plan conversion, LIBERO action materialization, and fallback action
+generation. Frame-grouped jobs return `FramePlannerJobResult` and apply through
+`FramePlannerResultApplication`; action-sequence jobs use
+`SequenceReplanJobOptions` and `SequenceReplanJobResult`. These frozen
+envelopes make session/cache ownership explicit. Their trace mappings remain
+mutable so the scheduler can append acceptance and wait metadata. The
 benchmark-independent
 `realtime_history` contract owns copied observation windows, fallback
 quarantine and washout, model-timeline advancement, and proprio normalization;

@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 import time
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import torch
@@ -27,7 +27,11 @@ from open_wam.integrations import libero_rollout
 from open_wam.integrations.realtime_control import (
     PlannedControlStep,
     PlannedFrameAction,
+    drop_partial_stale_control_chunk,
+    future_control_steps,
     make_planned_frame_actions,
+    merge_future_control_steps,
+    planned_frame_actions_to_control_steps,
     select_realtime_planner_job,
 )
 from open_wam.models.common.rollout_startup import (
@@ -52,13 +56,20 @@ from open_wam.utils import validate_positive_step_override
 
 
 __all__ = [
+    "FramePlannerJobResult",
+    "FramePlannerResultApplication",
     "SequenceReplanJobOptions",
     "SequenceReplanJobResult",
+    "annotate_sequence_planner_acceptance",
     "apply_inference_overrides",
+    "apply_frame_planner_result",
+    "apply_sequence_replan_result",
+    "build_exact_startup_conditioning_history_record",
     "build_sequence_startup_observation_window",
     "build_fallback_frame_actions",
     "collect_decoder_runtime_metadata",
     "copy_history_record_for_worker",
+    "exact_chunk_to_planned_steps",
     "isolated_torch_rng",
     "job_seed_for_session",
     "materialize_sequence_control_action",
@@ -86,6 +97,30 @@ __all__ = [
     "validate_sequence_startup_inputs",
     "validate_sequence_startup_open_loop_support",
 ]
+
+
+@dataclass(frozen=True)
+class FramePlannerJobResult:
+    """One frame-grouped planner result with explicit session ownership."""
+
+    job_kind: Literal["history_replan", "open_loop_extension"]
+    planned_frames: list[PlannedFrameAction]
+    buffer_tail_session: VariantRolloutSession | None
+    trace: dict[str, Any]
+    submitted_through_frame: int | None
+    session: VariantRolloutSession | None = None
+    warmup_session: VariantRolloutSession | None = None
+
+
+@dataclass(frozen=True)
+class FramePlannerResultApplication:
+    """Scheduler state after accepting or rejecting one frame planner job."""
+
+    history_base_session: VariantRolloutSession
+    current_chunk_session: VariantRolloutSession
+    buffer_tail_session: VariantRolloutSession | None
+    plan_by_action: dict[int, PlannedControlStep]
+    pending_history: list[dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -825,6 +860,227 @@ def _json_scalar_from_tensor(value) -> Any:
     return value
 
 
+def exact_chunk_to_planned_steps(
+    *,
+    chunk,
+    action_per_frame: int,
+    frame_chunk_size: int,
+    source: str,
+    ready_monotonic_s: float,
+) -> list[PlannedControlStep]:
+    """Convert one strict frame-grouped chunk to executable control steps."""
+
+    return planned_frame_actions_to_control_steps(
+        _chunk_to_planned_frames(
+            first_chunk=chunk,
+            frame_chunk_size=frame_chunk_size,
+            action_per_frame=action_per_frame,
+            source=source,
+            ready_monotonic_s=ready_monotonic_s,
+        )
+    )
+
+
+def build_exact_startup_conditioning_history_record(
+    *,
+    chunk,
+    initial_video_latents: torch.Tensor,
+    initial_obs: dict[str, np.ndarray],
+    action_per_frame: int,
+    frame_chunk_size: int,
+    conditioning_frame_index: int | None = None,
+    raw_actions_override: np.ndarray | None = None,
+    proprio_state: np.ndarray | torch.Tensor | None = None,
+) -> dict[str, Any]:
+    """Build the observed prefix record used by strict frame-grouped startup."""
+
+    if chunk.raw_chunk_action_pred is None:
+        raise RuntimeError("Exact runner did not produce raw 7D LIBERO actions.")
+    raw_actions = rearrange(
+        chunk.raw_chunk_action_pred[0],
+        "(f a) c -> f a c",
+        f=frame_chunk_size,
+        a=action_per_frame,
+    )
+    resolved_conditioning_frame_index = (
+        int(chunk.debug.get("generation_frame_start", 0))
+        if conditioning_frame_index is None
+        else int(conditioning_frame_index)
+    )
+    generation_frame_start = int(
+        chunk.debug.get(
+            "generation_frame_start",
+            resolved_conditioning_frame_index,
+        )
+    )
+    require_strict_startup_generation_frame(generation_frame_start)
+    resolved_raw_actions = (
+        raw_actions[0].detach().to(dtype=torch.float32).cpu().numpy()
+        if raw_actions_override is None
+        else np.asarray(raw_actions_override, dtype=np.float32)
+    )
+    raw_actions_valid = generation_frame_start <= resolved_conditioning_frame_index
+    if not raw_actions_valid:
+        resolved_raw_actions = np.zeros(
+            (0, int(raw_actions.shape[-1])),
+            dtype=np.float32,
+        )
+    record = {
+        "absolute_frame_index": int(resolved_conditioning_frame_index),
+        "obs": {
+            key: np.array(value, copy=True)
+            for key, value in initial_obs.items()
+        },
+        "obs_sequence": [],
+        "raw_actions": resolved_raw_actions,
+        "raw_actions_valid": bool(raw_actions_valid),
+        "raw_action_dim": int(raw_actions.shape[-1]),
+        "video_latents": initial_video_latents.detach(),
+        "source": "startup_conditioning_frame",
+    }
+    if proprio_state is not None:
+        record["proprio_state"] = realtime_history.proprio_state_to_numpy(
+            proprio_state
+        )
+    return record
+
+
+def apply_frame_planner_result(
+    result: FramePlannerJobResult,
+    *,
+    config: ExperimentConfig,
+    plan_by_action: dict[int, PlannedControlStep],
+    next_action_to_execute: int,
+    pending_history: list[dict[str, Any]],
+    history_base_session: VariantRolloutSession,
+    current_chunk_session: VariantRolloutSession,
+    buffer_tail_session: VariantRolloutSession | None,
+    replan_records: list[dict[str, Any]],
+    extension_records: list[dict[str, Any]],
+    min_future_actions_to_accept_stale_chunk: int = 0,
+) -> FramePlannerResultApplication:
+    """Apply one typed frame planner result to scheduler-owned state."""
+
+    planned_steps = planned_frame_actions_to_control_steps(result.planned_frames)
+    (
+        mergeable_planned_steps,
+        chunk_boundary_dropped_actions,
+        partial_stale_chunk_accepted_actions,
+    ) = drop_partial_stale_control_chunk(
+        planned_steps,
+        next_action_to_execute=next_action_to_execute,
+        min_future_actions_to_accept_stale_chunk=(
+            min_future_actions_to_accept_stale_chunk
+        ),
+    )
+    future_planned_steps = future_control_steps(
+        mergeable_planned_steps,
+        next_action_to_execute=next_action_to_execute,
+    )
+    chunk_accepted = bool(future_planned_steps)
+    result.trace["planned_action_indices"] = [
+        int(step.absolute_action_index) for step in planned_steps
+    ]
+    result.trace["future_planned_actions"] = int(len(future_planned_steps))
+    result.trace["stale_planned_actions"] = int(
+        len(planned_steps) - len(future_planned_steps)
+    )
+    result.trace["chunk_boundary_dropped_actions"] = int(
+        chunk_boundary_dropped_actions
+    )
+    result.trace["partial_stale_chunk_accepted_actions"] = int(
+        partial_stale_chunk_accepted_actions
+    )
+    result.trace["accepted_chunk"] = bool(chunk_accepted)
+
+    if result.job_kind == "history_replan":
+        replan_records.append(result.trace)
+        if chunk_accepted:
+            if result.submitted_through_frame is None or result.session is None:
+                raise RuntimeError(
+                    "Accepted history replan is missing its submitted frame or "
+                    "output session."
+                )
+            pending_history = [
+                record
+                for record in pending_history
+                if int(record["absolute_frame_index"])
+                > int(result.submitted_through_frame)
+            ]
+            current_chunk_session = result.session
+            history_base_session = resolve_next_exact_history_base_session(
+                config=config,
+                result=result,
+                history_base_session=history_base_session,
+            )
+            buffer_tail_session = result.buffer_tail_session
+    elif result.job_kind == "open_loop_extension":
+        extension_records.append(result.trace)
+        buffer_tail_session = (
+            result.buffer_tail_session if chunk_accepted else None
+        )
+    else:
+        raise AssertionError(
+            f"Unhandled frame planner job kind: {result.job_kind!r}."
+        )
+
+    return FramePlannerResultApplication(
+        history_base_session=history_base_session,
+        current_chunk_session=current_chunk_session,
+        buffer_tail_session=buffer_tail_session,
+        plan_by_action=merge_future_control_steps(
+            plan_by_action,
+            mergeable_planned_steps,
+            next_action_to_execute=next_action_to_execute,
+        ),
+        pending_history=pending_history,
+    )
+
+
+def apply_sequence_replan_result(
+    *,
+    result: SequenceReplanJobResult,
+    replan_records: list[dict[str, Any]],
+    plan_by_action: dict[int, PlannedControlStep],
+    next_action_to_execute: int,
+) -> tuple[
+    VariantRolloutSession,
+    int,
+    dict[int, PlannedControlStep],
+]:
+    """Commit one sequence replan result to the active executable plan."""
+
+    replan_records.append(result.trace)
+    return (
+        result.session,
+        int(result.next_generation_action_start),
+        merge_future_control_steps(
+            plan_by_action,
+            result.planned_steps,
+            next_action_to_execute=next_action_to_execute,
+        ),
+    )
+
+
+def annotate_sequence_planner_acceptance(
+    result: SequenceReplanJobResult,
+    *,
+    next_action_to_execute: int,
+) -> list[PlannedControlStep]:
+    """Record whether a completed sequence plan still has executable actions."""
+
+    future_steps = future_control_steps(
+        result.planned_steps,
+        next_action_to_execute=next_action_to_execute,
+    )
+    result.trace["future_planned_actions"] = int(len(future_steps))
+    result.trace["stale_planned_actions"] = int(
+        len(result.planned_steps) - len(future_steps)
+    )
+    result.trace["accepted_chunk"] = bool(future_steps)
+    return future_steps
+
+
 def _chunk_to_planned_frames(
     *,
     first_chunk,
@@ -871,7 +1127,7 @@ def _submit_planner_job(
     runtime_device: torch.device,
     buffer_tail_session,
     seed_base: int | None = None,
-) -> Future[dict[str, Any]]:
+) -> Future[FramePlannerJobResult]:
     history_payload = [
         copy_history_record_for_worker(record)
         for record in pending_history
@@ -919,7 +1175,10 @@ def submit_planner_job_with_snapshot(
     runtime_device: torch.device,
     buffer_tail_session,
     seed_base: int | None,
-) -> tuple[Future[dict[str, Any]] | None, VisualRuntimeStateSnapshot | None]:
+) -> tuple[
+    Future[FramePlannerJobResult] | None,
+    VisualRuntimeStateSnapshot | None,
+]:
     """Submit a planner branch with a rollback point for shared visual state."""
 
     selected_job = select_realtime_planner_job(
@@ -1050,14 +1309,20 @@ def _resolve_exact_startup_history_base_session(
 
 def resolve_next_exact_history_base_session(
     *,
-    config,
-    result: dict[str, Any],
-    history_base_session,
-):
+    config: ExperimentConfig,
+    result: FramePlannerJobResult,
+    history_base_session: VariantRolloutSession,
+) -> VariantRolloutSession:
     runtime_mode = getattr(config.policy_variant, "runtime_mode", None)
     if runtime_mode == ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
-        return result.get("warmup_session", history_base_session)
-    return result["session"]
+        return (
+            history_base_session
+            if result.warmup_session is None
+            else result.warmup_session
+        )
+    if result.session is None:
+        raise RuntimeError("History replan result is missing its output session.")
+    return result.session
 
 
 def run_replan_job(
@@ -1070,7 +1335,7 @@ def run_replan_job(
     frontend_device: torch.device,
     runtime_device: torch.device,
     job_seed: int | None = None,
-) -> dict[str, Any]:
+) -> FramePlannerJobResult:
     if not history_records:
         raise ValueError("Realtime replan requires at least one observed history frame.")
     observed_frame_index = int(history_records[-1]["absolute_frame_index"])
@@ -1136,17 +1401,17 @@ def run_replan_job(
         ready_monotonic_s=ready_monotonic_s,
         generation_frame_start=generation_frame_start,
     )
-    return {
-        "job_kind": "history_replan",
-        "session": chunk.session,
-        "warmup_session": warmup.session,
-        "buffer_tail_session": _session_for_next_chunk(
+    return FramePlannerJobResult(
+        job_kind="history_replan",
+        session=chunk.session,
+        warmup_session=warmup.session,
+        buffer_tail_session=_session_for_next_chunk(
             chunk.session,
             next_frame_start=generation_frame_start + int(config.inference.frame_chunk_size),
             frame_chunk_size=int(config.inference.frame_chunk_size),
         ),
-        "planned_frames": planned_frames,
-        "trace": {
+        planned_frames=planned_frames,
+        trace={
             "job_kind": "history_replan",
             "observed_frame_index": int(observed_frame_index),
             "history_frame_count": int(len(history_records)),
@@ -1172,8 +1437,8 @@ def run_replan_job(
             "total_latency_s": float(prepare_s + warmup_s + infer_s),
             "ready_monotonic_s": float(ready_monotonic_s),
         },
-        "submitted_through_frame": observed_frame_index,
-    }
+        submitted_through_frame=observed_frame_index,
+    )
 
 
 def run_extension_job(
@@ -1183,7 +1448,7 @@ def run_extension_job(
     config,
     runtime_device: torch.device,
     job_seed: int | None = None,
-) -> dict[str, Any]:
+) -> FramePlannerJobResult:
     with isolated_torch_rng(job_seed, runtime_device), torch.inference_mode():
         infer_t0 = time.perf_counter()
         chunk = runner.infer_chunk(session=session, advance_frame_start=True)
@@ -1198,11 +1463,11 @@ def run_extension_job(
         source="open_loop_extension",
         ready_monotonic_s=ready_monotonic_s,
     )
-    return {
-        "job_kind": "open_loop_extension",
-        "planned_frames": planned_frames,
-        "buffer_tail_session": chunk.session,
-        "trace": {
+    return FramePlannerJobResult(
+        job_kind="open_loop_extension",
+        planned_frames=planned_frames,
+        buffer_tail_session=chunk.session,
+        trace={
             "job_kind": "open_loop_extension",
             "generation_frame_start": generation_frame_start,
             "planned_frame_ids": [int(plan.absolute_frame_index) for plan in planned_frames],
@@ -1212,8 +1477,8 @@ def run_extension_job(
             "total_latency_s": float(infer_s),
             "ready_monotonic_s": float(ready_monotonic_s),
         },
-        "submitted_through_frame": None,
-    }
+        submitted_through_frame=None,
+    )
 
 
 def _prepare_history_runtime_inputs(

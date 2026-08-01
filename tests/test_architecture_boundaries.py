@@ -2695,13 +2695,20 @@ def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
     runtime_path = PACKAGE_ROOT / "evals" / "libero_realtime_runtime.py"
     runner_source = runner_path.read_text(encoding="utf-8")
     public_runtime_contracts = {
+        "FramePlannerJobResult",
+        "FramePlannerResultApplication",
         "SequenceReplanJobOptions",
         "SequenceReplanJobResult",
+        "annotate_sequence_planner_acceptance",
+        "apply_frame_planner_result",
         "apply_inference_overrides",
+        "apply_sequence_replan_result",
+        "build_exact_startup_conditioning_history_record",
         "build_fallback_frame_actions",
         "build_sequence_startup_observation_window",
         "collect_decoder_runtime_metadata",
         "copy_history_record_for_worker",
+        "exact_chunk_to_planned_steps",
         "isolated_torch_rng",
         "job_seed_for_session",
         "materialize_sequence_control_action",
@@ -2729,8 +2736,11 @@ def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
         "validate_sequence_startup_inputs",
         "validate_sequence_startup_open_loop_support",
     }
-    retired_sequence_runner_helpers = {
+    retired_planner_runner_helpers = {
         "_collect_decoder_runtime_metadata",
+        "_consume_exact_future_result",
+        "_exact_chunk_to_planned_steps",
+        "_exact_startup_conditioning_history_record",
         "_is_mot_non_joint_two_stream",
         "_materialize_sequence_control_action",
         "_mot_action_cache_rewind_for_sequence_submit",
@@ -2738,6 +2748,8 @@ def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
         "_mot_history_replan_ready",
         "_resolve_observation_conditioned_replan_session",
         "_run_sequence_replan_job",
+        "_apply_sequence_replan_result",
+        "_annotate_sequence_planner_acceptance",
         "_sequence_actions_per_frame",
         "_sequence_buffer_tail_ready_for_history_promotion",
         "_sequence_chunk_to_planned_steps",
@@ -2757,11 +2769,14 @@ def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
     assert "realtime_runtime._" not in runner_source
     assert public_runtime_contracts <= _top_level_definitions(runtime_path)
     assert public_runtime_contracts <= _module_all_names(runtime_path)
-    assert retired_sequence_runner_helpers.isdisjoint(
+    assert retired_planner_runner_helpers.isdisjoint(
         _top_level_definitions(runner_path)
     )
+    assert "realtime_runtime.apply_frame_planner_result(" in runner_source
+    assert "realtime_runtime.exact_chunk_to_planned_steps(" in runner_source
     assert "realtime_runtime.SequenceReplanJobOptions(" in runner_source
     assert "realtime_runtime.run_sequence_replan_job(" in runner_source
+    assert "Future[dict[str, Any]]" not in runner_source
     assert "PolicyInferContext" not in runner_source
     assert {
         "maybe_submit_planner_job",
@@ -2881,6 +2896,7 @@ def test_realtime_speculation_has_one_package_owner() -> None:
     assert "realtime_speculation._" not in runner_source
     assert retired_runner_contracts.isdisjoint(_top_level_definitions(runner_path))
     assert public_speculation_contracts <= _top_level_definitions(speculation_path)
+    assert "Future[dict[str, Any]]" not in speculation_source
     assert "def snapshot_runtime_state(" in tower_source
     assert "def restore_runtime_state(" in tower_source
     for private_visual_state in (

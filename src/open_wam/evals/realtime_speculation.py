@@ -58,6 +58,10 @@ class _VisualRuntimeRunner(Protocol):
     pipeline: _VisualRuntimePipeline
 
 
+class _PlannerResultLike(Protocol):
+    trace: Mapping[str, Any]
+
+
 @dataclass(frozen=True)
 class RuntimeRngSnapshot:
     """Python, NumPy, and Torch RNG state captured as one restore point."""
@@ -69,6 +73,7 @@ class RuntimeRngSnapshot:
 
 
 SessionT = TypeVar("SessionT")
+PlannerResultT = TypeVar("PlannerResultT")
 
 
 def visual_runtime_cache_name_for_session(
@@ -119,14 +124,19 @@ def restore_visual_runtime(
 
 
 def restore_visual_runtime_if_rejected(
-    result: Mapping[str, Any],
+    result: Mapping[str, Any] | _PlannerResultLike,
     *,
     runner: _VisualRuntimeRunner,
     snapshot: VisualRuntimeStateSnapshot | None,
 ) -> None:
     """Rollback speculative visual state unless the result was accepted."""
 
-    if bool(result.get("trace", {}).get("accepted_chunk", False)):
+    trace = (
+        result.get("trace", {})
+        if isinstance(result, Mapping)
+        else result.trace
+    )
+    if bool(trace.get("accepted_chunk", False)):
         return
     restore_visual_runtime(runner=runner, snapshot=snapshot)
 
@@ -188,11 +198,11 @@ def restore_rng_state(snapshot: RuntimeRngSnapshot | None) -> None:
 
 
 def resolve_future_result(
-    future: Future[dict[str, Any]],
+    future: Future[PlannerResultT],
     *,
     runner: _VisualRuntimeRunner,
     snapshot: VisualRuntimeStateSnapshot | None,
-) -> dict[str, Any]:
+) -> PlannerResultT:
     """Resolve a planner future and rollback visual state on failure."""
 
     try:
