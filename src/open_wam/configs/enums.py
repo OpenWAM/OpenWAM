@@ -734,6 +734,38 @@ class DeadlineMissPolicy(StrEnum):
     ZERO = "zero"
 
 
+class RealtimePlannerMode(StrEnum):
+    """Priority policy for observed-history replans and open-loop extension."""
+
+    HISTORY_ONLY = "history_only"
+    ASYNC_BUFFER = "async_buffer"
+    ASYNC_MIX = "async_mix"
+    ASYNC_HISTORY_FIRST = "async_history_first"
+
+
+class RealtimeEmptyPlanPolicy(StrEnum):
+    """Control-loop behavior when the next required plan is unavailable."""
+
+    FALLBACK = "fallback"
+    WAIT_FOR_REPLAN = "wait_for_replan"
+
+
+class RealtimeSchedulerProfile(StrEnum):
+    """Named bundle of realtime scheduling defaults."""
+
+    MANUAL = "manual"
+    BLOCKING_CONTROL = "blocking_control"
+    FREEZE_UNTIL_CLEAN_CHUNK = "freeze_until_clean_chunk"
+    ASYNC_HISTORY_FIRST = "async_history_first"
+
+
+class RealtimePlannerJob(StrEnum):
+    """Planner work selected for one available scheduling slot."""
+
+    HISTORY_REPLAN = "history_replan"
+    BUFFER_EXTENSION = "buffer_extension"
+
+
 class RolloutArtifactProfile(StrEnum):
     """Amount of rollout video and diagnostic state persisted per episode."""
 

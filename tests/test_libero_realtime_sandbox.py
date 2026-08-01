@@ -122,8 +122,10 @@ def test_realtime_profiles_apply_long_libero_defaults_and_scheduler_defaults() -
     assert args.max_actions == 3000
     assert args.env_horizon == 5000
     assert args.video_fps is None
-    assert args.planner_mode == "history_only"
-    assert args.sequence_empty_plan_policy == "wait_for_replan"
+    assert args.realtime_scheduler_profile is sandbox.RealtimeSchedulerProfile.BLOCKING_CONTROL
+    assert args.planner_mode is sandbox.RealtimePlannerMode.HISTORY_ONLY
+    assert args.sequence_empty_plan_policy is sandbox.RealtimeEmptyPlanPolicy.WAIT_FOR_REPLAN
+    assert args.fallback_history_policy is sandbox.FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY
 
 
 def test_realtime_profiles_preserve_explicit_low_level_overrides() -> None:
@@ -149,7 +151,8 @@ def test_realtime_profiles_preserve_explicit_low_level_overrides() -> None:
     )
 
     assert args.max_actions == 120
-    assert args.planner_mode == "history_only"
+    assert args.realtime_scheduler_profile is sandbox.RealtimeSchedulerProfile.ASYNC_HISTORY_FIRST
+    assert args.planner_mode is sandbox.RealtimePlannerMode.HISTORY_ONLY
     assert args.replan_low_watermark_actions == 7
     assert args.startup_open_loop_chunks == 1
 
@@ -322,111 +325,6 @@ def test_finalize_rollout_outputs_lean_skips_videos_and_traces(
     assert not list(tmp_path.rglob("*_replans.jsonl"))
     assert not list(tmp_path.rglob("*_extensions.jsonl"))
     assert not list(tmp_path.rglob("*_load_report.json"))
-
-
-def test_exact_wait_mode_prefers_history_replans_when_history_exists() -> None:
-    sandbox = _load_sandbox_module()
-
-    assert (
-        sandbox._resolve_exact_realtime_planner_mode(
-            planner_mode="async_buffer",
-            sequence_empty_plan_policy="wait_for_replan",
-            pending_history=[{"absolute_frame_index": 1}],
-        )
-        == "history_only"
-    )
-    assert (
-        sandbox._resolve_exact_realtime_planner_mode(
-            planner_mode="async_buffer",
-            sequence_empty_plan_policy="wait_for_replan",
-            pending_history=[],
-        )
-        == "async_buffer"
-    )
-    assert (
-        sandbox._resolve_exact_realtime_planner_mode(
-            planner_mode="async_buffer",
-            sequence_empty_plan_policy="fallback",
-            pending_history=[{"absolute_frame_index": 1}],
-        )
-        == "async_buffer"
-    )
-
-
-def test_exact_wait_mode_submits_replans_only_when_buffer_is_empty() -> None:
-    sandbox = _load_sandbox_module()
-
-    assert sandbox._should_submit_exact_realtime_planner(
-        future_buffer_depth_actions=0,
-        future_buffer_depth_frames=0,
-        sequence_empty_plan_policy="wait_for_replan",
-    )
-    assert not sandbox._should_submit_exact_realtime_planner(
-        future_buffer_depth_actions=8,
-        future_buffer_depth_frames=2,
-        sequence_empty_plan_policy="wait_for_replan",
-    )
-    assert sandbox._should_submit_exact_realtime_planner(
-        future_buffer_depth_actions=8,
-        future_buffer_depth_frames=2,
-        sequence_empty_plan_policy="fallback",
-    )
-
-
-def test_exact_replan_low_watermark_actions_gate_fallback_submissions() -> None:
-    sandbox = _load_sandbox_module()
-
-    assert sandbox._should_submit_exact_realtime_planner(
-        future_buffer_depth_actions=10,
-        future_buffer_depth_frames=3,
-        sequence_empty_plan_policy="fallback",
-        replan_low_watermark_actions=10,
-    )
-    assert not sandbox._should_submit_exact_realtime_planner(
-        future_buffer_depth_actions=11,
-        future_buffer_depth_frames=3,
-        sequence_empty_plan_policy="fallback",
-        replan_low_watermark_actions=10,
-    )
-    assert sandbox._should_submit_exact_realtime_planner(
-        future_buffer_depth_actions=0,
-        future_buffer_depth_frames=0,
-        sequence_empty_plan_policy="fallback",
-        replan_low_watermark_actions=10,
-    )
-
-
-def test_sequence_realtime_low_watermark_overrides_buffer_threshold() -> None:
-    sandbox = _load_sandbox_module()
-
-    assert sandbox._should_submit_sequence_realtime_planner(
-        planner_mode="async_history_first",
-        future_buffer_depth_actions=12,
-        sequence_empty_plan_policy="fallback",
-        sequence_buffer_threshold=3,
-        replan_low_watermark_actions=12,
-    )
-    assert not sandbox._should_submit_sequence_realtime_planner(
-        planner_mode="async_history_first",
-        future_buffer_depth_actions=13,
-        sequence_empty_plan_policy="fallback",
-        sequence_buffer_threshold=3,
-        replan_low_watermark_actions=12,
-    )
-    assert sandbox._should_submit_sequence_realtime_planner(
-        planner_mode="async_history_first",
-        future_buffer_depth_actions=3,
-        sequence_empty_plan_policy="wait_for_replan",
-        sequence_buffer_threshold=3,
-        replan_low_watermark_actions=0,
-    )
-    assert not sandbox._should_submit_sequence_realtime_planner(
-        planner_mode="history_only",
-        future_buffer_depth_actions=1,
-        sequence_empty_plan_policy="fallback",
-        sequence_buffer_threshold=3,
-        replan_low_watermark_actions=12,
-    )
 
 
 def test_exact_fallback_history_policy_freeze_until_clean_chunk_delays_full_clean_chunk() -> None:

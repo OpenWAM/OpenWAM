@@ -1,4 +1,4 @@
-"""Realtime LIBERO scheduling and observed-history execution contracts."""
+"""Realtime LIBERO planner jobs and observed-history execution contracts."""
 
 from __future__ import annotations
 
@@ -12,12 +12,17 @@ import torch
 from einops import rearrange
 
 from open_wam.configs import ParallelRuntimeMode
-from open_wam.configs.enums import DeadlineMissPolicy
+from open_wam.configs.enums import (
+    DeadlineMissPolicy,
+    RealtimePlannerJob,
+    RealtimePlannerMode,
+)
 from open_wam.evals import libero_visualization as exact_viz
 from open_wam.evals import realtime_speculation
 from open_wam.integrations.realtime_control import (
     PlannedFrameAction,
     make_planned_frame_actions,
+    select_realtime_planner_job,
 )
 from open_wam.models.common.rollout_startup import (
     require_strict_startup_generation_frame,
@@ -33,12 +38,10 @@ __all__ = [
     "copy_history_record_for_worker",
     "isolated_torch_rng",
     "job_seed_for_session",
-    "maybe_submit_planner_job",
     "resolve_exact_startup_sessions",
     "resolve_next_exact_history_base_session",
     "run_extension_job",
     "run_replan_job",
-    "should_submit_planner_job",
     "submit_planner_job_with_snapshot",
     "synchronize_devices",
 ]
@@ -132,40 +135,11 @@ def _chunk_to_planned_frames(
     )
 
 
-def should_submit_planner_job(
+def _submit_planner_job(
     *,
-    planner_mode: str,
-    has_history: bool,
-    future_buffer_depth: int,
-    has_buffer_tail_session: bool,
-) -> bool:
-    if planner_mode == "history_only":
-        return has_history
-    if planner_mode == "async_buffer":
-        if has_buffer_tail_session and future_buffer_depth <= 3:
-            return True
-        if has_history:
-            return True
-        return has_buffer_tail_session and future_buffer_depth <= 6
-    if planner_mode == "async_history_first":
-        return has_history or (has_buffer_tail_session and future_buffer_depth <= 6)
-    if planner_mode == "async_mix":
-        if has_history and future_buffer_depth >= 2:
-            return True
-        if has_buffer_tail_session and future_buffer_depth <= 3:
-            return True
-        if has_history:
-            return True
-        return has_buffer_tail_session and future_buffer_depth <= 6
-    raise ValueError(f"Unsupported planner_mode={planner_mode!r}.")
-
-
-def maybe_submit_planner_job(
-    *,
+    selected_job: RealtimePlannerJob,
     executor: ThreadPoolExecutor,
-    planner_mode: str,
     pending_history: list[dict[str, Any]],
-    future_buffer_depth: int,
     runner,
     history_base_session,
     current_chunk_session,
@@ -175,21 +149,14 @@ def maybe_submit_planner_job(
     runtime_device: torch.device,
     buffer_tail_session,
     seed_base: int | None = None,
-) -> Future[dict[str, Any]] | None:
-    if not should_submit_planner_job(
-        planner_mode=planner_mode,
-        has_history=bool(pending_history),
-        future_buffer_depth=future_buffer_depth,
-        has_buffer_tail_session=buffer_tail_session is not None,
-    ):
-        return None
+) -> Future[dict[str, Any]]:
     history_payload = [
         copy_history_record_for_worker(record)
         for record in pending_history
     ]
-    if planner_mode == "history_only":
+    if selected_job == RealtimePlannerJob.HISTORY_REPLAN:
         if not history_payload:
-            return None
+            raise RuntimeError("History replan selected without any observed history.")
         return executor.submit(
             run_replan_job,
             runner=runner,
@@ -201,112 +168,24 @@ def maybe_submit_planner_job(
             runtime_device=runtime_device,
             job_seed=job_seed_for_session(seed_base, current_chunk_session),
         )
-    if planner_mode == "async_buffer":
-        if buffer_tail_session is not None and future_buffer_depth <= 3:
-            return executor.submit(
-                run_extension_job,
-                runner=runner,
-                session=buffer_tail_session,
-                config=config,
-                runtime_device=runtime_device,
-                job_seed=job_seed_for_session(seed_base, buffer_tail_session),
-            )
-        if history_payload:
-            return executor.submit(
-                run_replan_job,
-                runner=runner,
-                session=history_base_session,
-                prompt=prompt,
-                history_records=history_payload,
-                config=config,
-                frontend_device=frontend_device,
-                runtime_device=runtime_device,
-                job_seed=job_seed_for_session(seed_base, current_chunk_session),
-            )
-        if buffer_tail_session is not None and future_buffer_depth <= 6:
-            return executor.submit(
-                run_extension_job,
-                runner=runner,
-                session=buffer_tail_session,
-                config=config,
-                runtime_device=runtime_device,
-                job_seed=job_seed_for_session(seed_base, buffer_tail_session),
-            )
-        return None
-    if planner_mode == "async_history_first":
-        if history_payload:
-            return executor.submit(
-                run_replan_job,
-                runner=runner,
-                session=history_base_session,
-                prompt=prompt,
-                history_records=history_payload,
-                config=config,
-                frontend_device=frontend_device,
-                runtime_device=runtime_device,
-                job_seed=job_seed_for_session(seed_base, current_chunk_session),
-            )
-        if buffer_tail_session is not None and future_buffer_depth <= 6:
-            return executor.submit(
-                run_extension_job,
-                runner=runner,
-                session=buffer_tail_session,
-                config=config,
-                runtime_device=runtime_device,
-                job_seed=job_seed_for_session(seed_base, buffer_tail_session),
-            )
-        return None
-    if planner_mode == "async_mix":
-        if history_payload and len(history_payload) >= 2 and future_buffer_depth >= 2:
-            return executor.submit(
-                run_replan_job,
-                runner=runner,
-                session=history_base_session,
-                prompt=prompt,
-                history_records=history_payload,
-                config=config,
-                frontend_device=frontend_device,
-                runtime_device=runtime_device,
-                job_seed=job_seed_for_session(seed_base, current_chunk_session),
-            )
-        if buffer_tail_session is not None and future_buffer_depth <= 3:
-            return executor.submit(
-                run_extension_job,
-                runner=runner,
-                session=buffer_tail_session,
-                config=config,
-                runtime_device=runtime_device,
-                job_seed=job_seed_for_session(seed_base, buffer_tail_session),
-            )
-        if history_payload:
-            return executor.submit(
-                run_replan_job,
-                runner=runner,
-                session=history_base_session,
-                prompt=prompt,
-                history_records=history_payload,
-                config=config,
-                frontend_device=frontend_device,
-                runtime_device=runtime_device,
-                job_seed=job_seed_for_session(seed_base, current_chunk_session),
-            )
-        if buffer_tail_session is not None and future_buffer_depth <= 6:
-            return executor.submit(
-                run_extension_job,
-                runner=runner,
-                session=buffer_tail_session,
-                config=config,
-                runtime_device=runtime_device,
-                job_seed=job_seed_for_session(seed_base, buffer_tail_session),
-            )
-        return None
-    raise ValueError(f"Unsupported planner_mode={planner_mode!r}.")
+    if selected_job == RealtimePlannerJob.BUFFER_EXTENSION:
+        if buffer_tail_session is None:
+            raise RuntimeError("Buffer extension selected without a tail session.")
+        return executor.submit(
+            run_extension_job,
+            runner=runner,
+            session=buffer_tail_session,
+            config=config,
+            runtime_device=runtime_device,
+            job_seed=job_seed_for_session(seed_base, buffer_tail_session),
+        )
+    raise AssertionError(f"Unhandled realtime planner job: {selected_job!r}")
 
 
 def submit_planner_job_with_snapshot(
     *,
     executor: ThreadPoolExecutor,
-    planner_mode: str,
+    planner_mode: RealtimePlannerMode | str,
     pending_history: list[dict[str, Any]],
     future_buffer_depth: int,
     runner,
@@ -321,23 +200,23 @@ def submit_planner_job_with_snapshot(
 ) -> tuple[Future[dict[str, Any]] | None, VisualRuntimeStateSnapshot | None]:
     """Submit a planner branch with a rollback point for shared visual state."""
 
-    if not should_submit_planner_job(
+    selected_job = select_realtime_planner_job(
         planner_mode=planner_mode,
-        has_history=bool(pending_history),
+        history_count=len(pending_history),
         future_buffer_depth=future_buffer_depth,
         has_buffer_tail_session=buffer_tail_session is not None,
-    ):
+    )
+    if selected_job is None:
         return None, None
     snapshot = realtime_speculation.snapshot_visual_runtime(
         runner=runner,
         config=config,
         session=current_chunk_session,
     )
-    submitted_future = maybe_submit_planner_job(
+    submitted_future = _submit_planner_job(
+        selected_job=selected_job,
         executor=executor,
-        planner_mode=planner_mode,
         pending_history=pending_history,
-        future_buffer_depth=future_buffer_depth,
         runner=runner,
         history_base_session=history_base_session,
         current_chunk_session=current_chunk_session,
@@ -348,8 +227,6 @@ def submit_planner_job_with_snapshot(
         buffer_tail_session=buffer_tail_session,
         seed_base=seed_base,
     )
-    if submitted_future is None:
-        return None, None
     return submitted_future, snapshot
 
 

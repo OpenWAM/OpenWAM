@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 
@@ -37,27 +38,37 @@ def test_submit_planner_job_returns_visual_rollback_snapshot(
         snapshot_calls.append(kwargs)
         return expected_snapshot
 
+    class RecordingExecutor:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, dict[str, object]]] = []
+
+        def submit(self, fn, **kwargs):
+            self.calls.append((fn, kwargs))
+            return expected_future
+
     monkeypatch.setattr(
         libero_realtime_runtime.realtime_speculation,
         "snapshot_visual_runtime",
         snapshot_visual_runtime,
     )
-    monkeypatch.setattr(
-        libero_realtime_runtime,
-        "maybe_submit_planner_job",
-        lambda **_: expected_future,
-    )
     runner = SimpleNamespace()
     config = SimpleNamespace()
-    session = SimpleNamespace()
+    session = SimpleNamespace(policy_state=SimpleNamespace(step_index=3))
+    history_session = SimpleNamespace(name="history")
+    executor = RecordingExecutor()
 
     future, snapshot = libero_realtime_runtime.submit_planner_job_with_snapshot(
-        executor=SimpleNamespace(),
+        executor=executor,
         planner_mode="history_only",
-        pending_history=[{"frame": 1}],
+        pending_history=[
+            {
+                "absolute_frame_index": 1,
+                "obs": {"image": np.asarray([1], dtype=np.uint8)},
+            }
+        ],
         future_buffer_depth=0,
         runner=runner,
-        history_base_session=SimpleNamespace(),
+        history_base_session=history_session,
         current_chunk_session=session,
         prompt="task",
         config=config,
@@ -69,6 +80,12 @@ def test_submit_planner_job_returns_visual_rollback_snapshot(
 
     assert future is expected_future
     assert snapshot is expected_snapshot
+    assert len(executor.calls) == 1
+    submitted_fn, submitted_kwargs = executor.calls[0]
+    assert submitted_fn is libero_realtime_runtime.run_replan_job
+    assert submitted_kwargs["session"] is history_session
+    assert submitted_kwargs["job_seed"] == 10
+    assert len(submitted_kwargs["history_records"]) == 1
     assert snapshot_calls == [
         {
             "runner": runner,

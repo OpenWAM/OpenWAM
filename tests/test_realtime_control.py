@@ -3,6 +3,13 @@ from __future__ import annotations
 import numpy as np
 
 import open_wam.integrations as integrations
+from open_wam.configs import (
+    FallbackHistoryPolicy,
+    RealtimeEmptyPlanPolicy,
+    RealtimePlannerJob,
+    RealtimePlannerMode,
+    RealtimeSchedulerProfile,
+)
 from open_wam.integrations.realtime_control import (
     PlannedControlStep,
     PlannedFrameAction,
@@ -18,6 +25,12 @@ from open_wam.integrations.realtime_control import (
     missing_control_action_indices,
     planned_frame_actions_to_control_steps,
     required_control_action_indices,
+    resolve_realtime_planner_mode,
+    resolve_realtime_scheduler_defaults,
+    select_realtime_planner_job,
+    should_submit_frame_grouped_planner,
+    should_submit_realtime_planner_job,
+    should_submit_sequence_planner,
     summarize_scalars,
 )
 
@@ -38,6 +51,132 @@ def _control_step(
 def test_realtime_control_contract_is_lazily_exported_by_integrations() -> None:
     assert integrations.PlannedControlStep is PlannedControlStep
     assert integrations.merge_future_control_steps is merge_future_control_steps
+
+
+def test_realtime_scheduler_profiles_resolve_to_typed_optional_overrides() -> None:
+    manual = resolve_realtime_scheduler_defaults(RealtimeSchedulerProfile.MANUAL)
+    blocking = resolve_realtime_scheduler_defaults("blocking_control")
+    frozen = resolve_realtime_scheduler_defaults("freeze_until_clean_chunk")
+    asynchronous = resolve_realtime_scheduler_defaults("async_history_first")
+
+    assert manual.to_override_mapping() == {}
+    assert blocking.planner_mode == RealtimePlannerMode.HISTORY_ONLY
+    assert blocking.empty_plan_policy == RealtimeEmptyPlanPolicy.WAIT_FOR_REPLAN
+    assert blocking.fallback_history_policy == FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY
+    assert blocking.replan_low_watermark_actions == 0
+    assert frozen.fallback_history_policy == FallbackHistoryPolicy.FREEZE_UNTIL_CLEAN_CHUNK
+    assert asynchronous.planner_mode == RealtimePlannerMode.ASYNC_HISTORY_FIRST
+    assert asynchronous.startup_open_loop_chunks == 1
+    assert "replan_low_watermark_actions" not in asynchronous.to_override_mapping()
+
+
+def test_realtime_planner_job_selection_preserves_mode_priority() -> None:
+    select = select_realtime_planner_job
+
+    assert select(
+        planner_mode="history_only",
+        history_count=0,
+        future_buffer_depth=0,
+        has_buffer_tail_session=True,
+    ) is None
+    assert select(
+        planner_mode="history_only",
+        history_count=1,
+        future_buffer_depth=7,
+        has_buffer_tail_session=False,
+    ) == RealtimePlannerJob.HISTORY_REPLAN
+    assert select(
+        planner_mode="async_buffer",
+        history_count=1,
+        future_buffer_depth=3,
+        has_buffer_tail_session=True,
+    ) == RealtimePlannerJob.BUFFER_EXTENSION
+    assert select(
+        planner_mode="async_buffer",
+        history_count=1,
+        future_buffer_depth=4,
+        has_buffer_tail_session=True,
+    ) == RealtimePlannerJob.HISTORY_REPLAN
+    assert select(
+        planner_mode="async_history_first",
+        history_count=1,
+        future_buffer_depth=0,
+        has_buffer_tail_session=True,
+    ) == RealtimePlannerJob.HISTORY_REPLAN
+    assert select(
+        planner_mode="async_mix",
+        history_count=1,
+        future_buffer_depth=3,
+        has_buffer_tail_session=True,
+    ) == RealtimePlannerJob.BUFFER_EXTENSION
+    assert select(
+        planner_mode="async_mix",
+        history_count=2,
+        future_buffer_depth=2,
+        has_buffer_tail_session=True,
+    ) == RealtimePlannerJob.HISTORY_REPLAN
+    assert should_submit_realtime_planner_job(
+        planner_mode="async_buffer",
+        history_count=0,
+        future_buffer_depth=6,
+        has_buffer_tail_session=True,
+    )
+
+
+def test_realtime_outer_scheduler_gates_preserve_blocking_and_low_watermarks() -> None:
+    assert resolve_realtime_planner_mode(
+        planner_mode="async_buffer",
+        empty_plan_policy="wait_for_replan",
+        has_history=True,
+    ) == RealtimePlannerMode.HISTORY_ONLY
+    assert resolve_realtime_planner_mode(
+        planner_mode="async_buffer",
+        empty_plan_policy="wait_for_replan",
+        has_history=False,
+    ) == RealtimePlannerMode.ASYNC_BUFFER
+    assert should_submit_frame_grouped_planner(
+        future_buffer_depth_actions=0,
+        future_buffer_depth_frames=0,
+        empty_plan_policy="wait_for_replan",
+    )
+    assert not should_submit_frame_grouped_planner(
+        future_buffer_depth_actions=8,
+        future_buffer_depth_frames=2,
+        empty_plan_policy="wait_for_replan",
+    )
+    assert should_submit_frame_grouped_planner(
+        future_buffer_depth_actions=10,
+        future_buffer_depth_frames=3,
+        empty_plan_policy="fallback",
+        replan_low_watermark_actions=10,
+    )
+    assert not should_submit_frame_grouped_planner(
+        future_buffer_depth_actions=11,
+        future_buffer_depth_frames=3,
+        empty_plan_policy="fallback",
+        replan_low_watermark_actions=10,
+    )
+    assert should_submit_sequence_planner(
+        planner_mode="async_history_first",
+        future_buffer_depth_actions=12,
+        empty_plan_policy="fallback",
+        sequence_buffer_threshold=3,
+        replan_low_watermark_actions=12,
+    )
+    assert not should_submit_sequence_planner(
+        planner_mode="async_history_first",
+        future_buffer_depth_actions=13,
+        empty_plan_policy="fallback",
+        sequence_buffer_threshold=3,
+        replan_low_watermark_actions=12,
+    )
+    assert not should_submit_sequence_planner(
+        planner_mode="history_only",
+        future_buffer_depth_actions=1,
+        empty_plan_policy="fallback",
+        sequence_buffer_threshold=3,
+        replan_low_watermark_actions=12,
+    )
 
 
 def test_make_planned_frame_actions_assigns_absolute_frame_ids() -> None:

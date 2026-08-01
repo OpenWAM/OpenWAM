@@ -30,6 +30,9 @@ from open_wam.configs import ActionTargetRepresentation, ParallelRuntimeMode  # 
 from open_wam.configs.enums import (  # noqa: E402
     DeadlineMissPolicy,
     FallbackHistoryPolicy,
+    RealtimeEmptyPlanPolicy,
+    RealtimePlannerMode,
+    RealtimeSchedulerProfile,
     RolloutArtifactProfile,
 )
 from open_wam.data.action_transforms import PoseSequence  # noqa: E402
@@ -54,6 +57,10 @@ from open_wam.integrations.realtime_control import (  # noqa: E402
     missing_control_action_indices,
     planned_frame_actions_to_control_steps,
     required_control_action_indices,
+    resolve_realtime_planner_mode,
+    resolve_realtime_scheduler_defaults,
+    should_submit_frame_grouped_planner,
+    should_submit_sequence_planner,
 )
 from open_wam.evals import libero_rollout_artifacts as rollout_artifacts  # noqa: E402
 from open_wam.evals import libero_realtime_runtime as realtime_runtime  # noqa: E402
@@ -98,31 +105,6 @@ EVAL_PROFILE_DEFAULTS: dict[str, dict[str, object]] = {
 }
 
 
-REALTIME_SCHEDULER_PROFILE_DEFAULTS: dict[str, dict[str, object]] = {
-    "manual": {},
-    "blocking_control": {
-        "planner_mode": "history_only",
-        "sequence_empty_plan_policy": "wait_for_replan",
-        "fallback_history_policy": FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY.value,
-        "startup_open_loop_chunks": 0,
-        "replan_low_watermark_actions": 0,
-    },
-    "freeze_until_clean_chunk": {
-        "planner_mode": "history_only",
-        "sequence_empty_plan_policy": "fallback",
-        "fallback_history_policy": FallbackHistoryPolicy.FREEZE_UNTIL_CLEAN_CHUNK.value,
-        "startup_open_loop_chunks": 0,
-        "replan_low_watermark_actions": 0,
-    },
-    "async_history_first": {
-        "planner_mode": "async_history_first",
-        "sequence_empty_plan_policy": "fallback",
-        "fallback_history_policy": FallbackHistoryPolicy.FREEZE_UNTIL_CLEAN_CHUNK.value,
-        "startup_open_loop_chunks": 1,
-    },
-}
-
-
 class _RolloutRunnerLike(Protocol):
     def reset(
         self,
@@ -151,13 +133,18 @@ def _apply_realtime_cli_profiles(args: argparse.Namespace, argv: list[str]) -> N
         },
     )
 
-    scheduler_defaults = REALTIME_SCHEDULER_PROFILE_DEFAULTS.get(str(args.realtime_scheduler_profile))
-    if scheduler_defaults is None:
-        raise ValueError(f"Unsupported realtime scheduler profile: {args.realtime_scheduler_profile!r}")
+    try:
+        scheduler_defaults = resolve_realtime_scheduler_defaults(
+            args.realtime_scheduler_profile,
+        )
+    except ValueError as error:
+        raise ValueError(
+            f"Unsupported realtime scheduler profile: {args.realtime_scheduler_profile!r}"
+        ) from error
     _apply_cli_profile_defaults(
         args,
         argv,
-        scheduler_defaults,
+        scheduler_defaults.to_override_mapping(),
         flag_aliases={
             "planner_mode": ("--planner-mode",),
             "sequence_empty_plan_policy": ("--sequence-empty-plan-policy",),
@@ -166,6 +153,10 @@ def _apply_realtime_cli_profiles(args: argparse.Namespace, argv: list[str]) -> N
             "replan_low_watermark_actions": ("--replan-low-watermark-actions", "--periodic-replan-frames"),
         },
     )
+    args.realtime_scheduler_profile = RealtimeSchedulerProfile(args.realtime_scheduler_profile)
+    args.planner_mode = RealtimePlannerMode(args.planner_mode)
+    args.sequence_empty_plan_policy = RealtimeEmptyPlanPolicy(args.sequence_empty_plan_policy)
+    args.fallback_history_policy = FallbackHistoryPolicy(args.fallback_history_policy)
 
 
 def _apply_cli_profile_defaults(
@@ -341,22 +332,23 @@ def main() -> None:
     )
     parser.add_argument(
         "--planner-mode",
-        type=str,
-        choices=("history_only", "async_buffer", "async_mix", "async_history_first"),
-        default="async_buffer",
+        type=RealtimePlannerMode,
+        choices=tuple(RealtimePlannerMode),
+        default=RealtimePlannerMode.ASYNC_BUFFER,
     )
     parser.add_argument(
         "--realtime-scheduler-profile",
-        choices=tuple(REALTIME_SCHEDULER_PROFILE_DEFAULTS),
-        default="manual",
+        type=RealtimeSchedulerProfile,
+        choices=tuple(RealtimeSchedulerProfile),
+        default=RealtimeSchedulerProfile.MANUAL,
         help="Named realtime scheduler defaults; explicit low-level scheduler flags still override the profile.",
     )
     parser.add_argument("--sequence-buffer-threshold", type=int, default=3)
     parser.add_argument(
         "--sequence-empty-plan-policy",
-        type=str,
-        choices=("fallback", "wait_for_replan"),
-        default="fallback",
+        type=RealtimeEmptyPlanPolicy,
+        choices=tuple(RealtimeEmptyPlanPolicy),
+        default=RealtimeEmptyPlanPolicy.FALLBACK,
         help=(
             "Exact/joint and sequence-style variants. `fallback` preserves strict fixed-rate behavior. "
             "`wait_for_replan` blocks the sim when the next action chunk is late and executes the model plan."
@@ -804,7 +796,7 @@ def _run_exact_like_realtime_rollout(
     env_horizon: int | None,
     target_action_hz: float,
     video_fps: float | None,
-    planner_mode: str,
+    planner_mode: RealtimePlannerMode | str,
     deadline_miss_policy: str,
     deadline_tolerance_ms: float,
     output_dir: Path,
@@ -818,7 +810,7 @@ def _run_exact_like_realtime_rollout(
     guidance_scale: float | None,
     action_guidance_scale: float | None,
     startup_open_loop_chunks: int,
-    sequence_empty_plan_policy: str,
+    sequence_empty_plan_policy: RealtimeEmptyPlanPolicy | str,
     fallback_history_policy: FallbackHistoryPolicy,
     replan_low_watermark_actions: int,
     write_fallback_timeline_video: bool,
@@ -826,6 +818,8 @@ def _run_exact_like_realtime_rollout(
     debug_startup_dump: bool,
     exact_startup_bootstrap_padding: bool,
 ) -> dict[str, Any]:
+    planner_mode = RealtimePlannerMode(planner_mode)
+    sequence_empty_plan_policy = RealtimeEmptyPlanPolicy(sequence_empty_plan_policy)
     replan_low_watermark_actions = int(replan_low_watermark_actions)
     pipeline = build_variant_pipeline_from_config(config)
     pipeline.eval()
@@ -859,7 +853,7 @@ def _run_exact_like_realtime_rollout(
         "guidance_scale_override": guidance_scale,
         "action_guidance_scale_override": action_guidance_scale,
         "reference_assets_device_policy": str(config.backbone.reference_assets_device_policy),
-        "sequence_empty_plan_policy": str(sequence_empty_plan_policy),
+        "sequence_empty_plan_policy": sequence_empty_plan_policy.value,
         "fallback_history_policy": str(fallback_history_policy),
         "replan_low_watermark_actions": int(replan_low_watermark_actions),
         "periodic_replan_frames": int(replan_low_watermark_actions),
@@ -1108,7 +1102,7 @@ def _run_exact_like_realtime_rollout(
                 )
                 wait_for_plan_s = 0.0
                 if (
-                    sequence_empty_plan_policy == "wait_for_replan"
+                    sequence_empty_plan_policy == RealtimeEmptyPlanPolicy.WAIT_FOR_REPLAN
                     and missing_control_action_indices(plan_by_action, required_action_indices)
                 ):
                     wait_t0 = time.perf_counter()
@@ -1138,10 +1132,10 @@ def _run_exact_like_realtime_rollout(
                                 replan_future_cache_snapshot,
                             ) = realtime_runtime.submit_planner_job_with_snapshot(
                                 executor=executor,
-                                planner_mode=_resolve_exact_realtime_planner_mode(
+                                planner_mode=resolve_realtime_planner_mode(
                                     planner_mode=planner_mode,
-                                    sequence_empty_plan_policy=sequence_empty_plan_policy,
-                                    pending_history=pending_history,
+                                    empty_plan_policy=sequence_empty_plan_policy,
+                                    has_history=bool(pending_history),
                                 ),
                                 pending_history=pending_history,
                                 future_buffer_depth=future_buffer_depth_frames,
@@ -1253,7 +1247,7 @@ def _run_exact_like_realtime_rollout(
                     required_action_indices,
                 )
                 use_fallback_frame = (
-                    sequence_empty_plan_policy == "fallback"
+                    sequence_empty_plan_policy == RealtimeEmptyPlanPolicy.FALLBACK
                     and bool(missing_required_action_indices)
                 )
                 if use_fallback_frame and freeze_model_timeline_on_fallback and not hidden_fallback_period_active:
@@ -1279,7 +1273,7 @@ def _run_exact_like_realtime_rollout(
                     else:
                         planned_step = plan_by_action.pop(frame_model_action_start + action_offset, None)
                         if planned_step is None:
-                            if sequence_empty_plan_policy == "wait_for_replan":
+                            if sequence_empty_plan_policy == RealtimeEmptyPlanPolicy.WAIT_FOR_REPLAN:
                                 raise RuntimeError(
                                     "Exact/joint wait-for-replan mode exhausted without action "
                                     f"{frame_model_action_start + action_offset}."
@@ -1474,10 +1468,10 @@ def _run_exact_like_realtime_rollout(
                     plan_by_action,
                     next_action_to_execute=next_action_index,
                 )
-                should_submit_replan = _should_submit_exact_realtime_planner(
+                should_submit_replan = should_submit_frame_grouped_planner(
                     future_buffer_depth_actions=future_buffer_depth_actions,
                     future_buffer_depth_frames=future_buffer_depth_frames,
-                    sequence_empty_plan_policy=sequence_empty_plan_policy,
+                    empty_plan_policy=sequence_empty_plan_policy,
                     replan_low_watermark_actions=replan_low_watermark_actions,
                 )
                 if replan_future is None and should_submit_replan:
@@ -1486,10 +1480,10 @@ def _run_exact_like_realtime_rollout(
                         replan_future_cache_snapshot,
                     ) = realtime_runtime.submit_planner_job_with_snapshot(
                         executor=executor,
-                        planner_mode=_resolve_exact_realtime_planner_mode(
+                        planner_mode=resolve_realtime_planner_mode(
                             planner_mode=planner_mode,
-                            sequence_empty_plan_policy=sequence_empty_plan_policy,
-                            pending_history=pending_history,
+                            empty_plan_policy=sequence_empty_plan_policy,
+                            has_history=bool(pending_history),
                         ),
                         pending_history=pending_history,
                         future_buffer_depth=future_buffer_depth_frames,
@@ -1585,10 +1579,10 @@ def _run_exact_like_realtime_rollout(
                 "action_num_inference_steps": int(runner.policy_variant.inference_config.action_num_inference_steps),
                 "guidance_scale": float(runner.policy_variant.inference_config.guidance_scale),
                 "action_guidance_scale": float(runner.policy_variant.inference_config.action_guidance_scale),
-                "planner_mode": planner_mode,
+                "planner_mode": planner_mode.value,
                 "deadline_miss_policy": deadline_miss_policy,
                 "fallback_absolute_tail_start": fallback_absolute_tail_start,
-                "sequence_empty_plan_policy": str(sequence_empty_plan_policy),
+                "sequence_empty_plan_policy": sequence_empty_plan_policy.value,
                 "fallback_history_policy": str(fallback_history_policy),
                 "replan_low_watermark_actions": int(replan_low_watermark_actions),
                 "periodic_replan_frames": int(replan_low_watermark_actions),
@@ -1716,61 +1710,6 @@ def _consume_exact_future_result(
     return history_base_session, current_chunk_session, buffer_tail_session, plan_by_action, pending_history
 
 
-def _resolve_exact_realtime_planner_mode(
-    *,
-    planner_mode: str,
-    sequence_empty_plan_policy: str,
-    pending_history: list[dict[str, Any]],
-) -> str:
-    if sequence_empty_plan_policy == "wait_for_replan" and pending_history:
-        return "history_only"
-    return str(planner_mode)
-
-
-def _should_submit_exact_realtime_planner(
-    *,
-    future_buffer_depth_actions: int,
-    future_buffer_depth_frames: int,
-    sequence_empty_plan_policy: str,
-    replan_low_watermark_actions: int = 0,
-) -> bool:
-    """Return whether to submit another planner job.
-
-    In fallback mode, positive K is an action-step low-watermark, not a video
-    frame cadence: submit once the future action buffer has at most K actions
-    remaining. Blocking mode keeps its historical empty-frame-buffer behavior.
-    """
-    if sequence_empty_plan_policy == "wait_for_replan":
-        return int(future_buffer_depth_frames) <= 0
-    if int(replan_low_watermark_actions) <= 0:
-        return True
-    return int(future_buffer_depth_actions) <= int(replan_low_watermark_actions)
-
-
-def _should_submit_sequence_realtime_planner(
-    *,
-    planner_mode: str,
-    future_buffer_depth_actions: int,
-    sequence_empty_plan_policy: str,
-    sequence_buffer_threshold: int,
-    replan_low_watermark_actions: int = 0,
-) -> bool:
-    """Return whether a sequence-style rollout should queue the next full chunk."""
-
-    if sequence_empty_plan_policy not in {"fallback", "wait_for_replan"}:
-        raise ValueError(f"Unsupported sequence_empty_plan_policy={sequence_empty_plan_policy!r}.")
-    if planner_mode == "history_only":
-        return int(future_buffer_depth_actions) <= 0
-    if planner_mode not in {"async_buffer", "async_mix", "async_history_first"}:
-        raise ValueError(f"Unsupported sequence realtime planner_mode={planner_mode!r}.")
-    threshold = (
-        int(replan_low_watermark_actions)
-        if int(replan_low_watermark_actions) > 0
-        else int(sequence_buffer_threshold)
-    )
-    return int(future_buffer_depth_actions) <= threshold
-
-
 def _exact_chunk_to_planned_steps(
     *,
     chunk,
@@ -1873,7 +1812,7 @@ def _run_sequence_policy_realtime_rollout(
     env_horizon: int | None,
     target_action_hz: float,
     video_fps: float | None,
-    planner_mode: str,
+    planner_mode: RealtimePlannerMode | str,
     deadline_miss_policy: str,
     deadline_tolerance_ms: float,
     output_dir: Path,
@@ -1886,7 +1825,7 @@ def _run_sequence_policy_realtime_rollout(
     frontend_device: torch.device,
     decode_device: torch.device,
     sequence_buffer_threshold: int,
-    sequence_empty_plan_policy: str,
+    sequence_empty_plan_policy: RealtimeEmptyPlanPolicy | str,
     fallback_history_policy: FallbackHistoryPolicy,
     startup_open_loop_chunks: int,
     replan_low_watermark_actions: int,
@@ -1898,6 +1837,8 @@ def _run_sequence_policy_realtime_rollout(
     write_fallback_timeline_video: bool,
     artifact_profile: RolloutArtifactProfile | str,
 ) -> dict[str, Any]:
+    planner_mode = RealtimePlannerMode(planner_mode)
+    sequence_empty_plan_policy = RealtimeEmptyPlanPolicy(sequence_empty_plan_policy)
     _apply_common_inference_overrides(
         config,
         video_num_inference_steps=video_num_inference_steps,
@@ -1971,7 +1912,7 @@ def _run_sequence_policy_realtime_rollout(
         "guidance_scale_override": guidance_scale,
         "action_guidance_scale_override": action_guidance_scale,
         "action_horizon": int(config.data.action_schema.action_horizon),
-        "sequence_empty_plan_policy": str(sequence_empty_plan_policy),
+        "sequence_empty_plan_policy": sequence_empty_plan_policy.value,
         "fallback_history_policy": str(fallback_history_policy),
         "sequence_buffer_threshold": int(sequence_buffer_threshold),
         "startup_open_loop_chunks": int(startup_open_loop_chunks),
@@ -2208,7 +2149,7 @@ def _run_sequence_policy_realtime_rollout(
                 planned_step = plan_by_action.pop(next_action_index, None)
                 wait_for_plan_s = 0.0
                 if planned_step is None:
-                    if sequence_empty_plan_policy == "wait_for_replan":
+                    if sequence_empty_plan_policy == RealtimeEmptyPlanPolicy.WAIT_FOR_REPLAN:
                         wait_t0 = time.perf_counter()
                         if replan_future is None:
                             blocking_replan_count += 1
@@ -2316,7 +2257,7 @@ def _run_sequence_policy_realtime_rollout(
                                 "Blocking sequence replan did not produce the next required action "
                                 f"{next_action_index}; planned={sorted(plan_by_action)}."
                             )
-                    elif sequence_empty_plan_policy == "fallback":
+                    elif sequence_empty_plan_policy == RealtimeEmptyPlanPolicy.FALLBACK:
                         action = realtime_runtime.build_fallback_frame_actions(
                             action_dim=int(config.data.action_schema.action_dim),
                             action_per_frame=1,
@@ -2492,12 +2433,10 @@ def _run_sequence_policy_realtime_rollout(
                     replan_future = None
 
                 remaining_buffer = future_control_depth(plan_by_action, next_action_to_execute=next_action_index)
-                if planner_mode not in {"history_only", "async_buffer", "async_mix", "async_history_first"}:
-                    raise ValueError(f"Unsupported planner_mode={planner_mode!r} for policy_variant={config.policy_variant.name!r}.")
-                should_submit = _should_submit_sequence_realtime_planner(
+                should_submit = should_submit_sequence_planner(
                     planner_mode=planner_mode,
                     future_buffer_depth_actions=remaining_buffer,
-                    sequence_empty_plan_policy=sequence_empty_plan_policy,
+                    empty_plan_policy=sequence_empty_plan_policy,
                     sequence_buffer_threshold=sequence_buffer_threshold,
                     replan_low_watermark_actions=replan_low_watermark_actions,
                 )
@@ -2525,8 +2464,15 @@ def _run_sequence_policy_realtime_rollout(
                             generation_action_start=history_generation_action_start,
                         )
                         use_observation_update = (
-                            planner_mode == "history_only"
-                            or (planner_mode in {"async_mix", "async_history_first"} and history_ready)
+                            planner_mode == RealtimePlannerMode.HISTORY_ONLY
+                            or (
+                                planner_mode
+                                in {
+                                    RealtimePlannerMode.ASYNC_MIX,
+                                    RealtimePlannerMode.ASYNC_HISTORY_FIRST,
+                                }
+                                and history_ready
+                            )
                         )
                         if use_observation_update:
                             submit_session = realtime_speculation.session_reference(
@@ -2654,9 +2600,9 @@ def _run_sequence_policy_realtime_rollout(
                 "startup_env_init_frames": int(startup_env_init_frames),
                 "model_obs_window_frames": int(model_obs_window_frames),
                 "strict_mot_one_frame_history": bool(_uses_strict_mot_one_frame_history(config)),
-                "planner_mode": planner_mode,
+                "planner_mode": planner_mode.value,
                 "sequence_buffer_threshold": int(sequence_buffer_threshold),
-                "sequence_empty_plan_policy": str(sequence_empty_plan_policy),
+                "sequence_empty_plan_policy": sequence_empty_plan_policy.value,
                 "fallback_history_policy": str(fallback_history_policy),
                 "replan_low_watermark_actions": int(replan_low_watermark_actions),
                 "periodic_replan_frames": int(replan_low_watermark_actions),
@@ -2945,12 +2891,17 @@ def _resolve_observation_conditioned_replan_session(
 def _should_use_mot_open_loop_extension(
     *,
     config,
-    planner_mode: str,
+    planner_mode: RealtimePlannerMode | str,
     remaining_buffer_actions: int,
 ) -> bool:
     if not resolve_mot_runtime_route(config).supports_realtime_history_controls:
         return False
-    if planner_mode not in {"async_buffer", "async_mix", "async_history_first"}:
+    mode = RealtimePlannerMode(planner_mode)
+    if mode not in {
+        RealtimePlannerMode.ASYNC_BUFFER,
+        RealtimePlannerMode.ASYNC_MIX,
+        RealtimePlannerMode.ASYNC_HISTORY_FIRST,
+    }:
         return False
     return int(remaining_buffer_actions) > 0
 
@@ -2975,7 +2926,7 @@ def _validate_mot_startup_open_loop_support(*, config, startup_open_loop_chunks:
 def _mot_action_cache_rewind_for_sequence_submit(
     *,
     config,
-    planner_mode: str,
+    planner_mode: RealtimePlannerMode | str,
     use_observation_update: bool,
     condition_frame_start: int | None,
 ) -> int | None:
@@ -2985,7 +2936,10 @@ def _mot_action_cache_rewind_for_sequence_submit(
         return None
     if not resolve_mot_runtime_route(config).supports_realtime_history_controls:
         return None
-    if planner_mode not in {"async_mix", "async_history_first"}:
+    if RealtimePlannerMode(planner_mode) not in {
+        RealtimePlannerMode.ASYNC_MIX,
+        RealtimePlannerMode.ASYNC_HISTORY_FIRST,
+    }:
         return None
     return int(condition_frame_start)
 

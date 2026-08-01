@@ -2640,7 +2640,7 @@ def test_deprecated_realtime_startup_bootstrap_has_no_runtime_implementation() -
     assert retired_helpers.isdisjoint(_top_level_definitions(runtime_path))
 
 
-def test_libero_realtime_scheduler_has_one_package_owner() -> None:
+def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
     runner_path = REPO_ROOT / "scripts" / "run_libero_realtime_sandbox.py"
     runtime_path = PACKAGE_ROOT / "evals" / "libero_realtime_runtime.py"
     runner_source = runner_path.read_text(encoding="utf-8")
@@ -2650,12 +2650,10 @@ def test_libero_realtime_scheduler_has_one_package_owner() -> None:
         "copy_history_record_for_worker",
         "isolated_torch_rng",
         "job_seed_for_session",
-        "maybe_submit_planner_job",
         "resolve_exact_startup_sessions",
         "resolve_next_exact_history_base_session",
         "run_extension_job",
         "run_replan_job",
-        "should_submit_planner_job",
         "submit_planner_job_with_snapshot",
         "synchronize_devices",
     }
@@ -2664,13 +2662,20 @@ def test_libero_realtime_scheduler_has_one_package_owner() -> None:
     assert "from open_wam.evals import libero_realtime_runtime as realtime_runtime" in runner_source
     assert "realtime_runtime._" not in runner_source
     assert public_runtime_contracts <= _top_level_definitions(runtime_path)
+    assert {
+        "maybe_submit_planner_job",
+        "should_submit_planner_job",
+    }.isdisjoint(_top_level_definitions(runtime_path))
 
 
 def test_realtime_control_plan_has_one_package_owner() -> None:
     runner_path = REPO_ROOT / "scripts" / "run_libero_realtime_sandbox.py"
     control_path = PACKAGE_ROOT / "integrations" / "realtime_control.py"
+    enum_path = PACKAGE_ROOT / "configs" / "enums.py"
+    runtime_path = PACKAGE_ROOT / "evals" / "libero_realtime_runtime.py"
     integration_exports_path = PACKAGE_ROOT / "integrations" / "__init__.py"
     runner_source = runner_path.read_text(encoding="utf-8")
+    runtime_source = runtime_path.read_text(encoding="utf-8")
     integration_exports = integration_exports_path.read_text(encoding="utf-8")
     retired_runner_contracts = {
         "PlannedControlStep",
@@ -2683,10 +2688,14 @@ def test_realtime_control_plan_has_one_package_owner() -> None:
         "_planned_frames_to_step_actions",
         "_required_frame_action_indices",
         "_sequence_future_planned_steps",
+        "_resolve_exact_realtime_planner_mode",
+        "_should_submit_exact_realtime_planner",
+        "_should_submit_sequence_realtime_planner",
     }
     public_control_contracts = {
         "PlannedControlStep",
         "PlannedFrameAction",
+        "RealtimeSchedulerDefaults",
         "drop_control_steps_from",
         "drop_partial_stale_control_chunk",
         "frame_index_to_action_start",
@@ -2698,11 +2707,33 @@ def test_realtime_control_plan_has_one_package_owner() -> None:
         "missing_control_action_indices",
         "planned_frame_actions_to_control_steps",
         "required_control_action_indices",
+        "resolve_realtime_planner_mode",
+        "resolve_realtime_scheduler_defaults",
+        "select_realtime_planner_job",
+        "should_submit_frame_grouped_planner",
+        "should_submit_realtime_planner_job",
+        "should_submit_sequence_planner",
     }
 
     assert "from open_wam.integrations.realtime_control import (" in runner_source
     assert retired_runner_contracts.isdisjoint(_top_level_definitions(runner_path))
     assert public_control_contracts <= _top_level_definitions(control_path)
+    assert {
+        "RealtimeEmptyPlanPolicy",
+        "RealtimePlannerJob",
+        "RealtimePlannerMode",
+        "RealtimeSchedulerProfile",
+    } <= _top_level_definitions(enum_path)
+    assert "select_realtime_planner_job(" in runtime_source
+    for raw_choice in (
+        '"history_only"',
+        '"async_buffer"',
+        '"async_mix"',
+        '"async_history_first"',
+        '"wait_for_replan"',
+    ):
+        assert raw_choice not in runner_source
+        assert raw_choice not in runtime_source
     for contract in public_control_contracts:
         assert f'"{contract}": "open_wam.integrations.realtime_control"' in integration_exports
 
