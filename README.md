@@ -100,6 +100,8 @@ Important source packages:
 - Camera names, camera count, layout, action dimension, action horizon, and state dimension should be configurable from YAML.
 - Dataset-specific parsing should stay inside dataset adapters registered by `data.dataset_type`.
 - Dataset adapters may expose transformed action supervision, not just raw controller deltas.
+- Offline latent encoding composes typed contracts, deterministic planning,
+  sidecar validation, and tensor execution behind the stable data facade.
 - All method families should continue to share the same top-level `VariantPipeline -> VisualTower` boundary even when their within-core runtimes differ.
 - For the canonical multimodal methods, differences should come from runtime
   programs, sequence semantics, cache policy, and decoders rather than from

@@ -1000,10 +1000,14 @@ def test_mixed_video_catalog_has_one_owner() -> None:
     assert legacy_load_mixed_video_catalog is load_mixed_video_catalog
     assert legacy_split_mixed_video_episodes is split_mixed_video_episodes
 
-    encoder_imports = _absolute_imports_for_file(
-        PACKAGE_ROOT / "data" / "mixed_video_encoding.py"
+    encoding_planning_imports = _absolute_imports_for_file(
+        PACKAGE_ROOT / "data" / "mixed_video_encoding_planning.py"
     )
-    assert "open_wam.data.mixed_video_catalog" in encoder_imports
+    encoding_runtime_imports = _absolute_imports_for_file(
+        PACKAGE_ROOT / "data" / "mixed_video_encoding_runtime.py"
+    )
+    assert "open_wam.data.mixed_video_catalog" in encoding_planning_imports
+    assert "open_wam.data.mixed_video_catalog" in encoding_runtime_imports
 
 
 def test_mixed_video_decode_has_one_owner() -> None:
@@ -1072,10 +1076,10 @@ def test_mixed_video_decode_has_one_owner() -> None:
         == "open_wam.data.mixed_video_decode"
     )
 
-    encoder_imports = _absolute_imports_for_file(
-        PACKAGE_ROOT / "data" / "mixed_video_encoding.py"
+    encoding_runtime_imports = _absolute_imports_for_file(
+        PACKAGE_ROOT / "data" / "mixed_video_encoding_runtime.py"
     )
-    assert "open_wam.data.mixed_video_decode" in encoder_imports
+    assert "open_wam.data.mixed_video_decode" in encoding_runtime_imports
 
     dataset_loader = _class_method(
         PACKAGE_ROOT / "data" / "mixed_video.py",
@@ -1092,7 +1096,7 @@ def test_mixed_video_decode_has_one_owner() -> None:
     assert len(full_stream_decode_calls) == 1
 
 
-def test_mixed_video_encoding_has_one_package_owner() -> None:
+def test_mixed_video_encoding_has_explicit_package_owners() -> None:
     from open_wam.configs import MixedVideoEncodingSplit
     from open_wam.data import (
         MixedVideoEncodedEpisode as PublicMixedVideoEncodedEpisode,
@@ -1109,13 +1113,33 @@ def test_mixed_video_encoding_has_one_package_owner() -> None:
         select_mixed_video_encoding_episodes as public_select_encoding_episodes,
     )
     from open_wam.data import mixed_video_encoding
+    from open_wam.data import mixed_video_encoding_contracts
+    from open_wam.data import mixed_video_encoding_planning
+    from open_wam.data import mixed_video_encoding_runtime
+    from open_wam.data import mixed_video_encoding_sidecars
 
-    owner_path = PACKAGE_ROOT / "data" / "mixed_video_encoding.py"
+    facade_path = PACKAGE_ROOT / "data" / "mixed_video_encoding.py"
+    contracts_path = (
+        PACKAGE_ROOT / "data" / "mixed_video_encoding_contracts.py"
+    )
+    planning_path = (
+        PACKAGE_ROOT / "data" / "mixed_video_encoding_planning.py"
+    )
+    runtime_path = PACKAGE_ROOT / "data" / "mixed_video_encoding_runtime.py"
+    sidecars_path = (
+        PACKAGE_ROOT / "data" / "mixed_video_encoding_sidecars.py"
+    )
     artifact_path = (
         PACKAGE_ROOT / "data" / "mixed_video_encoding_artifacts.py"
     )
     command_path = REPO_ROOT / "scripts" / "encode_mixed_video_latents.py"
-    owner_definitions = _top_level_definitions(owner_path)
+    role_definitions = {
+        "facade": _top_level_definitions(facade_path),
+        "contracts": _top_level_definitions(contracts_path),
+        "planning": _top_level_definitions(planning_path),
+        "runtime": _top_level_definitions(runtime_path),
+        "sidecars": _top_level_definitions(sidecars_path),
+    }
     artifact_definitions = _top_level_definitions(artifact_path)
     command_definitions = _top_level_definitions(command_path)
     public_names = {
@@ -1133,16 +1157,66 @@ def test_mixed_video_encoding_has_one_package_owner() -> None:
         "select_mixed_video_encoding_episodes",
     }
 
-    assert public_names == _module_all_names(owner_path)
-    assert {
+    assert public_names == _module_all_names(facade_path)
+    contract_owned_names = {
         "MixedVideoEncodedEpisode",
         "MixedVideoEncodingReport",
         "MixedVideoEncodingSelection",
         "MixedVideoEncodingTarget",
         "MixedVideoLatentEncoder",
+    }
+    facade_owned_names = {
+        "_submit_latent_save",
+        "_wait_for_latent_save",
         "encode_mixed_video_latent_sources",
+    }
+    planning_owned_names = {
+        "_data_config_for_encoding_target",
+        "_encoding_targets_for_episode",
+        "_episode_for_encoding_target",
+        "_episode_has_rgb_streams",
+        "_preflight_output_paths",
+        "_resolve_existing_target_path",
+        "_select_encoder_episodes",
+        "_selected_episode_keys",
         "resolve_mixed_video_encoding_config",
-    } <= owner_definitions
+    }
+    runtime_owned_names = {
+        "_decode_episode_view_chunk",
+        "_encode_episode_latents_streaming",
+        "_iter_episode_view_chunks",
+        "_streaming_chunk_ranges",
+    }
+    sidecar_owned_names = {
+        "_encoded_episode_from_existing_sidecar",
+        "_mixed_video_transform_signature",
+        "_mixed_video_transform_signature_hash",
+        "_validate_existing_sidecar_metadata",
+    }
+    expected_by_role = {
+        "facade": facade_owned_names,
+        "contracts": contract_owned_names,
+        "planning": planning_owned_names,
+        "runtime": runtime_owned_names,
+        "sidecars": sidecar_owned_names,
+    }
+    for role, expected_names in expected_by_role.items():
+        assert expected_names <= role_definitions[role]
+    for expected_names in expected_by_role.values():
+        for name in expected_names:
+            assert sum(
+                name in definitions for definitions in role_definitions.values()
+            ) == 1
+
+    assert contract_owned_names == _module_all_names(contracts_path)
+    assert {
+        "plan_mixed_video_episode_encoding_targets",
+        "preflight_mixed_video_encoding_outputs",
+        "resolve_existing_mixed_video_encoding_target",
+        "resolve_mixed_video_encoding_config",
+        "select_mixed_video_encoding_episodes",
+    } == _module_all_names(planning_path)
+    assert {"plan_mixed_video_streaming_chunks"} == _module_all_names(runtime_path)
     artifact_owned_names = {
         "_latent_causal_bucket_specs",
         "_latent_path_for_episode",
@@ -1155,7 +1229,10 @@ def test_mixed_video_encoding_has_one_package_owner() -> None:
         "_write_source_manifests",
     }
     assert artifact_owned_names <= artifact_definitions
-    assert artifact_owned_names.isdisjoint(owner_definitions)
+    assert all(
+        artifact_owned_names.isdisjoint(definitions)
+        for definitions in role_definitions.values()
+    )
     assert "encode_mixed_video_latent_sources" not in command_definitions
     assert {
         "launch_parallel_mixed_video_encoding",
@@ -1164,15 +1241,28 @@ def test_mixed_video_encoding_has_one_package_owner() -> None:
         "resolve_encoder_data_config",
     } <= command_definitions
     assert "open_wam.data.mixed_video_encoding" in _absolute_imports_for_file(command_path)
-    assert (
-        "open_wam.data.mixed_video_encoding_artifacts"
-        in _absolute_imports_for_file(owner_path)
+    facade_imports = _absolute_imports_for_file(facade_path)
+    assert {
+        "open_wam.data.mixed_video_encoding_artifacts",
+        "open_wam.data.mixed_video_encoding_contracts",
+        "open_wam.data.mixed_video_encoding_planning",
+        "open_wam.data.mixed_video_encoding_runtime",
+        "open_wam.data.mixed_video_encoding_sidecars",
+    } <= facade_imports
+    child_paths = (contracts_path, planning_path, runtime_path, sidecars_path, artifact_path)
+    assert all(
+        "open_wam.data.mixed_video_encoding" not in _absolute_imports_for_file(path)
+        for path in child_paths
     )
+    assert "open_wam.data.mixed_video_encoding_contracts" in _absolute_imports_for_file(
+        artifact_path
+    )
+    assert "torch" not in _absolute_imports_for_file(planning_path)
     assert {
         "argparse",
         "subprocess",
         "open_wam.models.visual_tower.reference_assets",
-    }.isdisjoint(_absolute_imports_for_file(owner_path))
+    }.isdisjoint(facade_imports)
     assert {
         "argparse",
         "subprocess",
@@ -1180,18 +1270,27 @@ def test_mixed_video_encoding_has_one_package_owner() -> None:
         "open_wam.models.visual_tower.reference_assets",
     }.isdisjoint(_absolute_imports_for_file(artifact_path))
 
-    assert PublicMixedVideoEncodedEpisode is mixed_video_encoding.MixedVideoEncodedEpisode
-    assert PublicMixedVideoEncodingReport is mixed_video_encoding.MixedVideoEncodingReport
-    assert PublicMixedVideoEncodingSelection is mixed_video_encoding.MixedVideoEncodingSelection
-    assert PublicMixedVideoEncodingTarget is mixed_video_encoding.MixedVideoEncodingTarget
-    assert PublicMixedVideoLatentEncoder is mixed_video_encoding.MixedVideoLatentEncoder
+    assert PublicMixedVideoEncodedEpisode is mixed_video_encoding_contracts.MixedVideoEncodedEpisode
+    assert PublicMixedVideoEncodingReport is mixed_video_encoding_contracts.MixedVideoEncodingReport
+    assert PublicMixedVideoEncodingSelection is mixed_video_encoding_contracts.MixedVideoEncodingSelection
+    assert PublicMixedVideoEncodingTarget is mixed_video_encoding_contracts.MixedVideoEncodingTarget
+    assert PublicMixedVideoLatentEncoder is mixed_video_encoding_contracts.MixedVideoLatentEncoder
+    assert mixed_video_encoding.MixedVideoEncodedEpisode is PublicMixedVideoEncodedEpisode
+    assert mixed_video_encoding.MixedVideoEncodingReport is PublicMixedVideoEncodingReport
+    assert mixed_video_encoding.MixedVideoEncodingSelection is PublicMixedVideoEncodingSelection
+    assert mixed_video_encoding.MixedVideoEncodingTarget is PublicMixedVideoEncodingTarget
+    assert mixed_video_encoding.MixedVideoLatentEncoder is PublicMixedVideoLatentEncoder
     assert public_encode_mixed_video_latent_sources is mixed_video_encoding.encode_mixed_video_latent_sources
-    assert public_plan_encoding_targets is mixed_video_encoding.plan_mixed_video_episode_encoding_targets
-    assert public_plan_streaming_chunks is mixed_video_encoding.plan_mixed_video_streaming_chunks
-    assert public_preflight_encoding_outputs is mixed_video_encoding.preflight_mixed_video_encoding_outputs
-    assert public_resolve_existing_target is mixed_video_encoding.resolve_existing_mixed_video_encoding_target
-    assert public_resolve_encoding_config is mixed_video_encoding.resolve_mixed_video_encoding_config
-    assert public_select_encoding_episodes is mixed_video_encoding.select_mixed_video_encoding_episodes
+    assert public_plan_encoding_targets is mixed_video_encoding_planning.plan_mixed_video_episode_encoding_targets
+    assert public_plan_streaming_chunks is mixed_video_encoding_runtime.plan_mixed_video_streaming_chunks
+    assert public_preflight_encoding_outputs is mixed_video_encoding_planning.preflight_mixed_video_encoding_outputs
+    assert public_resolve_existing_target is mixed_video_encoding_planning.resolve_existing_mixed_video_encoding_target
+    assert public_resolve_encoding_config is mixed_video_encoding_planning.resolve_mixed_video_encoding_config
+    assert public_select_encoding_episodes is mixed_video_encoding_planning.select_mixed_video_encoding_episodes
+    assert (
+        mixed_video_encoding._validate_existing_sidecar_metadata
+        is mixed_video_encoding_sidecars._validate_existing_sidecar_metadata
+    )
     assert (
         PublicMixedVideoEncodingSelection(split="train").split
         == MixedVideoEncodingSplit.TRAIN

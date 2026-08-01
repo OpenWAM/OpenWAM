@@ -1,9 +1,9 @@
 """Deterministic artifacts produced by mixed-video latent encoding.
 
 This module owns filesystem naming, manifests, generated latent-training
-configuration, and backbone compatibility checks. The encoding runtime remains
-in :mod:`open_wam.data.mixed_video_encoding` and supplies completed records to
-these helpers.
+configuration, and backbone compatibility checks. The public encoding facade
+supplies completed records to these helpers after planning and tensor
+execution.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from open_wam.contracts import VideoFrameMapping, wan_raw_frame_count_to_latent_
 
 if TYPE_CHECKING:
     from open_wam.data.mixed_video_catalog import MixedVideoEpisodeRecord
-    from open_wam.data.mixed_video_encoding import MixedVideoEncodedEpisode
+    from open_wam.data.mixed_video_encoding_contracts import MixedVideoEncodedEpisode
 
 
 LATENT_KEY = "video_latents"
