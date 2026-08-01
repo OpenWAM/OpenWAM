@@ -13,9 +13,34 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from open_wam.evals import libero_mot_rollout as mot_viz
+from open_wam.evals import libero_mot_runtime as mot_runtime
 from open_wam.models.policy_variants.mot.runtime_routing import (
     should_use_mot_legacy_split_cache_inference,
 )
+
+
+def test_mot_runtime_loading_contract_has_one_canonical_owner() -> None:
+    public_names = (
+        "CURRENT_FRONTEND_ENCODE_MODE",
+        "DEPRECATED_FRONTEND_ENCODE_MODE",
+        "LIVE_SIM_MOT_GENERALIST_ROLLOUT_MODES",
+        "MOT_GJD_ACTION_ROUTES",
+        "OFFLINE_DIAGNOSTIC_MOT_GENERALIST_ROLLOUT_MODES",
+        "MotLiberoLoadOptions",
+        "MotLiberoRuntime",
+        "load_mot_libero_runtime",
+        "print_rollout_event",
+    )
+    for name in public_names:
+        assert getattr(mot_viz, name) is getattr(mot_runtime, name)
+    assert (
+        mot_viz._maybe_merge_checkpoint_runtime_config
+        is mot_runtime._maybe_merge_checkpoint_runtime_config
+    )
+    assert (
+        mot_viz._require_current_frontend_encode_mode
+        is mot_runtime._require_current_frontend_encode_mode
+    )
 
 
 def _obs(index: int) -> dict[str, np.ndarray]:
@@ -122,9 +147,9 @@ def test_maybe_merge_checkpoint_runtime_config_skips_by_default(monkeypatch, tmp
     def _raise_if_called(*args, **kwargs):
         raise AssertionError("checkpoint runtime config merge should be opt-in")
 
-    monkeypatch.setattr(mot_viz, "merge_runtime_config_from_checkpoint", _raise_if_called)
+    monkeypatch.setattr(mot_runtime, "merge_runtime_config_from_checkpoint", _raise_if_called)
 
-    merged, resolved_config = mot_viz._maybe_merge_checkpoint_runtime_config(
+    merged, resolved_config = mot_runtime._maybe_merge_checkpoint_runtime_config(
         config,
         tmp_path / "checkpoint_step_1",
         merge_enabled=False,
@@ -144,9 +169,9 @@ def test_maybe_merge_checkpoint_runtime_config_merges_when_requested(monkeypatch
         assert checkpoint_path == tmp_path / "checkpoint_step_1"
         return merged_config, resolved_path
 
-    monkeypatch.setattr(mot_viz, "merge_runtime_config_from_checkpoint", _fake_merge)
+    monkeypatch.setattr(mot_runtime, "merge_runtime_config_from_checkpoint", _fake_merge)
 
-    merged, resolved_config = mot_viz._maybe_merge_checkpoint_runtime_config(
+    merged, resolved_config = mot_runtime._maybe_merge_checkpoint_runtime_config(
         config,
         tmp_path / "checkpoint_step_1",
         merge_enabled=True,

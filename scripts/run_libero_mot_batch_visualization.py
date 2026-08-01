@@ -11,7 +11,8 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from open_wam.evals import libero_mot_rollout as mot_viz  # noqa: E402
+import open_wam.evals.libero_mot_rollout as mot_viz  # noqa: E402
+import open_wam.evals.libero_mot_runtime as mot_runtime  # noqa: E402
 from open_wam.utils import seed_everywhere  # noqa: E402
 
 
@@ -105,7 +106,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--mot-gjd-action-route",
-        choices=sorted(mot_viz.MOT_GJD_ACTION_ROUTES),
+        choices=sorted(mot_runtime.MOT_GJD_ACTION_ROUTES),
         default="joint",
         help=(
             "Diagnostic M5 GJD live-sim action route. `joint` is the normal rollout; "
@@ -115,8 +116,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--frontend-encode-mode",
-        choices=(mot_viz.DEPRECATED_FRONTEND_ENCODE_MODE, mot_viz.CURRENT_FRONTEND_ENCODE_MODE),
-        default=mot_viz.CURRENT_FRONTEND_ENCODE_MODE,
+        choices=(
+            mot_runtime.DEPRECATED_FRONTEND_ENCODE_MODE,
+            mot_runtime.CURRENT_FRONTEND_ENCODE_MODE,
+        ),
+        default=mot_runtime.CURRENT_FRONTEND_ENCODE_MODE,
         help=(
             "Current rollout contract is lingbot_streaming_vae. rolling_offline is deprecated "
             "and requires --allow-deprecated-frontend-encode-mode."
@@ -188,7 +192,7 @@ def main() -> None:
                 rollout_seed = explicit_seed
                 if rollout_seed is None:
                     rollout_seed = _resolve_rollout_seed(args, episode_idx=episode_idx)
-                mot_viz.print_rollout_event(
+                mot_runtime.print_rollout_event(
                     "batch_rollout_start",
                     {"task_id": int(task_id), "episode_idx": int(episode_idx), "seed": rollout_seed},
                 )
@@ -200,7 +204,7 @@ def main() -> None:
                     seed=rollout_seed,
                 )
                 summaries.append(summary)
-                mot_viz.print_rollout_event(
+                mot_runtime.print_rollout_event(
                     "batch_rollout_done",
                     {
                         "task_id": int(task_id),
@@ -220,8 +224,8 @@ def main() -> None:
 
 
 def _load_batch_resources(args: argparse.Namespace) -> SimpleNamespace:
-    runtime = mot_viz.load_mot_libero_runtime(
-        mot_viz.MotLiberoLoadOptions(
+    runtime = mot_runtime.load_mot_libero_runtime(
+        mot_runtime.MotLiberoLoadOptions(
             config=args.config,
             checkpoint=args.checkpoint,
             merge_checkpoint_runtime_config=bool(

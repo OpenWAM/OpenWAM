@@ -2557,6 +2557,52 @@ def test_libero_mot_drivers_delegate_to_the_package_episode_runner() -> None:
         assert policy_state_field in observed_history_source
 
 
+def test_libero_mot_runtime_loading_has_one_owner() -> None:
+    runtime_path = PACKAGE_ROOT / "evals" / "libero_mot_runtime.py"
+    rollout_path = PACKAGE_ROOT / "evals" / "libero_mot_rollout.py"
+    single_driver_path = REPO_ROOT / "scripts" / "run_libero_mot_visualization.py"
+    batch_driver_path = (
+        REPO_ROOT / "scripts" / "run_libero_mot_batch_visualization.py"
+    )
+    runtime_definitions = _top_level_definitions(runtime_path)
+    rollout_definitions = _top_level_definitions(rollout_path)
+    runtime_contract = {
+        "MotLiberoLoadOptions",
+        "MotLiberoRuntime",
+        "_action_per_frame",
+        "_build_component_report",
+        "_frame_chunk_size",
+        "_maybe_merge_checkpoint_runtime_config",
+        "_require_current_frontend_encode_mode",
+        "_resolve_mot_checkpoint_path",
+        "_validate_live_sim_mot_generalist_rollout_mode",
+        "_validate_mot_config",
+        "load_mot_libero_runtime",
+        "print_rollout_event",
+    }
+
+    assert runtime_contract <= runtime_definitions
+    assert runtime_contract.isdisjoint(rollout_definitions)
+    assert "open_wam.evals.libero_mot_runtime" in _absolute_imports_for_file(
+        rollout_path
+    )
+    for driver_path in (single_driver_path, batch_driver_path):
+        assert "open_wam.evals.libero_mot_runtime" in _absolute_imports_for_file(
+            driver_path
+        )
+    runtime_source = runtime_path.read_text(encoding="utf-8")
+    rollout_source = rollout_path.read_text(encoding="utf-8")
+    for loading_dependency in (
+        "build_variant_pipeline_from_config",
+        "load_experiment_config",
+        "load_pipeline_checkpoint",
+        "merge_runtime_config_from_checkpoint",
+        "resolve_checkpoint_file",
+    ):
+        assert loading_dependency in runtime_source
+        assert loading_dependency not in rollout_source
+
+
 def test_libero_integration_roles_have_one_owner() -> None:
     task_path = PACKAGE_ROOT / "integrations" / "libero_tasks.py"
     runtime_path = PACKAGE_ROOT / "integrations" / "libero_runtime.py"
