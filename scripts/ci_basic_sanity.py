@@ -296,6 +296,19 @@ def _check_static_source_contracts() -> None:
         if forbidden in source:
             raise SystemExit(f"{relative} still contains forbidden source contract {forbidden!r}.")
 
+    legacy_bridge = REPO_ROOT / "src" / "open_wam" / "cli" / "_legacy_script.py"
+    if legacy_bridge.exists():
+        raise SystemExit("Installed commands must not depend on the retired legacy-script bridge.")
+    for cli_path in sorted((REPO_ROOT / "src" / "open_wam" / "cli").glob("*.py")):
+        source = cli_path.read_text(encoding="utf-8")
+        forbidden_tokens = ("run_legacy_script", "runpy", "scripts/")
+        present = [token for token in forbidden_tokens if token in source]
+        if present:
+            relative = cli_path.relative_to(REPO_ROOT)
+            raise SystemExit(
+                f"Installed command {relative} depends on checkout-only execution: {present!r}."
+            )
+
 def _check_workflow_is_no_torch() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     if "OPEN_WAM_CI_NO_TORCH" not in workflow:

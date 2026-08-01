@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import sys
-
-from ._legacy_script import run_legacy_script
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -14,9 +11,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--split", choices=("train", "val"), default="val")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--batch-size", type=int, default=None)
-    parser.add_argument("--max-batches", type=int, default=1)
+    parser.add_argument(
+        "--max-batches",
+        type=int,
+        default=1,
+        help=(
+            "Compatibility control; sanity reports inspect exactly one batch. "
+            "Use open-wam-eval for multi-batch metrics."
+        ),
+    )
     parser.add_argument("--rollout-steps", type=int, default=3)
     parser.add_argument("--require-gpu", action="store_true")
+    parser.add_argument(
+        "--allow-deprecated-libero-config",
+        action="store_true",
+        help=(
+            "Allow historical LIBERO M1/M5 configs that do not match the current strict fixed-128, "
+            "one-frame, proprio-conditioned training/eval paradigm."
+        ),
+    )
     parser.add_argument("--output-json", type=str, default=None)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--extension", action="append", default=[])
@@ -24,17 +37,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    resolved_argv = sys.argv[1:] if argv is None else argv
-    build_arg_parser().parse_args(resolved_argv)
-    if argv is None:
-        run_legacy_script("run_benchmark_pipeline_sanity.py")
-        return
-    old_argv = sys.argv
-    sys.argv = [old_argv[0], *argv]
+    args = build_arg_parser().parse_args(argv)
     try:
-        run_legacy_script("run_benchmark_pipeline_sanity.py")
-    finally:
-        sys.argv = old_argv
+        from open_wam.evals.sanity import run_sanity_command
+    except ModuleNotFoundError as error:
+        if error.name and error.name.startswith("open_wam"):
+            raise
+        missing = error.name or "an optional runtime module"
+        raise SystemExit(
+            "Sanity runtime dependencies are not installed. Install with "
+            "`pip install 'open-wam[train]'` or `uv sync --extra train`. "
+            f"Missing module: {missing}."
+        ) from error
+
+    run_sanity_command(args)
 
 
 if __name__ == "__main__":

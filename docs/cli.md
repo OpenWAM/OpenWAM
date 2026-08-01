@@ -14,8 +14,9 @@ compatibility wrappers.
 | `open-wam-sanity` | Run quantified load/train/eval/rollout-style sanity checks | `scripts/run_benchmark_pipeline_sanity.py` |
 | `open-wam-sim-rollout` | Run closed-loop RoboTwin/CALVIN rollout when simulators are installed | `scripts/run_sim_realtime_sandbox.py` |
 
-`open-wam-sim-rollout` executes entirely from the installed package. Its
-legacy script path is a thin adapter to the same parser and runtime.
+All six commands execute entirely from the installed package. The listed
+legacy script paths are compatibility adapters to the same package parsers and
+runtimes.
 
 ## Compatibility Policy
 

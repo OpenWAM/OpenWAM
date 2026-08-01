@@ -138,6 +138,9 @@ uv run --extra train open-wam-sanity \
   --rollout-steps 1
 ```
 
+Sanity reports intentionally inspect exactly one batch. Use `open-wam-eval`
+for aggregated multi-batch metrics.
+
 FDM/IDM ablations and simulator counterfactual renders are checkout-only
 research diagnostics, not installed library APIs. Their stable commands require
 an explicit checkpoint and local data inputs:

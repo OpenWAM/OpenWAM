@@ -2778,6 +2778,33 @@ def test_simulator_rollout_command_has_one_package_owner() -> None:
         assert simulator_owned_name not in integration_exports
 
 
+def test_sanity_command_has_one_package_owner() -> None:
+    cli_source = (PACKAGE_ROOT / "cli" / "sanity.py").read_text(encoding="utf-8")
+    runtime_source = (PACKAGE_ROOT / "evals" / "sanity.py").read_text(encoding="utf-8")
+    script_source = (REPO_ROOT / "scripts" / "run_benchmark_pipeline_sanity.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "run_legacy_script" not in cli_source
+    assert "from open_wam.evals.sanity import run_sanity_command" in cli_source
+    assert "--allow-deprecated-libero-config" in cli_source
+    assert "from open_wam.cli.sanity import main" in script_source
+    for implementation in (
+        "_build_load_report",
+        "_run_train_forward",
+        "_run_batch_infer",
+        "_run_rollout_style_infer",
+        "build_result_envelope",
+    ):
+        assert implementation in runtime_source
+        assert implementation not in script_source
+    assert "resolve_repo_path(args.config)" in runtime_source
+    assert "def _resolve_repo_path" not in runtime_source
+    assert "config.trainer.batch_adapter == BatchAdapterName.LATENTS" in runtime_source
+    assert 'dataset_type == "lerobot_v2_latent_local"' not in runtime_source
+    assert not (PACKAGE_ROOT / "cli" / "_legacy_script.py").exists()
+
+
 def test_libero_mot_runtime_loading_has_one_owner() -> None:
     runtime_path = PACKAGE_ROOT / "evals" / "libero_mot_runtime.py"
     rollout_path = PACKAGE_ROOT / "evals" / "libero_mot_rollout.py"
