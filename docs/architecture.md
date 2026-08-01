@@ -58,8 +58,9 @@ The `open_wam` wheel contains maintained configuration, data, model, training,
 runtime, evaluation-result, and extension contracts. Benchmark integrations
 remain lazy so importing the core does not require simulator dependencies.
 
-Large experiment analyses and artifact renderers live under `scripts/`. In
-particular, `scripts/research_dynamics/` contains checkout-only FDM/IDM
+Reusable result schemas, rollout artifact policies, and maintained renderers
+live under `open_wam.evals`. Large experiment analyses remain under `scripts/`;
+in particular, `scripts/research_dynamics/` contains checkout-only FDM/IDM
 diagnostics and is not a public import surface. Stable top-level scripts own
 their command interfaces and import reusable policy and data behavior from the
 installed package. Research tools must require machine-local checkpoints and

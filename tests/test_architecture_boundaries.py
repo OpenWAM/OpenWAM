@@ -2761,6 +2761,31 @@ def test_libero_mot_drivers_delegate_to_the_package_episode_runner() -> None:
         assert policy_state_field in observed_history_source
 
 
+def test_libero_realtime_artifacts_have_one_package_owner() -> None:
+    runner_source = (
+        REPO_ROOT / "scripts" / "run_libero_realtime_sandbox.py"
+    ).read_text(encoding="utf-8")
+    common_source = (
+        REPO_ROOT / "scripts" / "libero_exact_realtime_common.py"
+    ).read_text(encoding="utf-8")
+    artifact_source = (
+        PACKAGE_ROOT / "evals" / "libero_rollout_artifacts.py"
+    ).read_text(encoding="utf-8")
+
+    assert "persist_libero_realtime_artifacts(" in runner_source
+    assert "RolloutArtifactPolicy.from_value(" in runner_source
+    for artifact_implementation in (
+        "def build_libero_realtime_video_frames(",
+        "def build_libero_fallback_timeline_video_frames(",
+        "def build_libero_realtime_output_stem(",
+        "_fallback_timeline.mp4",
+        "imageio.mimsave(",
+    ):
+        assert artifact_implementation not in runner_source
+        assert artifact_implementation not in common_source
+        assert artifact_implementation in artifact_source
+
+
 def test_simulator_rollout_command_has_one_package_owner() -> None:
     cli_source = (PACKAGE_ROOT / "cli" / "sim_rollout.py").read_text(encoding="utf-8")
     runtime_source = (PACKAGE_ROOT / "evals" / "sim_rollout.py").read_text(encoding="utf-8")

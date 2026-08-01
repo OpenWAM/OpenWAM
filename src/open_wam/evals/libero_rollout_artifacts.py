@@ -6,6 +6,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 import imageio.v2 as imageio
@@ -14,6 +15,7 @@ from PIL import Image, ImageDraw
 import torch
 from diffusers.video_processor import VideoProcessor
 
+from open_wam.configs.enums import RolloutArtifactProfile
 from open_wam.integrations import LIBERO_ROLLOUT_VIEW_KEYS
 from open_wam.pipelines import VariantPipeline
 
@@ -25,12 +27,21 @@ __all__ = [
     "LiberoRolloutArtifactOptions",
     "LiberoRolloutArtifactOutput",
     "LiberoRolloutArtifactPayload",
+    "LiberoRealtimeArtifactIdentity",
+    "LiberoRealtimeArtifactOptions",
+    "LiberoRealtimeArtifactOutput",
+    "LiberoRealtimeArtifactPayload",
+    "RolloutArtifactPolicy",
     "append_predicted_latent_chunk",
+    "build_libero_fallback_timeline_video_frames",
+    "build_libero_realtime_output_stem",
+    "build_libero_realtime_video_frames",
     "build_libero_rollout_output_path",
     "decode_latent_video_chunks",
     "extract_predicted_latents",
     "iter_comparison_video_frames",
     "iter_rollout_video_frames",
+    "persist_libero_realtime_artifacts",
     "persist_libero_rollout_artifacts",
     "to_uint8",
     "with_title",
@@ -82,6 +93,196 @@ class LiberoRolloutArtifactOutput:
     component_report_path: Path
     comparison_video_path: Path | None
     rollout_video_path: Path | None
+
+
+@dataclass(frozen=True)
+class RolloutArtifactPolicy:
+    """Artifact profile decisions shared by collection and persistence."""
+
+    profile: RolloutArtifactProfile
+    write_fallback_timeline_video: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "profile", RolloutArtifactProfile(self.profile))
+
+    @classmethod
+    def from_value(
+        cls,
+        profile: RolloutArtifactProfile | str,
+        *,
+        write_fallback_timeline_video: bool = False,
+    ) -> RolloutArtifactPolicy:
+        return cls(
+            profile=RolloutArtifactProfile(profile),
+            write_fallback_timeline_video=bool(write_fallback_timeline_video),
+        )
+
+    @property
+    def writes_rollout_video(self) -> bool:
+        return self.profile in {
+            RolloutArtifactProfile.STANDARD,
+            RolloutArtifactProfile.DEBUG,
+        }
+
+    @property
+    def writes_debug_artifacts(self) -> bool:
+        return self.profile in {
+            RolloutArtifactProfile.STANDARD,
+            RolloutArtifactProfile.DEBUG,
+        }
+
+    @property
+    def writes_fallback_timeline_video(self) -> bool:
+        return (
+            self.profile is RolloutArtifactProfile.DEBUG
+            or self.write_fallback_timeline_video
+        )
+
+    @property
+    def collects_video_records(self) -> bool:
+        return self.writes_rollout_video or self.writes_fallback_timeline_video
+
+
+@dataclass(frozen=True)
+class LiberoRealtimeArtifactIdentity:
+    """Stable coordinates used for one realtime episode's artifact stem."""
+
+    benchmark: str
+    task_id: int
+    prompt: str
+    episode_idx: int
+    suffix: str
+
+
+@dataclass(frozen=True)
+class LiberoRealtimeArtifactOptions:
+    """Realtime output choices independent from simulator execution."""
+
+    output_root: Path
+    video_fps: float
+    action_per_frame: int
+    policy: RolloutArtifactPolicy
+
+
+@dataclass(frozen=True)
+class LiberoRealtimeArtifactPayload:
+    """Realtime traces consumed only by artifact rendering and persistence."""
+
+    action_records: Sequence[Mapping[str, Any]]
+    action_video_records: Sequence[Mapping[str, Any]]
+    replan_records: Sequence[Mapping[str, Any]]
+    extension_records: Sequence[Mapping[str, Any]]
+    component_report: Mapping[str, Any]
+    startup_debug_report: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class LiberoRealtimeArtifactOutput:
+    """Persisted realtime paths plus the path-enriched summary."""
+
+    summary: dict[str, Any]
+    summary_path: Path
+    video_path: Path | None
+    fallback_timeline_video_path: Path | None
+    action_trace_path: Path | None
+    replan_trace_path: Path | None
+    extension_trace_path: Path | None
+    load_report_path: Path | None
+    startup_debug_path: Path | None
+
+
+def persist_libero_realtime_artifacts(
+    *,
+    identity: LiberoRealtimeArtifactIdentity,
+    options: LiberoRealtimeArtifactOptions,
+    payload: LiberoRealtimeArtifactPayload,
+    summary: dict[str, Any],
+) -> LiberoRealtimeArtifactOutput:
+    """Persist one realtime rollout and enrich its established summary in place."""
+
+    output_stem = build_libero_realtime_output_stem(
+        root=options.output_root,
+        identity=identity,
+    )
+    output_stem.parent.mkdir(parents=True, exist_ok=True)
+    policy = options.policy
+    summary["artifact_profile"] = policy.profile.value
+
+    video_path: Path | None = None
+    if policy.writes_rollout_video:
+        video_frames = build_libero_realtime_video_frames(
+            action_video_records=payload.action_video_records,
+            target_action_hz=float(summary["target_action_hz"]),
+            action_per_frame=options.action_per_frame,
+        )
+        video_path = output_stem.with_suffix(".mp4")
+        imageio.mimsave(video_path, video_frames, fps=float(options.video_fps))
+        summary["video_path"] = str(video_path.resolve())
+
+    fallback_timeline_video_path: Path | None = None
+    if policy.writes_fallback_timeline_video:
+        fallback_timeline_frames = build_libero_fallback_timeline_video_frames(
+            action_video_records=payload.action_video_records,
+            target_action_hz=float(summary["target_action_hz"]),
+            action_per_frame=options.action_per_frame,
+        )
+        fallback_timeline_video_path = output_stem.with_name(
+            f"{output_stem.stem}_fallback_timeline.mp4"
+        )
+        imageio.mimsave(
+            fallback_timeline_video_path,
+            fallback_timeline_frames,
+            fps=float(options.video_fps),
+        )
+        summary["fallback_timeline_video_path"] = str(
+            fallback_timeline_video_path.resolve()
+        )
+
+    summary_path = output_stem.with_suffix(".json")
+    action_trace_path = output_stem.with_name(f"{output_stem.stem}_actions.jsonl")
+    replan_trace_path = output_stem.with_name(f"{output_stem.stem}_replans.jsonl")
+    extension_trace_path = output_stem.with_name(f"{output_stem.stem}_extensions.jsonl")
+    load_report_path = output_stem.with_name(f"{output_stem.stem}_load_report.json")
+    startup_debug_path = output_stem.with_name(f"{output_stem.stem}_startup_debug.json")
+    summary["summary_path"] = str(summary_path.resolve())
+    if policy.writes_debug_artifacts:
+        summary["action_trace_path"] = str(action_trace_path.resolve())
+        summary["replan_trace_path"] = str(replan_trace_path.resolve())
+        summary["extension_trace_path"] = str(extension_trace_path.resolve())
+        summary["load_report_path"] = str(load_report_path.resolve())
+    if payload.startup_debug_report is not None:
+        summary["startup_debug_path"] = str(startup_debug_path.resolve())
+
+    if policy.writes_debug_artifacts:
+        _write_jsonl_records(action_trace_path, payload.action_records)
+        _write_jsonl_records(replan_trace_path, payload.replan_records)
+        _write_jsonl_records(extension_trace_path, payload.extension_records)
+        load_report_path.write_text(
+            json.dumps(dict(payload.component_report), indent=2),
+            encoding="utf-8",
+        )
+    if payload.startup_debug_report is not None:
+        startup_debug_path.write_text(
+            json.dumps(dict(payload.startup_debug_report), indent=2),
+            encoding="utf-8",
+        )
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+    return LiberoRealtimeArtifactOutput(
+        summary=summary,
+        summary_path=summary_path,
+        video_path=video_path,
+        fallback_timeline_video_path=fallback_timeline_video_path,
+        action_trace_path=action_trace_path if policy.writes_debug_artifacts else None,
+        replan_trace_path=replan_trace_path if policy.writes_debug_artifacts else None,
+        extension_trace_path=extension_trace_path if policy.writes_debug_artifacts else None,
+        load_report_path=load_report_path if policy.writes_debug_artifacts else None,
+        startup_debug_path=(
+            startup_debug_path
+            if payload.startup_debug_report is not None
+            else None
+        ),
+    )
 
 
 def persist_libero_rollout_artifacts(
@@ -178,6 +379,23 @@ def persist_libero_rollout_artifacts(
         component_report_path=component_report_path,
         comparison_video_path=comparison_video_path,
         rollout_video_path=rollout_video_path,
+    )
+
+
+def build_libero_realtime_output_stem(
+    *,
+    root: Path,
+    identity: LiberoRealtimeArtifactIdentity,
+) -> Path:
+    """Resolve one sanitized realtime artifact stem without a suffix."""
+
+    safe_prompt = _safe_path_token(identity.prompt)
+    safe_suffix = _safe_path_token(identity.suffix)
+    return (
+        root
+        / identity.benchmark
+        / f"{identity.task_id}_{safe_prompt}"
+        / f"{identity.episode_idx}_{safe_suffix}"
     )
 
 
@@ -279,6 +497,147 @@ def iter_rollout_video_frames(
             "MoT Rollout (AgentView / Wrist)",
         )
         yield np.ascontiguousarray(np.array(titled, copy=True))
+
+
+def build_libero_realtime_video_frames(
+    *,
+    action_video_records: Sequence[Mapping[str, Any]],
+    target_action_hz: float,
+    action_per_frame: int,
+) -> list[np.ndarray]:
+    """Render the established live-observation realtime video layout."""
+
+    frames: list[np.ndarray] = []
+    for record in action_video_records:
+        obs = record["obs"]
+        agentview = np.ascontiguousarray(obs[LIBERO_OBS_KEYS[0]])
+        wrist = np.ascontiguousarray(obs[LIBERO_OBS_KEYS[1]])
+        row_real = np.hstack([agentview, wrist])
+        titled = with_title(
+            Image.fromarray(np.ascontiguousarray(row_real)),
+            "Live LIBERO (AgentView / Wrist)",
+        )
+        info_panel = Image.new("RGB", (titled.width, 108), color=(0, 0, 0))
+        draw = ImageDraw.Draw(info_panel)
+        header = (
+            f"Action {int(record['action_index']) + 1} | "
+            f"Frame {int(record['absolute_frame_index'])} "
+            f"[{int(record['action_offset']) + 1}/{action_per_frame}]"
+        )
+        source = str(record["source"])
+        lag_text = (
+            "fallback"
+            if record["generation_lag_frames"] is None
+            else str(int(record["generation_lag_frames"]))
+        )
+        lines = [
+            header,
+            (
+                f"Source: {source} | Target: {target_action_hz:.1f} Hz | "
+                f"Lateness: {1000.0 * float(record['lateness_s']):.1f} ms"
+            ),
+            (
+                f"Env step: {1000.0 * float(record['env_step_s']):.1f} ms | "
+                f"Generation lag: {lag_text} frame(s)"
+            ),
+        ]
+        text_color = (255, 255, 255) if source == "policy" else (255, 180, 120)
+        for index, line in enumerate(lines):
+            draw.text((10, 10 + index * 28), line, fill=text_color)
+        full_frame = np.vstack(
+            [np.array(titled, copy=True), np.array(info_panel, copy=True)]
+        )
+        frames.append(np.ascontiguousarray(full_frame))
+    return frames
+
+
+def build_libero_fallback_timeline_video_frames(
+    *,
+    action_video_records: Sequence[Mapping[str, Any]],
+    target_action_hz: float,
+    action_per_frame: int,
+) -> list[np.ndarray]:
+    """Render the established fallback-aware realtime timeline layout."""
+
+    frames: list[np.ndarray] = []
+    for record_index, record in enumerate(action_video_records):
+        obs = record["obs"]
+        agentview = np.ascontiguousarray(obs[LIBERO_OBS_KEYS[0]])
+        wrist = np.ascontiguousarray(obs[LIBERO_OBS_KEYS[1]])
+        row_real = np.hstack([agentview, wrist])
+        titled = with_title(
+            Image.fromarray(np.ascontiguousarray(row_real)),
+            "Live LIBERO fallback timeline (AgentView / Wrist)",
+        )
+        source_color = _fallback_timeline_record_color(record)
+        bordered = Image.new(
+            "RGB",
+            (titled.width + 12, titled.height + 12),
+            color=source_color,
+        )
+        bordered.paste(titled, (6, 6))
+
+        info_panel = Image.new("RGB", (bordered.width, 164), color=(0, 0, 0))
+        draw = ImageDraw.Draw(info_panel)
+        source = str(record.get("source", "unknown"))
+        history_decision = str(record.get("frame_history_decision", "not_recorded"))
+        generation_lag = (
+            "fallback"
+            if record.get("generation_lag_frames") is None
+            else f"{int(record['generation_lag_frames'])} frame(s)"
+        )
+        generation_frame = (
+            "NA"
+            if record.get("generation_frame_start") is None
+            else str(record["generation_frame_start"])
+        )
+        ready_delay = (
+            "NA"
+            if record.get("plan_ready_delay_s") is None
+            else f"{float(record['plan_ready_delay_s']):.2f}s"
+        )
+        lines = [
+            (
+                f"Action {int(record['action_index']) + 1} | "
+                f"Frame {int(record['absolute_frame_index'])} "
+                f"[{int(record['action_offset']) + 1}/{action_per_frame}] | "
+                f"Target {target_action_hz:.1f} Hz"
+            ),
+            (
+                f"Source: {source} | History decision: {history_decision} | "
+                "Frame has fallback: "
+                f"{bool(record.get('frame_contains_fallback_action', source.startswith('fallback_')))}"
+            ),
+            (
+                f"Gen frame: {generation_frame} | Gen lag: {generation_lag} | "
+                f"Ready delay: {ready_delay} | "
+                f"Late: {1000.0 * float(record['lateness_s']):.1f} ms"
+            ),
+            _format_fallback_timeline_action(record.get("action")),
+            (
+                "Timeline colors: red fallback, orange hidden/washout, "
+                "blue history, green extension, violet startup."
+            ),
+        ]
+        for index, line in enumerate(lines):
+            fill = source_color if index == 1 else (255, 255, 255)
+            draw.text((10, 10 + index * 28), line, fill=fill)
+
+        timeline = _build_fallback_timeline_strip(
+            action_video_records=action_video_records,
+            width=bordered.width,
+            height=42,
+            current_index=record_index,
+        )
+        full_frame = np.vstack(
+            [
+                np.array(bordered, copy=True),
+                np.array(info_panel, copy=True),
+                np.array(timeline, copy=True),
+            ]
+        )
+        frames.append(np.ascontiguousarray(full_frame))
+    return frames
 
 
 def iter_comparison_video_frames(
@@ -479,6 +838,84 @@ def _decode_latent_video(
             dtype=original_dtype,
         )
     return imagined_video
+
+
+def _safe_path_token(value: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._")
+    return normalized or "run"
+
+
+def _fallback_timeline_record_color(
+    record: Mapping[str, Any],
+) -> tuple[int, int, int]:
+    source = str(record.get("source", ""))
+    history_decision = str(record.get("frame_history_decision", ""))
+    if source.startswith("fallback_"):
+        return (230, 50, 40)
+    if history_decision in {"fallback", "washout"}:
+        return (235, 165, 35)
+    if source == "history_replan":
+        return (70, 150, 255)
+    if source == "open_loop_extension":
+        return (70, 210, 120)
+    if source == "startup_plan":
+        return (175, 150, 255)
+    return (180, 180, 180)
+
+
+def _format_fallback_timeline_action(action: Any) -> str:
+    if action is None:
+        return "Action: NA"
+    values = [float(value) for value in action]
+    delta_values = " ".join(f"{value:+.2f}" for value in values[:6])
+    tail_values = " ".join(f"{value:+.2f}" for value in values[6:])
+    return (
+        f"Action delta[0:6]: {delta_values} | "
+        f"absolute[6:]: {tail_values or 'NA'}"
+    )
+
+
+def _build_fallback_timeline_strip(
+    *,
+    action_video_records: Sequence[Mapping[str, Any]],
+    width: int,
+    height: int,
+    current_index: int,
+) -> Image.Image:
+    strip = Image.new("RGB", (int(width), int(height)), color=(18, 18, 18))
+    draw = ImageDraw.Draw(strip)
+    total = max(1, len(action_video_records))
+    bar_top = 8
+    bar_bottom = int(height) - 10
+    for index, record in enumerate(action_video_records):
+        x0 = int(index * int(width) / total)
+        x1 = max(x0 + 1, int((index + 1) * int(width) / total))
+        draw.rectangle(
+            [x0, bar_top, min(int(width) - 1, x1), bar_bottom],
+            fill=_fallback_timeline_record_color(record),
+        )
+    current_x = int(current_index * int(width) / total)
+    draw.line(
+        [(current_x, 0), (current_x, int(height) - 1)],
+        fill=(255, 255, 255),
+        width=3,
+    )
+    draw.text(
+        (10, int(height) - 10),
+        f"{current_index + 1}/{total}",
+        fill=(255, 255, 255),
+    )
+    return strip
+
+
+def _write_jsonl_records(
+    path: Path,
+    records: Sequence[Mapping[str, Any]],
+) -> None:
+    with path.open("w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(dict(record), sort_keys=True))
+            handle.write("\n")
 
 
 def _write_action_trace(

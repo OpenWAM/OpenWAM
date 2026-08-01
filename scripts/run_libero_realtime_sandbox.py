@@ -13,7 +13,6 @@ import time
 from pathlib import Path
 from typing import Any, Protocol
 
-import imageio.v2 as imageio
 import numpy as np
 import torch
 from einops import rearrange
@@ -35,7 +34,11 @@ _prepend_import_path(SCRIPT_ROOT)
 import libero_exact_realtime_common as exact_sandbox  # noqa: E402
 
 from open_wam.configs import ActionTargetRepresentation, GripperRepresentation, ParallelRuntimeMode  # noqa: E402
-from open_wam.configs.enums import DeadlineMissPolicy, FallbackHistoryPolicy  # noqa: E402
+from open_wam.configs.enums import (  # noqa: E402
+    DeadlineMissPolicy,
+    FallbackHistoryPolicy,
+    RolloutArtifactProfile,
+)
 from open_wam.data.action_transforms import PoseSequence  # noqa: E402
 from open_wam.data.latent_temporal import raw_window_frames_for_latents  # noqa: E402
 from open_wam.integrations import (  # noqa: E402
@@ -47,6 +50,7 @@ from open_wam.integrations import (  # noqa: E402
 )
 from open_wam.integrations import libero_rollout  # noqa: E402
 from open_wam.integrations.realtime_control import build_live_rollout_summary  # noqa: E402
+from open_wam.evals import libero_rollout_artifacts as rollout_artifacts  # noqa: E402
 from open_wam.evals import libero_visualization as exact_viz  # noqa: E402
 from open_wam.models.common.rollout_startup import require_strict_startup_generation_frame  # noqa: E402
 from open_wam.models.policy_variants import PolicyInferContext  # noqa: E402
@@ -83,9 +87,6 @@ EVAL_PROFILE_DEFAULTS: dict[str, dict[str, object]] = {
         "deadline_miss_policy": DeadlineMissPolicy.HOLD_STATE.value,
     },
 }
-
-
-ARTIFACT_PROFILES = ("lean", "standard", "debug")
 
 
 REALTIME_SCHEDULER_PROFILE_DEFAULTS: dict[str, dict[str, object]] = {
@@ -220,36 +221,6 @@ def _cli_flag_present(argv: list[str], *flags: str) -> bool:
     return False
 
 
-def _artifact_profile_writes_rollout_video(artifact_profile: str) -> bool:
-    return artifact_profile in {"standard", "debug"}
-
-
-def _artifact_profile_writes_debug_artifacts(artifact_profile: str) -> bool:
-    return artifact_profile in {"standard", "debug"}
-
-
-def _artifact_profile_writes_fallback_timeline_video(
-    artifact_profile: str,
-    *,
-    write_fallback_timeline_video: bool,
-) -> bool:
-    return artifact_profile == "debug" or bool(write_fallback_timeline_video)
-
-
-def _artifact_profile_collects_video_records(
-    artifact_profile: str,
-    *,
-    write_fallback_timeline_video: bool,
-) -> bool:
-    return (
-        _artifact_profile_writes_rollout_video(artifact_profile)
-        or _artifact_profile_writes_fallback_timeline_video(
-            artifact_profile,
-            write_fallback_timeline_video=write_fallback_timeline_video,
-        )
-    )
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -345,8 +316,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--artifact-profile",
-        choices=ARTIFACT_PROFILES,
-        default="standard",
+        type=RolloutArtifactProfile,
+        choices=tuple(RolloutArtifactProfile),
+        default=RolloutArtifactProfile.STANDARD,
         help=(
             "Output artifact set. `lean` writes only the summary JSON and any explicitly requested startup debug dump; "
             "`standard` preserves the historical rollout MP4, trace JSONL files, and load report; "
@@ -1284,7 +1256,7 @@ def _run_exact_like_realtime_rollout(
     fallback_history_policy: FallbackHistoryPolicy,
     replan_low_watermark_actions: int,
     write_fallback_timeline_video: bool,
-    artifact_profile: str,
+    artifact_profile: RolloutArtifactProfile | str,
     debug_startup_dump: bool,
     exact_startup_bootstrap_padding: bool,
 ) -> dict[str, Any]:
@@ -1464,10 +1436,10 @@ def _run_exact_like_realtime_rollout(
 
         action_records: list[dict[str, Any]] = []
         action_video_records: list[dict[str, Any]] = []
-        collect_video_records = _artifact_profile_collects_video_records(
+        collect_video_records = rollout_artifacts.RolloutArtifactPolicy.from_value(
             artifact_profile,
             write_fallback_timeline_video=write_fallback_timeline_video,
-        )
+        ).collects_video_records
         replan_records: list[dict[str, Any]] = []
         extension_records: list[dict[str, Any]] = []
         startup_open_loop_s = 0.0
@@ -2434,7 +2406,7 @@ def _run_sequence_policy_realtime_rollout(
     action_guidance_scale: float | None,
     initial_generation_action_start: int | None,
     write_fallback_timeline_video: bool,
-    artifact_profile: str,
+    artifact_profile: RolloutArtifactProfile | str,
 ) -> dict[str, Any]:
     _apply_common_inference_overrides(
         config,
@@ -2668,10 +2640,10 @@ def _run_sequence_policy_realtime_rollout(
             startup_infer_s += startup_open_loop_s
         action_records: list[dict[str, Any]] = []
         action_video_records: list[dict[str, Any]] = []
-        collect_video_records = _artifact_profile_collects_video_records(
+        collect_video_records = rollout_artifacts.RolloutArtifactPolicy.from_value(
             artifact_profile,
             write_fallback_timeline_video=write_fallback_timeline_video,
-        )
+        ).collects_video_records
         replan_records: list[dict[str, Any]] = []
         done = False
         last_action = np.zeros((int(config.data.action_schema.action_dim),), dtype=np.float32)
@@ -4023,64 +3995,37 @@ def _finalize_rollout_outputs(
     video_fps: float,
     action_per_frame: int,
     write_fallback_timeline_video: bool,
-    artifact_profile: str,
+    artifact_profile: RolloutArtifactProfile | str,
     startup_debug_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    output_stem = exact_sandbox._build_output_stem(
-        root=output_dir,
-        benchmark_name=benchmark,
-        task_id=task_id,
-        prompt=prompt,
-        episode_idx=episode_idx,
-        suffix=suffix,
+    output = rollout_artifacts.persist_libero_realtime_artifacts(
+        identity=rollout_artifacts.LiberoRealtimeArtifactIdentity(
+            benchmark=benchmark,
+            task_id=task_id,
+            prompt=prompt,
+            episode_idx=episode_idx,
+            suffix=suffix,
+        ),
+        options=rollout_artifacts.LiberoRealtimeArtifactOptions(
+            output_root=output_dir,
+            video_fps=video_fps,
+            action_per_frame=action_per_frame,
+            policy=rollout_artifacts.RolloutArtifactPolicy.from_value(
+                artifact_profile,
+                write_fallback_timeline_video=write_fallback_timeline_video,
+            ),
+        ),
+        payload=rollout_artifacts.LiberoRealtimeArtifactPayload(
+            action_records=action_records,
+            action_video_records=action_video_records,
+            replan_records=replan_records,
+            extension_records=extension_records,
+            component_report=component_report,
+            startup_debug_report=startup_debug_report,
+        ),
+        summary=summary,
     )
-    output_stem.parent.mkdir(parents=True, exist_ok=True)
-    summary["artifact_profile"] = str(artifact_profile)
-    if _artifact_profile_writes_rollout_video(artifact_profile):
-        video_frames = exact_sandbox._build_realtime_video_frames(
-            action_video_records=action_video_records,
-            target_action_hz=float(summary["target_action_hz"]),
-            action_per_frame=action_per_frame,
-        )
-        video_path = output_stem.with_suffix(".mp4")
-        imageio.mimsave(video_path, video_frames, fps=float(video_fps))
-        summary["video_path"] = str(video_path.resolve())
-    if _artifact_profile_writes_fallback_timeline_video(
-        artifact_profile,
-        write_fallback_timeline_video=write_fallback_timeline_video,
-    ):
-        fallback_timeline_frames = exact_sandbox._build_fallback_timeline_video_frames(
-            action_video_records=action_video_records,
-            target_action_hz=float(summary["target_action_hz"]),
-            action_per_frame=action_per_frame,
-        )
-        fallback_timeline_video_path = output_stem.with_name(f"{output_stem.stem}_fallback_timeline.mp4")
-        imageio.mimsave(fallback_timeline_video_path, fallback_timeline_frames, fps=float(video_fps))
-        summary["fallback_timeline_video_path"] = str(fallback_timeline_video_path.resolve())
-
-    summary_path = output_stem.with_suffix(".json")
-    action_trace_path = output_stem.with_name(f"{output_stem.stem}_actions.jsonl")
-    replan_trace_path = output_stem.with_name(f"{output_stem.stem}_replans.jsonl")
-    extension_trace_path = output_stem.with_name(f"{output_stem.stem}_extensions.jsonl")
-    load_report_path = output_stem.with_name(f"{output_stem.stem}_load_report.json")
-    startup_debug_path = output_stem.with_name(f"{output_stem.stem}_startup_debug.json")
-    summary["summary_path"] = str(summary_path.resolve())
-    if _artifact_profile_writes_debug_artifacts(artifact_profile):
-        summary["action_trace_path"] = str(action_trace_path.resolve())
-        summary["replan_trace_path"] = str(replan_trace_path.resolve())
-        summary["extension_trace_path"] = str(extension_trace_path.resolve())
-        summary["load_report_path"] = str(load_report_path.resolve())
-    if startup_debug_report is not None:
-        summary["startup_debug_path"] = str(startup_debug_path.resolve())
-    if _artifact_profile_writes_debug_artifacts(artifact_profile):
-        exact_sandbox._write_jsonl(action_trace_path, action_records)
-        exact_sandbox._write_jsonl(replan_trace_path, replan_records)
-        exact_sandbox._write_jsonl(extension_trace_path, extension_records)
-        load_report_path.write_text(json.dumps(component_report, indent=2), encoding="utf-8")
-    if startup_debug_report is not None:
-        startup_debug_path.write_text(json.dumps(startup_debug_report, indent=2), encoding="utf-8")
-    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    return summary
+    return output.summary
 
 
 def _print_stage(name: str, **payload: object) -> None:

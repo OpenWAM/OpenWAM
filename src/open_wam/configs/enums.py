@@ -726,6 +726,14 @@ class DeadlineMissPolicy(StrEnum):
     ZERO = "zero"
 
 
+class RolloutArtifactProfile(StrEnum):
+    """Amount of rollout video and diagnostic state persisted per episode."""
+
+    LEAN = "lean"
+    STANDARD = "standard"
+    DEBUG = "debug"
+
+
 class ActionNormMethod(StrEnum):
     """Raw-to-model action normalization strategy for exact method-1 paths."""
 

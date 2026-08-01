@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
+from open_wam.configs.enums import RolloutArtifactProfile
 from open_wam.evals import libero_rollout_artifacts as artifacts
 
 
@@ -16,6 +17,47 @@ def _observation(index: int) -> dict[str, np.ndarray]:
         artifacts.LIBERO_OBS_KEYS[0]: frame,
         artifacts.LIBERO_OBS_KEYS[1]: frame + 1,
     }
+
+
+def test_realtime_artifact_policy_uses_typed_profile_semantics() -> None:
+    lean = artifacts.RolloutArtifactPolicy.from_value("lean")
+    standard = artifacts.RolloutArtifactPolicy.from_value(
+        RolloutArtifactProfile.STANDARD
+    )
+    forced_timeline = artifacts.RolloutArtifactPolicy.from_value(
+        RolloutArtifactProfile.LEAN,
+        write_fallback_timeline_video=True,
+    )
+    directly_coerced = artifacts.RolloutArtifactPolicy(profile="debug")  # type: ignore[arg-type]
+
+    assert lean.profile is RolloutArtifactProfile.LEAN
+    assert not lean.writes_rollout_video
+    assert not lean.writes_debug_artifacts
+    assert not lean.collects_video_records
+    assert standard.writes_rollout_video
+    assert standard.writes_debug_artifacts
+    assert not standard.writes_fallback_timeline_video
+    assert forced_timeline.writes_fallback_timeline_video
+    assert forced_timeline.collects_video_records
+    assert directly_coerced.profile is RolloutArtifactProfile.DEBUG
+
+
+def test_build_realtime_output_stem_sanitizes_prompt_and_suffix(
+    tmp_path: Path,
+) -> None:
+    output_stem = artifacts.build_libero_realtime_output_stem(
+        root=tmp_path,
+        identity=artifacts.LiberoRealtimeArtifactIdentity(
+            benchmark="libero_10",
+            task_id=1,
+            prompt="put / both: things? in <basket>",
+            episode_idx=7,
+            suffix="step600/unsafe",
+        ),
+    )
+
+    assert output_stem.parent.name == "1_put_both_things_in_basket"
+    assert output_stem.name == "7_step600_unsafe"
 
 
 def test_append_predicted_latent_chunk_honors_frame_cap() -> None:
@@ -217,3 +259,129 @@ def test_persist_rollout_artifacts_preserves_legacy_schema_and_paths(
     assert json.loads(
         output.component_report_path.read_text(encoding="utf-8")
     ) == {"loaded_keys": 848}
+
+
+def test_persist_realtime_artifacts_preserves_schema_and_render_contract(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    written_videos: list[tuple[Path, float, list[np.ndarray]]] = []
+
+    def _mimsave(path: Path, frames, *, fps: float) -> None:
+        materialized = [np.array(frame, copy=True) for frame in frames]
+        path.write_bytes(b"video")
+        written_videos.append((path, fps, materialized))
+
+    monkeypatch.setattr(artifacts.imageio, "mimsave", _mimsave)
+    action_video_records = (
+        {
+            "obs": _observation(1),
+            "action_index": 0,
+            "absolute_frame_index": 1,
+            "action_offset": 0,
+            "source": "startup_plan",
+            "generation_lag_frames": 0,
+            "lateness_s": 0.001,
+            "env_step_s": 0.002,
+            "frame_history_decision": "history",
+            "frame_contains_fallback_action": False,
+            "generation_frame_start": 1,
+            "plan_ready_delay_s": 0.003,
+            "action": [0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 1.0],
+        },
+        {
+            "obs": _observation(2),
+            "action_index": 1,
+            "absolute_frame_index": 1,
+            "action_offset": 1,
+            "source": "fallback_hold_state",
+            "generation_lag_frames": None,
+            "lateness_s": 0.01,
+            "env_step_s": 0.02,
+            "frame_history_decision": "washout",
+            "frame_contains_fallback_action": True,
+            "generation_frame_start": None,
+            "plan_ready_delay_s": None,
+            "action": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0],
+        },
+    )
+    summary = {"target_action_hz": 10.0, "success": False}
+
+    output = artifacts.persist_libero_realtime_artifacts(
+        identity=artifacts.LiberoRealtimeArtifactIdentity(
+            benchmark="libero_10",
+            task_id=2,
+            prompt="put object in basket",
+            episode_idx=3,
+            suffix="debug",
+        ),
+        options=artifacts.LiberoRealtimeArtifactOptions(
+            output_root=tmp_path,
+            video_fps=7.5,
+            action_per_frame=4,
+            policy=artifacts.RolloutArtifactPolicy.from_value("debug"),
+        ),
+        payload=artifacts.LiberoRealtimeArtifactPayload(
+            action_records=({"action_index": 0, "action": [0.1, -0.2]},),
+            action_video_records=action_video_records,
+            replan_records=({"event": "replan", "frame": 1},),
+            extension_records=({"event": "extension", "frame": 5},),
+            component_report={"loaded_keys": 848},
+            startup_debug_report={"startup": "one_observation"},
+        ),
+        summary=summary,
+    )
+
+    expected_stem = (
+        tmp_path
+        / "libero_10"
+        / "2_put_object_in_basket"
+        / "3_debug"
+    )
+    assert output.summary is summary
+    assert output.summary_path == expected_stem.with_suffix(".json")
+    assert output.video_path == expected_stem.with_suffix(".mp4")
+    assert output.fallback_timeline_video_path == expected_stem.with_name(
+        "3_debug_fallback_timeline.mp4"
+    )
+    assert output.action_trace_path == expected_stem.with_name(
+        "3_debug_actions.jsonl"
+    )
+    assert output.replan_trace_path == expected_stem.with_name(
+        "3_debug_replans.jsonl"
+    )
+    assert output.extension_trace_path == expected_stem.with_name(
+        "3_debug_extensions.jsonl"
+    )
+    assert output.load_report_path == expected_stem.with_name(
+        "3_debug_load_report.json"
+    )
+    assert output.startup_debug_path == expected_stem.with_name(
+        "3_debug_startup_debug.json"
+    )
+    assert output.summary["artifact_profile"] == "debug"
+    assert [path for path, _, _ in written_videos] == [
+        output.video_path,
+        output.fallback_timeline_video_path,
+    ]
+    assert all(fps == 7.5 for _, fps, _ in written_videos)
+    assert [len(frames) for _, _, frames in written_videos] == [2, 2]
+    assert [frames[0].shape for _, _, frames in written_videos] == [
+        (146, 4, 3),
+        (256, 16, 3),
+    ]
+    assert all(
+        frame.flags["C_CONTIGUOUS"]
+        for _, _, frames in written_videos
+        for frame in frames
+    )
+    assert output.action_trace_path.read_text(encoding="utf-8") == (
+        '{"action": [0.1, -0.2], "action_index": 0}\n'
+    )
+    assert json.loads(output.summary_path.read_text(encoding="utf-8")) == summary
+    assert json.loads(output.load_report_path.read_text(encoding="utf-8")) == {
+        "loaded_keys": 848
+    }
+    assert json.loads(output.startup_debug_path.read_text(encoding="utf-8")) == {
+        "startup": "one_observation"
+    }

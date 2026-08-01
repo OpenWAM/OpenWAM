@@ -280,10 +280,17 @@ def test_finalize_rollout_outputs_lean_skips_videos_and_traces(
         del args, kwargs
         raise AssertionError("lean artifact profile should not render videos or trace files")
 
-    monkeypatch.setattr(sandbox.exact_sandbox, "_build_realtime_video_frames", fail_if_called)
-    monkeypatch.setattr(sandbox.exact_sandbox, "_build_fallback_timeline_video_frames", fail_if_called)
-    monkeypatch.setattr(sandbox.exact_sandbox, "_write_jsonl", fail_if_called)
-    monkeypatch.setattr(sandbox.imageio, "mimsave", fail_if_called)
+    monkeypatch.setattr(
+        sandbox.rollout_artifacts,
+        "build_libero_realtime_video_frames",
+        fail_if_called,
+    )
+    monkeypatch.setattr(
+        sandbox.rollout_artifacts,
+        "build_libero_fallback_timeline_video_frames",
+        fail_if_called,
+    )
+    monkeypatch.setattr(sandbox.rollout_artifacts.imageio, "mimsave", fail_if_called)
 
     summary = sandbox._finalize_rollout_outputs(
         summary={"target_action_hz": 10.0},

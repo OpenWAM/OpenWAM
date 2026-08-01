@@ -17,22 +17,6 @@ def _load_sandbox_module():
     return module
 
 
-def test_build_output_stem_sanitizes_prompt_and_suffix(tmp_path: Path) -> None:
-    sandbox = _load_sandbox_module()
-
-    output_stem = sandbox._build_output_stem(
-        root=tmp_path,
-        benchmark_name="libero_10",
-        task_id=1,
-        prompt="put / both: things? in <basket>",
-        episode_idx=7,
-        suffix="step600/unsafe",
-    )
-
-    assert output_stem.parent.name == "1_put_both_things_in_basket"
-    assert output_stem.name == "7_step600_unsafe"
-
-
 def test_exact_realtime_common_rejects_frame_zero_startup_actions() -> None:
     sandbox = _load_sandbox_module()
     chunk = SimpleNamespace(
