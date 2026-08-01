@@ -730,6 +730,27 @@ def test_lerobot_consortium_catalog_has_one_owner() -> None:
     assert catalog_owned <= _compatibility_export_names(dataset_path)
 
 
+def test_lerobot_consortium_planning_has_one_owner() -> None:
+    planning_path = PACKAGE_ROOT / "data" / "lerobot_consortium_planning.py"
+    dataset_path = PACKAGE_ROOT / "data" / "lerobot_consortium.py"
+    planning_owned = {
+        "ConsortiumChannelSelection",
+        "ConsortiumEpisodeKey",
+        "ConsortiumResolvedSplit",
+        "ConsortiumWindowRecord",
+        "build_lerobot_consortium_window_index",
+        "resolve_lerobot_consortium_train_val_split",
+    }
+
+    assert planning_owned <= _top_level_definitions(planning_path)
+    assert planning_owned.isdisjoint(_top_level_definitions(dataset_path))
+    assert planning_owned <= _compatibility_export_names(dataset_path)
+    assert not any(
+        imported == "torch" or imported.startswith("torch.")
+        for imported in _absolute_imports_for_file(planning_path)
+    )
+
+
 def test_lerobot_latent_segment_geometry_has_one_owner() -> None:
     geometry_functions = {
         "compact_boundary_start_range",

@@ -271,10 +271,13 @@ global interleaving. `lerobot_consortium_storage` owns source discovery,
 local/remote resolution, JSON/JSONL/Parquet reads, and optional local/cloud
 write-through caches. `lerobot_consortium_catalog` owns immutable member and
 channel contracts, source membership, metadata parsing, local index-snapshot
-validation/refresh, and catalog construction. `lerobot_consortium` owns
-train/validation splits, channel adaptation, window indexing, row decoding,
-and final sample construction. Historical catalog and storage imports from
-`lerobot_consortium` remain identity aliases. This policy is intentionally
+validation/refresh, and catalog construction. `lerobot_consortium_planning`
+owns canonical member-ID resolution, train/validation split membership,
+channel-to-slot selection, frame/slot packing decisions, and window geometry
+without materializing source rows or tensors. `lerobot_consortium` owns cache
+lifetime, structured-row and image decoding, action/state supervision, and
+final sample construction. Historical catalog, planning, and storage imports
+from `lerobot_consortium` remain identity aliases. This policy is intentionally
 distinct from mixed-video source balancing, whose rounded target counts may
 change epoch length.
 `distributed_sampling` owns rank sharding and epoch coordination; adapters

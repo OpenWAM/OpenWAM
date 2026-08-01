@@ -26,6 +26,7 @@ from .lerobot_consortium_index import (
     write_lerobot_consortium_inventory_markdown,
     write_lerobot_consortium_repo_targets,
 )
+from .lerobot_consortium_planning import _resolve_member_id
 from .lerobot_consortium_storage import (
     ConsortiumSourceResolver,
     ConsortiumSourceSpec,
@@ -110,21 +111,6 @@ def _parse_visual_shape(shape: Any) -> tuple[int | None, int | None, int | None,
     if c <= 4 and a > 16 and b > 16:
         return a, b, c, "hwc"
     return a, b, c, "unknown"
-
-
-def _resolve_member_id(
-    *,
-    explicit_member_id: str | None,
-    repo_id: str | None,
-    local_root: str | None,
-) -> str:
-    if explicit_member_id:
-        return explicit_member_id
-    if repo_id:
-        return repo_id
-    if local_root:
-        return Path(local_root).expanduser().resolve().name
-    raise ValueError("Cannot resolve consortium member id without explicit id, repo_id, or local_root.")
 
 
 def _resolve_member_sources(data_config: LeRobotConsortiumDataConfig) -> tuple[ConsortiumSourceSpec, ...]:

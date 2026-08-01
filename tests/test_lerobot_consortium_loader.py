@@ -32,12 +32,17 @@ from open_wam.configs import (
     ViewLayoutConfig,
 )
 from open_wam.data import (
+    ConsortiumChannelSelection as PublicConsortiumChannelSelection,
     DatasetLoaderSpec,
     ConsortiumEpochOrderPlan,
+    ConsortiumEpisodeKey as PublicConsortiumEpisodeKey,
     LeRobotConsortiumInventoryRow,
+    ConsortiumResolvedSplit as PublicConsortiumResolvedSplit,
+    ConsortiumWindowRecord as PublicConsortiumWindowRecord,
     build_lerobot_consortium_catalog,
     build_lerobot_consortium_report,
     build_lerobot_consortium_train_val_datasets,
+    build_lerobot_consortium_window_index as public_build_consortium_window_index,
     collate_wam_samples,
     discover_local_lerobot_consortium_members as public_discover_consortium_members,
     format_lerobot_consortium_report,
@@ -62,6 +67,14 @@ from open_wam.data.lerobot_consortium_catalog import (
     ConsortiumVisualChannelContract,
     build_lerobot_consortium_catalog as canonical_build_lerobot_consortium_catalog,
     validate_lerobot_consortium_index_snapshot,
+)
+from open_wam.data.lerobot_consortium_planning import (
+    ConsortiumChannelSelection,
+    ConsortiumEpisodeKey,
+    ConsortiumResolvedSplit,
+    ConsortiumWindowRecord,
+    build_lerobot_consortium_window_index,
+    resolve_lerobot_consortium_train_val_split as canonical_resolve_consortium_split,
 )
 
 
@@ -156,6 +169,27 @@ def test_consortium_catalog_imports_preserve_identity() -> None:
         consortium_module.validate_lerobot_consortium_index_snapshot
         is validate_lerobot_consortium_index_snapshot
     )
+
+
+def test_consortium_planning_imports_preserve_identity() -> None:
+    assert consortium_module.ConsortiumChannelSelection is ConsortiumChannelSelection
+    assert consortium_module.ConsortiumEpisodeKey is ConsortiumEpisodeKey
+    assert consortium_module.ConsortiumResolvedSplit is ConsortiumResolvedSplit
+    assert consortium_module.ConsortiumWindowRecord is ConsortiumWindowRecord
+    assert (
+        consortium_module.build_lerobot_consortium_window_index
+        is build_lerobot_consortium_window_index
+    )
+    assert (
+        consortium_module.resolve_lerobot_consortium_train_val_split
+        is canonical_resolve_consortium_split
+    )
+    assert PublicConsortiumChannelSelection is ConsortiumChannelSelection
+    assert PublicConsortiumEpisodeKey is ConsortiumEpisodeKey
+    assert PublicConsortiumResolvedSplit is ConsortiumResolvedSplit
+    assert PublicConsortiumWindowRecord is ConsortiumWindowRecord
+    assert public_build_consortium_window_index is build_lerobot_consortium_window_index
+    assert resolve_lerobot_consortium_train_val_split is canonical_resolve_consortium_split
 
 
 def _make_inventory_row(repo_id: str, *, source_group: str = "manual") -> LeRobotConsortiumInventoryRow:
