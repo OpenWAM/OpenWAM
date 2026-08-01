@@ -159,6 +159,16 @@ YAML, composes those parsers, and runs cross-section checks. Historical
 `open_wam.utils` loader/path imports are compatibility aliases only.
 Configuration parsing does not own policy runtime behavior.
 
+Static validation follows the same dependency direction without importing
+model or runtime code. `static_validation_contracts` owns immutable issue and
+report records; `static_validation_primitives` owns YAML, enum, scalar, and
+path checks; `static_validation_data` and `static_validation_policy` own their
+respective section rules; and `static_validation_rules` composes experiment,
+evaluation, and auxiliary-validation checks. The established
+`open_wam.configs.static_schema` module is the public validation facade used by
+the package root and `open-wam-validate-config`. Add section-specific checks to
+their owner and reserve the facade for file/report orchestration.
+
 ## Visual Tower Contract
 
 The shared visual stack exposes stage-aware outputs rather than allowing policy

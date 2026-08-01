@@ -1819,6 +1819,217 @@ def test_policy_configuration_contracts_have_role_specific_owners() -> None:
             assert imported_names.isdisjoint(all_public_names), consumer_path
 
 
+def test_static_configuration_validation_has_role_specific_owners() -> None:
+    import pickle
+    from typing import get_type_hints
+
+    import open_wam.configs as public_configs
+    from open_wam.configs import static_schema as static_facade
+    from open_wam.configs import (
+        static_validation_contracts,
+        static_validation_data,
+        static_validation_policy,
+        static_validation_primitives,
+        static_validation_rules,
+    )
+
+    facade_names = {
+        "StaticConfigIssue",
+        "StaticConfigReport",
+        "format_report",
+        "reports_to_exit_code",
+        "validate_config_file",
+        "validate_config_files",
+    }
+    owner_names = {
+        "static_validation_contracts.py": {
+            "StaticConfigIssue",
+            "StaticConfigReport",
+            "_IssueBuilder",
+        },
+        "static_validation_primitives.py": {
+            "_find_repo_root",
+            "_join_path",
+            "_mapping",
+            "_optional_int",
+            "_read_yaml_mapping",
+            "_resolve_relative",
+            "_validate_enum",
+            "_validate_local_path_placeholders",
+            "_validate_positive_ints",
+        },
+        "static_validation_data.py": {
+            "_validate_action_mapping",
+            "_validate_action_schema_compatibility",
+            "_validate_generalist_dynamics_mixture",
+            "_validate_sample_construction",
+        },
+        "static_validation_policy.py": {
+            "_validate_action_horizons",
+            "_validate_joint_denoise_training_mode_probs",
+            "_validate_mot_generalist_training_mode_probs",
+            "_validate_parallel_sequence_contract_static",
+            "_validate_probability_map",
+            "_validate_single_frame_condition_offset",
+            "_warn_deprecated_text_proprio_context",
+        },
+        "static_validation_rules.py": {
+            "_validate_eval_config",
+            "_validate_experiment_config",
+            "_validate_extension_envelope",
+            "_validate_validation_config",
+        },
+    }
+    owner_modules = {
+        "static_validation_contracts.py": static_validation_contracts,
+        "static_validation_primitives.py": static_validation_primitives,
+        "static_validation_data.py": static_validation_data,
+        "static_validation_policy.py": static_validation_policy,
+        "static_validation_rules.py": static_validation_rules,
+    }
+    compatibility_names = {
+        "ActionDecoderName",
+        "ActionMappingLossMaskMode",
+        "ActionMappingMode",
+        "ActionMappingSamplerMaskMode",
+        "ActionTargetReferenceSource",
+        "ActionTargetRepresentation",
+        "ActionTargetStateEncoding",
+        "AttachSite",
+        "AttentionMode",
+        "AuxiliaryValidationSource",
+        "BackboneImplementation",
+        "BatchAdapterName",
+        "CurrentBlockCoupling",
+        "DataSplit",
+        "ENUM_VALUE_ALIASES",
+        "EvalMode",
+        "GeneralistTrainingParadigm",
+        "JointDenoiseTrainingMode",
+        "JointTimestepCoupling",
+        "LOCAL_PATH_PATTERN",
+        "LatentTemporalLayout",
+        "MoTActionExpertInitMode",
+        "MoTConditionMode",
+        "MoTGeneralistTrainingMode",
+        "MoTRuntimeMode",
+        "PaddedTargetPolicy",
+        "ParallelContextConditionLatentSource",
+        "ParallelHistoryStreamVisibility",
+        "ParallelRuntimeMode",
+        "ParallelSequenceContract",
+        "ParallelStreamVariantProfile",
+        "PolicyVariantName",
+        "ProprioContextMode",
+        "ReplayStatusPolicy",
+        "RolloutContextPolicy",
+        "SampleOrderMode",
+        "SampleStateAnchorMode",
+        "SampleTargetAlignment",
+        "SampleWeightMode",
+        "SegmentContextPolicy",
+        "StrEnum",
+        "TailPaddingPolicy",
+        "TrainerAccelerator",
+        "TrainerPrecision",
+        "WindowSamplingMode",
+        "probability_map_static_issues",
+    }
+    facade_path = PACKAGE_ROOT / "configs" / "static_schema.py"
+
+    assert _top_level_definitions(facade_path) == {
+        "format_report",
+        "reports_to_exit_code",
+        "validate_config_file",
+        "validate_config_files",
+    }
+    assert _module_all_names(facade_path) == facade_names
+    assert _compatibility_export_names(facade_path) == compatibility_names
+    assert _module_all_names(
+        PACKAGE_ROOT / "configs" / "static_validation_contracts.py"
+    ) == {"StaticConfigIssue", "StaticConfigReport"}
+    for filename, names in owner_names.items():
+        assert _top_level_definitions(PACKAGE_ROOT / "configs" / filename) == names
+
+    assert static_facade.StaticConfigIssue is static_validation_contracts.StaticConfigIssue
+    assert static_facade.StaticConfigReport is static_validation_contracts.StaticConfigReport
+    assert public_configs.StaticConfigIssue is static_validation_contracts.StaticConfigIssue
+    assert public_configs.StaticConfigReport is static_validation_contracts.StaticConfigReport
+    assert public_configs.validate_config_file is static_facade.validate_config_file
+    assert public_configs.validate_config_files is static_facade.validate_config_files
+    enum_names = compatibility_names & set(vars(public_configs.enums))
+    for name in enum_names:
+        assert getattr(static_facade, name) is getattr(public_configs.enums, name)
+    assert (
+        static_facade.ENUM_VALUE_ALIASES
+        is static_validation_primitives.ENUM_VALUE_ALIASES
+    )
+    assert static_facade.LOCAL_PATH_PATTERN is static_validation_primitives.LOCAL_PATH_PATTERN
+    assert (
+        static_facade.probability_map_static_issues
+        is static_validation_policy.probability_map_static_issues
+    )
+    for name in facade_names:
+        assert get_type_hints(getattr(static_facade, name))
+
+    old_global = b"copen_wam.configs.static_schema\nStaticConfigReport\n."
+    assert pickle.loads(old_global) is static_validation_contracts.StaticConfigReport
+
+    dependency_layers = (
+        "static_validation_contracts",
+        "static_validation_primitives",
+        "static_validation_data",
+        "static_validation_policy",
+        "static_validation_rules",
+        "static_schema",
+    )
+    imports_by_layer = {
+        layer: _absolute_imports_for_file(PACKAGE_ROOT / "configs" / f"{layer}.py")
+        for layer in dependency_layers
+    }
+    for index, layer in enumerate(dependency_layers[:-1]):
+        forbidden = set(dependency_layers[index + 1 :])
+        assert imports_by_layer[layer].isdisjoint(forbidden)
+        assert "static_schema" not in imports_by_layer[layer]
+    assert "static_validation_contracts" in imports_by_layer["static_validation_primitives"]
+    assert {
+        "static_validation_contracts",
+        "static_validation_primitives",
+    } <= imports_by_layer["static_validation_data"]
+    assert {
+        "static_validation_contracts",
+        "static_validation_primitives",
+    } <= imports_by_layer["static_validation_policy"]
+    assert {
+        "static_validation_contracts",
+        "static_validation_data",
+        "static_validation_policy",
+        "static_validation_primitives",
+    } <= imports_by_layer["static_validation_rules"]
+    assert {
+        "static_validation_contracts",
+        "static_validation_primitives",
+        "static_validation_rules",
+    } <= imports_by_layer["static_schema"]
+
+    for filename, names in owner_names.items():
+        owner = owner_modules[filename]
+        for name in names:
+            assert getattr(owner, name).__module__ == f"open_wam.configs.{filename[:-3]}"
+
+    allowed_facade_consumers = {
+        PACKAGE_ROOT / "cli" / "validate_config.py",
+        PACKAGE_ROOT / "configs" / "__init__.py",
+        facade_path,
+    }
+    for consumer_path in PACKAGE_ROOT.rglob("*.py"):
+        if consumer_path in allowed_facade_consumers:
+            continue
+        imports = _absolute_imports_for_file(consumer_path)
+        assert "static_schema" not in imports, consumer_path
+        assert "open_wam.configs.static_schema" not in imports, consumer_path
+
+
 def test_configuration_loading_has_one_package_owner() -> None:
     canonical_definitions = _top_level_definitions(PACKAGE_ROOT / "configs" / "loader.py")
     compatibility_definitions = _top_level_definitions(PACKAGE_ROOT / "utils" / "config_loader.py")
