@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -19,9 +17,9 @@ from open_wam.configs import (
     EvalMode,
     EvalPredictionSource,
     ExperimentConfig,
-    LatentTemporalLayout,
     ReferenceCoreInitMode,
     TrainerAccelerator,
+    load_experiment_config,
 )
 from open_wam.data import (
     LatentWAMBatch,
@@ -35,80 +33,54 @@ from open_wam.data import (
     move_latent_wam_batch_to_device,
     move_wam_batch_to_device,
 )
-from open_wam.data.latent_temporal import observed_frame_ids_for_latent_segment
+from open_wam.evals.evaluation_contracts import (
+    EvaluationRequest,
+    EvaluationSummary,
+    _coerce_optional_positive_int,
+    _read_yaml,
+    _resolve_relative_path,
+    resolve_evaluation_request,
+)
+from open_wam.evals.evaluation_metrics import (
+    _align_eval_action_tensors,
+    _align_local_future_video_prediction,
+    _masked_action_mse,
+    _select_eval_action_prediction,
+    _select_eval_video_prediction,
+    _select_rollout_previous_action,
+    _video_latent_mse,
+)
+from open_wam.evals.evaluation_windows import (
+    _align_rollout_window_tensor,
+    _group_dataset_indices_by_episode,
+    _resolve_observation_frame_indices,
+)
 from open_wam.extensions import load_extension_modules
-from open_wam.configs import load_experiment_config, read_yaml_with_local_paths
 from open_wam.models.policy_variants import PolicyInferContext
-from open_wam.models.policy_variants.contracts import DecoderSequenceContext
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config
 from open_wam.runtime.checkpoints import load_pipeline_checkpoint, resolve_checkpoint_file
 from open_wam.utils import seed_everywhere
 
 
-@dataclass(frozen=True)
-class EvaluationRequest:
-    """Resolved evaluation request after applying YAML defaults and CLI overrides."""
+__all__ = ["EvaluationRequest", "EvaluationSummary", "resolve_evaluation_request", "run_evaluation"]
 
-    experiment_config_path: Path
-    mode: EvalMode
-    split: DataSplit
-    max_batches: int
-    max_trajectories: int | None
-    max_steps_per_trajectory: int | None
-    batch_size: int | None
-    checkpoint_path: Path | None
-    device: str
-    seed: int
-
-
-@dataclass(frozen=True)
-class EvaluationSummary:
-    """Minimal structured result for CLI output and tests."""
-
-    experiment_name: str
-    mode: EvalMode
-    split: DataSplit
-    num_batches: int
-    num_trajectories: int
-    device: str
-    video_num_inference_steps: int
-    action_num_inference_steps: int
-    joint_num_inference_steps: int | None
-    guidance_scale: float
-    action_guidance_scale: float
-    action_prediction_source: EvalPredictionSource
-    action_prediction_shape: tuple[int, ...]
-    target_action_shape: tuple[int, ...]
-    video_prediction_source: EvalPredictionSource
-    video_prediction_shape: tuple[int, ...]
-    target_video_shape: tuple[int, ...]
-    mean_action_mse: float | None
-    mean_trajectory_action_mse: float | None
-    mean_video_latent_mse: float | None
-    mean_trajectory_video_latent_mse: float | None
-    checkpoint_path: str | None
-
-
-def _read_yaml(path: Path) -> dict[str, Any]:
-    return read_yaml_with_local_paths(path)
-
-
-def _resolve_relative_path(base_path: Path, value: str | None) -> Path | None:
-    if value is None:
-        return None
-    candidate = Path(value)
-    if candidate.is_absolute():
-        return candidate
-    local_candidate = (base_path.parent / candidate).resolve()
-    if local_candidate.exists():
-        return local_candidate
-    cwd_candidate = (Path.cwd() / candidate).resolve()
-    if cwd_candidate.exists():
-        return cwd_candidate
-    raise FileNotFoundError(
-        f"Could not resolve relative path '{value}' from base '{base_path}'. "
-        f"Checked: {local_candidate} and {cwd_candidate}."
-    )
+# Preserve established private imports from this command module while the
+# implementations live with their reusable metric and window contracts.
+_EVALUATION_COMPATIBILITY_EXPORTS = (
+    _align_eval_action_tensors,
+    _align_local_future_video_prediction,
+    _align_rollout_window_tensor,
+    _coerce_optional_positive_int,
+    _group_dataset_indices_by_episode,
+    _masked_action_mse,
+    _read_yaml,
+    _resolve_observation_frame_indices,
+    _resolve_relative_path,
+    _select_eval_action_prediction,
+    _select_eval_video_prediction,
+    _select_rollout_previous_action,
+    _video_latent_mse,
+)
 
 
 def _apply_checkpoint_runtime_override(
@@ -126,94 +98,6 @@ def _apply_checkpoint_runtime_override(
 
 def _is_usable_transformer_dir(path: Path) -> bool:
     return path.is_dir() and any(path.iterdir())
-
-
-def _coerce_optional_positive_int(
-    value: Any,
-    *,
-    field_name: str,
-    config_path: Path,
-) -> int | None:
-    if value is None:
-        return None
-    try:
-        coerced = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"Invalid {field_name} {value!r} in {config_path}; expected a positive integer or null."
-        ) from exc
-    if coerced <= 0:
-        raise ValueError(
-            f"Invalid {field_name} {coerced!r} in {config_path}; expected a positive integer > 0."
-        )
-    return coerced
-
-
-def resolve_evaluation_request(
-    config_path: str | Path,
-    *,
-    mode_override: EvalMode | str | None = None,
-    split_override: DataSplit | str | None = None,
-    max_batches_override: int | None = None,
-    max_trajectories_override: int | None = None,
-    max_steps_per_trajectory_override: int | None = None,
-    batch_size_override: int | None = None,
-    checkpoint_override: str | None = None,
-    device_override: str | None = None,
-    seed_override: int | None = None,
-) -> EvaluationRequest:
-    """Resolve either an experiment YAML or an eval-wrapper YAML.
-
-    Eval wrappers are lightweight YAMLs under `configs/evals/` with an
-    `experiment_config` field plus optional eval defaults such as split, device,
-    checkpoint path, and batch count.
-    """
-
-    config_path = Path(config_path).resolve()
-    raw = _read_yaml(config_path)
-    experiment_config_path = (
-        _resolve_relative_path(config_path, raw.get("experiment_config"))
-        if "experiment_config" in raw
-        else config_path
-    )
-    if experiment_config_path is None:
-        raise ValueError(f"Eval config {config_path} is missing `experiment_config`.")
-    batch_size = (
-        batch_size_override
-        if batch_size_override is not None
-        else _coerce_optional_positive_int(raw.get("batch_size"), field_name="batch_size", config_path=config_path)
-    )
-    max_trajectories = (
-        max_trajectories_override
-        if max_trajectories_override is not None
-        else _coerce_optional_positive_int(
-            raw.get("max_trajectories"),
-            field_name="max_trajectories",
-            config_path=config_path,
-        )
-    )
-    max_steps_per_trajectory = (
-        max_steps_per_trajectory_override
-        if max_steps_per_trajectory_override is not None
-        else _coerce_optional_positive_int(
-            raw.get("max_steps_per_trajectory"),
-            field_name="max_steps_per_trajectory",
-            config_path=config_path,
-        )
-    )
-
-    return EvaluationRequest(
-        experiment_config_path=experiment_config_path,
-        mode=EvalMode(mode_override or raw.get("mode", "batch")),
-        split=DataSplit(split_override or raw.get("split", "val")),
-        max_batches=max_batches_override if max_batches_override is not None else int(raw.get("max_batches", 1)),
-        max_trajectories=max_trajectories,
-        max_steps_per_trajectory=max_steps_per_trajectory,
-        batch_size=batch_size,
-        checkpoint_path=_resolve_relative_path(config_path, checkpoint_override or raw.get("checkpoint_path")),
-        device=device_override or raw.get("device", "auto"),
-        seed=seed_override if seed_override is not None else int(raw.get("seed", 0)),
-    )
 
 
 def _resolve_device(device: str, experiment_config: ExperimentConfig) -> torch.device:
@@ -275,312 +159,6 @@ def _select_eval_dataset(
 
 def _uses_latent_dataset(data_config: DataConfig) -> bool:
     return str(data_config.dataset_type) == "lerobot_v2_latent_local"
-
-
-def _masked_action_mse(
-    predicted: torch.Tensor,
-    target: torch.Tensor,
-    action_mask: torch.Tensor | None,
-) -> float:
-    squared_error = (predicted.float() - target.float()).pow(2)
-    if action_mask is not None:
-        squared_error = squared_error * action_mask.float()
-        denom = action_mask.float().sum().clamp_min(1.0)
-    else:
-        denom = torch.tensor(float(squared_error.numel()), device=squared_error.device)
-    return float((squared_error.sum() / denom).item())
-
-
-def _video_latent_mse(
-    predicted: torch.Tensor,
-    target: torch.Tensor,
-) -> float:
-    squared_error = (predicted.float() - target.float()).pow(2)
-    return float(squared_error.mean().item())
-
-
-def _select_eval_action_prediction(
-    *,
-    target_actions: torch.Tensor,
-    decoder_action_pred: torch.Tensor,
-    policy_aux: dict[str, Any],
-) -> tuple[EvalPredictionSource, torch.Tensor]:
-    if decoder_action_pred.shape == target_actions.shape:
-        return EvalPredictionSource.DECODER_ACTION_PRED, decoder_action_pred
-    raw_chunk_action_pred = policy_aux.get("raw_chunk_action_pred")
-    if (
-        isinstance(raw_chunk_action_pred, torch.Tensor)
-        and raw_chunk_action_pred.ndim == target_actions.ndim
-        and raw_chunk_action_pred.shape[0] == target_actions.shape[0]
-        and raw_chunk_action_pred.shape[-1] == target_actions.shape[-1]
-        and target_actions.shape[1] >= raw_chunk_action_pred.shape[1]
-    ):
-        return EvalPredictionSource.RAW_CHUNK_ACTION_PRED, raw_chunk_action_pred
-    return EvalPredictionSource.DECODER_ACTION_PRED_UNMATCHED, decoder_action_pred
-
-
-def _align_eval_action_tensors(
-    *,
-    source: EvalPredictionSource,
-    prediction: torch.Tensor,
-    target_actions: torch.Tensor,
-    action_mask: torch.Tensor | None,
-) -> tuple[EvalPredictionSource, torch.Tensor, torch.Tensor, torch.Tensor | None]:
-    if prediction.shape == target_actions.shape:
-        return source, prediction, target_actions, action_mask
-    if (
-        source == EvalPredictionSource.RAW_CHUNK_ACTION_PRED
-        and prediction.ndim == target_actions.ndim
-        and prediction.shape[0] == target_actions.shape[0]
-        and prediction.shape[-1] == target_actions.shape[-1]
-        and target_actions.shape[1] >= prediction.shape[1]
-    ):
-        target_start = int(target_actions.shape[1] - prediction.shape[1])
-        aligned_target = target_actions[:, target_start:]
-        aligned_mask = None if action_mask is None else action_mask[:, target_start:]
-        return EvalPredictionSource.RAW_CHUNK_ACTION_PRED_TAIL_ALIGNED, prediction, aligned_target, aligned_mask
-    return source, prediction, target_actions, action_mask
-
-
-def _select_rollout_previous_action(
-    *,
-    decoder_action_pred: torch.Tensor,
-    policy_aux: dict[str, Any],
-) -> torch.Tensor:
-    """Return the model-facing action tensor to feed into the next rollout step."""
-
-    chunk_action_pred = policy_aux.get("chunk_action_pred")
-    if isinstance(chunk_action_pred, torch.Tensor) and chunk_action_pred.ndim == 3:
-        return chunk_action_pred
-    return decoder_action_pred
-
-
-def _select_eval_video_prediction(
-    *,
-    target_video_latents: torch.Tensor,
-    decoder_aux: dict[str, Any],
-    policy_aux: dict[str, Any],
-    sequence_context: DecoderSequenceContext | None = None,
-) -> tuple[EvalPredictionSource, torch.Tensor | None, torch.Tensor]:
-    for source_name in ("predicted_latents", "predicted_video_latents"):
-        candidate = decoder_aux.get(source_name)
-        if isinstance(candidate, torch.Tensor) and candidate.shape == target_video_latents.shape:
-            return (
-                EvalPredictionSource.DECODER_PREDICTED_LATENTS
-                if source_name == "predicted_latents"
-                else EvalPredictionSource.DECODER_PREDICTED_VIDEO_LATENTS,
-                candidate,
-                target_video_latents,
-            )
-        aligned_target = _align_local_future_video_prediction(
-            candidate,
-            target_video_latents=target_video_latents,
-            sequence_context=sequence_context,
-        )
-        if aligned_target is not None:
-            return EvalPredictionSource.DECODER_PREDICTED_LOCAL_FUTURE_LATENTS, candidate, aligned_target
-    for source_name in ("predicted_latents", "predicted_video_latents"):
-        candidate = policy_aux.get(source_name)
-        if isinstance(candidate, torch.Tensor) and candidate.shape == target_video_latents.shape:
-            return (
-                EvalPredictionSource.POLICY_PREDICTED_LATENTS
-                if source_name == "predicted_latents"
-                else EvalPredictionSource.POLICY_PREDICTED_VIDEO_LATENTS,
-                candidate,
-                target_video_latents,
-            )
-        aligned_target = _align_local_future_video_prediction(
-            candidate,
-            target_video_latents=target_video_latents,
-            sequence_context=sequence_context,
-        )
-        if aligned_target is not None:
-            return EvalPredictionSource.POLICY_PREDICTED_LOCAL_FUTURE_LATENTS, candidate, aligned_target
-    return EvalPredictionSource.UNAVAILABLE, None, target_video_latents
-
-
-def _align_local_future_video_prediction(
-    candidate: Any,
-    *,
-    target_video_latents: torch.Tensor,
-    sequence_context: DecoderSequenceContext | None,
-) -> torch.Tensor | None:
-    if not isinstance(candidate, torch.Tensor):
-        return None
-    if candidate.ndim != target_video_latents.ndim or candidate.ndim != 5:
-        return None
-    if candidate.shape[0:2] != target_video_latents.shape[0:2] or candidate.shape[3:] != target_video_latents.shape[3:]:
-        return None
-    if sequence_context is None or sequence_context.video_condition_window is None:
-        return None
-    window = sequence_context.video_condition_window
-    metadata = window.metadata
-    if metadata.get("source_family") != "generated_future_video_tokens":
-        return None
-    observed_frames = int(metadata.get("observed_prefix_frames", window.observed_frame_count))
-    observed_start = int(metadata.get("observed_prefix_start_index", 0))
-    target_start = observed_start + observed_frames
-    target_end = target_start + int(candidate.shape[2])
-    if target_end > int(target_video_latents.shape[2]):
-        return None
-    return target_video_latents[:, :, target_start:target_end]
-
-
-def _group_dataset_indices_by_episode(dataset: Dataset[WAMSample] | Dataset[LatentWAMSample]) -> list[list[int]]:
-    """Group one split's windowed samples into episode-ordered trajectories.
-
-    Trajectory-mode evaluation needs windows ordered by episode and observation
-    start so one infer state can be carried across the rollout. The LeRobot and
-    LIBERO offline datasets already expose a lightweight `sample_index` with
-    exactly that metadata; we use it when available to avoid decoding RGB just
-    to discover ordering.
-    """
-
-    sample_index = getattr(dataset, "sample_index", None)
-    grouped: dict[tuple[str, int], list[tuple[int, int]]] = {}
-    if sample_index is not None:
-        for dataset_index, window in enumerate(sample_index):
-            episode_index = getattr(window, "episode_index", None)
-            observation_start = getattr(window, "observation_start", None)
-            if observation_start is None:
-                observation_frame_indices = getattr(window, "observation_frame_indices", None)
-                if isinstance(observation_frame_indices, (list, tuple)) and observation_frame_indices:
-                    observation_start = observation_frame_indices[0]
-            if episode_index is None or observation_start is None:
-                raise ValueError(
-                    "Trajectory evaluation requires dataset sample_index entries with "
-                    "`episode_index` and `observation_start`."
-                )
-            dataset_identity = (
-                getattr(window, "repo_id", None)
-                or getattr(window, "member_id", None)
-                or getattr(window, "dataset_id", None)
-                or getattr(window, "repo_root", None)
-                or getattr(window, "local_root", None)
-                or "__default__"
-            )
-            grouped.setdefault((str(dataset_identity), int(episode_index)), []).append((int(observation_start), dataset_index))
-        return [
-            [dataset_index for _, dataset_index in sorted(entries)]
-            for _, entries in sorted(grouped.items(), key=lambda item: item[0])
-        ]
-
-    # Fallback for simple datasets that only expose episode metadata via the
-    # public sample contract. This is slower because it materializes samples,
-    # but keeps trajectory eval usable for small custom datasets.
-    for dataset_index in range(len(dataset)):
-        sample = dataset[dataset_index]
-        episode_index = sample.metadata.get("episode_index")
-        observation_start = sample.metadata.get("observation_start")
-        if observation_start is None:
-            observation_start = sample.metadata.get("window_start_frame")
-        if observation_start is None:
-            observation_start = sample.metadata.get("sample_start_frame")
-        if episode_index is None or observation_start is None:
-            raise ValueError(
-                "Trajectory evaluation requires either a dataset.sample_index with "
-                "`episode_index`/`observation_start`, or per-sample metadata with "
-                "those fields."
-            )
-        dataset_identity = (
-            sample.metadata.get("repo_id")
-            or sample.metadata.get("member_id")
-            or sample.metadata.get("dataset_id")
-            or sample.metadata.get("repo_root")
-            or sample.metadata.get("local_root")
-            or "__default__"
-        )
-        grouped.setdefault((str(dataset_identity), int(episode_index)), []).append((int(observation_start), dataset_index))
-    return [
-        [dataset_index for _, dataset_index in sorted(entries)]
-        for _, entries in sorted(grouped.items(), key=lambda item: item[0])
-    ]
-
-
-def _resolve_observation_frame_indices(
-    metadata: dict[str, Any],
-    *,
-    num_frames: int,
-) -> tuple[int, ...]:
-    """Resolve per-window frame ids for trajectory-open-loop alignment.
-
-    Open-loop evaluation carries predicted video latents across advancing dataset
-    windows. Those windows often overlap, so the latent tensor for the next
-    step must be shifted into the current frame-index basis before reuse.
-    """
-
-    raw_indices = metadata.get("observation_frame_indices")
-    if isinstance(raw_indices, (list, tuple)):
-        if len(raw_indices) != num_frames:
-            raise ValueError(
-                "Expected `observation_frame_indices` to match the current video "
-                f"window length {num_frames}, got {len(raw_indices)}."
-            )
-        return tuple(int(value) for value in raw_indices)
-
-    observed_frame_ids = metadata.get("observed_frame_ids")
-    if isinstance(observed_frame_ids, (list, tuple)):
-        resolved_ids = [int(value) for value in observed_frame_ids]
-        if len(resolved_ids) == num_frames:
-            return tuple(resolved_ids)
-        if len(resolved_ids) > num_frames:
-            layout = metadata.get("latent_temporal_layout", LatentTemporalLayout.WAN_CAUSAL_STRIDE4)
-            return tuple(
-                observed_frame_ids_for_latent_segment(
-                    raw_frame_ids=resolved_ids,
-                    source_latent_frames=num_frames,
-                    latent_start=0,
-                    segment_length=num_frames,
-                    layout=layout,
-                )
-            )
-        raise ValueError(
-            "Expected `observed_frame_ids` to contain at least as many entries as the "
-            f"current video window length {num_frames}, got {len(resolved_ids)}."
-        )
-
-    observation_start = metadata.get("observation_start")
-    if observation_start is None:
-        observation_start = metadata.get("window_start_frame")
-    if observation_start is None:
-        observation_start = metadata.get("sample_start_frame")
-    if observation_start is None:
-        raise ValueError(
-            "Trajectory-open-loop evaluation requires per-sample metadata with "
-            "`observation_frame_indices`, `observed_frame_ids`, or "
-            "`observation_start`/`window_start_frame`/`sample_start_frame`."
-        )
-    return tuple(int(observation_start) + offset for offset in range(num_frames))
-
-
-def _align_rollout_window_tensor(
-    previous_tensor: torch.Tensor | None,
-    *,
-    previous_frame_indices: tuple[int, ...] | None,
-    current_frame_indices: tuple[int, ...],
-    current_target_tensor: torch.Tensor,
-    frame_dim: int,
-) -> torch.Tensor:
-    """Shift a predicted rollout window into the current observation basis.
-
-    Overlapping frame ids reuse the previous step's predicted tensor. Any newly
-    entered frames are seeded from the current clean window so evaluation stays
-    temporally aligned even when the dataset advances the observation window by
-    one or more frames each step.
-    """
-
-    aligned = current_target_tensor.clone()
-    if previous_tensor is None or previous_frame_indices is None:
-        return aligned
-
-    previous_lookup = {frame_index: index for index, frame_index in enumerate(previous_frame_indices)}
-    max_previous_frames = previous_tensor.shape[frame_dim]
-    for current_index, frame_index in enumerate(current_frame_indices):
-        previous_index = previous_lookup.get(frame_index)
-        if previous_index is None or previous_index >= max_previous_frames:
-            continue
-        aligned.select(frame_dim, current_index).copy_(previous_tensor.select(frame_dim, previous_index))
-    return aligned
 
 
 def _mot_requires_observation_conditioned_session_reset(experiment_config: ExperimentConfig) -> bool:

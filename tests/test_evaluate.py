@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pickle
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,6 +18,16 @@ from open_wam.configs import load_experiment_config
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_legacy_evaluate_pickle_globals_resolve_to_contract_owners() -> None:
+    from open_wam.evals.evaluation_contracts import EvaluationRequest, EvaluationSummary
+
+    request_global = pickle.loads(b"copen_wam.evals.evaluate\nEvaluationRequest\n.")
+    summary_global = pickle.loads(b"copen_wam.evals.evaluate\nEvaluationSummary\n.")
+
+    assert request_global is EvaluationRequest
+    assert summary_global is EvaluationSummary
 
 
 def test_eval_wrapper_resolves_experiment_config() -> None:

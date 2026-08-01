@@ -4211,6 +4211,62 @@ def test_sampled_eval_planning_has_one_lightweight_package_owner() -> None:
     assert "open_wam.integrations.libero_tasks" not in planning_imports
 
 
+def test_generic_evaluator_has_explicit_contract_metric_and_window_owners() -> None:
+    facade_path = PACKAGE_ROOT / "evals" / "evaluate.py"
+    contracts_path = PACKAGE_ROOT / "evals" / "evaluation_contracts.py"
+    metrics_path = PACKAGE_ROOT / "evals" / "evaluation_metrics.py"
+    windows_path = PACKAGE_ROOT / "evals" / "evaluation_windows.py"
+    facade_definitions = _top_level_definitions(facade_path)
+
+    assert {
+        "EvaluationRequest",
+        "EvaluationSummary",
+        "resolve_evaluation_request",
+    } <= _top_level_definitions(contracts_path)
+    assert {
+        "_align_eval_action_tensors",
+        "_align_local_future_video_prediction",
+        "_masked_action_mse",
+        "_select_eval_action_prediction",
+        "_select_eval_video_prediction",
+        "_select_rollout_previous_action",
+        "_video_latent_mse",
+    } <= _top_level_definitions(metrics_path)
+    assert {
+        "_align_rollout_window_tensor",
+        "_group_dataset_indices_by_episode",
+        "_resolve_observation_frame_indices",
+    } <= _top_level_definitions(windows_path)
+    assert {
+        "EvaluationRequest",
+        "EvaluationSummary",
+        "resolve_evaluation_request",
+        "_align_eval_action_tensors",
+        "_align_local_future_video_prediction",
+        "_align_rollout_window_tensor",
+        "_group_dataset_indices_by_episode",
+        "_masked_action_mse",
+        "_resolve_observation_frame_indices",
+        "_select_eval_action_prediction",
+        "_select_eval_video_prediction",
+        "_select_rollout_previous_action",
+        "_video_latent_mse",
+    }.isdisjoint(facade_definitions)
+
+    contracts_imports = _absolute_imports_for_file(contracts_path)
+    metrics_imports = _absolute_imports_for_file(metrics_path)
+    windows_imports = _absolute_imports_for_file(windows_path)
+    assert "torch" not in contracts_imports
+    assert "open_wam.data" not in contracts_imports
+    assert "open_wam.pipelines" not in contracts_imports
+    assert "open_wam.pipelines" not in metrics_imports
+    assert "open_wam.pipelines" not in windows_imports
+    assert "argparse" not in contracts_imports | metrics_imports | windows_imports
+    assert "open_wam.evals.evaluation_contracts" in _absolute_imports_for_file(facade_path)
+    assert "open_wam.evals.evaluation_metrics" in _absolute_imports_for_file(facade_path)
+    assert "open_wam.evals.evaluation_windows" in _absolute_imports_for_file(facade_path)
+
+
 def test_checkpoint_artifact_discovery_has_one_lightweight_owner() -> None:
     artifact_path = PACKAGE_ROOT / "runtime" / "checkpoint_artifacts.py"
     loader_path = PACKAGE_ROOT / "runtime" / "checkpoints.py"

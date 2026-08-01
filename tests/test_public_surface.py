@@ -189,6 +189,25 @@ def test_sampled_eval_planning_public_facade_is_lazy_and_tensor_free() -> None:
 
 
 @pytest.mark.unit
+def test_generic_eval_contract_facade_is_lazy_and_tensor_free() -> None:
+    code = (
+        "import sys, open_wam.evals as evals; "
+        "assert 'open_wam.evals.evaluation_contracts' not in sys.modules; "
+        "assert 'open_wam.evals.evaluate' not in sys.modules; "
+        "from open_wam.evals import EvaluationRequest, EvaluationSummary, resolve_evaluation_request; "
+        "assert EvaluationRequest.__module__ == 'open_wam.evals.evaluation_contracts'; "
+        "assert EvaluationSummary.__module__ == 'open_wam.evals.evaluation_contracts'; "
+        "assert resolve_evaluation_request.__module__ == 'open_wam.evals.evaluation_contracts'; "
+        "assert 'open_wam.evals.evaluation_contracts' in sys.modules; "
+        "assert 'open_wam.evals.evaluate' not in sys.modules; "
+        "assert 'torch' not in sys.modules; "
+        "assert 'numpy' not in sys.modules; "
+        "assert 'pyarrow' not in sys.modules"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+@pytest.mark.unit
 def test_checkpoint_artifact_contract_does_not_import_tensor_stacks() -> None:
     code = (
         "import sys; "
