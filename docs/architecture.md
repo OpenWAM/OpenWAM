@@ -143,12 +143,16 @@ entrypoint, and `open_wam.configs.local_paths` owns machine-local path
 expansion over the shared project-path contract.
 `open_wam.configs.coercion` owns reusable YAML/CLI-to-type conversion.
 `open_wam.configs.sequence_contracts` owns defaults and cross-section
-validation for sequence semantics. Each typed component module owns its
-mapping-to-dataclass parser; the larger data section is isolated in
-`open_wam.configs.data_parsing`. The root loader only reads YAML, composes those
-parsers, and runs explicit cross-section checks. Historical `open_wam.utils`
-loader/path imports are compatibility aliases only. Configuration parsing does
-not own policy runtime behavior.
+validation for sequence semantics. Shared action, sampling, and dataset fields
+live in `open_wam.configs.data_contracts`; direct benchmark presets live in
+`data_benchmarks`; heterogeneous consortium and manifest-backed video choices
+live in `data_consortium` and `data_mixed_video`. The established
+`open_wam.configs.data` path is an import-only facade over those acyclic
+owners. Each typed component module owns its mapping-to-dataclass parser; the
+larger data section is isolated in `open_wam.configs.data_parsing`. The root
+loader only reads YAML, composes those parsers, and runs explicit cross-section
+checks. Historical `open_wam.utils` loader/path imports are compatibility
+aliases only. Configuration parsing does not own policy runtime behavior.
 
 ## Visual Tower Contract
 

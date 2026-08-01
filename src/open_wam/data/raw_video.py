@@ -6,7 +6,7 @@ from typing import Any, Mapping
 import torch
 import torch.nn.functional as F
 
-from open_wam.configs.data import DataConfig, ViewLayoutConfig
+from open_wam.configs.data_contracts import DataConfig, ViewLayoutConfig
 from open_wam.configs.enums import MixedVideoDecodeSizeMode
 from open_wam.contracts import ViewPlacement
 

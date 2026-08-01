@@ -8,7 +8,7 @@ from typing import Any
 
 from . import enums
 from .coercion import coerce_enum, coerce_strict_chunk_size, raw_enum_value
-from .data import DataConfig
+from .data_contracts import DataConfig
 from .experiment import ExperimentConfig
 from .policy_variant import (
     MoTPolicyConfig,

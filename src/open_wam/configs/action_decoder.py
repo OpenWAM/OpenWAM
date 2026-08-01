@@ -7,7 +7,7 @@ from typing import Any
 from . import enums as config_enums
 from .backbone import SharedVideoTransformerConfig
 from .coercion import coerce_enum as _coerce_enum
-from .data import DataConfig
+from .data_contracts import DataConfig
 from .enums import (
     ActionDecoderName,
     ActionChunkAnchorMode,

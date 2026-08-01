@@ -8,30 +8,36 @@ from .coercion import (
     coerce_enum as _coerce_enum,
     coerce_optional_enum as _coerce_optional_enum,
 )
-from .data import (
-    ActionMappingConfig,
-    ActionNormalizationConfig,
-    ActionSchemaConfig,
-    ActionTargetConfig,
+from .data_benchmarks import (
     CalvinDataConfig,
-    CausalPrefixSuffixBucketConfig,
+    GenericDataConfig,
+    LiberoDataConfig,
+    RobotWinDataConfig,
+)
+from .data_consortium import (
     ConsortiumChannelMappingConfig,
     ConsortiumCloudCacheConfig,
     ConsortiumEpisodeSelectionConfig,
     ConsortiumLocalCacheConfig,
     ConsortiumMemberConfig,
+    LeRobotConsortiumDataConfig,
+)
+from .data_contracts import (
+    ActionMappingConfig,
+    ActionNormalizationConfig,
+    ActionSchemaConfig,
+    ActionTargetConfig,
+    CausalPrefixSuffixBucketConfig,
     DataConfig,
     GeneralistDynamicsMixtureConfig,
-    GenericDataConfig,
-    LeRobotConsortiumDataConfig,
-    LiberoDataConfig,
+    SampleConstructionConfig,
+    ViewLayoutConfig,
+)
+from .data_mixed_video import (
     MixedVideoDataConfig,
     MixedVideoResizeBinConfig,
     MixedVideoSourceConfig,
     MixedVideoViewCombinationConfig,
-    RobotWinDataConfig,
-    SampleConstructionConfig,
-    ViewLayoutConfig,
 )
 
 __all__ = ["parse_data_config"]

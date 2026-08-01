@@ -10,7 +10,8 @@ from .backbone import (
     parse_shared_video_transformer_config,
 )
 from .coercion import raw_enum_value as _raw_enum_value
-from .data import DataConfig, MixedVideoDataConfig
+from .data_contracts import DataConfig
+from .data_mixed_video import MixedVideoDataConfig
 from .data_parsing import parse_data_config
 from .experiment import ExperimentConfig
 from .inference import parse_inference_config

@@ -1521,6 +1521,153 @@ def test_sequence_contract_semantics_have_one_config_owner() -> None:
     assert LoaderValidateOverrideKeys is CanonicalValidateOverrideKeys
 
 
+def test_data_configuration_contracts_have_role_specific_owners() -> None:
+    import open_wam.configs as public_configs
+    from open_wam.configs import data as data_facade
+    from open_wam.configs import (
+        data_benchmarks,
+        data_consortium,
+        data_contracts,
+        data_mixed_video,
+    )
+
+    owner_names = {
+        "data_contracts.py": {
+            "ActionMappingConfig",
+            "ActionNormalizationConfig",
+            "ActionSchemaConfig",
+            "ActionTargetConfig",
+            "CausalPrefixSuffixBucketConfig",
+            "DataConfig",
+            "GeneralistDynamicsMixtureConfig",
+            "SampleConstructionConfig",
+            "ViewLayoutConfig",
+        },
+        "data_benchmarks.py": {
+            "CalvinDataConfig",
+            "GenericDataConfig",
+            "LiberoDataConfig",
+            "RobotWinDataConfig",
+        },
+        "data_consortium.py": {
+            "ConsortiumChannelMappingConfig",
+            "ConsortiumCloudCacheConfig",
+            "ConsortiumEpisodeSelectionConfig",
+            "ConsortiumLocalCacheConfig",
+            "ConsortiumMemberConfig",
+            "LeRobotConsortiumDataConfig",
+        },
+        "data_mixed_video.py": {
+            "MixedVideoDataConfig",
+            "MixedVideoResizeBinConfig",
+            "MixedVideoSourceConfig",
+            "MixedVideoViewCombinationConfig",
+            "default_mixed_video_resize_bins",
+        },
+    }
+    owner_modules = {
+        "data_contracts.py": data_contracts,
+        "data_benchmarks.py": data_benchmarks,
+        "data_consortium.py": data_consortium,
+        "data_mixed_video.py": data_mixed_video,
+    }
+    facade_path = PACKAGE_ROOT / "configs" / "data.py"
+    all_public_names = set().union(*owner_names.values())
+    compatibility_enum_names = {
+        "ActionMappingLossMaskMode",
+        "ActionMappingMode",
+        "ActionMappingSamplerMaskMode",
+        "ActionNormalizationMode",
+        "ActionTargetReferenceSource",
+        "ActionTargetRepresentation",
+        "ActionTargetStateEncoding",
+        "AnchorPolicy",
+        "ConsortiumCacheMode",
+        "ConsortiumChannelSelectionMode",
+        "ConsortiumCloudCacheBackend",
+        "ConsortiumFramePackingOrder",
+        "ConsortiumMissingChannelPolicy",
+        "ConsortiumRandomMode",
+        "ConsortiumSplitMode",
+        "ConsortiumViewPackingMode",
+        "ConsortiumWeightMode",
+        "DataSplit",
+        "GripperRepresentation",
+        "LatentTemporalLayout",
+        "LatentWindowProfile",
+        "MixedVideoDecodeSizeMode",
+        "MixedVideoFrameFitMode",
+        "MixedVideoLatentEncodingMode",
+        "MixedVideoMissingStreamPolicy",
+        "MixedVideoRandomMode",
+        "MixedVideoSourceFormat",
+        "MixedVideoWeightMode",
+        "PaddedTargetPolicy",
+        "ReplayStatusPolicy",
+        "RolloutContextPolicy",
+        "RotationRepresentation",
+        "SampleOrderMode",
+        "SampleStateAnchorMode",
+        "SampleTargetAlignment",
+        "SampleWeightMode",
+        "SegmentContextPolicy",
+        "TailPaddingPolicy",
+        "WindowSamplingMode",
+        "coerce_fields",
+    }
+
+    assert not _top_level_definitions(facade_path)
+    assert _module_all_names(facade_path) == all_public_names
+    assert _compatibility_export_names(facade_path) == compatibility_enum_names
+    for name in compatibility_enum_names:
+        assert getattr(data_facade, name) is getattr(public_configs.enums, name)
+    for filename, public_names in owner_names.items():
+        owner_path = PACKAGE_ROOT / "configs" / filename
+        assert _module_all_names(owner_path) == public_names
+        assert public_names <= _top_level_definitions(owner_path)
+        for name in public_names:
+            owner_value = getattr(owner_modules[filename], name)
+            assert getattr(data_facade, name) is owner_value
+            assert getattr(public_configs, name) is owner_value
+
+    contracts_imports = _absolute_imports_for_file(
+        PACKAGE_ROOT / "configs" / "data_contracts.py"
+    )
+    benchmark_imports = _absolute_imports_for_file(
+        PACKAGE_ROOT / "configs" / "data_benchmarks.py"
+    )
+    consortium_imports = _absolute_imports_for_file(
+        PACKAGE_ROOT / "configs" / "data_consortium.py"
+    )
+    mixed_video_imports = _absolute_imports_for_file(
+        PACKAGE_ROOT / "configs" / "data_mixed_video.py"
+    )
+    assert "data" not in (
+        contracts_imports
+        | benchmark_imports
+        | consortium_imports
+        | mixed_video_imports
+    )
+    assert "data_contracts" not in contracts_imports
+    assert "data_contracts" in benchmark_imports
+    assert "data_contracts" in consortium_imports
+    assert {"data_contracts", "data_consortium"} <= mixed_video_imports
+
+    canonical_consumers = (
+        PACKAGE_ROOT / "configs" / "action_decoder.py",
+        PACKAGE_ROOT / "configs" / "data_parsing.py",
+        PACKAGE_ROOT / "configs" / "experiment.py",
+        PACKAGE_ROOT / "configs" / "loader.py",
+        PACKAGE_ROOT / "configs" / "policy_variant.py",
+        PACKAGE_ROOT / "configs" / "sequence_contracts.py",
+        PACKAGE_ROOT / "data" / "raw_video.py",
+    )
+    for consumer_path in canonical_consumers:
+        imports = _absolute_imports_for_file(consumer_path)
+        assert "data" not in imports
+        assert "open_wam.configs.data" not in imports
+
+
 def test_configuration_loading_has_one_package_owner() -> None:
     canonical_definitions = _top_level_definitions(PACKAGE_ROOT / "configs" / "loader.py")
     compatibility_definitions = _top_level_definitions(PACKAGE_ROOT / "utils" / "config_loader.py")

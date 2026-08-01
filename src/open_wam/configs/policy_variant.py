@@ -12,7 +12,7 @@ from .coercion import (
     coerce_enum_tuple as _coerce_enum_tuple,
     coerce_optional_enum as _coerce_optional_enum,
 )
-from .data import DataConfig
+from .data_contracts import DataConfig
 from .enums import (
     ActionChunkAnchorMode,
     ActionNormMethod,

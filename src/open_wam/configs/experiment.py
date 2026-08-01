@@ -4,7 +4,8 @@ from dataclasses import dataclass, field
 
 from open_wam.configs.action_decoder import ActionDecoderConfig, MLPActionDecoderConfig
 from open_wam.configs.backbone import LingbotCompatibleVideoBackboneConfig
-from open_wam.configs.data import DataConfig, RobotWinDataConfig
+from open_wam.configs.data_benchmarks import RobotWinDataConfig
+from open_wam.configs.data_contracts import DataConfig
 from open_wam.configs.inference import InferenceConfig
 from open_wam.configs.policy_variant import PolicyVariantConfig, PostLatentPolicyConfig
 from open_wam.configs.trainer import TrainerConfig
