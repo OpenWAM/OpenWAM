@@ -2651,7 +2651,6 @@ def test_libero_realtime_scheduler_has_one_package_owner() -> None:
         "isolated_torch_rng",
         "job_seed_for_session",
         "maybe_submit_planner_job",
-        "proprio_state_to_numpy",
         "resolve_exact_startup_sessions",
         "resolve_next_exact_history_base_session",
         "run_extension_job",
@@ -2664,6 +2663,46 @@ def test_libero_realtime_scheduler_has_one_package_owner() -> None:
     assert "from open_wam.evals import libero_realtime_runtime as realtime_runtime" in runner_source
     assert "realtime_runtime._" not in runner_source
     assert public_runtime_contracts <= _top_level_definitions(runtime_path)
+
+
+def test_realtime_fallback_history_has_one_package_owner() -> None:
+    runner_path = REPO_ROOT / "scripts" / "run_libero_realtime_sandbox.py"
+    history_path = PACKAGE_ROOT / "evals" / "realtime_history.py"
+    runner_source = runner_path.read_text(encoding="utf-8")
+    retired_runner_contracts = {
+        "ExactFallbackHistoryState",
+        "SequenceFallbackHistoryState",
+        "_action_advances_model_timeline",
+        "_append_obs_window_record",
+        "_copy_obs_record",
+        "_copy_obs_window",
+        "_fallback_absolute_tail_start",
+        "_fallback_policy_freezes_model_timeline",
+        "_frame_contains_fallback_action",
+        "_maybe_append_exact_history_record",
+        "_maybe_append_sequence_model_observation",
+        "_record_hidden_exact_history_frame",
+    }
+    public_history_contracts = {
+        "ActionFallbackHistoryState",
+        "FrameFallbackHistoryState",
+        "action_advances_model_timeline",
+        "append_action_observation",
+        "append_frame_history_record",
+        "append_observation_window",
+        "copy_observation",
+        "copy_observation_window",
+        "fallback_absolute_tail_start",
+        "fallback_policy_freezes_model_timeline",
+        "frame_contains_fallback_action",
+        "proprio_state_to_numpy",
+    }
+
+    assert history_path.exists()
+    assert "from open_wam.evals import realtime_history" in runner_source
+    assert "realtime_history._" not in runner_source
+    assert retired_runner_contracts.isdisjoint(_top_level_definitions(runner_path))
+    assert public_history_contracts <= _top_level_definitions(history_path)
 
 
 def test_private_uva_comparison_drivers_are_retired() -> None:

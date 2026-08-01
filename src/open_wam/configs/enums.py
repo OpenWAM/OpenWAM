@@ -718,6 +718,14 @@ class FallbackHistoryPolicy(StrEnum):
     FREEZE_UNTIL_CLEAN_CHUNK = "freeze_until_clean_chunk"
 
 
+class FallbackHistoryDecision(StrEnum):
+    """How one observed frame/action was handled by fallback quarantine."""
+
+    INCLUDED = "included"
+    FALLBACK = "fallback"
+    WASHOUT = "washout"
+
+
 class DeadlineMissPolicy(StrEnum):
     """Fallback action to execute when a realtime plan misses its deadline."""
 

@@ -32,7 +32,6 @@ __all__ = [
     "isolated_torch_rng",
     "job_seed_for_session",
     "maybe_submit_planner_job",
-    "proprio_state_to_numpy",
     "resolve_exact_startup_sessions",
     "resolve_next_exact_history_base_session",
     "run_extension_job",
@@ -674,14 +673,6 @@ def _history_records_to_precomputed_video_latents(history_records: list[dict[str
     if not latent_chunks:
         return None
     return torch.cat(latent_chunks, dim=2)
-
-
-def proprio_state_to_numpy(proprio_state: np.ndarray | torch.Tensor) -> np.ndarray:
-    if isinstance(proprio_state, torch.Tensor):
-        array = proprio_state.detach().to(dtype=torch.float32).cpu().numpy()
-    else:
-        array = np.asarray(proprio_state, dtype=np.float32)
-    return np.asarray(array, dtype=np.float32).reshape(-1).copy()
 
 
 def _history_records_to_proprio_state(

@@ -29,7 +29,7 @@ def _prepend_import_path(path: Path) -> None:
 
 _prepend_import_path(SRC_ROOT)
 
-from open_wam.configs import ActionTargetRepresentation, GripperRepresentation, ParallelRuntimeMode  # noqa: E402
+from open_wam.configs import ActionTargetRepresentation, ParallelRuntimeMode  # noqa: E402
 from open_wam.configs.enums import (  # noqa: E402
     DeadlineMissPolicy,
     FallbackHistoryPolicy,
@@ -49,6 +49,7 @@ from open_wam.integrations.realtime_control import build_live_rollout_summary  #
 from open_wam.evals import libero_rollout_artifacts as rollout_artifacts  # noqa: E402
 from open_wam.evals import libero_realtime_runtime as realtime_runtime  # noqa: E402
 from open_wam.evals import libero_visualization as exact_viz  # noqa: E402
+from open_wam.evals import realtime_history  # noqa: E402
 from open_wam.models.common.rollout_startup import require_strict_startup_generation_frame  # noqa: E402
 from open_wam.models.policy_variants import PolicyInferContext  # noqa: E402
 from open_wam.models.policy_variants.mot.runtime_routing import (  # noqa: E402
@@ -123,33 +124,6 @@ class PlannedControlStep:
     desired_position: np.ndarray | None = None
     desired_quaternion: np.ndarray | None = None
     desired_gripper: np.ndarray | None = None
-
-
-@dataclass
-class ExactFallbackHistoryState:
-    policy: FallbackHistoryPolicy
-    quarantine_active: bool = False
-    clean_frames_since_fallback: int = 0
-    hidden_history_frames: int = 0
-    hidden_history_raw_observations: int = 0
-    hidden_fallback_frames: int = 0
-    hidden_fallback_raw_observations: int = 0
-    hidden_washout_frames: int = 0
-    hidden_washout_raw_observations: int = 0
-    fallback_quarantine_count: int = 0
-    quarantine_records: list[dict[str, Any]] | None = None
-
-
-@dataclass
-class SequenceFallbackHistoryState:
-    policy: FallbackHistoryPolicy
-    quarantine_active: bool = False
-    clean_actions_since_fallback: int = 0
-    hidden_history_actions: int = 0
-    hidden_fallback_actions: int = 0
-    hidden_washout_actions: int = 0
-    fallback_quarantine_count: int = 0
-    quarantine_observations: list[dict[str, np.ndarray]] | None = None
 
 
 class _RolloutRunnerLike(Protocol):
@@ -722,8 +696,8 @@ def _sequence_startup_model_obs_window(
     if not initial_obs_window:
         raise ValueError("Cannot build sequence startup observation window from an empty initial window.")
     if _uses_strict_mot_one_frame_history(config):
-        return [_copy_obs_record(initial_obs_window[-1])]
-    return _copy_obs_window(initial_obs_window)
+        return [realtime_history.copy_observation(initial_obs_window[-1])]
+    return realtime_history.copy_observation_window(initial_obs_window)
 
 
 def _sequence_model_obs_window_frames(config, *, raw_window_frames: int) -> int:
@@ -797,56 +771,6 @@ def _apply_common_inference_overrides(
         object.__setattr__(config.inference, "guidance_scale", float(guidance_scale))
     if action_guidance_scale is not None:
         object.__setattr__(config.inference, "action_guidance_scale", float(action_guidance_scale))
-
-
-def _frame_contains_fallback_action(action_sources: list[str]) -> bool:
-    return any(str(source).startswith("fallback_") for source in action_sources)
-
-
-def _frame_source_label(action_sources: list[str]) -> str:
-    if not action_sources:
-        return "unknown"
-    first_source = str(action_sources[0])
-    if all(str(source) == first_source for source in action_sources):
-        return first_source
-    return "mixed"
-
-
-def _fallback_history_washout_frames_required(
-    policy: FallbackHistoryPolicy,
-    *,
-    frame_chunk_size: int,
-) -> int:
-    if policy is FallbackHistoryPolicy.FREEZE_UNTIL_CLEAN_CHUNK:
-        return int(frame_chunk_size)
-    return 0
-
-
-def _fallback_policy_freezes_model_timeline(policy: FallbackHistoryPolicy) -> bool:
-    return policy is not FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY
-
-
-def _action_advances_model_timeline(
-    action_source: str,
-    *,
-    fallback_history_policy: FallbackHistoryPolicy,
-) -> bool:
-    return not (
-        str(action_source).startswith("fallback_")
-        and _fallback_policy_freezes_model_timeline(fallback_history_policy)
-    )
-
-
-def _fallback_absolute_tail_start(config) -> int | None:
-    action_target = getattr(getattr(config, "data", None), "action_target", None)
-    gripper_representation = getattr(action_target, "gripper_representation", None)
-    if gripper_representation == GripperRepresentation.ACTION_COMMAND:
-        return None
-    if str(gripper_representation) == GripperRepresentation.ACTION_COMMAND.value:
-        return None
-    if bool(getattr(action_target, "include_gripper", False)):
-        return 6
-    return None
 
 
 def _exact_runtime_cache_name(session) -> str | None:
@@ -1049,158 +973,6 @@ def _maybe_submit_exact_planner_job_with_cache_snapshot(
     return submitted_future, snapshot
 
 
-def _record_hidden_exact_history_frame(
-    state: ExactFallbackHistoryState,
-    *,
-    raw_observation_count: int,
-    hidden_kind: str,
-) -> None:
-    state.hidden_history_frames += 1
-    state.hidden_history_raw_observations += int(raw_observation_count)
-    if hidden_kind == "fallback":
-        state.hidden_fallback_frames += 1
-        state.hidden_fallback_raw_observations += int(raw_observation_count)
-        return
-    if hidden_kind == "washout":
-        state.hidden_washout_frames += 1
-        state.hidden_washout_raw_observations += int(raw_observation_count)
-        return
-    raise ValueError(f"Unsupported hidden_kind={hidden_kind!r}.")
-
-
-def _maybe_append_exact_history_record(
-    *,
-    pending_history: list[dict[str, Any]],
-    state: ExactFallbackHistoryState,
-    absolute_frame_index: int,
-    current_obs: dict[str, np.ndarray],
-    frame_obs_sequence: list[dict[str, np.ndarray]],
-    frame_actions: list[np.ndarray],
-    frame_action_sources: list[str],
-    frame_chunk_size: int,
-    proprio_state: np.ndarray | torch.Tensor | None = None,
-) -> str:
-    contains_fallback_action = _frame_contains_fallback_action(frame_action_sources)
-    history_record = {
-        "absolute_frame_index": int(absolute_frame_index),
-        "obs": {key: np.array(value, copy=True) for key, value in current_obs.items()},
-        "obs_sequence": [
-            {key: np.array(value, copy=True) for key, value in obs.items()}
-            for obs in frame_obs_sequence
-        ],
-        "raw_actions": np.stack(frame_actions, axis=0).astype(np.float32),
-        "source": _frame_source_label(frame_action_sources),
-        "action_sources": [str(source) for source in frame_action_sources],
-        "contains_fallback_action": bool(contains_fallback_action),
-    }
-    if proprio_state is not None:
-        history_record["proprio_state"] = realtime_runtime.proprio_state_to_numpy(proprio_state)
-    raw_observation_count = len(frame_obs_sequence)
-    policy = state.policy
-    if policy is FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY:
-        pending_history.append(history_record)
-        return "included"
-
-    washout_frames_required = _fallback_history_washout_frames_required(
-        policy,
-        frame_chunk_size=frame_chunk_size,
-    )
-    if contains_fallback_action:
-        if not state.quarantine_active:
-            state.fallback_quarantine_count += 1
-        state.quarantine_active = True
-        state.clean_frames_since_fallback = 0
-        state.quarantine_records = []
-        _record_hidden_exact_history_frame(
-            state,
-            raw_observation_count=raw_observation_count,
-            hidden_kind="fallback",
-        )
-        return "fallback"
-    if not state.quarantine_active:
-        pending_history.append(history_record)
-        return "included"
-
-    state.clean_frames_since_fallback += 1
-    if state.quarantine_records is None:
-        state.quarantine_records = []
-    state.quarantine_records.append(history_record)
-    _record_hidden_exact_history_frame(
-        state,
-        raw_observation_count=raw_observation_count,
-        hidden_kind="washout",
-    )
-    if state.clean_frames_since_fallback >= washout_frames_required:
-        pending_history.extend(state.quarantine_records)
-        state.quarantine_records = []
-        state.quarantine_active = False
-        state.clean_frames_since_fallback = 0
-    return "washout"
-
-
-def _copy_obs_record(obs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-    return {key: np.array(value, copy=True) for key, value in obs.items()}
-
-
-def _copy_obs_window(obs_window: list[dict[str, np.ndarray]]) -> list[dict[str, np.ndarray]]:
-    return [_copy_obs_record(obs) for obs in obs_window]
-
-
-def _append_obs_window_record(
-    obs_window: list[dict[str, np.ndarray]],
-    obs: dict[str, np.ndarray],
-    *,
-    max_window_frames: int,
-) -> list[dict[str, np.ndarray]]:
-    obs_window.append(_copy_obs_record(obs))
-    if len(obs_window) > int(max_window_frames):
-        del obs_window[: -int(max_window_frames)]
-    return obs_window
-
-
-def _maybe_append_sequence_model_observation(
-    *,
-    model_obs_window: list[dict[str, np.ndarray]],
-    state: SequenceFallbackHistoryState,
-    current_obs: dict[str, np.ndarray],
-    action_source: str,
-    clean_actions_required: int,
-    max_window_frames: int,
-) -> str:
-    contains_fallback_action = str(action_source).startswith("fallback_")
-    if state.policy is FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY:
-        _append_obs_window_record(model_obs_window, current_obs, max_window_frames=max_window_frames)
-        return "included"
-
-    if contains_fallback_action:
-        if not state.quarantine_active:
-            state.fallback_quarantine_count += 1
-        state.quarantine_active = True
-        state.clean_actions_since_fallback = 0
-        state.quarantine_observations = []
-        state.hidden_history_actions += 1
-        state.hidden_fallback_actions += 1
-        return "fallback"
-
-    if not state.quarantine_active:
-        _append_obs_window_record(model_obs_window, current_obs, max_window_frames=max_window_frames)
-        return "included"
-
-    state.clean_actions_since_fallback += 1
-    if state.quarantine_observations is None:
-        state.quarantine_observations = []
-    state.quarantine_observations.append(_copy_obs_record(current_obs))
-    state.hidden_history_actions += 1
-    state.hidden_washout_actions += 1
-    if state.clean_actions_since_fallback >= int(clean_actions_required):
-        for obs in state.quarantine_observations:
-            _append_obs_window_record(model_obs_window, obs, max_window_frames=max_window_frames)
-        state.quarantine_observations = []
-        state.quarantine_active = False
-        state.clean_actions_since_fallback = 0
-    return "washout"
-
-
 def _construct_realtime_libero_env(task_spec, *, env_horizon: int | None):
     ensure_local_libero_config(REPO_ROOT)
     from libero.libero.envs import OffScreenRenderEnv  # type: ignore
@@ -1306,7 +1078,7 @@ def _run_exact_like_realtime_rollout(
 
     action_per_frame = int(config.policy_variant.action_per_frame)
     action_dim = int(config.data.action_schema.action_dim)
-    fallback_absolute_tail_start = _fallback_absolute_tail_start(config)
+    fallback_absolute_tail_start = realtime_history.fallback_absolute_tail_start(config)
     action_period_s = 1.0 / float(target_action_hz)
     deadline_tolerance_s = float(deadline_tolerance_ms) / 1000.0
     max_frames = int(math.ceil(max_actions / action_per_frame))
@@ -1429,7 +1201,7 @@ def _run_exact_like_realtime_rollout(
                 proprio_state=latest_proprio_state,
             )
         ]
-        fallback_history_state = ExactFallbackHistoryState(policy=fallback_history_policy)
+        fallback_history_state = realtime_history.FrameFallbackHistoryState(policy=fallback_history_policy)
 
         action_records: list[dict[str, Any]] = []
         action_video_records: list[dict[str, Any]] = []
@@ -1488,7 +1260,7 @@ def _run_exact_like_realtime_rollout(
         schedule_pause_s = 0.0
         fallback_invalidated_future_actions = 0
         fallback_invalidated_buffer_count = 0
-        freeze_model_timeline_on_fallback = _fallback_policy_freezes_model_timeline(fallback_history_policy)
+        freeze_model_timeline_on_fallback = realtime_history.fallback_policy_freezes_model_timeline(fallback_history_policy)
         hidden_fallback_period_active = False
         hidden_fallback_period_count = 0
         periodic_replan_submit_count = 0
@@ -1827,7 +1599,7 @@ def _run_exact_like_realtime_rollout(
                             done=bool(done),
                         )
                     executed_action_index += 1
-                    if _action_advances_model_timeline(
+                    if realtime_history.action_advances_model_timeline(
                         source,
                         fallback_history_policy=fallback_history_policy,
                     ):
@@ -1838,7 +1610,7 @@ def _run_exact_like_realtime_rollout(
                 if done or executed_action_index >= max_actions:
                     break
 
-                history_decision = _maybe_append_exact_history_record(
+                history_decision = realtime_history.append_frame_history_record(
                     pending_history=pending_history,
                     state=fallback_history_state,
                     absolute_frame_index=int(next_frame_to_execute),
@@ -1849,13 +1621,13 @@ def _run_exact_like_realtime_rollout(
                     frame_action_sources=frame_action_sources,
                     frame_chunk_size=int(config.inference.frame_chunk_size),
                 )
-                frame_contains_fallback = _frame_contains_fallback_action(frame_action_sources)
+                frame_contains_fallback = realtime_history.frame_contains_fallback_action(frame_action_sources)
                 for record in action_records[-len(frame_actions) :]:
-                    record["frame_history_decision"] = str(history_decision)
+                    record["frame_history_decision"] = history_decision.value
                     record["frame_contains_fallback_action"] = bool(frame_contains_fallback)
                     record["frame_action_sources"] = [str(source) for source in frame_action_sources]
                 for record in action_video_records[-len(frame_actions) :]:
-                    record["frame_history_decision"] = str(history_decision)
+                    record["frame_history_decision"] = history_decision.value
                     record["frame_contains_fallback_action"] = bool(frame_contains_fallback)
                     record["frame_action_sources"] = [str(source) for source in frame_action_sources]
                 if frame_contains_fallback and not freeze_model_timeline_on_fallback:
@@ -2339,7 +2111,7 @@ def _exact_startup_conditioning_history_record(
         "source": "startup_conditioning_frame",
     }
     if proprio_state is not None:
-        record["proprio_state"] = realtime_runtime.proprio_state_to_numpy(proprio_state)
+        record["proprio_state"] = realtime_history.proprio_state_to_numpy(proprio_state)
     return record
 
 
@@ -2549,7 +2321,7 @@ def _run_sequence_policy_realtime_rollout(
             startup = _run_sequence_replan_job(
                 runner=runner,
                 session=session,
-                obs_window=_copy_obs_window(startup_model_obs_window),
+                obs_window=realtime_history.copy_observation_window(startup_model_obs_window),
                 prompt=prompt,
                 task_id=int(task_id),
                 episode_idx=int(episode_idx),
@@ -2583,10 +2355,10 @@ def _run_sequence_policy_realtime_rollout(
         buffer_tail_cache_snapshot = startup.get("runtime_cache_snapshot")
         buffer_tail_generation_action_start = int(next_generation_action_start)
         plan_by_action = _merge_future_step_actions({}, startup["planned_steps"], next_action_to_execute=0)
-        current_obs = _copy_obs_record(initial_obs_window[-1])
-        obs_window = _copy_obs_window(initial_obs_window)
+        current_obs = realtime_history.copy_observation(initial_obs_window[-1])
+        obs_window = realtime_history.copy_observation_window(initial_obs_window)
         model_obs_window = _sequence_startup_model_obs_window(config, initial_obs_window)
-        sequence_fallback_state = SequenceFallbackHistoryState(policy=fallback_history_policy)
+        sequence_fallback_state = realtime_history.ActionFallbackHistoryState(policy=fallback_history_policy)
         sequence_clean_actions_required = max(1, int(config.data.action_schema.action_horizon))
         extension_records: list[dict[str, Any]] = []
         startup_open_loop_s = 0.0
@@ -2600,7 +2372,7 @@ def _run_sequence_policy_realtime_rollout(
                         if mot_non_joint_sequence
                         else _clone_sequence_session(buffer_tail_session)
                     ),
-                    obs_window=_copy_obs_window(model_obs_window),
+                    obs_window=realtime_history.copy_observation_window(model_obs_window),
                     prompt=prompt,
                     task_id=int(task_id),
                     episode_idx=int(episode_idx),
@@ -2756,7 +2528,7 @@ def _run_sequence_policy_realtime_rollout(
                             result = _run_sequence_replan_job(
                                 runner=runner,
                                 session=blocking_session,
-                                obs_window=_copy_obs_window(model_obs_window),
+                                obs_window=realtime_history.copy_observation_window(model_obs_window),
                                 prompt=prompt,
                                 task_id=int(task_id),
                                 episode_idx=int(episode_idx),
@@ -2864,12 +2636,12 @@ def _run_sequence_policy_realtime_rollout(
                 env_step_s = action_end_monotonic - actual_start_monotonic
                 last_action_end_monotonic = action_end_monotonic
                 current_obs = libero_rollout.extract_libero_rollout_observation(obs)
-                obs_window = _append_obs_window_record(
+                obs_window = realtime_history.append_observation_window(
                     obs_window,
                     current_obs,
                     max_window_frames=raw_window_frames,
                 )
-                history_append_result = _maybe_append_sequence_model_observation(
+                history_append_result = realtime_history.append_action_observation(
                     model_obs_window=model_obs_window,
                     state=sequence_fallback_state,
                     current_obs=current_obs,
@@ -2916,7 +2688,7 @@ def _run_sequence_policy_realtime_rollout(
                         else float(actual_start_monotonic - ready_monotonic_s)
                     ),
                     "wait_for_plan_s": float(wait_for_plan_s),
-                    "history_append_result": history_append_result,
+                    "history_append_result": history_append_result.value,
                 }
                 action_records.append(action_record)
                 if collect_video_records:
@@ -2935,7 +2707,7 @@ def _run_sequence_policy_realtime_rollout(
                         done=bool(done),
                     )
                 executed_action_index += 1
-                if _action_advances_model_timeline(
+                if realtime_history.action_advances_model_timeline(
                     source,
                     fallback_history_policy=fallback_history_policy,
                 ):
@@ -3009,7 +2781,7 @@ def _run_sequence_policy_realtime_rollout(
                     replan_low_watermark_actions=replan_low_watermark_actions,
                 )
                 if replan_future is None and should_submit:
-                    obs_snapshot = _copy_obs_window(model_obs_window)
+                    obs_snapshot = realtime_history.copy_observation_window(model_obs_window)
                     if _is_mot_non_joint_two_stream(config):
                         if (
                             buffer_tail_session is not None

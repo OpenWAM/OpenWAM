@@ -511,13 +511,13 @@ def test_partial_stale_chunks_can_be_accepted_when_the_future_suffix_is_meaningf
 def test_exact_fallback_history_policy_freeze_until_clean_chunk_delays_full_clean_chunk() -> None:
     sandbox = _load_sandbox_module()
     pending_history = []
-    state = sandbox.ExactFallbackHistoryState(
+    state = sandbox.realtime_history.FrameFallbackHistoryState(
         policy=sandbox.FallbackHistoryPolicy.FREEZE_UNTIL_CLEAN_CHUNK,
     )
     current_obs, frame_obs_sequence, frame_actions = _build_exact_history_frame_payload()
 
     assert (
-        sandbox._maybe_append_exact_history_record(
+        sandbox.realtime_history.append_frame_history_record(
             pending_history=pending_history,
             state=state,
             absolute_frame_index=4,
@@ -533,7 +533,7 @@ def test_exact_fallback_history_policy_freeze_until_clean_chunk_delays_full_clea
 
     for absolute_frame_index in range(5, 9):
         assert (
-            sandbox._maybe_append_exact_history_record(
+            sandbox.realtime_history.append_frame_history_record(
                 pending_history=pending_history,
                 state=state,
                 absolute_frame_index=absolute_frame_index,
@@ -552,7 +552,7 @@ def test_exact_fallback_history_policy_freeze_until_clean_chunk_delays_full_clea
     assert state.hidden_washout_frames == 4
 
     assert (
-        sandbox._maybe_append_exact_history_record(
+        sandbox.realtime_history.append_frame_history_record(
             pending_history=pending_history,
             state=state,
             absolute_frame_index=9,
@@ -570,15 +570,15 @@ def test_exact_fallback_history_policy_freeze_until_clean_chunk_delays_full_clea
 def test_fallback_model_timeline_advancement_is_policy_driven() -> None:
     sandbox = _load_sandbox_module()
 
-    assert sandbox._action_advances_model_timeline(
+    assert sandbox.realtime_history.action_advances_model_timeline(
         "history_replan",
         fallback_history_policy=sandbox.FallbackHistoryPolicy.FREEZE_UNTIL_CLEAN_CHUNK,
     )
-    assert not sandbox._action_advances_model_timeline(
+    assert not sandbox.realtime_history.action_advances_model_timeline(
         "fallback_hold_state",
         fallback_history_policy=sandbox.FallbackHistoryPolicy.FREEZE_UNTIL_CLEAN_CHUNK,
     )
-    assert sandbox._action_advances_model_timeline(
+    assert sandbox.realtime_history.action_advances_model_timeline(
         "fallback_hold_state",
         fallback_history_policy=sandbox.FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY,
     )
@@ -660,12 +660,12 @@ def test_mot_async_history_submit_rewinds_speculative_action_tail_only() -> None
 def test_sequence_fallback_history_freezes_until_full_clean_action_chunk() -> None:
     sandbox = _load_sandbox_module()
     model_obs_window = [{"image": np.array([0], dtype=np.uint8)}]
-    state = sandbox.SequenceFallbackHistoryState(
+    state = sandbox.realtime_history.ActionFallbackHistoryState(
         policy=sandbox.FallbackHistoryPolicy.FREEZE_UNTIL_CLEAN_CHUNK,
     )
 
     assert (
-        sandbox._maybe_append_sequence_model_observation(
+        sandbox.realtime_history.append_action_observation(
             model_obs_window=model_obs_window,
             state=state,
             current_obs={"image": np.array([1], dtype=np.uint8)},
@@ -680,7 +680,7 @@ def test_sequence_fallback_history_freezes_until_full_clean_action_chunk() -> No
 
     for value in (2, 3):
         assert (
-            sandbox._maybe_append_sequence_model_observation(
+            sandbox.realtime_history.append_action_observation(
                 model_obs_window=model_obs_window,
                 state=state,
                 current_obs={"image": np.array([value], dtype=np.uint8)},
@@ -693,7 +693,7 @@ def test_sequence_fallback_history_freezes_until_full_clean_action_chunk() -> No
         assert [int(obs["image"][0]) for obs in model_obs_window] == [0]
 
     assert (
-        sandbox._maybe_append_sequence_model_observation(
+        sandbox.realtime_history.append_action_observation(
             model_obs_window=model_obs_window,
             state=state,
             current_obs={"image": np.array([4], dtype=np.uint8)},
@@ -806,12 +806,12 @@ def test_fallback_absolute_tail_start_skips_action_command_gripper() -> None:
     sandbox = _load_sandbox_module()
 
     assert (
-        sandbox._fallback_absolute_tail_start(
+        sandbox.realtime_history.fallback_absolute_tail_start(
             SimpleNamespace(
                 data=SimpleNamespace(
                     action_target=SimpleNamespace(
                         include_gripper=True,
-                        gripper_representation=sandbox.GripperRepresentation.ACTION_COMMAND,
+                        gripper_representation="action_command",
                     )
                 )
             )
@@ -819,12 +819,12 @@ def test_fallback_absolute_tail_start_skips_action_command_gripper() -> None:
         is None
     )
     assert (
-        sandbox._fallback_absolute_tail_start(
+        sandbox.realtime_history.fallback_absolute_tail_start(
             SimpleNamespace(
                 data=SimpleNamespace(
                     action_target=SimpleNamespace(
                         include_gripper=True,
-                        gripper_representation=sandbox.GripperRepresentation.FIRST_CHANNEL,
+                        gripper_representation="first_channel",
                     )
                 )
             )
@@ -1168,12 +1168,12 @@ def test_exact_history_records_feed_wan_aligned_streaming_chunks() -> None:
 
     sandbox = _load_sandbox_module()
     pending_history = []
-    state = sandbox.ExactFallbackHistoryState(
+    state = sandbox.realtime_history.FrameFallbackHistoryState(
         policy=sandbox.FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY,
     )
     current_obs, frame_obs_sequence, frame_actions = _build_exact_history_frame_payload()
 
-    decision = sandbox._maybe_append_exact_history_record(
+    decision = sandbox.realtime_history.append_frame_history_record(
         pending_history=pending_history,
         state=state,
         absolute_frame_index=4,
@@ -2153,13 +2153,13 @@ def test_strict_split_cache_mot_model_history_keeps_latest_observation() -> None
         config,
         [_minimal_obs_record(float(index)) for index in range(4)],
     )
-    state = sandbox.SequenceFallbackHistoryState(
+    state = sandbox.realtime_history.ActionFallbackHistoryState(
         policy=sandbox.FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY,
     )
 
     assert len(model_obs_window) == 1
     assert (
-        sandbox._maybe_append_sequence_model_observation(
+        sandbox.realtime_history.append_action_observation(
             model_obs_window=model_obs_window,
             state=state,
             current_obs=_minimal_obs_record(4.0),

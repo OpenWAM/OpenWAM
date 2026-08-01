@@ -67,10 +67,14 @@ installed package. Research tools must require machine-local checkpoints and
 datasets explicitly rather than embedding private defaults.
 
 The maintained LIBERO realtime runner follows the same boundary. Package code
-owns planner-job submission, observed-history preparation, session continuity,
-fallback actions, and artifact persistence. The checkout script owns CLI
-composition and the benchmark-specific simulator control loop; it does not
-import another checkout helper or call private package runtime functions.
+in `libero_realtime_runtime` owns planner jobs, encoded-history preparation,
+session continuity, and fallback action generation. The benchmark-independent
+`realtime_history` contract owns copied observation windows, fallback
+quarantine and washout, model-timeline advancement, and proprio normalization;
+`libero_rollout_artifacts` owns rendering and persistence. The checkout script
+owns CLI composition and the benchmark-specific simulator control loop; it
+does not import another checkout helper or call private package runtime
+functions.
 
 ## Configuration Contract
 
