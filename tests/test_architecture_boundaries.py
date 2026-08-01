@@ -1111,8 +1111,12 @@ def test_mixed_video_encoding_has_one_package_owner() -> None:
     from open_wam.data import mixed_video_encoding
 
     owner_path = PACKAGE_ROOT / "data" / "mixed_video_encoding.py"
+    artifact_path = (
+        PACKAGE_ROOT / "data" / "mixed_video_encoding_artifacts.py"
+    )
     command_path = REPO_ROOT / "scripts" / "encode_mixed_video_latents.py"
     owner_definitions = _top_level_definitions(owner_path)
+    artifact_definitions = _top_level_definitions(artifact_path)
     command_definitions = _top_level_definitions(command_path)
     public_names = {
         "MixedVideoEncodedEpisode",
@@ -1139,6 +1143,19 @@ def test_mixed_video_encoding_has_one_package_owner() -> None:
         "encode_mixed_video_latent_sources",
         "resolve_mixed_video_encoding_config",
     } <= owner_definitions
+    artifact_owned_names = {
+        "_latent_causal_bucket_specs",
+        "_latent_path_for_episode",
+        "_latent_path_for_episode_view",
+        "_manifest_row_for_encoded_episode",
+        "_safe_path_part",
+        "_validate_encoded_records_for_backbone",
+        "_write_latent_source_config_patch",
+        "_write_latent_training_config",
+        "_write_source_manifests",
+    }
+    assert artifact_owned_names <= artifact_definitions
+    assert artifact_owned_names.isdisjoint(owner_definitions)
     assert "encode_mixed_video_latent_sources" not in command_definitions
     assert {
         "launch_parallel_mixed_video_encoding",
@@ -1147,11 +1164,21 @@ def test_mixed_video_encoding_has_one_package_owner() -> None:
         "resolve_encoder_data_config",
     } <= command_definitions
     assert "open_wam.data.mixed_video_encoding" in _absolute_imports_for_file(command_path)
+    assert (
+        "open_wam.data.mixed_video_encoding_artifacts"
+        in _absolute_imports_for_file(owner_path)
+    )
     assert {
         "argparse",
         "subprocess",
         "open_wam.models.visual_tower.reference_assets",
     }.isdisjoint(_absolute_imports_for_file(owner_path))
+    assert {
+        "argparse",
+        "subprocess",
+        "torch",
+        "open_wam.models.visual_tower.reference_assets",
+    }.isdisjoint(_absolute_imports_for_file(artifact_path))
 
     assert PublicMixedVideoEncodedEpisode is mixed_video_encoding.MixedVideoEncodedEpisode
     assert PublicMixedVideoEncodingReport is mixed_video_encoding.MixedVideoEncodingReport

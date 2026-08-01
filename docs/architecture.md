@@ -347,8 +347,10 @@ materialization, payload validation, and bounded LRU caching.
 eligibility and repetition, source weighting, epoch RNG, and source-balanced
 global orders. `mixed_video_encoding` owns the reusable offline RGB-to-latent
 boundary: typed episode selection, canonical/per-view target planning,
-streaming VAE calls, deterministic sidecars, resume validation, latent
-manifests, and generated training configs. It accepts a
+streaming VAE calls, sidecar writes, and strict resume validation.
+`mixed_video_encoding_artifacts` owns dependency-light latent path and manifest
+construction, raw-to-latent bucket conversion, generated training configs, and
+backbone compatibility checks. The encoding facade accepts a
 `MixedVideoLatentEncoder` capability and does not construct model assets,
 parse command-line arguments, or launch processes. `mixed_video` owns RGB
 frame-cache lifetime, RGB/latent tensor selection and padding, latent view
