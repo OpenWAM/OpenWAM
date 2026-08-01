@@ -2622,6 +2622,24 @@ def test_deprecated_libero_implementations_and_configs_are_retired() -> None:
     assert not any(path for root in deprecated_config_roots for path in root.glob("*.yaml"))
 
 
+def test_deprecated_realtime_startup_bootstrap_has_no_runtime_implementation() -> None:
+    runner_path = REPO_ROOT / "scripts" / "run_libero_realtime_sandbox.py"
+    common_path = REPO_ROOT / "scripts" / "libero_exact_realtime_common.py"
+    runner_source = runner_path.read_text(encoding="utf-8")
+    retired_helpers = {
+        "_exact_startup_bootstrap_action_history",
+        "_exact_startup_bootstrap_frame_start",
+        "_exact_startup_bootstrap_obs_sequence",
+        "_exact_startup_bootstrap_raw_frame_count",
+        "_repeat_exact_startup_bootstrap_latents",
+    }
+
+    assert "--exact-startup-bootstrap-padding" in runner_source
+    assert "`--exact-startup-bootstrap-padding` is deprecated" in runner_source
+    assert retired_helpers.isdisjoint(_top_level_definitions(runner_path))
+    assert retired_helpers.isdisjoint(_top_level_definitions(common_path))
+
+
 def test_private_uva_comparison_drivers_are_retired() -> None:
     retired_paths = (
         REPO_ROOT / "scripts" / "debug_gjd_uva_mode_videos.py",

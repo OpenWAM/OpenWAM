@@ -730,37 +730,6 @@ def _resolve_exact_startup_bootstrap_padding(
     return False
 
 
-def _repeat_exact_startup_bootstrap_latents(
-    initial_inputs: dict[str, Any],
-    *,
-    frame_chunk_size: int,
-) -> dict[str, Any]:
-    frame_chunk_size = int(frame_chunk_size)
-    if frame_chunk_size <= 0:
-        raise ValueError(f"Expected positive frame_chunk_size, got {frame_chunk_size}.")
-    video_latents = initial_inputs.get("video_latents")
-    if not isinstance(video_latents, torch.Tensor):
-        raise TypeError("Exact startup bootstrap requires tensor `video_latents` in prepared inputs.")
-    if video_latents.ndim != 5:
-        raise ValueError(
-            "Expected exact startup video latents with shape [B, C, T, H, W], "
-            f"got {tuple(video_latents.shape)}."
-        )
-    if video_latents.shape[2] == frame_chunk_size:
-        return initial_inputs
-    if video_latents.shape[2] != 1:
-        raise ValueError(
-            "Expected exact startup bootstrap to encode exactly one real observation before latent padding, "
-            f"got latent length {video_latents.shape[2]} for frame_chunk_size={frame_chunk_size}."
-        )
-
-    updated_inputs = dict(initial_inputs)
-    updated_inputs["video_latents"] = (
-        video_latents[:, :, :1].expand(-1, -1, frame_chunk_size, -1, -1).contiguous()
-    )
-    return updated_inputs
-
-
 def _is_mot_non_joint_two_stream(config) -> bool:
     # Historical helper name retained for call-site locality: this means the
     # Method-1-style split-cache MoT route, not every non-joint packed coupling.
@@ -1404,11 +1373,6 @@ def _run_exact_like_realtime_rollout(
                     frontend_device=frontend_device,
                     runtime_device=runtime_device,
                 )
-                if exact_startup_bootstrap_padding:
-                    initial_inputs = _repeat_exact_startup_bootstrap_latents(
-                        initial_inputs,
-                        frame_chunk_size=int(config.inference.frame_chunk_size),
-                    )
                 exact_sandbox._synchronize_devices(frontend_device, runtime_device)
                 startup_prepare_s = time.perf_counter() - startup_prepare_t0
                 if VERBOSE:
@@ -1420,53 +1384,14 @@ def _run_exact_like_realtime_rollout(
                     )
 
                 rng_before_startup_infer = _debug_rng_state()
-                if exact_startup_bootstrap_padding:
-                    startup_warmup_t0 = time.perf_counter()
-                    startup_action_history = exact_sandbox._exact_startup_bootstrap_action_history(
-                        frame_chunk_size=int(config.inference.frame_chunk_size),
-                        action_per_frame=action_per_frame,
-                        action_dim=action_dim,
-                        device=runtime_device,
-                    )
-                    if VERBOSE:
-                        print(
-                            "[exact_startup] warmup_cache "
-                            f"frame_start={exact_sandbox._exact_startup_bootstrap_frame_start(int(config.inference.frame_chunk_size))} "
-                            f"action_history_shape={tuple(startup_action_history.shape)}",
-                            flush=True,
-                        )
-                    warmup = runner.warmup_cache(
-                        session=session,
-                        video_latents=initial_inputs["video_latents"],
-                        text_context=initial_inputs["text_context"],
-                        negative_text_context=initial_inputs["negative_text_context"],
-                        action_history=startup_action_history,
-                        action_space="raw",
-                        frame_start_override=exact_sandbox._exact_startup_bootstrap_frame_start(
-                            int(config.inference.frame_chunk_size)
-                        ),
-                        proprio_state=latest_proprio_state,
-                    )
-                    exact_sandbox._synchronize_devices(runtime_device)
-                    startup_warmup_s = time.perf_counter() - startup_warmup_t0
-                    if VERBOSE:
-                        print(
-                            "[exact_startup] warmup_done "
-                            f"elapsed_s={startup_warmup_s:.3f} debug={warmup.debug}",
-                            flush=True,
-                        )
-                    startup_history_video_latents = initial_inputs["video_latents"][:, :, -1:].detach()
-                    startup_history_raw_actions = np.zeros((action_per_frame, action_dim), dtype=np.float32)
-                    startup_infer_session = warmup.session
-                else:
-                    startup_history_video_latents = initial_inputs["video_latents"]
-                    startup_infer_session = session
+                startup_history_video_latents = initial_inputs["video_latents"]
+                startup_infer_session = session
                 startup_infer_t0 = time.perf_counter()
                 if VERBOSE:
                     print("[exact_startup] infer_first_chunk", flush=True)
                 first_chunk = runner.infer_chunk(
                     session=startup_infer_session,
-                    video_latents=None if exact_startup_bootstrap_padding else initial_inputs["video_latents"],
+                    video_latents=initial_inputs["video_latents"],
                     text_context=initial_inputs["text_context"],
                     negative_text_context=initial_inputs["negative_text_context"],
                     proprio_state=latest_proprio_state,
@@ -1499,7 +1424,7 @@ def _run_exact_like_realtime_rollout(
                         rng_before_startup_infer=rng_before_startup_infer,
                         rng_after_startup_infer=_debug_rng_state(),
                         exact_startup_bootstrap_padding=exact_startup_bootstrap_padding,
-                        startup_warmup_debug=None if not exact_startup_bootstrap_padding else warmup.debug,
+                        startup_warmup_debug=None,
                     )
 
         history_base_session, current_chunk_session, buffer_tail_session = exact_sandbox._resolve_exact_startup_sessions(

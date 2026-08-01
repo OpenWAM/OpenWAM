@@ -884,58 +884,6 @@ def test_exact_fallback_hold_last_repeats_full_raw_action() -> None:
     np.testing.assert_allclose(fallback, np.repeat(last_action[None, :], 2, axis=0))
 
 
-def test_exact_startup_bootstrap_action_history_is_deprecated() -> None:
-    sandbox = _load_sandbox_module()
-    initial_obs = {"image": np.arange(6, dtype=np.uint8).reshape(1, 2, 3)}
-
-    obs_sequence = sandbox.exact_sandbox._exact_startup_bootstrap_obs_sequence(
-        initial_obs,
-        frame_chunk_size=4,
-    )
-
-    assert sandbox.exact_sandbox._exact_startup_bootstrap_frame_start(4) == -3
-    assert sandbox.exact_sandbox._exact_startup_bootstrap_raw_frame_count(4) == 13
-    assert len(obs_sequence) == 13
-    assert obs_sequence[0]["image"] is not initial_obs["image"]
-    np.testing.assert_array_equal(obs_sequence[-1]["image"], initial_obs["image"])
-    with pytest.raises(ValueError, match="deprecated"):
-        sandbox.exact_sandbox._exact_startup_bootstrap_action_history(
-            frame_chunk_size=4,
-            action_per_frame=4,
-            action_dim=7,
-            device=sandbox.torch.device("cpu"),
-        )
-
-
-def test_exact_startup_bootstrap_repeats_single_encoded_latent_chunk() -> None:
-    sandbox = _load_sandbox_module()
-    video_latents = sandbox.torch.arange(24, dtype=sandbox.torch.float32).view(2, 3, 1, 2, 2)
-    inputs = {
-        "video_latents": video_latents,
-        "text_context": "text",
-        "negative_text_context": "negative",
-    }
-
-    padded = sandbox._repeat_exact_startup_bootstrap_latents(inputs, frame_chunk_size=4)
-
-    assert padded is not inputs
-    assert padded["text_context"] == "text"
-    assert tuple(padded["video_latents"].shape) == (2, 3, 4, 2, 2)
-    assert padded["video_latents"].is_contiguous()
-    for frame_index in range(4):
-        sandbox.torch.testing.assert_close(padded["video_latents"][:, :, frame_index], video_latents[:, :, 0])
-
-
-def test_exact_startup_bootstrap_keeps_already_padded_latents() -> None:
-    sandbox = _load_sandbox_module()
-    video_latents = sandbox.torch.zeros(1, 3, 4, 2, 2)
-    inputs = {"video_latents": video_latents}
-
-    padded = sandbox._repeat_exact_startup_bootstrap_latents(inputs, frame_chunk_size=4)
-
-    assert padded is inputs
-
-
 def test_exact_startup_sessions_reject_legacy_frame_zero_generation() -> None:
     sandbox = _load_sandbox_module()
     startup_session = SimpleNamespace(policy_state=SimpleNamespace(step_index=0))

@@ -29,7 +29,6 @@ _prepend_import_path(REPO_ROOT / "scripts")
 
 from open_wam.configs import ParallelRuntimeMode  # noqa: E402
 from open_wam.configs.enums import DeadlineMissPolicy  # noqa: E402
-from open_wam.data.latent_temporal import raw_window_frames_for_latents  # noqa: E402
 from open_wam.evals import libero_visualization as exact_viz  # noqa: E402
 from open_wam.integrations.realtime_control import (  # noqa: E402
     PlannedFrameAction,
@@ -37,7 +36,6 @@ from open_wam.integrations.realtime_control import (  # noqa: E402
 )
 from open_wam.models.common.rollout_startup import (  # noqa: E402
     require_strict_startup_generation_frame,
-    strict_startup_conditioning_frame_index,
 )
 from open_wam.models.policy_variants import PolicyInferState, RolloutCursor  # noqa: E402
 from open_wam.utils import validate_positive_step_override  # noqa: E402
@@ -129,56 +127,6 @@ def _chunk_to_planned_frames(
         planner_step_index=int(first_chunk.session.policy_state.step_index),
         ready_monotonic_s=ready_monotonic_s,
     )
-
-
-def _startup_conditioning_history_record(
-    *,
-    first_chunk,
-    initial_video_latents: torch.Tensor,
-    initial_obs: dict[str, np.ndarray],
-    action_per_frame: int,
-    frame_chunk_size: int,
-    proprio_state: np.ndarray | torch.Tensor | None = None,
-) -> dict[str, Any]:
-    if first_chunk.raw_chunk_action_pred is None:
-        raise RuntimeError("Exact runner did not produce raw 7D LIBERO actions.")
-    raw_actions = rearrange(
-        first_chunk.raw_chunk_action_pred[0],
-        "(f a) c -> f a c",
-        f=frame_chunk_size,
-        a=action_per_frame,
-    )
-    generation_frame_start = int(first_chunk.debug.get("generation_frame_start", 0))
-    conditioning_frame_index = strict_startup_conditioning_frame_index(generation_frame_start)
-    raw_actions_valid = generation_frame_start <= conditioning_frame_index
-    history_raw_actions = (
-        raw_actions[0].detach().to(dtype=torch.float32).cpu().numpy()
-        if raw_actions_valid
-        else np.zeros((0, int(raw_actions.shape[-1])), dtype=np.float32)
-    )
-    record = {
-        "absolute_frame_index": int(conditioning_frame_index),
-        "obs": {key: np.array(value, copy=True) for key, value in initial_obs.items()},
-        "obs_sequence": [],
-        "raw_actions": history_raw_actions,
-        "raw_actions_valid": bool(raw_actions_valid),
-        "raw_action_dim": int(raw_actions.shape[-1]),
-        "video_latents": initial_video_latents.detach(),
-        "source": "startup_conditioning_frame",
-    }
-    if proprio_state is not None:
-        record["proprio_state"] = _proprio_state_to_numpy(proprio_state)
-    return record
-
-
-def _future_buffer_depth(
-    plan_by_frame: dict[int, PlannedFrameAction],
-    *,
-    next_frame_to_execute: int,
-) -> int:
-    if not plan_by_frame:
-        return 0
-    return max(0, max(int(frame_id) for frame_id in plan_by_frame) - int(next_frame_to_execute) + 1)
 
 
 def _should_submit_planner_job(
@@ -385,54 +333,6 @@ def _job_seed_for_session(seed_base: int | None, session) -> int | None:
     if seed_base is None:
         return None
     return int(seed_base) + int(session.policy_state.step_index)
-
-
-def _exact_startup_bootstrap_frame_start(frame_chunk_size: int) -> int:
-    frame_chunk_size = int(frame_chunk_size)
-    if frame_chunk_size <= 0:
-        raise ValueError(f"Expected positive frame_chunk_size, got {frame_chunk_size}.")
-    return 1 - frame_chunk_size
-
-
-def _exact_startup_bootstrap_raw_frame_count(frame_chunk_size: int) -> int:
-    frame_chunk_size = int(frame_chunk_size)
-    if frame_chunk_size <= 0:
-        raise ValueError(f"Expected positive frame_chunk_size, got {frame_chunk_size}.")
-    return raw_window_frames_for_latents(frame_chunk_size)
-
-
-def _exact_startup_bootstrap_obs_sequence(
-    initial_obs: dict[str, np.ndarray],
-    *,
-    frame_chunk_size: int,
-) -> list[dict[str, np.ndarray]]:
-    raw_frame_count = _exact_startup_bootstrap_raw_frame_count(frame_chunk_size)
-    return [
-        {key: np.array(value, copy=True) for key, value in initial_obs.items()}
-        for _ in range(raw_frame_count)
-    ]
-
-
-def _exact_startup_bootstrap_action_history(
-    *,
-    frame_chunk_size: int,
-    action_per_frame: int,
-    action_dim: int,
-    device: torch.device,
-) -> torch.Tensor:
-    frame_chunk_size = int(frame_chunk_size)
-    action_per_frame = int(action_per_frame)
-    action_dim = int(action_dim)
-    if frame_chunk_size <= 0 or action_per_frame <= 0 or action_dim <= 0:
-        raise ValueError(
-            "Expected positive startup bootstrap action dimensions, "
-            f"got frame_chunk_size={frame_chunk_size}, action_per_frame={action_per_frame}, action_dim={action_dim}."
-        )
-    del device
-    raise ValueError(
-        "Exact startup bootstrap action history is deprecated because it exposes synthetic zero actions "
-        "as model context. Use strict frame-0 prefix conditioning instead."
-    )
 
 
 def _session_for_next_chunk(
