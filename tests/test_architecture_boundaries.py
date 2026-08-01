@@ -1010,7 +1010,7 @@ def test_mixed_video_catalog_has_one_owner() -> None:
     assert "open_wam.data.mixed_video_catalog" in encoding_runtime_imports
 
 
-def test_mixed_video_decode_has_one_owner() -> None:
+def test_mixed_video_decode_has_explicit_package_owners() -> None:
     from open_wam.data import (
         decode_video_frames as public_decode_video_frames,
         transform_frame as public_transform_frame,
@@ -1026,53 +1026,160 @@ def test_mixed_video_decode_has_one_owner() -> None:
         resolve_mixed_video_observation_fps as legacy_resolve_fps,
         transform_frame as legacy_transform_frame,
     )
-    from open_wam.data.mixed_video_decode import (
-        MixedVideoResolvedDecodeSize,
-        decode_mixed_video_stream_frame_chunk,
-        decode_mixed_video_stream_frames,
-        decode_video_frames,
-        iter_mixed_video_stream_frame_chunks,
-        normalized_video_frame_count,
-        resample_video_frames_to_fps,
-        resolve_mixed_video_decode_size,
-        resolve_mixed_video_observation_fps,
-        transform_frame,
-    )
+    from open_wam.data import mixed_video_decode
+    from open_wam.data import mixed_video_decode_backends
+    from open_wam.data import mixed_video_decode_frames
+    from open_wam.data import mixed_video_decode_timeline
 
-    canonical_definitions = _top_level_definitions(
-        PACKAGE_ROOT / "data" / "mixed_video_decode.py"
-    )
+    facade_path = PACKAGE_ROOT / "data" / "mixed_video_decode.py"
+    backends_path = PACKAGE_ROOT / "data" / "mixed_video_decode_backends.py"
+    frames_path = PACKAGE_ROOT / "data" / "mixed_video_decode_frames.py"
+    timeline_path = PACKAGE_ROOT / "data" / "mixed_video_decode_timeline.py"
     compatibility_definitions = _top_level_definitions(
         PACKAGE_ROOT / "data" / "mixed_video.py"
     )
-    canonical_names = {
-        "MixedVideoResolvedDecodeSize",
+    definitions_by_role = {
+        "facade": _top_level_definitions(facade_path),
+        "backends": _top_level_definitions(backends_path),
+        "frames": _top_level_definitions(frames_path),
+        "timeline": _top_level_definitions(timeline_path),
+    }
+    facade_owned_names = {
+        "_resolve_stream_path",
         "decode_mixed_video_stream_frame_chunk",
         "decode_mixed_video_stream_frames",
-        "decode_video_frames",
         "iter_mixed_video_stream_frame_chunks",
-        "normalized_video_frame_count",
-        "resample_video_frames_to_fps",
+    }
+    backend_owned_names = {
+        "_iter_chunks_decord",
+        "_iter_chunks_imageio",
+        "decode_video_frames",
+    }
+    frame_owned_names = {
+        "MixedVideoResolvedDecodeSize",
+        "_batch_resize_frames",
+        "_center_crop_to_aspect",
+        "_letterbox_pad_to_target",
+        "_resize_frame",
+        "_resolve_frame_fit_mode",
+        "_select_mixed_video_resize_bin",
         "resolve_mixed_video_decode_size",
-        "resolve_mixed_video_observation_fps",
         "transform_frame",
     }
+    timeline_owned_names = {
+        "_native_span_for_target_chunk",
+        "_resample_video_frames_at_target_indices",
+        "normalized_video_frame_count",
+        "resample_video_frames_to_fps",
+        "resolve_mixed_video_observation_fps",
+    }
+    expected_by_role = {
+        "facade": facade_owned_names,
+        "backends": backend_owned_names,
+        "frames": frame_owned_names,
+        "timeline": timeline_owned_names,
+    }
+    for role, expected_names in expected_by_role.items():
+        assert expected_names <= definitions_by_role[role]
+    for expected_names in expected_by_role.values():
+        for name in expected_names:
+            assert sum(
+                name in definitions for definitions in definitions_by_role.values()
+            ) == 1
+    all_owned_names = set().union(*expected_by_role.values())
+    assert all_owned_names.isdisjoint(compatibility_definitions)
 
-    assert canonical_names <= canonical_definitions
-    assert canonical_names.isdisjoint(compatibility_definitions)
-    assert LegacyMixedVideoResolvedDecodeSize is MixedVideoResolvedDecodeSize
-    assert legacy_decode_stream_chunk is decode_mixed_video_stream_frame_chunk
-    assert legacy_decode_video_frames is decode_video_frames
-    assert legacy_iter_stream_chunks is iter_mixed_video_stream_frame_chunks
-    assert legacy_normalized_frame_count is normalized_video_frame_count
-    assert legacy_resample_frames is resample_video_frames_to_fps
-    assert legacy_resolve_decode_size is resolve_mixed_video_decode_size
-    assert legacy_resolve_fps is resolve_mixed_video_observation_fps
-    assert legacy_transform_frame is transform_frame
-    assert public_decode_video_frames is decode_video_frames
-    assert public_transform_frame is transform_frame
+    assert {"decode_video_frames"} == _module_all_names(backends_path)
+    assert {
+        "MixedVideoResolvedDecodeSize",
+        "resolve_mixed_video_decode_size",
+        "transform_frame",
+    } == _module_all_names(frames_path)
+    assert {
+        "normalized_video_frame_count",
+        "resample_video_frames_to_fps",
+        "resolve_mixed_video_observation_fps",
+    } == _module_all_names(timeline_path)
+
+    facade_imports = _absolute_imports_for_file(facade_path)
+    assert {
+        "open_wam.data.mixed_video_decode_backends",
+        "open_wam.data.mixed_video_decode_frames",
+        "open_wam.data.mixed_video_decode_timeline",
+    } <= facade_imports
+    child_paths = (backends_path, frames_path, timeline_path)
+    assert all(
+        "open_wam.data.mixed_video_decode" not in _absolute_imports_for_file(path)
+        for path in child_paths
+    )
+    backend_imports = _absolute_imports_for_file(backends_path)
+    assert {
+        "open_wam.data.mixed_video_decode_frames",
+        "open_wam.data.mixed_video_decode_timeline",
+    } <= backend_imports
+    assert {
+        "imageio.v2",
+        "open_wam.data.mixed_video_decode_backends",
+    }.isdisjoint(_absolute_imports_for_file(frames_path))
+    assert {
+        "imageio.v2",
+        "numpy",
+        "PIL",
+        "open_wam.data.mixed_video_decode_backends",
+        "open_wam.data.mixed_video_decode_frames",
+    }.isdisjoint(_absolute_imports_for_file(timeline_path))
+
+    for name in backend_owned_names:
+        assert getattr(mixed_video_decode, name) is getattr(
+            mixed_video_decode_backends,
+            name,
+        )
+    for name in frame_owned_names:
+        assert getattr(mixed_video_decode, name) is getattr(
+            mixed_video_decode_frames,
+            name,
+        )
+    for name in timeline_owned_names:
+        assert getattr(mixed_video_decode, name) is getattr(
+            mixed_video_decode_timeline,
+            name,
+        )
+
     assert (
-        decode_mixed_video_stream_frames.__module__
+        LegacyMixedVideoResolvedDecodeSize
+        is mixed_video_decode_frames.MixedVideoResolvedDecodeSize
+    )
+    assert (
+        legacy_decode_stream_chunk
+        is mixed_video_decode.decode_mixed_video_stream_frame_chunk
+    )
+    assert legacy_decode_video_frames is mixed_video_decode_backends.decode_video_frames
+    assert (
+        legacy_iter_stream_chunks
+        is mixed_video_decode.iter_mixed_video_stream_frame_chunks
+    )
+    assert (
+        legacy_normalized_frame_count
+        is mixed_video_decode_timeline.normalized_video_frame_count
+    )
+    assert (
+        legacy_resample_frames
+        is mixed_video_decode_timeline.resample_video_frames_to_fps
+    )
+    assert (
+        legacy_resolve_decode_size
+        is mixed_video_decode_frames.resolve_mixed_video_decode_size
+    )
+    assert (
+        legacy_resolve_fps
+        is mixed_video_decode_timeline.resolve_mixed_video_observation_fps
+    )
+    assert legacy_transform_frame is mixed_video_decode_frames.transform_frame
+    assert public_decode_video_frames is mixed_video_decode_backends.decode_video_frames
+    assert public_transform_frame is mixed_video_decode_frames.transform_frame
+    assert mixed_video_decode.imageio is mixed_video_decode_backends.imageio
+    assert (
+        mixed_video_decode.decode_mixed_video_stream_frames.__module__
         == "open_wam.data.mixed_video_decode"
     )
 
