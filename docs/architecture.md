@@ -66,6 +66,14 @@ their command interfaces and import reusable policy and data behavior from the
 installed package. Research tools must require machine-local checkpoints and
 datasets explicitly rather than embedding private defaults.
 
+`open_wam.runtime.checkpoint_artifacts` owns dependency-light filesystem
+discovery for model-only and full-training-state files, run/step layouts,
+standalone transformer exports, and checkpoint-local or configured transformer
+fallbacks. It returns a frozen preflight record and can be imported without
+Torch. `open_wam.runtime.checkpoints` composes that contract with tensor
+deserialization, state-dict normalization, and runtime-config restoration; it
+does not implement a second checkpoint directory search.
+
 The maintained LIBERO realtime runner follows the same boundary. Package code
 in `libero_realtime_runtime` executes both frame-grouped and action-sequence
 planner jobs and owns encoded-history preparation, session continuity,
@@ -104,7 +112,8 @@ selector parsing, and distribution/task-axis/full-grid selection. It accepts
 resolved metadata and does not import CLI or simulator integrations. The
 checkout-only `run_libero_sampled_eval.py` command owns LeRobot filesystem
 loading, LIBERO task/init resolution, target and case planning, process claims,
-worker scheduling, and child environments. Process status is created by that
+worker scheduling, and child environments; it delegates checkpoint artifact
+discovery to the installed runtime contract. Process status is created by that
 runner because it records live subprocess state; completed status and rollout
 summaries cross into the package as data records, not as script imports or
 benchmark objects.

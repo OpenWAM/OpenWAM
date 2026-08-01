@@ -8,9 +8,13 @@ import torch
 from torch import nn
 
 from open_wam.configs import ExperimentConfig, load_experiment_config
+from open_wam.runtime.checkpoint_artifacts import (
+    CHECKPOINT_FILENAMES,
+    CheckpointSearchLayout,
+    find_checkpoint_state_file,
+)
 
 
-CHECKPOINT_FILENAMES = ("model_state.pt", "full_training_state.pt")
 _PRESERVED_BASE_DATA_FIELDS = frozenset(
     {
         "dataset_name",
@@ -51,22 +55,12 @@ def resolve_checkpoint_file(path: str | Path) -> Path:
     because a run uses resumable checkpoints.
     """
 
-    candidate = Path(path).expanduser().resolve()
-    if candidate.is_file():
-        return candidate
-    for filename in CHECKPOINT_FILENAMES:
-        direct_file = candidate / filename
-        if direct_file.is_file():
-            return direct_file
-    checkpoint_dirs = sorted(
-        [child for child in candidate.glob("checkpoint_step_*") if child.is_dir()],
-        key=lambda child: int(child.name.rsplit("_", 1)[-1]),
+    checkpoint_file = find_checkpoint_state_file(
+        path,
+        layout=CheckpointSearchLayout.STEP_OR_CHILD_STEPS,
     )
-    for checkpoint_dir in reversed(checkpoint_dirs):
-        for filename in CHECKPOINT_FILENAMES:
-            checkpoint_file = checkpoint_dir / filename
-            if checkpoint_file.is_file():
-                return checkpoint_file
+    if checkpoint_file is not None:
+        return checkpoint_file
     expected = " or ".join(CHECKPOINT_FILENAMES)
     raise FileNotFoundError(f"Could not resolve {expected} from {path}.")
 

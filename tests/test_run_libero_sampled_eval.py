@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from open_wam.evals import sampled_eval_sampling
+from open_wam.runtime import checkpoint_artifacts
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "run_libero_sampled_eval.py"
@@ -47,6 +48,21 @@ def test_sampled_eval_script_delegates_selection_contracts_to_package() -> None:
     assert sampled_eval.DatasetEpisode is sampled_eval_sampling.DatasetEpisode
     assert sampled_eval.select_sampled_episodes is sampled_eval_sampling.select_sampled_episodes
     assert sampled_eval.allocate_proportional_counts is sampled_eval_sampling.allocate_proportional_counts
+
+
+def test_sampled_eval_script_delegates_checkpoint_artifacts_to_package() -> None:
+    assert (
+        sampled_eval.CheckpointResolution
+        is checkpoint_artifacts.CheckpointArtifactResolution
+    )
+    assert (
+        sampled_eval.resolve_checkpoint_input
+        is checkpoint_artifacts.resolve_checkpoint_artifacts
+    )
+    assert (
+        sampled_eval.find_checkpoint_file
+        is checkpoint_artifacts.find_checkpoint_state_file
+    )
 
 
 def test_build_dataset_episodes_uses_task_local_rank() -> None:

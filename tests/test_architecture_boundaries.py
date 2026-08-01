@@ -3390,6 +3390,60 @@ def test_sampled_eval_sampling_has_one_package_owner() -> None:
     )
 
 
+def test_checkpoint_artifact_discovery_has_one_lightweight_owner() -> None:
+    artifact_path = PACKAGE_ROOT / "runtime" / "checkpoint_artifacts.py"
+    loader_path = PACKAGE_ROOT / "runtime" / "checkpoints.py"
+    runner_path = REPO_ROOT / "scripts" / "run_libero_sampled_eval.py"
+    artifact_definitions = _top_level_definitions(artifact_path)
+    moved_runner_definitions = {
+        "CheckpointResolution",
+        "_has_transformer_weights",
+        "checkpoint_step",
+        "find_checkpoint_file",
+        "is_transformer_only_input_dir",
+        "is_usable_transformer_dir",
+        "read_backbone_transformer_subdir",
+        "read_backbone_transformer_subdir_without_yaml",
+        "resolve_checkpoint_input",
+        "resolve_runtime_transformer_dir",
+        "resolve_transformer_only_input",
+        "sorted_checkpoint_dirs",
+        "state_file_in_dir",
+        "transformer_dir_from_resolved_config",
+    }
+    artifact_contract = {
+        "CHECKPOINT_FILENAMES",
+        "CheckpointArtifactResolution",
+        "CheckpointSearchLayout",
+        "checkpoint_step",
+        "find_checkpoint_state_file",
+        "has_transformer_weights",
+        "is_transformer_only_input_dir",
+        "is_usable_transformer_dir",
+        "read_backbone_transformer_subdir",
+        "read_backbone_transformer_subdir_without_yaml",
+        "resolve_checkpoint_artifacts",
+        "resolve_runtime_transformer_dir",
+        "resolve_transformer_only_input",
+        "sorted_checkpoint_dirs",
+        "state_file_in_dir",
+        "transformer_dir_from_resolved_config",
+    }
+
+    assert artifact_contract - {"CHECKPOINT_FILENAMES"} <= artifact_definitions
+    assert artifact_contract == _module_all_names(artifact_path)
+    assert moved_runner_definitions.isdisjoint(_top_level_definitions(runner_path))
+    assert "open_wam.runtime.checkpoint_artifacts" in _absolute_imports_for_file(
+        runner_path
+    )
+    assert "open_wam.runtime.checkpoint_artifacts" in _absolute_imports_for_file(
+        loader_path
+    )
+    artifact_imports = _absolute_imports_for_file(artifact_path)
+    assert "torch" not in artifact_imports
+    assert "open_wam.configs" not in artifact_imports
+
+
 def test_data_public_facade_is_fully_lazy() -> None:
     path = PACKAGE_ROOT / "data" / "__init__.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

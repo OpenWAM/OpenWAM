@@ -30,6 +30,7 @@ from open_wam.configs.enums import ParallelStreamVariantProfile  # noqa: E402
 from open_wam.configs import load_experiment_config  # noqa: E402
 import open_wam.evals.sampled_eval_reporting as sampled_eval_reporting  # noqa: E402
 import open_wam.evals.sampled_eval_sampling as sampled_eval_sampling  # noqa: E402
+import open_wam.runtime.checkpoint_artifacts as checkpoint_artifacts  # noqa: E402
 
 
 # Preserve the script helpers exercised by callers and tests while package code
@@ -62,6 +63,22 @@ select_distribution_task_episodes = sampled_eval_sampling.select_distribution_ta
 select_full_task_init_axis = sampled_eval_sampling.select_full_task_init_axis
 select_sampled_episodes = sampled_eval_sampling.select_sampled_episodes
 select_task_episode_axis = sampled_eval_sampling.select_task_episode_axis
+CheckpointResolution = checkpoint_artifacts.CheckpointArtifactResolution
+checkpoint_step = checkpoint_artifacts.checkpoint_step
+find_checkpoint_file = checkpoint_artifacts.find_checkpoint_state_file
+is_transformer_only_input_dir = checkpoint_artifacts.is_transformer_only_input_dir
+is_usable_transformer_dir = checkpoint_artifacts.is_usable_transformer_dir
+read_backbone_transformer_subdir = checkpoint_artifacts.read_backbone_transformer_subdir
+read_backbone_transformer_subdir_without_yaml = (
+    checkpoint_artifacts.read_backbone_transformer_subdir_without_yaml
+)
+resolve_checkpoint_input = checkpoint_artifacts.resolve_checkpoint_artifacts
+resolve_runtime_transformer_dir = checkpoint_artifacts.resolve_runtime_transformer_dir
+resolve_transformer_only_input = checkpoint_artifacts.resolve_transformer_only_input
+sorted_checkpoint_dirs = checkpoint_artifacts.sorted_checkpoint_dirs
+state_file_in_dir = checkpoint_artifacts.state_file_in_dir
+transformer_dir_from_resolved_config = checkpoint_artifacts.transformer_dir_from_resolved_config
+_has_transformer_weights = checkpoint_artifacts.has_transformer_weights
 
 DEFAULT_CONFIG = "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
 DEFAULT_BASE_CHECKPOINT = (
@@ -154,16 +171,6 @@ class TargetRequest:
     checkpoint_key: str
     label: str | None
     checkpoint: str
-
-
-@dataclass(frozen=True)
-class CheckpointResolution:
-    raw: str | None
-    checkpoint_file: str | None
-    checkpoint_dir: str | None
-    runtime_transformer_dir: str | None
-    runtime_transformer_source: str | None
-    problem: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1301,201 +1308,6 @@ def scheduler_suffix_for(method: MethodSpec, scheduler: SchedulerSpec) -> str:
     if method.key == "m5" and scheduler.key == "freeze_until_clean_chunk":
         return "freeze_until_clean_chunk_startup1"
     return scheduler.key
-
-
-def resolve_checkpoint_input(raw_path: str | None) -> CheckpointResolution:
-    if raw_path is None or not raw_path.strip():
-        return CheckpointResolution(
-            raw=raw_path,
-            checkpoint_file=None,
-            checkpoint_dir=None,
-            runtime_transformer_dir=None,
-            runtime_transformer_source=None,
-            problem="checkpoint was not provided",
-        )
-
-    candidate = Path(raw_path).expanduser()
-    if not candidate.exists():
-        return CheckpointResolution(
-            raw=raw_path,
-            checkpoint_file=None,
-            checkpoint_dir=None,
-            runtime_transformer_dir=None,
-            runtime_transformer_source=None,
-            problem="checkpoint path does not exist",
-        )
-
-    checkpoint_file = find_checkpoint_file(candidate)
-    if checkpoint_file is None:
-        transformer_dir, transformer_source = resolve_transformer_only_input(candidate)
-        if transformer_dir is not None:
-            return CheckpointResolution(
-                raw=raw_path,
-                checkpoint_file=None,
-                checkpoint_dir=str(candidate.resolve()),
-                runtime_transformer_dir=str(transformer_dir.resolve()),
-                runtime_transformer_source=transformer_source,
-                problem=None,
-            )
-        return CheckpointResolution(
-            raw=raw_path,
-            checkpoint_file=None,
-            checkpoint_dir=None,
-            runtime_transformer_dir=None,
-            runtime_transformer_source=None,
-            problem=(
-                "could not resolve model_state.pt, full_training_state.pt, or transformer export "
-                "(config.json plus diffusion_pytorch_model*.safetensors)"
-            ),
-        )
-
-    checkpoint_dir = checkpoint_file.parent
-    transformer_dir, transformer_source, transformer_problem = resolve_runtime_transformer_dir(checkpoint_dir)
-    return CheckpointResolution(
-        raw=raw_path,
-        checkpoint_file=str(checkpoint_file.resolve()),
-        checkpoint_dir=str(checkpoint_dir.resolve()),
-        runtime_transformer_dir=str(transformer_dir.resolve()) if transformer_dir is not None else None,
-        runtime_transformer_source=transformer_source,
-        problem=transformer_problem,
-    )
-
-
-def resolve_transformer_only_input(path: Path) -> tuple[Path | None, str | None]:
-    candidate = path.expanduser().resolve()
-    if is_transformer_only_input_dir(candidate):
-        return candidate, "input_transformer_dir"
-    nested = candidate / "transformer"
-    if is_transformer_only_input_dir(nested):
-        return nested.resolve(), "input_transformer_subdir"
-    return None, None
-
-
-def find_checkpoint_file(path: Path) -> Path | None:
-    candidate = path.expanduser().resolve()
-    if candidate.is_file():
-        return candidate
-    direct = state_file_in_dir(candidate)
-    if direct is not None:
-        return direct
-
-    checkpoint_parent = candidate / "checkpoints"
-    for root in (checkpoint_parent, candidate):
-        if not root.is_dir():
-            continue
-        for checkpoint_dir in reversed(sorted_checkpoint_dirs(root)):
-            checkpoint_file = state_file_in_dir(checkpoint_dir)
-            if checkpoint_file is not None:
-                return checkpoint_file
-    return None
-
-
-def state_file_in_dir(path: Path) -> Path | None:
-    for filename in ("model_state.pt", "full_training_state.pt"):
-        checkpoint_file = path / filename
-        if checkpoint_file.is_file():
-            return checkpoint_file.resolve()
-    return None
-
-
-def sorted_checkpoint_dirs(root: Path) -> list[Path]:
-    checkpoint_dirs = [path for path in root.glob("checkpoint_step_*") if path.is_dir()]
-    return sorted(checkpoint_dirs, key=checkpoint_step)
-
-
-def checkpoint_step(path: Path) -> int:
-    try:
-        return int(path.name.rsplit("_", 1)[-1])
-    except ValueError:
-        return -1
-
-
-def resolve_runtime_transformer_dir(checkpoint_dir: Path) -> tuple[Path | None, str | None, str | None]:
-    local_transformer = checkpoint_dir / "transformer"
-    if is_usable_transformer_dir(local_transformer):
-        return local_transformer, "checkpoint", None
-
-    config_transformer = transformer_dir_from_resolved_config(checkpoint_dir / "resolved_config.yaml")
-    if config_transformer is not None and is_usable_transformer_dir(config_transformer):
-        return config_transformer, "resolved_config", None
-
-    if local_transformer.is_dir():
-        return (
-            None,
-            None,
-            "checkpoint transformer directory exists but is empty or unusable, and resolved_config fallback is missing",
-        )
-    return None, None, "missing usable transformer export directory or resolved_config transformer_subdir fallback"
-
-
-def transformer_dir_from_resolved_config(config_path: Path) -> Path | None:
-    if not config_path.is_file():
-        return None
-    transformer_value = read_backbone_transformer_subdir(config_path)
-    if not transformer_value:
-        return None
-    transformer_dir = Path(str(transformer_value)).expanduser()
-    if not transformer_dir.is_absolute():
-        transformer_dir = (config_path.parent / transformer_dir).resolve()
-    return transformer_dir
-
-
-def read_backbone_transformer_subdir(config_path: Path) -> str | None:
-    text = config_path.read_text(encoding="utf-8")
-    try:
-        import yaml  # type: ignore
-    except ModuleNotFoundError:
-        return read_backbone_transformer_subdir_without_yaml(text)
-    raw = yaml.safe_load(text) or {}
-    if not isinstance(raw, dict):
-        return None
-    backbone = raw.get("backbone", {})
-    if not isinstance(backbone, dict):
-        return None
-    value = backbone.get("transformer_subdir")
-    return str(value) if value else None
-
-
-def read_backbone_transformer_subdir_without_yaml(text: str) -> str | None:
-    in_backbone = False
-    backbone_indent: int | None = None
-    for raw_line in text.splitlines():
-        line = raw_line.split("#", 1)[0].rstrip()
-        if not line.strip():
-            continue
-        indent = len(line) - len(line.lstrip(" "))
-        stripped = line.strip()
-        if stripped == "backbone:":
-            in_backbone = True
-            backbone_indent = indent
-            continue
-        if in_backbone and backbone_indent is not None and indent <= backbone_indent:
-            in_backbone = False
-        if not in_backbone or not stripped.startswith("transformer_subdir:"):
-            continue
-        value = stripped.split(":", 1)[1].strip().strip("'\"")
-        return value or None
-    return None
-
-
-def is_usable_transformer_dir(path: Path) -> bool:
-    return path.is_dir() and any(path.iterdir())
-
-
-def is_transformer_only_input_dir(path: Path) -> bool:
-    return (
-        path.is_dir()
-        and (path / "config.json").is_file()
-        and _has_transformer_weights(path)
-    )
-
-
-def _has_transformer_weights(path: Path) -> bool:
-    return (
-        (path / "diffusion_pytorch_model.safetensors").is_file()
-        or (path / "diffusion_pytorch_model.safetensors.index.json").is_file()
-        or any(path.glob("diffusion_pytorch_model-*.safetensors"))
-    )
 
 
 def run_cases(cases: list[EvalCase], *, args: argparse.Namespace, status_dir: Path, logs_dir: Path) -> None:

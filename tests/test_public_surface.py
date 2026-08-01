@@ -29,9 +29,11 @@ from open_wam.contracts import (
 from open_wam.pipelines import ACTION_DECODER_BUILDERS, POLICY_VARIANT_BUILDERS
 from open_wam.pipelines.factory import build_action_decoder, build_policy_variant
 from open_wam.runtime import (
+    CheckpointArtifactResolution,
     OPEN_WAM_RESULT_SCHEMA_V1,
     build_result_envelope,
     find_repo_root,
+    resolve_checkpoint_artifacts,
     resolve_repo_path,
 )
 from open_wam.configs import load_experiment_config
@@ -163,6 +165,30 @@ def test_sampled_eval_data_contracts_do_not_import_tensor_stacks() -> None:
         "assert 'pyarrow' not in sys.modules"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+@pytest.mark.unit
+def test_checkpoint_artifact_contract_does_not_import_tensor_stacks() -> None:
+    code = (
+        "import sys; "
+        "from open_wam.runtime import CheckpointArtifactResolution, resolve_checkpoint_artifacts; "
+        "result = resolve_checkpoint_artifacts(None); "
+        "assert isinstance(result, CheckpointArtifactResolution); "
+        "assert result.problem == 'checkpoint was not provided'; "
+        "assert 'open_wam.runtime.checkpoint_artifacts' in sys.modules; "
+        "assert 'open_wam.runtime.checkpoints' not in sys.modules; "
+        "assert 'torch' not in sys.modules; "
+        "assert 'numpy' not in sys.modules"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+@pytest.mark.unit
+def test_runtime_checkpoint_artifact_exports_preserve_owner_identity() -> None:
+    from open_wam.runtime import checkpoint_artifacts
+
+    assert CheckpointArtifactResolution is checkpoint_artifacts.CheckpointArtifactResolution
+    assert resolve_checkpoint_artifacts is checkpoint_artifacts.resolve_checkpoint_artifacts
 
 
 @pytest.mark.unit
