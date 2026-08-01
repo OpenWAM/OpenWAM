@@ -30,6 +30,12 @@ from open_wam.data import (
     LatentCausalPrefixSuffixWindowPlanner as PublicCausalWindowPlanner,
     LocalLatentHierarchicalSampleKey as PublicHierarchicalSampleKey,
     LocalLatentHierarchicalSegmentPlan as PublicHierarchicalSegmentPlan,
+    LocalLatentRepository as PublicLatentRepository,
+    LocalEpisodeWindow as PublicLocalEpisodeWindow,
+    LocalRepoBundle as PublicRepoBundle,
+    LocalLatentSampleConditioning as PublicSampleConditioning,
+    LocalLatentSampleSource as PublicSampleSource,
+    LocalLatentSampleSourceLoader as PublicSampleSourceLoader,
     LocalLatentSegment as PublicLocalLatentSegment,
     LocalLatentSegmentAssembler as PublicLocalLatentSegmentAssembler,
     LocalLatentTrainValWindowPlan as PublicTrainValWindowPlan,
@@ -67,6 +73,7 @@ from open_wam.data.latent_temporal import (
 from open_wam.data.lerobot_v2_latent_storage import (
     LocalEpisodeWindow,
     LocalLatentRepository,
+    LocalRepoBundle,
     discover_local_lerobot_repo_bundles as discover_storage_repo_bundles,
     latent_filename,
     reshape_latent_payload,
@@ -80,6 +87,11 @@ from open_wam.data.lerobot_v2_latent_sampling import (
 from open_wam.data.lerobot_v2_latent_segment import (
     LocalLatentSegment,
     LocalLatentSegmentAssembler,
+)
+from open_wam.data.lerobot_v2_latent_source import (
+    LocalLatentSampleConditioning,
+    LocalLatentSampleSource,
+    LocalLatentSampleSourceLoader,
 )
 from open_wam.data.lerobot_v2_latent_split import (
     LocalLatentTrainValWindowPlan,
@@ -97,6 +109,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 def test_lerobot_latent_storage_owns_compatibility_exports() -> None:
     assert LegacyLocalEpisodeWindow is LocalEpisodeWindow
+    assert PublicLocalEpisodeWindow is LocalEpisodeWindow
+    assert PublicLatentRepository is LocalLatentRepository
+    assert PublicRepoBundle is LocalRepoBundle
     assert discover_local_lerobot_repo_bundles is discover_storage_repo_bundles
     assert legacy_latent_filename is latent_filename
     assert legacy_reshape_latent_payload is reshape_latent_payload
@@ -107,6 +122,9 @@ def test_lerobot_latent_storage_owns_compatibility_exports() -> None:
     )
     assert PublicUniformSamplingPlan is LocalLatentUniformSegmentSamplingPlan
     assert PublicWindowWeightPlan is LocalLatentWindowWeightPlan
+    assert PublicSampleConditioning is LocalLatentSampleConditioning
+    assert PublicSampleSource is LocalLatentSampleSource
+    assert PublicSampleSourceLoader is LocalLatentSampleSourceLoader
     assert PublicLocalLatentSegment is LocalLatentSegment
     assert PublicLocalLatentSegmentAssembler is LocalLatentSegmentAssembler
     assert PublicCausalCandidate is LatentCausalPrefixSuffixCandidate
@@ -738,6 +756,37 @@ def test_local_lerobot_latent_dataset_weights_long_depleted_tasks(tmp_path: Path
     assert train_dataset.sample_weights is weight_plan.sample_weights
     assert train_dataset.task_text_for_window_index(2) == "assemble the long task"
     assert weight_plan.task_text_for_window_index(2) == "assemble the long task"
+    sample_source = train_dataset._load_sample_source(
+        train_dataset.windows[2],
+        include_condition_latents=False,
+    )
+    conditioning = sample_source.conditioning_for_frame(
+        0,
+        empty_text_embedding=train_dataset.empty_text_embedding,
+    )
+    assert isinstance(sample_source, LocalLatentSampleSource)
+    assert isinstance(conditioning, LocalLatentSampleConditioning)
+    assert sample_source.repo_bundle is train_dataset._repo_bundles[
+        str(train_dataset.windows[2].repo_root)
+    ]
+    assert conditioning.task_index == 1
+    assert conditioning.task_text == "assemble the long task"
+    assert conditioning.text_context is None
+    assert conditioning.negative_text_context is None
+    restored_source = pickle.loads(pickle.dumps(sample_source))
+    restored_conditioning = restored_source.conditioning_for_frame(
+        0,
+        empty_text_embedding=None,
+    )
+    assert restored_source.raw_frame_ids == sample_source.raw_frame_ids
+    torch.testing.assert_close(
+        restored_source.video_latents,
+        sample_source.video_latents,
+    )
+    assert restored_conditioning.task_index == conditioning.task_index
+    assert restored_conditioning.task_text == conditioning.task_text
+    assert restored_conditioning.text_context is None
+    assert restored_conditioning.negative_text_context is None
     assert train_dataset.dataset_mean_valid_action_steps == pytest.approx(18.0)
     assert train_dataset.dataset_mean_task_demo_count == pytest.approx(1.5)
     assert weights_by_episode[0] == pytest.approx(0.25)

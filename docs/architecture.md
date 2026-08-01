@@ -222,10 +222,13 @@ geometry, split-aware draw order, and typed raw/latent window plans;
 LingBot action-sequence assembly, adapter-specific sequence extraction, state
 history, and per-frame/per-chunk proprio assembly;
 `lerobot_v2_latent_segment` combines one selected materialization with those
-latent and supervision tensors through `LocalLatentSegment`; and
-`lerobot_v2_latent` owns source-payload frame-ID parsing, profile/sample-mode
-and dataset-class selection, tensor materialization, final metadata, and public
-`LatentWAMSample` construction. Required
+latent and supervision tensors through `LocalLatentSegment`;
+`lerobot_v2_latent_source` loads one physical window through the repository,
+exposes canonical video/condition payloads, applies source frame-ID fallback,
+and resolves frame-indexed task/text conditioning; and
+`lerobot_v2_latent` owns profile/sample-mode and dataset-class selection,
+sampling-plan invocation, mode-specific tensor materialization, final metadata,
+and public `LatentWAMSample` construction. Required
 dataset-private compatibility helpers are thin delegates to these owners;
 unreachable private facades are removed rather than maintained as a second
 API.

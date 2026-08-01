@@ -67,11 +67,16 @@ datasets of `LatentWAMSample` under the same `dataset_type`.
 
 Build `LatentWAMSample` directly for a new storage contract. If the source
 already follows the local LeRobot episode-row plus per-camera latent contract,
-`open_wam.data.LocalLatentSegmentAssembler` can compose a selected latent
+use `open_wam.data.LocalLatentSampleSourceLoader` with a
+`open_wam.data.LocalLatentRepository` to load a canonical physical window. Its
+typed source contains video and optional condition latents, source frame IDs,
+rows, and frame-indexed task/text conditioning. The adapter chooses sampling
+geometry;
+`open_wam.data.LocalLatentSegmentAssembler` can then compose the selected
 range with aligned actions, state, and proprio into a typed
-`LocalLatentSegment`. The adapter still owns repository parsing, frame-ID
-fallback, sample selection, task/text resolution, and final metadata; the
-assembler does not impose those policies.
+`LocalLatentSegment`. The adapter still owns sample selection and final
+metadata; neither helper chooses those policies. A different storage contract
+should implement its parsing and frame-ID fallback inside its own adapter.
 
 For an encoded causal-video adapter, use
 `open_wam.data.LatentCausalPrefixSuffixWindowPlanner` to enumerate eligible

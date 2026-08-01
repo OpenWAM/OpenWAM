@@ -554,6 +554,65 @@ def test_lerobot_latent_sampling_policy_has_one_owner() -> None:
     )
 
 
+def test_lerobot_latent_sample_source_has_one_owner() -> None:
+    source_path = (
+        PACKAGE_ROOT / "data" / "lerobot_v2_latent_source.py"
+    )
+    dataset_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent.py"
+
+    source_contracts = {
+        "LocalLatentSampleConditioning",
+        "LocalLatentSampleSource",
+        "LocalLatentSampleSourceLoader",
+    }
+    assert source_contracts <= _top_level_definitions(source_path)
+    assert source_contracts.isdisjoint(_top_level_definitions(dataset_path))
+    assert {"conditioning_for_frame"} <= _class_method_definitions(
+        source_path,
+        "LocalLatentSampleSource",
+    )
+    assert {"load"} <= _class_method_definitions(
+        source_path,
+        "LocalLatentSampleSourceLoader",
+    )
+
+    source_delegate = _class_method(
+        dataset_path,
+        "LocalLeRobotLatentWindowDataset",
+        "_load_sample_source",
+    )
+    assert len(source_delegate.body) == 1
+    assert isinstance(source_delegate.body[0], ast.Return)
+    assert isinstance(source_delegate.body[0].value, ast.Call)
+
+    for class_name in (
+        "LocalLeRobotLatentWindowDataset",
+        "UniformSegmentLocalLeRobotLatentDataset",
+        "HierarchicalFixedSegmentLocalLeRobotLatentDataset",
+        "CausalPrefixSuffixLocalLeRobotLatentDataset",
+    ):
+        getitem = _class_method(dataset_path, class_name, "__getitem__")
+        source_calls = [
+            node
+            for node in ast.walk(getitem)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_load_sample_source"
+        ]
+        assert len(source_calls) == 1
+        called_methods = {
+            node.func.attr
+            for node in ast.walk(getitem)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+        }
+        assert {
+            "_load_canonical_window_latents",
+            "_load_episode_rows",
+            "_load_window_latents",
+        }.isdisjoint(called_methods)
+
+
 def test_lerobot_latent_hierarchical_segment_planning_has_one_owner() -> None:
     planner_path = PACKAGE_ROOT / "data" / "latent_hierarchical_sampling.py"
     dataset_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent.py"

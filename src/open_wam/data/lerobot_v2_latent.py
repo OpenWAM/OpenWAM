@@ -64,6 +64,10 @@ from .lerobot_v2_latent_sampling import (
     build_hierarchical_fixed_segment_task_specs,
 )
 from .lerobot_v2_latent_segment import LocalLatentSegmentAssembler
+from .lerobot_v2_latent_source import (
+    LocalLatentSampleSource,
+    LocalLatentSampleSourceLoader,
+)
 from .lerobot_v2_latent_split import LocalLatentTrainValWindowPlanner
 from .lerobot_v2_latent_supervision import LocalLatentSupervisionAssembler
 
@@ -104,6 +108,7 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
         self._episode_cache = repository.episode_cache
         self._latent_view_cache = repository.latent_view_cache
         self._latent_repository = repository
+        self._sample_source_loader = LocalLatentSampleSourceLoader(repository)
         self._supervision_assembler = LocalLatentSupervisionAssembler(data_config)
         self._segment_assembler = LocalLatentSegmentAssembler(
             data_config,
@@ -152,6 +157,17 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
 
         return self._window_weight_plan.task_text_for_window_index(index)
 
+    def _load_sample_source(
+        self,
+        window: LocalEpisodeWindow,
+        *,
+        include_condition_latents: bool,
+    ) -> LocalLatentSampleSource:
+        return self._sample_source_loader.load(
+            window,
+            include_condition_latents=include_condition_latents,
+        )
+
     def _action_loss_metadata(
         self,
         action_mask: torch.Tensor | None,
@@ -190,16 +206,13 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
 
     def __getitem__(self, index: int) -> LatentWAMSample:
         window = self.windows[index]
-        repo_bundle = self._repo_bundles[str(window.repo_root)]
-        rows = self._load_episode_rows(window.repo_root, window.episode_index, repo_bundle.metadata)
-        latent_payloads = self._load_window_latents(window, repo_bundle.metadata)
-        video_latents, latent_layout_metadata = self._assemble_canonical_latents(latent_payloads)
-        assert video_latents is not None
-
-        primary_payload = latent_payloads[self.data_config.latent_camera_names[0]]
-        raw_frame_ids = [int(value) for value in list(primary_payload.get("frame_ids", []))]
-        if not raw_frame_ids:
-            raw_frame_ids = list(window.observation_frame_indices)
+        source = self._load_sample_source(
+            window,
+            include_condition_latents=False,
+        )
+        rows = source.rows
+        video_latents = source.video_latents
+        raw_frame_ids = source.raw_frame_ids
         observed_frame_ids = observed_frame_ids_for_latent_segment(
             raw_frame_ids=raw_frame_ids,
             source_latent_frames=int(video_latents.shape[1]),
@@ -239,18 +252,10 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             loss_frame_start=0,
         )
 
-        text_context = primary_payload.get("text_emb")
-        if isinstance(text_context, torch.Tensor):
-            text_context = text_context.to(dtype=torch.float32)
-        else:
-            text_context = None
-        negative_text_context = self.empty_text_embedding.clone() if self.empty_text_embedding is not None else None
-
-        episode_record = repo_bundle.episodes_by_index.get(window.episode_index)
-        task_index = int(rows[min(anchor_frame_index, len(rows) - 1)].get("task_index", 0)) if rows else 0
-        task_text = repo_bundle.metadata.tasks_by_index.get(task_index)
-        if task_text is None and episode_record is not None and episode_record.tasks:
-            task_text = episode_record.tasks[0]
+        conditioning = source.conditioning_for_frame(
+            anchor_frame_index,
+            empty_text_embedding=self.empty_text_embedding,
+        )
 
         return LatentWAMSample(
             video_latents=video_latents,
@@ -260,9 +265,9 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
             state_mask=state_mask,
             proprio_context_state=proprio_context_state,
             proprio_context_state_mask=proprio_context_state_mask,
-            task_text=task_text,
-            text_context=text_context,
-            negative_text_context=negative_text_context,
+            task_text=conditioning.task_text,
+            text_context=conditioning.text_context,
+            negative_text_context=conditioning.negative_text_context,
             metadata={
                 "repo_root": str(window.repo_root),
                 "dataset_id": str(window.repo_root),
@@ -279,8 +284,8 @@ class LocalLeRobotLatentWindowDataset(Dataset[LatentWAMSample]):
                 "anchor_frame_index": anchor_frame_index,
                 "observed_frame_ids": observed_frame_ids,
                 "latent_temporal_layout": self.data_config.latent_temporal_layout,
-                "task_index": task_index,
-                "latent_layout": latent_layout_metadata,
+                "task_index": conditioning.task_index,
+                "latent_layout": source.latent_layout_metadata,
                 "state_source_key": self.data_config.action_target.pose_source_key,
                 "action_representation": self.data_config.action_target.representation,
                 "proprio_context_chunk_count": int(proprio_context_state.shape[0]),
@@ -482,18 +487,12 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
     def __getitem__(self, index: int) -> LatentWAMSample:
         window_index, virtual_latent_start = self._virtual_index[index]
         window = self.windows[window_index]
-        repo_bundle = self._repo_bundles[str(window.repo_root)]
-        rows = self._load_episode_rows(window.repo_root, window.episode_index, repo_bundle.metadata)
-        (
-            full_video_latents,
-            latent_layout_metadata,
-            primary_payload,
-            full_condition_latents,
-            condition_layout_metadata,
-        ) = self._load_canonical_window_latents(
+        source = self._load_sample_source(
             window,
-            repo_bundle.metadata,
+            include_condition_latents=True,
         )
+        rows = source.rows
+        full_video_latents = source.video_latents
         start_padding_frames = (
             self._uniform_segment_sampling_plan.resolve_start_padding_frames(
                 self.data_config,
@@ -513,35 +512,21 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
                 segment_length=segment_length
             )
         )
-        raw_frame_ids = [
-            int(value)
-            for value in list(primary_payload.get("frame_ids", []))
-        ]
-        if not raw_frame_ids:
-            raw_frame_ids = list(window.observation_frame_indices)
         segment = self._segment_assembler.build(
             video_latents=full_video_latents,
-            condition_latents=full_condition_latents,
+            condition_latents=source.condition_latents,
             rows=rows,
-            raw_frame_ids=raw_frame_ids,
+            raw_frame_ids=source.raw_frame_ids,
             window=window,
             latent_start=latent_start,
             segment_length=segment_length,
             start_padding_frames=start_padding_frames,
         )
 
-        task_index = int(rows[min(segment.sample_start_frame, len(rows) - 1)].get("task_index", 0)) if rows else 0
-        episode_record = repo_bundle.episodes_by_index.get(window.episode_index)
-        task_text = repo_bundle.metadata.tasks_by_index.get(task_index)
-        if task_text is None and episode_record is not None and episode_record.tasks:
-            task_text = episode_record.tasks[0]
-
-        text_context = primary_payload.get("text_emb")
-        if isinstance(text_context, torch.Tensor):
-            text_context = text_context.to(dtype=torch.float32)
-        else:
-            text_context = None
-        negative_text_context = self.empty_text_embedding.clone() if self.empty_text_embedding is not None else None
+        conditioning = source.conditioning_for_frame(
+            segment.sample_start_frame,
+            empty_text_embedding=self.empty_text_embedding,
+        )
 
         return LatentWAMSample(
             video_latents=segment.video_latents,
@@ -549,9 +534,9 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
             action_mask=segment.action_mask,
             state=segment.state,
             state_mask=segment.state_mask,
-            task_text=task_text,
-            text_context=text_context,
-            negative_text_context=negative_text_context,
+            task_text=conditioning.task_text,
+            text_context=conditioning.text_context,
+            negative_text_context=conditioning.negative_text_context,
             condition_latents=segment.condition_latents,
             proprio_context_state=segment.proprio_context_state,
             proprio_context_state_mask=segment.proprio_context_state_mask,
@@ -578,9 +563,9 @@ class UniformSegmentLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDataset):
                 "proprio_context_frame_count": int(segment.proprio_context_frames.shape[0]),
                 "observed_frame_ids": segment.observed_frame_ids,
                 "latent_temporal_layout": segment.latent_temporal_layout,
-                "task_index": task_index,
-                "latent_layout": latent_layout_metadata,
-                "condition_latent_layout": condition_layout_metadata,
+                "task_index": conditioning.task_index,
+                "latent_layout": source.latent_layout_metadata,
+                "condition_latent_layout": source.condition_layout_metadata,
                 "has_condition_latents": segment.condition_latents is not None,
                 "state_source_key": self.data_config.action_target.pose_source_key,
                 "action_representation": self.data_config.action_target.representation,
@@ -723,24 +708,12 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
         )
         window_index = int(window_spec.window_index)
         window = self.windows[window_index]
-        repo_bundle = self._repo_bundles[str(window.repo_root)]
-        rows = self._load_episode_rows(window.repo_root, window.episode_index, repo_bundle.metadata)
-        (
-            full_video_latents,
-            latent_layout_metadata,
-            primary_payload,
-            full_condition_latents,
-            condition_layout_metadata,
-        ) = self._load_canonical_window_latents(
+        source = self._load_sample_source(
             window,
-            repo_bundle.metadata,
+            include_condition_latents=True,
         )
-        raw_frame_ids = [
-            int(value)
-            for value in list(primary_payload.get("frame_ids", []))
-        ]
-        if not raw_frame_ids:
-            raw_frame_ids = list(window.observation_frame_indices)
+        rows = source.rows
+        full_video_latents = source.video_latents
         start_padding_frames = (
             _LocalLatentUniformSegmentSamplingPlan.resolve_start_padding_frames(
                 self.data_config,
@@ -749,9 +722,9 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
         )
         segment = self._segment_assembler.build(
             video_latents=full_video_latents,
-            condition_latents=full_condition_latents,
+            condition_latents=source.condition_latents,
             rows=rows,
-            raw_frame_ids=raw_frame_ids,
+            raw_frame_ids=source.raw_frame_ids,
             window=window,
             latent_start=latent_start,
             segment_length=self.segment_frames,
@@ -768,18 +741,10 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
             ),
         )
 
-        task_index = int(rows[min(segment.sample_start_frame, len(rows) - 1)].get("task_index", 0)) if rows else 0
-        episode_record = repo_bundle.episodes_by_index.get(window.episode_index)
-        task_text = repo_bundle.metadata.tasks_by_index.get(task_index)
-        if task_text is None and episode_record is not None and episode_record.tasks:
-            task_text = episode_record.tasks[0]
-
-        text_context = primary_payload.get("text_emb")
-        if isinstance(text_context, torch.Tensor):
-            text_context = text_context.to(dtype=torch.float32)
-        else:
-            text_context = None
-        negative_text_context = self.empty_text_embedding.clone() if self.empty_text_embedding is not None else None
+        conditioning = source.conditioning_for_frame(
+            segment.sample_start_frame,
+            empty_text_embedding=self.empty_text_embedding,
+        )
 
         boundary_metadata = dict(segment.boundary_metadata)
         effective_latent_start = int(boundary_metadata.get("effective_frame_start", latent_start))
@@ -791,9 +756,9 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
             action_mask=segment.action_mask,
             state=segment.state,
             state_mask=segment.state_mask,
-            task_text=task_text,
-            text_context=text_context,
-            negative_text_context=negative_text_context,
+            task_text=conditioning.task_text,
+            text_context=conditioning.text_context,
+            negative_text_context=conditioning.negative_text_context,
             condition_latents=segment.condition_latents,
             proprio_context_state=segment.proprio_context_state,
             proprio_context_state_mask=segment.proprio_context_state_mask,
@@ -820,9 +785,9 @@ class HierarchicalFixedSegmentLocalLeRobotLatentDataset(UniformSegmentLocalLeRob
                 "proprio_context_frame_count": int(segment.proprio_context_frames.shape[0]),
                 "observed_frame_ids": segment.observed_frame_ids,
                 "latent_temporal_layout": segment.latent_temporal_layout,
-                "task_index": task_index,
-                "latent_layout": latent_layout_metadata,
-                "condition_latent_layout": condition_layout_metadata,
+                "task_index": conditioning.task_index,
+                "latent_layout": source.latent_layout_metadata,
+                "condition_latent_layout": source.condition_layout_metadata,
                 "has_condition_latents": segment.condition_latents is not None,
                 "state_source_key": self.data_config.action_target.pose_source_key,
                 "action_representation": self.data_config.action_target.representation,
@@ -891,19 +856,14 @@ class CausalPrefixSuffixLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDatase
 
     def __getitem__(self, index: int) -> LatentWAMSample:
         window = self.windows[index]
-        repo_bundle = self._repo_bundles[str(window.repo_root)]
-        rows = self._load_episode_rows(window.repo_root, window.episode_index, repo_bundle.metadata)
-        latent_payloads = self._load_window_latents(window, repo_bundle.metadata)
-        full_video_latents, latent_layout_metadata = self._assemble_canonical_latents(latent_payloads)
-        primary_payload = latent_payloads[self.data_config.latent_camera_names[0]]
-        raw_frame_ids = [
-            int(value)
-            for value in list(primary_payload.get("frame_ids", []))
-        ]
-        if not raw_frame_ids:
-            raw_frame_ids = list(window.observation_frame_indices)
+        source = self._load_sample_source(
+            window,
+            include_condition_latents=False,
+        )
+        rows = source.rows
+        full_video_latents = source.video_latents
         plan = self._causal_sampling_planner.plan(
-            raw_frame_ids=raw_frame_ids,
+            raw_frame_ids=source.raw_frame_ids,
             source_latent_frames=int(full_video_latents.shape[1]),
             row_count=len(rows),
             sample_index=index,
@@ -941,18 +901,10 @@ class CausalPrefixSuffixLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDatase
         state_mask = torch.zeros_like(state)
         observed_frame_ids = list(plan.observed_frame_ids)
 
-        task_index = int(rows[min(plan.sample_start_frame, len(rows) - 1)].get("task_index", 0)) if rows else 0
-        episode_record = repo_bundle.episodes_by_index.get(window.episode_index)
-        task_text = repo_bundle.metadata.tasks_by_index.get(task_index)
-        if task_text is None and episode_record is not None and episode_record.tasks:
-            task_text = episode_record.tasks[0]
-
-        text_context = primary_payload.get("text_emb")
-        if isinstance(text_context, torch.Tensor):
-            text_context = text_context.to(dtype=torch.float32)
-        else:
-            text_context = None
-        negative_text_context = self.empty_text_embedding.clone() if self.empty_text_embedding is not None else None
+        conditioning = source.conditioning_for_frame(
+            plan.sample_start_frame,
+            empty_text_embedding=self.empty_text_embedding,
+        )
 
         return LatentWAMSample(
             video_latents=video_latents,
@@ -960,9 +912,9 @@ class CausalPrefixSuffixLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDatase
             action_mask=action_mask,
             state=state,
             state_mask=state_mask,
-            task_text=task_text,
-            text_context=text_context,
-            negative_text_context=negative_text_context,
+            task_text=conditioning.task_text,
+            text_context=conditioning.text_context,
+            negative_text_context=conditioning.negative_text_context,
             metadata={
                 "repo_root": str(window.repo_root),
                 "dataset_id": str(window.repo_root),
@@ -979,8 +931,8 @@ class CausalPrefixSuffixLocalLeRobotLatentDataset(LocalLeRobotLatentWindowDatase
                 "anchor_frame_index": plan.sample_start_frame,
                 "observed_frame_ids": observed_frame_ids,
                 "latent_temporal_layout": plan.latent_temporal_layout,
-                "task_index": task_index,
-                "latent_layout": latent_layout_metadata,
+                "task_index": conditioning.task_index,
+                "latent_layout": source.latent_layout_metadata,
                 "action_representation": self.data_config.action_target.representation,
                 "subwindow_latent_start": plan.latent_start,
                 "subwindow_latent_end": plan.latent_end,
