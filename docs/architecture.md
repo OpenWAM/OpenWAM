@@ -320,12 +320,18 @@ loss-bound calculations; `latent_segment_materialization` combines those
 bounds with raw-frame anchors and zero-order-hold latent slicing through a
 public typed plan; `lerobot_v2_latent_split` owns local repository-window
 discovery, replay-status filtering, explicit validation roots, and
-train/validation partitioning; `lerobot_v2_latent_sampling` owns local
-uniform-segment eligibility and ordering, hierarchical task/trajectory mass
-tables and split-salted draws, sampling metadata, and the thin
-distributed-sampler adapters; `latent_hierarchical_sampling` composes those
-draws with local chunk candidates, clean-context policy, eligible start
-ranges, resolved segment boundaries, and a typed diagnostic sample key;
+train/validation partitioning; `lerobot_v2_latent_weighting` owns physical
+window statistics and normalized physical/virtual sample weights;
+`lerobot_v2_latent_uniform_policy` owns uniform-segment eligibility, virtual
+starts, ordering, geometry, and sampling metadata;
+`lerobot_v2_latent_hierarchical_policy` owns hierarchical task/trajectory mass
+tables, split-salted draws, and draw metadata; and
+`lerobot_v2_latent_sampler_adapters` binds those policies to the shared
+distributed samplers. `lerobot_v2_latent_sampling` is only the stable import
+and old-pickle facade for those four owners. `latent_hierarchical_sampling`
+composes hierarchical draws with local chunk candidates, clean-context policy,
+eligible start ranges, resolved segment boundaries, and a typed diagnostic
+sample key;
 `latent_causal_sampling` owns tensor-free causal prefix/suffix candidate
 geometry, split-aware draw order, and typed raw/latent window plans;
 `lerobot_v2_latent_supervision` owns deterministic local row alignment,

@@ -50,17 +50,17 @@ from .lerobot_v2_latent_storage import (
     scan_local_latent_windows,
     split_local_episode_indices as split_local_episode_indices,
 )
-from .lerobot_v2_latent_sampling import (
+from .lerobot_v2_latent_hierarchical_policy import (
     HierarchicalFixedSegmentSamplingPlan,
     HierarchicalFixedSegmentTaskSpec as HierarchicalFixedSegmentTaskSpec,
+    HierarchicalFixedSegmentWindowSpec as HierarchicalFixedSegmentWindowSpec,
+    build_hierarchical_fixed_segment_task_specs,
+)
+from .lerobot_v2_latent_sampler_adapters import (
     HierarchicalFixedSegmentTrainSampler
     as HierarchicalFixedSegmentTrainSampler,
-    HierarchicalFixedSegmentWindowSpec as HierarchicalFixedSegmentWindowSpec,
     LocalLatentEpochOrderSampler as LocalLatentEpochOrderSampler,
-    LocalLatentUniformSegmentSamplingPlan as _LocalLatentUniformSegmentSamplingPlan,
-    LocalLatentWindowWeightPlan,
     LocalLatentWeightedTrainSampler as LocalLatentWeightedTrainSampler,
-    build_hierarchical_fixed_segment_task_specs,
 )
 from .lerobot_v2_latent_segment import LocalLatentSegmentAssembler
 from .lerobot_v2_latent_source import (
@@ -69,6 +69,10 @@ from .lerobot_v2_latent_source import (
 )
 from .lerobot_v2_latent_split import LocalLatentTrainValWindowPlanner
 from .lerobot_v2_latent_supervision import LocalLatentSupervisionAssembler
+from .lerobot_v2_latent_uniform_policy import (
+    LocalLatentUniformSegmentSamplingPlan as _LocalLatentUniformSegmentSamplingPlan,
+)
+from .lerobot_v2_latent_weighting import LocalLatentWindowWeightPlan
 
 _COMPATIBILITY_EXPORTS = (
     CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET,

@@ -411,20 +411,73 @@ def test_lerobot_latent_sampling_policy_has_one_owner() -> None:
         "LocalLatentWeightedTrainSampler",
         "build_hierarchical_fixed_segment_task_specs",
     }
-    sampling_path = (
+    sampling_facade_path = (
         PACKAGE_ROOT / "data" / "lerobot_v2_latent_sampling.py"
     )
+    hierarchical_policy_path = (
+        PACKAGE_ROOT / "data" / "lerobot_v2_latent_hierarchical_policy.py"
+    )
+    sampler_adapter_path = (
+        PACKAGE_ROOT / "data" / "lerobot_v2_latent_sampler_adapters.py"
+    )
+    uniform_policy_path = (
+        PACKAGE_ROOT / "data" / "lerobot_v2_latent_uniform_policy.py"
+    )
+    weighting_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent_weighting.py"
+    role_paths = (
+        hierarchical_policy_path,
+        sampler_adapter_path,
+        uniform_policy_path,
+        weighting_path,
+    )
     dataset_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent.py"
+    hierarchical_segment_path = (
+        PACKAGE_ROOT / "data" / "latent_hierarchical_sampling.py"
+    )
 
-    assert sampling_owned <= _top_level_definitions(sampling_path)
+    role_definitions = set().union(
+        *(_top_level_definitions(path) for path in role_paths)
+    )
+    assert sampling_owned <= role_definitions
+    assert all(
+        sum(name in _top_level_definitions(path) for path in role_paths) == 1
+        for name in sampling_owned
+    )
+    assert _module_all_names(sampling_facade_path) == sampling_owned
+    assert _module_all_names(hierarchical_policy_path) == {
+        "HierarchicalFixedSegmentSamplingPlan",
+        "HierarchicalFixedSegmentTaskSpec",
+        "HierarchicalFixedSegmentWindowSpec",
+        "build_hierarchical_fixed_segment_task_specs",
+    }
+    assert _module_all_names(sampler_adapter_path) == {
+        "HierarchicalFixedSegmentTrainSampler",
+        "LocalLatentEpochOrderSampler",
+        "LocalLatentWeightedTrainSampler",
+    }
+    assert _module_all_names(uniform_policy_path) == {
+        "LocalLatentUniformSegmentSamplingPlan",
+    }
+    assert _module_all_names(weighting_path) == {
+        "LocalLatentWindowWeightPlan",
+    }
+    assert not _top_level_definitions(sampling_facade_path)
     assert sampling_owned.isdisjoint(_top_level_definitions(dataset_path))
+    for role_path in role_paths:
+        assert "from .lerobot_v2_latent_sampling import" not in (
+            role_path.read_text(encoding="utf-8")
+        )
+    for consumer_path in (dataset_path, hierarchical_segment_path):
+        assert "from .lerobot_v2_latent_sampling import" not in (
+            consumer_path.read_text(encoding="utf-8")
+        )
     assert {
         "draw",
         "from_task_specs",
         "iter_eligible_start_keys",
         "sample_metadata",
     } <= _class_method_definitions(
-        sampling_path,
+        hierarchical_policy_path,
         "HierarchicalFixedSegmentSamplingPlan",
     )
 
@@ -433,7 +486,7 @@ def test_lerobot_latent_sampling_policy_has_one_owner() -> None:
         "sample_weight_metadata",
         "task_text_for_window_index",
     } <= _class_method_definitions(
-        sampling_path,
+        weighting_path,
         "LocalLatentWindowWeightPlan",
     )
 
@@ -485,7 +538,7 @@ def test_lerobot_latent_sampling_policy_has_one_owner() -> None:
         "sample_segment_geometry",
         "sample_weight_metadata",
     } <= _class_method_definitions(
-        sampling_path,
+        uniform_policy_path,
         "LocalLatentUniformSegmentSamplingPlan",
     )
 

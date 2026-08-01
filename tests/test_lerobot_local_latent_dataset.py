@@ -113,6 +113,43 @@ from open_wam.configs import load_experiment_config
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_lerobot_latent_sampling_facade_exports_canonical_role_objects() -> None:
+    from open_wam.data import lerobot_v2_latent_hierarchical_policy as hierarchical
+    from open_wam.data import lerobot_v2_latent_sampler_adapters as adapters
+    from open_wam.data import lerobot_v2_latent_sampling as facade
+    from open_wam.data import lerobot_v2_latent_uniform_policy as uniform
+    from open_wam.data import lerobot_v2_latent_weighting as weighting
+
+    owners = {
+        hierarchical: (
+            "HierarchicalFixedSegmentSamplingPlan",
+            "HierarchicalFixedSegmentTaskSpec",
+            "HierarchicalFixedSegmentWindowSpec",
+            "build_hierarchical_fixed_segment_task_specs",
+        ),
+        adapters: (
+            "HierarchicalFixedSegmentTrainSampler",
+            "LocalLatentEpochOrderSampler",
+            "LocalLatentWeightedTrainSampler",
+            "_WeightedLocalLatentSource",
+        ),
+        uniform: ("LocalLatentUniformSegmentSamplingPlan",),
+        weighting: (
+            "LocalLatentWindowWeightPlan",
+            "_build_local_latent_sample_weights",
+        ),
+    }
+
+    for owner, names in owners.items():
+        for name in names:
+            assert getattr(facade, name) is getattr(owner, name)
+            legacy_global = (
+                "copen_wam.data.lerobot_v2_latent_sampling\n"
+                f"{name}\n."
+            ).encode("ascii")
+            assert pickle.loads(legacy_global) is getattr(owner, name)
+
+
 def test_lerobot_latent_storage_owns_compatibility_exports() -> None:
     assert LegacyLocalEpisodeWindow is LocalEpisodeWindow
     assert PublicLocalEpisodeWindow is LocalEpisodeWindow

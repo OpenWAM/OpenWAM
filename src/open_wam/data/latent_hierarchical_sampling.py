@@ -20,14 +20,16 @@ from .latent_segment_geometry import (
     resolve_rollout_parity_boundary_segment,
     rollout_parity_start_range,
 )
-from .lerobot_v2_latent_sampling import (
+from .lerobot_v2_latent_hierarchical_policy import (
     HierarchicalFixedSegmentSamplingPlan,
     HierarchicalFixedSegmentTaskSpec,
     HierarchicalFixedSegmentWindowSpec,
-    LocalLatentUniformSegmentSamplingPlan,
     build_hierarchical_fixed_segment_task_specs,
 )
 from .lerobot_v2_latent_storage import LocalEpisodeWindow
+from .lerobot_v2_latent_uniform_policy import (
+    LocalLatentUniformSegmentSamplingPlan,
+)
 
 
 __all__ = [
