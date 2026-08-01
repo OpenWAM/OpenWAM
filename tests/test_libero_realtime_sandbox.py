@@ -36,7 +36,7 @@ def test_realtime_helpers_use_source_visualization_contract() -> None:
     sandbox = _load_sandbox_module()
 
     assert Path(sandbox.exact_viz.__file__).resolve() == expected_module
-    assert Path(sandbox.exact_sandbox.exact_viz.__file__).resolve() == expected_module
+    assert Path(sandbox.realtime_runtime.exact_viz.__file__).resolve() == expected_module
 
 
 def _build_exact_history_frame_payload() -> tuple[dict[str, np.ndarray], list[dict[str, np.ndarray]], list[np.ndarray]]:
@@ -714,8 +714,8 @@ def test_exact_realtime_job_seed_tracks_session_step_index() -> None:
     sandbox = _load_sandbox_module()
     session = SimpleNamespace(policy_state=SimpleNamespace(step_index=4))
 
-    assert sandbox.exact_sandbox._job_seed_for_session(10, session) == 14
-    assert sandbox.exact_sandbox._job_seed_for_session(None, session) is None
+    assert sandbox.realtime_runtime.job_seed_for_session(10, session) == 14
+    assert sandbox.realtime_runtime.job_seed_for_session(None, session) is None
 
 
 def test_exact_realtime_job_seed_uses_isolated_torch_rng() -> None:
@@ -725,9 +725,9 @@ def test_exact_realtime_job_seed_uses_isolated_torch_rng() -> None:
     try:
         torch.manual_seed(1234)
         before_state = torch.random.get_rng_state()
-        with sandbox.exact_sandbox._isolated_torch_rng(99, torch.device("cpu")):
+        with sandbox.realtime_runtime.isolated_torch_rng(99, torch.device("cpu")):
             first = torch.rand(3)
-        with sandbox.exact_sandbox._isolated_torch_rng(99, torch.device("cpu")):
+        with sandbox.realtime_runtime.isolated_torch_rng(99, torch.device("cpu")):
             second = torch.rand(3)
 
         assert torch.equal(torch.random.get_rng_state(), before_state)
@@ -768,7 +768,7 @@ def test_exact_fallback_hold_state_zeroes_delta_channels_and_preserves_gripper()
     sandbox = _load_sandbox_module()
     last_action = np.array([0.9, -0.8, 0.7, -0.6, 0.5, -0.4, -1.0], dtype=np.float32)
 
-    fallback = sandbox.exact_sandbox._build_fallback_frame_actions(
+    fallback = sandbox.realtime_runtime.build_fallback_frame_actions(
         action_dim=7,
         action_per_frame=2,
         policy="hold_state",
@@ -791,7 +791,7 @@ def test_exact_fallback_hold_state_zeroes_action_command_tail_when_configured() 
     sandbox = _load_sandbox_module()
     last_action = np.array([0.9, -0.8, 0.7, -0.6, 0.5, -0.4, -1.0], dtype=np.float32)
 
-    fallback = sandbox.exact_sandbox._build_fallback_frame_actions(
+    fallback = sandbox.realtime_runtime.build_fallback_frame_actions(
         action_dim=7,
         action_per_frame=2,
         policy="hold_state",
@@ -881,7 +881,7 @@ def test_exact_fallback_hold_last_repeats_full_raw_action() -> None:
     sandbox = _load_sandbox_module()
     last_action = np.array([0.9, -0.8, 0.7, -0.6, 0.5, -0.4, -1.0], dtype=np.float32)
 
-    fallback = sandbox.exact_sandbox._build_fallback_frame_actions(
+    fallback = sandbox.realtime_runtime.build_fallback_frame_actions(
         action_dim=7,
         action_per_frame=2,
         policy="hold_last",
@@ -911,7 +911,7 @@ def test_exact_startup_sessions_reject_legacy_frame_zero_generation() -> None:
     )
 
     with pytest.raises(ValueError, match="generation_frame_start < 1"):
-        sandbox.exact_sandbox._resolve_exact_startup_sessions(
+        sandbox.realtime_runtime.resolve_exact_startup_sessions(
             config=SimpleNamespace(policy_variant=SimpleNamespace(runtime_mode="lingbot_exact")),
             startup_session=startup_session,
             first_chunk=first_chunk,
@@ -938,7 +938,7 @@ def test_exact_startup_sessions_strict_first_chunk_advances_tail_from_frame_one(
         debug={"generation_frame_start": 1},
     )
 
-    _, _, buffer_tail_session = sandbox.exact_sandbox._resolve_exact_startup_sessions(
+    _, _, buffer_tail_session = sandbox.realtime_runtime.resolve_exact_startup_sessions(
         config=SimpleNamespace(policy_variant=SimpleNamespace(runtime_mode="lingbot_exact")),
         startup_session=startup_session,
         first_chunk=first_chunk,
@@ -968,7 +968,7 @@ def test_exact_action_conditioned_startup_sessions_keep_reset_history_base() -> 
         debug={"generation_frame_start": 1},
     )
 
-    history_session, current_session, buffer_tail_session = sandbox.exact_sandbox._resolve_exact_startup_sessions(
+    history_session, current_session, buffer_tail_session = sandbox.realtime_runtime.resolve_exact_startup_sessions(
         config=SimpleNamespace(policy_variant=SimpleNamespace(runtime_mode="lingbot_exact_action_conditioned")),
         startup_session=startup_session,
         first_chunk=first_chunk,
@@ -1103,10 +1103,10 @@ def test_exact_history_worker_copy_preserves_raw_obs_sequences_and_latents() -> 
         "video_latents": sandbox.torch.ones(1, 2, 1, 1, 1),
     }
 
-    copied = sandbox.exact_sandbox._copy_history_record_for_worker(record)
-    views = sandbox.exact_sandbox._history_records_to_obs_sequence([copied])
-    raw_count = sandbox.exact_sandbox._count_history_raw_observations([copied])
-    latents = sandbox.exact_sandbox._history_records_to_precomputed_video_latents([copied])
+    copied = sandbox.realtime_runtime.copy_history_record_for_worker(record)
+    views = sandbox.realtime_runtime._history_records_to_obs_sequence([copied])
+    raw_count = sandbox.realtime_runtime._count_history_raw_observations([copied])
+    latents = sandbox.realtime_runtime._history_records_to_precomputed_video_latents([copied])
 
     assert len(views) == 2
     assert raw_count == 2
@@ -1128,8 +1128,8 @@ def test_exact_history_obs_sequence_expands_raw_observation_sequences() -> None:
         "raw_actions": np.ones((4, 7), dtype=np.float32),
     }
 
-    views = sandbox.exact_sandbox._history_records_to_obs_sequence([record])
-    raw_count = sandbox.exact_sandbox._count_history_raw_observations([record])
+    views = sandbox.realtime_runtime._history_records_to_obs_sequence([record])
+    raw_count = sandbox.realtime_runtime._count_history_raw_observations([record])
 
     assert len(views) == 2
     np.testing.assert_array_equal(views[0]["image"], record["obs_sequence"][0]["image"])
@@ -1154,7 +1154,7 @@ def test_exact_history_action_history_skips_invalid_startup_rows() -> None:
         },
     ]
 
-    action_history = sandbox.exact_sandbox._history_records_to_action_history(
+    action_history = sandbox.realtime_runtime._history_records_to_action_history(
         history,
         config=SimpleNamespace(data=SimpleNamespace(action_schema=SimpleNamespace(action_dim=7))),
     )
@@ -1190,8 +1190,8 @@ def test_exact_history_records_feed_wan_aligned_streaming_chunks() -> None:
     assert pending_history[0]["raw_actions"].shape == (4, 7)
     assert wan_safe_temporal_frame_count(4, cache_initialized=True) == 4
 
-    views = sandbox.exact_sandbox._history_records_to_obs_sequence(pending_history)
-    raw_count = sandbox.exact_sandbox._count_history_raw_observations(pending_history)
+    views = sandbox.realtime_runtime._history_records_to_obs_sequence(pending_history)
+    raw_count = sandbox.realtime_runtime._count_history_raw_observations(pending_history)
 
     assert len(views) == 4
     assert raw_count == 4
@@ -1199,7 +1199,7 @@ def test_exact_history_records_feed_wan_aligned_streaming_chunks() -> None:
 
 def test_exact_future_result_drops_partial_stale_chunks() -> None:
     sandbox = _load_sandbox_module()
-    frame_cls = sandbox.exact_sandbox.PlannedFrameAction
+    frame_cls = sandbox.realtime_runtime.PlannedFrameAction
     trace = {"job_kind": "open_loop_extension"}
     result = {
         "job_kind": "open_loop_extension",
@@ -1247,7 +1247,7 @@ def test_exact_future_result_drops_partial_stale_chunks() -> None:
 
 def test_exact_future_result_keeps_full_future_chunks() -> None:
     sandbox = _load_sandbox_module()
-    frame_cls = sandbox.exact_sandbox.PlannedFrameAction
+    frame_cls = sandbox.realtime_runtime.PlannedFrameAction
     trace = {"job_kind": "open_loop_extension"}
     result = {
         "job_kind": "open_loop_extension",
@@ -1333,7 +1333,7 @@ def test_exact_history_replan_anchors_planned_frames_to_next_observed_frame(monk
             )
 
     monkeypatch.setattr(
-        sandbox.exact_sandbox,
+        sandbox.realtime_runtime,
         "_prepare_history_runtime_inputs",
         lambda *args, **kwargs: {
             "video_latents": sandbox.torch.zeros(1, 48, 13, 1, 1),
@@ -1341,9 +1341,9 @@ def test_exact_history_replan_anchors_planned_frames_to_next_observed_frame(monk
             "negative_text_context": "negative",
         },
     )
-    monkeypatch.setattr(sandbox.exact_sandbox, "_synchronize_devices", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sandbox.realtime_runtime, "synchronize_devices", lambda *args, **kwargs: None)
 
-    result = sandbox.exact_sandbox._run_replan_job(
+    result = sandbox.realtime_runtime.run_replan_job(
         runner=_FakeRunner(),
         session=SimpleNamespace(
             policy_state=SimpleNamespace(step_index=1, cache={"frame_start": 0}),
@@ -1381,7 +1381,7 @@ def test_exact_history_replan_anchors_planned_frames_to_next_observed_frame(monk
 
 def test_exact_history_replan_result_advances_base_session_to_chunk_session() -> None:
     sandbox = _load_sandbox_module()
-    frame_cls = sandbox.exact_sandbox.PlannedFrameAction
+    frame_cls = sandbox.realtime_runtime.PlannedFrameAction
     result = {
         "job_kind": "history_replan",
         "planned_frames": [
@@ -1426,7 +1426,7 @@ def test_exact_history_replan_result_advances_base_session_to_chunk_session() ->
 
 def test_exact_rejected_history_replan_keeps_pending_history() -> None:
     sandbox = _load_sandbox_module()
-    frame_cls = sandbox.exact_sandbox.PlannedFrameAction
+    frame_cls = sandbox.realtime_runtime.PlannedFrameAction
     result = {
         "job_kind": "history_replan",
         "planned_frames": [
@@ -1480,7 +1480,7 @@ def test_exact_rejected_history_replan_keeps_pending_history() -> None:
 
 def test_exact_action_conditioned_history_replan_keeps_warmup_session_base() -> None:
     sandbox = _load_sandbox_module()
-    frame_cls = sandbox.exact_sandbox.PlannedFrameAction
+    frame_cls = sandbox.realtime_runtime.PlannedFrameAction
     result = {
         "job_kind": "history_replan",
         "planned_frames": [
@@ -1872,7 +1872,7 @@ def test_method4_realtime_replan_uses_absolute_action_start_for_video_condition(
             "negative_text_context": None,
         },
     )
-    monkeypatch.setattr(sandbox.exact_sandbox, "_synchronize_devices", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sandbox.realtime_runtime, "synchronize_devices", lambda *args, **kwargs: None)
 
     class Runner:
         pipeline = SimpleNamespace(action_decoder=SimpleNamespace(rollout_chunk_steps=6))
@@ -2286,7 +2286,7 @@ def test_strict_split_cache_mot_realtime_init_calls_env_with_single_frame(monkey
             "negative_text_context": "negative",
         },
     )
-    monkeypatch.setattr(sandbox.exact_sandbox, "_synchronize_devices", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sandbox.realtime_runtime, "synchronize_devices", lambda *args, **kwargs: None)
     monkeypatch.setattr(sandbox, "_run_sequence_replan_job", fake_replan_job)
     monkeypatch.setattr(sandbox, "build_live_rollout_summary", lambda **kwargs: {"summary": True})
     monkeypatch.setattr(sandbox, "_finalize_rollout_outputs", lambda **kwargs: kwargs["summary"])
@@ -2385,7 +2385,7 @@ def test_strict_split_cache_mot_startup_replan_trace_reports_origin(monkeypatch)
             "negative_text_context": None,
         },
     )
-    monkeypatch.setattr(sandbox.exact_sandbox, "_synchronize_devices", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sandbox.realtime_runtime, "synchronize_devices", lambda *args, **kwargs: None)
 
     class Runner:
         pipeline = SimpleNamespace(action_decoder=SimpleNamespace(rollout_chunk_steps=16))
@@ -2604,7 +2604,7 @@ def test_exact_realtime_inference_overrides_preserve_config_values_by_default() 
         )
     )
 
-    sandbox.exact_sandbox._apply_inference_overrides(
+    sandbox.realtime_runtime.apply_inference_overrides(
         runner,
         video_num_inference_steps=None,
         action_num_inference_steps=None,
@@ -2644,7 +2644,7 @@ def test_exact_realtime_inference_overrides_reject_nonpositive_step_values(
     )
 
     with pytest.raises(ValueError, match="must be positive"):
-        sandbox.exact_sandbox._apply_inference_overrides(
+        sandbox.realtime_runtime.apply_inference_overrides(
             runner,
             video_num_inference_steps=video_steps,
             action_num_inference_steps=action_steps,

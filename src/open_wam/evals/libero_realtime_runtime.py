@@ -1,9 +1,9 @@
+"""Realtime LIBERO scheduling and observed-history execution contracts."""
+
 from __future__ import annotations
 
 from contextlib import contextmanager
 from concurrent.futures import Future, ThreadPoolExecutor
-from pathlib import Path
-import sys
 import time
 from typing import Any
 
@@ -11,35 +11,39 @@ import numpy as np
 import torch
 from einops import rearrange
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SRC_ROOT = REPO_ROOT / "src"
-
-
-def _prepend_import_path(path: Path) -> None:
-    path_str = str(path)
-    sys.path[:] = [entry for entry in sys.path if entry != path_str]
-    sys.path.insert(0, path_str)
-
-
-_prepend_import_path(SRC_ROOT)
-_prepend_import_path(REPO_ROOT / "scripts")
-
-from open_wam.configs import ParallelRuntimeMode  # noqa: E402
-from open_wam.configs.enums import DeadlineMissPolicy  # noqa: E402
-from open_wam.evals import libero_visualization as exact_viz  # noqa: E402
-from open_wam.integrations.realtime_control import (  # noqa: E402
+from open_wam.configs import ParallelRuntimeMode
+from open_wam.configs.enums import DeadlineMissPolicy
+from open_wam.evals import libero_visualization as exact_viz
+from open_wam.integrations.realtime_control import (
     PlannedFrameAction,
     make_planned_frame_actions,
 )
-from open_wam.models.common.rollout_startup import (  # noqa: E402
+from open_wam.models.common.rollout_startup import (
     require_strict_startup_generation_frame,
 )
-from open_wam.models.policy_variants import PolicyInferState, RolloutCursor  # noqa: E402
-from open_wam.utils import validate_positive_step_override  # noqa: E402
+from open_wam.models.policy_variants import PolicyInferState, RolloutCursor
+from open_wam.utils import validate_positive_step_override
+
+
+__all__ = [
+    "apply_inference_overrides",
+    "build_fallback_frame_actions",
+    "copy_history_record_for_worker",
+    "isolated_torch_rng",
+    "job_seed_for_session",
+    "maybe_submit_planner_job",
+    "proprio_state_to_numpy",
+    "resolve_exact_startup_sessions",
+    "resolve_next_exact_history_base_session",
+    "run_extension_job",
+    "run_replan_job",
+    "should_submit_planner_job",
+    "synchronize_devices",
+]
 
 
 @contextmanager
-def _isolated_torch_rng(seed: int | None, *devices: torch.device):
+def isolated_torch_rng(seed: int | None, *devices: torch.device):
     if seed is None:
         yield
         return
@@ -56,7 +60,7 @@ def _isolated_torch_rng(seed: int | None, *devices: torch.device):
         yield
 
 
-def _apply_inference_overrides(
+def apply_inference_overrides(
     runner,
     *,
     video_num_inference_steps: int | None,
@@ -126,7 +130,7 @@ def _chunk_to_planned_frames(
     )
 
 
-def _should_submit_planner_job(
+def should_submit_planner_job(
     *,
     planner_mode: str,
     has_history: bool,
@@ -154,7 +158,7 @@ def _should_submit_planner_job(
     raise ValueError(f"Unsupported planner_mode={planner_mode!r}.")
 
 
-def _maybe_submit_planner_job(
+def maybe_submit_planner_job(
     *,
     executor: ThreadPoolExecutor,
     planner_mode: str,
@@ -170,7 +174,7 @@ def _maybe_submit_planner_job(
     buffer_tail_session,
     seed_base: int | None = None,
 ) -> Future[dict[str, Any]] | None:
-    if not _should_submit_planner_job(
+    if not should_submit_planner_job(
         planner_mode=planner_mode,
         has_history=bool(pending_history),
         future_buffer_depth=future_buffer_depth,
@@ -178,14 +182,14 @@ def _maybe_submit_planner_job(
     ):
         return None
     history_payload = [
-        _copy_history_record_for_worker(record)
+        copy_history_record_for_worker(record)
         for record in pending_history
     ]
     if planner_mode == "history_only":
         if not history_payload:
             return None
         return executor.submit(
-            _run_replan_job,
+            run_replan_job,
             runner=runner,
             session=history_base_session,
             prompt=prompt,
@@ -193,21 +197,21 @@ def _maybe_submit_planner_job(
             config=config,
             frontend_device=frontend_device,
             runtime_device=runtime_device,
-            job_seed=_job_seed_for_session(seed_base, current_chunk_session),
+            job_seed=job_seed_for_session(seed_base, current_chunk_session),
         )
     if planner_mode == "async_buffer":
         if buffer_tail_session is not None and future_buffer_depth <= 3:
             return executor.submit(
-                _run_extension_job,
+                run_extension_job,
                 runner=runner,
                 session=buffer_tail_session,
                 config=config,
                 runtime_device=runtime_device,
-                job_seed=_job_seed_for_session(seed_base, buffer_tail_session),
+                job_seed=job_seed_for_session(seed_base, buffer_tail_session),
             )
         if history_payload:
             return executor.submit(
-                _run_replan_job,
+                run_replan_job,
                 runner=runner,
                 session=history_base_session,
                 prompt=prompt,
@@ -215,22 +219,22 @@ def _maybe_submit_planner_job(
                 config=config,
                 frontend_device=frontend_device,
                 runtime_device=runtime_device,
-                job_seed=_job_seed_for_session(seed_base, current_chunk_session),
+                job_seed=job_seed_for_session(seed_base, current_chunk_session),
             )
         if buffer_tail_session is not None and future_buffer_depth <= 6:
             return executor.submit(
-                _run_extension_job,
+                run_extension_job,
                 runner=runner,
                 session=buffer_tail_session,
                 config=config,
                 runtime_device=runtime_device,
-                job_seed=_job_seed_for_session(seed_base, buffer_tail_session),
+                job_seed=job_seed_for_session(seed_base, buffer_tail_session),
             )
         return None
     if planner_mode == "async_history_first":
         if history_payload:
             return executor.submit(
-                _run_replan_job,
+                run_replan_job,
                 runner=runner,
                 session=history_base_session,
                 prompt=prompt,
@@ -238,22 +242,22 @@ def _maybe_submit_planner_job(
                 config=config,
                 frontend_device=frontend_device,
                 runtime_device=runtime_device,
-                job_seed=_job_seed_for_session(seed_base, current_chunk_session),
+                job_seed=job_seed_for_session(seed_base, current_chunk_session),
             )
         if buffer_tail_session is not None and future_buffer_depth <= 6:
             return executor.submit(
-                _run_extension_job,
+                run_extension_job,
                 runner=runner,
                 session=buffer_tail_session,
                 config=config,
                 runtime_device=runtime_device,
-                job_seed=_job_seed_for_session(seed_base, buffer_tail_session),
+                job_seed=job_seed_for_session(seed_base, buffer_tail_session),
             )
         return None
     if planner_mode == "async_mix":
         if history_payload and len(history_payload) >= 2 and future_buffer_depth >= 2:
             return executor.submit(
-                _run_replan_job,
+                run_replan_job,
                 runner=runner,
                 session=history_base_session,
                 prompt=prompt,
@@ -261,20 +265,20 @@ def _maybe_submit_planner_job(
                 config=config,
                 frontend_device=frontend_device,
                 runtime_device=runtime_device,
-                job_seed=_job_seed_for_session(seed_base, current_chunk_session),
+                job_seed=job_seed_for_session(seed_base, current_chunk_session),
             )
         if buffer_tail_session is not None and future_buffer_depth <= 3:
             return executor.submit(
-                _run_extension_job,
+                run_extension_job,
                 runner=runner,
                 session=buffer_tail_session,
                 config=config,
                 runtime_device=runtime_device,
-                job_seed=_job_seed_for_session(seed_base, buffer_tail_session),
+                job_seed=job_seed_for_session(seed_base, buffer_tail_session),
             )
         if history_payload:
             return executor.submit(
-                _run_replan_job,
+                run_replan_job,
                 runner=runner,
                 session=history_base_session,
                 prompt=prompt,
@@ -282,22 +286,22 @@ def _maybe_submit_planner_job(
                 config=config,
                 frontend_device=frontend_device,
                 runtime_device=runtime_device,
-                job_seed=_job_seed_for_session(seed_base, current_chunk_session),
+                job_seed=job_seed_for_session(seed_base, current_chunk_session),
             )
         if buffer_tail_session is not None and future_buffer_depth <= 6:
             return executor.submit(
-                _run_extension_job,
+                run_extension_job,
                 runner=runner,
                 session=buffer_tail_session,
                 config=config,
                 runtime_device=runtime_device,
-                job_seed=_job_seed_for_session(seed_base, buffer_tail_session),
+                job_seed=job_seed_for_session(seed_base, buffer_tail_session),
             )
         return None
     raise ValueError(f"Unsupported planner_mode={planner_mode!r}.")
 
 
-def _copy_history_record_for_worker(record: dict[str, Any]) -> dict[str, Any]:
+def copy_history_record_for_worker(record: dict[str, Any]) -> dict[str, Any]:
     copied = {
         "absolute_frame_index": int(record["absolute_frame_index"]),
         "obs": {
@@ -326,7 +330,7 @@ def _copy_history_record_for_worker(record: dict[str, Any]) -> dict[str, Any]:
     return copied
 
 
-def _job_seed_for_session(seed_base: int | None, session) -> int | None:
+def job_seed_for_session(seed_base: int | None, session) -> int | None:
     if seed_base is None:
         return None
     return int(seed_base) + int(session.policy_state.step_index)
@@ -358,7 +362,7 @@ def _session_for_next_chunk(
     )
 
 
-def _resolve_exact_startup_sessions(
+def resolve_exact_startup_sessions(
     *,
     config,
     startup_session,
@@ -393,7 +397,7 @@ def _resolve_exact_startup_history_base_session(
     return current_chunk_session
 
 
-def _resolve_next_exact_history_base_session(
+def resolve_next_exact_history_base_session(
     *,
     config,
     result: dict[str, Any],
@@ -405,7 +409,7 @@ def _resolve_next_exact_history_base_session(
     return result["session"]
 
 
-def _run_replan_job(
+def run_replan_job(
     *,
     runner,
     session,
@@ -432,7 +436,7 @@ def _run_replan_job(
         device=runtime_device,
     )
     action_history = _history_records_to_action_history(history_records, config=config)
-    with _isolated_torch_rng(job_seed, frontend_device, runtime_device), torch.inference_mode():
+    with isolated_torch_rng(job_seed, frontend_device, runtime_device), torch.inference_mode():
         prepare_t0 = time.perf_counter()
         prepared = _prepare_history_runtime_inputs(
             runner,
@@ -445,7 +449,7 @@ def _run_replan_job(
             runtime_device=runtime_device,
             precomputed_video_latents=precomputed_video_latents,
         )
-        _synchronize_devices(frontend_device, runtime_device)
+        synchronize_devices(frontend_device, runtime_device)
         prepare_s = time.perf_counter() - prepare_t0
 
         warmup_t0 = time.perf_counter()
@@ -459,12 +463,12 @@ def _run_replan_job(
             frame_start_override=history_frame_start,
             proprio_state=proprio_state,
         )
-        _synchronize_devices(runtime_device)
+        synchronize_devices(runtime_device)
         warmup_s = time.perf_counter() - warmup_t0
 
         infer_t0 = time.perf_counter()
         chunk = runner.infer_chunk(session=warmup.session, proprio_state=proprio_state)
-        _synchronize_devices(runtime_device)
+        synchronize_devices(runtime_device)
         infer_s = time.perf_counter() - infer_t0
 
     ready_monotonic_s = time.perf_counter()
@@ -521,7 +525,7 @@ def _run_replan_job(
     }
 
 
-def _run_extension_job(
+def run_extension_job(
     *,
     runner,
     session,
@@ -529,10 +533,10 @@ def _run_extension_job(
     runtime_device: torch.device,
     job_seed: int | None = None,
 ) -> dict[str, Any]:
-    with _isolated_torch_rng(job_seed, runtime_device), torch.inference_mode():
+    with isolated_torch_rng(job_seed, runtime_device), torch.inference_mode():
         infer_t0 = time.perf_counter()
         chunk = runner.infer_chunk(session=session, advance_frame_start=True)
-        _synchronize_devices(chunk.chunk_action_pred.device)
+        synchronize_devices(chunk.chunk_action_pred.device)
         infer_s = time.perf_counter() - infer_t0
     ready_monotonic_s = time.perf_counter()
     generation_frame_start = int(chunk.debug.get("generation_frame_start", session.policy_state.cache.get("frame_start", 0)))
@@ -672,7 +676,7 @@ def _history_records_to_precomputed_video_latents(history_records: list[dict[str
     return torch.cat(latent_chunks, dim=2)
 
 
-def _proprio_state_to_numpy(proprio_state: np.ndarray | torch.Tensor) -> np.ndarray:
+def proprio_state_to_numpy(proprio_state: np.ndarray | torch.Tensor) -> np.ndarray:
     if isinstance(proprio_state, torch.Tensor):
         array = proprio_state.detach().to(dtype=torch.float32).cpu().numpy()
     else:
@@ -695,7 +699,7 @@ def _history_records_to_proprio_state(
     return None
 
 
-def _synchronize_devices(*devices: torch.device) -> None:
+def synchronize_devices(*devices: torch.device) -> None:
     seen: set[tuple[str, int | None]] = set()
     for device in devices:
         if device.type != "cuda":
@@ -707,7 +711,7 @@ def _synchronize_devices(*devices: torch.device) -> None:
         seen.add(key)
 
 
-def _build_fallback_frame_actions(
+def build_fallback_frame_actions(
     *,
     action_dim: int,
     action_per_frame: int,

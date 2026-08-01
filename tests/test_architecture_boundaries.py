@@ -2624,7 +2624,7 @@ def test_deprecated_libero_implementations_and_configs_are_retired() -> None:
 
 def test_deprecated_realtime_startup_bootstrap_has_no_runtime_implementation() -> None:
     runner_path = REPO_ROOT / "scripts" / "run_libero_realtime_sandbox.py"
-    common_path = REPO_ROOT / "scripts" / "libero_exact_realtime_common.py"
+    runtime_path = PACKAGE_ROOT / "evals" / "libero_realtime_runtime.py"
     runner_source = runner_path.read_text(encoding="utf-8")
     retired_helpers = {
         "_exact_startup_bootstrap_action_history",
@@ -2637,7 +2637,33 @@ def test_deprecated_realtime_startup_bootstrap_has_no_runtime_implementation() -
     assert "--exact-startup-bootstrap-padding" in runner_source
     assert "`--exact-startup-bootstrap-padding` is deprecated" in runner_source
     assert retired_helpers.isdisjoint(_top_level_definitions(runner_path))
-    assert retired_helpers.isdisjoint(_top_level_definitions(common_path))
+    assert retired_helpers.isdisjoint(_top_level_definitions(runtime_path))
+
+
+def test_libero_realtime_scheduler_has_one_package_owner() -> None:
+    runner_path = REPO_ROOT / "scripts" / "run_libero_realtime_sandbox.py"
+    runtime_path = PACKAGE_ROOT / "evals" / "libero_realtime_runtime.py"
+    runner_source = runner_path.read_text(encoding="utf-8")
+    public_runtime_contracts = {
+        "apply_inference_overrides",
+        "build_fallback_frame_actions",
+        "copy_history_record_for_worker",
+        "isolated_torch_rng",
+        "job_seed_for_session",
+        "maybe_submit_planner_job",
+        "proprio_state_to_numpy",
+        "resolve_exact_startup_sessions",
+        "resolve_next_exact_history_base_session",
+        "run_extension_job",
+        "run_replan_job",
+        "should_submit_planner_job",
+        "synchronize_devices",
+    }
+
+    assert not (REPO_ROOT / "scripts" / "libero_exact_realtime_common.py").exists()
+    assert "from open_wam.evals import libero_realtime_runtime as realtime_runtime" in runner_source
+    assert "realtime_runtime._" not in runner_source
+    assert public_runtime_contracts <= _top_level_definitions(runtime_path)
 
 
 def test_private_uva_comparison_drivers_are_retired() -> None:
@@ -2765,8 +2791,8 @@ def test_libero_realtime_artifacts_have_one_package_owner() -> None:
     runner_source = (
         REPO_ROOT / "scripts" / "run_libero_realtime_sandbox.py"
     ).read_text(encoding="utf-8")
-    common_source = (
-        REPO_ROOT / "scripts" / "libero_exact_realtime_common.py"
+    runtime_source = (
+        PACKAGE_ROOT / "evals" / "libero_realtime_runtime.py"
     ).read_text(encoding="utf-8")
     artifact_source = (
         PACKAGE_ROOT / "evals" / "libero_rollout_artifacts.py"
@@ -2782,7 +2808,7 @@ def test_libero_realtime_artifacts_have_one_package_owner() -> None:
         "imageio.mimsave(",
     ):
         assert artifact_implementation not in runner_source
-        assert artifact_implementation not in common_source
+        assert artifact_implementation not in runtime_source
         assert artifact_implementation in artifact_source
 
 

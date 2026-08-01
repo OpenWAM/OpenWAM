@@ -19,7 +19,6 @@ from einops import rearrange
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
-SCRIPT_ROOT = Path(__file__).resolve().parent
 
 
 def _prepend_import_path(path: Path) -> None:
@@ -29,9 +28,6 @@ def _prepend_import_path(path: Path) -> None:
 
 
 _prepend_import_path(SRC_ROOT)
-_prepend_import_path(SCRIPT_ROOT)
-
-import libero_exact_realtime_common as exact_sandbox  # noqa: E402
 
 from open_wam.configs import ActionTargetRepresentation, GripperRepresentation, ParallelRuntimeMode  # noqa: E402
 from open_wam.configs.enums import (  # noqa: E402
@@ -51,6 +47,7 @@ from open_wam.integrations import (  # noqa: E402
 from open_wam.integrations import libero_rollout  # noqa: E402
 from open_wam.integrations.realtime_control import build_live_rollout_summary  # noqa: E402
 from open_wam.evals import libero_rollout_artifacts as rollout_artifacts  # noqa: E402
+from open_wam.evals import libero_realtime_runtime as realtime_runtime  # noqa: E402
 from open_wam.evals import libero_visualization as exact_viz  # noqa: E402
 from open_wam.models.common.rollout_startup import require_strict_startup_generation_frame  # noqa: E402
 from open_wam.models.policy_variants import PolicyInferContext  # noqa: E402
@@ -1019,7 +1016,7 @@ def _maybe_submit_exact_planner_job_with_cache_snapshot(
     buffer_tail_session,
     seed_base: int | None,
 ) -> tuple[Future[dict[str, Any]] | None, dict[str, Any] | None]:
-    if not exact_sandbox._should_submit_planner_job(
+    if not realtime_runtime.should_submit_planner_job(
         planner_mode=planner_mode,
         has_history=bool(pending_history),
         future_buffer_depth=future_buffer_depth,
@@ -1032,7 +1029,7 @@ def _maybe_submit_exact_planner_job_with_cache_snapshot(
         config=config,
         session=current_chunk_session,
     )
-    submitted_future = exact_sandbox._maybe_submit_planner_job(
+    submitted_future = realtime_runtime.maybe_submit_planner_job(
         executor=executor,
         planner_mode=planner_mode,
         pending_history=pending_history,
@@ -1097,7 +1094,7 @@ def _maybe_append_exact_history_record(
         "contains_fallback_action": bool(contains_fallback_action),
     }
     if proprio_state is not None:
-        history_record["proprio_state"] = exact_sandbox._proprio_state_to_numpy(proprio_state)
+        history_record["proprio_state"] = realtime_runtime.proprio_state_to_numpy(proprio_state)
     raw_observation_count = len(frame_obs_sequence)
     policy = state.policy
     if policy is FallbackHistoryPolicy.INCLUDE_FALLBACK_HISTORY:
@@ -1264,7 +1261,7 @@ def _run_exact_like_realtime_rollout(
     pipeline = build_variant_pipeline_from_config(config)
     pipeline.eval()
     runner = LingbotExactRunner(pipeline)
-    exact_sandbox._apply_inference_overrides(
+    realtime_runtime.apply_inference_overrides(
         runner,
         video_num_inference_steps=video_num_inference_steps,
         action_num_inference_steps=action_num_inference_steps,
@@ -1330,7 +1327,7 @@ def _run_exact_like_realtime_rollout(
         with torch.inference_mode():
             session = runner.reset(task_text=(prompt,))
             # Preserve the exact M1 contract: reseed immediately before each chunk.
-            with exact_sandbox._isolated_torch_rng(seed, frontend_device, runtime_device):
+            with realtime_runtime.isolated_torch_rng(seed, frontend_device, runtime_device):
                 startup_prepare_t0 = time.perf_counter()
                 if VERBOSE:
                     print(
@@ -1345,7 +1342,7 @@ def _run_exact_like_realtime_rollout(
                     frontend_device=frontend_device,
                     runtime_device=runtime_device,
                 )
-                exact_sandbox._synchronize_devices(frontend_device, runtime_device)
+                realtime_runtime.synchronize_devices(frontend_device, runtime_device)
                 startup_prepare_s = time.perf_counter() - startup_prepare_t0
                 if VERBOSE:
                     print(
@@ -1368,7 +1365,7 @@ def _run_exact_like_realtime_rollout(
                     negative_text_context=initial_inputs["negative_text_context"],
                     proprio_state=latest_proprio_state,
                 )
-                exact_sandbox._synchronize_devices(runtime_device)
+                realtime_runtime.synchronize_devices(runtime_device)
                 startup_infer_s = time.perf_counter() - startup_infer_t0
                 if VERBOSE:
                     print(
@@ -1399,7 +1396,7 @@ def _run_exact_like_realtime_rollout(
                         startup_warmup_debug=None,
                     )
 
-        history_base_session, current_chunk_session, buffer_tail_session = exact_sandbox._resolve_exact_startup_sessions(
+        history_base_session, current_chunk_session, buffer_tail_session = realtime_runtime.resolve_exact_startup_sessions(
             config=config,
             startup_session=session,
             first_chunk=first_chunk,
@@ -1448,12 +1445,12 @@ def _run_exact_like_realtime_rollout(
             for _ in range(int(startup_open_loop_chunks)):
                 if buffer_tail_session is None:
                     break
-                extension_result = exact_sandbox._run_extension_job(
+                extension_result = realtime_runtime.run_extension_job(
                     runner=runner,
                     session=buffer_tail_session,
                     config=config,
                     runtime_device=runtime_device,
-                    job_seed=exact_sandbox._job_seed_for_session(seed, buffer_tail_session),
+                    job_seed=realtime_runtime.job_seed_for_session(seed, buffer_tail_session),
                 )
                 (
                     history_base_session,
@@ -1600,11 +1597,11 @@ def _run_exact_like_realtime_rollout(
                             )
                             if pending_history:
                                 history_payload = [
-                                    exact_sandbox._copy_history_record_for_worker(record)
+                                    realtime_runtime.copy_history_record_for_worker(record)
                                     for record in pending_history
                                 ]
                                 try:
-                                    result = exact_sandbox._run_replan_job(
+                                    result = realtime_runtime.run_replan_job(
                                         runner=runner,
                                         session=history_base_session,
                                         prompt=prompt,
@@ -1612,7 +1609,7 @@ def _run_exact_like_realtime_rollout(
                                         config=config,
                                         frontend_device=frontend_device,
                                         runtime_device=runtime_device,
-                                        job_seed=exact_sandbox._job_seed_for_session(seed, current_chunk_session),
+                                        job_seed=realtime_runtime.job_seed_for_session(seed, current_chunk_session),
                                     )
                                 except BaseException:
                                     _restore_exact_runtime_cache_snapshot(
@@ -1623,12 +1620,12 @@ def _run_exact_like_realtime_rollout(
                                     raise
                             elif buffer_tail_session is not None:
                                 try:
-                                    result = exact_sandbox._run_extension_job(
+                                    result = realtime_runtime.run_extension_job(
                                         runner=runner,
                                         session=buffer_tail_session,
                                         config=config,
                                         runtime_device=runtime_device,
-                                        job_seed=exact_sandbox._job_seed_for_session(seed, buffer_tail_session),
+                                        job_seed=realtime_runtime.job_seed_for_session(seed, buffer_tail_session),
                                     )
                                 except BaseException:
                                     _restore_exact_runtime_cache_snapshot(
@@ -1702,7 +1699,7 @@ def _run_exact_like_realtime_rollout(
                     if executed_action_index + action_offset >= max_actions:
                         break
                     if use_fallback_frame:
-                        raw_action = exact_sandbox._build_fallback_frame_actions(
+                        raw_action = realtime_runtime.build_fallback_frame_actions(
                             action_dim=action_dim,
                             action_per_frame=1,
                             policy=deadline_miss_policy,
@@ -2137,7 +2134,7 @@ def _consume_exact_future_result(
                 record for record in pending_history if int(record["absolute_frame_index"]) > submitted_through_frame
             ]
             current_chunk_session = result["session"]
-            history_base_session = exact_sandbox._resolve_next_exact_history_base_session(
+            history_base_session = realtime_runtime.resolve_next_exact_history_base_session(
                 config=config,
                 result=result,
                 history_base_session=history_base_session,
@@ -2342,7 +2339,7 @@ def _exact_startup_conditioning_history_record(
         "source": "startup_conditioning_frame",
     }
     if proprio_state is not None:
-        record["proprio_state"] = exact_sandbox._proprio_state_to_numpy(proprio_state)
+        record["proprio_state"] = realtime_runtime.proprio_state_to_numpy(proprio_state)
     return record
 
 
@@ -2540,7 +2537,7 @@ def _run_sequence_policy_realtime_rollout(
                 frontend_device=frontend_device,
                 runtime_device=runtime_device,
             )
-            exact_sandbox._synchronize_devices(frontend_device, runtime_device)
+            realtime_runtime.synchronize_devices(frontend_device, runtime_device)
             startup_prepare_s = time.perf_counter() - startup_prepare_t0
 
             session = runner.reset(
@@ -2568,7 +2565,7 @@ def _run_sequence_policy_realtime_rollout(
                 ),
                 source="startup_plan",
             )
-            exact_sandbox._synchronize_devices(runtime_device)
+            realtime_runtime.synchronize_devices(runtime_device)
             startup_infer_s = time.perf_counter() - startup_infer_t0
             _print_stage(
                 f"{rollout_label}_startup_done",
@@ -2827,7 +2824,7 @@ def _run_sequence_policy_realtime_rollout(
                                 f"{next_action_index}; planned={sorted(plan_by_action)}."
                             )
                     elif sequence_empty_plan_policy == "fallback":
-                        action = exact_sandbox._build_fallback_frame_actions(
+                        action = realtime_runtime.build_fallback_frame_actions(
                             action_dim=int(config.data.action_schema.action_dim),
                             action_per_frame=1,
                             policy=deadline_miss_policy,
@@ -3279,7 +3276,7 @@ def _run_sequence_replan_job(
             text_context=session.text_context,
             negative_text_context=session.negative_text_context,
         )
-        exact_sandbox._synchronize_devices(frontend_device, runtime_device)
+        realtime_runtime.synchronize_devices(frontend_device, runtime_device)
         prepare_s = time.perf_counter() - prepare_t0
         _validate_strict_mot_split_cache_startup_inputs(
             config=config,
@@ -3332,7 +3329,7 @@ def _run_sequence_replan_job(
             video_latents=rollout_inputs["video_latents"],
             canonical_video=None,
         )
-        exact_sandbox._synchronize_devices(runtime_device)
+        realtime_runtime.synchronize_devices(runtime_device)
         infer_s = time.perf_counter() - infer_t0
         output_runtime_cache_snapshot = _snapshot_sequence_runtime_cache(
             runner=runner,
