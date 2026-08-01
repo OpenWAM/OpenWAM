@@ -3990,6 +3990,9 @@ def test_libero_mot_drivers_delegate_to_the_package_episode_runner() -> None:
     artifact_source = (
         PACKAGE_ROOT / "evals" / "libero_rollout_artifacts.py"
     ).read_text(encoding="utf-8")
+    artifact_rendering_source = (
+        PACKAGE_ROOT / "evals" / "libero_rollout_artifact_rendering.py"
+    ).read_text(encoding="utf-8")
     visualization_source = (
         PACKAGE_ROOT / "evals" / "libero_visualization.py"
     ).read_text(encoding="utf-8")
@@ -4008,16 +4011,20 @@ def test_libero_mot_drivers_delegate_to_the_package_episode_runner() -> None:
     assert "._forward_infer_with_visual_outputs(" not in package_source
     assert "runner.reconcile_observed_history(" in package_source
     assert "persist_libero_rollout_artifacts(" in package_source
-    for artifact_implementation in (
-        "imageio",
+    for rendering_implementation in (
         "ImageDraw",
         "VideoProcessor",
-        "_actions.jsonl",
-        "_chunks.json",
         "_decode_latent_video",
     ):
-        assert artifact_implementation not in package_source
-        assert artifact_implementation in artifact_source
+        assert rendering_implementation not in package_source
+        assert rendering_implementation not in artifact_source
+        assert rendering_implementation in artifact_rendering_source
+    for persistence_implementation in (
+        "_actions.jsonl",
+        "_chunks.json",
+    ):
+        assert persistence_implementation not in package_source
+        assert persistence_implementation in artifact_source
     assert "def decode_imagined_video" not in visualization_source
     assert "def build_comparison_video_frames" not in visualization_source
     for policy_state_field in (
@@ -4033,24 +4040,58 @@ def test_libero_mot_drivers_delegate_to_the_package_episode_runner() -> None:
 def test_libero_realtime_artifacts_have_one_package_owner() -> None:
     runner_path = REPO_ROOT / "scripts" / "run_libero_realtime_sandbox.py"
     artifact_path = PACKAGE_ROOT / "evals" / "libero_rollout_artifacts.py"
+    artifact_contract_path = (
+        PACKAGE_ROOT / "evals" / "libero_rollout_artifact_contracts.py"
+    )
+    artifact_diagnostic_path = (
+        PACKAGE_ROOT / "evals" / "libero_rollout_artifact_diagnostics.py"
+    )
+    artifact_rendering_path = (
+        PACKAGE_ROOT / "evals" / "libero_rollout_artifact_rendering.py"
+    )
+    artifact_storage_path = (
+        PACKAGE_ROOT / "evals" / "libero_rollout_artifact_storage.py"
+    )
     runner_source = runner_path.read_text(encoding="utf-8")
     runtime_source = (
         PACKAGE_ROOT / "evals" / "libero_realtime_runtime.py"
     ).read_text(encoding="utf-8")
     artifact_source = artifact_path.read_text(encoding="utf-8")
+    artifact_rendering_source = artifact_rendering_path.read_text(encoding="utf-8")
+    artifact_storage_source = artifact_storage_path.read_text(encoding="utf-8")
 
     assert "persist_libero_realtime_artifacts(" in runner_source
     assert "RolloutArtifactPolicy.from_value(" in runner_source
-    for artifact_implementation in (
+    for rendering_implementation in (
         "def build_libero_realtime_video_frames(",
         "def build_libero_fallback_timeline_video_frames(",
-        "def build_libero_realtime_output_stem(",
+    ):
+        assert rendering_implementation not in runner_source
+        assert rendering_implementation not in runtime_source
+        assert rendering_implementation not in artifact_source
+        assert rendering_implementation in artifact_rendering_source
+    assert "def build_libero_realtime_output_stem(" in artifact_storage_source
+    for persistence_implementation in (
         "_fallback_timeline.mp4",
         "imageio.mimsave(",
     ):
-        assert artifact_implementation not in runner_source
-        assert artifact_implementation not in runtime_source
-        assert artifact_implementation in artifact_source
+        assert persistence_implementation not in runner_source
+        assert persistence_implementation not in runtime_source
+        assert persistence_implementation in artifact_source
+
+    assert _top_level_definitions(artifact_path) == {
+        "persist_libero_realtime_artifacts",
+        "persist_libero_rollout_artifacts",
+    }
+    for role_path in (
+        artifact_contract_path,
+        artifact_diagnostic_path,
+        artifact_rendering_path,
+        artifact_storage_path,
+    ):
+        assert "from open_wam.evals.libero_rollout_artifacts import" not in (
+            role_path.read_text(encoding="utf-8")
+        )
 
     startup_contract = {
         "LiberoExactStartupDebugOptions",
@@ -4058,7 +4099,14 @@ def test_libero_realtime_artifacts_have_one_package_owner() -> None:
         "build_libero_exact_startup_debug_report",
         "capture_torch_rng_debug_state",
     }
-    assert startup_contract <= _top_level_definitions(artifact_path)
+    assert {
+        "LiberoExactStartupDebugOptions",
+        "LiberoExactStartupDebugPayload",
+    } <= _top_level_definitions(artifact_contract_path)
+    assert {
+        "build_libero_exact_startup_debug_report",
+        "capture_torch_rng_debug_state",
+    } <= _top_level_definitions(artifact_diagnostic_path)
     assert startup_contract <= _module_all_names(artifact_path)
     assert not {
         "_debug_sha256_bytes",

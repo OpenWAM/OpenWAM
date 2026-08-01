@@ -9,6 +9,10 @@ import numpy as np
 import torch
 
 from open_wam.configs.enums import RolloutArtifactProfile
+from open_wam.evals import libero_rollout_artifact_contracts as artifact_contracts
+from open_wam.evals import libero_rollout_artifact_diagnostics as artifact_diagnostics
+from open_wam.evals import libero_rollout_artifact_rendering as artifact_rendering
+from open_wam.evals import libero_rollout_artifact_storage as artifact_storage
 from open_wam.evals import libero_rollout_artifacts as artifacts
 
 
@@ -18,6 +22,48 @@ def _observation(index: int) -> dict[str, np.ndarray]:
         artifacts.LIBERO_OBS_KEYS[0]: frame,
         artifacts.LIBERO_OBS_KEYS[1]: frame + 1,
     }
+
+
+def test_artifact_facade_exports_canonical_role_objects_by_identity() -> None:
+    owners = {
+        artifact_contracts: (
+            "LiberoExactStartupDebugOptions",
+            "LiberoExactStartupDebugPayload",
+            "LiberoRealtimeArtifactIdentity",
+            "LiberoRealtimeArtifactOptions",
+            "LiberoRealtimeArtifactOutput",
+            "LiberoRealtimeArtifactPayload",
+            "LiberoRolloutArtifactIdentity",
+            "LiberoRolloutArtifactOptions",
+            "LiberoRolloutArtifactOutput",
+            "LiberoRolloutArtifactPayload",
+            "RolloutArtifactPolicy",
+        ),
+        artifact_diagnostics: (
+            "build_libero_exact_startup_debug_report",
+            "capture_torch_rng_debug_state",
+        ),
+        artifact_rendering: (
+            "append_predicted_latent_chunk",
+            "build_libero_fallback_timeline_video_frames",
+            "build_libero_realtime_video_frames",
+            "decode_latent_video_chunks",
+            "extract_predicted_latents",
+            "iter_comparison_video_frames",
+            "iter_rollout_video_frames",
+            "to_uint8",
+            "with_title",
+            "write_video_frames",
+        ),
+        artifact_storage: (
+            "build_libero_realtime_output_stem",
+            "build_libero_rollout_output_path",
+        ),
+    }
+
+    for owner, names in owners.items():
+        for name in names:
+            assert getattr(artifacts, name) is getattr(owner, name)
 
 
 def test_capture_torch_rng_debug_state_does_not_advance_rng() -> None:
