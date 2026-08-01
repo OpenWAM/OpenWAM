@@ -194,7 +194,7 @@ def test_filter_dataset_episodes_by_replay_status_rejects_failed_task_axis_reque
 
 def test_resolve_task_ids_uses_requested_benchmark(monkeypatch) -> None:
     calls: list[tuple[str, str | None]] = []
-    fake_module = types.ModuleType("open_wam.integrations.libero_env")
+    fake_module = types.ModuleType("open_wam.integrations.libero_tasks")
 
     def fake_resolve_libero_task(task_text, project_root, *, benchmark_name=None):
         del project_root
@@ -206,7 +206,7 @@ def test_resolve_task_ids_uses_requested_benchmark(monkeypatch) -> None:
         )
 
     fake_module.resolve_libero_task = fake_resolve_libero_task
-    monkeypatch.setitem(sys.modules, "open_wam.integrations.libero_env", fake_module)
+    monkeypatch.setitem(sys.modules, "open_wam.integrations.libero_tasks", fake_module)
 
     task_ids, task_names, warnings = sampled_eval.resolve_task_ids(
         {"pick up the book and place it in the back compartment of the caddy": 9},
@@ -225,14 +225,14 @@ def test_resolve_task_ids_uses_requested_benchmark(monkeypatch) -> None:
 
 
 def test_resolve_task_ids_auto_refuses_metadata_fallback(monkeypatch) -> None:
-    fake_module = types.ModuleType("open_wam.integrations.libero_env")
+    fake_module = types.ModuleType("open_wam.integrations.libero_tasks")
 
     def fake_resolve_libero_task(task_text, project_root, *, benchmark_name=None):
         del task_text, project_root, benchmark_name
         raise ValueError("duplicate task text")
 
     fake_module.resolve_libero_task = fake_resolve_libero_task
-    monkeypatch.setitem(sys.modules, "open_wam.integrations.libero_env", fake_module)
+    monkeypatch.setitem(sys.modules, "open_wam.integrations.libero_tasks", fake_module)
 
     with pytest.raises(RuntimeError, match="Refusing to fall back to metadata task_index"):
         sampled_eval.resolve_task_ids(
@@ -259,7 +259,7 @@ def test_resolve_task_ids_metadata_emits_safety_warning() -> None:
 
 def test_resolve_task_ids_libero_repo_root_overrides_stale_environment(monkeypatch, tmp_path: Path) -> None:
     calls: list[str | None] = []
-    fake_module = types.ModuleType("open_wam.integrations.libero_env")
+    fake_module = types.ModuleType("open_wam.integrations.libero_tasks")
 
     def fake_resolve_libero_task(task_text, project_root, *, benchmark_name=None):
         del task_text, project_root, benchmark_name
@@ -271,7 +271,7 @@ def test_resolve_task_ids_libero_repo_root_overrides_stale_environment(monkeypat
         )
 
     fake_module.resolve_libero_task = fake_resolve_libero_task
-    monkeypatch.setitem(sys.modules, "open_wam.integrations.libero_env", fake_module)
+    monkeypatch.setitem(sys.modules, "open_wam.integrations.libero_tasks", fake_module)
     monkeypatch.setenv("LIBERO_REPO_ROOT", "/stale/libero")
 
     override_root = tmp_path / "LIBERO"
@@ -289,7 +289,7 @@ def test_resolve_task_ids_libero_repo_root_overrides_stale_environment(monkeypat
 
 def test_resolve_task_ids_local_paths_overrides_stale_environment(monkeypatch, tmp_path: Path) -> None:
     calls: list[str | None] = []
-    fake_module = types.ModuleType("open_wam.integrations.libero_env")
+    fake_module = types.ModuleType("open_wam.integrations.libero_tasks")
 
     def fake_resolve_libero_task(task_text, project_root, *, benchmark_name=None):
         del task_text, project_root, benchmark_name
@@ -301,7 +301,7 @@ def test_resolve_task_ids_local_paths_overrides_stale_environment(monkeypatch, t
         )
 
     fake_module.resolve_libero_task = fake_resolve_libero_task
-    monkeypatch.setitem(sys.modules, "open_wam.integrations.libero_env", fake_module)
+    monkeypatch.setitem(sys.modules, "open_wam.integrations.libero_tasks", fake_module)
     monkeypatch.setenv("OPEN_WAM_LOCAL_PATHS", "/stale/local_paths.yaml")
 
     local_paths = tmp_path / "local_paths.yaml"

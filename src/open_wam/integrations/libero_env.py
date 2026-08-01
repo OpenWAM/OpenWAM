@@ -1,3 +1,5 @@
+"""Open-WAM simulator adapter for LIBERO benchmark episodes."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -14,20 +16,37 @@ from open_wam.configs import (
     GripperRepresentation,
     LiberoAbsoluteJointExecutionMode,
 )
-from open_wam.data import reconstruct_absolute_pose_targets
 from open_wam.data.action_transforms import (
     PoseSequence,
     axis_angle_to_quaternion,
-    collapse_gripper_state,
     denormalize_action_targets,
     denormalize_joint_positions,
-    normalize_quaternion,
-    quaternion_inverse,
-    quaternion_multiply,
-    quaternion_to_axis_angle,
-    rotation_matrix_to_quaternion,
 )
 from open_wam.data.action_mapping import inverse_action_mapping
+from open_wam.integrations.libero_control import (
+    LiberoControlConfig,
+    absolute_joint_position_to_libero_joint_delta_action,
+    compute_osc_pose_action,
+    disable_libero_joint_position_controller_interpolator,
+    extract_gripper_positions_from_obs,
+    extract_joint_positions_from_obs,
+    extract_pose_from_obs,
+    gripper_command_for_substep as _raw_gripper_command_for_substep,
+    gripper_qpos_tracking_command as _gripper_qpos_tracking_command,
+    integrated_eef6d_target_to_osc_action,
+    integrated_eef6d_target_to_osc_action_from_arrays as _integrated_eef6d_target_to_osc_action_from_arrays,
+    quaternion_angular_error_degrees,
+    quaternion_xyzw_to_rotation_matrix as _quaternion_xyzw_to_rotation_matrix_np,
+    resolve_libero_joint_delta_limit,
+    resolve_libero_joint_limit_array as _joint_limit_array,
+    resolve_libero_joint_scale_array as _joint_scale_array,
+    set_libero_joint_position_controller_gain,
+    step_libero_absolute_joint_position_goal,
+)
+from open_wam.integrations.libero_runtime import (
+    build_libero_control_env,
+    build_libero_offscreen_env,
+)
 from open_wam.integrations.libero_tasks import (
     LiberoTaskSpec,
     ensure_local_libero_config,
@@ -35,6 +54,10 @@ from open_wam.integrations.libero_tasks import (
     load_libero_task_init_states,
     resolve_libero_task,
     resolve_libero_task_by_id,
+)
+from open_wam.integrations.libero_tracking import (
+    LiberoTrackingResult,
+    track_relative_targets_in_libero_env,
 )
 from open_wam.simulators import EpisodeSpec, SimulatorCapabilities, SimulatorObservation, SimulatorStepResult
 
@@ -49,30 +72,30 @@ _LIBERO_TASK_COMPATIBILITY_EXPORTS = (
 )
 
 
-@dataclass(frozen=True)
-class LiberoControlConfig:
-    """Closed-loop tracking gains for converting our public targets to OSC actions.
+_LIBERO_CONTROL_COMPATIBILITY_EXPORTS = (
+    LiberoControlConfig,
+    absolute_joint_position_to_libero_joint_delta_action,
+    compute_osc_pose_action,
+    disable_libero_joint_position_controller_interpolator,
+    extract_gripper_positions_from_obs,
+    extract_joint_positions_from_obs,
+    extract_pose_from_obs,
+    integrated_eef6d_target_to_osc_action,
+    quaternion_angular_error_degrees,
+    resolve_libero_joint_delta_limit,
+    set_libero_joint_position_controller_gain,
+    step_libero_absolute_joint_position_goal,
+)
 
-    `OSC_POSE` expects a 7D action `[dx, dy, dz, dax, day, daz, gripper]`.
-    The first six channels are normalized and internally scaled by robosuite to
-    +/- 0.05 m and +/- 0.5 rad respectively. The public WAM target, however, is
-    a reference-relative absolute EEF target `[rel_xyz, rel_axis_angle, gripper]`
-    expressed against a dataset-defined anchor pose.
-    We therefore:
-    1. reconstruct the desired absolute EEF target from the stored reference pose
-    2. compute current world-frame pose error
-    3. normalize that error into the controller's expected action range
-    """
+_LIBERO_RUNTIME_COMPATIBILITY_EXPORTS = (
+    build_libero_control_env,
+    build_libero_offscreen_env,
+)
 
-    max_pos_delta_m: float = 0.05
-    max_rot_delta_rad: float = 0.5
-    max_gripper_delta: float = 0.005
-    control_substeps_per_target: int = 8
-    env_control_hz: int = 20
-    action_command_delay_steps: int = 1
-    gripper_open_threshold: float = 0.060
-    gripper_close_threshold: float = 0.030
-    gripper_position_tolerance: float = 0.002
+_LIBERO_TRACKING_COMPATIBILITY_EXPORTS = (
+    LiberoTrackingResult,
+    track_relative_targets_in_libero_env,
+)
 
 
 @dataclass(frozen=True)
@@ -139,295 +162,6 @@ class LiberoEnvConfig:
             raise ValueError(
                 "absolute_joint_gripper_substep_policy must be one of: repeat, first_only, last_only."
             )
-
-
-@dataclass(frozen=True)
-class LiberoTrackingResult:
-    """Trajectory rollout and tracking metrics from a LIBERO env replay."""
-
-    task_spec: LiberoTaskSpec
-    init_state_index: int
-    desired_pose: PoseSequence
-    tracked_pose: PoseSequence
-    position_error_per_target: torch.Tensor
-    rotation_error_deg_per_target: torch.Tensor
-    gripper_error_per_target: torch.Tensor
-    camera_frames: dict[str, list[np.ndarray]]
-    rendered_target_indices: list[int]
-
-
-def build_libero_offscreen_env(
-    task_spec: LiberoTaskSpec,
-    *,
-    controller: str = "OSC_POSE",
-    camera_height: int = 256,
-    camera_width: int = 256,
-    horizon: int = 5000,
-    ignore_done: bool = True,
-    control_freq: int | None = None,
-    project_root: Path | None = None,
-):
-    """Construct one offscreen LIBERO environment for evaluation."""
-
-    ensure_local_libero_config(project_root)
-    from libero.libero.envs import OffScreenRenderEnv  # type: ignore
-
-    env_kwargs: dict[str, Any] = {}
-    if control_freq is not None:
-        env_kwargs["control_freq"] = int(control_freq)
-
-    return OffScreenRenderEnv(
-        bddl_file_name=task_spec.bddl_file_path,
-        controller=controller,
-        camera_heights=camera_height,
-        camera_widths=camera_width,
-        horizon=horizon,
-        ignore_done=ignore_done,
-        **env_kwargs,
-    )
-
-
-def build_libero_control_env(
-    task_spec: LiberoTaskSpec,
-    *,
-    controller: str = "OSC_POSE",
-    camera_height: int = 256,
-    camera_width: int = 256,
-    horizon: int = 5000,
-    ignore_done: bool = False,
-    control_freq: int | None = None,
-    use_camera_obs: bool = False,
-    has_offscreen_renderer: bool = False,
-    project_root: Path | None = None,
-):
-    """Construct LIBERO's ControlEnv with explicit render/camera knobs."""
-
-    ensure_local_libero_config(project_root)
-    from libero.libero.envs.env_wrapper import ControlEnv  # type: ignore
-
-    env_kwargs: dict[str, Any] = {}
-    if control_freq is not None:
-        env_kwargs["control_freq"] = int(control_freq)
-
-    return ControlEnv(
-        bddl_file_name=task_spec.bddl_file_path,
-        controller=controller,
-        use_camera_obs=bool(use_camera_obs),
-        has_offscreen_renderer=bool(has_offscreen_renderer),
-        has_renderer=False,
-        camera_heights=camera_height,
-        camera_widths=camera_width,
-        horizon=horizon,
-        ignore_done=ignore_done,
-        **env_kwargs,
-    )
-
-
-def extract_pose_from_obs(obs: dict[str, Any]) -> PoseSequence:
-    """Parse LIBERO / robosuite observation dict into the common pose contract."""
-
-    quaternion_xyzw = torch.tensor(obs["robot0_eef_quat"], dtype=torch.float32)
-    return PoseSequence(
-        position=torch.tensor(obs["robot0_eef_pos"], dtype=torch.float32),
-        quaternion=normalize_quaternion(quaternion_xyzw),
-        gripper=torch.tensor(obs["robot0_gripper_qpos"], dtype=torch.float32),
-    )
-
-
-def extract_joint_positions_from_obs(obs: dict[str, Any]) -> np.ndarray:
-    """Extract Panda arm qpos from a LIBERO / robosuite observation."""
-
-    if "robot0_joint_pos" not in obs:
-        raise KeyError("LIBERO observation does not expose `robot0_joint_pos`.")
-    joint_positions = np.asarray(obs["robot0_joint_pos"], dtype=np.float32).reshape(-1)
-    if joint_positions.size == 0:
-        raise ValueError("LIBERO `robot0_joint_pos` is empty.")
-    return joint_positions
-
-
-def extract_gripper_positions_from_obs(obs: dict[str, Any]) -> np.ndarray:
-    """Extract Panda gripper qpos from a LIBERO / robosuite observation."""
-
-    if "robot0_gripper_qpos" not in obs:
-        raise KeyError("LIBERO observation does not expose `robot0_gripper_qpos`.")
-    values = np.asarray(obs["robot0_gripper_qpos"], dtype=np.float32).reshape(-1)
-    if values.size == 0:
-        raise ValueError("LIBERO `robot0_gripper_qpos` is empty.")
-    return values
-
-
-def resolve_libero_joint_delta_limit(
-    env: Any,
-    *,
-    fallback: float | tuple[float, ...] = 0.05,
-    joint_dim: int = 7,
-) -> np.ndarray:
-    """Infer normalized JOINT_POSITION delta scaling from robosuite controller config."""
-
-    fallback_limit = _joint_limit_array(fallback, joint_dim=joint_dim)
-    robots = getattr(getattr(env, "env", env), "robots", None)
-    if not robots:
-        return fallback_limit
-    controller = getattr(robots[0], "controller", None)
-    if controller is None:
-        return fallback_limit
-    output_max = getattr(controller, "output_max", None)
-    output_min = getattr(controller, "output_min", None)
-    if output_max is None:
-        return fallback_limit
-    max_values = np.asarray(output_max, dtype=np.float32).reshape(-1)
-    if max_values.size < joint_dim:
-        return fallback_limit
-    if output_min is not None:
-        min_values = np.asarray(output_min, dtype=np.float32).reshape(-1)
-        if min_values.size >= joint_dim:
-            max_values = np.maximum(np.abs(max_values[:joint_dim]), np.abs(min_values[:joint_dim]))
-        else:
-            max_values = np.abs(max_values[:joint_dim])
-    else:
-        max_values = np.abs(max_values[:joint_dim])
-    if np.any(max_values <= 0.0):
-        return fallback_limit
-    return max_values.astype(np.float32)
-
-
-def absolute_joint_position_to_libero_joint_delta_action(
-    *,
-    target_joint_positions: np.ndarray,
-    current_joint_positions: np.ndarray,
-    gripper_command: float = 0.0,
-    joint_delta_limit_rad: float | tuple[float, ...] | np.ndarray = 0.05,
-) -> np.ndarray:
-    """Convert absolute joint qpos targets to normalized LIBERO `JOINT_POSITION` actions."""
-
-    target = np.asarray(target_joint_positions, dtype=np.float32).reshape(-1)
-    current = np.asarray(current_joint_positions, dtype=np.float32).reshape(-1)
-    if target.shape != current.shape:
-        raise ValueError(f"Target/current joint shapes must match, got {target.shape} and {current.shape}.")
-    limits = _joint_limit_array(joint_delta_limit_rad, joint_dim=target.shape[0])
-    arm_action = np.clip((target - current) / limits, -1.0, 1.0)
-    gripper = np.asarray([float(np.clip(gripper_command, -1.0, 1.0))], dtype=np.float32)
-    return np.concatenate([arm_action.astype(np.float32), gripper], axis=0)
-
-
-def step_libero_absolute_joint_position_goal(
-    env: Any,
-    *,
-    target_joint_positions: np.ndarray,
-    gripper_command: float = 0.0,
-) -> tuple[dict[str, Any], float, bool, dict[str, Any]]:
-    """Step a LIBERO `JOINT_POSITION` env with an absolute joint-position goal.
-
-    Robosuite's public `JOINT_POSITION` action is a normalized relative delta.
-    For dataset replay validation we also need the stricter semantic of
-    "track this absolute qpos target now". The upstream controller already has
-    that hook via `set_goal(..., set_qpos=target)`, but the normal `env.step`
-    path does not expose it. This helper keeps gripper actuation on the normal
-    env action path and temporarily redirects only the arm goal update.
-    """
-
-    target = np.asarray(target_joint_positions, dtype=np.float32).reshape(-1)
-    robot = _first_libero_robot(env)
-    controller = getattr(robot, "controller", None)
-    if controller is None or not hasattr(controller, "set_goal"):
-        raise ValueError("LIBERO env does not expose a robosuite arm controller with `set_goal`.")
-    control_dim = int(getattr(controller, "control_dim", target.shape[0]))
-    if control_dim < target.shape[0]:
-        raise ValueError(
-            f"Controller control_dim={control_dim} is smaller than target joint dim={target.shape[0]}."
-        )
-
-    action_dim = int(getattr(robot, "action_dim", control_dim + 1))
-    action = np.zeros(action_dim, dtype=np.float32)
-    action[:control_dim] = 0.0
-    if action_dim > control_dim:
-        action[control_dim:] = float(np.clip(gripper_command, -1.0, 1.0))
-
-    original_set_goal = controller.set_goal
-
-    def _set_absolute_goal(action_arg: Any, *args: Any, **kwargs: Any) -> Any:
-        del action_arg, args, kwargs
-        return original_set_goal(np.zeros(control_dim, dtype=np.float32), set_qpos=target)
-
-    controller.set_goal = _set_absolute_goal
-    try:
-        return env.step(action)
-    finally:
-        controller.set_goal = original_set_goal
-
-
-def set_libero_joint_position_controller_gain(env: Any, *, kp: float) -> None:
-    """Override JOINT_POSITION controller gains for deterministic absolute-goal tracking."""
-
-    controller = getattr(_first_libero_robot(env), "controller", None)
-    if controller is None:
-        raise ValueError("LIBERO env robot does not expose a controller for gain override.")
-    joint_dim = int(getattr(controller, "control_dim", 7))
-    controller.kp = np.full(joint_dim, float(kp), dtype=np.float64)
-    controller.kd = 2.0 * np.sqrt(controller.kp)
-
-
-def disable_libero_joint_position_controller_interpolator(env: Any) -> None:
-    """Disable robosuite's JOINT_POSITION interpolator for exact absolute-goal tracking."""
-
-    controller = getattr(_first_libero_robot(env), "controller", None)
-    if controller is None:
-        raise ValueError("LIBERO env robot does not expose a controller for interpolator override.")
-    controller.interpolator = None
-
-
-def _raw_gripper_command_for_substep(
-    command: float,
-    *,
-    substep_index: int,
-    substeps: int,
-    policy: str,
-) -> float:
-    if policy == "repeat":
-        return float(command)
-    if policy == "first_only":
-        return float(command) if int(substep_index) == 0 else 0.0
-    if policy == "last_only":
-        return float(command) if int(substep_index) == int(substeps) - 1 else 0.0
-    raise ValueError(f"Unknown gripper substep policy: {policy!r}.")
-
-
-def _gripper_opening(gripper_positions: np.ndarray) -> float:
-    values = np.asarray(gripper_positions, dtype=np.float32).reshape(-1)
-    if values.size >= 2:
-        return float(values[0] - values[1])
-    return float(values[0])
-
-
-def _gripper_qpos_tracking_command(
-    *,
-    current_gripper_positions: np.ndarray,
-    target_gripper_positions: np.ndarray,
-    tolerance: float = 0.001,
-) -> float:
-    target_values = np.asarray(target_gripper_positions, dtype=np.float32).reshape(-1)
-    current_values = np.asarray(current_gripper_positions, dtype=np.float32).reshape(-1)
-    if target_values.size == 1:
-        current_value = float(current_values[0])
-        target_value = float(target_values[0])
-    else:
-        current_value = _gripper_opening(current_values)
-        target_value = _gripper_opening(target_values)
-    if current_value > target_value + float(tolerance):
-        return 1.0
-    if current_value < target_value - float(tolerance):
-        return -1.0
-    return 0.0
-
-
-def _first_libero_robot(env: Any) -> Any:
-    robots = getattr(env, "robots", None)
-    if robots is None:
-        inner_env = getattr(env, "env", None)
-        robots = getattr(inner_env, "robots", None)
-    if not robots:
-        raise ValueError("LIBERO env does not expose any robot handles.")
-    return robots[0]
 
 
 class LiberoBenchmarkAdapter:
@@ -801,337 +535,13 @@ class LiberoBenchmarkAdapter:
 
     def _absolute_joint_delta_integration_scale(self, *, joint_dim: int) -> np.ndarray:
         if self.config.absolute_joint_delta_integration_scale is not None:
-            return _joint_scale_array(self.config.absolute_joint_delta_integration_scale, joint_dim=joint_dim)
+            return _joint_scale_array(
+                self.config.absolute_joint_delta_integration_scale,
+                joint_dim=joint_dim,
+            )
         if self._joint_delta_limit is not None:
             return _joint_scale_array(self._joint_delta_limit, joint_dim=joint_dim)
         return _joint_scale_array(0.05, joint_dim=joint_dim)
-
-
-def compute_osc_pose_action(
-    *,
-    current_pose: PoseSequence,
-    desired_pose: PoseSequence,
-    control_config: LiberoControlConfig,
-    gripper_representation: str,
-) -> np.ndarray:
-    """Convert one desired absolute pose into one normalized `OSC_POSE` action."""
-
-    position_error = desired_pose.position - current_pose.position
-
-    delta_quaternion = quaternion_multiply(
-        desired_pose.quaternion.unsqueeze(0),
-        quaternion_inverse(current_pose.quaternion).unsqueeze(0),
-    )[0]
-    delta_axis_angle = quaternion_to_axis_angle(normalize_quaternion(delta_quaternion.unsqueeze(0)))[0]
-
-    position_command = torch.clamp(position_error / control_config.max_pos_delta_m, min=-1.0, max=1.0)
-    rotation_command = torch.clamp(delta_axis_angle / control_config.max_rot_delta_rad, min=-1.0, max=1.0)
-
-    if desired_pose.gripper is None:
-        gripper_command = torch.tensor([0.0], dtype=torch.float32)
-    elif gripper_representation == "action_command":
-        # When the public target carries the raw LIBERO gripper command, replay
-        # should pass that command through directly instead of re-interpreting
-        # it as a finger-joint state target.
-        gripper_command = desired_pose.gripper[0:1].clamp(min=-1.0, max=1.0).to(dtype=torch.float32)
-    elif current_pose.gripper is None:
-        gripper_command = torch.tensor([0.0], dtype=torch.float32)
-    else:
-        current_public = _project_gripper_state(
-            current_pose.gripper,
-            gripper_representation=gripper_representation,
-        )
-
-        if gripper_representation == "all_channels":
-            # LIBERO exposes two finger joints in state. When the public target
-            # keeps both channels, interpret them via the jaw opening.
-            current_value = current_pose.gripper[0] - current_pose.gripper[1]
-            desired_value = desired_pose.gripper[0] - desired_pose.gripper[1]
-            open_threshold = control_config.gripper_open_threshold
-            close_threshold = control_config.gripper_close_threshold
-            tolerance = control_config.gripper_position_tolerance
-        elif gripper_representation == "first_channel":
-            # The default public representation keeps only the first finger
-            # qpos. For Panda this is roughly half of the jaw opening.
-            current_value = current_public[0]
-            desired_value = desired_pose.gripper[0]
-            open_threshold = control_config.gripper_open_threshold * 0.5
-            close_threshold = control_config.gripper_close_threshold * 0.5
-            tolerance = control_config.gripper_position_tolerance * 0.5
-        else:
-            raise ValueError(f"Unsupported gripper representation: {gripper_representation}")
-
-        error_value = desired_value - current_value
-        if desired_value >= open_threshold:
-            gripper_command = torch.tensor([-1.0], dtype=torch.float32)
-        elif desired_value <= close_threshold:
-            gripper_command = torch.tensor([1.0], dtype=torch.float32)
-        elif torch.abs(error_value) <= tolerance:
-            gripper_command = torch.tensor([0.0], dtype=torch.float32)
-        else:
-            gripper_command = torch.clamp(
-                -error_value / control_config.max_gripper_delta,
-                min=-1.0,
-                max=1.0,
-            ).reshape(1)
-
-    action = torch.cat([position_command, rotation_command, gripper_command], dim=0)
-    return action.detach().cpu().numpy().astype(np.float32)
-
-
-def integrated_eef6d_target_to_osc_action(
-    *,
-    previous_target: PoseSequence,
-    target: np.ndarray,
-    position_scale: float,
-    rotation_scale: float,
-) -> tuple[np.ndarray, PoseSequence]:
-    """Recover one LIBERO OSC action from a pseudo-absolute EEF-6D target.
-
-    The target contract is `[absolute_xyz, continuous_rotation_6d, gripper]`.
-    It is intentionally differenced against the previous pseudo-target, not the
-    measured current pose, so dataset construction can be exactly invertible
-    back to the source 7D OSC command.
-    """
-
-    action, target_position, target_rotation = _integrated_eef6d_target_to_osc_action_from_arrays(
-        previous_position=previous_target.position.detach().cpu().numpy(),
-        previous_rotation_matrix=_quaternion_xyzw_to_rotation_matrix_np(previous_target.quaternion.detach().cpu().numpy()),
-        target=target,
-        position_scale=position_scale,
-        rotation_scale=rotation_scale,
-    )
-    next_target = PoseSequence(
-        position=torch.as_tensor(target_position, dtype=torch.float32),
-        quaternion=rotation_matrix_to_quaternion(torch.as_tensor(target_rotation, dtype=torch.float32).unsqueeze(0))[0],
-        gripper=torch.as_tensor([float(action[6])], dtype=torch.float32),
-    )
-    return action, next_target
-
-
-def _integrated_eef6d_target_to_osc_action_from_arrays(
-    *,
-    previous_position: np.ndarray,
-    previous_rotation_matrix: np.ndarray,
-    target: np.ndarray,
-    position_scale: float,
-    rotation_scale: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    payload = np.asarray(target, dtype=np.float32).reshape(-1)
-    if payload.shape[0] < 10:
-        raise ValueError(f"Expected integrated EEF6D target with at least 10 dims, got {payload.shape[0]}.")
-    if abs(float(position_scale)) <= 1e-12 or abs(float(rotation_scale)) <= 1e-12:
-        raise ValueError("Integrated EEF position and rotation scales must be nonzero.")
-    target_position = payload[0:3].astype(np.float32, copy=True)
-    target_rotation = _continuous_6d_to_rotation_matrix_np(payload[3:9]).astype(np.float32, copy=False)
-    delta_axis_angle = _relative_rotation_matrix_to_axis_angle_np(
-        target_rotation,
-        np.asarray(previous_rotation_matrix, dtype=np.float32),
-    )
-    position_command = np.clip(
-        (target_position - np.asarray(previous_position, dtype=np.float32)) / float(position_scale),
-        -1.0,
-        1.0,
-    )
-    rotation_command = np.clip(delta_axis_angle / float(rotation_scale), -1.0, 1.0)
-    action = np.concatenate(
-        [
-            position_command.astype(np.float32, copy=False),
-            rotation_command.astype(np.float32, copy=False),
-            np.asarray([float(np.clip(payload[9], -1.0, 1.0))], dtype=np.float32),
-        ],
-        axis=0,
-    )
-    return action.astype(np.float32, copy=False), target_position, target_rotation.astype(np.float32, copy=False)
-
-
-def _quaternion_xyzw_to_rotation_matrix_np(quaternion: np.ndarray) -> np.ndarray:
-    quat = np.asarray(quaternion, dtype=np.float64).reshape(4)
-    quat = quat / max(float(np.linalg.norm(quat)), 1e-12)
-    x, y, z, w = quat
-    return np.asarray(
-        [
-            [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
-            [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
-            [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
-        ],
-        dtype=np.float32,
-    )
-
-
-def _continuous_6d_to_rotation_matrix_np(rotation_6d: np.ndarray) -> np.ndarray:
-    rot = np.asarray(rotation_6d, dtype=np.float64).reshape(6)
-    first = _normalize_np(rot[0:3])
-    second_raw = rot[3:6] - float(np.dot(first, rot[3:6])) * first
-    if float(np.linalg.norm(second_raw)) <= 1e-8:
-        seed = np.asarray([0.0, 1.0, 0.0] if abs(float(first[0])) > 0.9 else [1.0, 0.0, 0.0], dtype=np.float64)
-        second_raw = np.cross(first, seed)
-    second = _normalize_np(second_raw)
-    third = np.cross(first, second)
-    return np.stack([first, second, third], axis=-1).astype(np.float32)
-
-
-def _normalize_np(vector: np.ndarray) -> np.ndarray:
-    arr = np.asarray(vector, dtype=np.float64)
-    return arr / max(float(np.linalg.norm(arr)), 1e-12)
-
-
-def _relative_rotation_matrix_to_axis_angle_np(target: np.ndarray, previous: np.ndarray) -> np.ndarray:
-    delta = np.asarray(target, dtype=np.float64) @ np.asarray(previous, dtype=np.float64).T
-    return _rotation_matrix_to_axis_angle_np(delta)
-
-
-def _rotation_matrix_to_axis_angle_np(matrix: np.ndarray) -> np.ndarray:
-    mat = np.asarray(matrix, dtype=np.float64)
-    trace = float(np.trace(mat))
-    angle = float(np.arccos(np.clip((trace - 1.0) * 0.5, -1.0, 1.0)))
-    vee = np.asarray(
-        [
-            mat[2, 1] - mat[1, 2],
-            mat[0, 2] - mat[2, 0],
-            mat[1, 0] - mat[0, 1],
-        ],
-        dtype=np.float64,
-    )
-    if angle <= 1e-6:
-        return (0.5 * vee).astype(np.float32)
-    return (vee / max(2.0 * float(np.sin(angle)), 1e-12) * angle).astype(np.float32)
-
-
-def track_relative_targets_in_libero_env(
-    *,
-    task_text: str,
-    relative_pose_targets: torch.Tensor,
-    rotation_representation: str,
-    reference_position: torch.Tensor,
-    reference_quaternion: torch.Tensor,
-    gripper_representation: str = "first_channel",
-    init_state_index: int = 0,
-    control_config: LiberoControlConfig | None = None,
-    camera_obs_keys: tuple[str, ...] = ("agentview_image", "robot0_eye_in_hand_image"),
-    camera_height: int = 256,
-    camera_width: int = 256,
-    project_root: Path | None = None,
-) -> LiberoTrackingResult:
-    """Replay one public WAM trajectory in the real LIBERO simulator.
-
-    The public representation is reference-relative. Replay must therefore use
-    the same reference pose that was used to build the public targets in the
-    dataset adapter. For episode-mode LIBERO targets that is the first dataset
-    frame; for sample-mode targets it is the sample's anchor state.
-    """
-
-    if control_config is None:
-        control_config = LiberoControlConfig()
-
-    task_spec = resolve_libero_task(task_text, project_root=project_root)
-    init_states = load_libero_task_init_states(task_spec, project_root=project_root)
-    init_state_index = int(np.clip(init_state_index, 0, len(init_states) - 1))
-
-    env = build_libero_offscreen_env(
-        task_spec,
-        camera_height=camera_height,
-        camera_width=camera_width,
-        horizon=max(5000, int(relative_pose_targets.shape[0] * control_config.control_substeps_per_target + 32)),
-        ignore_done=True,
-        project_root=project_root,
-    )
-    try:
-        obs = env.reset()
-        obs = env.set_init_state(init_states[init_state_index])
-        desired_pose = reconstruct_absolute_pose_targets(
-            reference_position=reference_position,
-            reference_quaternion=reference_quaternion,
-            relative_pose_targets=relative_pose_targets,
-            rotation_representation=rotation_representation,
-        )
-        aligned_gripper_targets = _align_replay_gripper_targets(
-            desired_pose.gripper,
-            gripper_representation=gripper_representation,
-            delay_steps=control_config.action_command_delay_steps,
-        )
-
-        tracked_positions: list[torch.Tensor] = []
-        tracked_quaternions: list[torch.Tensor] = []
-        tracked_gripper: list[torch.Tensor] = []
-        rendered_target_indices: list[int] = []
-        camera_frames: dict[str, list[np.ndarray]] = {camera_key: [] for camera_key in camera_obs_keys}
-
-        for target_index in range(relative_pose_targets.shape[0]):
-            target_pose = PoseSequence(
-                position=desired_pose.position[target_index],
-                quaternion=desired_pose.quaternion[target_index],
-                gripper=None if aligned_gripper_targets is None else aligned_gripper_targets[target_index],
-            )
-            for _ in range(control_config.control_substeps_per_target):
-                current_pose = extract_pose_from_obs(obs)
-                action = compute_osc_pose_action(
-                    current_pose=current_pose,
-                    desired_pose=target_pose,
-                    control_config=control_config,
-                    gripper_representation=gripper_representation,
-                )
-                obs, _, _, _ = env.step(action)
-                rendered_target_indices.append(target_index)
-                for camera_key in camera_obs_keys:
-                    camera_frames[camera_key].append(np.array(obs[camera_key], copy=True))
-
-            final_pose = extract_pose_from_obs(obs)
-            tracked_positions.append(final_pose.position)
-            tracked_quaternions.append(final_pose.quaternion)
-            if final_pose.gripper is not None:
-                if gripper_representation == "action_command":
-                    tracked_gripper.append(torch.tensor([float(action[-1])], dtype=torch.float32))
-                    continue
-                tracked_gripper.append(
-                    _project_gripper_state(
-                        final_pose.gripper,
-                        gripper_representation=gripper_representation,
-                    )
-                )
-
-        tracked_pose = PoseSequence(
-            position=torch.stack(tracked_positions, dim=0),
-            quaternion=torch.stack(tracked_quaternions, dim=0),
-            gripper=torch.stack(tracked_gripper, dim=0) if tracked_gripper else None,
-        )
-
-        position_error_per_target = torch.linalg.vector_norm(
-            tracked_pose.position - desired_pose.position,
-            dim=-1,
-        )
-        rotation_error_deg_per_target = quaternion_angular_error_degrees(
-            tracked_pose.quaternion,
-            desired_pose.quaternion,
-        )
-        if desired_pose.gripper is not None and tracked_pose.gripper is not None:
-            gripper_error_per_target = torch.linalg.vector_norm(
-                tracked_pose.gripper - aligned_gripper_targets,
-                dim=-1,
-            )
-        else:
-            gripper_error_per_target = torch.zeros_like(position_error_per_target)
-
-        return LiberoTrackingResult(
-            task_spec=task_spec,
-            init_state_index=init_state_index,
-            desired_pose=desired_pose,
-            tracked_pose=tracked_pose,
-            position_error_per_target=position_error_per_target,
-            rotation_error_deg_per_target=rotation_error_deg_per_target,
-            gripper_error_per_target=gripper_error_per_target,
-            camera_frames=camera_frames,
-            rendered_target_indices=rendered_target_indices,
-        )
-    finally:
-        env.close()
-
-
-def quaternion_angular_error_degrees(lhs_xyzw: torch.Tensor, rhs_xyzw: torch.Tensor) -> torch.Tensor:
-    lhs = normalize_quaternion(lhs_xyzw)
-    rhs = normalize_quaternion(rhs_xyzw)
-    dot = (lhs * rhs).sum(dim=-1).abs().clamp(max=1.0)
-    return torch.rad2deg(2.0 * torch.arccos(dot))
 
 
 def _source_action_from_model_action(
@@ -1149,80 +559,3 @@ def _source_action_from_model_action(
     source = denormalize_action_targets(source, normalization=data_config.action_target.normalization)
     array = source.detach().cpu().numpy().astype(np.float32)
     return array[0] if squeeze else array
-
-
-def _joint_limit_array(
-    value: float | tuple[float, ...] | np.ndarray,
-    *,
-    joint_dim: int,
-) -> np.ndarray:
-    array = np.asarray(value, dtype=np.float32).reshape(-1)
-    if array.size == 1:
-        array = np.full(joint_dim, float(array[0]), dtype=np.float32)
-    if array.size != joint_dim:
-        raise ValueError(f"Expected {joint_dim} joint delta limits, got {array.size}.")
-    if np.any(array <= 0.0):
-        raise ValueError("Joint delta limits must be positive.")
-    return array.astype(np.float32)
-
-
-def _joint_scale_array(
-    value: float | tuple[float, ...] | np.ndarray,
-    *,
-    joint_dim: int,
-) -> np.ndarray:
-    array = np.asarray(value, dtype=np.float32).reshape(-1)
-    if array.size == 1:
-        array = np.full(joint_dim, float(array[0]), dtype=np.float32)
-    if array.size != joint_dim:
-        raise ValueError(f"Expected {joint_dim} joint integration scales, got {array.size}.")
-    if np.any(np.isclose(array, 0.0)):
-        raise ValueError("Joint integration scales must be nonzero.")
-    return array.astype(np.float32)
-
-
-def _project_gripper_state(gripper_state: torch.Tensor, *, gripper_representation: str) -> torch.Tensor:
-    """Expose one env gripper state in the same public representation as targets."""
-
-    if gripper_state.ndim != 1:
-        raise ValueError(f"Expected one gripper state vector, got shape {tuple(gripper_state.shape)}.")
-    if gripper_representation == "action_command":
-        raise ValueError(
-            "action_command is a control-domain target and cannot be recovered from env gripper state alone."
-        )
-    return collapse_gripper_state(
-        gripper_state.unsqueeze(0),
-        gripper_representation=gripper_representation,
-    )[0]
-
-
-def _align_replay_gripper_targets(
-    gripper_targets: torch.Tensor | None,
-    *,
-    gripper_representation: str,
-    delay_steps: int,
-) -> torch.Tensor | None:
-    """Shift command-domain gripper targets to the state they actually produce.
-
-    LIBERO's 1D action gripper command is causal: `action[t]` drives the
-    transition from state `t` toward state `t+1`. For replay we compare against
-    pose targets at state-aligned timesteps, so the command must be delayed by
-    one target to avoid visibly closing / opening too early.
-    """
-
-    if gripper_targets is None:
-        return None
-    if gripper_representation != "action_command":
-        return gripper_targets
-    if delay_steps < 0:
-        raise ValueError(f"Expected non-negative action_command_delay_steps, got {delay_steps}.")
-
-    aligned = torch.zeros_like(gripper_targets)
-    if delay_steps == 0:
-        aligned.copy_(gripper_targets)
-        return aligned
-    if delay_steps >= gripper_targets.shape[0]:
-        return aligned
-
-    aligned[delay_steps:] = gripper_targets[:-delay_steps]
-    return aligned

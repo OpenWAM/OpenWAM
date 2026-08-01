@@ -1066,7 +1066,7 @@ def resolve_task_ids(
 
     try:
         try:
-            from open_wam.integrations.libero_env import resolve_libero_task
+            from open_wam.integrations.libero_tasks import resolve_libero_task
         except Exception as exc:
             raise RuntimeError(
                 "Could not import the LIBERO task resolver. Refusing to fall back to metadata task_index "
@@ -1126,7 +1126,7 @@ def resolve_libero_init_counts(
 
     try:
         try:
-            from open_wam.integrations.libero_env import (
+            from open_wam.integrations.libero_tasks import (
                 LiberoTaskSpec,
                 ensure_local_libero_config,
                 load_libero_task_init_states,

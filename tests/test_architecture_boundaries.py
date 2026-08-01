@@ -2557,10 +2557,16 @@ def test_libero_mot_drivers_delegate_to_the_package_episode_runner() -> None:
         assert policy_state_field in observed_history_source
 
 
-def test_libero_task_discovery_has_one_integration_owner() -> None:
+def test_libero_integration_roles_have_one_owner() -> None:
     task_path = PACKAGE_ROOT / "integrations" / "libero_tasks.py"
+    runtime_path = PACKAGE_ROOT / "integrations" / "libero_runtime.py"
+    control_path = PACKAGE_ROOT / "integrations" / "libero_control.py"
+    tracking_path = PACKAGE_ROOT / "integrations" / "libero_tracking.py"
     env_path = PACKAGE_ROOT / "integrations" / "libero_env.py"
     task_definitions = _top_level_definitions(task_path)
+    runtime_definitions = _top_level_definitions(runtime_path)
+    control_definitions = _top_level_definitions(control_path)
+    tracking_definitions = _top_level_definitions(tracking_path)
     env_definitions = _top_level_definitions(env_path)
     task_contract = {
         "LiberoTaskSpec",
@@ -2573,9 +2579,52 @@ def test_libero_task_discovery_has_one_integration_owner() -> None:
 
     assert task_contract <= task_definitions
     assert task_contract.isdisjoint(env_definitions)
-    assert "open_wam.integrations.libero_tasks" in _absolute_imports_for_file(
-        env_path
-    )
+    runtime_contract = {
+        "build_libero_control_env",
+        "build_libero_offscreen_env",
+    }
+    control_contract = {
+        "LiberoControlConfig",
+        "absolute_joint_position_to_libero_joint_delta_action",
+        "compute_osc_pose_action",
+        "disable_libero_joint_position_controller_interpolator",
+        "extract_gripper_positions_from_obs",
+        "extract_joint_positions_from_obs",
+        "extract_pose_from_obs",
+        "gripper_command_for_substep",
+        "gripper_qpos_tracking_command",
+        "integrated_eef6d_target_to_osc_action",
+        "integrated_eef6d_target_to_osc_action_from_arrays",
+        "project_libero_gripper_state",
+        "quaternion_angular_error_degrees",
+        "quaternion_xyzw_to_rotation_matrix",
+        "resolve_libero_joint_delta_limit",
+        "resolve_libero_joint_limit_array",
+        "resolve_libero_joint_scale_array",
+        "set_libero_joint_position_controller_gain",
+        "step_libero_absolute_joint_position_goal",
+    }
+    tracking_contract = {
+        "LiberoTrackingResult",
+        "track_relative_targets_in_libero_env",
+    }
+    assert runtime_contract <= runtime_definitions
+    assert control_contract <= control_definitions
+    assert tracking_contract <= tracking_definitions
+    assert runtime_contract.isdisjoint(env_definitions)
+    assert control_contract.isdisjoint(env_definitions)
+    assert tracking_contract.isdisjoint(env_definitions)
+    assert env_definitions == {
+        "LiberoBenchmarkAdapter",
+        "LiberoEnvConfig",
+        "_source_action_from_model_action",
+    }
+    assert {
+        "open_wam.integrations.libero_control",
+        "open_wam.integrations.libero_runtime",
+        "open_wam.integrations.libero_tasks",
+        "open_wam.integrations.libero_tracking",
+    } <= _absolute_imports_for_file(env_path)
 
 
 def test_public_config_enums_are_declared_once() -> None:

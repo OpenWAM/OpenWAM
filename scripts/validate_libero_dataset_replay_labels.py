@@ -27,7 +27,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from open_wam.integrations.libero_env import (  # noqa: E402
+from open_wam.integrations.libero_tasks import (  # noqa: E402
     LiberoTaskSpec,
     ensure_local_libero_config,
     load_libero_task_init_states,
