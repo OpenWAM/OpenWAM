@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from datetime import datetime, timezone
 import json
 import os
@@ -30,6 +30,7 @@ from open_wam.data.replay_status import (  # noqa: E402
 from open_wam.configs.enums import ParallelStreamVariantProfile  # noqa: E402
 from open_wam.configs import load_experiment_config  # noqa: E402
 import open_wam.evals.sampled_eval_reporting as sampled_eval_reporting  # noqa: E402
+import open_wam.evals.sampled_eval_planning as sampled_eval_planning  # noqa: E402
 import open_wam.evals.sampled_eval_sampling as sampled_eval_sampling  # noqa: E402
 import open_wam.runtime.checkpoint_artifacts as checkpoint_artifacts  # noqa: E402
 
@@ -64,6 +65,23 @@ select_distribution_task_episodes = sampled_eval_sampling.select_distribution_ta
 select_full_task_init_axis = sampled_eval_sampling.select_full_task_init_axis
 select_sampled_episodes = sampled_eval_sampling.select_sampled_episodes
 select_task_episode_axis = sampled_eval_sampling.select_task_episode_axis
+MethodSpec = sampled_eval_planning.SampledEvalMethodSpec
+SchedulerSpec = sampled_eval_planning.SampledEvalSchedulerSpec
+TargetRequest = sampled_eval_planning.SampledEvalTargetRequest
+CheckpointSpec = sampled_eval_planning.SampledEvalCheckpointSpec
+EvalCase = sampled_eval_planning.SampledEvalCase
+METHODS = sampled_eval_planning.SAMPLED_EVAL_METHODS
+SCHEDULERS = sampled_eval_planning.SAMPLED_EVAL_SCHEDULERS
+parse_target_requests = sampled_eval_planning.parse_sampled_eval_target_requests
+select_by_key = sampled_eval_planning.select_sampled_eval_specs_by_key
+append_optional_arg = sampled_eval_planning._append_optional_arg
+extra_args_for_case = sampled_eval_planning._sampled_eval_case_extra_args
+extra_args_for_transformer_only_input = (
+    sampled_eval_planning._extra_args_for_transformer_only_input
+)
+scheduler_flags_for = sampled_eval_planning.sampled_eval_scheduler_flags
+scheduler_suffix_for = sampled_eval_planning.sampled_eval_scheduler_suffix
+sanitize_label = sampled_eval_planning.sanitize_sampled_eval_label
 CheckpointResolution = checkpoint_artifacts.CheckpointArtifactResolution
 checkpoint_step = checkpoint_artifacts.checkpoint_step
 find_checkpoint_file = checkpoint_artifacts.find_checkpoint_state_file
@@ -81,7 +99,7 @@ state_file_in_dir = checkpoint_artifacts.state_file_in_dir
 transformer_dir_from_resolved_config = checkpoint_artifacts.transformer_dir_from_resolved_config
 _has_transformer_weights = checkpoint_artifacts.has_transformer_weights
 
-DEFAULT_CONFIG = "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
+DEFAULT_CONFIG = sampled_eval_planning.SAMPLED_EVAL_DEFAULT_CONFIG
 DEFAULT_BASE_CHECKPOINT = (
     "/data/openwam_exp/runs/parallel_stream_libero_lingbot_exact_heng_compatible/checkpoints/checkpoint_step_400"
 )
@@ -146,162 +164,6 @@ def reject_gjd_checkpoint_specs(
         "Generic sampled eval may silently change frontend, startup, inference-window, ablation, "
         "or config-override semantics for GJD."
     )
-
-
-@dataclass(frozen=True)
-class MethodSpec:
-    key: str
-    label: str
-    config: str
-    reference_assets_device_policy: str
-    async_low_watermark: int
-    extra_args: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class SchedulerSpec:
-    key: str
-    label: str
-    flags: tuple[str, ...]
-    use_method_low_watermark: bool = False
-
-
-@dataclass(frozen=True)
-class TargetRequest:
-    method_key: str
-    checkpoint_key: str
-    label: str | None
-    checkpoint: str
-
-
-@dataclass(frozen=True)
-class CheckpointSpec:
-    key: str
-    label: str
-    checkpoint: str
-    method_key: str = "m1"
-    method_label: str = "M1 exact"
-    config: str = DEFAULT_CONFIG
-    checkpoint_raw: str | None = None
-    checkpoint_file: str | None = None
-    checkpoint_dir: str | None = None
-    runtime_transformer_dir: str | None = None
-    runtime_transformer_source: str | None = None
-    reference_assets_device_policy: str = "runtime"
-    extra_args: tuple[str, ...] = ()
-    preflight_problem: str | None = None
-
-
-@dataclass(frozen=True)
-class EvalCase:
-    index: int
-    sample_index: int
-    checkpoint_key: str
-    checkpoint_label: str
-    checkpoint: str
-    checkpoint_raw: str | None
-    checkpoint_file: str | None
-    checkpoint_dir: str | None
-    runtime_transformer_dir: str | None
-    runtime_transformer_source: str | None
-    method_key: str
-    method_label: str
-    config: str
-    scheduler_key: str
-    scheduler_label: str
-    benchmark: str
-    task_id: int
-    task_text: str
-    task_name: str | None
-    dataset_episode_index: int
-    episode_id: int
-    init_id: int
-    episode_idx: int
-    replay_status: str | None
-    seed: int
-    output_dir: str
-    suffix: str
-    summary_glob: str
-    command_template: list[str]
-    preflight_problem: str | None = None
-    resolved_init_state_index: int | None = None
-    init_id_source: str = "task_local_rank"
-
-
-METHODS: tuple[MethodSpec, ...] = (
-    MethodSpec(
-        key="m1",
-        label="M1 exact",
-        config=DEFAULT_CONFIG,
-        reference_assets_device_policy="runtime",
-        async_low_watermark=8,
-        extra_args=("--merge-checkpoint-runtime-config",),
-    ),
-    MethodSpec(
-        key="m2",
-        label="M2 joint denoise",
-        config="configs/experiments/parallel_stream_libero_lingbot_joint_denoise_heng_compatible.yaml",
-        reference_assets_device_policy="runtime",
-        async_low_watermark=12,
-        extra_args=("--merge-checkpoint-runtime-config",),
-    ),
-    MethodSpec(
-        key="m5",
-        label="M5 action-only MoT",
-        config="configs/evals/mot_libero_full_segment_non_joint_action_only_eval.yaml",
-        reference_assets_device_policy="cpu_offload",
-        async_low_watermark=16,
-    ),
-)
-
-
-SCHEDULERS: tuple[SchedulerSpec, ...] = (
-    SchedulerSpec(
-        key="blocking_control",
-        label="blocking_control",
-        flags=(
-            "--planner-mode",
-            "history_only",
-            "--sequence-empty-plan-policy",
-            "wait_for_replan",
-            "--fallback-history-policy",
-            "include_fallback_history",
-            "--startup-open-loop-chunks",
-            "0",
-            "--replan-low-watermark-actions",
-            "0",
-        ),
-    ),
-    SchedulerSpec(
-        key="freeze_until_clean_chunk",
-        label="freeze_until_clean_chunk",
-        flags=(
-            "--planner-mode",
-            "history_only",
-            "--sequence-empty-plan-policy",
-            "fallback",
-            "--fallback-history-policy",
-            "freeze_until_clean_chunk",
-            "--replan-low-watermark-actions",
-            "0",
-        ),
-    ),
-    SchedulerSpec(
-        key="async_history_first",
-        label="async_history_first",
-        flags=(
-            "--planner-mode",
-            "async_history_first",
-            "--sequence-empty-plan-policy",
-            "fallback",
-            "--fallback-history-policy",
-            "freeze_until_clean_chunk",
-            "--startup-open-loop-chunks",
-            "1",
-        ),
-        use_method_low_watermark=True,
-    ),
-)
 
 
 def main() -> None:
@@ -778,108 +640,19 @@ def main() -> None:
     raise SystemExit(1 if failed else 0)
 
 
-def parse_target_requests(values: list[str]) -> list[TargetRequest]:
-    requests: list[TargetRequest] = []
-    seen: set[tuple[str, str]] = set()
-    for raw_value in values:
-        if "=" not in raw_value:
-            raise ValueError(
-                f"Invalid --target {raw_value!r}; expected METHOD:KEY[:LABEL]=CHECKPOINT."
-            )
-        raw_selector, checkpoint = raw_value.split("=", 1)
-        pieces = [piece.strip() for piece in raw_selector.split(":", 2)]
-        if len(pieces) < 2 or not pieces[0] or not pieces[1] or not checkpoint.strip():
-            raise ValueError(
-                f"Invalid --target {raw_value!r}; expected METHOD:KEY[:LABEL]=CHECKPOINT."
-            )
-        method_key = pieces[0].lower()
-        checkpoint_key = sanitize_label(pieces[1])
-        label = pieces[2].strip() if len(pieces) == 3 and pieces[2].strip() else None
-        duplicate_key = (method_key, checkpoint_key)
-        if duplicate_key in seen:
-            raise ValueError(f"Duplicate --target for {method_key}:{checkpoint_key}.")
-        seen.add(duplicate_key)
-        requests.append(
-            TargetRequest(
-                method_key=method_key,
-                checkpoint_key=checkpoint_key,
-                label=label,
-                checkpoint=checkpoint.strip(),
-            )
-        )
-    return requests
-
-
-def select_by_key(items: tuple[Any, ...], selector: str, *, field_name: str) -> list[Any]:
-    by_key = {item.key: item for item in items}
-    selected: list[Any] = []
-    seen: set[str] = set()
-    for raw_key in selector.split(","):
-        key = raw_key.strip()
-        if not key:
-            continue
-        if key not in by_key:
-            valid = ", ".join(sorted(by_key))
-            raise ValueError(f"Unknown {field_name} key {key!r}; expected one of: {valid}.")
-        if key in seen:
-            continue
-        seen.add(key)
-        selected.append(by_key[key])
-    if not selected:
-        raise ValueError(f"{field_name} selector did not select any entries.")
-    return selected
-
-
 def resolve_checkpoint_specs(
     *,
     args: argparse.Namespace,
     selected_methods: list[MethodSpec],
     target_requests: list[TargetRequest],
 ) -> list[CheckpointSpec]:
-    method_by_key = {method.key: method for method in METHODS}
-    selected_method_keys = {method.key for method in selected_methods}
     requests = target_requests or default_target_requests(args=args, selected_methods=selected_methods)
-    specs: list[CheckpointSpec] = []
-    seen_keys: set[str] = set()
-    for request in requests:
-        if request.method_key not in method_by_key:
-            valid = ", ".join(sorted(method_by_key))
-            raise ValueError(f"Unknown target method {request.method_key!r}; expected one of: {valid}.")
-        if request.method_key not in selected_method_keys:
-            raise ValueError(
-                f"Target method {request.method_key!r} is not included in --methods "
-                f"({', '.join(sorted(selected_method_keys))})."
-            )
-        method = method_by_key[request.method_key]
-        key = sanitize_label(f"{method.key}_{request.checkpoint_key}")
-        if key in seen_keys:
-            raise ValueError(f"Duplicate resolved target key {key!r}.")
-        seen_keys.add(key)
-        resolution = resolve_checkpoint_input(request.checkpoint)
-        config = args.cfg or method.config
-        reference_policy = args.reference_assets_device_policy or method.reference_assets_device_policy
-        label = request.label or f"{method.label} {request.checkpoint_key}"
-        uses_transformer_only_input = resolution.checkpoint_file is None and resolution.runtime_transformer_dir is not None
-        extra_args = extra_args_for_transformer_only_input(method.extra_args) if uses_transformer_only_input else method.extra_args
-        specs.append(
-            CheckpointSpec(
-                key=key,
-                label=label,
-                checkpoint=resolution.checkpoint_file or request.checkpoint,
-                method_key=method.key,
-                method_label=method.label,
-                config=config,
-                checkpoint_raw=resolution.raw,
-                checkpoint_file=resolution.checkpoint_file,
-                checkpoint_dir=resolution.checkpoint_dir,
-                runtime_transformer_dir=resolution.runtime_transformer_dir,
-                runtime_transformer_source=resolution.runtime_transformer_source,
-                reference_assets_device_policy=reference_policy,
-                extra_args=extra_args,
-                preflight_problem=resolution.problem,
-            )
-        )
-    return specs
+    return sampled_eval_planning.resolve_sampled_eval_checkpoint_specs(
+        selected_methods=selected_methods,
+        target_requests=requests,
+        config_override=args.cfg,
+        reference_assets_device_policy_override=args.reference_assets_device_policy,
+    )
 
 
 def default_target_requests(*, args: argparse.Namespace, selected_methods: list[MethodSpec]) -> list[TargetRequest]:
@@ -1049,20 +822,6 @@ def resolve_libero_init_counts(
         )
 
 
-def append_optional_arg(
-    command: list[str],
-    flag: str,
-    value: object | None,
-    *,
-    default: object | None = None,
-) -> None:
-    if value is None:
-        return
-    if default is not None and value == default:
-        return
-    command.extend([flag, str(value)])
-
-
 def build_cases(
     sampled_episodes: list[DatasetEpisode],
     *,
@@ -1073,124 +832,32 @@ def build_cases(
     scheduler_spec: SchedulerSpec,
     args: argparse.Namespace,
 ) -> list[EvalCase]:
-    cases: list[EvalCase] = []
-    method_by_key = {method.key: method for method in METHODS}
-    for sample_index, episode in enumerate(sampled_episodes):
-        for checkpoint_spec in checkpoint_specs:
-            method = method_by_key[checkpoint_spec.method_key]
-            scheduler_flags = scheduler_flags_for(method, scheduler_spec)
-            scheduler_suffix = scheduler_suffix_for(method, scheduler_spec)
-            checkpoint_output_dir = output_root / checkpoint_spec.key
-            uses_transformer_dir = (
-                checkpoint_spec.checkpoint_file is None
-                and checkpoint_spec.runtime_transformer_dir is not None
-            )
-            suffix = sanitize_label(
-                f"{checkpoint_spec.key}_{args.run_label}_{benchmark}_sample{sample_index:03d}_"
-                f"dataset_ep{episode.dataset_episode_index:06d}_t{episode.task_id:02d}_init{episode.init_id}_"
-                f"seed{seed}_{scheduler_suffix}"
-            )
-            command = [
-                str(args.python),
-                "scripts/run_libero_realtime_sandbox.py",
-                "--cfg",
-                checkpoint_spec.config,
-                "--task-id",
-                str(episode.task_id),
-                "--episode-idx",
-                str(episode.init_id),
-                "--eval-profile",
-                args.eval_profile,
-                "--realtime-scheduler-profile",
-                scheduler_spec.key,
-                "--runtime-device",
-                "{device}",
-                "--artifact-profile",
-                args.rollout_artifact_profile,
-                "--output-dir",
-                str(checkpoint_output_dir),
-                "--suffix",
-                suffix,
-            ]
-            if uses_transformer_dir:
-                command.extend(["--transformer-dir", str(checkpoint_spec.runtime_transformer_dir)])
-            else:
-                command.extend(["--checkpoint", checkpoint_spec.checkpoint])
-            append_optional_arg(command, "--benchmark", benchmark, default="libero_10")
-            append_optional_arg(command, "--max-actions", args.max_actions)
-            append_optional_arg(command, "--env-horizon", args.env_horizon)
-            append_optional_arg(command, "--target-action-hz", args.target_action_hz)
-            append_optional_arg(command, "--video-fps", args.video_fps)
-            append_optional_arg(command, "--seed", seed, default=0)
-            append_optional_arg(command, "--deadline-miss-policy", args.deadline_miss_policy)
-            append_optional_arg(command, "--pretrained-model-root", getattr(args, "pretrained_model_root", None))
-            append_optional_arg(
-                command,
-                "--reference-assets-device-policy",
-                checkpoint_spec.reference_assets_device_policy,
-                default="runtime",
-            )
-            command.extend(extra_args_for_case(checkpoint_spec, uses_transformer_dir=uses_transformer_dir))
-            command.extend(scheduler_flags)
-            if args.write_fallback_timeline_video:
-                command.append("--write-fallback-timeline-video")
-            if getattr(args, "allow_deprecated_libero_config", False):
-                command.append("--allow-deprecated-libero-config")
-            cases.append(
-                EvalCase(
-                    index=len(cases),
-                    sample_index=sample_index,
-                    checkpoint_key=checkpoint_spec.key,
-                    checkpoint_label=checkpoint_spec.label,
-                    checkpoint=checkpoint_spec.checkpoint,
-                    checkpoint_raw=checkpoint_spec.checkpoint_raw,
-                    checkpoint_file=checkpoint_spec.checkpoint_file,
-                    checkpoint_dir=checkpoint_spec.checkpoint_dir,
-                    runtime_transformer_dir=checkpoint_spec.runtime_transformer_dir,
-                    runtime_transformer_source=checkpoint_spec.runtime_transformer_source,
-                    method_key=checkpoint_spec.method_key,
-                    method_label=checkpoint_spec.method_label,
-                    config=checkpoint_spec.config,
-                    scheduler_key=scheduler_spec.key,
-                    scheduler_label=scheduler_spec.label,
-                    benchmark=benchmark,
-                    task_id=episode.task_id,
-                    task_text=episode.task_text,
-                    task_name=episode.task_name,
-                    dataset_episode_index=episode.dataset_episode_index,
-                    episode_id=int(episode.episode_id),
-                    init_id=int(episode.init_id),
-                    episode_idx=episode.episode_idx,
-                    replay_status=episode.replay_status,
-                    seed=seed,
-                    output_dir=str(checkpoint_output_dir),
-                    suffix=suffix,
-                    summary_glob=str(
-                        checkpoint_output_dir
-                        / benchmark
-                        / f"{episode.task_id}_*"
-                        / f"{episode.init_id}_{suffix}.json"
-                    ),
-                    command_template=command,
-                    preflight_problem=checkpoint_spec.preflight_problem,
-                    resolved_init_state_index=episode.resolved_init_state_index,
-                    init_id_source=episode.init_id_source,
-                )
-            )
-    return cases
-
-
-def extra_args_for_case(checkpoint_spec: CheckpointSpec, *, uses_transformer_dir: bool) -> list[str]:
-    """Return checkpoint-only runtime flags for one sampled-eval command."""
-
-    extra_args = list(checkpoint_spec.extra_args)
-    if uses_transformer_dir:
-        extra_args = list(extra_args_for_transformer_only_input(tuple(extra_args)))
-    return extra_args
-
-
-def extra_args_for_transformer_only_input(extra_args: tuple[str, ...]) -> tuple[str, ...]:
-    return tuple(arg for arg in extra_args if arg != "--merge-checkpoint-runtime-config")
+    return sampled_eval_planning.build_sampled_eval_cases(
+        sampled_episodes,
+        checkpoint_specs=checkpoint_specs,
+        output_root=output_root,
+        benchmark=benchmark,
+        seed=seed,
+        scheduler_spec=scheduler_spec,
+        options=sampled_eval_planning.SampledEvalCaseOptions(
+            python=args.python,
+            run_label=args.run_label,
+            eval_profile=args.eval_profile,
+            rollout_artifact_profile=args.rollout_artifact_profile,
+            max_actions=args.max_actions,
+            env_horizon=args.env_horizon,
+            target_action_hz=args.target_action_hz,
+            video_fps=args.video_fps,
+            deadline_miss_policy=args.deadline_miss_policy,
+            pretrained_model_root=getattr(args, "pretrained_model_root", None),
+            write_fallback_timeline_video=args.write_fallback_timeline_video,
+            allow_deprecated_libero_config=getattr(
+                args,
+                "allow_deprecated_libero_config",
+                False,
+            ),
+        ),
+    )
 
 
 def preflight(
@@ -1199,67 +866,17 @@ def preflight(
     checkpoint_specs: list[CheckpointSpec],
     dataset_problem: str | None,
 ) -> list[dict[str, str]]:
-    missing: list[dict[str, str]] = []
-    if dataset_problem is not None:
-        missing.append({"kind": "dataset", "path": str(args.dataset_root), "reason": dataset_problem})
-    if not args.python.is_file():
-        missing.append({"kind": "python", "path": str(args.python), "reason": "python executable is missing"})
-    local_paths = args.local_paths if args.local_paths.is_absolute() else REPO_ROOT / args.local_paths
-    if not local_paths.is_file():
-        missing.append({"kind": "local_paths", "path": str(local_paths), "reason": "local paths file is missing"})
-    if not args.libero_repo_root.is_dir():
-        missing.append(
-            {
-                "kind": "libero_repo_root",
-                "path": str(args.libero_repo_root),
-                "reason": "LIBERO repo root is missing",
-            }
-        )
-
-    seen_checkpoints: set[str] = set()
-    seen_configs: set[str] = set()
-    for spec in checkpoint_specs:
-        config_path = Path(spec.config)
-        if not config_path.is_absolute():
-            config_path = REPO_ROOT / config_path
-        config_key = str(config_path.resolve())
-        if config_key not in seen_configs:
-            seen_configs.add(config_key)
-            if not config_path.is_file():
-                missing.append({"kind": "config", "path": str(config_path), "reason": "config file is missing"})
-
-        checkpoint_key = spec.checkpoint_file or spec.checkpoint_raw or spec.key
-        if checkpoint_key in seen_checkpoints:
-            continue
-        seen_checkpoints.add(checkpoint_key)
-        if spec.preflight_problem is not None:
-            missing.append(
-                {
-                    "kind": "checkpoint",
-                    "path": str(spec.checkpoint_raw or spec.checkpoint),
-                    "reason": spec.preflight_problem,
-                }
-            )
-    return missing
-
-
-def scheduler_flags_for(method: MethodSpec, scheduler: SchedulerSpec) -> list[str]:
-    flags: list[str] = []
-    if scheduler.key == "freeze_until_clean_chunk":
-        startup_chunks = "1" if method.key == "m5" else "0"
-        if startup_chunks != "0":
-            flags.extend(["--startup-open-loop-chunks", startup_chunks])
-    if scheduler.use_method_low_watermark:
-        flags.extend(["--replan-low-watermark-actions", str(method.async_low_watermark)])
-    return flags
-
-
-def scheduler_suffix_for(method: MethodSpec, scheduler: SchedulerSpec) -> str:
-    if scheduler.use_method_low_watermark:
-        return f"async_k{method.async_low_watermark}_startup1"
-    if method.key == "m5" and scheduler.key == "freeze_until_clean_chunk":
-        return "freeze_until_clean_chunk_startup1"
-    return scheduler.key
+    return sampled_eval_planning.preflight_sampled_eval_cases(
+        options=sampled_eval_planning.SampledEvalPreflightOptions(
+            repo_root=REPO_ROOT,
+            dataset_root=args.dataset_root,
+            python=args.python,
+            local_paths=args.local_paths,
+            libero_repo_root=args.libero_repo_root,
+        ),
+        checkpoint_specs=checkpoint_specs,
+        dataset_problem=dataset_problem,
+    )
 
 
 def run_cases(cases: list[EvalCase], *, args: argparse.Namespace, status_dir: Path, logs_dir: Path) -> None:
@@ -1554,12 +1171,6 @@ def parse_devices(value: str) -> list[str]:
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
     with path.open("r", encoding="utf-8") as handle:
         return [json.loads(line) for line in handle if line.strip()]
-
-
-def sanitize_label(value: str) -> str:
-    sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
-    sanitized = sanitized.strip("._-")
-    return sanitized or "run"
 
 
 if __name__ == "__main__":

@@ -170,6 +170,25 @@ def test_sampled_eval_data_contracts_do_not_import_tensor_stacks() -> None:
 
 
 @pytest.mark.unit
+def test_sampled_eval_planning_public_facade_is_lazy_and_tensor_free() -> None:
+    code = (
+        "import sys, open_wam.evals as evals; "
+        "assert 'open_wam.evals.sampled_eval_planning' not in sys.modules; "
+        "from open_wam.evals import DatasetEpisode, SampledEvalCaseOptions, SampledEvalMethodSpec, parse_sampled_eval_target_requests; "
+        "assert DatasetEpisode.__module__ == 'open_wam.evals.sampled_eval_sampling'; "
+        "assert SampledEvalCaseOptions.__module__ == 'open_wam.evals.sampled_eval_planning'; "
+        "assert SampledEvalMethodSpec.__module__ == 'open_wam.evals.sampled_eval_planning'; "
+        "assert parse_sampled_eval_target_requests(['m1:x=/tmp/x'])[0].checkpoint_key == 'x'; "
+        "assert 'open_wam.evals.sampled_eval_planning' in sys.modules; "
+        "assert 'open_wam.integrations.libero_tasks' not in sys.modules; "
+        "assert 'torch' not in sys.modules; "
+        "assert 'numpy' not in sys.modules; "
+        "assert 'pyarrow' not in sys.modules"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+@pytest.mark.unit
 def test_checkpoint_artifact_contract_does_not_import_tensor_stacks() -> None:
     code = (
         "import sys; "

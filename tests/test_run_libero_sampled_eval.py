@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from open_wam.evals import sampled_eval_sampling
+from open_wam.evals import sampled_eval_planning, sampled_eval_sampling
 from open_wam.runtime import checkpoint_artifacts
 
 
@@ -48,6 +48,23 @@ def test_sampled_eval_script_delegates_selection_contracts_to_package() -> None:
     assert sampled_eval.DatasetEpisode is sampled_eval_sampling.DatasetEpisode
     assert sampled_eval.select_sampled_episodes is sampled_eval_sampling.select_sampled_episodes
     assert sampled_eval.allocate_proportional_counts is sampled_eval_sampling.allocate_proportional_counts
+
+
+def test_sampled_eval_script_delegates_planning_contracts_to_package() -> None:
+    assert sampled_eval.MethodSpec is sampled_eval_planning.SampledEvalMethodSpec
+    assert sampled_eval.SchedulerSpec is sampled_eval_planning.SampledEvalSchedulerSpec
+    assert sampled_eval.TargetRequest is sampled_eval_planning.SampledEvalTargetRequest
+    assert sampled_eval.CheckpointSpec is sampled_eval_planning.SampledEvalCheckpointSpec
+    assert sampled_eval.EvalCase is sampled_eval_planning.SampledEvalCase
+    assert sampled_eval.METHODS is sampled_eval_planning.SAMPLED_EVAL_METHODS
+    assert sampled_eval.SCHEDULERS is sampled_eval_planning.SAMPLED_EVAL_SCHEDULERS
+    assert (
+        sampled_eval.parse_target_requests
+        is sampled_eval_planning.parse_sampled_eval_target_requests
+    )
+    assert sampled_eval.select_by_key is sampled_eval_planning.select_sampled_eval_specs_by_key
+    assert sampled_eval.scheduler_flags_for is sampled_eval_planning.sampled_eval_scheduler_flags
+    assert sampled_eval.scheduler_suffix_for is sampled_eval_planning.sampled_eval_scheduler_suffix
 
 
 def test_sampled_eval_script_delegates_checkpoint_artifacts_to_package() -> None:

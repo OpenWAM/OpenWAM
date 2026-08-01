@@ -3399,6 +3399,64 @@ def test_sampled_eval_sampling_has_one_package_owner() -> None:
     )
 
 
+def test_sampled_eval_planning_has_one_lightweight_package_owner() -> None:
+    runner_path = REPO_ROOT / "scripts" / "run_libero_sampled_eval.py"
+    planning_path = PACKAGE_ROOT / "evals" / "sampled_eval_planning.py"
+    runner_definitions = _top_level_definitions(runner_path)
+    planning_definitions = _top_level_definitions(planning_path)
+    planning_contract = {
+        "SAMPLED_EVAL_DEFAULT_CONFIG",
+        "SAMPLED_EVAL_METHODS",
+        "SAMPLED_EVAL_SCHEDULERS",
+        "SampledEvalCase",
+        "SampledEvalCaseOptions",
+        "SampledEvalCheckpointSpec",
+        "SampledEvalMethodSpec",
+        "SampledEvalPreflightOptions",
+        "SampledEvalSchedulerSpec",
+        "SampledEvalTargetRequest",
+        "build_sampled_eval_cases",
+        "parse_sampled_eval_target_requests",
+        "preflight_sampled_eval_cases",
+        "resolve_sampled_eval_checkpoint_specs",
+        "sampled_eval_scheduler_flags",
+        "sampled_eval_scheduler_suffix",
+        "sanitize_sampled_eval_label",
+        "select_sampled_eval_specs_by_key",
+    }
+
+    assert planning_contract - {
+        "SAMPLED_EVAL_DEFAULT_CONFIG",
+        "SAMPLED_EVAL_METHODS",
+        "SAMPLED_EVAL_SCHEDULERS",
+    } <= planning_definitions
+    assert planning_contract == _module_all_names(planning_path)
+    assert {
+        "MethodSpec",
+        "SchedulerSpec",
+        "TargetRequest",
+        "CheckpointSpec",
+        "EvalCase",
+        "append_optional_arg",
+        "extra_args_for_case",
+        "extra_args_for_transformer_only_input",
+        "parse_target_requests",
+        "sanitize_label",
+        "scheduler_flags_for",
+        "scheduler_suffix_for",
+        "select_by_key",
+    }.isdisjoint(runner_definitions)
+    assert "open_wam.evals.sampled_eval_planning" in _absolute_imports_for_file(
+        runner_path
+    )
+    planning_imports = _absolute_imports_for_file(planning_path)
+    assert "argparse" not in planning_imports
+    assert "os" not in planning_imports
+    assert "torch" not in planning_imports
+    assert "numpy" not in planning_imports
+    assert "open_wam.integrations.libero_tasks" not in planning_imports
+
+
 def test_checkpoint_artifact_discovery_has_one_lightweight_owner() -> None:
     artifact_path = PACKAGE_ROOT / "runtime" / "checkpoint_artifacts.py"
     loader_path = PACKAGE_ROOT / "runtime" / "checkpoints.py"

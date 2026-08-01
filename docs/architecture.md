@@ -116,15 +116,23 @@ deterministic JSON, CSV, and Markdown artifacts.
 contract, enum-backed sample modes and task-local strategies, metadata-to-axis
 ranking, replay-status attachment/filtering, proportional allocation, explicit
 selector parsing, and distribution/task-axis/full-grid selection. It accepts
-resolved metadata and does not import CLI or simulator integrations. The
-checkout-only `run_libero_sampled_eval.py` command owns LeRobot filesystem
-loading, metadata-versus-upstream task-ID safety policy, temporary machine-path
-overrides, target and case planning, process claims, worker scheduling, and
-child environments. It delegates checkpoint discovery to the runtime artifact
-contract and benchmark inventory/init counting to the LIBERO integration.
-Process status is created by that runner because it records live subprocess
-state; completed status and rollout summaries cross into the package as data
-records, not as script imports or benchmark objects.
+resolved metadata and does not import CLI or simulator integrations.
+`open_wam.evals.sampled_eval_planning` owns typed method, scheduler, target,
+checkpoint, case, and preflight contracts. Given explicit options and resolved
+dataset episodes, it parses targets, resolves checkpoint artifacts, applies
+enum-backed scheduler/device/artifact policy, and constructs deterministic
+rollout command matrices without importing argparse, environment state, or a
+simulator. Its stable contracts are lazily available from `open_wam.evals`.
+The checkout-only `run_libero_sampled_eval.py` command owns LeRobot filesystem
+loading, environment and legacy-argument precedence, GJD routing safeguards,
+metadata-versus-upstream task-ID safety policy, temporary machine-path
+overrides, process claims, worker scheduling, and child environments. It
+adapts argparse values into package planning options, delegates checkpoint
+discovery to the runtime artifact contract, and delegates benchmark
+inventory/init counting to the LIBERO integration. Process status is created
+by that runner because it records live subprocess state; completed status and
+rollout summaries cross into the package as data records, not as script imports
+or benchmark objects.
 
 ## Configuration Contract
 
