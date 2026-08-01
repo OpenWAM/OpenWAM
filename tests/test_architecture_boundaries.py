@@ -2797,8 +2797,11 @@ def test_action_decoder_rollout_plan_has_one_model_owner() -> None:
 
 
 def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
+    from open_wam.evals import libero_realtime_plans, libero_realtime_runtime
+
     runner_path = REPO_ROOT / "scripts" / "run_libero_realtime_sandbox.py"
     runtime_path = PACKAGE_ROOT / "evals" / "libero_realtime_runtime.py"
+    plans_path = PACKAGE_ROOT / "evals" / "libero_realtime_plans.py"
     runner_source = runner_path.read_text(encoding="utf-8")
     public_runtime_contracts = {
         "FramePlannerJobResult",
@@ -2842,6 +2845,22 @@ def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
         "validate_sequence_startup_inputs",
         "validate_sequence_startup_open_loop_support",
     }
+    plan_contracts = {
+        "FramePlannerJobResult",
+        "FramePlannerResultApplication",
+        "SequenceReplanJobOptions",
+        "SequenceReplanJobResult",
+        "annotate_sequence_planner_acceptance",
+        "apply_frame_planner_result",
+        "apply_sequence_replan_result",
+        "build_exact_startup_conditioning_history_record",
+        "build_fallback_frame_actions",
+        "exact_chunk_to_planned_steps",
+        "materialize_sequence_control_action",
+        "resolve_exact_startup_sessions",
+        "resolve_next_exact_history_base_session",
+        "sequence_chunk_to_planned_steps",
+    }
     retired_planner_runner_helpers = {
         "_collect_decoder_runtime_metadata",
         "_consume_exact_future_result",
@@ -2873,8 +2892,38 @@ def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
     assert not (REPO_ROOT / "scripts" / "libero_exact_realtime_common.py").exists()
     assert "from open_wam.evals import libero_realtime_runtime as realtime_runtime" in runner_source
     assert "realtime_runtime._" not in runner_source
-    assert public_runtime_contracts <= _top_level_definitions(runtime_path)
+    runtime_definitions = _top_level_definitions(runtime_path)
+    plans_definitions = _top_level_definitions(plans_path)
+    assert public_runtime_contracts <= runtime_definitions | plans_definitions
+    assert plan_contracts == _module_all_names(plans_path)
+    assert plan_contracts <= plans_definitions
+    assert plan_contracts.isdisjoint(runtime_definitions)
     assert public_runtime_contracts <= _module_all_names(runtime_path)
+    assert (
+        "open_wam.evals.libero_realtime_plans"
+        in _absolute_imports_for_file(runtime_path)
+    )
+    assert (
+        "open_wam.evals.libero_realtime_runtime"
+        not in _absolute_imports_for_file(plans_path)
+    )
+    for contract_name in plan_contracts:
+        assert getattr(libero_realtime_runtime, contract_name) is getattr(
+            libero_realtime_plans,
+            contract_name,
+        )
+    assert _compatibility_export_names(runtime_path) == {
+        "ActionTargetRepresentation",
+        "PlannedFrameAction",
+    }
+    assert (
+        libero_realtime_runtime.ActionTargetRepresentation
+        is libero_realtime_plans.ActionTargetRepresentation
+    )
+    assert (
+        libero_realtime_runtime.PlannedFrameAction
+        is libero_realtime_plans.PlannedFrameAction
+    )
     assert retired_planner_runner_helpers.isdisjoint(
         _top_level_definitions(runner_path)
     )

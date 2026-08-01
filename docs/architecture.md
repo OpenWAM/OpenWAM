@@ -83,10 +83,12 @@ package does not import LIBERO or Torch.
 
 The maintained LIBERO realtime runner follows the same boundary. Package code
 in `libero_realtime_runtime` executes both frame-grouped and action-sequence
-planner jobs and owns encoded-history preparation, session continuity,
-route-aware sequence startup, typed planner results and result application,
-decoder-plan conversion, LIBERO action materialization, and fallback action
-generation. Frame-grouped jobs return `FramePlannerJobResult` and apply through
+planner jobs and owns encoded-history preparation, cache/RNG execution,
+route-aware sequence startup, and worker submission. The sibling
+`libero_realtime_plans` contract owns typed planner handoffs, model-action
+projection, exact startup session progression, result acceptance, LIBERO
+action materialization, and fallback plan construction. Frame-grouped jobs
+return `FramePlannerJobResult` and apply through
 `FramePlannerResultApplication`; action-sequence jobs use
 `SequenceReplanJobOptions` and `SequenceReplanJobResult`. These frozen
 envelopes make session/cache ownership explicit. Their trace mappings remain
