@@ -713,6 +713,23 @@ def test_lerobot_consortium_storage_has_one_owner() -> None:
     assert storage_owned <= _compatibility_export_names(dataset_path)
 
 
+def test_lerobot_consortium_catalog_has_one_owner() -> None:
+    catalog_path = PACKAGE_ROOT / "data" / "lerobot_consortium_catalog.py"
+    dataset_path = PACKAGE_ROOT / "data" / "lerobot_consortium.py"
+    catalog_owned = {
+        "ConsortiumCatalog",
+        "ConsortiumEpisodeRecord",
+        "ConsortiumMemberContract",
+        "ConsortiumVisualChannelContract",
+        "build_lerobot_consortium_catalog",
+        "validate_lerobot_consortium_index_snapshot",
+    }
+
+    assert catalog_owned <= _top_level_definitions(catalog_path)
+    assert catalog_owned.isdisjoint(_top_level_definitions(dataset_path))
+    assert catalog_owned <= _compatibility_export_names(dataset_path)
+
+
 def test_lerobot_latent_segment_geometry_has_one_owner() -> None:
     geometry_functions = {
         "compact_boundary_start_range",

@@ -6,12 +6,14 @@ from typing import Any
 from open_wam.configs import LeRobotConsortiumDataConfig
 
 from .lerobot_consortium import (
-    ConsortiumMemberContract,
     ConsortiumResolvedSplit,
     LeRobotConsortiumWindowDataset,
-    build_lerobot_consortium_catalog,
     build_lerobot_consortium_train_val_datasets,
     resolve_lerobot_consortium_train_val_split,
+)
+from .lerobot_consortium_catalog import (
+    ConsortiumMemberContract,
+    build_lerobot_consortium_catalog,
 )
 
 

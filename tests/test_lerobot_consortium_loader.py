@@ -17,6 +17,7 @@ import yaml
 
 import open_wam.data.lerobot_consortium_report as consortium_report_module
 import open_wam.data.lerobot_consortium as consortium_module
+import open_wam.data.lerobot_consortium_catalog as consortium_catalog_module
 from open_wam.configs import (
     ActionSchemaConfig,
     ActionTargetConfig,
@@ -40,6 +41,7 @@ from open_wam.data import (
     collate_wam_samples,
     discover_local_lerobot_consortium_members as public_discover_consortium_members,
     format_lerobot_consortium_report,
+    load_lerobot_consortium_inventory_rows,
     resolve_dataset_loader_spec,
     resolve_lerobot_consortium_train_val_split,
 )
@@ -52,6 +54,14 @@ from open_wam.data.lerobot_consortium_storage import (
     LocalConsortiumCache,
     NoopConsortiumCache,
     discover_local_lerobot_consortium_members,
+)
+from open_wam.data.lerobot_consortium_catalog import (
+    ConsortiumCatalog,
+    ConsortiumEpisodeRecord,
+    ConsortiumMemberContract,
+    ConsortiumVisualChannelContract,
+    build_lerobot_consortium_catalog as canonical_build_lerobot_consortium_catalog,
+    validate_lerobot_consortium_index_snapshot,
 )
 
 
@@ -127,6 +137,25 @@ def test_consortium_storage_imports_preserve_identity() -> None:
         is discover_local_lerobot_consortium_members
     )
     assert public_discover_consortium_members is discover_local_lerobot_consortium_members
+
+
+def test_consortium_catalog_imports_preserve_identity() -> None:
+    assert consortium_module.ConsortiumCatalog is ConsortiumCatalog
+    assert consortium_module.ConsortiumEpisodeRecord is ConsortiumEpisodeRecord
+    assert consortium_module.ConsortiumMemberContract is ConsortiumMemberContract
+    assert (
+        consortium_module.ConsortiumVisualChannelContract
+        is ConsortiumVisualChannelContract
+    )
+    assert (
+        consortium_module.build_lerobot_consortium_catalog
+        is canonical_build_lerobot_consortium_catalog
+    )
+    assert build_lerobot_consortium_catalog is canonical_build_lerobot_consortium_catalog
+    assert (
+        consortium_module.validate_lerobot_consortium_index_snapshot
+        is validate_lerobot_consortium_index_snapshot
+    )
 
 
 def _make_inventory_row(repo_id: str, *, source_group: str = "manual") -> LeRobotConsortiumInventoryRow:
@@ -474,18 +503,18 @@ def test_consortium_snapshot_sanity_warns_on_mismatch(monkeypatch, tmp_path: Pat
     _write_contract_snapshot_json(contracts_json_path, ("other-org/repo_b",), dataset_count=2)
     inventory_md_path.write_text("# stub\n", encoding="utf-8")
 
-    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_REPO_IDS_PATH", repo_ids_path)
-    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_INVENTORY_CSV_PATH", inventory_csv_path)
-    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_INVENTORY_MD_PATH", inventory_md_path)
-    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_CONTRACTS_JSON_PATH", contracts_json_path)
-    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_SANITY_CACHE", set())
-    monkeypatch.setattr(consortium_module, "_consortium_index_prompt_available", lambda: False)
+    monkeypatch.setattr(consortium_catalog_module, "_CONSORTIUM_INDEX_REPO_IDS_PATH", repo_ids_path)
+    monkeypatch.setattr(consortium_catalog_module, "_CONSORTIUM_INDEX_INVENTORY_CSV_PATH", inventory_csv_path)
+    monkeypatch.setattr(consortium_catalog_module, "_CONSORTIUM_INDEX_INVENTORY_MD_PATH", inventory_md_path)
+    monkeypatch.setattr(consortium_catalog_module, "_CONSORTIUM_INDEX_CONTRACTS_JSON_PATH", contracts_json_path)
+    monkeypatch.setattr(consortium_catalog_module, "_CONSORTIUM_INDEX_SANITY_CACHE", set())
+    monkeypatch.setattr(consortium_catalog_module, "_consortium_index_prompt_available", lambda: False)
 
     config = _make_consortium_config(
         members=(ConsortiumMemberConfig(member_id="repo_a", repo_id="other-org/repo_a"),),
     )
     with pytest.warns(UserWarning, match="Detected discrepancy between the configured LeRobot consortium repo ids"):
-        consortium_module.validate_lerobot_consortium_index_snapshot(config)
+        validate_lerobot_consortium_index_snapshot(config)
 
 
 def test_consortium_snapshot_sanity_can_prompt_and_refresh(monkeypatch, tmp_path: Path) -> None:
@@ -505,19 +534,19 @@ def test_consortium_snapshot_sanity_can_prompt_and_refresh(monkeypatch, tmp_path
         _write_inventory_snapshot_csv(inventory_csv_path, ("other-org/repo_a",))
         _write_contract_snapshot_json(contracts_json_path, ("other-org/repo_a",))
 
-    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_REPO_IDS_PATH", repo_ids_path)
-    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_INVENTORY_CSV_PATH", inventory_csv_path)
-    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_INVENTORY_MD_PATH", inventory_md_path)
-    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_CONTRACTS_JSON_PATH", contracts_json_path)
-    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_SANITY_CACHE", set())
-    monkeypatch.setattr(consortium_module, "_consortium_index_prompt_available", lambda: True)
-    monkeypatch.setattr(consortium_module, "_refresh_lerobot_consortium_index_snapshots", _fake_refresh)
+    monkeypatch.setattr(consortium_catalog_module, "_CONSORTIUM_INDEX_REPO_IDS_PATH", repo_ids_path)
+    monkeypatch.setattr(consortium_catalog_module, "_CONSORTIUM_INDEX_INVENTORY_CSV_PATH", inventory_csv_path)
+    monkeypatch.setattr(consortium_catalog_module, "_CONSORTIUM_INDEX_INVENTORY_MD_PATH", inventory_md_path)
+    monkeypatch.setattr(consortium_catalog_module, "_CONSORTIUM_INDEX_CONTRACTS_JSON_PATH", contracts_json_path)
+    monkeypatch.setattr(consortium_catalog_module, "_CONSORTIUM_INDEX_SANITY_CACHE", set())
+    monkeypatch.setattr(consortium_catalog_module, "_consortium_index_prompt_available", lambda: True)
+    monkeypatch.setattr(consortium_catalog_module, "_refresh_lerobot_consortium_index_snapshots", _fake_refresh)
     monkeypatch.setattr("builtins.input", lambda _: "y")
 
     config = _make_consortium_config(
         members=(ConsortiumMemberConfig(member_id="repo_a", repo_id="other-org/repo_a"),),
     )
-    consortium_module.validate_lerobot_consortium_index_snapshot(config)
+    validate_lerobot_consortium_index_snapshot(config)
 
     assert refreshed["called"] is True
 
@@ -539,19 +568,19 @@ def test_consortium_snapshot_incremental_refresh_only_fetches_missing_repo_metad
         fetched_repo_ids.extend(target.repo_id for target in repo_targets)
         return [_make_inventory_row(target.repo_id, source_group=target.source_group) for target in repo_targets]
 
-    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_REPO_IDS_PATH", repo_ids_path)
-    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_INVENTORY_CSV_PATH", inventory_csv_path)
-    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_INVENTORY_MD_PATH", inventory_md_path)
-    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_CONTRACTS_JSON_PATH", contracts_json_path)
-    monkeypatch.setattr(consortium_module, "build_lerobot_consortium_inventory", _fake_build_inventory)
+    monkeypatch.setattr(consortium_catalog_module, "_CONSORTIUM_INDEX_REPO_IDS_PATH", repo_ids_path)
+    monkeypatch.setattr(consortium_catalog_module, "_CONSORTIUM_INDEX_INVENTORY_CSV_PATH", inventory_csv_path)
+    monkeypatch.setattr(consortium_catalog_module, "_CONSORTIUM_INDEX_INVENTORY_MD_PATH", inventory_md_path)
+    monkeypatch.setattr(consortium_catalog_module, "_CONSORTIUM_INDEX_CONTRACTS_JSON_PATH", contracts_json_path)
+    monkeypatch.setattr(consortium_catalog_module, "build_lerobot_consortium_inventory", _fake_build_inventory)
 
     config = _make_consortium_config(
         members=(ConsortiumMemberConfig(member_id="repo_a", repo_id="other-org/repo_a"),),
     )
-    consortium_module._refresh_lerobot_consortium_index_snapshots(config)
+    consortium_catalog_module._refresh_lerobot_consortium_index_snapshots(config)
 
     assert fetched_repo_ids == ["other-org/repo_a"]
-    refreshed_inventory_repo_ids = [row.repo_id for row in consortium_module.load_lerobot_consortium_inventory_rows(inventory_csv_path)]
+    refreshed_inventory_repo_ids = [row.repo_id for row in load_lerobot_consortium_inventory_rows(inventory_csv_path)]
     assert refreshed_inventory_repo_ids == ["other-org/repo_a", "other-org/repo_b"]
     refreshed_contracts = json.loads(contracts_json_path.read_text(encoding="utf-8"))
     assert refreshed_contracts["dataset_count"] == 2
@@ -575,19 +604,19 @@ def test_consortium_snapshot_incremental_refresh_drops_removed_repo_ids(monkeypa
         fetched_repo_ids.extend(target.repo_id for target in repo_targets)
         return [_make_inventory_row(target.repo_id, source_group=target.source_group) for target in repo_targets]
 
-    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_REPO_IDS_PATH", repo_ids_path)
-    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_INVENTORY_CSV_PATH", inventory_csv_path)
-    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_INVENTORY_MD_PATH", inventory_md_path)
-    monkeypatch.setattr(consortium_module, "_CONSORTIUM_INDEX_CONTRACTS_JSON_PATH", contracts_json_path)
-    monkeypatch.setattr(consortium_module, "build_lerobot_consortium_inventory", _fake_build_inventory)
+    monkeypatch.setattr(consortium_catalog_module, "_CONSORTIUM_INDEX_REPO_IDS_PATH", repo_ids_path)
+    monkeypatch.setattr(consortium_catalog_module, "_CONSORTIUM_INDEX_INVENTORY_CSV_PATH", inventory_csv_path)
+    monkeypatch.setattr(consortium_catalog_module, "_CONSORTIUM_INDEX_INVENTORY_MD_PATH", inventory_md_path)
+    monkeypatch.setattr(consortium_catalog_module, "_CONSORTIUM_INDEX_CONTRACTS_JSON_PATH", contracts_json_path)
+    monkeypatch.setattr(consortium_catalog_module, "build_lerobot_consortium_inventory", _fake_build_inventory)
 
     config = _make_consortium_config(
         members=(ConsortiumMemberConfig(member_id="repo_a", repo_id="other-org/repo_a"),),
     )
-    consortium_module._refresh_lerobot_consortium_index_snapshots(config)
+    consortium_catalog_module._refresh_lerobot_consortium_index_snapshots(config)
 
     assert fetched_repo_ids == []
-    refreshed_inventory_repo_ids = [row.repo_id for row in consortium_module.load_lerobot_consortium_inventory_rows(inventory_csv_path)]
+    refreshed_inventory_repo_ids = [row.repo_id for row in load_lerobot_consortium_inventory_rows(inventory_csv_path)]
     assert refreshed_inventory_repo_ids == ["other-org/repo_a"]
     refreshed_contracts = json.loads(contracts_json_path.read_text(encoding="utf-8"))
     assert refreshed_contracts["dataset_count"] == 1

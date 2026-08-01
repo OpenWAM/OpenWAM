@@ -269,11 +269,14 @@ the typed weight/random modes, and the sampling seed. It owns fixed-length
 largest-remainder allocation, member-local seeded shuffling, and deterministic
 global interleaving. `lerobot_consortium_storage` owns source discovery,
 local/remote resolution, JSON/JSONL/Parquet reads, and optional local/cloud
-write-through caches. `lerobot_consortium` owns catalog/split construction,
-channel adaptation, row decoding, and final sample construction. Historical
-storage imports from `lerobot_consortium` remain identity aliases. This policy
-is intentionally distinct from mixed-video source balancing, whose rounded
-target counts may change epoch length.
+write-through caches. `lerobot_consortium_catalog` owns immutable member and
+channel contracts, source membership, metadata parsing, local index-snapshot
+validation/refresh, and catalog construction. `lerobot_consortium` owns
+train/validation splits, channel adaptation, window indexing, row decoding,
+and final sample construction. Historical catalog and storage imports from
+`lerobot_consortium` remain identity aliases. This policy is intentionally
+distinct from mixed-video source balancing, whose rounded target counts may
+change epoch length.
 `distributed_sampling` owns rank sharding and epoch coordination; adapters
 supply weights or deterministic global index orders without embedding
 distributed control flow. Equal-rank padded orders, intentionally unpadded
