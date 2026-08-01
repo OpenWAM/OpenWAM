@@ -12,6 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from open_wam.evals import sampled_eval_sampling
+
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "run_libero_sampled_eval.py"
 SPEC = importlib.util.spec_from_file_location("run_libero_sampled_eval", SCRIPT_PATH)
@@ -39,6 +41,12 @@ def test_allocate_proportional_counts_largest_remainder() -> None:
 def test_normalize_sample_mode_accepts_legacy_uniform_alias() -> None:
     assert sampled_eval.normalize_sample_mode("uniform_task_distribution") == "dataset_distribution"
     assert sampled_eval.normalize_sample_mode("task_episode_axis") == "task_episode_axis"
+
+
+def test_sampled_eval_script_delegates_selection_contracts_to_package() -> None:
+    assert sampled_eval.DatasetEpisode is sampled_eval_sampling.DatasetEpisode
+    assert sampled_eval.select_sampled_episodes is sampled_eval_sampling.select_sampled_episodes
+    assert sampled_eval.allocate_proportional_counts is sampled_eval_sampling.allocate_proportional_counts
 
 
 def test_build_dataset_episodes_uses_task_local_rank() -> None:

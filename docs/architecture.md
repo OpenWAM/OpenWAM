@@ -96,12 +96,18 @@ they do not encode policy-route or model-output semantics.
 Multi-checkpoint sampled evaluation follows the same installed/checkout split.
 `open_wam.evals.sampled_eval_reporting` owns the JSON-native case-report
 contract, status/rollout joins, aggregate metrics, summary discovery, and
-deterministic JSON, CSV, and Markdown artifacts. The checkout-only
-`run_libero_sampled_eval.py` command owns target planning, benchmark sampling,
-process claims, worker scheduling, and child environments. Process status is
-created by that runner because it records live subprocess state; completed
-status and rollout summaries cross into the package as data records, not as
-script imports or benchmark objects.
+deterministic JSON, CSV, and Markdown artifacts.
+`open_wam.evals.sampled_eval_sampling` owns the frozen `DatasetEpisode`
+contract, enum-backed sample modes and task-local strategies, metadata-to-axis
+ranking, replay-status attachment/filtering, proportional allocation, explicit
+selector parsing, and distribution/task-axis/full-grid selection. It accepts
+resolved metadata and does not import CLI or simulator integrations. The
+checkout-only `run_libero_sampled_eval.py` command owns LeRobot filesystem
+loading, LIBERO task/init resolution, target and case planning, process claims,
+worker scheduling, and child environments. Process status is created by that
+runner because it records live subprocess state; completed status and rollout
+summaries cross into the package as data records, not as script imports or
+benchmark objects.
 
 ## Configuration Contract
 
@@ -239,6 +245,12 @@ Dataset adapters are selected by `data.dataset_type`. One adapter identity may
 provide a raw-RGB builder, a pre-encoded latent builder, or both. External
 adapters register explicitly through `module[:hook]` extensions before
 experiment construction.
+
+The public `open_wam.data` facade is fully lazy. Importing the namespace or a
+lightweight submodule such as `data.replay_status` does not load Torch, NumPy,
+PyArrow, or simulator packages; resolving a tensor-backed export loads its
+role module on demand and preserves object identity. Keep new public data
+exports in the facade registry rather than adding eager package imports.
 
 Raw adapters normalize source records into one public batch contract:
 

@@ -3334,5 +3334,85 @@ def test_sampled_eval_reporting_has_one_package_owner() -> None:
     )
 
 
+def test_sampled_eval_sampling_has_one_package_owner() -> None:
+    runner_path = REPO_ROOT / "scripts" / "run_libero_sampled_eval.py"
+    sampling_path = PACKAGE_ROOT / "evals" / "sampled_eval_sampling.py"
+    runner_definitions = _top_level_definitions(runner_path)
+    sampling_definitions = _top_level_definitions(sampling_path)
+    sampling_contract = {
+        "DatasetEpisode",
+        "DistributionEpisodeStrategy",
+        "SAMPLE_MODE_CHOICES",
+        "SampledEvalMode",
+        "TaskAxisInitSource",
+        "allocate_proportional_counts",
+        "attach_replay_status_to_dataset_episodes",
+        "build_dataset_episodes",
+        "build_replay_status_warnings",
+        "build_sample_warnings",
+        "evenly_spaced_indices",
+        "filter_dataset_episodes_by_replay_status",
+        "normalize_sample_mode",
+        "parse_int_selector",
+        "sample_episodes_by_task_distribution",
+        "select_distribution_task_episodes",
+        "select_full_task_init_axis",
+        "select_sampled_episodes",
+        "select_task_episode_axis",
+        "uses_replay_resolved_init_ids",
+    }
+
+    assert sampling_contract - {"SAMPLE_MODE_CHOICES"} <= sampling_definitions
+    assert sampling_contract == _module_all_names(sampling_path)
+    assert {
+        "DatasetEpisode",
+        "allocate_proportional_counts",
+        "attach_replay_status_to_dataset_episodes",
+        "build_dataset_episodes",
+        "build_replay_status_warnings",
+        "build_sample_warnings",
+        "evenly_spaced_indices",
+        "filter_dataset_episodes_by_replay_status",
+        "normalize_sample_mode",
+        "parse_int_selector",
+        "sample_episodes_by_task_distribution",
+        "select_distribution_task_episodes",
+        "select_full_task_init_axis",
+        "select_sampled_episodes",
+        "select_task_episode_axis",
+    }.isdisjoint(runner_definitions)
+    assert "open_wam.evals.sampled_eval_sampling" in _absolute_imports_for_file(
+        runner_path
+    )
+    assert "argparse" not in _absolute_imports_for_file(sampling_path)
+    assert "open_wam.integrations.libero_tasks" not in _absolute_imports_for_file(
+        sampling_path
+    )
+
+
+def test_data_public_facade_is_fully_lazy() -> None:
+    path = PACKAGE_ROOT / "data" / "__init__.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    lazy_exports: dict[str, str] = {}
+    relative_imports: list[ast.ImportFrom] = []
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.level:
+            relative_imports.append(node)
+        if not isinstance(node, ast.Assign):
+            continue
+        if any(
+            isinstance(target, ast.Name) and target.id == "_LAZY_EXPORTS"
+            for target in node.targets
+        ):
+            lazy_exports = ast.literal_eval(node.value)
+
+    assert relative_imports == []
+    assert set(lazy_exports) == _module_all_names(path)
+    assert len(lazy_exports) == 163
+    assert lazy_exports["WAMSample"] == "contracts"
+    assert lazy_exports["ReplayStatusFilterReport"] == "replay_status"
+    assert lazy_exports["pack_temporal_sequence"] == "sequence_packing"
+
+
 def test_legacy_backbone_config_import_is_identity_preserving() -> None:
     assert LegacySharedVideoTransformerConfig is SharedVideoTransformerConfig

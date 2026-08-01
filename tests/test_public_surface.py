@@ -150,6 +150,47 @@ def test_minimal_import_surfaces_do_not_import_torch_stack() -> None:
 
 
 @pytest.mark.unit
+def test_sampled_eval_data_contracts_do_not_import_tensor_stacks() -> None:
+    code = (
+        "import sys; "
+        "import open_wam.data, open_wam.data.replay_status; "
+        "from open_wam.data import ReplayStatusRecord; "
+        "import open_wam.evals.sampled_eval_sampling as sampling; "
+        "assert ReplayStatusRecord.__module__ == 'open_wam.data.replay_status'; "
+        "assert sampling.SampledEvalMode.FULL.value == 'full'; "
+        "assert 'torch' not in sys.modules; "
+        "assert 'numpy' not in sys.modules; "
+        "assert 'pyarrow' not in sys.modules"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+@pytest.mark.unit
+def test_lazy_data_facade_preserves_representative_export_identities() -> None:
+    from importlib import import_module
+
+    import open_wam.data as public_data
+
+    owners = {
+        "PoseSequence": "action_transforms",
+        "ActionMappingResult": "action_mapping",
+        "WAMSample": "contracts",
+        "GENERALIST_GJD_CHUNK_CONTRACT_T0_SINGLETON": "conditional_dynamics_layout",
+        "ActionBranchSpec": "counterfactual_actions",
+        "LatentWAMSample": "latent_contracts",
+        "LatentSegmentBoundary": "latent_segment_geometry",
+        "LatentSegmentMaterializationPlan": "latent_segment_materialization",
+        "assemble_latent_views": "latent_view_assembly",
+        "RowSequenceExtractor": "row_action_targets",
+        "pack_temporal_sequence": "sequence_packing",
+    }
+
+    for name, module_name in owners.items():
+        owner = import_module(f"open_wam.data.{module_name}")
+        assert getattr(public_data, name) is getattr(owner, name)
+
+
+@pytest.mark.unit
 def test_runtime_entrypoints_accept_ordered_extensions() -> None:
     from open_wam.cli.eval import build_arg_parser as eval_parser
     from open_wam.cli.sanity import build_arg_parser as sanity_parser

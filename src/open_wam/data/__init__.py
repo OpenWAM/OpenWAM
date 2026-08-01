@@ -3,72 +3,58 @@
 from importlib import import_module
 from typing import Any
 
-from .action_transforms import (
-    PoseSequence,
-    build_absolute_joint_position_targets,
-    build_relative_pose_targets,
-    denormalize_action_targets,
-    denormalize_joint_positions,
-    expected_joint_position_target_dim,
-    expected_pose_target_dim,
-    normalize_action_targets,
-    normalize_joint_positions,
-    reconstruct_absolute_pose_targets,
-    state_sequence_to_pose_sequence,
-)
-from .action_mapping import (
-    ActionMappingResult,
-    action_mapping_is_active,
-    apply_action_mapping,
-    inverse_action_mapping,
-    resolve_action_source_dim,
-    resolve_action_target_dim,
-    validate_action_mapping_preflight,
-)
-from .contracts import WAMBatch, WAMSample, collate_wam_samples, move_wam_batch_to_device
-from .conditional_dynamics_layout import (
-    GENERALIST_CONDITIONAL_CONTRACT_TARGET_ONLY_T0_PLUS_FUTURE,
-    GENERALIST_CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
-    GENERALIST_GJD_CHUNK_CONTRACT_T0_SINGLETON,
-    project_real_conditional_sample_to_target_only,
-)
-from .counterfactual_actions import (
-    ACTION_BRANCH_SPECS,
-    BRANCH_PRESETS,
-    ActionBranchSpec,
-    apply_action_branch,
-    branch_metadata,
-    branch_seed_offset,
-    expand_branch_names,
-)
-from .latent_contracts import (
-    LatentWAMBatch,
-    LatentWAMSample,
-    collate_latent_wam_samples,
-    move_latent_wam_batch_to_device,
-)
-from .latent_segment_geometry import (
-    LatentSegmentBoundary,
-    compact_boundary_start_range,
-    resolve_compact_boundary_segment,
-    resolve_rollout_parity_boundary_segment,
-    rollout_parity_start_range,
-)
-from .latent_segment_materialization import (
-    LatentSegmentMaterializationPlan,
-    plan_latent_segment_materialization,
-    slice_latent_segment_with_zero_order_hold,
-)
-from .latent_view_assembly import assemble_latent_views
-from .row_action_targets import (
-    RowSequenceExtractor,
-    SequencePacker,
-    build_row_action_targets,
-    resolve_row_key,
-)
-from .sequence_packing import pack_temporal_sequence
-
 _LAZY_EXPORTS = {
+    "PoseSequence": "action_transforms",
+    "build_absolute_joint_position_targets": "action_transforms",
+    "build_relative_pose_targets": "action_transforms",
+    "denormalize_action_targets": "action_transforms",
+    "denormalize_joint_positions": "action_transforms",
+    "expected_joint_position_target_dim": "action_transforms",
+    "expected_pose_target_dim": "action_transforms",
+    "normalize_action_targets": "action_transforms",
+    "normalize_joint_positions": "action_transforms",
+    "reconstruct_absolute_pose_targets": "action_transforms",
+    "state_sequence_to_pose_sequence": "action_transforms",
+    "ActionMappingResult": "action_mapping",
+    "action_mapping_is_active": "action_mapping",
+    "apply_action_mapping": "action_mapping",
+    "inverse_action_mapping": "action_mapping",
+    "resolve_action_source_dim": "action_mapping",
+    "resolve_action_target_dim": "action_mapping",
+    "validate_action_mapping_preflight": "action_mapping",
+    "WAMBatch": "contracts",
+    "WAMSample": "contracts",
+    "collate_wam_samples": "contracts",
+    "move_wam_batch_to_device": "contracts",
+    "GENERALIST_CONDITIONAL_CONTRACT_TARGET_ONLY_T0_PLUS_FUTURE": "conditional_dynamics_layout",
+    "GENERALIST_CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY": "conditional_dynamics_layout",
+    "GENERALIST_GJD_CHUNK_CONTRACT_T0_SINGLETON": "conditional_dynamics_layout",
+    "project_real_conditional_sample_to_target_only": "conditional_dynamics_layout",
+    "ACTION_BRANCH_SPECS": "counterfactual_actions",
+    "BRANCH_PRESETS": "counterfactual_actions",
+    "ActionBranchSpec": "counterfactual_actions",
+    "apply_action_branch": "counterfactual_actions",
+    "branch_metadata": "counterfactual_actions",
+    "branch_seed_offset": "counterfactual_actions",
+    "expand_branch_names": "counterfactual_actions",
+    "LatentWAMBatch": "latent_contracts",
+    "LatentWAMSample": "latent_contracts",
+    "collate_latent_wam_samples": "latent_contracts",
+    "move_latent_wam_batch_to_device": "latent_contracts",
+    "LatentSegmentBoundary": "latent_segment_geometry",
+    "compact_boundary_start_range": "latent_segment_geometry",
+    "resolve_compact_boundary_segment": "latent_segment_geometry",
+    "resolve_rollout_parity_boundary_segment": "latent_segment_geometry",
+    "rollout_parity_start_range": "latent_segment_geometry",
+    "LatentSegmentMaterializationPlan": "latent_segment_materialization",
+    "plan_latent_segment_materialization": "latent_segment_materialization",
+    "slice_latent_segment_with_zero_order_hold": "latent_segment_materialization",
+    "assemble_latent_views": "latent_view_assembly",
+    "RowSequenceExtractor": "row_action_targets",
+    "SequencePacker": "row_action_targets",
+    "build_row_action_targets": "row_action_targets",
+    "resolve_row_key": "row_action_targets",
+    "pack_temporal_sequence": "sequence_packing",
     "CalvinNPZWindowDataset": "calvin_npz",
     "build_calvin_npz_train_val_datasets": "calvin_npz",
     "discover_calvin_npz_episodes": "calvin_npz",
