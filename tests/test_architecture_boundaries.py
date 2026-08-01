@@ -2666,6 +2666,47 @@ def test_libero_realtime_scheduler_has_one_package_owner() -> None:
     assert public_runtime_contracts <= _top_level_definitions(runtime_path)
 
 
+def test_realtime_control_plan_has_one_package_owner() -> None:
+    runner_path = REPO_ROOT / "scripts" / "run_libero_realtime_sandbox.py"
+    control_path = PACKAGE_ROOT / "integrations" / "realtime_control.py"
+    integration_exports_path = PACKAGE_ROOT / "integrations" / "__init__.py"
+    runner_source = runner_path.read_text(encoding="utf-8")
+    integration_exports = integration_exports_path.read_text(encoding="utf-8")
+    retired_runner_contracts = {
+        "PlannedControlStep",
+        "_drop_partial_stale_chunk_steps",
+        "_drop_sequence_future_actions_from",
+        "_frame_index_to_action_start",
+        "_future_buffer_depth_actions",
+        "_merge_future_step_actions",
+        "_missing_plan_action_indices",
+        "_planned_frames_to_step_actions",
+        "_required_frame_action_indices",
+        "_sequence_future_planned_steps",
+    }
+    public_control_contracts = {
+        "PlannedControlStep",
+        "PlannedFrameAction",
+        "drop_control_steps_from",
+        "drop_partial_stale_control_chunk",
+        "frame_index_to_action_start",
+        "future_control_depth",
+        "future_control_steps",
+        "make_planned_frame_actions",
+        "merge_future_control_steps",
+        "merge_future_frame_actions",
+        "missing_control_action_indices",
+        "planned_frame_actions_to_control_steps",
+        "required_control_action_indices",
+    }
+
+    assert "from open_wam.integrations.realtime_control import (" in runner_source
+    assert retired_runner_contracts.isdisjoint(_top_level_definitions(runner_path))
+    assert public_control_contracts <= _top_level_definitions(control_path)
+    for contract in public_control_contracts:
+        assert f'"{contract}": "open_wam.integrations.realtime_control"' in integration_exports
+
+
 def test_realtime_speculation_has_one_package_owner() -> None:
     runner_path = REPO_ROOT / "scripts" / "run_libero_realtime_sandbox.py"
     speculation_path = PACKAGE_ROOT / "evals" / "realtime_speculation.py"

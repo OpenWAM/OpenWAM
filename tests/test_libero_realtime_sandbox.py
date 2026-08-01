@@ -324,59 +324,6 @@ def test_finalize_rollout_outputs_lean_skips_videos_and_traces(
     assert not list(tmp_path.rglob("*_load_report.json"))
 
 
-def test_frame_index_to_action_start_matches_exact_realtime_convention() -> None:
-    sandbox = _load_sandbox_module()
-
-    assert sandbox._frame_index_to_action_start(1, 4) == 0
-    assert sandbox._frame_index_to_action_start(2, 4) == 4
-    assert sandbox._frame_index_to_action_start(3, 4) == 8
-
-
-def test_required_frame_action_indices_stop_at_rollout_limit() -> None:
-    sandbox = _load_sandbox_module()
-
-    assert sandbox._required_frame_action_indices(
-        next_action_index=8,
-        max_actions=10,
-        action_per_frame=4,
-    ) == [8, 9]
-
-
-def test_merge_future_step_actions_drops_stale_steps_and_prefers_newer_future() -> None:
-    sandbox = _load_sandbox_module()
-    step_cls = sandbox.PlannedControlStep
-
-    existing = {
-        0: step_cls(absolute_action_index=0, generation_action_start=0, source="old"),
-        1: step_cls(absolute_action_index=1, generation_action_start=0, source="old"),
-        2: step_cls(absolute_action_index=2, generation_action_start=0, source="old"),
-    }
-    incoming = [
-        step_cls(absolute_action_index=1, generation_action_start=1, source="new"),
-        step_cls(absolute_action_index=3, generation_action_start=1, source="new"),
-    ]
-
-    merged = sandbox._merge_future_step_actions(existing, incoming, next_action_to_execute=1)
-
-    assert list(merged) == [1, 2, 3]
-    assert merged[1].source == "new"
-    assert merged[2].source == "old"
-    assert merged[3].source == "new"
-
-
-def test_missing_plan_action_indices_reports_required_gaps() -> None:
-    sandbox = _load_sandbox_module()
-    step_cls = sandbox.PlannedControlStep
-    plan_by_action = {
-        4: step_cls(absolute_action_index=4, generation_action_start=4, source="plan"),
-        6: step_cls(absolute_action_index=6, generation_action_start=4, source="plan"),
-    }
-
-    missing = sandbox._missing_plan_action_indices(plan_by_action, [4, 5, 6, 7])
-
-    assert missing == [5, 7]
-
-
 def test_exact_wait_mode_prefers_history_replans_when_history_exists() -> None:
     sandbox = _load_sandbox_module()
 
@@ -480,32 +427,6 @@ def test_sequence_realtime_low_watermark_overrides_buffer_threshold() -> None:
         sequence_buffer_threshold=3,
         replan_low_watermark_actions=12,
     )
-
-
-def test_partial_stale_chunks_can_be_accepted_when_the_future_suffix_is_meaningful() -> None:
-    sandbox = _load_sandbox_module()
-    step_cls = sandbox.PlannedControlStep
-    planned = [
-        step_cls(absolute_action_index=index, generation_action_start=0, source="history_replan")
-        for index in range(16)
-    ]
-
-    mergeable, dropped, accepted_partial = sandbox._drop_partial_stale_chunk_steps(
-        planned,
-        next_action_to_execute=8,
-    )
-    assert mergeable == []
-    assert dropped == 8
-    assert accepted_partial == 0
-
-    mergeable, dropped, accepted_partial = sandbox._drop_partial_stale_chunk_steps(
-        planned,
-        next_action_to_execute=8,
-        min_future_actions_to_accept_stale_chunk=8,
-    )
-    assert [step.absolute_action_index for step in mergeable] == list(range(8, 16))
-    assert dropped == 0
-    assert accepted_partial == 8
 
 
 def test_exact_fallback_history_policy_freeze_until_clean_chunk_delays_full_clean_chunk() -> None:
@@ -2057,7 +1978,7 @@ def test_native_packed_mot_realtime_does_not_drop_startup_actions() -> None:
         action_target_representation=sandbox.ActionTargetRepresentation.RAW,
         rotation_representation="axis_angle",
     )
-    merged = sandbox._merge_future_step_actions(
+    merged = sandbox.merge_future_control_steps(
         {},
         planned_steps,
         next_action_to_execute=0,
@@ -2086,7 +2007,7 @@ def test_strict_split_cache_mot_realtime_does_not_drop_startup_actions() -> None
         action_target_representation=sandbox.ActionTargetRepresentation.RAW,
         rotation_representation="axis_angle",
     )
-    merged = sandbox._merge_future_step_actions(
+    merged = sandbox.merge_future_control_steps(
         {},
         planned_steps,
         next_action_to_execute=0,
@@ -2185,7 +2106,7 @@ def test_strict_split_cache_mot_model_history_keeps_latest_observation() -> None
     generation_frame_start = condition_frame_start + len(model_obs_window)
     assert condition_frame_start == 4
     assert generation_frame_start == 5
-    assert sandbox._frame_index_to_action_start(generation_frame_start, 4) == 16
+    assert sandbox.frame_index_to_action_start(generation_frame_start, 4) == 16
 
 
 def test_strict_split_cache_mot_realtime_init_calls_env_with_single_frame(monkeypatch) -> None:

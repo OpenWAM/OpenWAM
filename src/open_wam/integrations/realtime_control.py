@@ -1,9 +1,30 @@
+"""Realtime frame/action planning and control-loop reporting contracts."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 import numpy as np
+
+
+__all__ = [
+    "PlannedControlStep",
+    "PlannedFrameAction",
+    "build_live_rollout_summary",
+    "drop_control_steps_from",
+    "drop_partial_stale_control_chunk",
+    "frame_index_to_action_start",
+    "future_control_depth",
+    "future_control_steps",
+    "make_planned_frame_actions",
+    "merge_future_control_steps",
+    "merge_future_frame_actions",
+    "missing_control_action_indices",
+    "planned_frame_actions_to_control_steps",
+    "required_control_action_indices",
+    "summarize_scalars",
+]
 
 
 @dataclass(frozen=True)
@@ -17,6 +38,197 @@ class PlannedFrameAction:
     source: str = "history_replan"
     planner_step_index: int | None = None
     ready_monotonic_s: float | None = None
+
+
+@dataclass(frozen=True)
+class PlannedControlStep:
+    """One executable control step with its prediction provenance.
+
+    A step carries either a model-native ``raw_action`` or an absolute pose
+    target that a benchmark adapter materializes against the live state.
+    """
+
+    absolute_action_index: int
+    generation_action_start: int
+    source: str
+    planner_step_index: int | None = None
+    ready_monotonic_s: float | None = None
+    generation_frame_start: int | None = None
+    raw_action: np.ndarray | None = None
+    desired_position: np.ndarray | None = None
+    desired_quaternion: np.ndarray | None = None
+    desired_gripper: np.ndarray | None = None
+
+
+def frame_index_to_action_start(frame_index: int, action_per_frame: int) -> int:
+    """Map a generated frame index to its first zero-based control step.
+
+    Frame zero is conditioning-only; generated frame one starts at action zero.
+    """
+
+    return max(0, int(frame_index) - 1) * int(action_per_frame)
+
+
+def planned_frame_actions_to_control_steps(
+    planned_frames: Sequence[PlannedFrameAction],
+) -> list[PlannedControlStep]:
+    """Expand frame-aligned action blocks into independently scheduled steps."""
+
+    planned_steps: list[PlannedControlStep] = []
+    for planned_frame in planned_frames:
+        raw_actions = np.asarray(planned_frame.raw_actions, dtype=np.float32)
+        action_per_frame = int(raw_actions.shape[0])
+        generation_frame_start = int(planned_frame.generation_frame_start)
+        generation_action_start = frame_index_to_action_start(
+            generation_frame_start,
+            action_per_frame,
+        )
+        for action_offset in range(action_per_frame):
+            absolute_action_index = (
+                frame_index_to_action_start(
+                    int(planned_frame.absolute_frame_index),
+                    action_per_frame,
+                )
+                + action_offset
+            )
+            planned_steps.append(
+                PlannedControlStep(
+                    absolute_action_index=int(absolute_action_index),
+                    generation_action_start=int(generation_action_start),
+                    generation_frame_start=int(generation_frame_start),
+                    source=str(planned_frame.source),
+                    planner_step_index=planned_frame.planner_step_index,
+                    ready_monotonic_s=planned_frame.ready_monotonic_s,
+                    raw_action=np.array(raw_actions[action_offset], copy=True),
+                )
+            )
+    return planned_steps
+
+
+def merge_future_control_steps(
+    existing: Mapping[int, PlannedControlStep],
+    incoming: Sequence[PlannedControlStep],
+    *,
+    next_action_to_execute: int,
+) -> dict[int, PlannedControlStep]:
+    """Drop stale steps and replace future indices with fresher predictions."""
+
+    merged = {
+        int(action_index): plan
+        for action_index, plan in existing.items()
+        if int(action_index) >= int(next_action_to_execute)
+    }
+    for plan in incoming:
+        if int(plan.absolute_action_index) < int(next_action_to_execute):
+            continue
+        merged[int(plan.absolute_action_index)] = plan
+    return dict(sorted(merged.items(), key=lambda item: int(item[0])))
+
+
+def future_control_depth(
+    plan_by_action: Mapping[int, PlannedControlStep],
+    *,
+    next_action_to_execute: int,
+) -> int:
+    """Return the distance to the furthest planned action, including gaps."""
+
+    if not plan_by_action:
+        return 0
+    return max(
+        0,
+        max(int(action_id) for action_id in plan_by_action)
+        - int(next_action_to_execute)
+        + 1,
+    )
+
+
+def required_control_action_indices(
+    *,
+    next_action_index: int,
+    max_actions: int,
+    action_per_frame: int,
+) -> list[int]:
+    """Return the next frame's executable indices within the rollout limit."""
+
+    action_count = min(
+        int(action_per_frame),
+        max(0, int(max_actions) - int(next_action_index)),
+    )
+    return [int(next_action_index) + offset for offset in range(action_count)]
+
+
+def missing_control_action_indices(
+    plan_by_action: Mapping[int, PlannedControlStep],
+    required_action_indices: Sequence[int],
+) -> list[int]:
+    """Report required action indices that do not yet have a plan."""
+
+    return [
+        int(action_index)
+        for action_index in required_action_indices
+        if int(action_index) not in plan_by_action
+    ]
+
+
+def future_control_steps(
+    planned_steps: Sequence[PlannedControlStep],
+    *,
+    next_action_to_execute: int,
+) -> list[PlannedControlStep]:
+    """Select steps that have not passed the execution cursor."""
+
+    return [
+        step
+        for step in planned_steps
+        if int(step.absolute_action_index) >= int(next_action_to_execute)
+    ]
+
+
+def drop_control_steps_from(
+    plan_by_action: Mapping[int, PlannedControlStep],
+    *,
+    replace_from_action: int,
+) -> dict[int, PlannedControlStep]:
+    """Keep only control steps before a replacement boundary."""
+
+    return {
+        int(action_index): plan
+        for action_index, plan in plan_by_action.items()
+        if int(action_index) < int(replace_from_action)
+    }
+
+
+def drop_partial_stale_control_chunk(
+    planned_steps: Sequence[PlannedControlStep],
+    *,
+    next_action_to_execute: int,
+    min_future_actions_to_accept_stale_chunk: int = 0,
+) -> tuple[list[PlannedControlStep], int, int]:
+    """Apply atomic acceptance policy when execution overtakes part of a chunk.
+
+    Returns ``(mergeable, dropped_future_count, accepted_partial_count)``.
+    Fully stale chunks are returned unchanged because the subsequent future-plan
+    merge owns ordinary stale filtering. A partially stale chunk is either
+    rejected as a unit or accepted as a sufficiently large future suffix.
+    """
+
+    steps = list(planned_steps)
+    stale_steps = [
+        step
+        for step in steps
+        if int(step.absolute_action_index) < int(next_action_to_execute)
+    ]
+    future_steps = [
+        step
+        for step in steps
+        if int(step.absolute_action_index) >= int(next_action_to_execute)
+    ]
+    if stale_steps and future_steps:
+        minimum = int(min_future_actions_to_accept_stale_chunk)
+        if minimum > 0 and len(future_steps) >= minimum:
+            return future_steps, 0, len(future_steps)
+        return [], len(future_steps), 0
+    return steps, 0, 0
 
 
 def make_planned_frame_actions(

@@ -2,12 +2,42 @@ from __future__ import annotations
 
 import numpy as np
 
+import open_wam.integrations as integrations
 from open_wam.integrations.realtime_control import (
+    PlannedControlStep,
+    PlannedFrameAction,
     build_live_rollout_summary,
+    drop_control_steps_from,
+    drop_partial_stale_control_chunk,
+    frame_index_to_action_start,
+    future_control_depth,
+    future_control_steps,
     make_planned_frame_actions,
+    merge_future_control_steps,
     merge_future_frame_actions,
+    missing_control_action_indices,
+    planned_frame_actions_to_control_steps,
+    required_control_action_indices,
     summarize_scalars,
 )
+
+
+def _control_step(
+    action_index: int,
+    *,
+    generation_action_start: int = 0,
+    source: str = "plan",
+) -> PlannedControlStep:
+    return PlannedControlStep(
+        absolute_action_index=action_index,
+        generation_action_start=generation_action_start,
+        source=source,
+    )
+
+
+def test_realtime_control_contract_is_lazily_exported_by_integrations() -> None:
+    assert integrations.PlannedControlStep is PlannedControlStep
+    assert integrations.merge_future_control_steps is merge_future_control_steps
 
 
 def test_make_planned_frame_actions_assigns_absolute_frame_ids() -> None:
@@ -59,6 +89,116 @@ def test_merge_future_frame_actions_drops_stale_and_replaces_future() -> None:
     assert list(merged) == [3, 4]
     assert float(merged[3].raw_actions[0, 0]) == 30.0
     assert float(merged[4].raw_actions[0, 0]) == 40.0
+
+
+def test_frame_index_to_action_start_uses_conditioning_frame_convention() -> None:
+    assert [frame_index_to_action_start(index, 4) for index in range(5)] == [0, 0, 4, 8, 12]
+
+
+def test_planned_frame_actions_expand_to_independent_control_steps() -> None:
+    source_actions = np.asarray(
+        [[10.0, 11.0], [12.0, 13.0], [14.0, 15.0], [16.0, 17.0]],
+        dtype=np.float64,
+    )
+    planned_frame = PlannedFrameAction(
+        absolute_frame_index=3,
+        generation_frame_start=2,
+        frame_offset=1,
+        raw_actions=source_actions,
+        source="frame_plan",
+        planner_step_index=7,
+        ready_monotonic_s=1.25,
+    )
+
+    planned_steps = planned_frame_actions_to_control_steps([planned_frame])
+
+    assert [step.absolute_action_index for step in planned_steps] == [8, 9, 10, 11]
+    assert [step.generation_action_start for step in planned_steps] == [4, 4, 4, 4]
+    assert all(step.generation_frame_start == 2 for step in planned_steps)
+    assert all(step.source == "frame_plan" for step in planned_steps)
+    assert all(step.planner_step_index == 7 for step in planned_steps)
+    assert all(step.ready_monotonic_s == 1.25 for step in planned_steps)
+    assert all(step.raw_action is not None and step.raw_action.dtype == np.float32 for step in planned_steps)
+    np.testing.assert_array_equal(planned_steps[0].raw_action, np.asarray([10.0, 11.0], dtype=np.float32))
+    source_actions[0, 0] = -1.0
+    assert planned_steps[0].raw_action is not None
+    assert float(planned_steps[0].raw_action[0]) == 10.0
+
+
+def test_merge_future_control_steps_drops_stale_and_prefers_newer_predictions() -> None:
+    existing = {
+        0: _control_step(0, source="old"),
+        1: _control_step(1, source="old"),
+        2: _control_step(2, source="old"),
+    }
+    incoming = [
+        _control_step(1, generation_action_start=1, source="new"),
+        _control_step(3, generation_action_start=1, source="new"),
+    ]
+
+    merged = merge_future_control_steps(existing, incoming, next_action_to_execute=1)
+
+    assert list(merged) == [1, 2, 3]
+    assert merged[1].source == "new"
+    assert merged[2].source == "old"
+    assert merged[3].source == "new"
+
+
+def test_control_plan_queries_respect_rollout_cursor_and_limit() -> None:
+    plan = {
+        4: _control_step(4),
+        6: _control_step(6),
+    }
+
+    required = required_control_action_indices(
+        next_action_index=8,
+        max_actions=10,
+        action_per_frame=4,
+    )
+
+    assert required == [8, 9]
+    assert missing_control_action_indices(plan, [4, 5, 6, 7]) == [5, 7]
+    assert future_control_depth(plan, next_action_to_execute=4) == 3
+    assert future_control_depth({}, next_action_to_execute=4) == 0
+
+
+def test_control_plan_slices_steps_at_replacement_and_execution_boundaries() -> None:
+    planned_steps = [_control_step(index) for index in range(8)]
+    plan_by_action = {step.absolute_action_index: step for step in planned_steps}
+
+    future = future_control_steps(planned_steps, next_action_to_execute=5)
+    prefix = drop_control_steps_from(plan_by_action, replace_from_action=5)
+
+    assert [step.absolute_action_index for step in future] == [5, 6, 7]
+    assert list(prefix) == [0, 1, 2, 3, 4]
+
+
+def test_partial_stale_control_chunks_are_atomic_unless_suffix_is_large_enough() -> None:
+    planned_steps = [_control_step(index, source="history_replan") for index in range(16)]
+
+    rejected, dropped, accepted_partial = drop_partial_stale_control_chunk(
+        planned_steps,
+        next_action_to_execute=8,
+    )
+    accepted, accepted_dropped, accepted_partial_count = drop_partial_stale_control_chunk(
+        planned_steps,
+        next_action_to_execute=8,
+        min_future_actions_to_accept_stale_chunk=8,
+    )
+    fully_stale, fully_stale_dropped, fully_stale_partial = drop_partial_stale_control_chunk(
+        planned_steps[:4],
+        next_action_to_execute=8,
+    )
+
+    assert rejected == []
+    assert dropped == 8
+    assert accepted_partial == 0
+    assert [step.absolute_action_index for step in accepted] == list(range(8, 16))
+    assert accepted_dropped == 0
+    assert accepted_partial_count == 8
+    assert fully_stale == planned_steps[:4]
+    assert fully_stale_dropped == 0
+    assert fully_stale_partial == 0
 
 
 def test_build_live_rollout_summary_reports_rates_and_stage_stats() -> None:

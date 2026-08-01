@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
 import hashlib
 import json
 import math
@@ -43,7 +42,19 @@ from open_wam.integrations import (  # noqa: E402
     resolve_libero_task_by_id,
 )
 from open_wam.integrations import libero_rollout  # noqa: E402
-from open_wam.integrations.realtime_control import build_live_rollout_summary  # noqa: E402
+from open_wam.integrations.realtime_control import (  # noqa: E402
+    PlannedControlStep,
+    build_live_rollout_summary,
+    drop_control_steps_from,
+    drop_partial_stale_control_chunk,
+    frame_index_to_action_start,
+    future_control_depth,
+    future_control_steps,
+    merge_future_control_steps,
+    missing_control_action_indices,
+    planned_frame_actions_to_control_steps,
+    required_control_action_indices,
+)
 from open_wam.evals import libero_rollout_artifacts as rollout_artifacts  # noqa: E402
 from open_wam.evals import libero_realtime_runtime as realtime_runtime  # noqa: E402
 from open_wam.evals import libero_visualization as exact_viz  # noqa: E402
@@ -110,20 +121,6 @@ REALTIME_SCHEDULER_PROFILE_DEFAULTS: dict[str, dict[str, object]] = {
         "startup_open_loop_chunks": 1,
     },
 }
-
-
-@dataclass(frozen=True)
-class PlannedControlStep:
-    absolute_action_index: int
-    generation_action_start: int
-    source: str
-    planner_step_index: int | None = None
-    ready_monotonic_s: float | None = None
-    generation_frame_start: int | None = None
-    raw_action: np.ndarray | None = None
-    desired_position: np.ndarray | None = None
-    desired_quaternion: np.ndarray | None = None
-    desired_gripper: np.ndarray | None = None
 
 
 class _RolloutRunnerLike(Protocol):
@@ -974,7 +971,7 @@ def _run_exact_like_realtime_rollout(
             first_chunk=first_chunk,
             frame_chunk_size=int(config.inference.frame_chunk_size),
         )
-        plan_by_action: dict[int, PlannedControlStep] = _merge_future_step_actions(
+        plan_by_action: dict[int, PlannedControlStep] = merge_future_control_steps(
             {},
             _exact_chunk_to_planned_steps(
                 chunk=first_chunk,
@@ -1104,7 +1101,7 @@ def _run_exact_like_realtime_rollout(
                     replan_future = None
                     replan_future_cache_snapshot = None
 
-                required_action_indices = _required_frame_action_indices(
+                required_action_indices = required_control_action_indices(
                     next_action_index=next_action_index,
                     max_actions=max_actions,
                     action_per_frame=action_per_frame,
@@ -1112,24 +1109,24 @@ def _run_exact_like_realtime_rollout(
                 wait_for_plan_s = 0.0
                 if (
                     sequence_empty_plan_policy == "wait_for_replan"
-                    and _missing_plan_action_indices(plan_by_action, required_action_indices)
+                    and missing_control_action_indices(plan_by_action, required_action_indices)
                 ):
                     wait_t0 = time.perf_counter()
                     wait_job_count = 0
                     max_wait_jobs = max(4, max_frames + 2)
-                    while _missing_plan_action_indices(plan_by_action, required_action_indices):
+                    while missing_control_action_indices(plan_by_action, required_action_indices):
                         if wait_job_count >= max_wait_jobs:
                             raise RuntimeError(
                                 "Blocking exact/joint replan did not produce the next required actions "
                                 f"{required_action_indices}; missing="
-                                f"{_missing_plan_action_indices(plan_by_action, required_action_indices)}."
+                                f"{missing_control_action_indices(plan_by_action, required_action_indices)}."
                             )
                         wait_job_count += 1
                         if replan_future is None:
                             blocking_replan_count += 1
                             future_buffer_depth_frames = int(
                                 math.ceil(
-                                    _future_buffer_depth_actions(
+                                    future_control_depth(
                                         plan_by_action,
                                         next_action_to_execute=next_action_index,
                                     )
@@ -1251,7 +1248,10 @@ def _run_exact_like_realtime_rollout(
                 frame_actions: list[np.ndarray] = []
                 frame_action_sources: list[str] = []
                 frame_action_metadata: list[dict[str, Any]] = []
-                missing_required_action_indices = _missing_plan_action_indices(plan_by_action, required_action_indices)
+                missing_required_action_indices = missing_control_action_indices(
+                    plan_by_action,
+                    required_action_indices,
+                )
                 use_fallback_frame = (
                     sequence_empty_plan_policy == "fallback"
                     and bool(missing_required_action_indices)
@@ -1340,7 +1340,7 @@ def _run_exact_like_realtime_rollout(
                     generation_action_start = (
                         None
                         if generation_frame_start is None
-                        else _frame_index_to_action_start(generation_frame_start, action_per_frame)
+                        else frame_index_to_action_start(generation_frame_start, action_per_frame)
                     )
                     action_record = {
                         "action_index": real_action_index,
@@ -1466,11 +1466,11 @@ def _run_exact_like_realtime_rollout(
 
                 future_buffer_depth_frames = int(
                     math.ceil(
-                        _future_buffer_depth_actions(plan_by_action, next_action_to_execute=next_action_index)
+                        future_control_depth(plan_by_action, next_action_to_execute=next_action_index)
                         / action_per_frame
                     )
                 )
-                future_buffer_depth_actions = _future_buffer_depth_actions(
+                future_buffer_depth_actions = future_control_depth(
                     plan_by_action,
                     next_action_to_execute=next_action_index,
                 )
@@ -1663,12 +1663,12 @@ def _consume_exact_future_result(
     extension_records: list[dict[str, Any]],
     min_future_actions_to_accept_stale_chunk: int = 0,
 ):
-    planned_steps = _planned_frames_to_step_actions(result["planned_frames"])
+    planned_steps = planned_frame_actions_to_control_steps(result["planned_frames"])
     (
         mergeable_planned_steps,
         chunk_boundary_dropped_actions,
         partial_stale_chunk_accepted_actions,
-    ) = _drop_partial_stale_chunk_steps(
+    ) = drop_partial_stale_control_chunk(
         planned_steps,
         next_action_to_execute=next_action_to_execute,
         min_future_actions_to_accept_stale_chunk=min_future_actions_to_accept_stale_chunk,
@@ -1708,56 +1708,12 @@ def _consume_exact_future_result(
             buffer_tail_session = result["buffer_tail_session"]
         else:
             buffer_tail_session = None
-    plan_by_action = _merge_future_step_actions(
+    plan_by_action = merge_future_control_steps(
         plan_by_action,
         mergeable_planned_steps,
         next_action_to_execute=next_action_to_execute,
     )
     return history_base_session, current_chunk_session, buffer_tail_session, plan_by_action, pending_history
-
-
-def _drop_partial_stale_chunk_steps(
-    planned_steps: list[PlannedControlStep],
-    *,
-    next_action_to_execute: int,
-    min_future_actions_to_accept_stale_chunk: int = 0,
-) -> tuple[list[PlannedControlStep], int, int]:
-    """Keep exact-runtime chunks atomic when a result arrives after its first action is stale."""
-
-    stale_steps = [
-        step
-        for step in planned_steps
-        if int(step.absolute_action_index) < int(next_action_to_execute)
-    ]
-    future_steps = [
-        step
-        for step in planned_steps
-        if int(step.absolute_action_index) >= int(next_action_to_execute)
-    ]
-    if stale_steps and future_steps:
-        if int(min_future_actions_to_accept_stale_chunk) > 0 and len(future_steps) >= int(
-            min_future_actions_to_accept_stale_chunk
-        ):
-            return future_steps, 0, len(future_steps)
-        return [], len(future_steps), 0
-    return planned_steps, 0, 0
-
-
-def _required_frame_action_indices(
-    *,
-    next_action_index: int,
-    max_actions: int,
-    action_per_frame: int,
-) -> list[int]:
-    frame_action_count = min(int(action_per_frame), max(0, int(max_actions) - int(next_action_index)))
-    return [int(next_action_index) + offset for offset in range(frame_action_count)]
-
-
-def _missing_plan_action_indices(
-    plan_by_action: dict[int, PlannedControlStep],
-    required_action_indices: list[int],
-) -> list[int]:
-    return [int(action_index) for action_index in required_action_indices if int(action_index) not in plan_by_action]
 
 
 def _resolve_exact_realtime_planner_mode(
@@ -1833,12 +1789,12 @@ def _exact_chunk_to_planned_steps(
     )
     generation_frame_start = int(chunk.debug.get("generation_frame_start", 1))
     require_strict_startup_generation_frame(generation_frame_start)
-    generation_action_start = _frame_index_to_action_start(generation_frame_start, action_per_frame)
+    generation_action_start = frame_index_to_action_start(generation_frame_start, action_per_frame)
     planned_steps: list[PlannedControlStep] = []
     for frame_offset in range(raw_actions.shape[0]):
         absolute_frame_index = generation_frame_start + frame_offset
         for action_offset in range(raw_actions.shape[1]):
-            absolute_action_index = _frame_index_to_action_start(
+            absolute_action_index = frame_index_to_action_start(
                 absolute_frame_index,
                 action_per_frame,
             ) + action_offset
@@ -1903,31 +1859,6 @@ def _exact_startup_conditioning_history_record(
     if proprio_state is not None:
         record["proprio_state"] = realtime_history.proprio_state_to_numpy(proprio_state)
     return record
-
-
-def _planned_frames_to_step_actions(planned_frames: list[Any]) -> list[PlannedControlStep]:
-    planned_steps: list[PlannedControlStep] = []
-    for planned_frame in planned_frames:
-        raw_actions = np.asarray(planned_frame.raw_actions, dtype=np.float32)
-        generation_frame_start = int(planned_frame.generation_frame_start)
-        generation_action_start = _frame_index_to_action_start(generation_frame_start, int(raw_actions.shape[0]))
-        for action_offset in range(raw_actions.shape[0]):
-            absolute_action_index = (
-                _frame_index_to_action_start(int(planned_frame.absolute_frame_index), int(raw_actions.shape[0]))
-                + action_offset
-            )
-            planned_steps.append(
-                PlannedControlStep(
-                    absolute_action_index=int(absolute_action_index),
-                    generation_action_start=int(generation_action_start),
-                    generation_frame_start=int(generation_frame_start),
-                    source=str(planned_frame.source),
-                    planner_step_index=planned_frame.planner_step_index,
-                    ready_monotonic_s=planned_frame.ready_monotonic_s,
-                    raw_action=np.array(raw_actions[action_offset], copy=True),
-                )
-            )
-    return planned_steps
 
 
 def _run_sequence_policy_realtime_rollout(
@@ -2144,7 +2075,7 @@ def _run_sequence_policy_realtime_rollout(
         buffer_tail_session = session if mot_non_joint_sequence else realtime_speculation.clone_session(session)
         buffer_tail_cache_snapshot = startup.get("runtime_cache_snapshot")
         buffer_tail_generation_action_start = int(next_generation_action_start)
-        plan_by_action = _merge_future_step_actions({}, startup["planned_steps"], next_action_to_execute=0)
+        plan_by_action = merge_future_control_steps({}, startup["planned_steps"], next_action_to_execute=0)
         current_obs = realtime_history.copy_observation(initial_obs_window[-1])
         obs_window = realtime_history.copy_observation_window(initial_obs_window)
         model_obs_window = _sequence_startup_model_obs_window(config, initial_obs_window)
@@ -2190,7 +2121,7 @@ def _run_sequence_policy_realtime_rollout(
                     else realtime_speculation.clone_session(buffer_tail_session)
                 )
                 next_generation_action_start = int(buffer_tail_generation_action_start)
-                plan_by_action = _merge_future_step_actions(
+                plan_by_action = merge_future_control_steps(
                     plan_by_action,
                     extension["planned_steps"],
                     next_action_to_execute=0,
@@ -2230,7 +2161,7 @@ def _run_sequence_policy_realtime_rollout(
                         if future_steps:
                             if bool(result["trace"].get("use_observation_update", True)):
                                 replace_from_action = min(int(step.absolute_action_index) for step in future_steps)
-                                plan_by_action = _drop_sequence_future_actions_from(
+                                plan_by_action = drop_control_steps_from(
                                     plan_by_action,
                                     replace_from_action=replace_from_action,
                                 )
@@ -2253,7 +2184,7 @@ def _run_sequence_policy_realtime_rollout(
                                 )
                                 buffer_tail_cache_snapshot = result.get("runtime_cache_snapshot")
                                 buffer_tail_generation_action_start = int(result["next_generation_action_start"])
-                            plan_by_action = _merge_future_step_actions(
+                            plan_by_action = merge_future_control_steps(
                                 plan_by_action,
                                 future_steps,
                                 next_action_to_execute=next_action_index,
@@ -2267,7 +2198,7 @@ def _run_sequence_policy_realtime_rollout(
                         replan_records.append(result["trace"])
                         session = result["session"]
                         next_generation_action_start = int(result["next_generation_action_start"])
-                        plan_by_action = _merge_future_step_actions(
+                        plan_by_action = merge_future_control_steps(
                             plan_by_action,
                             result["planned_steps"],
                             next_action_to_execute=next_action_index,
@@ -2346,7 +2277,7 @@ def _run_sequence_policy_realtime_rollout(
                             replan_records.append(result["trace"])
                             if future_steps:
                                 replace_from_action = min(int(step.absolute_action_index) for step in future_steps)
-                                plan_by_action = _drop_sequence_future_actions_from(
+                                plan_by_action = drop_control_steps_from(
                                     plan_by_action,
                                     replace_from_action=replace_from_action,
                                 )
@@ -2362,7 +2293,7 @@ def _run_sequence_policy_realtime_rollout(
                                 )
                                 buffer_tail_cache_snapshot = result.get("runtime_cache_snapshot")
                                 buffer_tail_generation_action_start = int(result["next_generation_action_start"])
-                                plan_by_action = _merge_future_step_actions(
+                                plan_by_action = merge_future_control_steps(
                                     plan_by_action,
                                     future_steps,
                                     next_action_to_execute=next_action_index,
@@ -2516,7 +2447,7 @@ def _run_sequence_policy_realtime_rollout(
                         if future_steps:
                             if bool(result["trace"].get("use_observation_update", True)):
                                 replace_from_action = min(int(step.absolute_action_index) for step in future_steps)
-                                plan_by_action = _drop_sequence_future_actions_from(
+                                plan_by_action = drop_control_steps_from(
                                     plan_by_action,
                                     replace_from_action=replace_from_action,
                                 )
@@ -2539,7 +2470,7 @@ def _run_sequence_policy_realtime_rollout(
                                 )
                                 buffer_tail_cache_snapshot = result.get("runtime_cache_snapshot")
                                 buffer_tail_generation_action_start = int(result["next_generation_action_start"])
-                            plan_by_action = _merge_future_step_actions(
+                            plan_by_action = merge_future_control_steps(
                                 plan_by_action,
                                 future_steps,
                                 next_action_to_execute=next_action_index,
@@ -2553,14 +2484,14 @@ def _run_sequence_policy_realtime_rollout(
                         replan_records.append(result["trace"])
                         session = result["session"]
                         next_generation_action_start = int(result["next_generation_action_start"])
-                        plan_by_action = _merge_future_step_actions(
+                        plan_by_action = merge_future_control_steps(
                             plan_by_action,
                             result["planned_steps"],
                             next_action_to_execute=next_action_index,
                         )
                     replan_future = None
 
-                remaining_buffer = _future_buffer_depth_actions(plan_by_action, next_action_to_execute=next_action_index)
+                remaining_buffer = future_control_depth(plan_by_action, next_action_to_execute=next_action_index)
                 if planner_mode not in {"history_only", "async_buffer", "async_mix", "async_history_first"}:
                     raise ValueError(f"Unsupported planner_mode={planner_mode!r} for policy_variant={config.policy_variant.name!r}.")
                 should_submit = _should_submit_sequence_realtime_planner(
@@ -2668,7 +2599,7 @@ def _run_sequence_policy_realtime_rollout(
                     )
                     replan_records.append(result["trace"])
                     if future_steps:
-                        plan_by_action = _merge_future_step_actions(
+                        plan_by_action = merge_future_control_steps(
                             plan_by_action,
                             future_steps,
                             next_action_to_execute=next_action_index,
@@ -2677,7 +2608,7 @@ def _run_sequence_policy_realtime_rollout(
                     replan_records.append(result["trace"])
                     session = result["session"]
                     next_generation_action_start = int(result["next_generation_action_start"])
-                    plan_by_action = _merge_future_step_actions(
+                    plan_by_action = merge_future_control_steps(
                         plan_by_action,
                         result["planned_steps"],
                         next_action_to_execute=next_action_index,
@@ -3070,7 +3001,7 @@ def _apply_sequence_replan_result(
     return (
         result["session"],
         int(result["next_generation_action_start"]),
-        _merge_future_step_actions(
+        merge_future_control_steps(
             plan_by_action,
             result["planned_steps"],
             next_action_to_execute=next_action_to_execute,
@@ -3078,37 +3009,13 @@ def _apply_sequence_replan_result(
     )
 
 
-def _sequence_future_planned_steps(
-    result: dict[str, Any],
-    *,
-    next_action_to_execute: int,
-) -> list[PlannedControlStep]:
-    return [
-        step
-        for step in result["planned_steps"]
-        if int(step.absolute_action_index) >= int(next_action_to_execute)
-    ]
-
-
-def _drop_sequence_future_actions_from(
-    plan_by_action: dict[int, PlannedControlStep],
-    *,
-    replace_from_action: int,
-) -> dict[int, PlannedControlStep]:
-    return {
-        int(action_index): plan
-        for action_index, plan in plan_by_action.items()
-        if int(action_index) < int(replace_from_action)
-    }
-
-
 def _annotate_sequence_planner_acceptance(
     result: dict[str, Any],
     *,
     next_action_to_execute: int,
 ) -> list[PlannedControlStep]:
-    future_steps = _sequence_future_planned_steps(
-        result,
+    future_steps = future_control_steps(
+        result["planned_steps"],
         next_action_to_execute=next_action_to_execute,
     )
     result["trace"]["future_planned_actions"] = int(len(future_steps))
@@ -3359,38 +3266,6 @@ def _materialize_sequence_control_action(
         control_config=control_config,
         gripper_representation=gripper_representation,
     ).astype(np.float32)
-
-
-def _merge_future_step_actions(
-    existing: dict[int, PlannedControlStep],
-    incoming: list[PlannedControlStep],
-    *,
-    next_action_to_execute: int,
-) -> dict[int, PlannedControlStep]:
-    merged = {
-        int(action_index): plan
-        for action_index, plan in existing.items()
-        if int(action_index) >= int(next_action_to_execute)
-    }
-    for plan in incoming:
-        if int(plan.absolute_action_index) < int(next_action_to_execute):
-            continue
-        merged[int(plan.absolute_action_index)] = plan
-    return dict(sorted(merged.items(), key=lambda item: int(item[0])))
-
-
-def _future_buffer_depth_actions(
-    plan_by_action: dict[int, PlannedControlStep],
-    *,
-    next_action_to_execute: int,
-) -> int:
-    if not plan_by_action:
-        return 0
-    return max(0, max(int(action_id) for action_id in plan_by_action) - int(next_action_to_execute) + 1)
-
-
-def _frame_index_to_action_start(frame_index: int, action_per_frame: int) -> int:
-    return max(0, int(frame_index) - 1) * int(action_per_frame)
 
 
 def _debug_sha256_bytes(data: bytes) -> str:

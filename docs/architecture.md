@@ -71,6 +71,9 @@ in `libero_realtime_runtime` owns planner jobs, encoded-history preparation,
 session continuity, and fallback action generation. The benchmark-independent
 `realtime_history` contract owns copied observation windows, fallback
 quarantine and washout, model-timeline advancement, and proprio normalization;
+`realtime_speculation` owns session/RNG/visual-cache rollback. The integration
+contract in `open_wam.integrations.realtime_control` owns frame- and
+action-aligned plans, execution-cursor filtering, and future-plan replacement;
 `libero_rollout_artifacts` owns rendering and persistence. The checkout script
 owns CLI composition and the benchmark-specific simulator control loop; it
 does not import another checkout helper or call private package runtime
