@@ -4267,6 +4267,62 @@ def test_generic_evaluator_has_explicit_contract_metric_and_window_owners() -> N
     assert "open_wam.evals.evaluation_windows" in _absolute_imports_for_file(facade_path)
 
 
+def test_training_runtime_has_explicit_composition_owners() -> None:
+    training_root = PACKAGE_ROOT / "training"
+    runtime_path = training_root / "runtime.py"
+    data_loading_path = training_root / "data_loading.py"
+    auxiliary_validation_path = training_root / "auxiliary_validation.py"
+    logging_path = training_root / "logging.py"
+    optim_path = training_root / "optim.py"
+    runtime_definitions = _top_level_definitions(runtime_path)
+
+    data_loading_definitions = {
+        "build_runtime_dataloaders",
+        "_uses_mixed_dynamics_paradigm",
+        "_validate_mixed_dynamics_source_sampling",
+    }
+    auxiliary_validation_definitions = {
+        "AuxiliaryValidationDataset",
+        "AuxiliaryValidationRun",
+        "build_auxiliary_validation_runs",
+        "_resolve_auxiliary_validation_source",
+        "_resolve_named_auxiliary_validation_source",
+        "_auxiliary_validation_summary_metrics",
+    }
+    optimizer_state_definitions = {
+        "_is_floating_dtype",
+        "_optimizer_state_target_dtype",
+        "_normalize_optimizer_state_dtypes",
+    }
+
+    assert data_loading_definitions <= _top_level_definitions(data_loading_path)
+    assert auxiliary_validation_definitions <= _top_level_definitions(
+        auxiliary_validation_path
+    )
+    assert "build_log_sink" in _top_level_definitions(logging_path)
+    assert optimizer_state_definitions <= _top_level_definitions(optim_path)
+    assert {
+        *data_loading_definitions,
+        *auxiliary_validation_definitions,
+        *optimizer_state_definitions,
+        "build_log_sink",
+    }.isdisjoint(runtime_definitions)
+    assert "TrainingRuntime" in runtime_definitions
+
+    runtime_imports = _absolute_imports_for_file(runtime_path)
+    assert "data_loading" in runtime_imports
+    assert "auxiliary_validation" in runtime_imports
+    assert "logging" in runtime_imports
+    assert "optim" in runtime_imports
+    for owner_path in (
+        data_loading_path,
+        auxiliary_validation_path,
+        logging_path,
+        optim_path,
+    ):
+        assert "open_wam.pipelines" not in _absolute_imports_for_file(owner_path)
+
+
 def test_checkpoint_artifact_discovery_has_one_lightweight_owner() -> None:
     artifact_path = PACKAGE_ROOT / "runtime" / "checkpoint_artifacts.py"
     loader_path = PACKAGE_ROOT / "runtime" / "checkpoints.py"

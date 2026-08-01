@@ -12,6 +12,7 @@ import yaml
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 
+import open_wam.training.runtime as runtime_module
 from open_wam.configs import AuxiliaryValidationTaskConfig, TrainingConfig
 from open_wam.configs.enums import BatchAdapterName, CheckpointMode
 from open_wam.data import (
@@ -22,14 +23,14 @@ from open_wam.data import (
 )
 from open_wam.models.policy_variants import PolicyTrainBatch
 from open_wam.training import TrainingRuntime
-from open_wam.training.checkpoints import CheckpointManager
-from open_wam.training.loop_policies import StepLoopPolicy
-from open_wam.training.runtime import (
+from open_wam.training.auxiliary_validation import (
     AuxiliaryValidationDataset,
-    _normalize_optimizer_state_dtypes,
     _resolve_auxiliary_validation_source,
-    _validate_mixed_dynamics_source_sampling,
 )
+from open_wam.training.checkpoints import CheckpointManager
+from open_wam.training.data_loading import _validate_mixed_dynamics_source_sampling
+from open_wam.training.loop_policies import StepLoopPolicy
+from open_wam.training.optim import _normalize_optimizer_state_dtypes
 from open_wam.training.state import TrainState
 from open_wam.training.step_executor import (
     LatentBatchAdapter,
@@ -39,6 +40,16 @@ from open_wam.training.step_executor import (
 from open_wam.configs import load_experiment_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_runtime_compatibility_aliases_keep_canonical_owner_identity() -> None:
+    assert runtime_module.AuxiliaryValidationDataset is AuxiliaryValidationDataset
+    assert runtime_module._normalize_optimizer_state_dtypes is _normalize_optimizer_state_dtypes
+    assert runtime_module._resolve_auxiliary_validation_source is _resolve_auxiliary_validation_source
+    assert (
+        runtime_module._validate_mixed_dynamics_source_sampling
+        is _validate_mixed_dynamics_source_sampling
+    )
 
 
 def test_normalize_optimizer_state_prefers_gradient_dtype_for_mixed_precision_resume() -> (

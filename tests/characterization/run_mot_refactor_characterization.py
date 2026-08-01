@@ -56,7 +56,8 @@ DISTRIBUTED_AGGREGATE_TOLERANCE = ComparisonTolerance(
     relative=0.0,
 )
 RESUME_POST_UPDATE_METRIC_TOLERANCE = ComparisonTolerance(
-    absolute=5e-6,
+    # One BF16 quantum at the observed ~2^-9 continuation-loss scale.
+    absolute=2**-16,
     relative=0.0,
 )
 

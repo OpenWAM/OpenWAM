@@ -1,100 +1,68 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, replace
-import inspect
 import os
 from pathlib import Path
 
 import torch
 import torch.distributed as dist
-from torch.utils.data import DataLoader, Dataset
-from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data import DataLoader
 
 from open_wam.configs import (
     AuxiliaryValidationTaskConfig,
-    BatchAdapterName,
     ExperimentConfig,
     LoopPolicyName,
 )
-from open_wam.configs.enums import (
-    AuxiliaryValidationSource,
-    DataSplit,
-    GeneralistTrainingParadigm,
-    SampleWeightMode,
-    serialize_enum_values,
-)
-from open_wam.contracts import (
-    GENERALIST_TRAINING_BUCKET_METADATA_KEY,
-    GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY,
-    GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY,
-    GENERALIST_TRAINING_SOURCE_METADATA_KEY,
-)
-from open_wam.data import (
-    build_generalist_dynamics_mixture_datasets,
-    build_train_val_datasets,
-    build_train_val_latent_datasets,
-    collate_latent_wam_samples,
-    collate_wam_samples,
-    resolve_dataset_loader_spec,
-)
 from open_wam.pipelines import build_variant_pipeline_from_config
 
+from .auxiliary_validation import (
+    AuxiliaryValidationDataset,
+    AuxiliaryValidationRun,
+    _auxiliary_validation_summary_metrics,
+    _resolve_auxiliary_validation_source,
+    build_auxiliary_validation_runs,
+)
 from .checkpoints import CheckpointManager
 from .controls import TrainabilityReport, apply_training_component_controls
-from .logging import CompositeLogSink, ConsoleLogSink, JsonlLogSink, NoopLogSink, WandBLogSink
+from .data_loading import (
+    _uses_mixed_dynamics_paradigm,
+    _validate_mixed_dynamics_source_sampling,
+    build_runtime_dataloaders,
+)
+from .logging import (
+    CompositeLogSink,
+    ConsoleLogSink,
+    JsonlLogSink,
+    NoopLogSink,
+    WandBLogSink,
+    build_log_sink,
+)
 from .loop_policies import EpochLoopPolicy, StepLoopPolicy
-from .optim import build_optimizer, build_scheduler
-from .run_tracking import (
-    build_run_title,
-    build_run_tracking_metadata,
-    build_wandb_group,
-    build_wandb_job_type,
-    build_wandb_tags,
-    resolve_wandb_project,
+from .optim import (
+    _is_floating_dtype,
+    _normalize_optimizer_state_dtypes,
+    _optimizer_state_target_dtype,
+    build_optimizer,
+    build_scheduler,
 )
 from .state import TrainState
 from .step_executor import PipelineTrainStepExecutor, build_batch_adapter
 from .strategies import build_training_strategy
 
 
-@dataclass(frozen=True)
-class AuxiliaryValidationRun:
-    """Runtime-ready auxiliary validation task."""
-
-    config: AuxiliaryValidationTaskConfig
-    loader: DataLoader
-    resolved_source: str
-
-
-def _is_floating_dtype(dtype: torch.dtype | None) -> bool:
-    if dtype is None:
-        return False
-    return torch.empty((), dtype=dtype).is_floating_point()
-
-
-def _optimizer_state_target_dtype(parameter: object) -> torch.dtype | None:
-    grad = getattr(parameter, "grad", None)
-    grad_dtype = getattr(grad, "dtype", None)
-    if _is_floating_dtype(grad_dtype):
-        return grad_dtype
-    parameter_dtype = getattr(parameter, "dtype", None)
-    if _is_floating_dtype(parameter_dtype):
-        return parameter_dtype
-    return None
-
-
-def _normalize_optimizer_state_dtypes(optimizer: torch.optim.Optimizer) -> None:
-    for parameter, state in optimizer.state.items():
-        if not isinstance(state, dict):
-            continue
-        state_dtype = _optimizer_state_target_dtype(parameter)
-        if state_dtype is None:
-            continue
-        for key, value in list(state.items()):
-            if key == "step":
-                continue
-            if torch.is_tensor(value) and torch.is_floating_point(value) and value.dtype != state_dtype:
-                state[key] = value.to(dtype=state_dtype)
+# Keep historical runtime-module lookups stable while canonical owners remain
+# role-specific. These names are compatibility aliases, not extension points.
+_RUNTIME_COMPATIBILITY_EXPORTS = (
+    AuxiliaryValidationDataset,
+    ConsoleLogSink,
+    JsonlLogSink,
+    NoopLogSink,
+    WandBLogSink,
+    _is_floating_dtype,
+    _optimizer_state_target_dtype,
+    _resolve_auxiliary_validation_source,
+    _uses_mixed_dynamics_paradigm,
+    _validate_mixed_dynamics_source_sampling,
+)
 
 
 def _local_tensor_view(tensor: torch.Tensor) -> torch.Tensor:
@@ -588,314 +556,6 @@ def _set_sampler_epoch(loader: DataLoader, epoch: int) -> None:
     set_epoch = getattr(getattr(loader, "sampler", None), "set_epoch", None)
     if callable(set_epoch):
         set_epoch(int(epoch))
-
-
-def build_runtime_dataloaders(config: ExperimentConfig, strategy) -> tuple[DataLoader, DataLoader]:
-    if _uses_mixed_dynamics_paradigm(config):
-        _validate_mixed_dynamics_source_sampling(config)
-    if config.trainer.batch_adapter == BatchAdapterName.LATENTS:
-        train_dataset, val_dataset = build_train_val_latent_datasets(config.data)
-        if _uses_mixed_dynamics_paradigm(config):
-            if config.data.train_batch_size != 1 or config.data.val_batch_size != 1:
-                raise ValueError(
-                    "`generalist_training_paradigm = mixed_dynamics` currently requires "
-                    "`data.train_batch_size = data.val_batch_size = 1` because mixed samples may have "
-                    "different temporal lengths and GJD runtimes use one forced mode per segment."
-                )
-            train_dataset, val_dataset = build_generalist_dynamics_mixture_datasets(
-                data_config=config.data,
-                train_dataset=train_dataset,
-                val_dataset=val_dataset,
-            )
-        train_loader_spec = resolve_dataset_loader_spec(
-            train_dataset,
-            split="train",
-            world_size=strategy.world_size,
-            rank=strategy.rank,
-        )
-        train_sampler = train_loader_spec.sampler
-        if train_sampler is None and strategy.distributed:
-            train_sampler = DistributedSampler(
-                train_dataset,
-                shuffle=True,
-                num_replicas=strategy.world_size,
-                rank=strategy.rank,
-            )
-        val_sampler = (
-            DistributedSampler(val_dataset, shuffle=False, num_replicas=strategy.world_size, rank=strategy.rank)
-            if strategy.distributed
-            else None
-        )
-        return (
-            DataLoader(
-                train_dataset,
-                batch_size=config.data.train_batch_size,
-                shuffle=train_sampler is None and train_loader_spec.shuffle,
-                num_workers=config.data.num_workers,
-                sampler=train_sampler,
-                collate_fn=collate_latent_wam_samples,
-            ),
-            DataLoader(
-                val_dataset,
-                batch_size=config.data.val_batch_size,
-                shuffle=False,
-                num_workers=config.data.num_workers,
-                sampler=val_sampler,
-                collate_fn=collate_latent_wam_samples,
-            ),
-        )
-    train_dataset, val_dataset = build_train_val_datasets(config.data)
-    train_loader_spec = resolve_dataset_loader_spec(
-        train_dataset,
-        split="train",
-        world_size=strategy.world_size,
-        rank=strategy.rank,
-    )
-    val_loader_spec = resolve_dataset_loader_spec(
-        val_dataset,
-        split="val",
-        world_size=strategy.world_size,
-        rank=strategy.rank,
-    )
-    train_sampler = train_loader_spec.sampler
-    if train_sampler is None and strategy.distributed:
-        train_sampler = DistributedSampler(train_dataset, shuffle=True, num_replicas=strategy.world_size, rank=strategy.rank)
-    val_sampler = val_loader_spec.sampler
-    if val_sampler is None and strategy.distributed:
-        val_sampler = DistributedSampler(val_dataset, shuffle=False, num_replicas=strategy.world_size, rank=strategy.rank)
-    return (
-        DataLoader(
-            train_dataset,
-            batch_size=config.data.train_batch_size,
-            shuffle=train_sampler is None and train_loader_spec.shuffle,
-            num_workers=config.data.num_workers,
-            sampler=train_sampler,
-            collate_fn=collate_wam_samples,
-        ),
-        DataLoader(
-            val_dataset,
-            batch_size=config.data.val_batch_size,
-            shuffle=val_loader_spec.shuffle,
-            num_workers=config.data.num_workers,
-            sampler=val_sampler,
-            collate_fn=collate_wam_samples,
-        ),
-    )
-
-
-class AuxiliaryValidationDataset(Dataset):
-    """Apply validation-only metadata overrides without changing source datasets."""
-
-    def __init__(
-        self,
-        dataset: Dataset,
-        *,
-        task: AuxiliaryValidationTaskConfig,
-    ) -> None:
-        self.dataset = dataset
-        self.task = task
-
-    def __len__(self) -> int:
-        return len(self.dataset)
-
-    def __getitem__(self, index: int):
-        sample = self.dataset[index]
-        metadata = dict(getattr(sample, "metadata", {}) or {})
-        if self.task.mode_override is not None:
-            metadata[GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY] = self.task.mode_override.value
-            metadata[GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY] = self.task.should_drop_text
-            metadata.setdefault(GENERALIST_TRAINING_SOURCE_METADATA_KEY, "auxiliary_validation")
-            metadata.setdefault(GENERALIST_TRAINING_BUCKET_METADATA_KEY, self.task.name)
-            metadata["generalist_validation_task"] = self.task.name
-            metadata["generalist_validation_phase"] = self.task.phase
-            metadata["generalist_validation_requested_source"] = self.task.source.value
-        updates = {"metadata": metadata}
-        if self.task.should_drop_text:
-            if hasattr(sample, "task_text"):
-                updates["task_text"] = None
-            if hasattr(sample, "text_context"):
-                text_context = getattr(sample, "text_context")
-                negative_text_context = getattr(sample, "negative_text_context", None)
-                if negative_text_context is not None:
-                    updates["text_context"] = negative_text_context.clone()
-                elif text_context is not None:
-                    updates["text_context"] = torch.zeros_like(text_context)
-        return replace(sample, **updates)
-
-
-def build_auxiliary_validation_runs(
-    config: ExperimentConfig,
-    strategy,
-    *,
-    train_loader: DataLoader,
-    val_loader: DataLoader,
-) -> tuple[AuxiliaryValidationRun, ...]:
-    runs: list[AuxiliaryValidationRun] = []
-    seen_phases: set[str] = set()
-    for task in config.validation.auxiliary_tasks:
-        if not task.enabled or task.max_batches == 0:
-            continue
-        if task.phase in seen_phases:
-            raise ValueError(f"Duplicate auxiliary validation report prefix {task.phase!r}.")
-        seen_phases.add(task.phase)
-        source_loader = train_loader if task.dataset_split == DataSplit.TRAIN else val_loader
-        source_dataset, resolved_source = _resolve_auxiliary_validation_source(source_loader.dataset, task=task)
-        dataset = AuxiliaryValidationDataset(source_dataset, task=task)
-        sampler = (
-            DistributedSampler(dataset, shuffle=False, num_replicas=strategy.world_size, rank=strategy.rank)
-            if strategy.distributed
-            else None
-        )
-        runs.append(
-            AuxiliaryValidationRun(
-                config=task,
-                loader=DataLoader(
-                    dataset,
-                    batch_size=source_loader.batch_size,
-                    shuffle=False,
-                    num_workers=source_loader.num_workers,
-                    sampler=sampler,
-                    collate_fn=source_loader.collate_fn,
-                    pin_memory=source_loader.pin_memory,
-                ),
-                resolved_source=resolved_source,
-            )
-        )
-    return tuple(runs)
-
-
-def _resolve_auxiliary_validation_source(
-    dataset: Dataset,
-    *,
-    task: AuxiliaryValidationTaskConfig,
-) -> tuple[Dataset, str]:
-    if task.source == AuxiliaryValidationSource.DATASET:
-        return dataset, AuxiliaryValidationSource.DATASET.value
-    if task.source == AuxiliaryValidationSource.COUNTERFACTUAL_DYNAMICS_IF_AVAILABLE:
-        return _resolve_named_auxiliary_validation_source(
-            dataset,
-            task=task,
-            source=AuxiliaryValidationSource.COUNTERFACTUAL_DYNAMICS,
-            fallback=(dataset, AuxiliaryValidationSource.DATASET.value),
-        )
-    return _resolve_named_auxiliary_validation_source(dataset, task=task, source=task.source)
-
-
-def _resolve_named_auxiliary_validation_source(
-    dataset: Dataset,
-    *,
-    task: AuxiliaryValidationTaskConfig,
-    source: AuxiliaryValidationSource,
-    fallback: tuple[Dataset, str] | None = None,
-) -> tuple[Dataset, str]:
-    build_source_view = getattr(dataset, "build_source_view", None)
-    if callable(build_source_view):
-        source_view_kwargs = {
-            "source": source.value,
-            "mode": task.mode_override.value if task.mode_override is not None else "joint",
-            "bucket_name": task.name,
-            "drop_text": task.should_drop_text,
-        }
-        try:
-            source_view_parameters = inspect.signature(build_source_view).parameters
-        except (TypeError, ValueError):
-            source_view_parameters = {}
-        if "spread_indices" in source_view_parameters:
-            source_view_kwargs["spread_indices"] = True
-        view = build_source_view(**source_view_kwargs)
-        if isinstance(view, Dataset):
-            return view, source.value
-    attribute_by_source = {
-        AuxiliaryValidationSource.REAL_DEMO: "real_dataset",
-        AuxiliaryValidationSource.COUNTERFACTUAL_DYNAMICS: "counterfactual_dataset",
-    }
-    attribute = attribute_by_source.get(source)
-    if attribute is not None and hasattr(dataset, attribute):
-        resolved = getattr(dataset, attribute)
-        if isinstance(resolved, Dataset):
-            return resolved, source.value
-    if fallback is not None:
-        return fallback
-    raise ValueError(
-        f"Auxiliary validation task {task.name!r} requested source {task.source.value!r}, "
-        f"but the selected {task.dataset_split.value!r} dataset does not expose that source."
-    )
-
-
-def _auxiliary_validation_summary_metrics(
-    *,
-    task: AuxiliaryValidationTaskConfig,
-    metrics: dict[str, float],
-    batch_count: float,
-) -> dict[str, float]:
-    summary: dict[str, float] = {"count": float(batch_count)}
-    for namespace in ("joint_denoise", "mot_generalist"):
-        action_active_key = f"{namespace}/action_loss_active"
-        latent_active_key = f"{namespace}/latent_loss_active"
-        if action_active_key in metrics:
-            summary["action_loss_active"] = metrics[action_active_key]
-        if latent_active_key in metrics:
-            summary["latent_loss_active"] = metrics[latent_active_key]
-        if task.mode_override is None:
-            continue
-        mode = task.mode_override.value
-        mode_count_key = f"{namespace}/{mode}/count"
-        if mode_count_key in metrics:
-            summary["mode_fraction"] = metrics[mode_count_key]
-    return summary
-
-
-def _uses_mixed_dynamics_paradigm(config: ExperimentConfig) -> bool:
-    paradigm = getattr(config.policy_variant, "generalist_training_paradigm", None)
-    return paradigm == GeneralistTrainingParadigm.MIXED_DYNAMICS
-
-
-def _validate_mixed_dynamics_source_sampling(config: ExperimentConfig) -> None:
-    if config.trainer.batch_adapter != BatchAdapterName.LATENTS:
-        raise ValueError(
-            "`policy_variant.generalist_training_paradigm=mixed_dynamics` requires "
-            "`trainer.batch_adapter=latents` because the mixed-dynamics source mixture wraps latent datasets."
-        )
-    sample_construction = config.data.sample_construction
-    if sample_construction.sample_weight_mode != SampleWeightMode.UNIFORM:
-        raise ValueError(
-            "`data.sample_construction.sample_weight_mode` must be `uniform` with "
-            "`policy_variant.generalist_training_paradigm=mixed_dynamics` because the mixed-dynamics "
-            "wrapper owns source sampling and only preserves parity for uniform replacement draws."
-        )
-
-
-def build_log_sink(*, config: ExperimentConfig, output_dir: Path, run_name: str, strategy=None) -> CompositeLogSink:
-    if strategy is not None and not strategy.is_main_process:
-        return CompositeLogSink([NoopLogSink()])
-    sinks = [ConsoleLogSink()]
-    tracking_metadata = build_run_tracking_metadata(config, run_name=run_name, output_dir=output_dir)
-    resolved_project = resolve_wandb_project(config, tracking_metadata)
-    resolved_group = build_wandb_group(tracking_metadata)
-    resolved_job_type = build_wandb_job_type(tracking_metadata)
-    resolved_tags = build_wandb_tags(tracking_metadata)
-    tracking_metadata["wandb_project"] = resolved_project
-    tracking_metadata["wandb_group"] = resolved_group
-    tracking_metadata["wandb_job_type"] = resolved_job_type
-    tracking_metadata["wandb_tags"] = list(resolved_tags)
-    if config.trainer.enable_jsonl_logging:
-        sinks.append(JsonlLogSink(output_dir / config.trainer.metrics_filename))
-    if config.trainer.enable_wandb:
-        config_payload = serialize_enum_values(asdict(config))
-        config_payload["tracking"] = tracking_metadata
-        sinks.append(
-            WandBLogSink(
-                project=resolved_project,
-                entity=config.trainer.wandb_entity,
-                mode=config.trainer.wandb_mode,
-                run_name=build_run_title(tracking_metadata),
-                group=resolved_group,
-                job_type=resolved_job_type,
-                tags=resolved_tags,
-                config_payload=config_payload,
-            )
-        )
-    return CompositeLogSink(sinks)
 
 
 def resolve_runtime_output_dir(config: ExperimentConfig) -> Path:

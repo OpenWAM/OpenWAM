@@ -1,9 +1,22 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 import json
 import os
 from pathlib import Path
 from typing import Any, Protocol
+
+from open_wam.configs import ExperimentConfig
+from open_wam.configs.enums import serialize_enum_values
+
+from .run_tracking import (
+    build_run_title,
+    build_run_tracking_metadata,
+    build_wandb_group,
+    build_wandb_job_type,
+    build_wandb_tags,
+    resolve_wandb_project,
+)
 
 
 class LogSink(Protocol):
@@ -131,3 +144,36 @@ class WandBLogSink:
     def close(self) -> None:
         if self._run is not None:
             self._run.finish()
+
+
+def build_log_sink(*, config: ExperimentConfig, output_dir: Path, run_name: str, strategy=None) -> CompositeLogSink:
+    if strategy is not None and not strategy.is_main_process:
+        return CompositeLogSink([NoopLogSink()])
+    sinks = [ConsoleLogSink()]
+    tracking_metadata = build_run_tracking_metadata(config, run_name=run_name, output_dir=output_dir)
+    resolved_project = resolve_wandb_project(config, tracking_metadata)
+    resolved_group = build_wandb_group(tracking_metadata)
+    resolved_job_type = build_wandb_job_type(tracking_metadata)
+    resolved_tags = build_wandb_tags(tracking_metadata)
+    tracking_metadata["wandb_project"] = resolved_project
+    tracking_metadata["wandb_group"] = resolved_group
+    tracking_metadata["wandb_job_type"] = resolved_job_type
+    tracking_metadata["wandb_tags"] = list(resolved_tags)
+    if config.trainer.enable_jsonl_logging:
+        sinks.append(JsonlLogSink(output_dir / config.trainer.metrics_filename))
+    if config.trainer.enable_wandb:
+        config_payload = serialize_enum_values(asdict(config))
+        config_payload["tracking"] = tracking_metadata
+        sinks.append(
+            WandBLogSink(
+                project=resolved_project,
+                entity=config.trainer.wandb_entity,
+                mode=config.trainer.wandb_mode,
+                run_name=build_run_title(tracking_metadata),
+                group=resolved_group,
+                job_type=resolved_job_type,
+                tags=resolved_tags,
+                config_payload=config_payload,
+            )
+        )
+    return CompositeLogSink(sinks)

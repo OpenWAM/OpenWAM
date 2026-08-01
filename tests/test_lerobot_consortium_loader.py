@@ -50,7 +50,7 @@ from open_wam.data import (
     resolve_dataset_loader_spec,
     resolve_lerobot_consortium_train_val_split,
 )
-from open_wam.training.runtime import build_runtime_dataloaders
+from open_wam.training.data_loading import build_runtime_dataloaders
 from open_wam.configs import load_experiment_config
 from open_wam.data.lerobot_consortium_storage import (
     CloudConsortiumCache,
@@ -1101,10 +1101,10 @@ def test_training_runtime_passes_strategy_world_size_and_rank_to_loader_spec(
     train_dataset = _DummyDataset()
     val_dataset = _DummyDataset()
     monkeypatch.setattr(
-        "open_wam.training.runtime.build_train_val_datasets",
+        "open_wam.training.data_loading.build_train_val_datasets",
         lambda data_config: (train_dataset, val_dataset),
     )
-    monkeypatch.setattr("open_wam.training.runtime.resolve_dataset_loader_spec", _fake_resolve)
+    monkeypatch.setattr("open_wam.training.data_loading.resolve_dataset_loader_spec", _fake_resolve)
     config = ExperimentConfig(
         data=_make_consortium_config(
             members=(ConsortiumMemberConfig(member_id="repo_a", local_root="/tmp/repo_a"),),

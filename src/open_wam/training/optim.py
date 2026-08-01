@@ -8,6 +8,37 @@ from torch import nn
 from open_wam.configs import OptimizerName, SchedulerName, TrainingConfig
 
 
+def _is_floating_dtype(dtype: torch.dtype | None) -> bool:
+    if dtype is None:
+        return False
+    return torch.empty((), dtype=dtype).is_floating_point()
+
+
+def _optimizer_state_target_dtype(parameter: object) -> torch.dtype | None:
+    grad = getattr(parameter, "grad", None)
+    grad_dtype = getattr(grad, "dtype", None)
+    if _is_floating_dtype(grad_dtype):
+        return grad_dtype
+    parameter_dtype = getattr(parameter, "dtype", None)
+    if _is_floating_dtype(parameter_dtype):
+        return parameter_dtype
+    return None
+
+
+def _normalize_optimizer_state_dtypes(optimizer: torch.optim.Optimizer) -> None:
+    for parameter, state in optimizer.state.items():
+        if not isinstance(state, dict):
+            continue
+        state_dtype = _optimizer_state_target_dtype(parameter)
+        if state_dtype is None:
+            continue
+        for key, value in list(state.items()):
+            if key == "step":
+                continue
+            if torch.is_tensor(value) and torch.is_floating_point(value) and value.dtype != state_dtype:
+                state[key] = value.to(dtype=state_dtype)
+
+
 def warmup_constant_lambda(step: int, *, warmup_steps: int) -> float:
     if warmup_steps <= 0:
         return 1.0

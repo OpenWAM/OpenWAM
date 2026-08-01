@@ -112,7 +112,15 @@ Training uses one generic composable runtime:
 - [src/open_wam/training/train.py](src/open_wam/training/train.py) loads a root
   experiment config and constructs `TrainingRuntime`
 - [src/open_wam/training/runtime.py](src/open_wam/training/runtime.py) owns
-  data loaders, loop policy, strategy, validation, logging, and checkpoints
+  lifecycle composition, train/validation loops, distributed metric reduction,
+  and checkpoint scheduling
+- [src/open_wam/training/data_loading.py](src/open_wam/training/data_loading.py)
+  owns raw/latent dataset selection, samplers, collation, and loaders
+- [src/open_wam/training/auxiliary_validation.py](src/open_wam/training/auxiliary_validation.py)
+  owns validation source views and validation-only metadata overrides
+- [src/open_wam/training/logging.py](src/open_wam/training/logging.py) and
+  [src/open_wam/training/optim.py](src/open_wam/training/optim.py) own reusable
+  sinks and optimizer/scheduler state handling
 - [src/open_wam/training/step_executor.py](src/open_wam/training/step_executor.py)
   converts the public data batch into `PolicyTrainBatch` and calls
   `pipeline.forward_train(...)`

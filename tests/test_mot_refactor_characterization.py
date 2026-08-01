@@ -72,6 +72,7 @@ from tests.characterization.mot_refactor_worker import (
     _runtime_state_contract_differences,
 )
 from tests.characterization.run_mot_refactor_characterization import (
+    RESUME_POST_UPDATE_METRIC_TOLERANCE,
     _comparison_projection,
     _initialize_golden_files,
     _numeric_tolerance_resolver,
@@ -865,8 +866,9 @@ def test_resume_post_update_metrics_have_narrow_cross_job_tolerance() -> None:
         "first_update": {"scenario": {"metrics": {"action_mse": 0.0002}}},
     }
     actual = json.loads(json.dumps(expected))
-    actual["uninterrupted_update"]["scenario"]["metrics"]["action_mse"] += 4e-6
-    actual["resumed_update"]["scenario"]["metrics"]["action_mse"] += 4e-6
+    accepted_delta = RESUME_POST_UPDATE_METRIC_TOLERANCE.absolute
+    actual["uninterrupted_update"]["scenario"]["metrics"]["action_mse"] += accepted_delta
+    actual["resumed_update"]["scenario"]["metrics"]["action_mse"] += accepted_delta
 
     differences = compare_characterization_reports(
         expected,
@@ -879,6 +881,19 @@ def test_resume_post_update_metrics_have_narrow_cross_job_tolerance() -> None:
     )
 
     assert differences == []
+    actual["resumed_update"]["scenario"]["metrics"]["action_mse"] += 1e-9
+    differences = compare_characterization_reports(
+        expected,
+        actual,
+        tolerance=ComparisonTolerance(absolute=0.0, relative=0.0),
+        tolerance_for_path=_numeric_tolerance_resolver(
+            ComparisonTolerance(absolute=0.0, relative=0.0)
+        ),
+        path="gjd_mode_token.resume.json",
+    )
+    assert any(".resumed_update.scenario.metrics.action_mse" in item for item in differences)
+
+    actual = json.loads(json.dumps(expected))
     actual["first_update"]["scenario"]["metrics"]["action_mse"] += 1e-9
     differences = compare_characterization_reports(
         expected,

@@ -4,7 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 import sys
 
-import open_wam.training.runtime as runtime_module
+import open_wam.training.logging as logging_module
 from open_wam.training.logging import WandBLogSink
 from open_wam.training.run_tracking import (
     build_default_wandb_project,
@@ -143,10 +143,10 @@ def test_build_log_sink_passes_standardized_wandb_tracking_context(monkeypatch, 
         def close(self) -> None:
             return None
 
-    monkeypatch.setattr(runtime_module, "WandBLogSink", _FakeWandBLogSink)
+    monkeypatch.setattr(logging_module, "WandBLogSink", _FakeWandBLogSink)
 
     output_dir = tmp_path / "track-run"
-    sink = runtime_module.build_log_sink(
+    sink = logging_module.build_log_sink(
         config=config,
         output_dir=output_dir,
         run_name="track-run",

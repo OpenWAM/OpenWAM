@@ -154,11 +154,13 @@ their complete tensor/state structure is.
 The persisted resume golden keeps full output fingerprints for the first
 update, before any optimizer nondeterminism can accumulate. Post-update reports
 retain output shape, dtype, element count, and finiteness. Their scalar metrics
-use a `5e-6` absolute cross-job tolerance, while first-update metrics remain
-exact and the stronger uninterrupted-versus-resumed numerical comparison
-remains an in-run assertion. This prevents an independent job from failing only
-because a low-bit reduction changed while still catching altered inputs,
-routing, outputs, optimizer schema, scheduler behavior, or resume counters.
+use a one-BF16-quantum (`2^-16`) absolute cross-job tolerance at the
+characterized loss scale, while first-update metrics remain exact and the
+stronger uninterrupted-versus-resumed numerical comparison remains an in-run
+assertion. Values immediately above that bound fail. This prevents an
+independent job from failing only because a low-bit reduction changed while
+still catching altered inputs, routing, outputs, optimizer schema, scheduler
+behavior, or resume counters.
 
 The gate also verifies two checkpoint details that ordinary model-only loading
 cannot cover:
