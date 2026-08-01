@@ -52,6 +52,19 @@ Historical `runtime.paths`, `utils.video_timeline`, `utils.wan_geometry`,
 keys under `configs.variant_semantics` remain identity-preserving compatibility
 facades; new code imports `open_wam.contracts`.
 
+## Installed And Checkout-Only Boundaries
+
+The `open_wam` wheel contains maintained configuration, data, model, training,
+runtime, evaluation-result, and extension contracts. Benchmark integrations
+remain lazy so importing the core does not require simulator dependencies.
+
+Large experiment analyses and artifact renderers live under `scripts/`. In
+particular, `scripts/research_dynamics/` contains checkout-only FDM/IDM
+diagnostics and is not a public import surface. Stable top-level scripts own
+their command interfaces and import reusable policy and data behavior from the
+installed package. Research tools must require machine-local checkpoints and
+datasets explicitly rather than embedding private defaults.
+
 ## Configuration Contract
 
 `open_wam.configs.load_experiment_config` is the public YAML-to-dataclass

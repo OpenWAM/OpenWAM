@@ -2047,6 +2047,34 @@ def test_retired_ablations_namespace_is_not_packaged() -> None:
     assert not (PACKAGE_ROOT / "ablations").exists()
 
 
+def test_research_dynamics_diagnostics_are_checkout_only() -> None:
+    assert not (PACKAGE_ROOT / "evals" / "dynamics").exists()
+
+    research_root = REPO_ROOT / "scripts" / "research_dynamics"
+    assert {
+        "cli.py",
+        "counterfactual.py",
+        "metrics.py",
+        "rollout.py",
+        "sampling.py",
+        "types.py",
+        "visualization.py",
+    } <= {path.name for path in research_root.glob("*.py")}
+
+    wrappers = {
+        "run_joint_denoising_fdm_ablation.py": "scripts.research_dynamics.cli",
+        "run_joint_denoising_fdm_counterfactual.py": "scripts.research_dynamics.counterfactual",
+    }
+    for script_name, implementation in wrappers.items():
+        source = (REPO_ROOT / "scripts" / script_name).read_text(encoding="utf-8")
+        assert f"from {implementation} import main" in source
+
+    private_root_prefixes = ("/afs/", "/hai/", "/scr/", "/simurgh2/")
+    for path in research_root.glob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        assert not any(prefix in source for prefix in private_root_prefixes), path
+
+
 def test_attention_cache_policy_has_one_implementation_owner() -> None:
     cache_policy_functions = {
         "merge_attention_cache_entries",
@@ -2388,7 +2416,7 @@ def test_parallel_runtime_semantics_have_one_implementation_owner() -> None:
     )
     semantics_path = parallel_stream_root / "runtime_semantics.py"
     reference_runtime_path = parallel_stream_root / "reference_runtime.py"
-    dynamics_rollout_path = PACKAGE_ROOT / "evals" / "dynamics" / "rollout.py"
+    dynamics_rollout_path = REPO_ROOT / "scripts" / "research_dynamics" / "rollout.py"
 
     assert semantics_definitions <= _top_level_definitions(semantics_path)
     assert {

@@ -96,4 +96,6 @@ run.
 
 Use `scripts/run_gjd_libero.sh` and
 `scripts/run_libero_mot_visualization.py` for maintained Open-WAM GJD rollout.
-Use `open_wam.evals.dynamics` for Open-WAM-native FDM/IDM diagnostics.
+Use `scripts/run_joint_denoising_fdm_ablation.py` and
+`scripts/run_joint_denoising_fdm_counterfactual.py` for checkout-only
+Open-WAM-native FDM/IDM research diagnostics.

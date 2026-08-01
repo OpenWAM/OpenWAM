@@ -11,7 +11,7 @@ from open_wam.configs import (
     ParallelSequenceContract,
     ParallelStreamPolicyConfig,
 )
-from open_wam.evals.dynamics import rollout as dynamics_rollout
+from scripts.research_dynamics import rollout as dynamics_rollout
 from open_wam.models.common import (
     chunked_temporal_exact_profile_name_for_coupling,
 )

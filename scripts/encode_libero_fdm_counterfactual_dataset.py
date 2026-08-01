@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -11,10 +12,14 @@ from typing import Any
 import numpy as np
 import torch
 
-from open_wam.evals.dynamics.cli import (
-    DEFAULT_CHECKPOINT,
-    _repair_runtime_config_for_local_eval,
-)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = REPO_ROOT / "src"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from scripts.research_dynamics.cli import _repair_runtime_config_for_local_eval
 from open_wam.data.latent_temporal import (
     CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET,
     latent_raw_boundaries,
@@ -29,10 +34,6 @@ from open_wam.utils import (
 )
 
 
-DEFAULT_DATASET_ROOT = (
-    "/path/to/private-resource"
-    "libero10_fdm_counterfactual_coverage_10000_h32_ctx16_random_t0_seed0_sharded"
-)
 LIBERO_OBS_KEYS = (
     "observation.images.agentview_rgb",
     "observation.images.eye_in_hand_rgb",
@@ -594,10 +595,10 @@ def _as_uint8(value: np.ndarray) -> np.ndarray:
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Encode LIBERO FDM counterfactual RGB dataset into Wan latents.")
-    parser.add_argument("--dataset-root", default=DEFAULT_DATASET_ROOT)
+    parser.add_argument("--dataset-root", required=True)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--config", "--cfg", default="configs/experiments/parallel_stream_libero_lingbot_joint_denoise_heng_compatible.yaml")
-    parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT)
+    parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--reference-assets-device-policy", default="runtime")
     parser.add_argument("--output-dtype", default="float16", choices=("float32", "float16", "bfloat16"))

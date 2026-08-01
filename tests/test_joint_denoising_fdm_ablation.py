@@ -18,30 +18,30 @@ from open_wam.data.counterfactual_actions import (
     branch_metadata,
     expand_branch_names,
 )
-from open_wam.evals.dynamics.counterfactual import (
+from scripts.research_dynamics.counterfactual import (
     CounterfactualCase,
     _decoded_raw_frames_for_latents,
     _render_counterfactual_branch,
     _raw_window_frames_for_latents,
     _should_drop_text_conditioning,
 )
-from open_wam.evals.dynamics.metrics import (
+from scripts.research_dynamics.metrics import (
     action_mse_per_frame,
     build_metric_rows,
     latent_mse_per_frame,
     rgb_mse_per_frame,
     summarize_metric_rows,
 )
-from open_wam.evals.dynamics.rollout import (
+from scripts.research_dynamics.rollout import (
     JointDenoisingFdmRollout,
     MotGeneralistDenoisingFdmRollout,
     should_drop_task_text_for_fdm_mode,
 )
-from open_wam.evals.dynamics.sampling import (
+from scripts.research_dynamics.sampling import (
     select_counterfactual_target_only_windows,
     select_early_middle_windows,
 )
-from open_wam.evals.dynamics.types import FdmAblationMode, FdmStartPolicy, FdmWindowSelection
+from scripts.research_dynamics.types import FdmAblationMode, FdmStartPolicy, FdmWindowSelection
 
 
 def _load_repo_script(relative_path: str):
@@ -907,10 +907,12 @@ def test_fdm_rollout_warmup_receives_rollout_mode() -> None:
 
 
 def test_fdm_cli_accepts_training_style_set_overrides() -> None:
-    from open_wam.evals.dynamics.cli import _parse_args, _resolve_runtime_dtype
+    from scripts.research_dynamics.cli import _parse_args, _resolve_runtime_dtype
 
     args = _parse_args(
         [
+            "--checkpoint",
+            "/tmp/checkpoint",
             "--runtime-dtype",
             "bfloat16",
             "--set",
@@ -928,8 +930,21 @@ def test_fdm_cli_accepts_training_style_set_overrides() -> None:
     assert _resolve_runtime_dtype(args.runtime_dtype) is torch.bfloat16
 
 
+def test_fdm_local_path_overrides_are_explicit(tmp_path: Path) -> None:
+    from scripts.research_dynamics.cli import _resolve_existing_path_override
+
+    assert _resolve_existing_path_override(explicit=None) is None
+
+    existing = tmp_path / "asset"
+    existing.mkdir()
+    assert _resolve_existing_path_override(explicit=str(existing)) == existing.resolve()
+
+    with pytest.raises(FileNotFoundError, match="Configured override path does not exist"):
+        _resolve_existing_path_override(explicit=str(tmp_path / "missing"))
+
+
 def test_fdm_cli_resolves_action_per_frame_for_m1_and_m5_configs() -> None:
-    from open_wam.evals.dynamics.cli import _resolve_action_per_frame
+    from scripts.research_dynamics.cli import _resolve_action_per_frame
 
     m1_config = SimpleNamespace(
         policy_variant=SimpleNamespace(action_per_frame=3),
@@ -955,7 +970,7 @@ def test_fdm_cli_resolves_action_per_frame_for_m1_and_m5_configs() -> None:
 
 
 def test_fdm_cli_drops_latent_rows_when_rgb_temporal_resolution_differs() -> None:
-    from open_wam.evals.dynamics.cli import _latent_mse_for_metric_rows
+    from scripts.research_dynamics.cli import _latent_mse_for_metric_rows
 
     assert _latent_mse_for_metric_rows(
         latent_mse=[0.1, 0.2],
@@ -1020,7 +1035,7 @@ def test_fdm_eval_selects_counterfactual_target_only_windows() -> None:
 
 
 def test_fdm_cli_rejects_unsupported_counterfactual_modes() -> None:
-    from open_wam.evals.dynamics.cli import _validate_counterfactual_eval_modes
+    from scripts.research_dynamics.cli import _validate_counterfactual_eval_modes
 
     _validate_counterfactual_eval_modes(
         (
@@ -1033,10 +1048,16 @@ def test_fdm_cli_rejects_unsupported_counterfactual_modes() -> None:
 
 
 def test_counterfactual_cli_accepts_training_style_set_overrides() -> None:
-    from open_wam.evals.dynamics.counterfactual import _parse_args
+    from scripts.research_dynamics.counterfactual import _parse_args
 
     args = _parse_args(
         [
+            "--checkpoint",
+            "/tmp/checkpoint",
+            "--replay-status-path",
+            "/tmp/replay_status.jsonl",
+            "--episode-indices",
+            "0",
             "--set",
             "policy_variant.generalist_mode_text_token=true",
             "--set",
@@ -1051,7 +1072,7 @@ def test_counterfactual_cli_accepts_training_style_set_overrides() -> None:
 
 
 def test_fdm_eval_threads_per_frame_proprio_to_warmup_and_chunks(tmp_path: Path) -> None:
-    from open_wam.evals.dynamics.cli import _run_one_selection_mode
+    from scripts.research_dynamics.cli import _run_one_selection_mode
 
     captured_warmup: dict[str, object] = {}
     captured_chunks: list[torch.Tensor | None] = []
@@ -1117,7 +1138,7 @@ def test_fdm_eval_threads_per_frame_proprio_to_warmup_and_chunks(tmp_path: Path)
 
 
 def test_fdm_eval_target_only_offset_predicts_future_from_current_action(tmp_path: Path) -> None:
-    from open_wam.evals.dynamics.cli import _run_one_selection_mode
+    from scripts.research_dynamics.cli import _run_one_selection_mode
 
     captured_warmup: dict[str, object] = {}
     captured_actions: list[torch.Tensor] = []
@@ -1208,8 +1229,8 @@ def test_fdm_eval_m5_vanilla_ignores_selection_fit_target_offset(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import open_wam.evals.dynamics.cli as cli_module
-    from open_wam.evals.dynamics.cli import _run_one_selection_mode
+    import scripts.research_dynamics.cli as cli_module
+    from scripts.research_dynamics.cli import _run_one_selection_mode
 
     captured_warmup: dict[str, object] = {}
 
@@ -1337,7 +1358,7 @@ def test_m5_gjd_offline_rollout_seeds_per_chunk_proprio_history(mode: FdmAblatio
 
 
 def test_idm_rollout_threads_video_condition_and_drops_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    import open_wam.evals.dynamics.rollout as rollout_module
+    import scripts.research_dynamics.rollout as rollout_module
 
     captured: dict[str, object] = {}
 

@@ -138,6 +138,26 @@ uv run --extra train open-wam-sanity \
   --rollout-steps 1
 ```
 
+FDM/IDM ablations and simulator counterfactual renders are checkout-only
+research diagnostics, not installed library APIs. Their stable commands require
+an explicit checkpoint and local data inputs:
+
+```bash
+uv run --extra eval python scripts/run_joint_denoising_fdm_ablation.py \
+  --checkpoint /path/to/checkpoint_step_N \
+  --dataset-root /path/to/libero_10
+
+uv run --extra sim python scripts/run_joint_denoising_fdm_counterfactual.py \
+  --checkpoint /path/to/checkpoint_step_N \
+  --replay-status-path /path/to/replay_status.jsonl \
+  --episode-indices 0,1,2 \
+  --dataset-root /path/to/libero_10
+```
+
+Use `--help` to select modes, windows, branches, and output paths. The reusable
+GJD policy and counterfactual-action contracts continue to live in `open_wam`;
+only the experiment orchestration and visualization live under `scripts/`.
+
 ## LIBERO Inference
 
 The maintained M5 evaluator loads one checkpoint and executes a closed-loop

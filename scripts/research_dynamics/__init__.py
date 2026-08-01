@@ -1,4 +1,9 @@
-"""Offline evaluation utilities for conditional GJD dynamics."""
+"""Checkout-only research diagnostics for conditional GJD dynamics.
+
+This namespace is intentionally excluded from the open_wam wheel. Use the
+stable top-level scripts documented in this directory instead of importing it
+as a library API.
+"""
 
 from open_wam.data.counterfactual_actions import (
     ACTION_BRANCH_SPECS,
