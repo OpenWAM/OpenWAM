@@ -123,7 +123,7 @@ _LAZY_EXPORTS = {
     "ConsortiumEpochOrderPlan": "lerobot_consortium_sampling",
     "build_lerobot_consortium_catalog": "lerobot_consortium",
     "build_lerobot_consortium_train_val_datasets": "lerobot_consortium",
-    "discover_local_lerobot_consortium_members": "lerobot_consortium",
+    "discover_local_lerobot_consortium_members": "lerobot_consortium_storage",
     "resolve_lerobot_consortium_train_val_split": "lerobot_consortium",
     "build_lerobot_consortium_report": "lerobot_consortium_report",
     "format_lerobot_consortium_report": "lerobot_consortium_report",

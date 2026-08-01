@@ -696,6 +696,23 @@ def test_lerobot_consortium_epoch_order_planning_has_one_owner() -> None:
     assert owner_call.func.attr == "build_epoch_index_order"
 
 
+def test_lerobot_consortium_storage_has_one_owner() -> None:
+    storage_path = PACKAGE_ROOT / "data" / "lerobot_consortium_storage.py"
+    dataset_path = PACKAGE_ROOT / "data" / "lerobot_consortium.py"
+    storage_owned = {
+        "CloudConsortiumCache",
+        "ConsortiumSourceResolver",
+        "ConsortiumSourceSpec",
+        "LocalConsortiumCache",
+        "NoopConsortiumCache",
+        "discover_local_lerobot_consortium_members",
+    }
+
+    assert storage_owned <= _top_level_definitions(storage_path)
+    assert storage_owned.isdisjoint(_top_level_definitions(dataset_path))
+    assert storage_owned <= _compatibility_export_names(dataset_path)
+
+
 def test_lerobot_latent_segment_geometry_has_one_owner() -> None:
     geometry_functions = {
         "compact_boundary_start_range",

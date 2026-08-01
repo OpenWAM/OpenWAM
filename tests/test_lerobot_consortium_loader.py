@@ -38,12 +38,21 @@ from open_wam.data import (
     build_lerobot_consortium_report,
     build_lerobot_consortium_train_val_datasets,
     collate_wam_samples,
+    discover_local_lerobot_consortium_members as public_discover_consortium_members,
     format_lerobot_consortium_report,
     resolve_dataset_loader_spec,
     resolve_lerobot_consortium_train_val_split,
 )
 from open_wam.training.runtime import build_runtime_dataloaders
 from open_wam.configs import load_experiment_config
+from open_wam.data.lerobot_consortium_storage import (
+    CloudConsortiumCache,
+    ConsortiumSourceResolver,
+    ConsortiumSourceSpec,
+    LocalConsortiumCache,
+    NoopConsortiumCache,
+    discover_local_lerobot_consortium_members,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -105,6 +114,19 @@ REAL_HETEROGENEOUS_SANITY_SET = (
         "jsonl_meta",
     ),
 )
+
+
+def test_consortium_storage_imports_preserve_identity() -> None:
+    assert consortium_module.CloudConsortiumCache is CloudConsortiumCache
+    assert consortium_module.ConsortiumSourceResolver is ConsortiumSourceResolver
+    assert consortium_module.ConsortiumSourceSpec is ConsortiumSourceSpec
+    assert consortium_module.LocalConsortiumCache is LocalConsortiumCache
+    assert consortium_module.NoopConsortiumCache is NoopConsortiumCache
+    assert (
+        consortium_module.discover_local_lerobot_consortium_members
+        is discover_local_lerobot_consortium_members
+    )
+    assert public_discover_consortium_members is discover_local_lerobot_consortium_members
 
 
 def _make_inventory_row(repo_id: str, *, source_group: str = "manual") -> LeRobotConsortiumInventoryRow:
