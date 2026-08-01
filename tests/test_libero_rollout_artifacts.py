@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +18,133 @@ def _observation(index: int) -> dict[str, np.ndarray]:
         artifacts.LIBERO_OBS_KEYS[0]: frame,
         artifacts.LIBERO_OBS_KEYS[1]: frame + 1,
     }
+
+
+def test_capture_torch_rng_debug_state_does_not_advance_rng() -> None:
+    torch.manual_seed(20260801)
+    cpu_state_before = torch.get_rng_state().clone()
+    cuda_states_before = (
+        [state.clone() for state in torch.cuda.get_rng_state_all()]
+        if torch.cuda.is_available()
+        else None
+    )
+
+    summary = artifacts.capture_torch_rng_debug_state()
+
+    assert torch.equal(torch.get_rng_state(), cpu_state_before)
+    assert summary["torch_cpu"]["shape"] == list(cpu_state_before.shape)
+    if cuda_states_before is None:
+        assert summary["torch_cuda"] is None
+    else:
+        cuda_states_after = torch.cuda.get_rng_state_all()
+        assert len(cuda_states_after) == len(cuda_states_before)
+        assert all(
+            torch.equal(after, before)
+            for after, before in zip(cuda_states_after, cuda_states_before)
+        )
+        assert len(summary["torch_cuda"]) == len(cuda_states_before)
+
+
+def test_build_exact_startup_debug_report_preserves_canonical_contract(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(artifacts.torch, "__version__", "2.test")
+    raw_actions = (
+        torch.arange(1 * 16 * 7, dtype=torch.float32).reshape(1, 16, 7) / 10.0
+    )
+
+    report = artifacts.build_libero_exact_startup_debug_report(
+        options=artifacts.LiberoExactStartupDebugOptions(
+            prompt="pick up the red mug",
+            seed=17,
+            runtime_device=torch.device("cpu"),
+            frontend_device=torch.device("cpu"),
+            decode_device=torch.device("cpu"),
+            reference_assets_device_policy="runtime",
+            runtime_mode="joint",
+            video_num_inference_steps=20,
+            action_num_inference_steps=50,
+            guidance_scale=5.0,
+            action_guidance_scale=1.0,
+            frame_chunk_size=4,
+            action_per_frame=4,
+            exact_startup_bootstrap_padding=False,
+            startup_warmup_debug={
+                "warmup_frames": 1,
+                "source": "observation",
+            },
+        ),
+        payload=artifacts.LiberoExactStartupDebugPayload(
+            first_observation={
+                "agentview_image": np.arange(18, dtype=np.uint8).reshape(3, 2, 3),
+                "robot0_eef_pos": np.asarray(
+                    [0.1, -0.2, 0.3],
+                    dtype=np.float32,
+                ),
+            },
+            video_latents=torch.arange(24, dtype=torch.float16).reshape(
+                1,
+                2,
+                3,
+                2,
+                2,
+            ),
+            text_context=torch.arange(12, dtype=torch.float32).reshape(1, 3, 4),
+            negative_text_context=None,
+            session_text_context=torch.full(
+                (1, 2, 3),
+                0.25,
+                dtype=torch.bfloat16,
+            ),
+            session_negative_text_context=torch.full(
+                (1, 1, 3),
+                -0.5,
+                dtype=torch.float32,
+            ),
+            rng_before_startup_infer={
+                "torch_cpu": {"sha256": "before"},
+                "torch_cuda": None,
+            },
+            rng_after_startup_infer={
+                "torch_cpu": {"sha256": "after"},
+                "torch_cuda": None,
+            },
+            first_chunk_debug={"generation_frame_start": 0, "chunk": 1},
+            chunk_action_pred=raw_actions + 1.0,
+            raw_chunk_action_pred=raw_actions,
+            predicted_latents=torch.arange(16, dtype=torch.float32).reshape(
+                1,
+                2,
+                2,
+                2,
+                2,
+            ),
+        ),
+    )
+
+    compact_report = json.dumps(
+        report,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    assert len(compact_report) == 4900
+    assert hashlib.sha256(compact_report).hexdigest() == (
+        "b4fd69ccb5fa9c73334cc2b42e3b97bf561173f759086c72dba59571bb3c6e6d"
+    )
+    assert list(report["first_obs"]) == ["agentview_image", "robot0_eef_pos"]
+    assert report["initial_inputs"]["video_latents"]["sha256"] == (
+        "40e4f6e29a2f373b1429b42a4096c41f8411a646d52c949dbc2cbe5ffd37a802"
+    )
+    assert report["initial_inputs"]["negative_text_context"] is None
+    assert report["first_chunk"]["raw_chunk_action_pred"]["sha256"] == (
+        "50d83969c6c6065c42f348ea53188dd59170c1876c1352b369e848cd97e3de26"
+    )
+    raw_action_grid = report["first_chunk"]["raw_action_grid"]
+    assert raw_action_grid["generation_frame_start"] == 0
+    assert len(raw_action_grid["all_gripper_by_frame"]) == 4
+    assert all(len(frame) == 4 for frame in raw_action_grid["all_gripper_by_frame"])
+    assert len(raw_action_grid["first_executable_actions"]) == 12
+    assert raw_action_grid["first_executable_actions"][0] == raw_actions[0, 4].tolist()
 
 
 def test_realtime_artifact_policy_uses_typed_profile_semantics() -> None:

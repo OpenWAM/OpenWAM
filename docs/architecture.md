@@ -76,10 +76,13 @@ quarantine and washout, model-timeline advancement, and proprio normalization;
 contract in `open_wam.integrations.realtime_control` owns frame- and
 action-aligned plans, typed scheduler profiles and planner-job selection,
 execution-cursor filtering, and future-plan replacement;
-`libero_rollout_artifacts` owns rendering and persistence. The checkout script
-owns CLI composition and the benchmark-specific simulator control loop; it
-does not import another checkout helper or call private package runtime
-functions.
+`libero_rollout_artifacts` owns rendering, persistence, and typed exact-startup
+diagnostic construction, including read-only RNG summaries and canonical
+tensor/action-grid fingerprints. The checkout script owns CLI composition and
+the benchmark-specific simulator control loop; it passes typed diagnostic
+metadata and payloads to the artifact owner instead of implementing a second
+serialization contract, and it does not import another checkout helper or call
+private package runtime functions.
 
 ## Configuration Contract
 

@@ -118,6 +118,21 @@ def _top_level_import_names(path: Path) -> set[str]:
     return names
 
 
+def _module_all_names(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id == "__all__"
+            for target in node.targets
+        ):
+            continue
+        value = ast.literal_eval(node.value)
+        return {str(name) for name in value}
+    return set()
+
+
 def _compatibility_export_names(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     names: list[str] = []
@@ -2984,15 +2999,13 @@ def test_libero_mot_drivers_delegate_to_the_package_episode_runner() -> None:
 
 
 def test_libero_realtime_artifacts_have_one_package_owner() -> None:
-    runner_source = (
-        REPO_ROOT / "scripts" / "run_libero_realtime_sandbox.py"
-    ).read_text(encoding="utf-8")
+    runner_path = REPO_ROOT / "scripts" / "run_libero_realtime_sandbox.py"
+    artifact_path = PACKAGE_ROOT / "evals" / "libero_rollout_artifacts.py"
+    runner_source = runner_path.read_text(encoding="utf-8")
     runtime_source = (
         PACKAGE_ROOT / "evals" / "libero_realtime_runtime.py"
     ).read_text(encoding="utf-8")
-    artifact_source = (
-        PACKAGE_ROOT / "evals" / "libero_rollout_artifacts.py"
-    ).read_text(encoding="utf-8")
+    artifact_source = artifact_path.read_text(encoding="utf-8")
 
     assert "persist_libero_realtime_artifacts(" in runner_source
     assert "RolloutArtifactPolicy.from_value(" in runner_source
@@ -3006,6 +3019,28 @@ def test_libero_realtime_artifacts_have_one_package_owner() -> None:
         assert artifact_implementation not in runner_source
         assert artifact_implementation not in runtime_source
         assert artifact_implementation in artifact_source
+
+    startup_contract = {
+        "LiberoExactStartupDebugOptions",
+        "LiberoExactStartupDebugPayload",
+        "build_libero_exact_startup_debug_report",
+        "capture_torch_rng_debug_state",
+    }
+    assert startup_contract <= _top_level_definitions(artifact_path)
+    assert startup_contract <= _module_all_names(artifact_path)
+    assert not {
+        "_debug_sha256_bytes",
+        "_debug_array_summary",
+        "_debug_tensor_summary",
+        "_debug_rng_state",
+        "_debug_raw_action_grid",
+        "_build_exact_startup_debug_report",
+    } & _top_level_definitions(runner_path)
+    assert "rollout_artifacts.capture_torch_rng_debug_state()" in runner_source
+    assert (
+        "rollout_artifacts.build_libero_exact_startup_debug_report("
+        in runner_source
+    )
 
 
 def test_simulator_rollout_command_has_one_package_owner() -> None:

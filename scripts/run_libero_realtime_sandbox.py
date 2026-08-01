@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import Future, ThreadPoolExecutor
-import hashlib
 import json
 import math
 import sys
@@ -915,7 +914,7 @@ def _run_exact_like_realtime_rollout(
                         flush=True,
                     )
 
-                rng_before_startup_infer = _debug_rng_state()
+                rng_before_startup_infer = rollout_artifacts.capture_torch_rng_debug_state()
                 startup_history_video_latents = initial_inputs["video_latents"]
                 startup_infer_session = session
                 startup_infer_t0 = time.perf_counter()
@@ -942,21 +941,53 @@ def _run_exact_like_realtime_rollout(
                 ):
                     startup_history_raw_actions = np.zeros((action_per_frame, action_dim), dtype=np.float32)
                 if debug_startup_dump:
-                    startup_debug_report = _build_exact_startup_debug_report(
-                        first_obs=first_obs,
-                        initial_inputs=initial_inputs,
-                        session=session,
-                        first_chunk=first_chunk,
-                        config=config,
-                        prompt=prompt,
-                        seed=seed,
-                        runtime_device=runtime_device,
-                        frontend_device=frontend_device,
-                        decode_device=decode_device,
-                        rng_before_startup_infer=rng_before_startup_infer,
-                        rng_after_startup_infer=_debug_rng_state(),
-                        exact_startup_bootstrap_padding=exact_startup_bootstrap_padding,
-                        startup_warmup_debug=None,
+                    startup_debug_report = rollout_artifacts.build_libero_exact_startup_debug_report(
+                        options=rollout_artifacts.LiberoExactStartupDebugOptions(
+                            prompt=prompt,
+                            seed=seed,
+                            runtime_device=runtime_device,
+                            frontend_device=frontend_device,
+                            decode_device=decode_device,
+                            reference_assets_device_policy=str(
+                                config.backbone.reference_assets_device_policy
+                            ),
+                            runtime_mode=str(config.policy_variant.runtime_mode),
+                            video_num_inference_steps=int(
+                                config.inference.video_num_inference_steps
+                            ),
+                            action_num_inference_steps=int(
+                                config.inference.action_num_inference_steps
+                            ),
+                            guidance_scale=float(config.inference.guidance_scale),
+                            action_guidance_scale=float(
+                                config.inference.action_guidance_scale
+                            ),
+                            frame_chunk_size=int(config.inference.frame_chunk_size),
+                            action_per_frame=int(config.policy_variant.action_per_frame),
+                            exact_startup_bootstrap_padding=exact_startup_bootstrap_padding,
+                        ),
+                        payload=rollout_artifacts.LiberoExactStartupDebugPayload(
+                            first_observation=first_obs,
+                            video_latents=initial_inputs.get("video_latents"),
+                            text_context=initial_inputs.get("text_context"),
+                            negative_text_context=initial_inputs.get(
+                                "negative_text_context"
+                            ),
+                            session_text_context=getattr(session, "text_context", None),
+                            session_negative_text_context=getattr(
+                                session,
+                                "negative_text_context",
+                                None,
+                            ),
+                            rng_before_startup_infer=rng_before_startup_infer,
+                            rng_after_startup_infer=(
+                                rollout_artifacts.capture_torch_rng_debug_state()
+                            ),
+                            first_chunk_debug=first_chunk.debug,
+                            chunk_action_pred=first_chunk.chunk_action_pred,
+                            raw_chunk_action_pred=first_chunk.raw_chunk_action_pred,
+                            predicted_latents=first_chunk.predicted_latents,
+                        ),
                     )
 
         history_base_session, current_chunk_session, buffer_tail_session = realtime_runtime.resolve_exact_startup_sessions(
@@ -3144,149 +3175,6 @@ def _materialize_sequence_control_action(
         control_config=control_config,
         gripper_representation=gripper_representation,
     ).astype(np.float32)
-
-
-def _debug_sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def _debug_array_summary(value: np.ndarray | None) -> dict[str, Any] | None:
-    if value is None:
-        return None
-    array = np.ascontiguousarray(np.asarray(value))
-    flat = array.reshape(-1)
-    numeric = flat.astype(np.float64, copy=False) if flat.size else flat
-    return {
-        "shape": [int(dim) for dim in array.shape],
-        "dtype": str(array.dtype),
-        "sha256": _debug_sha256_bytes(array.tobytes()),
-        "preview": flat[:12].tolist(),
-        "mean": None if flat.size == 0 else float(numeric.mean()),
-        "std": None if flat.size == 0 else float(numeric.std()),
-    }
-
-
-def _debug_tensor_summary(value: torch.Tensor | None) -> dict[str, Any] | None:
-    if value is None:
-        return None
-    tensor = value.detach().contiguous().cpu()
-    byte_tensor = tensor.view(torch.uint8)
-    flat = tensor.reshape(-1)
-    numeric = flat.to(dtype=torch.float32) if flat.numel() else flat
-    return {
-        "shape": [int(dim) for dim in tensor.shape],
-        "dtype": str(tensor.dtype),
-        "device": str(value.device),
-        "sha256": _debug_sha256_bytes(byte_tensor.numpy().tobytes()),
-        "preview": flat[:12].to(dtype=torch.float32).tolist(),
-        "mean": None if flat.numel() == 0 else float(numeric.mean().item()),
-        "std": None if flat.numel() == 0 else float(numeric.std(unbiased=False).item()),
-    }
-
-
-def _debug_rng_state() -> dict[str, Any]:
-    return {
-        "torch_cpu": _debug_tensor_summary(torch.get_rng_state()),
-        "torch_cuda": (
-            [_debug_tensor_summary(state) for state in torch.cuda.get_rng_state_all()]
-            if torch.cuda.is_available()
-            else None
-        ),
-    }
-
-
-def _debug_raw_action_grid(
-    *,
-    chunk,
-    frame_chunk_size: int,
-    action_per_frame: int,
-) -> dict[str, Any] | None:
-    if chunk.raw_chunk_action_pred is None:
-        return None
-    raw_actions = rearrange(
-        chunk.raw_chunk_action_pred[0].detach().to(dtype=torch.float32).cpu(),
-        "(f a) c -> f a c",
-        f=frame_chunk_size,
-        a=action_per_frame,
-    )
-    generation_frame_start = int(chunk.debug.get("generation_frame_start", 0))
-    executable: list[list[float]] = []
-    for frame_offset in range(raw_actions.shape[0]):
-        if generation_frame_start + frame_offset < 1:
-            continue
-        for action_offset in range(raw_actions.shape[1]):
-            executable.append([float(value) for value in raw_actions[frame_offset, action_offset].tolist()])
-    return {
-        "generation_frame_start": int(generation_frame_start),
-        "all_gripper_by_frame": [
-            [float(raw_actions[frame_offset, action_offset, 6].item()) for action_offset in range(raw_actions.shape[1])]
-            for frame_offset in range(raw_actions.shape[0])
-        ],
-        "first_executable_actions": executable[:16],
-    }
-
-
-def _build_exact_startup_debug_report(
-    *,
-    first_obs: dict[str, np.ndarray],
-    initial_inputs: dict[str, torch.Tensor | None],
-    session,
-    first_chunk,
-    config,
-    prompt: str,
-    seed: int,
-    runtime_device: torch.device,
-    frontend_device: torch.device,
-    decode_device: torch.device,
-    rng_before_startup_infer: dict[str, Any],
-    rng_after_startup_infer: dict[str, Any],
-    exact_startup_bootstrap_padding: bool = False,
-    startup_warmup_debug: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    cuda_device_name = None
-    if runtime_device.type == "cuda" and torch.cuda.is_available():
-        device_index = torch.cuda.current_device() if runtime_device.index is None else int(runtime_device.index)
-        cuda_device_name = torch.cuda.get_device_name(device_index)
-    return {
-        "schema_version": 1,
-        "purpose": "startup_first_chunk_cross_gpu_debug",
-        "prompt": str(prompt),
-        "seed": int(seed),
-        "torch_version": str(torch.__version__),
-        "cuda_device_name": cuda_device_name,
-        "runtime_device": str(runtime_device),
-        "frontend_device": str(frontend_device),
-        "decode_device": str(decode_device),
-        "reference_assets_device_policy": str(config.backbone.reference_assets_device_policy),
-        "runtime_mode": str(config.policy_variant.runtime_mode),
-        "video_num_inference_steps": int(config.inference.video_num_inference_steps),
-        "action_num_inference_steps": int(config.inference.action_num_inference_steps),
-        "guidance_scale": float(config.inference.guidance_scale),
-        "action_guidance_scale": float(config.inference.action_guidance_scale),
-        "exact_startup_bootstrap_padding": bool(exact_startup_bootstrap_padding),
-        "startup_warmup_debug": None if startup_warmup_debug is None else dict(startup_warmup_debug),
-        "first_obs": {key: _debug_array_summary(value) for key, value in sorted(first_obs.items())},
-        "initial_inputs": {
-            "video_latents": _debug_tensor_summary(initial_inputs.get("video_latents")),
-            "text_context": _debug_tensor_summary(initial_inputs.get("text_context")),
-            "negative_text_context": _debug_tensor_summary(initial_inputs.get("negative_text_context")),
-        },
-        "session_text_context": _debug_tensor_summary(getattr(session, "text_context", None)),
-        "session_negative_text_context": _debug_tensor_summary(getattr(session, "negative_text_context", None)),
-        "rng_before_startup_infer": rng_before_startup_infer,
-        "rng_after_startup_infer": rng_after_startup_infer,
-        "first_chunk": {
-            "debug": dict(first_chunk.debug),
-            "chunk_action_pred": _debug_tensor_summary(first_chunk.chunk_action_pred),
-            "raw_chunk_action_pred": _debug_tensor_summary(first_chunk.raw_chunk_action_pred),
-            "predicted_latents": _debug_tensor_summary(first_chunk.predicted_latents),
-            "raw_action_grid": _debug_raw_action_grid(
-                chunk=first_chunk,
-                frame_chunk_size=int(config.inference.frame_chunk_size),
-                action_per_frame=int(config.policy_variant.action_per_frame),
-            ),
-        },
-    }
 
 
 def _finalize_rollout_outputs(
