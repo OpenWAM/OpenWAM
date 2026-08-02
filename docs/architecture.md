@@ -314,6 +314,15 @@ plain contracts:
   scheduler-grid adaptation, and tuple layouts for coupled timestep plans. It
   consumes the generic flow-noise plan from `models.common`; model execution
   and generalist mode selection remain in the policy runtime.
+- Parallel-stream training assembly is divided by tensor layout.
+  `training_artifact_contracts` owns the typed result record;
+  `training_exact_artifacts` owns standard exact and action-conditioned
+  assembly; `training_prefix_artifacts` owns the single clean-prefix layout;
+  and `training_single_frame_artifacts` owns current-frame action-chunk and
+  FastWAM first-frame layouts. `training_artifacts` is only the stable
+  historical import and pickle facade. Policy code imports the layout owner
+  directly, while scheduler/noise policy remains in `training_noise` and GJD
+  mode mutation remains in `generalist_training`.
 - `models.common.flow_schedule` owns the generic flow-matching scheduler,
   timestep sampling and lookup, sigma-grid termination, and explicit Euler
   integration primitives. `flow_training` builds parameter-free noisy

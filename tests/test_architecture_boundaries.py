@@ -171,6 +171,43 @@ SHARED_TRANSFORMER_ROLE_PATHS = {
         PACKAGE_ROOT / "models" / "visual_tower" / "shared_transformer_support.py"
     ),
 }
+PARALLEL_TRAINING_ARTIFACT_ROLE_PATHS = {
+    "contracts": (
+        PACKAGE_ROOT
+        / "models"
+        / "policy_variants"
+        / "parallel_stream"
+        / "training_artifact_contracts.py"
+    ),
+    "exact": (
+        PACKAGE_ROOT
+        / "models"
+        / "policy_variants"
+        / "parallel_stream"
+        / "training_exact_artifacts.py"
+    ),
+    "facade": (
+        PACKAGE_ROOT
+        / "models"
+        / "policy_variants"
+        / "parallel_stream"
+        / "training_artifacts.py"
+    ),
+    "prefix": (
+        PACKAGE_ROOT
+        / "models"
+        / "policy_variants"
+        / "parallel_stream"
+        / "training_prefix_artifacts.py"
+    ),
+    "single_frame": (
+        PACKAGE_ROOT
+        / "models"
+        / "policy_variants"
+        / "parallel_stream"
+        / "training_single_frame_artifacts.py"
+    ),
+}
 MOT_ATTENTION_ROLE_PATHS = {
     "cached": (
         PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "attention_cached.py"
@@ -5510,22 +5547,251 @@ def test_runtime_compatibility_facades_anchor_every_import() -> None:
 
 
 def test_parallel_training_artifacts_have_one_implementation_owner() -> None:
-    artifact_definitions = {
+    import pickle
+
+    import torch
+
+    from open_wam.models.policy_variants.parallel_stream import reference_runtime
+    from open_wam.models.policy_variants.parallel_stream import (
+        training_artifact_contracts,
+        training_artifacts,
+        training_exact_artifacts,
+        training_prefix_artifacts,
+        training_single_frame_artifacts,
+    )
+
+    role_modules = {
+        "contracts": training_artifact_contracts,
+        "exact": training_exact_artifacts,
+        "prefix": training_prefix_artifacts,
+        "single_frame": training_single_frame_artifacts,
+    }
+    owner_names = {
+        "contracts": {"LingbotParallelTrainArtifacts"},
+        "exact": {
+            "prepare_parallel_action_conditioned_train_artifacts",
+            "prepare_parallel_exact_train_artifacts",
+        },
+        "prefix": {"prepare_parallel_prefix_condition_exact_train_artifacts"},
+        "single_frame": {
+            "prepare_parallel_current_frame_action_chunk_train_artifacts",
+            "prepare_parallel_fastwam_first_frame_train_artifacts",
+        },
+    }
+    all_owner_names = set().union(*owner_names.values())
+    all_public_names = all_owner_names | {"ParallelTrainArtifacts"}
+
+    assert len(all_owner_names) == 6
+    assert not _top_level_definitions(
+        PARALLEL_TRAINING_ARTIFACT_ROLE_PATHS["facade"]
+    )
+    for role, names in owner_names.items():
+        path = PARALLEL_TRAINING_ARTIFACT_ROLE_PATHS[role]
+        assert _top_level_definitions(path) == names
+        expected_exports = names | (
+            {"ParallelTrainArtifacts"} if role == "contracts" else set()
+        )
+        assert _module_all_names(path) == expected_exports
+    assert _module_all_names(
+        PARALLEL_TRAINING_ARTIFACT_ROLE_PATHS["facade"]
+    ) == all_public_names
+    assert all(
+        sum(
+            name in _top_level_definitions(path)
+            for path in PARALLEL_TRAINING_ARTIFACT_ROLE_PATHS.values()
+        )
+        == 1
+        for name in all_owner_names
+    )
+
+    relative_imports: dict[str, set[str]] = {}
+    for role, path in PARALLEL_TRAINING_ARTIFACT_ROLE_PATHS.items():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        relative_imports[role] = {
+            node.module
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.level and node.module
+        }
+    assert relative_imports == {
+        "contracts": set(),
+        "exact": {
+            "generalist_training",
+            "latent_conditioning",
+            "runtime_semantics",
+            "training_artifact_contracts",
+            "training_noise",
+        },
+        "facade": {
+            "generalist_training",
+            "latent_conditioning",
+            "runtime_semantics",
+            "training_artifact_contracts",
+            "training_exact_artifacts",
+            "training_noise",
+            "training_prefix_artifacts",
+            "training_single_frame_artifacts",
+        },
+        "prefix": {
+            "generalist_training",
+            "runtime_semantics",
+            "training_artifact_contracts",
+            "training_noise",
+        },
+        "single_frame": {
+            "latent_conditioning",
+            "training_artifact_contracts",
+            "training_noise",
+        },
+    }
+
+    expected_consumers = {
+        "training_artifact_contracts": {
+            "models/policy_variants/parallel_stream/reference_runtime.py",
+            "models/policy_variants/parallel_stream/training_artifacts.py",
+            "models/policy_variants/parallel_stream/training_exact_artifacts.py",
+            "models/policy_variants/parallel_stream/training_prefix_artifacts.py",
+            "models/policy_variants/parallel_stream/training_single_frame_artifacts.py",
+        },
+        "training_exact_artifacts": {
+            "models/policy_variants/parallel_stream/reference_runtime.py",
+            "models/policy_variants/parallel_stream/training_artifacts.py",
+            "models/policy_variants/parallel_stream/variant.py",
+        },
+        "training_prefix_artifacts": {
+            "models/policy_variants/parallel_stream/reference_runtime.py",
+            "models/policy_variants/parallel_stream/training_artifacts.py",
+            "models/policy_variants/parallel_stream/variant.py",
+        },
+        "training_single_frame_artifacts": {
+            "models/policy_variants/parallel_stream/reference_runtime.py",
+            "models/policy_variants/parallel_stream/training_artifacts.py",
+            "models/policy_variants/parallel_stream/variant.py",
+        },
+        "training_artifacts": set(),
+    }
+    for module_name, expected_paths in expected_consumers.items():
+        owner_path = next(
+            path
+            for path in PARALLEL_TRAINING_ARTIFACT_ROLE_PATHS.values()
+            if path.stem == module_name
+        )
+        actual_paths = set()
+        for path in PACKAGE_ROOT.rglob("*.py"):
+            if path == owner_path:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            if any(
+                isinstance(node, ast.ImportFrom)
+                and node.module
+                in {
+                    f"open_wam.models.policy_variants.parallel_stream.{module_name}",
+                    module_name,
+                }
+                for node in ast.walk(tree)
+            ):
+                actual_paths.add(path.relative_to(PACKAGE_ROOT).as_posix())
+        assert actual_paths == expected_paths
+
+    for role, names in owner_names.items():
+        for name in names:
+            owner_value = getattr(role_modules[role], name)
+            assert getattr(training_artifacts, name) is owner_value
+            assert getattr(reference_runtime, name) is owner_value
+            payload = (
+                "copen_wam.models.policy_variants.parallel_stream.training_artifacts\n"
+                f"{name}\n."
+            ).encode()
+            assert pickle.loads(payload) is owner_value
+    assert (
+        training_artifact_contracts.ParallelTrainArtifacts
+        is training_artifact_contracts.LingbotParallelTrainArtifacts
+    )
+    assert (
+        training_artifacts.ParallelTrainArtifacts
+        is training_artifact_contracts.LingbotParallelTrainArtifacts
+    )
+
+    expected_direct_names = {
+        "CurrentBlockCoupling",
+        "FlowMatchScheduler",
+        "JointDenoiseTrainingMode",
+        "JointTimestepCoupling",
         "LingbotParallelTrainArtifacts",
+        "ParallelContextConditionLatentSource",
+        "ParallelStreamPolicyConfig",
+        "ParallelStreamVariantProfile",
+        "ParallelTrainArtifacts",
+        "SharedVideoTransformerConfig",
+        "TrainingConfig",
+        "_add_noise",
+        "_apply_generalist_joint_denoise_training_mode",
+        "_apply_generalist_legacy_prefix_joint_training_mode",
+        "_attention_profile_name_for_current_block_coupling",
+        "_resolve_full_condition_latents",
+        "_sample_coupled_timestep_values",
+        "_sample_index_matched_timestep_values",
+        "_sample_shared_video_schedule_timestep_values",
+        "_select_first_frame_condition_latents",
+        "_share_video_scheduler_grid_with_action_scheduler",
+        "annotations",
+        "clean_timestep_values",
+        "dataclass",
+        "force_clean_noisy_slot",
+        "preferred_reference_dtype",
         "prepare_parallel_action_conditioned_train_artifacts",
         "prepare_parallel_current_frame_action_chunk_train_artifacts",
         "prepare_parallel_exact_train_artifacts",
         "prepare_parallel_fastwam_first_frame_train_artifacts",
         "prepare_parallel_prefix_condition_exact_train_artifacts",
+        "rearrange",
+        "resolve_parallel_context_condition_latent_source",
+        "resolve_parallel_current_block_coupling",
+        "resolve_parallel_history_stream_visibility",
+        "resolve_parallel_joint_timestep_coupling",
+        "resolve_stage_attention_mode",
+        "sample_joint_denoise_timestep_values",
+        "torch",
+        "zero_condition_slot",
     }
-    parallel_stream_root = (
-        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
+    assert {
+        name for name in vars(training_artifacts) if not name.startswith("__")
+    } == expected_direct_names
+    wildcard_namespace: dict[str, object] = {}
+    exec(
+        "from open_wam.models.policy_variants.parallel_stream.training_artifacts import *",
+        wildcard_namespace,
     )
-    artifact_path = parallel_stream_root / "training_artifacts.py"
-    reference_runtime_path = parallel_stream_root / "reference_runtime.py"
+    assert set(wildcard_namespace) - {"__builtins__"} == all_public_names
 
-    assert artifact_definitions <= _top_level_definitions(artifact_path)
-    assert artifact_definitions.isdisjoint(
+    value = training_artifact_contracts.LingbotParallelTrainArtifacts(
+        input_dict={"probe": torch.tensor([1.0])},
+        latent_scheduler=object(),
+        action_scheduler=object(),
+    )
+    payload = pickle.dumps(value, protocol=0)
+    canonical_global = (
+        b"copen_wam.models.policy_variants.parallel_stream.training_artifact_contracts\n"
+        b"LingbotParallelTrainArtifacts\n"
+    )
+    historical_global = (
+        b"copen_wam.models.policy_variants.parallel_stream.training_artifacts\n"
+        b"LingbotParallelTrainArtifacts\n"
+    )
+    assert canonical_global in payload
+    restored = pickle.loads(payload.replace(canonical_global, historical_global))
+    assert type(restored) is type(value)
+    assert torch.equal(restored.input_dict["probe"], value.input_dict["probe"])
+    assert type(restored.latent_scheduler) is object
+    assert type(restored.action_scheduler) is object
+
+    reference_runtime_path = (
+        PACKAGE_ROOT
+        / "models"
+        / "policy_variants"
+        / "parallel_stream"
+        / "reference_runtime.py"
+    )
+    assert all_owner_names.isdisjoint(
         _top_level_definitions(reference_runtime_path)
     )
 

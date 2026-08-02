@@ -44,12 +44,16 @@ from .forward_execution import (
 )
 from .packed_rollout import run_parallel_packed_inference_rollout
 from .staged_rollout import run_parallel_staged_inference_rollout
-from .training_artifacts import (
+from .training_exact_artifacts import (
     prepare_parallel_action_conditioned_train_artifacts,
-    prepare_parallel_current_frame_action_chunk_train_artifacts,
     prepare_parallel_exact_train_artifacts,
-    prepare_parallel_fastwam_first_frame_train_artifacts,
+)
+from .training_prefix_artifacts import (
     prepare_parallel_prefix_condition_exact_train_artifacts,
+)
+from .training_single_frame_artifacts import (
+    prepare_parallel_current_frame_action_chunk_train_artifacts,
+    prepare_parallel_fastwam_first_frame_train_artifacts,
 )
 from .runtime_semantics import resolve_parallel_current_block_coupling
 from .action_adapter import LingbotActionAdapter, build_action_adapter_spec
