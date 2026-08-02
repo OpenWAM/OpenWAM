@@ -113,6 +113,68 @@ from open_wam.configs import load_experiment_config
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_lerobot_latent_dataset_facade_exports_canonical_role_objects() -> None:
+    from open_wam import data as public_data
+    from open_wam.data import lerobot_v2_latent as facade
+    from open_wam.data import lerobot_v2_latent_base_dataset as base
+    from open_wam.data import lerobot_v2_latent_causal_dataset as causal
+    from open_wam.data import lerobot_v2_latent_factory as factory
+    from open_wam.data import (
+        lerobot_v2_latent_hierarchical_dataset as hierarchical,
+    )
+    from open_wam.data import lerobot_v2_latent_uniform_dataset as uniform
+
+    owners = {
+        base: (
+            "FullSegmentLocalLeRobotLatentDataset",
+            "LocalLeRobotLatentWindowDataset",
+        ),
+        causal: ("CausalPrefixSuffixLocalLeRobotLatentDataset",),
+        factory: ("build_local_lerobot_latent_train_val_datasets",),
+        hierarchical: (
+            "HierarchicalFixedSegmentLocalLeRobotLatentDataset",
+        ),
+        uniform: ("UniformSegmentLocalLeRobotLatentDataset",),
+    }
+
+    for owner, names in owners.items():
+        for name in names:
+            assert getattr(facade, name) is getattr(owner, name)
+            legacy_global = (
+                "copen_wam.data.lerobot_v2_latent\n" f"{name}\n."
+            ).encode("ascii")
+            assert pickle.loads(legacy_global) is getattr(owner, name)
+
+    assert (
+        public_data.LocalLeRobotLatentWindowDataset
+        is base.LocalLeRobotLatentWindowDataset
+    )
+    assert (
+        public_data.build_local_lerobot_latent_train_val_datasets
+        is factory.build_local_lerobot_latent_train_val_datasets
+    )
+    assert issubclass(
+        hierarchical.HierarchicalFixedSegmentLocalLeRobotLatentDataset,
+        uniform.UniformSegmentLocalLeRobotLatentDataset,
+    )
+    assert issubclass(
+        uniform.UniformSegmentLocalLeRobotLatentDataset,
+        base.LocalLeRobotLatentWindowDataset,
+    )
+    assert issubclass(
+        causal.CausalPrefixSuffixLocalLeRobotLatentDataset,
+        base.LocalLeRobotLatentWindowDataset,
+    )
+
+    wildcard_namespace: dict[str, object] = {}
+    exec(
+        "from open_wam.data.lerobot_v2_latent import *",
+        wildcard_namespace,
+    )
+    assert len(facade.__all__) == 58
+    assert set(wildcard_namespace) - {"__builtins__"} == set(facade.__all__)
+
+
 def test_lerobot_latent_sampling_facade_exports_canonical_role_objects() -> None:
     from open_wam.data import lerobot_v2_latent_hierarchical_policy as hierarchical
     from open_wam.data import lerobot_v2_latent_sampler_adapters as adapters

@@ -10,7 +10,9 @@ from torch.utils.data import Dataset
 
 from open_wam.configs import DataConfig, ReplayStatusPolicy
 from open_wam.data import LatentWAMSample
-from open_wam.data.lerobot_v2_latent import FullSegmentLocalLeRobotLatentDataset
+from open_wam.data.lerobot_v2_latent_base_dataset import (
+    FullSegmentLocalLeRobotLatentDataset,
+)
 from open_wam.data.lerobot_v2_latent_storage import (
     LocalEpisodeWindow,
     discover_local_lerobot_repo_bundles,

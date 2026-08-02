@@ -341,14 +341,17 @@ history, and per-frame/per-chunk proprio assembly;
 latent and supervision tensors through `LocalLatentSegment`;
 `lerobot_v2_latent_source` loads one physical window through the repository,
 exposes canonical video/condition payloads, applies source frame-ID fallback,
-and resolves frame-indexed task/text conditioning; and
-`lerobot_v2_latent` owns profile/sample-mode and dataset-class selection,
-sampling-plan invocation, mode-specific tensor materialization, final metadata,
-and public `LatentWAMSample` construction. It calls repository, source, and
-supervision owners directly; it does not duplicate them behind dataset-private
-facades. Historical module-level helper imports remain identity aliases for
-compatibility, but new extensions should use the public `open_wam.data`
-contracts above.
+and resolves frame-indexed task/text conditioning.
+`lerobot_v2_latent_base_dataset` composes those repository, source,
+supervision, segment, and weighting contracts for full-segment samples;
+`lerobot_v2_latent_uniform_dataset`,
+`lerobot_v2_latent_hierarchical_dataset`, and
+`lerobot_v2_latent_causal_dataset` each own one sample-construction mode and
+its final metadata; and `lerobot_v2_latent_factory` selects the configured
+dataset class and train/validation windows. `lerobot_v2_latent` is only the
+stable import, wildcard, and old-pickle facade for those owners. Historical
+module-level helper imports remain identity aliases for compatibility, but new
+extensions should use the public `open_wam.data` contracts above.
 For row-oriented robot datasets, `row_action_targets` owns raw, relative-EEF,
 and absolute-joint target conversion, action mapping, normalization, and
 target metadata. `sequence_packing` owns the canonical float32 padded tensor

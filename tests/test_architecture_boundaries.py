@@ -78,6 +78,29 @@ from open_wam.utils.wan_geometry import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "src" / "open_wam"
+LOCAL_LATENT_DATASET_FACADE_PATH = (
+    PACKAGE_ROOT / "data" / "lerobot_v2_latent.py"
+)
+LOCAL_LATENT_DATASET_FACTORY_PATH = (
+    PACKAGE_ROOT / "data" / "lerobot_v2_latent_factory.py"
+)
+LOCAL_LATENT_DATASET_OWNER_PATHS = {
+    "CausalPrefixSuffixLocalLeRobotLatentDataset": (
+        PACKAGE_ROOT / "data" / "lerobot_v2_latent_causal_dataset.py"
+    ),
+    "FullSegmentLocalLeRobotLatentDataset": (
+        PACKAGE_ROOT / "data" / "lerobot_v2_latent_base_dataset.py"
+    ),
+    "HierarchicalFixedSegmentLocalLeRobotLatentDataset": (
+        PACKAGE_ROOT / "data" / "lerobot_v2_latent_hierarchical_dataset.py"
+    ),
+    "LocalLeRobotLatentWindowDataset": (
+        PACKAGE_ROOT / "data" / "lerobot_v2_latent_base_dataset.py"
+    ),
+    "UniformSegmentLocalLeRobotLatentDataset": (
+        PACKAGE_ROOT / "data" / "lerobot_v2_latent_uniform_dataset.py"
+    ),
+}
 
 
 def _absolute_imports_for_file(path: Path) -> set[str]:
@@ -371,7 +394,9 @@ def test_lerobot_latent_repository_io_has_one_storage_owner() -> None:
         "reshape_latent_payload",
     }
     storage_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent_storage.py"
-    dataset_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent.py"
+    dataset_path = LOCAL_LATENT_DATASET_OWNER_PATHS[
+        "LocalLeRobotLatentWindowDataset"
+    ]
     storage_definitions = _top_level_definitions(storage_path)
     dataset_definitions = _top_level_definitions(dataset_path)
 
@@ -397,6 +422,87 @@ def test_lerobot_latent_repository_io_has_one_storage_owner() -> None:
             "LocalLeRobotLatentWindowDataset",
         )
     )
+
+
+def test_lerobot_latent_dataset_roles_have_one_owner() -> None:
+    from open_wam import data as public_data
+    from open_wam.data import lerobot_v2_latent as facade
+    from open_wam.data import lerobot_v2_latent_base_dataset as base
+    from open_wam.data import lerobot_v2_latent_causal_dataset as causal
+    from open_wam.data import lerobot_v2_latent_factory as factory
+    from open_wam.data import (
+        lerobot_v2_latent_hierarchical_dataset as hierarchical,
+    )
+    from open_wam.data import lerobot_v2_latent_uniform_dataset as uniform
+
+    expected_owners = {
+        "CausalPrefixSuffixLocalLeRobotLatentDataset": causal,
+        "FullSegmentLocalLeRobotLatentDataset": base,
+        "HierarchicalFixedSegmentLocalLeRobotLatentDataset": hierarchical,
+        "LocalLeRobotLatentWindowDataset": base,
+        "UniformSegmentLocalLeRobotLatentDataset": uniform,
+        "build_local_lerobot_latent_train_val_datasets": factory,
+    }
+    role_paths = tuple(
+        dict.fromkeys(LOCAL_LATENT_DATASET_OWNER_PATHS.values())
+    ) + (LOCAL_LATENT_DATASET_FACTORY_PATH,)
+    role_definitions = {
+        name
+        for path in role_paths
+        for name in _top_level_definitions(path)
+    }
+
+    assert set(expected_owners) == role_definitions
+    assert not _top_level_definitions(LOCAL_LATENT_DATASET_FACADE_PATH)
+    assert all(
+        sum(name in _top_level_definitions(path) for path in role_paths) == 1
+        for name in expected_owners
+    )
+    assert _module_all_names(
+        LOCAL_LATENT_DATASET_OWNER_PATHS[
+            "LocalLeRobotLatentWindowDataset"
+        ]
+    ) == {
+        "FullSegmentLocalLeRobotLatentDataset",
+        "LocalLeRobotLatentWindowDataset",
+    }
+    assert _module_all_names(
+        LOCAL_LATENT_DATASET_OWNER_PATHS[
+            "UniformSegmentLocalLeRobotLatentDataset"
+        ]
+    ) == {"UniformSegmentLocalLeRobotLatentDataset"}
+    assert _module_all_names(
+        LOCAL_LATENT_DATASET_OWNER_PATHS[
+            "HierarchicalFixedSegmentLocalLeRobotLatentDataset"
+        ]
+    ) == {"HierarchicalFixedSegmentLocalLeRobotLatentDataset"}
+    assert _module_all_names(
+        LOCAL_LATENT_DATASET_OWNER_PATHS[
+            "CausalPrefixSuffixLocalLeRobotLatentDataset"
+        ]
+    ) == {"CausalPrefixSuffixLocalLeRobotLatentDataset"}
+    assert _module_all_names(LOCAL_LATENT_DATASET_FACTORY_PATH) == {
+        "build_local_lerobot_latent_train_val_datasets"
+    }
+    for name, owner in expected_owners.items():
+        assert getattr(facade, name) is getattr(owner, name)
+    assert (
+        public_data.LocalLeRobotLatentWindowDataset
+        is base.LocalLeRobotLatentWindowDataset
+    )
+    assert (
+        public_data.build_local_lerobot_latent_train_val_datasets
+        is factory.build_local_lerobot_latent_train_val_datasets
+    )
+    for path in role_paths:
+        assert "from .lerobot_v2_latent import" not in path.read_text(
+            encoding="utf-8"
+        )
+    latent_factory_source = (
+        PACKAGE_ROOT / "data" / "latent_factory.py"
+    ).read_text(encoding="utf-8")
+    assert "from .lerobot_v2_latent_factory import" in latent_factory_source
+    assert "from .lerobot_v2_latent import" not in latent_factory_source
 
 
 def test_lerobot_latent_sampling_policy_has_one_owner() -> None:
@@ -430,7 +536,15 @@ def test_lerobot_latent_sampling_policy_has_one_owner() -> None:
         uniform_policy_path,
         weighting_path,
     )
-    dataset_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent.py"
+    base_dataset_path = LOCAL_LATENT_DATASET_OWNER_PATHS[
+        "LocalLeRobotLatentWindowDataset"
+    ]
+    uniform_dataset_path = LOCAL_LATENT_DATASET_OWNER_PATHS[
+        "UniformSegmentLocalLeRobotLatentDataset"
+    ]
+    hierarchical_dataset_path = LOCAL_LATENT_DATASET_OWNER_PATHS[
+        "HierarchicalFixedSegmentLocalLeRobotLatentDataset"
+    ]
     hierarchical_segment_path = (
         PACKAGE_ROOT / "data" / "latent_hierarchical_sampling.py"
     )
@@ -462,12 +576,20 @@ def test_lerobot_latent_sampling_policy_has_one_owner() -> None:
         "LocalLatentWindowWeightPlan",
     }
     assert not _top_level_definitions(sampling_facade_path)
-    assert sampling_owned.isdisjoint(_top_level_definitions(dataset_path))
+    assert all(
+        sampling_owned.isdisjoint(_top_level_definitions(path))
+        for path in LOCAL_LATENT_DATASET_OWNER_PATHS.values()
+    )
     for role_path in role_paths:
         assert "from .lerobot_v2_latent_sampling import" not in (
             role_path.read_text(encoding="utf-8")
         )
-    for consumer_path in (dataset_path, hierarchical_segment_path):
+    for consumer_path in (
+        *LOCAL_LATENT_DATASET_OWNER_PATHS.values(),
+        LOCAL_LATENT_DATASET_FACTORY_PATH,
+        LOCAL_LATENT_DATASET_FACADE_PATH,
+        hierarchical_segment_path,
+    ):
         assert "from .lerobot_v2_latent_sampling import" not in (
             consumer_path.read_text(encoding="utf-8")
         )
@@ -491,7 +613,7 @@ def test_lerobot_latent_sampling_policy_has_one_owner() -> None:
     )
 
     base_weight_delegate = _class_method(
-        dataset_path,
+        base_dataset_path,
         "LocalLeRobotLatentWindowDataset",
         "_sample_weight_metadata",
     )
@@ -500,7 +622,7 @@ def test_lerobot_latent_sampling_policy_has_one_owner() -> None:
     assert isinstance(base_weight_delegate.body[0].value, ast.Call)
 
     task_text_delegate = _class_method(
-        dataset_path,
+        base_dataset_path,
         "LocalLeRobotLatentWindowDataset",
         "task_text_for_window_index",
     )
@@ -517,7 +639,7 @@ def test_lerobot_latent_sampling_policy_has_one_owner() -> None:
         "_window_task_text",
     }.isdisjoint(
         _class_method_definitions(
-            dataset_path,
+            base_dataset_path,
             "LocalLeRobotLatentWindowDataset",
         )
     )
@@ -548,7 +670,7 @@ def test_lerobot_latent_sampling_policy_has_one_owner() -> None:
     }
     for method_name in uniform_compatibility_methods:
         method = _class_method(
-            dataset_path,
+            uniform_dataset_path,
             "UniformSegmentLocalLeRobotLatentDataset",
             method_name,
         )
@@ -572,7 +694,7 @@ def test_lerobot_latent_sampling_policy_has_one_owner() -> None:
     }
     assert retired_uniform_helpers.isdisjoint(
         _class_method_definitions(
-            dataset_path,
+            uniform_dataset_path,
             "UniformSegmentLocalLeRobotLatentDataset",
         )
     )
@@ -583,7 +705,7 @@ def test_lerobot_latent_sampling_policy_has_one_owner() -> None:
     }
     for method_name in retained_diagnostic_methods:
         method = _class_method(
-            dataset_path,
+            hierarchical_dataset_path,
             "HierarchicalFixedSegmentLocalLeRobotLatentDataset",
             method_name,
         )
@@ -609,7 +731,7 @@ def test_lerobot_latent_sampling_policy_has_one_owner() -> None:
     }
     assert retired_hierarchical_helpers.isdisjoint(
         _class_method_definitions(
-            dataset_path,
+            hierarchical_dataset_path,
             "HierarchicalFixedSegmentLocalLeRobotLatentDataset",
         )
     )
@@ -619,7 +741,9 @@ def test_lerobot_latent_sample_source_has_one_owner() -> None:
     source_path = (
         PACKAGE_ROOT / "data" / "lerobot_v2_latent_source.py"
     )
-    dataset_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent.py"
+    base_dataset_path = LOCAL_LATENT_DATASET_OWNER_PATHS[
+        "LocalLeRobotLatentWindowDataset"
+    ]
 
     source_contracts = {
         "LocalLatentSampleConditioning",
@@ -627,7 +751,10 @@ def test_lerobot_latent_sample_source_has_one_owner() -> None:
         "LocalLatentSampleSourceLoader",
     }
     assert source_contracts <= _top_level_definitions(source_path)
-    assert source_contracts.isdisjoint(_top_level_definitions(dataset_path))
+    assert all(
+        source_contracts.isdisjoint(_top_level_definitions(path))
+        for path in LOCAL_LATENT_DATASET_OWNER_PATHS.values()
+    )
     assert {"conditioning_for_frame"} <= _class_method_definitions(
         source_path,
         "LocalLatentSampleSource",
@@ -638,7 +765,7 @@ def test_lerobot_latent_sample_source_has_one_owner() -> None:
     )
 
     source_delegate = _class_method(
-        dataset_path,
+        base_dataset_path,
         "LocalLeRobotLatentWindowDataset",
         "_load_sample_source",
     )
@@ -652,7 +779,11 @@ def test_lerobot_latent_sample_source_has_one_owner() -> None:
         "HierarchicalFixedSegmentLocalLeRobotLatentDataset",
         "CausalPrefixSuffixLocalLeRobotLatentDataset",
     ):
-        getitem = _class_method(dataset_path, class_name, "__getitem__")
+        getitem = _class_method(
+            LOCAL_LATENT_DATASET_OWNER_PATHS[class_name],
+            class_name,
+            "__getitem__",
+        )
         source_calls = [
             node
             for node in ast.walk(getitem)
@@ -676,7 +807,9 @@ def test_lerobot_latent_sample_source_has_one_owner() -> None:
 
 def test_lerobot_latent_hierarchical_segment_planning_has_one_owner() -> None:
     planner_path = PACKAGE_ROOT / "data" / "latent_hierarchical_sampling.py"
-    dataset_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent.py"
+    dataset_path = LOCAL_LATENT_DATASET_OWNER_PATHS[
+        "HierarchicalFixedSegmentLocalLeRobotLatentDataset"
+    ]
 
     assert {
         "LocalLatentHierarchicalSampleKey",
@@ -830,7 +963,9 @@ def test_lerobot_latent_segment_geometry_has_one_owner() -> None:
         PACKAGE_ROOT / "data" / "latent_segment_geometry.py"
     )
     dataset_methods = _class_method_definitions(
-        PACKAGE_ROOT / "data" / "lerobot_v2_latent.py",
+        LOCAL_LATENT_DATASET_OWNER_PATHS[
+            "UniformSegmentLocalLeRobotLatentDataset"
+        ],
         "UniformSegmentLocalLeRobotLatentDataset",
     )
 
@@ -845,7 +980,9 @@ def test_lerobot_latent_segment_materialization_has_one_owner() -> None:
         PACKAGE_ROOT / "data" / "latent_segment_materialization.py"
     )
     segment_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent_segment.py"
-    dataset_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent.py"
+    uniform_dataset_path = LOCAL_LATENT_DATASET_OWNER_PATHS[
+        "UniformSegmentLocalLeRobotLatentDataset"
+    ]
     assert {
         "LatentSegmentMaterializationPlan",
         "plan_latent_segment_materialization",
@@ -886,7 +1023,7 @@ def test_lerobot_latent_segment_materialization_has_one_owner() -> None:
     }
     assert retired_dataset_helpers.isdisjoint(
         _class_method_definitions(
-            dataset_path,
+            uniform_dataset_path,
             "UniformSegmentLocalLeRobotLatentDataset",
         )
     )
@@ -895,7 +1032,11 @@ def test_lerobot_latent_segment_materialization_has_one_owner() -> None:
         "UniformSegmentLocalLeRobotLatentDataset",
         "HierarchicalFixedSegmentLocalLeRobotLatentDataset",
     ):
-        getitem = _class_method(dataset_path, dataset_class, "__getitem__")
+        getitem = _class_method(
+            LOCAL_LATENT_DATASET_OWNER_PATHS[dataset_class],
+            dataset_class,
+            "__getitem__",
+        )
         owner_calls = [
             node
             for node in ast.walk(getitem)
@@ -910,7 +1051,12 @@ def test_lerobot_latent_segment_materialization_has_one_owner() -> None:
 
 def test_lerobot_latent_causal_sampling_has_one_owner() -> None:
     planner_path = PACKAGE_ROOT / "data" / "latent_causal_sampling.py"
-    dataset_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent.py"
+    base_dataset_path = LOCAL_LATENT_DATASET_OWNER_PATHS[
+        "LocalLeRobotLatentWindowDataset"
+    ]
+    causal_dataset_path = LOCAL_LATENT_DATASET_OWNER_PATHS[
+        "CausalPrefixSuffixLocalLeRobotLatentDataset"
+    ]
 
     assert {
         "LatentCausalPrefixSuffixCandidate",
@@ -932,19 +1078,19 @@ def test_lerobot_latent_causal_sampling_has_one_owner() -> None:
     )
 
     assert "_build_raw_bucket_boundaries" not in _class_method_definitions(
-        dataset_path,
+        base_dataset_path,
         "LocalLeRobotLatentWindowDataset",
     )
     assert (
         "_sample_causal_prefix_suffix_subwindow"
         not in _class_method_definitions(
-            dataset_path,
+            causal_dataset_path,
             "CausalPrefixSuffixLocalLeRobotLatentDataset",
         )
     )
 
     getitem = _class_method(
-        dataset_path,
+        causal_dataset_path,
         "CausalPrefixSuffixLocalLeRobotLatentDataset",
         "__getitem__",
     )
@@ -962,7 +1108,7 @@ def test_lerobot_latent_causal_sampling_has_one_owner() -> None:
 
 def test_lerobot_latent_train_val_window_planning_has_one_owner() -> None:
     planner_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent_split.py"
-    dataset_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent.py"
+    dataset_path = LOCAL_LATENT_DATASET_FACTORY_PATH
 
     assert {
         "LocalLatentTrainValWindowPlan",
@@ -1559,7 +1705,9 @@ def test_lerobot_latent_supervision_assembly_has_one_owner() -> None:
     supervision_path = (
         PACKAGE_ROOT / "data" / "lerobot_v2_latent_supervision.py"
     )
-    dataset_path = PACKAGE_ROOT / "data" / "lerobot_v2_latent.py"
+    dataset_path = LOCAL_LATENT_DATASET_OWNER_PATHS[
+        "LocalLeRobotLatentWindowDataset"
+    ]
     assembler_methods = {
         "build_action_targets",
         "build_lingbot_window_action_targets",
@@ -1653,7 +1801,9 @@ def test_temporal_sequence_packing_has_one_owner() -> None:
 
     adapter_classes = {
         "lerobot_v2.py": "LeRobotV2WindowDataset",
-        "lerobot_v2_latent.py": "LocalLeRobotLatentWindowDataset",
+        "lerobot_v2_latent_base_dataset.py": (
+            "LocalLeRobotLatentWindowDataset"
+        ),
         "lerobot_consortium.py": "LeRobotConsortiumWindowDataset",
         "libero_hdf5.py": "LiberoOfflineWindowDataset",
     }
@@ -1675,11 +1825,12 @@ def test_hierarchical_draw_primitives_have_one_owner() -> None:
         "weighted_choice_index",
     } <= sampling_definitions
 
-    for filename in (
-        "lerobot_v2_latent.py",
-        "counterfactual_dynamics_dataset.py",
-    ):
-        adapter_definitions = _top_level_definitions(PACKAGE_ROOT / "data" / filename)
+    adapter_paths = (
+        *LOCAL_LATENT_DATASET_OWNER_PATHS.values(),
+        PACKAGE_ROOT / "data" / "counterfactual_dynamics_dataset.py",
+    )
+    for adapter_path in adapter_paths:
+        adapter_definitions = _top_level_definitions(adapter_path)
         assert {
             "_stable_int_seed",
             "_weighted_choice_index",

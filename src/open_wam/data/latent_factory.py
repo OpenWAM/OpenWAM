@@ -6,7 +6,9 @@ from open_wam.configs import DataConfig
 
 from .latent_contracts import LatentWAMSample
 from .latent_synthetic import SyntheticLatentWindowDataset
-from .lerobot_v2_latent import build_local_lerobot_latent_train_val_datasets
+from .lerobot_v2_latent_factory import (
+    build_local_lerobot_latent_train_val_datasets,
+)
 from .mixed_video import build_mixed_video_latent_train_val_datasets
 from .registries import (
     DATASET_ADAPTERS,
@@ -35,5 +37,9 @@ def _build_synthetic_latent_datasets(
 register_latent_dataset_builder("synthetic_latent", _build_synthetic_latent_datasets)
 register_latent_dataset_builder("synthetic_robotwin", _build_synthetic_latent_datasets)
 register_latent_dataset_builder("synthetic_multiview", _build_synthetic_latent_datasets)
-register_latent_dataset_builder("lerobot_v2_latent_local", build_local_lerobot_latent_train_val_datasets)
-register_latent_dataset_builder("mixed_video", build_mixed_video_latent_train_val_datasets)
+register_latent_dataset_builder(
+    "lerobot_v2_latent_local", build_local_lerobot_latent_train_val_datasets
+)
+register_latent_dataset_builder(
+    "mixed_video", build_mixed_video_latent_train_val_datasets
+)
