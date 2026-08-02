@@ -170,6 +170,22 @@ evaluation, and auxiliary-validation checks. The established
 the package root and `open-wam-validate-config`. Add section-specific checks to
 their owner and reserve the facade for file/report orchestration.
 
+## Pipeline Construction Contract
+
+Pipeline construction is divided by role before learned modules enter the
+stable runtime boundary. `pipelines.factory_validation` owns cross-component
+preflight and model/state-dimension resolution. `policy_factory` selects and
+constructs one `PolicyVariant`; `action_decoder_factory` does the same for one
+`ActionDecoder`. Both consume the typed built-in and extension registries.
+
+`pipelines.factory` remains the supported composition owner and historical
+import surface. It installs built-in registry entries, constructs the shared
+`VisualTower`, invokes policy attachment hooks before sharding, constructs the
+decoder and sampler mask, and returns `VariantPipeline`. Applications add
+open-string extension builders through `register_policy_variant` and
+`register_action_decoder`; they do not branch the composition code. These
+factory roles own no learned parameters or checkpoint state.
+
 ## Visual Tower Contract
 
 The shared visual stack exposes stage-aware outputs rather than allowing policy

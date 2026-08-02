@@ -3459,6 +3459,163 @@ def test_flow_matching_roles_have_one_owner() -> None:
     assert facade_consumers == []
 
 
+def test_pipeline_factory_roles_have_one_owner() -> None:
+    import pickle
+
+    from open_wam import pipelines as pipelines_api
+    from open_wam.pipelines import (
+        action_decoder_factory,
+        factory,
+        factory_validation,
+        policy_factory,
+        registries,
+    )
+
+    pipelines_root = PACKAGE_ROOT / "pipelines"
+    role_paths = {
+        "composition": pipelines_root / "factory.py",
+        "decoder": pipelines_root / "action_decoder_factory.py",
+        "policy": pipelines_root / "policy_factory.py",
+        "validation": pipelines_root / "factory_validation.py",
+    }
+    owner_names = {
+        "composition": {
+            "_register_builtin_pipeline_builders",
+            "build_exact_runtime_runner_from_config",
+            "build_lingbot_exact_runner_from_config",
+            "build_variant_pipeline_from_config",
+        },
+        "decoder": {
+            "_build_decoded_feature_action_decoder",
+            "_build_extension_action_decoder",
+            "_build_lingbot_parallel_action_decoder",
+            "_build_mlp_action_decoder",
+            "_build_mot_action_decoder",
+            "_build_video_conditioned_action_decoder",
+            "_build_video_only_action_decoder",
+            "build_action_decoder",
+        },
+        "policy": {
+            "_build_causal_video_prediction_policy_variant",
+            "_build_extension_policy_variant",
+            "_build_mot_policy_variant",
+            "_build_parallel_stream_policy_variant",
+            "_build_post_decoded_policy_variant",
+            "_build_post_latent_policy_variant",
+            "build_policy_variant",
+        },
+        "validation": {
+            "_resolve_parallel_stream_model_action_dim",
+            "_resolve_proprio_context_state_dim",
+            "_resolve_proprio_hidden_context_state_dim",
+            "validate_experiment_config",
+        },
+    }
+    all_names = set().union(*owner_names.values())
+    assert len(all_names) == 23
+    assert all(
+        sum(name in _top_level_definitions(path) for path in role_paths.values()) == 1
+        for name in all_names
+    )
+    for role, names in owner_names.items():
+        assert _top_level_definitions(role_paths[role]) == names
+
+    assert _module_all_names(role_paths["decoder"]) == {"build_action_decoder"}
+    assert _module_all_names(role_paths["policy"]) == {"build_policy_variant"}
+    assert _module_all_names(role_paths["validation"]) == {
+        "validate_experiment_config"
+    }
+    assert _module_all_names(role_paths["composition"]) == set()
+    assert "factory" not in _absolute_imports_for_file(role_paths["decoder"])
+    assert "factory" not in _absolute_imports_for_file(role_paths["policy"])
+    assert "factory" not in _absolute_imports_for_file(role_paths["validation"])
+
+    assert factory.validate_experiment_config is factory_validation.validate_experiment_config
+    assert factory.build_policy_variant is policy_factory.build_policy_variant
+    assert factory.build_action_decoder is action_decoder_factory.build_action_decoder
+    assert pipelines_api.build_policy_variant is policy_factory.build_policy_variant
+    assert pipelines_api.build_action_decoder is action_decoder_factory.build_action_decoder
+    assert (
+        pipelines_api.build_variant_pipeline_from_config
+        is factory.build_variant_pipeline_from_config
+    )
+    for entry in registries.POLICY_VARIANT_BUILDERS.entries():
+        assert entry.value is getattr(policy_factory, entry.value.__name__)
+    for entry in registries.ACTION_DECODER_BUILDERS.entries():
+        assert entry.value is getattr(action_decoder_factory, entry.value.__name__)
+
+    expected_wildcard_names = {
+        "ACTION_DECODER_BUILDERS",
+        "ActionDecoder",
+        "ActionDecoderName",
+        "ActionNormalizationMode",
+        "BackboneImplementation",
+        "BatchAdapterName",
+        "CausalVideoPredictionPolicyConfig",
+        "CausalVideoPredictionPolicyVariant",
+        "DecodedFeatureActionDecoder",
+        "ExperimentConfig",
+        "ExtensionActionDecoderConfig",
+        "ExtensionPolicyConfig",
+        "LingbotExactRunner",
+        "LingbotParallelActionDecoder",
+        "MLPActionDecoder",
+        "MoTActionDecoder",
+        "MoTPolicyConfig",
+        "MoTPolicyVariant",
+        "MoTRuntimeMode",
+        "POLICY_VARIANT_BUILDERS",
+        "ParallelRuntimeMode",
+        "ParallelStreamPolicyConfig",
+        "ParallelStreamPolicyVariant",
+        "PolicyVariant",
+        "PostDecodedPolicyConfig",
+        "PostDecodedPolicyVariant",
+        "PostLatentPolicyConfig",
+        "PostLatentPolicyVariant",
+        "ProprioContextMode",
+        "VariantPipeline",
+        "VideoConditionInputSpace",
+        "VideoConditionSource",
+        "VideoConditionTrainMode",
+        "VideoConditionedActionDecoder",
+        "VideoOnlyActionDecoder",
+        "VisualTower",
+        "annotations",
+        "build_action_adapter_spec",
+        "build_action_decoder",
+        "build_action_sampler_mask",
+        "build_canonical_video_preprocessor",
+        "build_exact_runtime_runner_from_config",
+        "build_lingbot_exact_runner_from_config",
+        "build_policy_variant",
+        "build_variant_pipeline_from_config",
+        "normalize_backbone_implementation",
+        "validate_action_mapping_preflight",
+        "validate_experiment_config",
+    }
+    wildcard_namespace: dict[str, object] = {}
+    exec("from open_wam.pipelines.factory import *", wildcard_namespace)
+    assert set(wildcard_namespace) - {"__builtins__"} == expected_wildcard_names
+    assert len(_compatibility_export_names(role_paths["composition"])) == 29
+
+    old_globals = {
+        "validate_experiment_config": factory_validation.validate_experiment_config,
+        "build_policy_variant": policy_factory.build_policy_variant,
+        "build_action_decoder": action_decoder_factory.build_action_decoder,
+        "build_variant_pipeline_from_config": factory.build_variant_pipeline_from_config,
+        "build_lingbot_exact_runner_from_config": (
+            factory.build_lingbot_exact_runner_from_config
+        ),
+        "build_exact_runtime_runner_from_config": (
+            factory.build_exact_runtime_runner_from_config
+        ),
+    }
+    for name, expected in old_globals.items():
+        payload = f"copen_wam.pipelines.factory\n{name}\n.".encode()
+        assert pickle.loads(payload) is expected
+
+
 def test_mot_condition_latent_selection_has_one_owner() -> None:
     function_name = "resolve_mot_condition_latents"
     mot_root = PACKAGE_ROOT / "models" / "policy_variants" / "mot"

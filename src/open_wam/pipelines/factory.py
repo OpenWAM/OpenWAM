@@ -1,3 +1,5 @@
+"""Stable pipeline composition and historical factory import surface."""
+
 from __future__ import annotations
 
 from open_wam.configs import (
@@ -59,453 +61,67 @@ from .registries import (
 )
 from .variant_pipeline import VariantPipeline
 
-_PARALLEL_STREAM_EXACT_MODEL_ACTION_MODES = {
-    ParallelRuntimeMode.LINGBOT_EXACT,
-    ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
-    ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK,
-    ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
-}
+from .action_decoder_factory import (
+    _build_decoded_feature_action_decoder,
+    _build_extension_action_decoder,
+    _build_lingbot_parallel_action_decoder,
+    _build_mlp_action_decoder,
+    _build_mot_action_decoder,
+    _build_video_conditioned_action_decoder,
+    _build_video_only_action_decoder,
+    build_action_decoder,
+)
+from .factory_validation import (
+    _PARALLEL_STREAM_EXACT_MODEL_ACTION_MODES,
+    _resolve_parallel_stream_model_action_dim,
+    _resolve_proprio_context_state_dim,
+    _resolve_proprio_hidden_context_state_dim,
+    validate_experiment_config,
+)
+from .policy_factory import (
+    _build_causal_video_prediction_policy_variant,
+    _build_extension_policy_variant,
+    _build_mot_policy_variant,
+    _build_parallel_stream_policy_variant,
+    _build_post_decoded_policy_variant,
+    _build_post_latent_policy_variant,
+    build_policy_variant,
+)
 
 
-def _resolve_parallel_stream_model_action_dim(config: ExperimentConfig) -> int:
-    if (
-        isinstance(config.policy_variant, ParallelStreamPolicyConfig)
-        and config.policy_variant.runtime_mode in _PARALLEL_STREAM_EXACT_MODEL_ACTION_MODES
-    ):
-        return config.action_decoder.action_dim
-    return config.data.action_schema.action_dim
-
-
-def _resolve_proprio_context_state_dim(config: ExperimentConfig) -> int | None:
-    if not isinstance(config.policy_variant, (MoTPolicyConfig, ParallelStreamPolicyConfig)):
-        return None
-    mode = ProprioContextMode(config.policy_variant.proprio_context_mode)
-    if mode != ProprioContextMode.TEXT_CONTEXT_TOKEN:
-        return None
-    state_dim = int(config.data.action_schema.state_dim)
-    if state_dim <= 0:
-        raise ValueError(
-            "Deprecated proprio_context_mode=text_context_token requires positive data.action_schema.state_dim."
-        )
-    return state_dim
-
-
-def _resolve_proprio_hidden_context_state_dim(config: ExperimentConfig) -> int | None:
-    if not isinstance(config.policy_variant, ParallelStreamPolicyConfig):
-        return None
-    mode = ProprioContextMode(config.policy_variant.proprio_context_mode)
-    if mode != ProprioContextMode.PER_CHUNK_ADDITIVE:
-        return None
-    state_dim = int(config.data.action_schema.state_dim)
-    if state_dim <= 0:
-        raise ValueError("proprio_context_mode=per_chunk_additive requires positive data.action_schema.state_dim.")
-    return state_dim
-
-
-def validate_experiment_config(config: ExperimentConfig) -> None:
-    action_schema = config.data.action_schema
-    validate_action_mapping_preflight(
-        config.data.action_mapping,
-        action_schema_dim=action_schema.action_dim,
-    )
-    if (
-        isinstance(
-            config.policy_variant,
-            (
-                ParallelStreamPolicyConfig,
-                PostLatentPolicyConfig,
-                PostDecodedPolicyConfig,
-                CausalVideoPredictionPolicyConfig,
-                MoTPolicyConfig,
-            ),
-        )
-        and normalize_backbone_implementation(config.backbone.implementation)
-        != BackboneImplementation.SHARED_TRANSFORMER
-    ):
-        raise ValueError(
-            "Policy variants in the current repo all require the shared transformer backbone so they run "
-            f"through the same LingBot-compatible visual core, got "
-            f"backbone.implementation={config.backbone.implementation!r}."
-        )
-    if isinstance(config.policy_variant, ParallelStreamPolicyConfig):
-        if config.policy_variant.runtime_mode not in _PARALLEL_STREAM_EXACT_MODEL_ACTION_MODES:
-            raise ValueError(
-                "Parallel-stream method 1 now only supports LingBot-exact semantics, "
-                f"got policy_variant.runtime_mode={config.policy_variant.runtime_mode!r}."
-            )
-        expected_horizon = config.data.num_frames * config.policy_variant.action_per_frame
-        if action_schema.action_horizon != expected_horizon:
-            raise ValueError(
-                "Parallel-stream config requires `action_horizon == num_frames * action_per_frame`, "
-                f"got action_horizon={action_schema.action_horizon}, num_frames={config.data.num_frames}, "
-                f"action_per_frame={config.policy_variant.action_per_frame}."
-            )
-        if config.action_decoder.name != ActionDecoderName.LINGBOT_PARALLEL:
-            raise ValueError(
-                "Parallel-stream method 1 requires `action_decoder.name = lingbot_parallel_decoder`."
-            )
-        if config.action_decoder.action_horizon != action_schema.action_horizon:
-            raise ValueError(
-                "Parallel-stream method 1 requires `action_decoder.action_horizon` to match "
-                "`data.action_schema.action_horizon`, "
-                f"got decoder={config.action_decoder.action_horizon}, data={action_schema.action_horizon}."
-            )
-        model_action_dim = _resolve_parallel_stream_model_action_dim(config)
-        adapter_spec = build_action_adapter_spec(config.policy_variant, model_action_dim=model_action_dim)
-        if adapter_spec is None and action_schema.action_dim != model_action_dim:
-            raise ValueError(
-                "Exact LingBot runtime needs an action adapter when dataset and model action dims differ, "
-                f"got data action_dim={action_schema.action_dim} and model action_dim={model_action_dim}."
-            )
-        if (
-            adapter_spec is not None
-            and action_schema.action_dim != model_action_dim
-            and adapter_spec.raw_action_dim != action_schema.action_dim
-        ):
-            raise ValueError(
-                "Exact LingBot action adapter raw action dim must match `data.action_schema.action_dim` "
-                "when dataset and model action dims differ, "
-                f"got adapter raw_action_dim={adapter_spec.raw_action_dim}, "
-                f"data action_dim={action_schema.action_dim}, model action_dim={model_action_dim}."
-            )
-    if isinstance(config.policy_variant, MoTPolicyConfig):
-        if action_schema.action_horizon <= 0:
-            raise ValueError("MoT method 5 requires `data.action_schema.action_horizon > 0`.")
-        if (
-            config.policy_variant.runtime_mode
-            in {MoTRuntimeMode.JOINT_DENOISE, MoTRuntimeMode.NON_JOINT_TWO_STREAM}
-            and config.policy_variant.video_prefix_frames >= config.data.num_frames
-        ):
-            raise ValueError(
-                "MoT two-stream method 5 requires `video_prefix_frames < data.num_frames`, "
-                f"got video_prefix_frames={config.policy_variant.video_prefix_frames}, "
-                f"data.num_frames={config.data.num_frames}, "
-                f"runtime_mode={config.policy_variant.runtime_mode!r}."
-            )
-        if config.policy_variant.num_action_layers != config.backbone.num_layers:
-            raise ValueError(
-                "MoT method 5 currently requires `policy_variant.num_action_layers == backbone.num_layers` "
-                "so the action expert stays layer-aligned with the video expert, "
-                f"got num_action_layers={config.policy_variant.num_action_layers}, "
-                f"backbone.num_layers={config.backbone.num_layers}."
-            )
-    if (
-        isinstance(config.policy_variant, (PostLatentPolicyConfig, PostDecodedPolicyConfig))
-        and config.action_decoder.name == ActionDecoderName.VIDEO_CONDITIONED
-    ):
-        direct_train_mode = config.action_decoder.train_mode == VideoConditionTrainMode.CURRENT_FRAME_REGRESSION
-        if config.policy_variant.local_video_window_frames > config.data.num_frames:
-            raise ValueError(
-                "Method-4 video-conditioned decoding requires `policy_variant.local_video_window_frames <= data.num_frames`, "
-                f"got local_video_window_frames={config.policy_variant.local_video_window_frames}, "
-                f"data.num_frames={config.data.num_frames}."
-            )
-        if config.action_decoder.action_horizon <= 0:
-            raise ValueError("Method-4 video-conditioned decoding requires `action_horizon > 0`.")
-        if not direct_train_mode and int(config.policy_variant.current_video_frame_index) != 0:
-            raise ValueError(
-                "Method-4 rollout-window decoding currently supports only `current_video_frame_index = 0`. "
-                "Non-zero sliding-window alignment is not implemented yet."
-            )
-        if (
-            direct_train_mode
-            and config.policy_variant.train_video_condition_source == VideoConditionSource.GENERATED_FUTURE
-        ):
-            raise ValueError(
-                "Method-4 generated-future video conditioning is only supported for rollout-window diffusion "
-                "training. `current_frame_regression` bypasses the policy-variant window builder."
-            )
-        if direct_train_mode:
-            if config.policy_variant.video_condition_input_space == VideoConditionInputSpace.VIDEO_LATENT:
-                if config.trainer.batch_adapter != BatchAdapterName.LATENTS:
-                    raise ValueError(
-                        "Method-4 `current_frame_regression` with `video_latent` input requires the latent batch "
-                        "adapter so training sees dataset video latents directly, "
-                        f"got trainer.batch_adapter={config.trainer.batch_adapter!r}."
-                    )
-                if config.data.dataset_type != "lerobot_v2_latent_local":
-                    raise ValueError(
-                        "Method-4 `current_frame_regression` with `video_latent` input is currently maintained "
-                        "only for latent-local datasets, "
-                        f"got data.dataset_type={config.data.dataset_type!r}."
-                    )
-            if config.policy_variant.video_condition_input_space == VideoConditionInputSpace.RGB_VIDEO:
-                if config.trainer.batch_adapter != BatchAdapterName.VIEWS:
-                    raise ValueError(
-                        "Method-4 `current_frame_regression` with `rgb_video` input requires the view batch "
-                        "adapter so training sees raw RGB frames directly, "
-                        f"got trainer.batch_adapter={config.trainer.batch_adapter!r}."
-                    )
-                if config.data.dataset_type == "lerobot_v2_latent_local":
-                    raise ValueError(
-                        "Method-4 `current_frame_regression` with `rgb_video` input requires raw RGB dataset "
-                        "windows. Latent-local datasets enter through precomputed latents, so use "
-                        "`video_latent` there."
-                    )
-                if config.action_decoder.use_text_conditioning:
-                    raise ValueError(
-                        "Method-4 `current_frame_regression` with `rgb_video` input and the view batch adapter "
-                        "does not currently provide text embeddings. Set `action_decoder.use_text_conditioning=false` "
-                        "for this mode."
-                    )
-        elif (
-            config.policy_variant.video_condition_input_space == VideoConditionInputSpace.RGB_VIDEO
-            and config.data.dataset_type == "lerobot_v2_latent_local"
-        ):
-            raise ValueError(
-                "Method-4 `rgb_video` conditioning requires raw RGB to enter through the shared frontend/VAE path. "
-                "Latent-local datasets enter from precomputed latents, so use `video_latent` conditioning there."
-            )
-        if not direct_train_mode and config.data.dataset_type in {"lerobot_v2", "libero_hdf5"}:
-            raise ValueError(
-                "Method-4 video-conditioned current-action decoding is currently aligned only for latent-local "
-                "`standard_policy_window` style data. Raw LIBERO / raw LeRobot adapters anchor actions at the "
-                "last observed frame, so apples-to-apples current-action method-4 runs need a deliberate raw-data "
-                "alignment pass first. Use the latent-local method-4 configs or keep the explicit legacy "
-                "method-4 decoders on raw LIBERO for now."
-            )
-
-
-def _build_post_latent_policy_variant(config: ExperimentConfig):
-    action_schema = config.data.action_schema
-    policy_config = config.policy_variant
-    assert isinstance(policy_config, PostLatentPolicyConfig)
-    return PostLatentPolicyVariant(
-        config=policy_config,
-        training_config=config.training,
-        inference_config=config.inference,
-        action_horizon=action_schema.action_horizon,
-        state_dim=action_schema.state_dim,
-    )
-
-
-def _build_post_decoded_policy_variant(config: ExperimentConfig):
-    action_schema = config.data.action_schema
-    policy_config = config.policy_variant
-    assert isinstance(policy_config, PostDecodedPolicyConfig)
-    return PostDecodedPolicyVariant(
-        config=policy_config,
-        training_config=config.training,
-        inference_config=config.inference,
-        action_horizon=action_schema.action_horizon,
-        state_dim=action_schema.state_dim,
-    )
-
-
-def _build_causal_video_prediction_policy_variant(config: ExperimentConfig):
-    policy_config = config.policy_variant
-    assert isinstance(policy_config, CausalVideoPredictionPolicyConfig)
-    return CausalVideoPredictionPolicyVariant(
-        config=policy_config,
-        training_config=config.training,
-        inference_config=config.inference,
-    )
-
-
-def _build_mot_policy_variant(config: ExperimentConfig):
-    action_schema = config.data.action_schema
-    policy_config = config.policy_variant
-    assert isinstance(policy_config, MoTPolicyConfig)
-    return MoTPolicyVariant(
-        config=policy_config,
-        backbone_config=config.backbone,
-        training_config=config.training,
-        inference_config=config.inference,
-        action_dim=action_schema.action_dim,
-        action_horizon=action_schema.action_horizon,
-        state_dim=action_schema.state_dim,
-    )
-
-
-def _build_parallel_stream_policy_variant(config: ExperimentConfig):
-    action_schema = config.data.action_schema
-    policy_config = config.policy_variant
-    assert isinstance(policy_config, ParallelStreamPolicyConfig)
-    return ParallelStreamPolicyVariant(
-        config=policy_config,
-        backbone_config=config.backbone,
-        training_config=config.training,
-        inference_config=config.inference,
-        action_dim=_resolve_parallel_stream_model_action_dim(config),
-        action_horizon=action_schema.action_horizon,
-        num_frames=config.data.num_frames,
-    )
-
-
-def _build_extension_policy_variant(config: ExperimentConfig):
-    policy_config = config.policy_variant
-    assert isinstance(policy_config, ExtensionPolicyConfig)
-    builder = _EXTENSION_POLICY_VARIANT_BUILDERS.get(policy_config.extension_type)
-    if builder is None:
-        registered = ", ".join(_EXTENSION_POLICY_VARIANT_BUILDERS.keys()) or "<none>"
-        raise ValueError(
-            f"Unsupported policy variant extension {policy_config.extension_type!r}. "
-            f"Registered extension types: {registered}. "
-            "Load its module with `--extension module[:hook]` before constructing the experiment."
-        )
-    return builder(config)
-
-
-def build_policy_variant(config: ExperimentConfig):
-    builder = POLICY_VARIANT_BUILDERS.get(type(config.policy_variant))
-    if builder is None:
-        raise ValueError(f"Unsupported policy variant config '{type(config.policy_variant).__name__}'.")
-    policy_variant = builder(config)
-    if not isinstance(policy_variant, PolicyVariant):
-        raise TypeError(
-            f"Policy variant builder returned {type(policy_variant).__name__}; "
-            "expected an `open_wam.models.policy_variants.PolicyVariant`."
-        )
-    return policy_variant
-
-
-def _build_mlp_action_decoder(config: ExperimentConfig):
-    decoder_config = config.action_decoder
-    mot_compat_decoder = (
-        isinstance(config.policy_variant, MoTPolicyConfig)
-        and decoder_config.name == ActionDecoderName.MLP
-    )
-    if mot_compat_decoder:
-        return MoTActionDecoder(
-            hidden_size=decoder_config.hidden_size,
-            action_dim=decoder_config.action_dim,
-            action_horizon=decoder_config.action_horizon,
-            training_config=config.training,
-            inference_config=config.inference,
-            dropout=decoder_config.dropout,
-        )
-    return MLPActionDecoder(
-        hidden_size=decoder_config.hidden_size,
-        action_dim=decoder_config.action_dim,
-        action_horizon=decoder_config.action_horizon,
-        training_config=config.training,
-        inference_config=config.inference,
-        dropout=decoder_config.dropout,
-    )
-
-
-def _build_decoded_feature_action_decoder(config: ExperimentConfig):
-    decoder_config = config.action_decoder
-    return DecodedFeatureActionDecoder(
-        hidden_size=decoder_config.hidden_size,
-        action_dim=decoder_config.action_dim,
-        action_horizon=decoder_config.action_horizon,
-        training_config=config.training,
-        inference_config=config.inference,
-        dropout=decoder_config.dropout,
-    )
-
-
-def _build_video_conditioned_action_decoder(config: ExperimentConfig):
-    decoder_config = config.action_decoder
-    return VideoConditionedActionDecoder(
-        hidden_size=decoder_config.hidden_size,
-        action_dim=decoder_config.action_dim,
-        action_horizon=decoder_config.action_horizon,
-        context_dim=decoder_config.context_dim,
-        text_context_dim=decoder_config.text_context_dim,
-        state_dim=decoder_config.state_dim,
-        freq_dim=decoder_config.freq_dim,
-        num_layers=decoder_config.num_layers,
-        num_heads=decoder_config.num_heads,
-        attention_head_dim=decoder_config.attention_head_dim,
-        ffn_dim=decoder_config.ffn_dim,
-        cross_attn_norm=decoder_config.cross_attn_norm,
-        eps=decoder_config.eps,
-        input_space=decoder_config.input_space,
-        train_mode=decoder_config.train_mode,
-        action_chunk_anchor_mode=decoder_config.action_chunk_anchor_mode,
-        action_expert_init_mode=decoder_config.action_expert_init_mode,
-        rollout_chunk_steps=decoder_config.rollout_chunk_steps,
-        direct_latent_channels=decoder_config.direct_latent_channels,
-        direct_rgb_patch_size=decoder_config.direct_rgb_patch_size,
-        use_text_conditioning=decoder_config.use_text_conditioning,
-        use_state_conditioning=decoder_config.use_state_conditioning,
-        training_config=config.training,
-        inference_config=config.inference,
-        dropout=decoder_config.dropout,
-    )
-
-
-def _build_lingbot_parallel_action_decoder(config: ExperimentConfig):
-    decoder_config = config.action_decoder
-    source_action_channel_ids: tuple[int, ...] = ()
-    if isinstance(config.policy_variant, ParallelStreamPolicyConfig):
-        adapter_spec = build_action_adapter_spec(
-            config.policy_variant,
-            model_action_dim=decoder_config.action_dim,
-        )
-        if adapter_spec is not None:
-            source_action_channel_ids = adapter_spec.used_action_channel_ids
-    action_normalization = config.data.action_target.normalization
-    source_action_mean: tuple[float, ...] = ()
-    source_action_std: tuple[float, ...] = ()
-    if action_normalization.mode == ActionNormalizationMode.GAUSSIAN:
-        source_action_mean = action_normalization.mean
-        source_action_std = action_normalization.std
-    return LingbotParallelActionDecoder(
-        hidden_size=decoder_config.hidden_size,
-        action_dim=decoder_config.action_dim,
-        action_horizon=decoder_config.action_horizon,
-        dropout=decoder_config.dropout,
-        recovered_osc_loss_weight=decoder_config.recovered_osc_loss_weight,
-        recovered_osc_position_scale=decoder_config.recovered_osc_position_scale,
-        recovered_osc_rotation_scale=decoder_config.recovered_osc_rotation_scale,
-        source_action_channel_ids=source_action_channel_ids,
-        source_action_mean=source_action_mean,
-        source_action_std=source_action_std,
-    )
-
-
-def _build_mot_action_decoder(config: ExperimentConfig):
-    decoder_config = config.action_decoder
-    return MoTActionDecoder(
-        hidden_size=decoder_config.hidden_size,
-        action_dim=decoder_config.action_dim,
-        action_horizon=decoder_config.action_horizon,
-        training_config=config.training,
-        inference_config=config.inference,
-        dropout=decoder_config.dropout,
-    )
-
-
-def _build_video_only_action_decoder(config: ExperimentConfig):
-    decoder_config = config.action_decoder
-    return VideoOnlyActionDecoder(
-        hidden_size=decoder_config.hidden_size,
-        action_dim=decoder_config.action_dim,
-        action_horizon=decoder_config.action_horizon,
-        training_config=config.training,
-        inference_config=config.inference,
-        dropout=decoder_config.dropout,
-    )
-
-
-def _build_extension_action_decoder(config: ExperimentConfig):
-    decoder_config = config.action_decoder
-    assert isinstance(decoder_config, ExtensionActionDecoderConfig)
-    builder = _EXTENSION_ACTION_DECODER_BUILDERS.get(decoder_config.extension_type)
-    if builder is None:
-        registered = ", ".join(_EXTENSION_ACTION_DECODER_BUILDERS.keys()) or "<none>"
-        raise ValueError(
-            f"Unsupported action decoder extension {decoder_config.extension_type!r}. "
-            f"Registered extension types: {registered}. "
-            "Load its module with `--extension module[:hook]` before constructing the experiment."
-        )
-    return builder(config)
-
-
-def build_action_decoder(config: ExperimentConfig):
-    builder = ACTION_DECODER_BUILDERS.get(config.action_decoder.name)
-    if builder is None:
-        raise ValueError(f"Unsupported action decoder '{config.action_decoder.name}'.")
-    action_decoder = builder(config)
-    if not isinstance(action_decoder, ActionDecoder):
-        raise TypeError(
-            f"Action decoder builder returned {type(action_decoder).__name__}; "
-            "expected an `open_wam.models.action_decoders.ActionDecoder`."
-        )
-    return action_decoder
+# Preserve the historical direct/wildcard import surface without making these
+# implementation dependencies of the composition owner.
+_COMPATIBILITY_EXPORTS = (
+    ActionNormalizationMode,
+    BackboneImplementation,
+    BatchAdapterName,
+    ExtensionActionDecoderConfig,
+    MoTRuntimeMode,
+    ParallelRuntimeMode,
+    ProprioContextMode,
+    VideoConditionInputSpace,
+    VideoConditionSource,
+    VideoConditionTrainMode,
+    validate_action_mapping_preflight,
+    ActionDecoder,
+    DecodedFeatureActionDecoder,
+    LingbotParallelActionDecoder,
+    MLPActionDecoder,
+    MoTActionDecoder,
+    VideoConditionedActionDecoder,
+    VideoOnlyActionDecoder,
+    CausalVideoPredictionPolicyVariant,
+    MoTPolicyVariant,
+    ParallelStreamPolicyVariant,
+    PolicyVariant,
+    PostDecodedPolicyVariant,
+    PostLatentPolicyVariant,
+    build_action_adapter_spec,
+    normalize_backbone_implementation,
+    _EXTENSION_ACTION_DECODER_BUILDERS,
+    _EXTENSION_POLICY_VARIANT_BUILDERS,
+    _PARALLEL_STREAM_EXACT_MODEL_ACTION_MODES,
+)
 
 
 def _register_builtin_pipeline_builders() -> None:
