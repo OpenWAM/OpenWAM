@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .lerobot_consortium_index import LeRobotConsortiumInventoryRow, load_lerobot_consortium_inventory_rows
+from .lerobot_consortium_inventory_contracts import LeRobotConsortiumInventoryRow
+from .lerobot_consortium_inventory_io import load_lerobot_consortium_inventory_rows
 
 
 def _split_pipe(value: str | None) -> list[str]:

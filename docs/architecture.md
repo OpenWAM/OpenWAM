@@ -407,8 +407,15 @@ owns canonical member-ID resolution, train/validation split membership,
 channel-to-slot selection, frame/slot packing decisions, and window geometry
 without materializing source rows or tensors. `lerobot_consortium` owns cache
 lifetime, structured-row and image decoding, action/state supervision, and
-final sample construction. Historical catalog, planning, and storage imports
-from `lerobot_consortium` remain identity aliases. This policy is intentionally
+final sample construction. Consortium inventory tooling has a separate
+extension boundary: `lerobot_consortium_inventory_contracts` owns
+dependency-light records and scalar coercion, `lerobot_consortium_targets`
+owns deterministic repo-list parsing and persistence,
+`lerobot_consortium_inventory_io` owns CSV/JSON/Markdown representation, and
+`lerobot_consortium_index` owns optional Hugging Face/PyArrow inspection and
+parallel orchestration. Historical index imports and old pickle globals remain
+identity aliases. Historical catalog, planning, and storage imports from
+`lerobot_consortium` remain identity aliases. This policy is intentionally
 distinct from mixed-video source balancing, whose rounded target counts may
 change epoch length.
 `distributed_sampling` owns rank sharding and epoch coordination; adapters

@@ -15,15 +15,19 @@ from .lerobot_consortium_contracts import (
     build_lerobot_consortium_contract_catalog_from_inventory_rows,
     write_lerobot_consortium_contract_catalog,
 )
-from .lerobot_consortium_index import (
+from .lerobot_consortium_index import build_lerobot_consortium_inventory
+from .lerobot_consortium_inventory_contracts import (
     LeRobotConsortiumInventoryRow,
     LeRobotConsortiumRepoTarget,
-    build_lerobot_consortium_inventory,
-    infer_lerobot_consortium_source_group,
+)
+from .lerobot_consortium_inventory_io import (
     load_lerobot_consortium_inventory_rows,
-    load_lerobot_consortium_repo_targets,
     write_lerobot_consortium_inventory_csv,
     write_lerobot_consortium_inventory_markdown,
+)
+from .lerobot_consortium_targets import (
+    infer_lerobot_consortium_source_group,
+    load_lerobot_consortium_repo_targets,
     write_lerobot_consortium_repo_targets,
 )
 from .lerobot_consortium_planning import _resolve_member_id

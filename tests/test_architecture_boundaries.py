@@ -101,6 +101,16 @@ LOCAL_LATENT_DATASET_OWNER_PATHS = {
         PACKAGE_ROOT / "data" / "lerobot_v2_latent_uniform_dataset.py"
     ),
 }
+CONSORTIUM_INVENTORY_ROLE_PATHS = {
+    "contracts": (
+        PACKAGE_ROOT
+        / "data"
+        / "lerobot_consortium_inventory_contracts.py"
+    ),
+    "index": PACKAGE_ROOT / "data" / "lerobot_consortium_index.py",
+    "io": PACKAGE_ROOT / "data" / "lerobot_consortium_inventory_io.py",
+    "targets": PACKAGE_ROOT / "data" / "lerobot_consortium_targets.py",
+}
 
 
 def _absolute_imports_for_file(path: Path) -> set[str]:
@@ -929,6 +939,137 @@ def test_lerobot_consortium_catalog_has_one_owner() -> None:
     assert catalog_owned <= _top_level_definitions(catalog_path)
     assert catalog_owned.isdisjoint(_top_level_definitions(dataset_path))
     assert catalog_owned <= _compatibility_export_names(dataset_path)
+
+
+def test_lerobot_consortium_inventory_roles_have_one_owner() -> None:
+    from open_wam import data as public_data
+    from open_wam.data import lerobot_consortium_index as index
+    from open_wam.data import (
+        lerobot_consortium_inventory_contracts as contracts,
+    )
+    from open_wam.data import lerobot_consortium_inventory_io as inventory_io
+    from open_wam.data import lerobot_consortium_targets as targets
+
+    role_modules = {
+        "contracts": contracts,
+        "index": index,
+        "io": inventory_io,
+        "targets": targets,
+    }
+    expected_owner_names = {
+        "contracts": {
+            "LeRobotConsortiumInventoryRow",
+            "LeRobotConsortiumRepoTarget",
+            "_to_bool",
+            "_to_float",
+            "_to_int",
+        },
+        "index": {
+            "_extract_task_texts",
+            "_find_feature",
+            "_find_language_feature_keys",
+            "_find_visual_features",
+            "_infer_domain_type",
+            "_infer_embodiment",
+            "_inventory_error_row",
+            "_load_downloaded_json",
+            "_load_downloaded_text",
+            "_load_task_texts",
+            "_remote_file_exists",
+            "_shape_product",
+            "_shape_text",
+            "_sum_prefixed_sizes_mb",
+            "_sum_repo_sizes_mb",
+            "_text_annotation_extent",
+            "build_lerobot_consortium_inventory",
+            "build_lerobot_consortium_inventory_row",
+        },
+        "io": {
+            "load_lerobot_consortium_inventory_rows",
+            "render_lerobot_consortium_inventory_markdown",
+            "write_lerobot_consortium_inventory_csv",
+            "write_lerobot_consortium_inventory_json",
+            "write_lerobot_consortium_inventory_markdown",
+        },
+        "targets": {
+            "_prefer_repo_target",
+            "infer_lerobot_consortium_source_group",
+            "load_lerobot_consortium_repo_targets",
+            "write_lerobot_consortium_repo_targets",
+        },
+    }
+    expected_public_owners = {
+        "LeRobotConsortiumInventoryRow": contracts,
+        "LeRobotConsortiumRepoTarget": contracts,
+        "build_lerobot_consortium_inventory": index,
+        "build_lerobot_consortium_inventory_row": index,
+        "infer_lerobot_consortium_source_group": targets,
+        "load_lerobot_consortium_inventory_rows": inventory_io,
+        "load_lerobot_consortium_repo_targets": targets,
+        "render_lerobot_consortium_inventory_markdown": inventory_io,
+        "write_lerobot_consortium_inventory_csv": inventory_io,
+        "write_lerobot_consortium_inventory_json": inventory_io,
+        "write_lerobot_consortium_inventory_markdown": inventory_io,
+        "write_lerobot_consortium_repo_targets": targets,
+    }
+
+    for role_name, expected_names in expected_owner_names.items():
+        assert _top_level_definitions(
+            CONSORTIUM_INVENTORY_ROLE_PATHS[role_name]
+        ) == expected_names
+
+    all_owner_paths = tuple(CONSORTIUM_INVENTORY_ROLE_PATHS.values())
+    all_owned_names = set().union(*expected_owner_names.values())
+    assert all(
+        sum(name in _top_level_definitions(path) for path in all_owner_paths)
+        == 1
+        for name in all_owned_names
+    )
+    assert "_split_pipe" not in all_owned_names
+
+    for name, owner in expected_public_owners.items():
+        assert getattr(index, name) is getattr(owner, name)
+        assert getattr(public_data, name) is getattr(owner, name)
+
+    assert set(role_modules) == set(CONSORTIUM_INVENTORY_ROLE_PATHS)
+
+    assert _module_all_names(
+        CONSORTIUM_INVENTORY_ROLE_PATHS["contracts"]
+    ) == {
+        "LeRobotConsortiumInventoryRow",
+        "LeRobotConsortiumRepoTarget",
+    }
+    assert _module_all_names(CONSORTIUM_INVENTORY_ROLE_PATHS["targets"]) == {
+        "infer_lerobot_consortium_source_group",
+        "load_lerobot_consortium_repo_targets",
+        "write_lerobot_consortium_repo_targets",
+    }
+    assert _module_all_names(CONSORTIUM_INVENTORY_ROLE_PATHS["io"]) == {
+        "load_lerobot_consortium_inventory_rows",
+        "render_lerobot_consortium_inventory_markdown",
+        "write_lerobot_consortium_inventory_csv",
+        "write_lerobot_consortium_inventory_json",
+        "write_lerobot_consortium_inventory_markdown",
+    }
+    for role_name in ("contracts", "io", "targets"):
+        imports = _absolute_imports_for_file(
+            CONSORTIUM_INVENTORY_ROLE_PATHS[role_name]
+        )
+        assert not any(
+            imported == dependency or imported.startswith(f"{dependency}.")
+            for imported in imports
+            for dependency in ("huggingface_hub", "pyarrow")
+        )
+        assert "lerobot_consortium_index" not in imports
+
+    contracts_source = (
+        PACKAGE_ROOT / "data" / "lerobot_consortium_contracts.py"
+    ).read_text(encoding="utf-8")
+    assert "from .lerobot_consortium_inventory_contracts import" in (
+        contracts_source
+    )
+    assert "from .lerobot_consortium_inventory_io import" in contracts_source
+    assert "from .lerobot_consortium_index import" not in contracts_source
 
 
 def test_lerobot_consortium_planning_has_one_owner() -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+import pickle
 from types import SimpleNamespace
 
 import pyarrow as pa
@@ -19,6 +20,92 @@ from open_wam.data import (
     write_lerobot_consortium_contract_catalog,
     write_lerobot_consortium_inventory_csv,
 )
+
+
+def test_consortium_index_facade_preserves_public_and_pickle_identity() -> None:
+    from open_wam import data as public_data
+    from open_wam.data import lerobot_consortium_index as index
+    from open_wam.data import (
+        lerobot_consortium_inventory_contracts as contracts,
+    )
+    from open_wam.data import lerobot_consortium_inventory_io as inventory_io
+    from open_wam.data import lerobot_consortium_targets as targets
+
+    moved_owners = {
+        contracts: (
+            "LeRobotConsortiumInventoryRow",
+            "LeRobotConsortiumRepoTarget",
+        ),
+        inventory_io: (
+            "load_lerobot_consortium_inventory_rows",
+            "render_lerobot_consortium_inventory_markdown",
+            "write_lerobot_consortium_inventory_csv",
+            "write_lerobot_consortium_inventory_json",
+            "write_lerobot_consortium_inventory_markdown",
+        ),
+        targets: (
+            "infer_lerobot_consortium_source_group",
+            "load_lerobot_consortium_repo_targets",
+            "write_lerobot_consortium_repo_targets",
+        ),
+    }
+    for owner, names in moved_owners.items():
+        for name in names:
+            canonical = getattr(owner, name)
+            assert getattr(index, name) is canonical
+            assert getattr(public_data, name) is canonical
+            legacy_global = (
+                "copen_wam.data.lerobot_consortium_index\n" f"{name}\n."
+            ).encode("ascii")
+            assert pickle.loads(legacy_global) is canonical
+
+    assert (
+        index.build_lerobot_consortium_inventory_row.__globals__
+        is index.__dict__
+    )
+    assert (
+        index.build_lerobot_consortium_inventory_row.__globals__[
+            "hf_hub_download"
+        ]
+        is index.hf_hub_download
+    )
+
+    expected_wildcard_names = {
+        "Any",
+        "HfApi",
+        "Iterable",
+        "LeRobotConsortiumInventoryRow",
+        "LeRobotConsortiumRepoTarget",
+        "Path",
+        "ThreadPoolExecutor",
+        "annotations",
+        "as_completed",
+        "asdict",
+        "build_lerobot_consortium_inventory",
+        "build_lerobot_consortium_inventory_row",
+        "csv",
+        "dataclass",
+        "hf_hub_download",
+        "infer_lerobot_consortium_source_group",
+        "json",
+        "load_lerobot_consortium_inventory_rows",
+        "load_lerobot_consortium_repo_targets",
+        "pq",
+        "render_lerobot_consortium_inventory_markdown",
+        "write_lerobot_consortium_inventory_csv",
+        "write_lerobot_consortium_inventory_json",
+        "write_lerobot_consortium_inventory_markdown",
+        "write_lerobot_consortium_repo_targets",
+    }
+    wildcard_namespace: dict[str, object] = {}
+    exec(
+        "from open_wam.data.lerobot_consortium_index import *",
+        wildcard_namespace,
+    )
+    assert set(index.__all__) == expected_wildcard_names
+    assert set(wildcard_namespace) - {"__builtins__"} == (
+        expected_wildcard_names
+    )
 
 
 def _write_json(path: Path, payload: object) -> None:
