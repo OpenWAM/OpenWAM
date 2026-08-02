@@ -12,7 +12,7 @@ import torch
 
 from open_wam.configs import MixedVideoDataConfig, MixedVideoLatentEncodingMode
 from open_wam.configs.enums import serialize_enum_values
-from open_wam.data.mixed_video_catalog import MixedVideoEpisodeRecord
+from open_wam.data.mixed_video_catalog_contracts import MixedVideoEpisodeRecord
 from open_wam.data.mixed_video_encoding_artifacts import (
     LATENT_KEY,
     _encoded_latent_target_slot,

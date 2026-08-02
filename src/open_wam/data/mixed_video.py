@@ -19,12 +19,16 @@ from .contracts import WAMSample
 from .distributed_sampling import EpochOrderDistributedSampler
 from .latent_contracts import LatentWAMSample
 from .latent_view_assembly import assemble_mixed_video_latent_views
-from .mixed_video_catalog import (
+from .mixed_video_catalog_assembly import (
+    load_mixed_video_catalog as load_mixed_video_catalog,
+)
+from .mixed_video_catalog_contracts import (
     MixedVideoCatalog,
     MixedVideoEpisodeRecord,
     MixedVideoStreamRecord,
-    load_mixed_video_catalog,
-    split_mixed_video_episodes,
+)
+from .mixed_video_catalog_split import (
+    split_mixed_video_episodes as split_mixed_video_episodes,
 )
 from .mixed_video_decode import (
     MixedVideoResolvedDecodeSize as MixedVideoResolvedDecodeSize,

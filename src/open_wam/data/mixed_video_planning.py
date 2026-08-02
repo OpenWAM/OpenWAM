@@ -18,7 +18,7 @@ from open_wam.configs import (
 )
 
 if TYPE_CHECKING:
-    from .mixed_video_catalog import MixedVideoEpisodeRecord
+    from .mixed_video_catalog_contracts import MixedVideoEpisodeRecord
 
 
 __all__ = [

@@ -27,7 +27,7 @@ from open_wam.configs.enums import serialize_enum_values
 from open_wam.contracts import VideoFrameMapping, wan_raw_frame_count_to_latent_count
 
 if TYPE_CHECKING:
-    from open_wam.data.mixed_video_catalog import MixedVideoEpisodeRecord
+    from open_wam.data.mixed_video_catalog_contracts import MixedVideoEpisodeRecord
     from open_wam.data.mixed_video_encoding_contracts import MixedVideoEncodedEpisode
 
 

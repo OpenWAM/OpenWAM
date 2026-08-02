@@ -18,12 +18,12 @@ from open_wam.configs import (
     MixedVideoSourceFormat,
     ViewLayoutConfig,
 )
-from open_wam.data.mixed_video_catalog import (
+from open_wam.data.mixed_video_catalog_assembly import load_mixed_video_catalog
+from open_wam.data.mixed_video_catalog_contracts import (
     MixedVideoCatalog,
     MixedVideoEpisodeRecord,
-    load_mixed_video_catalog,
-    split_mixed_video_episodes,
 )
+from open_wam.data.mixed_video_catalog_split import split_mixed_video_episodes
 from open_wam.data.mixed_video_encoding_artifacts import (
     _encoded_latent_target_slot,
     _latent_path_for_episode,

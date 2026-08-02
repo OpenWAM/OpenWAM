@@ -118,6 +118,15 @@ ACTION_TRANSFORM_ROLE_PATHS = {
     "targets": PACKAGE_ROOT / "data" / "action_target_builders.py",
 }
 ACTION_TRANSFORM_FACADE_PATH = PACKAGE_ROOT / "data" / "action_transforms.py"
+MIXED_VIDEO_CATALOG_ROLE_PATHS = {
+    "assembly": PACKAGE_ROOT / "data" / "mixed_video_catalog_assembly.py",
+    "contracts": PACKAGE_ROOT / "data" / "mixed_video_catalog_contracts.py",
+    "manifest": PACKAGE_ROOT / "data" / "mixed_video_manifest.py",
+    "split": PACKAGE_ROOT / "data" / "mixed_video_catalog_split.py",
+}
+MIXED_VIDEO_CATALOG_FACADE_PATH = (
+    PACKAGE_ROOT / "data" / "mixed_video_catalog.py"
+)
 
 
 def _absolute_imports_for_file(path: Path) -> set[str]:
@@ -1463,7 +1472,16 @@ def test_lerobot_latent_train_val_window_planning_has_one_owner() -> None:
 
 
 def test_mixed_video_catalog_has_one_owner() -> None:
-    from open_wam.data import MixedVideoCatalog as PublicMixedVideoCatalog
+    import pickle
+
+    from open_wam import data as public_data
+    from open_wam.data import (
+        mixed_video_catalog,
+        mixed_video_catalog_assembly,
+        mixed_video_catalog_contracts,
+        mixed_video_catalog_split,
+        mixed_video_manifest,
+    )
     from open_wam.data.mixed_video import (
         MixedVideoCatalog as LegacyMixedVideoCatalog,
         MixedVideoEpisodeRecord as LegacyMixedVideoEpisodeRecord,
@@ -1471,45 +1489,141 @@ def test_mixed_video_catalog_has_one_owner() -> None:
         load_mixed_video_catalog as legacy_load_mixed_video_catalog,
         split_mixed_video_episodes as legacy_split_mixed_video_episodes,
     )
-    from open_wam.data.mixed_video_catalog import (
-        MixedVideoCatalog,
-        MixedVideoEpisodeRecord,
-        MixedVideoStreamRecord,
-        load_mixed_video_catalog,
-        split_mixed_video_episodes,
-    )
+    role_modules = {
+        "assembly": mixed_video_catalog_assembly,
+        "contracts": mixed_video_catalog_contracts,
+        "manifest": mixed_video_manifest,
+        "split": mixed_video_catalog_split,
+    }
+    owner_names = {
+        "assembly": {
+            "_merge_tasks",
+            "_stream_normalized_length_frames",
+            "_validate_unique_episode_target_slots",
+            "load_mixed_video_catalog",
+        },
+        "contracts": {
+            "MixedVideoCatalog",
+            "MixedVideoEpisodeRecord",
+            "MixedVideoStreamRecord",
+        },
+        "manifest": {
+            "_float_field",
+            "_int_field",
+            "_load_source_streams",
+            "_local_latent_path",
+            "_local_video_path",
+            "_optional_int_field",
+            "_parse_tasks",
+            "_probe_video_observation_fps",
+            "_read_manifest_csv",
+            "_resolve_manifest_path",
+            "_stream_path_key",
+            "_string_field",
+            "_target_slot_for_stream",
+        },
+        "split": {
+            "_physical_episode_group_key",
+            "split_mixed_video_episodes",
+        },
+    }
+    public_names = {
+        "assembly": {"load_mixed_video_catalog"},
+        "contracts": owner_names["contracts"],
+        "manifest": set(),
+        "split": {"split_mixed_video_episodes"},
+    }
+    compatibility_names = {
+        name
+        for role_names in owner_names.values()
+        for name in role_names
+        if name.startswith("_")
+    }
 
-    canonical_definitions = _top_level_definitions(
-        PACKAGE_ROOT / "data" / "mixed_video_catalog.py"
+    assert not _top_level_definitions(MIXED_VIDEO_CATALOG_FACADE_PATH)
+    all_owner_paths = tuple(MIXED_VIDEO_CATALOG_ROLE_PATHS.values())
+    all_owned_names = set().union(*owner_names.values())
+    assert len(all_owned_names) == 22
+    assert all(
+        sum(name in _top_level_definitions(path) for path in all_owner_paths) == 1
+        for name in all_owned_names
     )
+    for role, names in owner_names.items():
+        owner_path = MIXED_VIDEO_CATALOG_ROLE_PATHS[role]
+        assert _top_level_definitions(owner_path) == names
+        assert _module_all_names(owner_path) == public_names[role]
+        assert "mixed_video_catalog" not in _absolute_imports_for_file(owner_path)
+        for name in names:
+            assert getattr(mixed_video_catalog, name) is getattr(
+                role_modules[role], name
+            )
+
+    assert _compatibility_export_names(MIXED_VIDEO_CATALOG_FACADE_PATH) == (
+        compatibility_names
+    )
+    assert _module_all_names(MIXED_VIDEO_CATALOG_FACADE_PATH) == {
+        "Iterable",
+        "MixedVideoCatalog",
+        "MixedVideoDataConfig",
+        "MixedVideoEpisodeRecord",
+        "MixedVideoSourceConfig",
+        "MixedVideoSourceFormat",
+        "MixedVideoStreamRecord",
+        "Path",
+        "ResolvedVideoClip",
+        "Sequence",
+        "annotations",
+        "csv",
+        "dataclass",
+        "defaultdict",
+        "imageio",
+        "load_mixed_video_catalog",
+        "normalized_video_frame_count",
+        "random",
+        "resolve_video_source_fps",
+        "split_mixed_video_episodes",
+    }
+
     compatibility_definitions = _top_level_definitions(
         PACKAGE_ROOT / "data" / "mixed_video.py"
     )
-    canonical_names = {
+    public_owner_names = {
         "MixedVideoCatalog",
         "MixedVideoEpisodeRecord",
         "MixedVideoStreamRecord",
         "load_mixed_video_catalog",
         "split_mixed_video_episodes",
     }
+    assert public_owner_names.isdisjoint(compatibility_definitions)
 
-    assert canonical_names <= canonical_definitions
-    assert canonical_names.isdisjoint(compatibility_definitions)
-    assert PublicMixedVideoCatalog is MixedVideoCatalog
-    assert LegacyMixedVideoCatalog is MixedVideoCatalog
-    assert LegacyMixedVideoEpisodeRecord is MixedVideoEpisodeRecord
-    assert LegacyMixedVideoStreamRecord is MixedVideoStreamRecord
-    assert legacy_load_mixed_video_catalog is load_mixed_video_catalog
-    assert legacy_split_mixed_video_episodes is split_mixed_video_episodes
+    catalog_type = mixed_video_catalog_contracts.MixedVideoCatalog
+    episode_type = mixed_video_catalog_contracts.MixedVideoEpisodeRecord
+    stream_type = mixed_video_catalog_contracts.MixedVideoStreamRecord
+    load_catalog = mixed_video_catalog_assembly.load_mixed_video_catalog
+    split_catalog = mixed_video_catalog_split.split_mixed_video_episodes
+    assert public_data.MixedVideoCatalog is catalog_type
+    assert public_data.load_mixed_video_catalog is load_catalog
+    assert public_data.split_mixed_video_episodes is split_catalog
+    assert LegacyMixedVideoCatalog is catalog_type
+    assert LegacyMixedVideoEpisodeRecord is episode_type
+    assert LegacyMixedVideoStreamRecord is stream_type
+    assert legacy_load_mixed_video_catalog is load_catalog
+    assert legacy_split_mixed_video_episodes is split_catalog
 
-    encoding_planning_imports = _absolute_imports_for_file(
-        PACKAGE_ROOT / "data" / "mixed_video_encoding_planning.py"
-    )
-    encoding_runtime_imports = _absolute_imports_for_file(
-        PACKAGE_ROOT / "data" / "mixed_video_encoding_runtime.py"
-    )
-    assert "open_wam.data.mixed_video_catalog" in encoding_planning_imports
-    assert "open_wam.data.mixed_video_catalog" in encoding_runtime_imports
+    old_catalog_global = b"copen_wam.data.mixed_video_catalog\nMixedVideoCatalog\n."
+    assert pickle.loads(old_catalog_global) is catalog_type
+
+    facade_consumers = []
+    for path in PACKAGE_ROOT.rglob("*.py"):
+        if path == MIXED_VIDEO_CATALOG_FACADE_PATH:
+            continue
+        imports = _absolute_imports_for_file(path)
+        if {
+            "mixed_video_catalog",
+            "open_wam.data.mixed_video_catalog",
+        } & imports:
+            facade_consumers.append(path.relative_to(PACKAGE_ROOT).as_posix())
+    assert facade_consumers == []
 
 
 def test_mixed_video_decode_has_explicit_package_owners() -> None:

@@ -9,7 +9,7 @@ import torch
 
 from open_wam.configs import MixedVideoDataConfig
 
-from .mixed_video_catalog import MixedVideoStreamRecord
+from .mixed_video_catalog_contracts import MixedVideoStreamRecord
 
 
 __all__ = [

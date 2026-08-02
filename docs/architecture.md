@@ -381,9 +381,13 @@ samples bypass that projection.
 `latent_view_assembly` owns the public, dataset-independent 1-4-view latent
 canvas contract. Dataset adapters choose slots and sampling weights, then call
 `assemble_latent_views`; backbones receive only the assembled canonical tensor.
-For manifest-backed video pretraining, `mixed_video_catalog` owns source CSV
-parsing, stream and episode records, path/FPS normalization, target-slot
-validation, task merging, and physical-episode train/validation splits.
+For manifest-backed video pretraining, `mixed_video_catalog_contracts` owns
+immutable stream, episode, and catalog records. `mixed_video_manifest` owns
+source CSV parsing plus path, FPS, clip, and target-slot resolution;
+`mixed_video_catalog_assembly` groups streams into validated logical episodes
+and merges task metadata; and `mixed_video_catalog_split` owns leak-free
+physical-episode train/validation splits. `mixed_video_catalog` is an
+identity-preserving direct/wildcard import and old-pickle facade only.
 `mixed_video_decode` owns video-file materialization, timestamp clipping,
 target-FPS interpolation, adaptive sizing, frame transforms, and imageio/decord
 backend selection. `mixed_video_latent_storage` owns latent-sidecar
@@ -402,8 +406,8 @@ frame-cache lifetime, RGB/latent tensor selection and padding, latent view
 assembly, and final sample construction. It calls the latent repository and
 window planner directly rather than exposing dataset-private storage/cache
 compatibility facades.
-Historical catalog, decode, and window-record imports from `mixed_video` remain
-identity aliases.
+Historical catalog imports from `mixed_video_catalog` and `mixed_video`, plus
+decode and window-record imports from `mixed_video`, remain identity aliases.
 For heterogeneous LeRobot consortium training,
 `ConsortiumEpochOrderPlan` freezes member index groups, per-member weights,
 the typed weight/random modes, and the sampling seed. It owns fixed-length

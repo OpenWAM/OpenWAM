@@ -10,7 +10,7 @@ import numpy as np
 import torch
 
 from open_wam.configs import MixedVideoDataConfig, MixedVideoFrameFitMode
-from open_wam.data.mixed_video_catalog import MixedVideoStreamRecord
+from open_wam.data.mixed_video_catalog_contracts import MixedVideoStreamRecord
 from open_wam.data.mixed_video_decode_frames import (
     MixedVideoResolvedDecodeSize,
     _batch_resize_frames,

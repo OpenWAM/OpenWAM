@@ -11,7 +11,7 @@ from typing import Any
 import torch
 
 from open_wam.configs import MixedVideoDataConfig, MixedVideoSourceFormat
-from open_wam.data.mixed_video_catalog import (
+from open_wam.data.mixed_video_catalog_contracts import (
     MixedVideoEpisodeRecord,
     MixedVideoStreamRecord,
 )

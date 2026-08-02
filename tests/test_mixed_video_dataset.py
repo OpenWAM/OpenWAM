@@ -46,6 +46,8 @@ from open_wam.data import (
     collate_latent_wam_samples,
     collate_wam_samples,
     decode_video_frames as public_decode_video_frames,
+    load_mixed_video_catalog as public_load_mixed_video_catalog,
+    split_mixed_video_episodes as public_split_mixed_video_episodes,
     transform_frame as public_transform_frame,
 )
 from open_wam.data.raw_video import build_canonical_video_preprocessor
@@ -69,10 +71,21 @@ from open_wam.data.mixed_video import (
     transform_frame,
 )
 from open_wam.data.mixed_video_catalog import (
+    MixedVideoCatalog as FacadeMixedVideoCatalog,
+    MixedVideoEpisodeRecord as FacadeMixedVideoEpisodeRecord,
+    MixedVideoStreamRecord as FacadeMixedVideoStreamRecord,
+    load_mixed_video_catalog as facade_load_mixed_video_catalog,
+    split_mixed_video_episodes as facade_split_mixed_video_episodes,
+)
+from open_wam.data.mixed_video_catalog_assembly import (
+    load_mixed_video_catalog as canonical_load_mixed_video_catalog,
+)
+from open_wam.data.mixed_video_catalog_contracts import (
     MixedVideoCatalog,
     MixedVideoEpisodeRecord,
     MixedVideoStreamRecord,
-    load_mixed_video_catalog as canonical_load_mixed_video_catalog,
+)
+from open_wam.data.mixed_video_catalog_split import (
     split_mixed_video_episodes as canonical_split_mixed_video_episodes,
 )
 from open_wam.data.mixed_video_decode import (
@@ -106,11 +119,18 @@ def _write_video(path: Path, *, num_frames: int, height: int, width: int, offset
 
 def test_mixed_video_catalog_legacy_imports_preserve_identity() -> None:
     assert PublicMixedVideoCatalog is MixedVideoCatalog
+    assert FacadeMixedVideoCatalog is MixedVideoCatalog
+    assert FacadeMixedVideoEpisodeRecord is MixedVideoEpisodeRecord
+    assert FacadeMixedVideoStreamRecord is MixedVideoStreamRecord
     assert LegacyMixedVideoCatalog is MixedVideoCatalog
     assert LegacyMixedVideoEpisodeRecord is MixedVideoEpisodeRecord
     assert LegacyMixedVideoStreamRecord is MixedVideoStreamRecord
     assert load_mixed_video_catalog is canonical_load_mixed_video_catalog
+    assert facade_load_mixed_video_catalog is canonical_load_mixed_video_catalog
+    assert public_load_mixed_video_catalog is canonical_load_mixed_video_catalog
     assert split_mixed_video_episodes is canonical_split_mixed_video_episodes
+    assert facade_split_mixed_video_episodes is canonical_split_mixed_video_episodes
+    assert public_split_mixed_video_episodes is canonical_split_mixed_video_episodes
 
 
 def test_mixed_video_planning_imports_preserve_identity() -> None:

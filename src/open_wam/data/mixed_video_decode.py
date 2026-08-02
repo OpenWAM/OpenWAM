@@ -11,7 +11,7 @@ from open_wam.configs import MixedVideoDataConfig
 from open_wam.data import mixed_video_decode_backends as _backends
 from open_wam.data import mixed_video_decode_frames as _frames
 from open_wam.data import mixed_video_decode_timeline as _timeline
-from open_wam.data.mixed_video_catalog import MixedVideoStreamRecord
+from open_wam.data.mixed_video_catalog_contracts import MixedVideoStreamRecord
 from open_wam.data.mixed_video_decode_backends import (
     _iter_chunks_decord,
     _iter_chunks_imageio,
