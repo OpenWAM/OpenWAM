@@ -30,7 +30,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from open_wam.models.common.attention_profiles import apply_attention_backend
+from open_wam.models.common.attention_backends import apply_attention_backend
 from open_wam.models.visual_tower.shared_transformer_support import apply_rotary_emb, select_chunk_slices
 
 

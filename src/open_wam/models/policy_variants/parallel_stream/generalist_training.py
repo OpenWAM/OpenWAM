@@ -12,7 +12,7 @@ from open_wam.configs.enums import (
 )
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.contracts import GENERALIST_TRAINING_SOURCE_METADATA_KEY
-from open_wam.models.common.attention_profiles import (
+from open_wam.models.common.attention_contracts import (
     CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
 )
 from open_wam.models.common.flow_schedule import (

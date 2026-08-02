@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 
 from open_wam.configs import CurrentBlockCoupling, MoTConditionMode
-from open_wam.models.common.attention_profiles import PreparedAttentionProfile
+from open_wam.models.common.attention_contracts import PreparedAttentionProfile
 from open_wam.models.common.coupling_profiles import (
     build_exact_packed_video_action_coupling_profile,
 )

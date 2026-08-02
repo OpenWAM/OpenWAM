@@ -211,9 +211,22 @@ result = visual_tower.execute_runtime_step(
 
 The profile may provide dense boolean masks, FlexAttention block masks, or
 both. Keep sequence packing and mask construction in the policy extension;
-the visual tower owns kernel selection and backbone execution. The exact
-dual-stream M1/M5 programs are checkpoint-compatibility contracts with fixed
-layout semantics, not general attention extension points.
+the shared visual runtime applies backend-ready profiles and owns backbone
+execution. The exact dual-stream M1/M5 programs are checkpoint-compatibility
+contracts with fixed layout semantics, not general attention extension points.
+
+The built-in attention implementation has three parameter-free roles:
+
+- `open_wam.models.common.attention_contracts` owns profile records, coupling
+  names, and semantic normalization;
+- `open_wam.models.common.chunked_attention` assembles the maintained packed
+  chunk masks; and
+- `open_wam.models.common.attention_backends` selects and executes dense SDPA
+  or FlexAttention representations.
+
+`open_wam.models.common.attention_profiles` remains a historical import
+facade. New integrations should depend on the role module matching what they
+extend, or on the stable `open_wam.models.common` public exports above.
 
 ### Shared Transformer Primitives
 

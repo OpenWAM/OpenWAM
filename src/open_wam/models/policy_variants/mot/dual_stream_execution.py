@@ -4,11 +4,11 @@ import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
 
-from open_wam.models.common.attention_profiles import (
-    PreparedAttentionProfile,
+from open_wam.models.common.attention_backends import (
     apply_attention_backend,
     select_attention_profile_mask,
 )
+from open_wam.models.common.attention_contracts import PreparedAttentionProfile
 from open_wam.models.common.sharded_execution import (
     checkpoint_unshard_context as _checkpoint_summon_context,
     unshard_runtime_parameters as _unshard_runtime_params,

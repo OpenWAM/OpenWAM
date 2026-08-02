@@ -136,6 +136,12 @@ FLOW_MATCHING_ROLE_PATHS = {
 FLOW_MATCHING_FACADE_PATH = (
     PACKAGE_ROOT / "models" / "common" / "flow_matching.py"
 )
+ATTENTION_PROFILE_ROLE_PATHS = {
+    "backends": PACKAGE_ROOT / "models" / "common" / "attention_backends.py",
+    "contracts": PACKAGE_ROOT / "models" / "common" / "attention_contracts.py",
+    "facade": PACKAGE_ROOT / "models" / "common" / "attention_profiles.py",
+    "profiles": PACKAGE_ROOT / "models" / "common" / "chunked_attention.py",
+}
 CHECKPOINT_ROLE_PATHS = {
     "export": PACKAGE_ROOT / "training" / "checkpoint_export.py",
     "manager": PACKAGE_ROOT / "training" / "checkpoints.py",
@@ -3728,6 +3734,244 @@ def test_checkpoint_persistence_roles_have_one_owner() -> None:
             expected = getattr(role_modules[role], name)
             payload = f"copen_wam.training.checkpoints\n{name}\n.".encode()
             assert pickle.loads(payload) is expected
+
+
+def test_attention_profile_roles_have_one_owner_and_a_stable_facade() -> None:
+    import pickle
+
+    from open_wam.models import common as common_api
+    from open_wam.models.common import (
+        attention_backends,
+        attention_contracts,
+        attention_profiles,
+        chunked_attention,
+    )
+
+    role_modules = {
+        "backends": attention_backends,
+        "contracts": attention_contracts,
+        "profiles": chunked_attention,
+    }
+    owner_names = {
+        "backends": {
+            "_resolve_compiled_create_block_mask",
+            "_resolve_compiled_flex_attention",
+            "apply_attention_backend",
+            "resolve_attention_profile_backend",
+            "select_attention_profile_mask",
+        },
+        "contracts": {
+            "AttentionProfileSpec",
+            "PreparedAttentionProfile",
+            "chunked_temporal_exact_coupling_from_profile_name",
+            "chunked_temporal_exact_profile_name_for_coupling",
+            "normalize_attention_profile_name",
+            "normalize_chunked_temporal_exact_coupling",
+            "normalize_conditional_history_policy",
+            "normalize_parallel_history_stream_visibility",
+        },
+        "profiles": {
+            "_effective_frame_ids_for_singleton_cutoff",
+            "_previous_boundary_frame_ids",
+            "build_chunked_temporal_exact_attention_profile",
+            "build_chunked_text_context_cross_attention_mask",
+            "build_lingbot_chunked_exact_attention_profile",
+        },
+    }
+    all_names = set().union(*owner_names.values())
+
+    assert len(all_names) == 18
+    assert not _top_level_definitions(ATTENTION_PROFILE_ROLE_PATHS["facade"])
+    assert all(
+        sum(
+            name in _top_level_definitions(path)
+            for path in ATTENTION_PROFILE_ROLE_PATHS.values()
+        )
+        == 1
+        for name in all_names
+    )
+    for role, names in owner_names.items():
+        assert _top_level_definitions(ATTENTION_PROFILE_ROLE_PATHS[role]) == names
+
+    assert _module_all_names(ATTENTION_PROFILE_ROLE_PATHS["backends"]) == {
+        "apply_attention_backend",
+        "resolve_attention_profile_backend",
+        "select_attention_profile_mask",
+    }
+    assert _module_all_names(ATTENTION_PROFILE_ROLE_PATHS["contracts"]) == {
+        "ACTION_NOISY_TO_VIDEO_COUPLING",
+        "ACTION_THEN_VIDEO_COUPLING",
+        "AttentionProfileSpec",
+        "CONDITIONAL_HISTORY_POLICY_NONE",
+        "CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY",
+        "DECOUPLED_SAME_STEP_COUPLING",
+        "HISTORY_STREAM_VISIBILITY_FULL",
+        "HISTORY_STREAM_VISIBILITY_VIDEO_ONLY",
+        "HISTORY_STREAM_VISIBILITY_VIDEO_QUERIES_VIDEO_ONLY",
+        "JOINT_COUPLING",
+        "PreparedAttentionProfile",
+        "VIDEO_NOISY_TO_ACTION_COUPLING",
+        "VIDEO_THEN_ACTION_COUPLING",
+        "chunked_temporal_exact_coupling_from_profile_name",
+        "chunked_temporal_exact_profile_name_for_coupling",
+        "normalize_attention_profile_name",
+        "normalize_chunked_temporal_exact_coupling",
+        "normalize_conditional_history_policy",
+        "normalize_parallel_history_stream_visibility",
+    }
+    assert _module_all_names(ATTENTION_PROFILE_ROLE_PATHS["profiles"]) == {
+        "build_chunked_temporal_exact_attention_profile",
+        "build_chunked_text_context_cross_attention_mask",
+        "build_lingbot_chunked_exact_attention_profile",
+    }
+    assert _module_all_names(ATTENTION_PROFILE_ROLE_PATHS["facade"]) == set()
+    assert all(
+        "open_wam.models.common.attention_profiles"
+        not in _absolute_imports_for_file(ATTENTION_PROFILE_ROLE_PATHS[role])
+        for role in role_modules
+    )
+    role_import_names = {
+        "open_wam.models.common.attention_backends",
+        "open_wam.models.common.attention_contracts",
+        "open_wam.models.common.chunked_attention",
+    }
+    role_imports = {
+        role: _absolute_imports_for_file(path) & role_import_names
+        for role, path in ATTENTION_PROFILE_ROLE_PATHS.items()
+    }
+    assert role_imports == {
+        "backends": {"open_wam.models.common.attention_contracts"},
+        "contracts": set(),
+        "facade": role_import_names,
+        "profiles": {
+            "open_wam.models.common.attention_backends",
+            "open_wam.models.common.attention_contracts",
+        },
+    }
+
+    facade_consumers = []
+    for path in PACKAGE_ROOT.rglob("*.py"):
+        if path == ATTENTION_PROFILE_ROLE_PATHS["facade"]:
+            continue
+        source = path.read_text(encoding="utf-8")
+        if (
+            "open_wam.models.common.attention_profiles" in source
+            or "from .attention_profiles import" in source
+        ):
+            facade_consumers.append(path.relative_to(PACKAGE_ROOT).as_posix())
+    assert facade_consumers == []
+
+    for role, names in owner_names.items():
+        for name in names:
+            owner_value = getattr(role_modules[role], name)
+            assert getattr(attention_profiles, name) is owner_value
+            payload = f"copen_wam.models.common.attention_profiles\n{name}\n.".encode()
+            assert pickle.loads(payload) is owner_value
+
+    assert attention_contracts.AttentionProfileSpec.__module__ == (
+        "open_wam.models.common.attention_contracts"
+    )
+    assert attention_contracts.PreparedAttentionProfile.__module__ == (
+        "open_wam.models.common.attention_contracts"
+    )
+    common_exports = {
+        "AttentionProfileSpec": attention_contracts.AttentionProfileSpec,
+        "PreparedAttentionProfile": attention_contracts.PreparedAttentionProfile,
+        "apply_attention_backend": attention_backends.apply_attention_backend,
+        "build_chunked_temporal_exact_attention_profile": (
+            chunked_attention.build_chunked_temporal_exact_attention_profile
+        ),
+        "build_lingbot_chunked_exact_attention_profile": (
+            chunked_attention.build_lingbot_chunked_exact_attention_profile
+        ),
+        "chunked_temporal_exact_coupling_from_profile_name": (
+            attention_contracts.chunked_temporal_exact_coupling_from_profile_name
+        ),
+        "chunked_temporal_exact_profile_name_for_coupling": (
+            attention_contracts.chunked_temporal_exact_profile_name_for_coupling
+        ),
+        "normalize_attention_profile_name": (
+            attention_contracts.normalize_attention_profile_name
+        ),
+        "normalize_chunked_temporal_exact_coupling": (
+            attention_contracts.normalize_chunked_temporal_exact_coupling
+        ),
+        "resolve_attention_profile_backend": (
+            attention_backends.resolve_attention_profile_backend
+        ),
+        "select_attention_profile_mask": (
+            attention_backends.select_attention_profile_mask
+        ),
+    }
+    for name, owner_value in common_exports.items():
+        assert getattr(common_api, name) is owner_value
+
+    expected_wildcard_names = {
+        "ACTION_NOISY_TO_VIDEO_COUPLING",
+        "ACTION_THEN_VIDEO_COUPLING",
+        "Any",
+        "AttentionProfileSpec",
+        "BlockMask",
+        "CONDITIONAL_HISTORY_POLICY_NONE",
+        "CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY",
+        "DECOUPLED_SAME_STEP_COUPLING",
+        "HISTORY_STREAM_VISIBILITY_FULL",
+        "HISTORY_STREAM_VISIBILITY_VIDEO_ONLY",
+        "HISTORY_STREAM_VISIBILITY_VIDEO_QUERIES_VIDEO_ONLY",
+        "JOINT_COUPLING",
+        "PackedTokenStream",
+        "PreparedAttentionProfile",
+        "VIDEO_NOISY_TO_ACTION_COUPLING",
+        "VIDEO_THEN_ACTION_COUPLING",
+        "annotations",
+        "apply_attention_backend",
+        "build_chunked_temporal_exact_attention_profile",
+        "build_chunked_text_context_cross_attention_mask",
+        "build_exact_video_action_token_layout",
+        "build_lingbot_chunked_exact_attention_profile",
+        "chunked_temporal_exact_coupling_from_profile_name",
+        "chunked_temporal_exact_profile_name_for_coupling",
+        "create_block_mask",
+        "dataclass",
+        "field",
+        "flex_attention",
+        "normalize_attention_profile_name",
+        "normalize_chunked_temporal_exact_coupling",
+        "normalize_conditional_history_policy",
+        "normalize_parallel_history_stream_visibility",
+        "resolve_attention_profile_backend",
+        "select_attention_profile_mask",
+        "torch",
+    }
+    wildcard_namespace: dict[str, object] = {}
+    exec(
+        "from open_wam.models.common.attention_profiles import *",
+        wildcard_namespace,
+    )
+    assert set(wildcard_namespace) - {"__builtins__"} == expected_wildcard_names
+
+    expected_private_names = {
+        "_ATTENTION_PROFILE_ALIASES",
+        "_CHUNKED_EXACT_COUPLING_BY_PROFILE",
+        "_CHUNKED_EXACT_PROFILE_BY_COUPLING",
+        "_COMPILED_CREATE_BLOCK_MASK",
+        "_COMPILED_FLEX_ATTENTION",
+        "_CONDITIONAL_HISTORY_POLICY_VALUES",
+        "_HISTORY_STREAM_VISIBILITY_VALUES",
+        "_effective_frame_ids_for_singleton_cutoff",
+        "_previous_boundary_frame_ids",
+        "_resolve_compiled_create_block_mask",
+        "_resolve_compiled_flex_attention",
+    }
+    expected_direct_names = expected_wildcard_names | expected_private_names
+    assert {
+        name
+        for name in vars(attention_profiles)
+        if not name.startswith("__")
+    } == expected_direct_names
+    assert _top_level_import_names(ATTENTION_PROFILE_ROLE_PATHS["facade"]) == (
+        expected_wildcard_names - {"annotations"}
+    ) | expected_private_names
 
 
 def test_mot_condition_latent_selection_has_one_owner() -> None:

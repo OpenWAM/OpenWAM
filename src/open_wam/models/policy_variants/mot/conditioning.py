@@ -12,7 +12,7 @@ from open_wam.configs import (
     ProprioContextMode,
 )
 from open_wam.configs.policy_mot import MoTPolicyConfig
-from open_wam.models.common.attention_profiles import (
+from open_wam.models.common.chunked_attention import (
     build_chunked_text_context_cross_attention_mask,
 )
 from open_wam.models.common.packed_token_layout import frame_chunk_ids_for_origin

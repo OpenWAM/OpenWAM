@@ -3,8 +3,8 @@ from __future__ import annotations
 import torch
 
 from open_wam.configs import CurrentBlockCoupling
-from open_wam.models.common.attention_profiles import (
-    PreparedAttentionProfile,
+from open_wam.models.common.attention_contracts import PreparedAttentionProfile
+from open_wam.models.common.chunked_attention import (
     build_chunked_temporal_exact_attention_profile,
 )
 

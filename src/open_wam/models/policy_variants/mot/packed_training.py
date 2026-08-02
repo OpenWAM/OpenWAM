@@ -14,7 +14,7 @@ from open_wam.configs import (
     TrainingConfig,
 )
 from open_wam.configs.policy_mot import MoTPolicyConfig
-from open_wam.models.common.attention_profiles import (
+from open_wam.models.common.attention_contracts import (
     CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
 )
 from open_wam.models.common.flow_training import (

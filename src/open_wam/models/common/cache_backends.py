@@ -6,7 +6,7 @@ from typing import Any
 
 import torch
 
-from open_wam.models.common.attention_profiles import PreparedAttentionProfile
+from open_wam.models.common.attention_contracts import PreparedAttentionProfile
 from open_wam.models.video_backbone.contracts import AttentionCacheEntry
 
 

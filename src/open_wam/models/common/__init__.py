@@ -1,17 +1,21 @@
 """Shared model utilities reused across policy variants and decoders."""
 
-from .attention_profiles import (
+from .attention_backends import (
+    apply_attention_backend,
+    resolve_attention_profile_backend,
+    select_attention_profile_mask,
+)
+from .attention_contracts import (
     AttentionProfileSpec,
     PreparedAttentionProfile,
-    apply_attention_backend,
-    build_chunked_temporal_exact_attention_profile,
-    build_lingbot_chunked_exact_attention_profile,
     chunked_temporal_exact_coupling_from_profile_name,
     chunked_temporal_exact_profile_name_for_coupling,
     normalize_attention_profile_name,
     normalize_chunked_temporal_exact_coupling,
-    resolve_attention_profile_backend,
-    select_attention_profile_mask,
+)
+from .chunked_attention import (
+    build_chunked_temporal_exact_attention_profile,
+    build_lingbot_chunked_exact_attention_profile,
 )
 from .cache_backends import (
     CacheBackendSpec,
