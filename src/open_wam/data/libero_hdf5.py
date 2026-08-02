@@ -56,9 +56,9 @@ class EpisodeWindow:
 class LiberoOfflineWindowDataset(Dataset[WAMSample]):
     """Windowed reader for local LIBERO HDF5 demos.
 
-    This path is for the original offline benchmark files such as
-    `/path/to/datasets`. It preserves the same public
-    view/action contract as the LeRobot-backed LIBERO adapter:
+    This path is for original offline benchmark files such as
+    `<dataset-root>/libero_10/*.hdf5`. It preserves the same public view/action
+    contract as the LeRobot-backed LIBERO adapter:
 
     - `image` <- `obs/agentview_rgb`
     - `wrist_image` <- `obs/eye_in_hand_rgb`

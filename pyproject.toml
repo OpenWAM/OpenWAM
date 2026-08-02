@@ -170,5 +170,24 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/open_wam"]
 
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md",
+    "configs",
+    "docs",
+    "mkdocs.yml",
+    "pyproject.toml",
+    "src/open_wam",
+    "templates",
+]
+exclude = [
+    "/.grimp_cache",
+    "/.gitignore",
+    "/configs/local_paths.yaml",
+    "/notes/*.tmp.md",
+]
+
 [tool.uv]
 package = true

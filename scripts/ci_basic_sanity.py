@@ -11,6 +11,11 @@ import tempfile
 import tomllib
 from typing import Any
 
+from check_release_metadata import (
+    private_sdist_path_violations,
+    validate_release_build_config,
+)
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -32,6 +37,7 @@ def main() -> None:
     optional_deps = pyproject["project"].get("optional-dependencies", {})
 
     _check_console_scripts(scripts)
+    _check_release_build_config(pyproject)
     _check_optional_dependency_duplicates(pyproject["project"].get("dependencies", ()), optional_deps)
     _check_public_local_paths_sample()
     _check_artifact_manifest()
@@ -60,6 +66,16 @@ def main() -> None:
 
 def _read_toml(path: Path) -> dict[str, Any]:
     return tomllib.loads(path.read_text(encoding="utf-8"))
+
+
+def _check_release_build_config(pyproject: dict[str, Any]) -> None:
+    try:
+        validate_release_build_config(pyproject)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    private_paths = private_sdist_path_violations(REPO_ROOT)
+    if private_paths:
+        raise SystemExit(f"Private paths found in the public sdist surface: {private_paths}")
 
 
 def _check_console_scripts(scripts: dict[str, str]) -> None:

@@ -31,6 +31,22 @@ python -m build
 python -m twine check dist/*
 ```
 
+## Source Archive
+
+The wheel contains only `src/open_wam`. The source distribution is also a
+bounded public artifact, not a repository snapshot. Its allowlist contains:
+
+- package source;
+- public configs;
+- public docs;
+- extension templates;
+- required project metadata.
+
+Checkout-only deployment, research scripts, tests, baselines, notes, caches,
+and machine-local config are intentionally excluded. Both basic CI and
+`scripts/check_release_metadata.py` enforce the allowlist and reject private
+mount paths in the selected text files.
+
 Before tagging:
 
 - `CHANGELOG.md` is updated.
@@ -40,5 +56,6 @@ Before tagging:
 - Any CPU/GPU/simulator validation claims are linked in cards.
 - Deprecations are documented before removals.
 
-Packaging checks are release or manually triggered CI. They are not part of the
-default static PR tier.
+Artifact build and Twine checks are release or manually triggered CI. The
+source-archive allowlist and private-path checks are part of the default static
+PR tier.
