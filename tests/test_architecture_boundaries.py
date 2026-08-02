@@ -6214,6 +6214,59 @@ def test_parallel_proprio_conditioning_has_one_implementation_owner() -> None:
     }.isdisjoint(_top_level_definitions(reference_runtime_path))
 
 
+def test_parallel_policy_conditioning_has_one_implementation_owner() -> None:
+    conditioning_methods = {
+        "append_generalist_mode_text_token",
+        "append_train_proprio_text_context",
+        "attach_train_hidden_proprio_context",
+        "cache_infer_proprio_state",
+        "configure_visual_tower",
+        "resolve_generalist_training_metadata",
+        "resolve_infer_hidden_proprio_context",
+        "resolve_infer_proprio_context",
+        "resolve_required_proprio_state",
+        "resolve_train_condition_latents",
+        "resolve_train_hidden_proprio_context",
+        "resolve_train_proprio_context",
+        "select_anchor_state",
+        "select_rollout_proprio_state",
+        "uses_generalist_mode_text_token",
+        "uses_per_chunk_proprio_context",
+        "uses_proprio_context",
+        "uses_text_proprio_context",
+    }
+    retired_variant_methods = {
+        "_append_generalist_mode_text_token",
+        "_cache_proprio_state",
+        "_require_per_chunk_proprio_state",
+        "_require_proprio_state",
+        "_require_train_proprio_context",
+        "_resolve_generalist_training_metadata",
+        "_resolve_per_chunk_proprio_state",
+        "_resolve_proprio_state",
+        "_resolve_train_condition_latents",
+        "_select_anchor_state",
+        "_select_proprio_state",
+        "_uses_generalist_mode_text_token",
+        "_uses_per_chunk_proprio_context",
+        "_uses_proprio_context",
+        "_uses_text_proprio_context",
+    }
+    parallel_stream_root = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
+    )
+    conditioning_path = parallel_stream_root / "conditioning.py"
+    variant_path = parallel_stream_root / "variant.py"
+
+    assert conditioning_methods <= _class_method_definitions(
+        conditioning_path,
+        "ParallelStreamConditioning",
+    )
+    assert retired_variant_methods.isdisjoint(
+        _class_method_definitions(variant_path, "ParallelStreamPolicyVariant")
+    )
+
+
 def test_visual_runtime_tensor_transport_has_one_implementation_owner() -> None:
     transport_definitions = {
         "cached_attention_profile",

@@ -4810,7 +4810,10 @@ def test_parallel_variant_appends_generalist_mode_token_before_deprecated_text_t
     core.configure_generalist_mode_context_encoder(enabled=True)
     core.configure_proprio_context_encoder(enabled=True, state_dim=8)
 
-    mode_count = variant._append_generalist_mode_text_token(core, artifacts)
+    mode_count = variant.conditioning.append_generalist_mode_text_token(
+        core,
+        artifacts,
+    )
     base_text_token_count = int(artifacts.input_dict["latent_dict"]["text_emb"].shape[1])
     appended_text = core.append_proprio_context_tokens(  # deprecated helper
         artifacts.input_dict["latent_dict"]["text_emb"],
