@@ -30,7 +30,8 @@ production-core Pyflakes over `src`, `scripts`, `tests`, `baselines`, and
 `templates`. Pyflakes runs in an isolated `uv --no-project` environment; it
 does not install Open-WAM or its runtime dependencies. The separate
 `deployment` hardware/ROS workspace is not part of the installed package or
-this gate; change it only with its hardware-specific tests.
+this model-library gate. Its own dependency-light CI job compiles the
+workspace, lints the supported hardware runtime, and runs no-hardware tests.
 
 Run that static lint locally with the pinned development dependency:
 
@@ -38,12 +39,15 @@ Run that static lint locally with the pinned development dependency:
 uv run python -m pyflakes src scripts tests baselines templates
 ```
 
-The default PR workflow also includes two dependency-light companion jobs:
+The default PR workflow also includes three dependency-light companion jobs:
 
 - `minimal-package`: installs only the minimal package and verifies import-safe
   package surfaces plus CLI parser construction without Torch.
 - `docs-site`: installs only MkDocs, stages curated public docs, asserts Torch
   is unavailable, and builds the static GitHub Pages site.
+- `hardware-workspace-sanity`: installs NumPy, PyYAML, Pytest, and Pyflakes;
+  compiles `deployment/`; and verifies the supported launcher/library contract
+  without Torch, ROS2, cameras, or an FR3.
 
 ## Local CPU Pytest Tier
 

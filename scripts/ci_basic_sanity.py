@@ -49,6 +49,7 @@ def main() -> None:
     _check_no_merge_conflict_markers()
     _check_static_source_contracts()
     _check_workflow_is_no_torch()
+    _check_hardware_workflow()
     _check_pages_workflow()
 
     summary = {
@@ -333,6 +334,46 @@ def _check_workflow_is_no_torch() -> None:
     present = [token for token in forbidden if token in workflow]
     if present:
         raise SystemExit(f"CI workflow still contains heavy install/test tokens: {present!r}")
+
+
+def _check_hardware_workflow() -> None:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    marker = "  hardware-workspace-sanity:"
+    if marker not in workflow:
+        raise SystemExit("CI workflow is missing the hardware workspace sanity job.")
+    job = workflow.split(marker, maxsplit=1)[1]
+    next_job = re.search(r"(?m)^  [A-Za-z0-9_-]+:\s*$", job)
+    if next_job is not None:
+        job = job[: next_job.start()]
+    required = (
+        "python -m compileall -q deployment",
+        "deployment/openwam",
+        "deployment/ros2/teleop",
+        "deployment/scripts/deploy_parallel_stream_fr3_serial.py",
+        "deployment/scripts/deploy_parallel_stream_fr3_parallel.py",
+        'find_spec("torch") is None',
+        'find_spec("rclpy") is None',
+        "pytest deployment/tests -q",
+    )
+    missing = [token for token in required if token not in job]
+    if missing:
+        raise SystemExit(
+            f"Hardware workspace CI is missing expected gates: {missing!r}"
+        )
+    forbidden = (
+        "uv sync",
+        "pip install .",
+        "open-wam[",
+        "pip install torch",
+        "--with torch",
+    )
+    present = [token for token in forbidden if token in job.lower()]
+    if present:
+        raise SystemExit(
+            f"Hardware workspace CI contains heavy package installs: {present!r}"
+        )
 
 
 def _check_pages_workflow() -> None:

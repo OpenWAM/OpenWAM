@@ -43,7 +43,7 @@ configs/         runnable experiment and eval YAMLs
 docs/            public quickstart, CLI, testing, artifact, and deployment docs
 notes/           research and engineering notes
 deployment/      separate FR3/SO-101 hardware operations workspace
-                 (ROS2 impedance teleop + recording; see deployment/README.md)
+                 (checkout-only, separately tested; see deployment/README.md)
 AGENTS.md        repo-level contributor and agent style guide
 src/open_wam/third_party/  vendored external modules kept inside the repo
 scripts/         thin wrappers, smoke tests, and inspection scripts
