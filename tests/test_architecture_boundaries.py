@@ -136,6 +136,11 @@ FLOW_MATCHING_ROLE_PATHS = {
 FLOW_MATCHING_FACADE_PATH = (
     PACKAGE_ROOT / "models" / "common" / "flow_matching.py"
 )
+CHECKPOINT_ROLE_PATHS = {
+    "export": PACKAGE_ROOT / "training" / "checkpoint_export.py",
+    "manager": PACKAGE_ROOT / "training" / "checkpoints.py",
+    "storage": PACKAGE_ROOT / "training" / "checkpoint_storage.py",
+}
 
 
 def _absolute_imports_for_file(path: Path) -> set[str]:
@@ -3614,6 +3619,115 @@ def test_pipeline_factory_roles_have_one_owner() -> None:
     for name, expected in old_globals.items():
         payload = f"copen_wam.pipelines.factory\n{name}\n.".encode()
         assert pickle.loads(payload) is expected
+
+
+def test_checkpoint_persistence_roles_have_one_owner() -> None:
+    import pickle
+
+    from open_wam import training as training_api
+    from open_wam.training import checkpoint_export, checkpoint_storage, checkpoints
+
+    role_modules = {
+        "export": checkpoint_export,
+        "manager": checkpoints,
+        "storage": checkpoint_storage,
+    }
+    owner_names = {
+        "export": {"_remap_packed_video_blocks_into_backbone"},
+        "manager": {
+            "CheckpointManager",
+            "_cpu_align_non_dtensor_state_for_full_load",
+            "_densify_optimizer_state_dict",
+            "_is_dtensor",
+            "_iter_model_state_tensors",
+            "_load_state_dict_options",
+            "_non_scalar_model_state_devices",
+            "_optimizer_state_presence_contract",
+            "_prune_synthetic_optimizer_state",
+            "_release_unused_device_memory",
+            "_save_state_dict_options",
+            "_set_model_state_dict",
+        },
+        "storage": {
+            "_atomic_torch_save",
+            "_is_rank_zero",
+            "_load_sibling_train_state",
+            "_serialize_config",
+            "_serialize_runtime_backbone_config",
+            "_wait_for_file",
+        },
+    }
+    all_names = set().union(*owner_names.values())
+
+    assert len(all_names) == 19
+    assert all(
+        sum(
+            name in _top_level_definitions(path)
+            for path in CHECKPOINT_ROLE_PATHS.values()
+        )
+        == 1
+        for name in all_names
+    )
+    for role, names in owner_names.items():
+        assert _top_level_definitions(CHECKPOINT_ROLE_PATHS[role]) == names
+    assert _module_all_names(CHECKPOINT_ROLE_PATHS["export"]) == set()
+    assert _module_all_names(CHECKPOINT_ROLE_PATHS["storage"]) == set()
+    assert all(
+        "checkpoints" not in _absolute_imports_for_file(CHECKPOINT_ROLE_PATHS[role])
+        for role in ("export", "storage")
+    )
+
+    for role in ("export", "storage"):
+        for name in owner_names[role]:
+            assert getattr(checkpoints, name) is getattr(role_modules[role], name)
+    assert training_api.CheckpointManager is checkpoints.CheckpointManager
+    assert checkpoints.CheckpointManager.__module__ == "open_wam.training.checkpoints"
+
+    expected_wildcard_names = {
+        "Any",
+        "CheckpointManager",
+        "CheckpointMode",
+        "ExperimentConfig",
+        "Path",
+        "StateDictOptions",
+        "TrainState",
+        "annotations",
+        "asdict",
+        "contextmanager",
+        "dist",
+        "gc",
+        "get_model_state_dict",
+        "get_optimizer_state_dict",
+        "is_dataclass",
+        "json",
+        "nn",
+        "os",
+        "save_file",
+        "serialize_enum_values",
+        "set_model_state_dict",
+        "set_optimizer_state_dict",
+        "shutil",
+        "time",
+        "torch",
+        "warnings",
+        "yaml",
+    }
+    wildcard_namespace: dict[str, object] = {}
+    exec("from open_wam.training.checkpoints import *", wildcard_namespace)
+    assert set(wildcard_namespace) - {"__builtins__"} == expected_wildcard_names
+    assert _compatibility_export_names(CHECKPOINT_ROLE_PATHS["manager"]) == {
+        "asdict",
+        "is_dataclass",
+        "os",
+        "serialize_enum_values",
+        "time",
+    }
+
+    for role, names in owner_names.items():
+        for name in names:
+            expected = getattr(role_modules[role], name)
+            payload = f"copen_wam.training.checkpoints\n{name}\n.".encode()
+            assert pickle.loads(payload) is expected
 
 
 def test_mot_condition_latent_selection_has_one_owner() -> None:

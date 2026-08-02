@@ -186,6 +186,28 @@ open-string extension builders through `register_policy_variant` and
 `register_action_decoder`; they do not branch the composition code. These
 factory roles own no learned parameters or checkpoint state.
 
+## Training Checkpoint Contract
+
+`training.checkpoints.CheckpointManager` is the stable persistence owner. It
+coordinates distributed model and optimizer state collection, sparse optimizer
+restoration, mixed-device full-state loading, checkpoint retention, and runtime
+backbone export. The distributed-checkpoint functions remain globals in that
+module so tests and advanced runtimes can patch the established lookup seam.
+
+Two internal leaf roles keep format mechanics out of the manager without
+changing ownership:
+
+- `training.checkpoint_storage` owns typed config serialization, rank-aware
+  marker waits, atomic Torch writes, and model-only sibling train-state
+  recovery.
+- `training.checkpoint_export` owns the pure packed-video-block projection used
+  to produce a LingBot-compatible runtime backbone state dictionary.
+
+Neither leaf imports the manager, owns learned state, or defines checkpoint
+keys. Full-training-state saves continue to write an exact-resume payload plus
+a lightweight sibling `model_state.pt`; consumers use `CheckpointManager`
+through `open_wam.training` rather than calling the private leaf helpers.
+
 ## Visual Tower Contract
 
 The shared visual stack exposes stage-aware outputs rather than allowing policy

@@ -27,49 +27,24 @@ from torch.distributed.checkpoint.state_dict import (
 from open_wam.configs import CheckpointMode, ExperimentConfig
 from open_wam.configs.enums import serialize_enum_values
 
+from .checkpoint_export import _remap_packed_video_blocks_into_backbone
+from .checkpoint_storage import (
+    _atomic_torch_save,
+    _is_rank_zero,
+    _load_sibling_train_state,
+    _serialize_config,
+    _serialize_runtime_backbone_config,
+    _wait_for_file,
+)
 from .state import TrainState
 
-
-def _serialize_config(config: ExperimentConfig) -> dict[str, Any]:
-    if is_dataclass(config):
-        return serialize_enum_values(asdict(config))
-    raise TypeError(f"Expected dataclass config, got {type(config).__name__}.")
-
-
-def _serialize_runtime_backbone_config(backbone_config: object) -> dict[str, Any]:
-    if is_dataclass(backbone_config):
-        return serialize_enum_values(asdict(backbone_config))
-    if isinstance(backbone_config, dict):
-        return serialize_enum_values(dict(backbone_config))
-    return {"repr": repr(backbone_config)}
-
-
-def _is_rank_zero() -> bool:
-    return not dist.is_initialized() or dist.get_rank() == 0
-
-
-def _wait_for_file(
-    path: Path, *, timeout_seconds: float = 7200.0, poll_seconds: float = 2.0
-) -> None:
-    deadline = time.monotonic() + float(timeout_seconds)
-    while not path.exists():
-        if time.monotonic() >= deadline:
-            raise TimeoutError(
-                f"Timed out waiting for checkpoint completion marker: {path}"
-            )
-        time.sleep(float(poll_seconds))
-
-
-def _atomic_torch_save(payload: object, path: Path) -> None:
-    tmp_path = path.with_name(f".{path.name}.tmp.{os.getpid()}")
-    if tmp_path.exists():
-        tmp_path.unlink()
-    try:
-        torch.save(payload, tmp_path)
-        tmp_path.replace(path)
-    finally:
-        if tmp_path.exists():
-            tmp_path.unlink()
+_CHECKPOINT_COMPATIBILITY_EXPORTS = (
+    asdict,
+    is_dataclass,
+    os,
+    serialize_enum_values,
+    time,
+)
 
 
 def _save_state_dict_options() -> StateDictOptions:
@@ -250,28 +225,6 @@ def _set_model_state_dict(
             set_model_state_dict(model, model_state_dict, options=options)
         return
     set_model_state_dict(model, model_state_dict, options=options)
-
-
-def _load_sibling_train_state(checkpoint_path: Path) -> dict[str, Any] | None:
-    """Recover step metadata for lightweight model-only warm starts when available."""
-
-    if checkpoint_path.name != "model_state.pt":
-        return None
-    train_state_path = checkpoint_path.parent / "train_state.json"
-    if not train_state_path.is_file():
-        return None
-    with train_state_path.open("r", encoding="utf-8") as handle:
-        raw = json.load(handle)
-    if not isinstance(raw, dict):
-        raise ValueError(
-            f"Expected object in {train_state_path}, got {type(raw).__name__}."
-        )
-    # A model-only checkpoint has no optimizer/scheduler/sampler state. Preserve
-    # the step counters for logging and max-step continuation, but do not skip
-    # batches as if this were an exact full-training-state resume.
-    raw["epoch_index"] = 0
-    raw["seen_batches"] = 0
-    return raw
 
 
 class CheckpointManager:
@@ -639,47 +592,3 @@ class CheckpointManager:
         )
         with (transformer_dir / "config.json").open("w", encoding="utf-8") as handle:
             json.dump(config_payload, handle, indent=2, sort_keys=True, default=str)
-
-
-def _remap_packed_video_blocks_into_backbone(
-    *,
-    backbone_state_dict: dict[str, torch.Tensor],
-    stack_state_dict: dict[str, torch.Tensor],
-) -> dict[str, torch.Tensor]:
-    """Move ``packed_blocks.{i}.video_block.*`` entries under ``blocks.{i}.*``.
-
-    After ownership transfer in ``MoTPolicyVariant.attach_visual_tower``, the
-    visual_tower core no longer owns its blocks; running ``state_dict()`` on
-    the core therefore drops every ``blocks.{i}.*`` weight. The packed stack
-    holds the canonical video block weights under
-    ``packed_blocks.{i}.video_block.*``; this helper re-keys them so the
-    exported runtime backbone state dict is a drop-in replacement for the
-    pre-surgery layout. ``action_block.*`` entries are intentionally skipped —
-    they belong to the action expert export path, not the video runtime
-    backbone.
-    """
-
-    if any(key.startswith("blocks.") for key in backbone_state_dict):
-        raise ValueError(
-            "Runtime backbone state dict already contains `blocks.*` keys; "
-            "packed-coupling remap would clobber them. Investigate why "
-            "visual_tower.core kept its block weights despite the packed "
-            "stack being attached."
-        )
-    remapped: dict[str, torch.Tensor] = dict(backbone_state_dict)
-    prefix = "packed_blocks."
-    video_marker = ".video_block."
-    for key, tensor in stack_state_dict.items():
-        if not key.startswith(prefix):
-            continue
-        marker_index = key.find(video_marker, len(prefix))
-        if marker_index == -1:
-            # action_block.* (or any other future child) — not part of the
-            # video runtime backbone export.
-            continue
-        block_index_str = key[len(prefix) : marker_index]
-        if not block_index_str.isdigit():
-            continue
-        suffix = key[marker_index + len(video_marker) :]
-        remapped[f"blocks.{block_index_str}.{suffix}"] = tensor
-    return remapped
