@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Protocol
+from typing import TYPE_CHECKING, Any, Mapping, Protocol, TypeAlias
 
-import numpy as np
+if TYPE_CHECKING:
+    import numpy as np
+
+    _NumpyArray: TypeAlias = np.ndarray
+else:
+    _NumpyArray: TypeAlias = Any
 
 
 @dataclass(frozen=True)
@@ -30,8 +35,8 @@ class SimulatorCapabilities:
 class SimulatorObservation:
     """Policy-visible simulator observation plus raw benchmark payload."""
 
-    views: Mapping[str, np.ndarray]
-    state: np.ndarray | None = None
+    views: Mapping[str, _NumpyArray]
+    state: _NumpyArray | None = None
     task_text: str | None = None
     raw: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -60,13 +65,21 @@ class SimulatorBackend(Protocol):
     def task_text(self) -> str | None:
         """Return the current natural-language instruction, if available."""
 
-    def action_from_model_action(self, model_action: np.ndarray, *, data_config: Any) -> np.ndarray:
+    def action_from_model_action(
+        self,
+        model_action: _NumpyArray,
+        *,
+        data_config: Any,
+    ) -> _NumpyArray:
         """Convert one model-facing action vector into the simulator action space."""
 
-    def step(self, action: np.ndarray) -> SimulatorStepResult:
+    def step(self, action: _NumpyArray) -> SimulatorStepResult:
         """Execute one policy-visible control action."""
 
-    def render_frame(self, observation: SimulatorObservation) -> np.ndarray | None:
+    def render_frame(
+        self,
+        observation: SimulatorObservation,
+    ) -> _NumpyArray | None:
         """Return an RGB visualization frame, if available."""
 
     def close(self) -> None:
@@ -102,10 +115,15 @@ class LegacyAdapterSimulatorBackend:
     def task_text(self) -> str | None:
         return self.adapter.task_text()
 
-    def action_from_model_action(self, model_action: np.ndarray, *, data_config: Any) -> np.ndarray:
+    def action_from_model_action(
+        self,
+        model_action: _NumpyArray,
+        *,
+        data_config: Any,
+    ) -> _NumpyArray:
         return self.adapter.model_action_to_env_action(model_action, data_config=data_config)
 
-    def step(self, action: np.ndarray) -> SimulatorStepResult:
+    def step(self, action: _NumpyArray) -> SimulatorStepResult:
         transition = self.adapter.step(action)
         observation = self._normalize_observation(transition.observation)
         info = dict(getattr(transition, "info", {}) or {})
@@ -118,7 +136,10 @@ class LegacyAdapterSimulatorBackend:
             info=info,
         )
 
-    def render_frame(self, observation: SimulatorObservation) -> np.ndarray | None:
+    def render_frame(
+        self,
+        observation: SimulatorObservation,
+    ) -> _NumpyArray | None:
         return self.adapter.render_frame(observation.raw)
 
     def close(self) -> None:

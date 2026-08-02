@@ -29,6 +29,13 @@ uv sync --extra robotwin
 uv sync --extra sim
 ```
 
+The base install can import `LiberoEnvConfig`, `RobotwinEnvConfig`,
+`CalvinEnvConfig`, and the generic `SimulatorBackend` contract without NumPy,
+Torch, or simulator packages. The three benchmark-named extras add only their
+benchmark-side dependency overlays; they do not include the Open-WAM model
+stack or upstream source trees. Use `[sim]` for model-driven closed-loop
+rollouts, then install the selected benchmark source separately.
+
 For local documentation-site preview:
 
 ```bash
@@ -94,14 +101,14 @@ OPEN_WAM_LOCAL_PATHS=/absolute/path/to/local_paths.yaml uv run open-wam-eval ...
 To actually run a LIBERO realtime rollout (for example through
 `scripts/run_libero_realtime_sandbox.py` or
 `scripts/run_libero_sampled_eval.py`) on your own machine, the
-`[libero]` extra is necessary but not sufficient — it pins the LIBERO-side
+`[libero]` extra is necessary but not sufficient: it pins the LIBERO-side
 runtime deps (`gym==0.25.2`, `robosuite==1.4.0`, `bddl==1.0.1`, etc.) but
 not the model stack (Torch, diffusers, transformers, ...). Three additional
 steps are required.
 
 ### 1. Install model + simulator deps together
 
-Use `[sim]` (or `[full]`) — `[sim]` is the smallest extra that combines the
+Use `[sim]` (or `[full]`): `[sim]` is the smallest extra that combines the
 LIBERO-side deps with the model runtime stack:
 
 ```bash

@@ -6930,11 +6930,13 @@ def test_libero_integration_roles_have_one_owner() -> None:
     runtime_path = PACKAGE_ROOT / "integrations" / "libero_runtime.py"
     control_path = PACKAGE_ROOT / "integrations" / "libero_control.py"
     tracking_path = PACKAGE_ROOT / "integrations" / "libero_tracking.py"
+    config_path = PACKAGE_ROOT / "integrations" / "simulator_configs.py"
     env_path = PACKAGE_ROOT / "integrations" / "libero_env.py"
     task_definitions = _top_level_definitions(task_path)
     runtime_definitions = _top_level_definitions(runtime_path)
     control_definitions = _top_level_definitions(control_path)
     tracking_definitions = _top_level_definitions(tracking_path)
+    config_definitions = _top_level_definitions(config_path)
     env_definitions = _top_level_definitions(env_path)
     task_contract = {
         "LiberoTaskSpec",
@@ -6981,17 +6983,22 @@ def test_libero_integration_roles_have_one_owner() -> None:
     assert runtime_contract <= runtime_definitions
     assert control_contract <= control_definitions
     assert tracking_contract <= tracking_definitions
+    assert config_definitions == {
+        "CalvinEnvConfig",
+        "LiberoEnvConfig",
+        "RobotwinEnvConfig",
+    }
     assert runtime_contract.isdisjoint(env_definitions)
     assert control_contract.isdisjoint(env_definitions)
     assert tracking_contract.isdisjoint(env_definitions)
     assert env_definitions == {
         "LiberoBenchmarkAdapter",
-        "LiberoEnvConfig",
         "_source_action_from_model_action",
     }
     assert {
         "open_wam.integrations.libero_control",
         "open_wam.integrations.libero_runtime",
+        "open_wam.integrations.simulator_configs",
         "open_wam.integrations.libero_tasks",
         "open_wam.integrations.libero_tracking",
     } <= _absolute_imports_for_file(env_path)
@@ -7002,6 +7009,52 @@ def test_libero_integration_roles_have_one_owner() -> None:
     assert "LiberoTaskSpec(" not in sampled_source
     assert "from libero.libero import benchmark" not in sampled_source
     assert "import yaml" not in sampled_source
+
+
+def test_simulator_configs_preserve_frozen_definitions_and_legacy_aliases() -> None:
+    import hashlib
+    import importlib
+    import pickle
+
+    from open_wam import integrations
+    from open_wam.integrations import simulator_configs
+
+    config_path = PACKAGE_ROOT / "integrations" / "simulator_configs.py"
+    config_tree = ast.parse(
+        config_path.read_text(encoding="utf-8"),
+        filename=str(config_path),
+    )
+    legacy_owners = {
+        "LiberoEnvConfig": "libero_env",
+        "RobotwinEnvConfig": "robotwin_env",
+        "CalvinEnvConfig": "calvin_env",
+    }
+    class_nodes = {
+        node.name: node
+        for node in config_tree.body
+        if isinstance(node, ast.ClassDef)
+    }
+    serialized_definitions = "\n".join(
+        f"{name}:{ast.dump(class_nodes[name])}" for name in legacy_owners
+    ).encode()
+
+    assert hashlib.sha256(serialized_definitions).hexdigest() == (
+        "504e7c4d0b80675722ee0d308f07db283811700d5e0d3aa8618ba8bdc4dc7998"
+    )
+    for class_name, legacy_module_name in legacy_owners.items():
+        owner_value = getattr(simulator_configs, class_name)
+        legacy_module = importlib.import_module(
+            f"open_wam.integrations.{legacy_module_name}"
+        )
+        assert class_name not in _top_level_definitions(
+            PACKAGE_ROOT / "integrations" / f"{legacy_module_name}.py"
+        )
+        assert getattr(integrations, class_name) is owner_value
+        assert getattr(legacy_module, class_name) is owner_value
+        legacy_payload = (
+            f"copen_wam.integrations.{legacy_module_name}\n{class_name}\n."
+        ).encode()
+        assert pickle.loads(legacy_payload) is owner_value
 
 
 def test_public_config_enums_are_declared_once() -> None:

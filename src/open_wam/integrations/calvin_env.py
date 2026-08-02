@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections import deque
 from contextlib import contextmanager
-from dataclasses import dataclass
 import inspect
 import os
 from pathlib import Path
@@ -15,6 +14,7 @@ import torch
 from open_wam.configs import DataConfig
 from open_wam.models.policy_variants import PolicyInferContext
 from open_wam.pipelines import VariantRolloutRunner
+from open_wam.integrations.simulator_configs import CalvinEnvConfig as CalvinEnvConfig
 from open_wam.simulators import (
     SimStepResult,
     SimulatorCapabilities,
@@ -22,16 +22,6 @@ from open_wam.simulators import (
     build_view_history_batch,
     source_action_from_model_action,
 )
-
-
-@dataclass(frozen=True)
-class CalvinEnvConfig:
-    """Configuration needed to launch one CALVIN play-table environment."""
-
-    calvin_root: str | None = None
-    dataset_root: str | None = None
-    task_text: str | None = None
-    show_gui: bool = False
 
 
 class CalvinBenchmarkAdapter:

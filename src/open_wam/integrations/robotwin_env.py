@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
 import importlib
 import importlib.machinery
 import importlib.util
@@ -15,6 +14,7 @@ import numpy as np
 import yaml
 
 from open_wam.configs import DataConfig
+from open_wam.integrations.simulator_configs import RobotwinEnvConfig as RobotwinEnvConfig
 from open_wam.simulators import (
     SimStepResult,
     SimulatorCapabilities,
@@ -36,20 +36,6 @@ _CUROBO_IMPORT_STUB_MODULES = (
     "curobo.util",
     "curobo.util.logger",
 )
-
-
-@dataclass(frozen=True)
-class RobotwinEnvConfig:
-    """Configuration needed to launch one RoboTwin task environment."""
-
-    robotwin_root: str
-    task_name: str
-    task_config: str
-    instruction: str | None = None
-    seed_offset: int = 10000
-    action_type: str = "ee"
-    expert_precheck: bool = False
-    instruction_type: str = "seen"
 
 
 class RobotwinBenchmarkAdapter:

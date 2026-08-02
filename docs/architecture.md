@@ -57,6 +57,14 @@ facades; new code imports `open_wam.contracts`.
 The `open_wam` wheel contains maintained configuration, data, model, training,
 runtime, evaluation-result, and extension contracts. Benchmark integrations
 remain lazy so importing the core does not require simulator dependencies.
+`open_wam.integrations.simulator_configs` owns the dependency-light LIBERO,
+RoboTwin, and CALVIN launch records; the historical adapter modules retain
+identity-preserving aliases. `open_wam.simulators.contracts` owns the generic
+backend and observation protocol without importing NumPy at runtime, while
+`open_wam.simulators.rollout` owns the NumPy/Torch execution layer. Lazy
+adapter and rollout exports use `open_wam.runtime.load_optional_module` so
+missing extras produce an actionable install command without hiding missing
+internal package modules.
 
 Reusable result schemas, rollout artifact policies, and maintained renderers
 live under `open_wam.evals`. Large experiment analyses remain under `scripts/`;

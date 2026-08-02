@@ -33,6 +33,7 @@ from open_wam.runtime import (
     OPEN_WAM_RESULT_SCHEMA_V1,
     build_result_envelope,
     find_repo_root,
+    load_optional_module,
     resolve_checkpoint_artifacts,
     resolve_repo_path,
 )
@@ -78,6 +79,79 @@ def test_libero_task_contract_does_not_load_control_or_torch_stacks() -> None:
 
 
 @pytest.mark.unit
+def test_simulator_config_and_backend_contracts_are_dependency_light() -> None:
+    code = (
+        "import sys; "
+        "from open_wam.integrations import CalvinEnvConfig, LiberoEnvConfig, RobotwinEnvConfig; "
+        "from open_wam.simulators import EpisodeSpec, SimulatorBackend, SimulatorCapabilities, SimulatorObservation, SimulatorStepResult; "
+        "assert CalvinEnvConfig.__module__ == 'open_wam.integrations.simulator_configs'; "
+        "assert LiberoEnvConfig.__module__ == 'open_wam.integrations.simulator_configs'; "
+        "assert RobotwinEnvConfig.__module__ == 'open_wam.integrations.simulator_configs'; "
+        "assert SimulatorBackend.__module__ == 'open_wam.simulators.contracts'; "
+        "from typing import get_type_hints; "
+        "assert get_type_hints(SimulatorObservation)['state'] is not None; "
+        "assert get_type_hints(SimulatorBackend.action_from_model_action)['return'] is not None; "
+        "assert EpisodeSpec(seed=7).seed == 7; "
+        "assert SimulatorCapabilities(action_step_semantics='step').action_step_semantics == 'step'; "
+        "assert 'open_wam.integrations.calvin_env' not in sys.modules; "
+        "assert 'open_wam.integrations.libero_env' not in sys.modules; "
+        "assert 'open_wam.integrations.robotwin_env' not in sys.modules; "
+        "assert 'open_wam.simulators.rollout' not in sys.modules; "
+        "assert 'torch' not in sys.modules; "
+        "assert 'numpy' not in sys.modules"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("package_name", "public_name", "missing_module"),
+    [
+        ("open_wam.integrations", "RobotwinBenchmarkAdapter", "numpy"),
+        ("open_wam.simulators", "SimRolloutResult", "torch"),
+    ],
+)
+def test_optional_runtime_exports_report_actionable_dependency_errors(
+    package_name: str,
+    public_name: str,
+    missing_module: str,
+) -> None:
+    code = """
+import builtins
+import importlib
+import sys
+
+package_name, public_name, missing_module = sys.argv[1:]
+package = importlib.import_module(package_name)
+real_import = builtins.__import__
+
+def blocked_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == missing_module or name.startswith(f"{missing_module}."):
+        raise ModuleNotFoundError(
+            f"No module named '{missing_module}'",
+            name=missing_module,
+        )
+    return real_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = blocked_import
+try:
+    getattr(package, public_name)
+except ImportError as exc:
+    message = str(exc)
+    assert f"{package_name}.{public_name}" in message
+    assert "open-wam[sim]" in message
+    assert "uv sync --extra sim" in message
+    assert f"Missing module: {missing_module}." in message
+else:
+    raise AssertionError("optional export unexpectedly imported")
+"""
+    subprocess.run(
+        [sys.executable, "-c", code, package_name, public_name, missing_module],
+        check=True,
+    )
+
+
+@pytest.mark.unit
 def test_console_entrypoints_are_declared() -> None:
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     scripts = pyproject["project"]["scripts"]
@@ -120,6 +194,7 @@ def test_base_dependencies_stay_minimal_and_extras_are_explicit() -> None:
         "libero",
         "robotwin",
         "calvin",
+        "sim",
         "deployment",
         "docs",
         "full",
@@ -229,6 +304,16 @@ def test_runtime_checkpoint_artifact_exports_preserve_owner_identity() -> None:
 
     assert CheckpointArtifactResolution is checkpoint_artifacts.CheckpointArtifactResolution
     assert resolve_checkpoint_artifacts is checkpoint_artifacts.resolve_checkpoint_artifacts
+
+
+@pytest.mark.unit
+def test_optional_dependency_loader_does_not_mask_package_defects() -> None:
+    with pytest.raises(ModuleNotFoundError, match="open_wam.missing_internal_module"):
+        load_optional_module(
+            "open_wam.missing_internal_module",
+            public_name="open_wam.example",
+            extra="sim",
+        )
 
 
 @pytest.mark.unit

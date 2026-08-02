@@ -10,14 +10,16 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
+from open_wam.runtime.optional_dependencies import load_optional_module
+
 
 _EXPORTS: dict[str, str] = {
     "CalvinBenchmarkAdapter": "open_wam.integrations.calvin_env",
-    "CalvinEnvConfig": "open_wam.integrations.calvin_env",
+    "CalvinEnvConfig": "open_wam.integrations.simulator_configs",
     "OpenWAMCalvinCustomModel": "open_wam.integrations.calvin_env",
     "LiberoControlConfig": "open_wam.integrations.libero_control",
     "LiberoBenchmarkAdapter": "open_wam.integrations.libero_env",
-    "LiberoEnvConfig": "open_wam.integrations.libero_env",
+    "LiberoEnvConfig": "open_wam.integrations.simulator_configs",
     "LiberoTaskSpec": "open_wam.integrations.libero_tasks",
     "LiberoTrackingResult": "open_wam.integrations.libero_tracking",
     "PlannedControlStep": "open_wam.integrations.realtime_control",
@@ -70,7 +72,17 @@ _EXPORTS: dict[str, str] = {
     "summarize_scalars": "open_wam.integrations.realtime_control",
     "track_relative_targets_in_libero_env": "open_wam.integrations.libero_tracking",
     "RobotwinBenchmarkAdapter": "open_wam.integrations.robotwin_env",
-    "RobotwinEnvConfig": "open_wam.integrations.robotwin_env",
+    "RobotwinEnvConfig": "open_wam.integrations.simulator_configs",
+}
+
+_OPTIONAL_RUNTIME_MODULES = {
+    "open_wam.integrations.calvin_env",
+    "open_wam.integrations.libero_control",
+    "open_wam.integrations.libero_env",
+    "open_wam.integrations.libero_rollout",
+    "open_wam.integrations.libero_tracking",
+    "open_wam.integrations.realtime_control",
+    "open_wam.integrations.robotwin_env",
 }
 
 __all__ = sorted(_EXPORTS)
@@ -81,7 +93,14 @@ def __getattr__(name: str) -> Any:
         module_name = _EXPORTS[name]
     except KeyError as exc:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
-    module = import_module(module_name)
+    if module_name in _OPTIONAL_RUNTIME_MODULES:
+        module = load_optional_module(
+            module_name,
+            public_name=f"open_wam.integrations.{name}",
+            extra="sim",
+        )
+    else:
+        module = import_module(module_name)
     value = getattr(module, name)
     globals()[name] = value
     return value

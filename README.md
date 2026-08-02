@@ -236,11 +236,15 @@ uv sync --extra docs
 uv sync --extra full
 ```
 
-For a local LIBERO simulator rollout the `[libero]` extra alone is **not**
-enough — it only pins the LIBERO-specific runtime deps (`gym`, `robosuite`,
-`bddl`, etc.) and not the model stack. Use `[sim]` (or `[full]`), and add
-the upstream LIBERO source plus a one-line config so LIBERO can locate its
-bddl / init / asset folders:
+Simulator config records and the generic backend protocol are available from
+the base install; importing them does not load NumPy, Torch, or a benchmark.
+The `[libero]`, `[robotwin]`, and `[calvin]` extras are benchmark-side
+dependency overlays and do not include the model stack or upstream source
+checkouts. For a model-driven simulator rollout, use `[sim]` (or `[full]`)
+and install the selected benchmark source separately.
+
+For a local LIBERO rollout, add the upstream source plus a one-line config so
+LIBERO can locate its bddl / init / asset folders:
 
 ```bash
 # 1. Install model + simulator deps in one shot
