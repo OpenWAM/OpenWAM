@@ -5657,6 +5657,20 @@ def test_parallel_cache_lifecycle_has_one_implementation_owner() -> None:
     }.isdisjoint(_top_level_definitions(reference_runtime_path))
 
 
+def test_parallel_reference_profile_validation_has_one_owner() -> None:
+    parallel_stream_root = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
+    )
+    profile_path = parallel_stream_root / "reference_profile.py"
+    variant_path = parallel_stream_root / "variant.py"
+
+    assert {
+        "LingbotReferenceRuntimeContract",
+        "validate_reference_profile",
+    } <= _top_level_definitions(profile_path)
+    assert "_validate_reference_profile" not in _top_level_definitions(variant_path)
+
+
 def test_parallel_inference_conditioning_has_one_implementation_owner() -> None:
     conditioning_definitions = {
         "append_generalist_mode_text_context",

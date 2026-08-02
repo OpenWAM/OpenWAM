@@ -28,6 +28,26 @@ class LingbotReferenceProfile:
     norm_q99: tuple[float, ...]
 
 
+@dataclass(frozen=True)
+class LingbotReferenceRuntimeContract:
+    """Runtime values that an exact LingBot profile must match."""
+
+    max_text_tokens: int
+    action_dim: int
+    action_per_frame: int
+    policy_frame_chunk_size: int
+    inference_frame_chunk_size: int
+    attn_window: int
+    guidance_scale: float
+    require_guidance_scale_match: bool
+    action_guidance_scale: float
+    video_num_inference_steps: int
+    action_num_inference_steps: int
+    video_exec_step: int
+    video_sigma_shift: float
+    action_sigma_shift: float
+
+
 _BUILTIN_REFERENCE_PROFILES: dict[str, LingbotReferenceProfile] = {
     "robotwin": LingbotReferenceProfile(
         name="robotwin",
@@ -280,3 +300,81 @@ def load_reference_profile(name: str | None) -> LingbotReferenceProfile | None:
     except KeyError as exc:
         supported = ", ".join(sorted(_BUILTIN_REFERENCE_PROFILES))
         raise ValueError(f"Unsupported LingBot reference profile '{name}'. Expected one of: {supported}.") from exc
+
+
+def validate_reference_profile(
+    profile: LingbotReferenceProfile | None,
+    runtime: LingbotReferenceRuntimeContract,
+) -> None:
+    """Reject runtime settings that violate a selected exact-profile contract."""
+
+    if profile is None:
+        return
+    if profile.max_text_tokens != runtime.max_text_tokens:
+        raise ValueError(
+            "Exact LingBot reference profile max_text_tokens does not match the backbone config, "
+            f"profile={profile.max_text_tokens}, config={runtime.max_text_tokens}."
+        )
+    if profile.action_dim != runtime.action_dim:
+        raise ValueError(
+            "Exact LingBot reference profile action_dim does not match the current experiment action dim, "
+            f"profile={profile.action_dim}, config={runtime.action_dim}."
+        )
+    if profile.action_per_frame != runtime.action_per_frame:
+        raise ValueError(
+            "Exact LingBot reference profile action_per_frame does not match the policy config, "
+            f"profile={profile.action_per_frame}, config={runtime.action_per_frame}."
+        )
+    if profile.frame_chunk_size != runtime.policy_frame_chunk_size:
+        raise ValueError(
+            "Exact LingBot reference profile frame_chunk_size does not match the policy config, "
+            f"profile={profile.frame_chunk_size}, config={runtime.policy_frame_chunk_size}."
+        )
+    if profile.frame_chunk_size != runtime.inference_frame_chunk_size:
+        raise ValueError(
+            "Exact LingBot reference profile frame_chunk_size does not match the inference config, "
+            f"profile={profile.frame_chunk_size}, config={runtime.inference_frame_chunk_size}."
+        )
+    if profile.attn_window != runtime.attn_window:
+        raise ValueError(
+            "Exact LingBot reference profile attn_window does not match the policy config, "
+            f"profile={profile.attn_window}, config={runtime.attn_window}."
+        )
+    if (
+        profile.guidance_scale != runtime.guidance_scale
+        and runtime.require_guidance_scale_match
+    ):
+        raise ValueError(
+            "Exact LingBot reference profile guidance_scale does not match the inference config, "
+            f"profile={profile.guidance_scale}, config={runtime.guidance_scale}."
+        )
+    if profile.action_guidance_scale != runtime.action_guidance_scale:
+        raise ValueError(
+            "Exact LingBot reference profile action_guidance_scale does not match the inference config, "
+            f"profile={profile.action_guidance_scale}, config={runtime.action_guidance_scale}."
+        )
+    if profile.video_num_inference_steps != runtime.video_num_inference_steps:
+        raise ValueError(
+            "Exact LingBot reference profile video_num_inference_steps does not match the inference config, "
+            f"profile={profile.video_num_inference_steps}, config={runtime.video_num_inference_steps}."
+        )
+    if profile.action_num_inference_steps != runtime.action_num_inference_steps:
+        raise ValueError(
+            "Exact LingBot reference profile action_num_inference_steps does not match the inference config, "
+            f"profile={profile.action_num_inference_steps}, config={runtime.action_num_inference_steps}."
+        )
+    if profile.video_exec_step != runtime.video_exec_step:
+        raise ValueError(
+            "Exact LingBot reference profile video_exec_step does not match the inference config, "
+            f"profile={profile.video_exec_step}, config={runtime.video_exec_step}."
+        )
+    if profile.video_sigma_shift != runtime.video_sigma_shift:
+        raise ValueError(
+            "Exact LingBot reference profile video_sigma_shift does not match the training config, "
+            f"profile={profile.video_sigma_shift}, config={runtime.video_sigma_shift}."
+        )
+    if profile.action_sigma_shift != runtime.action_sigma_shift:
+        raise ValueError(
+            "Exact LingBot reference profile action_sigma_shift does not match the training config, "
+            f"profile={profile.action_sigma_shift}, config={runtime.action_sigma_shift}."
+        )

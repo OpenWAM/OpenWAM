@@ -57,6 +57,7 @@ from .training_single_frame_artifacts import (
 )
 from .runtime_semantics import resolve_parallel_current_block_coupling
 from .action_adapter import LingbotActionAdapter, build_action_adapter_spec
+from .reference_profile import LingbotReferenceRuntimeContract, validate_reference_profile
 
 _PER_CHUNK_PROPRIO_GRANULARITY_CHUNK = "chunk"
 _PER_CHUNK_PROPRIO_GRANULARITY_FRAME = "frame"
@@ -122,7 +123,28 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             build_action_adapter_spec(config, model_action_dim=action_dim)
         )
         self.reference_profile = self.exact_action_adapter.spec.reference_profile if self.exact_action_adapter.spec is not None else None
-        self._validate_reference_profile()
+        validate_reference_profile(
+            self.reference_profile,
+            LingbotReferenceRuntimeContract(
+                max_text_tokens=self.backbone_config.max_text_tokens,
+                action_dim=self.action_dim,
+                action_per_frame=self.config.action_per_frame,
+                policy_frame_chunk_size=self.config.frame_chunk_size,
+                inference_frame_chunk_size=self.inference_config.frame_chunk_size,
+                attn_window=self.config.attn_window,
+                guidance_scale=self.inference_config.guidance_scale,
+                require_guidance_scale_match=(
+                    self.config.variant_profile
+                    == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING
+                ),
+                action_guidance_scale=self.inference_config.action_guidance_scale,
+                video_num_inference_steps=self.inference_config.video_num_inference_steps,
+                action_num_inference_steps=self.inference_config.action_num_inference_steps,
+                video_exec_step=self.inference_config.video_exec_step,
+                video_sigma_shift=self.training_config.video_sigma_shift,
+                action_sigma_shift=self.training_config.action_sigma_shift,
+            ),
+        )
 
     def _uses_proprio_context(self) -> bool:
         return ProprioContextMode(self.config.proprio_context_mode) != ProprioContextMode.NONE
@@ -1142,80 +1164,3 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             proprio_state=self._select_proprio_state(context.state),
             action_conditioning_mode=str(getattr(action_conditioning_mode, "value", action_conditioning_mode)),
         )
-
-    def _validate_reference_profile(self) -> None:
-        if self.reference_profile is None:
-            return
-        if self.reference_profile.max_text_tokens != self.backbone_config.max_text_tokens:
-            raise ValueError(
-                "Exact LingBot reference profile max_text_tokens does not match the backbone config, "
-                f"profile={self.reference_profile.max_text_tokens}, config={self.backbone_config.max_text_tokens}."
-            )
-        if self.reference_profile.action_dim != self.action_dim:
-            raise ValueError(
-                "Exact LingBot reference profile action_dim does not match the current experiment action dim, "
-                f"profile={self.reference_profile.action_dim}, config={self.action_dim}."
-            )
-        if self.reference_profile.action_per_frame != self.config.action_per_frame:
-            raise ValueError(
-                "Exact LingBot reference profile action_per_frame does not match the policy config, "
-                f"profile={self.reference_profile.action_per_frame}, config={self.config.action_per_frame}."
-            )
-        if self.reference_profile.frame_chunk_size != self.config.frame_chunk_size:
-            raise ValueError(
-                "Exact LingBot reference profile frame_chunk_size does not match the policy config, "
-                f"profile={self.reference_profile.frame_chunk_size}, config={self.config.frame_chunk_size}."
-            )
-        if self.reference_profile.frame_chunk_size != self.inference_config.frame_chunk_size:
-            raise ValueError(
-                "Exact LingBot reference profile frame_chunk_size does not match the inference config, "
-                f"profile={self.reference_profile.frame_chunk_size}, config={self.inference_config.frame_chunk_size}."
-            )
-        if self.reference_profile.attn_window != self.config.attn_window:
-            raise ValueError(
-                "Exact LingBot reference profile attn_window does not match the policy config, "
-                f"profile={self.reference_profile.attn_window}, config={self.config.attn_window}."
-            )
-        requires_guidance_profile_match = (
-            self.config.variant_profile == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING
-        )
-        if (
-            self.reference_profile.guidance_scale != self.inference_config.guidance_scale
-            and requires_guidance_profile_match
-        ):
-            raise ValueError(
-                "Exact LingBot reference profile guidance_scale does not match the inference config, "
-                f"profile={self.reference_profile.guidance_scale}, config={self.inference_config.guidance_scale}."
-            )
-        if self.reference_profile.action_guidance_scale != self.inference_config.action_guidance_scale:
-            raise ValueError(
-                "Exact LingBot reference profile action_guidance_scale does not match the inference config, "
-                f"profile={self.reference_profile.action_guidance_scale}, config={self.inference_config.action_guidance_scale}."
-            )
-        if self.reference_profile.video_num_inference_steps != self.inference_config.video_num_inference_steps:
-            raise ValueError(
-                "Exact LingBot reference profile video_num_inference_steps does not match the inference config, "
-                f"profile={self.reference_profile.video_num_inference_steps}, "
-                f"config={self.inference_config.video_num_inference_steps}."
-            )
-        if self.reference_profile.action_num_inference_steps != self.inference_config.action_num_inference_steps:
-            raise ValueError(
-                "Exact LingBot reference profile action_num_inference_steps does not match the inference config, "
-                f"profile={self.reference_profile.action_num_inference_steps}, "
-                f"config={self.inference_config.action_num_inference_steps}."
-            )
-        if self.reference_profile.video_exec_step != self.inference_config.video_exec_step:
-            raise ValueError(
-                "Exact LingBot reference profile video_exec_step does not match the inference config, "
-                f"profile={self.reference_profile.video_exec_step}, config={self.inference_config.video_exec_step}."
-            )
-        if self.reference_profile.video_sigma_shift != self.training_config.video_sigma_shift:
-            raise ValueError(
-                "Exact LingBot reference profile video_sigma_shift does not match the training config, "
-                f"profile={self.reference_profile.video_sigma_shift}, config={self.training_config.video_sigma_shift}."
-            )
-        if self.reference_profile.action_sigma_shift != self.training_config.action_sigma_shift:
-            raise ValueError(
-                "Exact LingBot reference profile action_sigma_shift does not match the training config, "
-                f"profile={self.reference_profile.action_sigma_shift}, config={self.training_config.action_sigma_shift}."
-            )
