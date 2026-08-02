@@ -857,6 +857,41 @@ def test_characterization_tolerance_is_limited_to_distributed_numeric_fields() -
     )
 
 
+def test_characterization_delta_tolerance_propagates_aggregate_error() -> None:
+    expected = {
+        "optimizer_step": {
+            "distributed_numeric": {
+                "parameter_groups": {
+                    "video_backbone": {"delta": {"absolute_sum": 1.0}}
+                }
+            }
+        }
+    }
+    actual = json.loads(json.dumps(expected))
+    delta = actual["optimizer_step"]["distributed_numeric"]["parameter_groups"][
+        "video_backbone"
+    ]["delta"]
+    delta["absolute_sum"] = 1.5
+
+    resolver = _numeric_tolerance_resolver(
+        ComparisonTolerance(absolute=0.0, relative=0.0)
+    )
+    assert compare_characterization_reports(
+        expected,
+        actual,
+        tolerance=ComparisonTolerance(absolute=0.0, relative=0.0),
+        tolerance_for_path=resolver,
+    ) == []
+
+    delta["absolute_sum"] = 1.500001
+    assert compare_characterization_reports(
+        expected,
+        actual,
+        tolerance=ComparisonTolerance(absolute=0.0, relative=0.0),
+        tolerance_for_path=resolver,
+    )
+
+
 def test_resume_post_update_metrics_have_narrow_cross_job_tolerance() -> None:
     expected = {
         "uninterrupted_update": {
@@ -1155,7 +1190,7 @@ def test_resume_update_comparison_bounds_distributed_aggregate_noise() -> None:
         "scenario": {"outputs": {"sha256": "same"}},
         "optimizer_step": {
             "distributed_numeric": {
-                "parameter_groups": {"video_backbone": {"delta": {"sum": 1.2}}},
+                "parameter_groups": {"video_backbone": {"delta": {"sum": 1.5}}},
                 "parameter_probes": [{"local_flat_index": 99}],
             }
         },
@@ -1165,7 +1200,7 @@ def test_resume_update_comparison_bounds_distributed_aggregate_noise() -> None:
 
     actual["optimizer_step"]["distributed_numeric"]["parameter_groups"][
         "video_backbone"
-    ]["delta"]["sum"] = 1.3
+    ]["delta"]["sum"] = 1.500001
     assert _resume_update_differences(expected, actual)
 
 

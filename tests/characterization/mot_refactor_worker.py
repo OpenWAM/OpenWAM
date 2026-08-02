@@ -82,6 +82,10 @@ RESUME_DISTRIBUTED_AGGREGATE_TOLERANCE = ComparisonTolerance(
     absolute=0.25,
     relative=0.0,
 )
+RESUME_DISTRIBUTED_AGGREGATE_DELTA_TOLERANCE = ComparisonTolerance(
+    absolute=2 * RESUME_DISTRIBUTED_AGGREGATE_TOLERANCE.absolute,
+    relative=0.0,
+)
 
 
 def build_training_characterization_config(
@@ -1963,6 +1967,11 @@ def _resume_update_differences(
     actual: dict[str, Any],
 ) -> list[str]:
     def tolerance_for_path(path: str) -> ComparisonTolerance | None:
+        if (
+            ".optimizer_step.distributed_numeric.parameter_groups." in path
+            and ".delta." in path
+        ):
+            return RESUME_DISTRIBUTED_AGGREGATE_DELTA_TOLERANCE
         if ".optimizer_step.distributed_numeric.parameter_groups." in path:
             return RESUME_DISTRIBUTED_AGGREGATE_TOLERANCE
         if (

@@ -55,6 +55,12 @@ DISTRIBUTED_AGGREGATE_TOLERANCE = ComparisonTolerance(
     absolute=0.25,
     relative=0.0,
 )
+# Delta fields subtract independently reduced before/after aggregates, so their
+# worst-case absolute error is the sum of both aggregate error bounds.
+DISTRIBUTED_AGGREGATE_DELTA_TOLERANCE = ComparisonTolerance(
+    absolute=2 * DISTRIBUTED_AGGREGATE_TOLERANCE.absolute,
+    relative=0.0,
+)
 RESUME_POST_UPDATE_METRIC_TOLERANCE = ComparisonTolerance(
     # One BF16 quantum at the observed ~2^-9 continuation-loss scale.
     absolute=2**-16,
@@ -817,6 +823,11 @@ def _numeric_tolerance_resolver(
             or ".resume.json.resumed_update.scenario.metrics." in path
         ):
             return RESUME_POST_UPDATE_METRIC_TOLERANCE
+        if (
+            ".optimizer_step.distributed_numeric.parameter_groups." in path
+            and ".delta." in path
+        ):
+            return DISTRIBUTED_AGGREGATE_DELTA_TOLERANCE
         if ".optimizer_step.distributed_numeric.parameter_groups." in path:
             return DISTRIBUTED_AGGREGATE_TOLERANCE
         if (
