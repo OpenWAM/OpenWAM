@@ -325,13 +325,21 @@ side-by-side GIF of original dataset frames vs env replay:
   --output outputs/libero_tracking_ep0.gif
 ```
 
-Run smoke tests:
+Run package-owned sanity checks against representative typed configs:
 
 ```bash
-python scripts/smoke_backbone_only.py
-python scripts/smoke_phase_two.py
-python scripts/smoke_parallel_stream.py
-python scripts/smoke_lingbot_exact_runner.py
+uv run --extra train open-wam-sanity \
+  --cfg configs/experiments/contract_only_robotwin.yaml \
+  --device cpu --batch-size 1 --rollout-steps 1
+uv run --extra train open-wam-sanity \
+  --cfg configs/experiments/post_latent_robotwin.yaml \
+  --device cpu --batch-size 1 --rollout-steps 1
+uv run --extra train open-wam-sanity \
+  --cfg configs/experiments/post_decoded_robotwin.yaml \
+  --device cpu --batch-size 1 --rollout-steps 1
+uv run --extra train open-wam-sanity \
+  --cfg configs/experiments/parallel_stream_robotwin_smoke.yaml \
+  --device cpu --batch-size 1 --rollout-steps 1
 ```
 
 Train the current contract-only path:

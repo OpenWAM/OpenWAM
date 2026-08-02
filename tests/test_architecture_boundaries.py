@@ -6852,6 +6852,40 @@ def test_orphaned_diagnostics_and_duplicate_aliases_are_retired() -> None:
     assert not any(path.exists() for path in retired_paths)
 
 
+def test_bespoke_smoke_and_config_preset_aliases_are_retired() -> None:
+    retired_paths = tuple(
+        REPO_ROOT / "scripts" / name
+        for name in (
+            "smoke_backbone_only.py",
+            "smoke_phase_two.py",
+            "smoke_variant_pipeline.py",
+            "smoke_post_decoded.py",
+            "smoke_parallel_stream.py",
+            "smoke_lingbot_exact_runner.py",
+            "run_train_backbone_only.sh",
+            "run_train_contract_only.sh",
+            "run_train_contract_only_libero.sh",
+            "run_eval_causal_video_prediction_robotwin_smoke.sh",
+            "run_eval_contract_only.sh",
+            "run_eval_contract_only_libero_trajectory.sh",
+            "run_eval_mot_robotwin_smoke.sh",
+            "run_eval_parallel_stream_robotwin_smoke.sh",
+            "run_eval_post_decoded_video_conditioned_libero_trajectory.sh",
+            "run_eval_post_latent_video_conditioned_libero_trajectory.sh",
+        )
+    )
+
+    assert not any(path.exists() for path in retired_paths)
+    active_guides = (
+        REPO_ROOT / "README.md",
+        REPO_ROOT / "notes" / "collaboration_guide.md",
+        REPO_ROOT / "notes" / "lingbot_reference_usage.md",
+    )
+    for guide in active_guides:
+        source = guide.read_text(encoding="utf-8")
+        assert not any(path.name in source for path in retired_paths)
+
+
 def test_retained_pose_and_wan_diagnostics_use_owned_portable_contracts() -> None:
     pose_path = REPO_ROOT / "scripts" / "visualize_libero_pose_compare.py"
     assert "quaternion_angular_error_degrees" not in _top_level_definitions(

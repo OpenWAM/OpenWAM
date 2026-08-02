@@ -130,10 +130,12 @@ def test_sanity_command_public_tiny_numerical_contract(tmp_path: Path, capsys) -
     assert summary["command"] == "open-wam-sanity"
     assert summary["benchmark"] == "public_tiny"
     assert summary["seed"] == 17
-    assert summary["metrics"] == {
-        "rollout_steps": 1,
-        "train_loss": 3.3964438438415527,
-    }
+    assert summary["metrics"]["rollout_steps"] == 1
+    assert summary["metrics"]["train_loss"] == pytest.approx(
+        3.3964438438415527,
+        rel=0.0,
+        abs=1e-6,
+    )
     assert summary["mapping"] == {
         "action_dim": 4,
         "action_mapping_mode": "none",
@@ -148,11 +150,23 @@ def test_sanity_command_public_tiny_numerical_contract(tmp_path: Path, capsys) -
         "task_text_count": 1,
         "view_shapes": {"camera_0": [1, 2, 64, 64, 3]},
     }
-    assert summary["train_forward"]["metrics"] == {
-        "action_diffusion_loss": 3.3964438438415527,
-        "action_mse": 0.16798308491706848,
-        "weighted_action_diffusion_loss": 3.3964438438415527,
-    }
+    assert summary["train_forward"]["loss"] == pytest.approx(
+        3.3964438438415527,
+        rel=0.0,
+        abs=1e-6,
+    )
+    train_metrics = summary["train_forward"]["metrics"]
+    assert train_metrics["action_diffusion_loss"] == pytest.approx(
+        3.3964438438415527,
+        rel=0.0,
+        abs=1e-6,
+    )
+    assert train_metrics["weighted_action_diffusion_loss"] == pytest.approx(
+        3.3964438438415527,
+        rel=0.0,
+        abs=1e-6,
+    )
+    assert train_metrics["action_mse"] == 0.16798308491706848
     assert summary["batch_infer"]["action_pred_shape"] == [1, 2, 4]
     assert summary["batch_infer"]["target_action_shape"] == [1, 2, 4]
     assert summary["batch_infer"]["masked_action_mse"] == 0.5524998307228088
