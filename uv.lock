@@ -1644,6 +1644,7 @@ deployment = [
     { name = "numpy" },
     { name = "opencv-python" },
     { name = "pyarrow" },
+    { name = "scipy" },
 ]
 docs = [
     { name = "mkdocs" },
@@ -1866,6 +1867,7 @@ requires-dist = [
     { name = "robosuite", marker = "extra == 'full'", specifier = "==1.4.0" },
     { name = "robosuite", marker = "extra == 'libero'", specifier = "==1.4.0" },
     { name = "robosuite", marker = "extra == 'sim'", specifier = "==1.4.0" },
+    { name = "scipy", marker = "extra == 'deployment'", specifier = ">=1.11" },
     { name = "sentencepiece", marker = "extra == 'eval'", specifier = ">=0.2.0" },
     { name = "sentencepiece", marker = "extra == 'full'", specifier = ">=0.2.0" },
     { name = "sentencepiece", marker = "extra == 'sim'", specifier = ">=0.2.0" },

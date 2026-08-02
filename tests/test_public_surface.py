@@ -206,6 +206,7 @@ def test_base_dependencies_stay_minimal_and_extras_are_explicit() -> None:
         "numpy>=1.26",
         "opencv-python>=4.10.0",
         "pyarrow>=18.0",
+        "scipy>=1.11",
     ]
     assert not {dependency.split(">=", 1)[0] for dependency in base_deps}.intersection(heavy_base_names)
     assert {
