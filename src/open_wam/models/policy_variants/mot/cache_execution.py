@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 
 from open_wam.models.common.sharded_execution import summon_full_parameters
-from open_wam.models.visual_tower.shared_transformer_support import (
+from open_wam.models.visual_tower.runtime_parameter_ops import (
     linear_with_materialized_params,
 )
 

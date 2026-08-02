@@ -262,17 +262,26 @@ rather than adding method-specific branches to these MoT owners.
 ### Shared Transformer Primitives
 
 `open_wam.models.visual_tower` exports the shared Wan-style transformer
-building blocks used by the visual core and action-side experts:
+building blocks used by the visual core and action-side experts. Their
+canonical owners are:
 
-- timestep and rotary positional embeddings;
-- `SharedTransformerAttention` and `SharedTransformerBlock`;
-- rotary, chunk-slice, and split-segment tensor helpers;
-- FSDP-safe linear, normalization, and feed-forward helpers.
+- `shared_transformer_support` for `SharedTransformerAttention` and
+  `SharedTransformerBlock`, including the stable attention-backend patch
+  point;
+- `shared_transformer_embeddings` for timestep and rotary positional
+  embeddings plus rotary application;
+- `shared_transformer_layout` for chunk-slice and split-segment tensor
+  helpers;
+- `runtime_parameter_ops` for FSDP-safe linear, normalization, and
+  feed-forward helpers.
 
-These functions own learned transformer execution, not sequence visibility or
-cache retention. Extensions should normally submit an attention profile
-through `VisualCoreInput`; use the lower-level primitives only when implementing
-a genuinely new reusable block outside the built-in core.
+The package-root exports and historical `shared_transformer_support` aggregate
+remain compatible. New implementation code should import the role owner it
+uses. These functions own learned transformer execution or the explicit tensor
+operations supporting it, not sequence visibility or cache retention.
+Extensions should normally submit an attention profile through
+`VisualCoreInput`; use the lower-level primitives only when implementing a
+genuinely new reusable block outside the built-in core.
 
 ### Cache Policy
 

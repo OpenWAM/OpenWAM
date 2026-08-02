@@ -154,6 +154,23 @@ CACHE_BACKEND_ROLE_PATHS = {
         PACKAGE_ROOT / "models" / "common" / "cache_backend_lifecycle.py"
     ),
 }
+SHARED_TRANSFORMER_ROLE_PATHS = {
+    "embeddings": (
+        PACKAGE_ROOT
+        / "models"
+        / "visual_tower"
+        / "shared_transformer_embeddings.py"
+    ),
+    "layout": (
+        PACKAGE_ROOT / "models" / "visual_tower" / "shared_transformer_layout.py"
+    ),
+    "parameters": (
+        PACKAGE_ROOT / "models" / "visual_tower" / "runtime_parameter_ops.py"
+    ),
+    "support": (
+        PACKAGE_ROOT / "models" / "visual_tower" / "shared_transformer_support.py"
+    ),
+}
 MOT_ATTENTION_ROLE_PATHS = {
     "cached": (
         PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "attention_cached.py"
@@ -5002,27 +5019,231 @@ def test_attention_cache_policy_has_one_implementation_owner() -> None:
 
 
 def test_shared_transformer_support_has_one_implementation_owner() -> None:
-    support_definitions = {
+    import pickle
+
+    import torch
+
+    from open_wam.models import visual_tower as public_api
+    from open_wam.models.visual_tower import (
+        runtime_parameter_ops,
+        shared_transformer_embeddings,
+        shared_transformer_layout,
+        shared_transformer_support,
+    )
+
+    role_modules = {
+        "embeddings": shared_transformer_embeddings,
+        "layout": shared_transformer_layout,
+        "parameters": runtime_parameter_ops,
+        "support": shared_transformer_support,
+    }
+    owner_names = {
+        "embeddings": {
+            "SharedTransformerRotaryPositionalEmbedding",
+            "SharedTransformerTimeEmbedding",
+            "apply_rotary_emb",
+        },
+        "layout": {"select_chunk_slices", "select_split_segments"},
+        "parameters": {
+            "feed_forward_with_materialized_params",
+            "layer_norm_with_materialized_params",
+            "linear_with_materialized_params",
+            "materialize_runtime_parameter",
+            "rms_norm_with_materialized_weight",
+        },
+        "support": {"SharedTransformerAttention", "SharedTransformerBlock"},
+    }
+    all_names = set().union(*owner_names.values())
+    replica_core_path = PACKAGE_ROOT / "models" / "visual_tower" / "replica_core.py"
+
+    assert len(all_names) == 12
+    for role, names in owner_names.items():
+        assert _top_level_definitions(SHARED_TRANSFORMER_ROLE_PATHS[role]) == names
+        if role == "support":
+            assert _module_all_names(SHARED_TRANSFORMER_ROLE_PATHS[role]) == all_names
+        else:
+            assert _module_all_names(SHARED_TRANSFORMER_ROLE_PATHS[role]) == names
+    assert all(
+        sum(
+            name in _top_level_definitions(path)
+            for path in SHARED_TRANSFORMER_ROLE_PATHS.values()
+        )
+        == 1
+        for name in all_names
+    )
+
+    relative_imports: dict[str, set[str]] = {}
+    for role, path in SHARED_TRANSFORMER_ROLE_PATHS.items():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        relative_imports[role] = {
+            node.module
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.level and node.module
+        }
+    assert relative_imports == {
+        "embeddings": set(),
+        "layout": set(),
+        "parameters": set(),
+        "support": {
+            "runtime_parameter_ops",
+            "shared_transformer_embeddings",
+            "shared_transformer_layout",
+        },
+    }
+
+    direct_consumers = {
+        "shared_transformer_embeddings": {
+            "models/action_decoders/video_conditioned_expert.py",
+            "models/policy_variants/mot/packed_block.py",
+            "models/visual_tower/__init__.py",
+            "models/visual_tower/replica_core.py",
+            "models/visual_tower/shared_transformer_support.py",
+        },
+        "shared_transformer_layout": {
+            "models/action_decoders/video_conditioned_expert.py",
+            "models/policy_variants/mot/dual_stream_execution.py",
+            "models/policy_variants/mot/packed_block.py",
+            "models/visual_tower/__init__.py",
+            "models/visual_tower/replica_core.py",
+            "models/visual_tower/shared_transformer_support.py",
+        },
+        "runtime_parameter_ops": {
+            "models/action_decoders/video_conditioned_expert.py",
+            "models/policy_variants/mot/cache_execution.py",
+            "models/policy_variants/mot/dual_stream_execution.py",
+            "models/visual_tower/__init__.py",
+            "models/visual_tower/replica_core.py",
+            "models/visual_tower/shared_transformer_support.py",
+        },
+        "shared_transformer_support": {
+            "models/action_decoders/video_conditioned_expert.py",
+            "models/visual_tower/__init__.py",
+            "models/visual_tower/replica_core.py",
+        },
+    }
+    role_paths_by_module = {
+        "runtime_parameter_ops": SHARED_TRANSFORMER_ROLE_PATHS["parameters"],
+        "shared_transformer_embeddings": SHARED_TRANSFORMER_ROLE_PATHS[
+            "embeddings"
+        ],
+        "shared_transformer_layout": SHARED_TRANSFORMER_ROLE_PATHS["layout"],
+        "shared_transformer_support": SHARED_TRANSFORMER_ROLE_PATHS["support"],
+    }
+    for role_module, expected_paths in direct_consumers.items():
+        actual_paths = set()
+        for path in PACKAGE_ROOT.rglob("*.py"):
+            if path == role_paths_by_module[role_module]:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            if any(
+                isinstance(node, ast.ImportFrom)
+                and node.module
+                in {
+                    f"open_wam.models.visual_tower.{role_module}",
+                    role_module,
+                }
+                for node in ast.walk(tree)
+            ):
+                actual_paths.add(path.relative_to(PACKAGE_ROOT).as_posix())
+        assert actual_paths == expected_paths
+
+    for role, names in owner_names.items():
+        for name in names:
+            owner_value = getattr(role_modules[role], name)
+            assert getattr(shared_transformer_support, name) is owner_value
+            assert getattr(public_api, name) is owner_value
+            payload = (
+                "copen_wam.models.visual_tower.shared_transformer_support\n"
+                f"{name}\n."
+            ).encode()
+            assert pickle.loads(payload) is owner_value
+
+    assert (
+        shared_transformer_support.SharedTransformerAttention.forward.__globals__
+        is vars(shared_transformer_support)
+    )
+    assert (
+        shared_transformer_support.SharedTransformerBlock.forward.__globals__
+        is vars(shared_transformer_support)
+    )
+
+    expected_direct_names = {
+        "AttentionCacheEntry",
+        "F",
+        "FP32LayerNorm",
+        "FeedForward",
+        "PreparedAttentionProfile",
+        "SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS",
         "SharedTransformerAttention",
         "SharedTransformerBlock",
         "SharedTransformerRotaryPositionalEmbedding",
         "SharedTransformerTimeEmbedding",
+        "TimestepEmbedding",
+        "Timesteps",
+        "_apply_rotary_emb",
+        "_feed_forward_with_materialized_params",
+        "_layer_norm_with_materialized_params",
+        "_linear_with_materialized_params",
+        "_materialize_runtime_parameter",
+        "_packed_slot_pool_query_sequence_ids",
+        "_prepare_sdpa_mask",
+        "_prepend_cached_prefix_mask",
+        "_resolve_slot_pool_prefix_visibility",
+        "_retained_slot_pool_indices_for_current_write",
+        "_rms_norm_with_materialized_weight",
+        "_select_chunk_slices",
+        "annotations",
+        "apply_attention_backend",
         "apply_rotary_emb",
+        "cache_backend_uses_slot_pool",
         "feed_forward_with_materialized_params",
         "layer_norm_with_materialized_params",
         "linear_with_materialized_params",
         "materialize_runtime_parameter",
+        "nn",
+        "rearrange",
         "rms_norm_with_materialized_weight",
+        "select_attention_profile_mask",
         "select_chunk_slices",
         "select_split_segments",
+        "torch",
+        "update_slot_pool_layer_state",
     }
-    support_path = PACKAGE_ROOT / "models" / "visual_tower" / "shared_transformer_support.py"
-    replica_core_path = PACKAGE_ROOT / "models" / "visual_tower" / "replica_core.py"
-
-    assert support_definitions <= _top_level_definitions(support_path)
-    assert support_definitions.isdisjoint(_top_level_definitions(replica_core_path))
     assert {
-        f"_{name}" for name in support_definitions if not name.startswith("Shared")
+        name for name in vars(shared_transformer_support) if not name.startswith("__")
+    } == expected_direct_names
+    wildcard_namespace: dict[str, object] = {}
+    exec(
+        "from open_wam.models.visual_tower.shared_transformer_support import *",
+        wildcard_namespace,
+    )
+    assert set(wildcard_namespace) - {"__builtins__"} == all_names
+
+    legacy_instances = (
+        shared_transformer_embeddings.SharedTransformerTimeEmbedding(8, 4),
+        shared_transformer_embeddings.SharedTransformerRotaryPositionalEmbedding(4),
+    )
+    for value in legacy_instances:
+        canonical_module = type(value).__module__.encode()
+        payload = pickle.dumps(value, protocol=0)
+        canonical_global = b"c" + canonical_module + b"\n" + type(value).__name__.encode() + b"\n"
+        historical_global = (
+            b"copen_wam.models.visual_tower.shared_transformer_support\n"
+            + type(value).__name__.encode()
+            + b"\n"
+        )
+        assert canonical_global in payload
+        restored = pickle.loads(payload.replace(canonical_global, historical_global))
+        assert type(restored) is type(value)
+        assert restored.state_dict().keys() == value.state_dict().keys()
+        assert all(
+            torch.equal(restored.state_dict()[key], tensor)
+            for key, tensor in value.state_dict().items()
+        )
+
+    assert all_names.isdisjoint(_top_level_definitions(replica_core_path))
+    assert {
+        f"_{name}" for name in all_names if not name.startswith("Shared")
     }.isdisjoint(_top_level_definitions(replica_core_path))
 
 

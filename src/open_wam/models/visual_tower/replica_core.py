@@ -63,19 +63,25 @@ from .sequence_adapters import (
     prepare_exact_dual_stream_train_sequence,
     prepare_runtime_sequence,
 )
-from .shared_transformer_support import (
-    SharedTransformerAttention,
-    SharedTransformerBlock,
-    SharedTransformerRotaryPositionalEmbedding,
-    SharedTransformerTimeEmbedding,
-    apply_rotary_emb as _apply_rotary_emb,
+from .runtime_parameter_ops import (
     feed_forward_with_materialized_params as _feed_forward_with_materialized_params,
     layer_norm_with_materialized_params as _layer_norm_with_materialized_params,
     linear_with_materialized_params as _linear_with_materialized_params,
     materialize_runtime_parameter as _materialize_runtime_parameter,
     rms_norm_with_materialized_weight as _rms_norm_with_materialized_weight,
+)
+from .shared_transformer_embeddings import (
+    SharedTransformerRotaryPositionalEmbedding,
+    SharedTransformerTimeEmbedding,
+    apply_rotary_emb as _apply_rotary_emb,
+)
+from .shared_transformer_layout import (
     select_chunk_slices as _select_chunk_slices,
     select_split_segments as _select_split_segments,
+)
+from .shared_transformer_support import (
+    SharedTransformerAttention,
+    SharedTransformerBlock,
 )
 
 _COMPATIBILITY_EXPORTS = (

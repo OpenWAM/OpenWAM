@@ -18,10 +18,12 @@ from open_wam.models.common.video_geometry import (
     video_token_grid_from_latent_shape,
 )
 from open_wam.models.visual_tower.grid_ids import build_video_grid_ids
-from open_wam.models.visual_tower.shared_transformer_support import (
+from open_wam.models.visual_tower.runtime_parameter_ops import (
     layer_norm_with_materialized_params,
     linear_with_materialized_params,
     materialize_runtime_parameter,
+)
+from open_wam.models.visual_tower.shared_transformer_layout import (
     select_chunk_slices,
 )
 

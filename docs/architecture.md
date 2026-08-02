@@ -270,10 +270,14 @@ plain contracts:
   code imports the role-specific owners directly.
 - common attention profiles own token visibility; the policy selects a profile
   and supplies its resolved layout.
-- `visual_tower.shared_transformer_support` owns the reusable learned
-  transformer primitives: timestep and rotary embeddings, attention and
-  transformer-block execution, and FSDP-safe parameter materialization. Both
-  the visual core and action-side experts consume this public implementation.
+- `visual_tower.shared_transformer_support` owns learned attention and
+  transformer-block execution, including the stable attention-backend patch
+  point. `shared_transformer_embeddings` owns learned timestep and rotary
+  embedding modules; `shared_transformer_layout` owns parameter-free chunk
+  and stream slicing; and `runtime_parameter_ops` owns FSDP-safe explicit
+  linear, normalization, and feed-forward execution. The support module keeps
+  the historical aggregate import surface, while maintained visual and action
+  consumers import each canonical role directly.
 - `visual_tower.context_encoders` owns learned proprio and GJD mode
   projections. `SharedVideoTransformerCore` attaches them under stable
   checkpoint names and owns their execution lifecycle.

@@ -31,7 +31,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from open_wam.models.common.attention_backends import apply_attention_backend
-from open_wam.models.visual_tower.shared_transformer_support import apply_rotary_emb, select_chunk_slices
+from open_wam.models.visual_tower.shared_transformer_embeddings import apply_rotary_emb
+from open_wam.models.visual_tower.shared_transformer_layout import select_chunk_slices
 
 
 def _native_attention(

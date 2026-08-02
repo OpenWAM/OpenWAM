@@ -32,174 +32,21 @@ from open_wam.models.common.cache_backend_lifecycle import (
 from open_wam.models.video_backbone.contracts import AttentionCacheEntry
 
 
-class SharedTransformerTimeEmbedding(nn.Module):
-    """Wan-style timestep conditioner used by the shared transformer core."""
+from .runtime_parameter_ops import (
+    feed_forward_with_materialized_params,
+    layer_norm_with_materialized_params,
+    linear_with_materialized_params,
+    materialize_runtime_parameter,
+    rms_norm_with_materialized_weight,
+)
+from .shared_transformer_embeddings import (
+    SharedTransformerRotaryPositionalEmbedding,
+    SharedTransformerTimeEmbedding,
+    apply_rotary_emb,
+)
+from .shared_transformer_layout import select_chunk_slices, select_split_segments
 
-    def __init__(self, hidden_size: int, freq_dim: int) -> None:
-        super().__init__()
-        self.timesteps_proj = Timesteps(num_channels=freq_dim, flip_sin_to_cos=True, downscale_freq_shift=0)
-        self.time_embedder = TimestepEmbedding(in_channels=freq_dim, time_embed_dim=hidden_size)
-        self.act_fn = nn.SiLU()
-        self.time_proj = nn.Linear(hidden_size, hidden_size * 6)
-
-    def forward(self, timestep_values: torch.Tensor, *, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
-        batch_size, seq_len = timestep_values.shape
-        flat = timestep_values.reshape(-1)
-        projected = self.timesteps_proj(flat)
-        projected = projected.to(self.time_embedder.linear_1.weight.dtype)
-        temb = self.time_embedder(projected).to(dtype=dtype).reshape(batch_size, seq_len, -1)
-        timestep_proj = self.time_proj(self.act_fn(temb)).reshape(batch_size, seq_len, 6, -1)
-        return temb, timestep_proj
-
-
-class SharedTransformerRotaryPositionalEmbedding(nn.Module):
-    """Wan-style rotary embedding over frame, height, and width axes."""
-
-    def __init__(self, attention_head_dim: int, theta: float = 10000.0) -> None:
-        super().__init__()
-        self.attention_head_dim = attention_head_dim
-        self.theta = theta
-        self.f_dim = self.attention_head_dim - 2 * (self.attention_head_dim // 3)
-        self.h_dim = self.attention_head_dim // 3
-        self.w_dim = self.attention_head_dim // 3
-        self.register_buffer("f_freqs_base", self._make_freqs_base(self.f_dim), persistent=False)
-        self.register_buffer("h_freqs_base", self._make_freqs_base(self.h_dim), persistent=False)
-        self.register_buffer("w_freqs_base", self._make_freqs_base(self.w_dim), persistent=False)
-
-    def _make_freqs_base(self, dim: int) -> torch.Tensor:
-        half_dim = max(1, dim // 2)
-        return 1.0 / (self.theta ** (torch.arange(0, dim, 2)[:half_dim].double() / max(dim, 1)))
-
-    def forward(self, grid_ids: torch.Tensor) -> torch.Tensor:
-        if grid_ids.ndim == 2:
-            grid_ids = grid_ids.unsqueeze(0)
-        f_freqs = grid_ids[:, 0, :].unsqueeze(-1) * self.f_freqs_base.to(grid_ids.device)
-        h_freqs = grid_ids[:, 1, :].unsqueeze(-1) * self.h_freqs_base.to(grid_ids.device)
-        w_freqs = grid_ids[:, 2, :].unsqueeze(-1) * self.w_freqs_base.to(grid_ids.device)
-        freqs = torch.cat([f_freqs, h_freqs, w_freqs], dim=-1).float()
-        return torch.polar(torch.ones_like(freqs), freqs)
-
-
-def apply_rotary_emb(x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
-    """Apply complex rotary frequencies to per-head query or key features."""
-
-    x_complex = torch.view_as_complex(x.to(torch.float64).reshape(x.shape[0], x.shape[1], x.shape[2], -1, 2))
-    if freqs.ndim == 3:
-        freqs = freqs[:, :, None, :]
-    x_out = torch.view_as_real(x_complex * freqs).flatten(3)
-    return x_out.to(x.dtype)
-
-
-def select_chunk_slices(tensor: torch.Tensor, count: int) -> tuple[torch.Tensor, ...]:
-    """Split the chunk axis into cloned per-chunk tensors."""
-
-    chunked = rearrange(tensor, "b l n c -> b n l c").contiguous()
-    if int(chunked.shape[1]) != count:
-        raise ValueError(f"Expected chunk axis length {count}, got {tuple(chunked.shape)}.")
-    return tuple(chunked[:, index, :, :].clone() for index in range(count))
-
-
-def materialize_runtime_parameter(
-    parameter: torch.Tensor,
-    *,
-    device: torch.device,
-    dtype: torch.dtype,
-) -> torch.Tensor:
-    """Return a dense tensor for helper paths that bypass FSDP pre-forward hooks."""
-
-    if hasattr(parameter, "full_tensor"):
-        return parameter.full_tensor().to(device=device, dtype=dtype)
-    return parameter.to(device=device, dtype=dtype)
-
-
-def linear_with_materialized_params(
-    linear: nn.Linear,
-    inputs: torch.Tensor,
-) -> torch.Tensor:
-    """Apply a linear layer after materializing any sharded parameters."""
-
-    weight = materialize_runtime_parameter(
-        linear.weight,
-        device=inputs.device,
-        dtype=inputs.dtype,
-    )
-    bias = None
-    if linear.bias is not None:
-        bias = materialize_runtime_parameter(
-            linear.bias,
-            device=inputs.device,
-            dtype=inputs.dtype,
-        )
-    return F.linear(inputs, weight, bias)
-
-
-def rms_norm_with_materialized_weight(
-    norm: nn.RMSNorm,
-    inputs: torch.Tensor,
-) -> torch.Tensor:
-    """Apply RMS normalization with a materialized affine weight."""
-
-    weight = None
-    if norm.weight is not None:
-        weight = materialize_runtime_parameter(
-            norm.weight,
-            device=inputs.device,
-            dtype=inputs.dtype,
-        )
-    return F.rms_norm(
-        inputs,
-        list(norm.normalized_shape),
-        weight=weight,
-        eps=norm.eps,
-    )
-
-
-def layer_norm_with_materialized_params(
-    norm: nn.LayerNorm,
-    inputs: torch.Tensor,
-) -> torch.Tensor:
-    """Apply layer normalization with materialized affine parameters."""
-
-    weight = None
-    bias = None
-    if getattr(norm, "weight", None) is not None:
-        weight = materialize_runtime_parameter(
-            norm.weight,
-            device=inputs.device,
-            dtype=inputs.dtype,
-        )
-    if getattr(norm, "bias", None) is not None:
-        bias = materialize_runtime_parameter(
-            norm.bias,
-            device=inputs.device,
-            dtype=inputs.dtype,
-        )
-    return F.layer_norm(
-        inputs,
-        list(norm.normalized_shape),
-        weight=weight,
-        bias=bias,
-        eps=norm.eps,
-    )
-
-
-def feed_forward_with_materialized_params(
-    ffn: FeedForward,
-    inputs: torch.Tensor,
-) -> torch.Tensor:
-    """Apply the supported Diffusers feed-forward layout with dense parameters."""
-
-    if len(ffn.net) != 3:
-        raise ValueError(f"Unsupported FeedForward layout for materialized helper: {ffn.net!r}")
-    act = ffn.net[0]
-    dropout = ffn.net[1]
-    proj_out = ffn.net[2]
-    if not hasattr(act, "proj"):
-        raise ValueError(f"Unsupported FeedForward activation module for materialized helper: {act!r}")
-    hidden = linear_with_materialized_params(act.proj, inputs)
-    hidden = F.gelu(hidden, approximate="tanh")
-    hidden = dropout(hidden)
-    return linear_with_materialized_params(proj_out, hidden)
+(F, TimestepEmbedding, Timesteps, rearrange)
 
 
 # Private aliases preserve historical internal imports while this module owns no
@@ -707,15 +554,6 @@ class SharedTransformerBlock(nn.Module):
         ff_output = self.ffn(norm_hidden_states)
         hidden_states = (hidden_states.float() + ff_output.float() * c_gate_msa).type_as(hidden_states)
         return hidden_states, self_cache_entry, cross_cache_entry
-
-
-def select_split_segments(tensor: torch.Tensor, lengths: tuple[int, ...]) -> tuple[torch.Tensor, ...]:
-    offset = 0
-    segments: list[torch.Tensor] = []
-    for length in lengths:
-        segments.append(tensor.narrow(1, offset, length).clone())
-        offset += length
-    return tuple(segments)
 
 
 __all__ = [

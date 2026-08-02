@@ -33,19 +33,22 @@ from .runtime_programs import (
     build_single_stream_exact_runtime_program,
 )
 from .reference_transformer import build_reference_transformer, preferred_reference_dtype
-from .shared_transformer_support import (
-    SharedTransformerAttention,
-    SharedTransformerBlock,
-    SharedTransformerRotaryPositionalEmbedding,
-    SharedTransformerTimeEmbedding,
-    apply_rotary_emb,
+from .runtime_parameter_ops import (
     feed_forward_with_materialized_params,
     layer_norm_with_materialized_params,
     linear_with_materialized_params,
     materialize_runtime_parameter,
     rms_norm_with_materialized_weight,
-    select_chunk_slices,
-    select_split_segments,
+)
+from .shared_transformer_embeddings import (
+    SharedTransformerRotaryPositionalEmbedding,
+    SharedTransformerTimeEmbedding,
+    apply_rotary_emb,
+)
+from .shared_transformer_layout import select_chunk_slices, select_split_segments
+from .shared_transformer_support import (
+    SharedTransformerAttention,
+    SharedTransformerBlock,
 )
 from .tower import VisualTower
 

@@ -9,17 +9,23 @@ from diffusers.models.normalization import FP32LayerNorm
 from torch import nn
 
 from open_wam.models.visual_tower.grid_ids import build_sequence_grid_ids
-from open_wam.models.visual_tower.shared_transformer_support import (
-    SharedTransformerAttention,
-    SharedTransformerRotaryPositionalEmbedding,
-    SharedTransformerTimeEmbedding,
-    apply_rotary_emb,
+from open_wam.models.visual_tower.runtime_parameter_ops import (
     feed_forward_with_materialized_params,
     layer_norm_with_materialized_params,
     linear_with_materialized_params,
     materialize_runtime_parameter,
     rms_norm_with_materialized_weight,
+)
+from open_wam.models.visual_tower.shared_transformer_embeddings import (
+    SharedTransformerRotaryPositionalEmbedding,
+    SharedTransformerTimeEmbedding,
+    apply_rotary_emb,
+)
+from open_wam.models.visual_tower.shared_transformer_layout import (
     select_chunk_slices,
+)
+from open_wam.models.visual_tower.shared_transformer_support import (
+    SharedTransformerAttention,
 )
 
 
