@@ -4,7 +4,7 @@ Executable policy behavior lives in role-owned modules beside this facade.
 New code should import those owners directly.
 """
 
-from open_wam.models.common.flow_matching import (
+from open_wam.models.common.flow_schedule import (
     FlowMatchScheduler,
     sample_timestep_id,
 )

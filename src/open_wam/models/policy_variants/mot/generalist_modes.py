@@ -7,7 +7,9 @@ import torch
 from open_wam.configs import MoTGeneralistTrainingMode
 from open_wam.configs.policy_mot import MoTPolicyConfig
 from open_wam.contracts import SampleConstructionMetadata
-from open_wam.models.common.flow_matching import VideoFlowMatchTrainArtifacts
+from open_wam.models.common.flow_training import (
+    VideoFlowMatchTrainArtifacts,
+)
 from open_wam.models.common.joint_conditioning import (
     resolve_generalist_joint_conditioning_semantics,
     sample_conditioning_mode,

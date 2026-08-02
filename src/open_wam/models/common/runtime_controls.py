@@ -15,8 +15,10 @@ from open_wam.configs import (
 )
 from open_wam.models.video_backbone.contracts import ConditioningState
 
-from .flow_matching import (
+from .flow_schedule import (
     FlowMatchScheduler,
+)
+from .flow_inference import (
     build_action_flow_match_inference_scheduler,
     build_flow_unipc_inference_scheduler,
     build_video_flow_match_inference_scheduler,

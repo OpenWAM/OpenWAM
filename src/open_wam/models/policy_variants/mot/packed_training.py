@@ -17,11 +17,15 @@ from open_wam.configs.policy_mot import MoTPolicyConfig
 from open_wam.models.common.attention_profiles import (
     CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
 )
-from open_wam.models.common.flow_matching import (
+from open_wam.models.common.flow_training import (
     build_frame_aligned_action_flow_match_train_artifacts,
     build_video_flow_match_train_artifacts,
+)
+from open_wam.models.common.flow_supervision import (
     denoised_actions_from_flow,
     denoised_video_latents_from_flow,
+)
+from open_wam.models.common.flow_schedule import (
     sample_timestep_id,
 )
 from open_wam.models.common.flow_noise_plan import frame_sigmas_for_timesteps

@@ -7,7 +7,9 @@ import torch
 from open_wam.configs import TrainingConfig
 from open_wam.configs.policy_mot import MoTPolicyConfig
 from open_wam.contracts import SampleConstructionMetadata
-from open_wam.models.common.flow_matching import ActionFlowMatchTrainArtifacts
+from open_wam.models.common.flow_training import (
+    ActionFlowMatchTrainArtifacts,
+)
 from open_wam.models.visual_tower.grid_ids import build_action_grid_ids
 
 from ..contracts import PolicyTrainBatch

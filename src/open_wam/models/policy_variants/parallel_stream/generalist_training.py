@@ -15,7 +15,9 @@ from open_wam.contracts import GENERALIST_TRAINING_SOURCE_METADATA_KEY
 from open_wam.models.common.attention_profiles import (
     CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
 )
-from open_wam.models.common.flow_matching import FlowMatchScheduler
+from open_wam.models.common.flow_schedule import (
+    FlowMatchScheduler,
+)
 from open_wam.models.common.flow_noise_plan import sample_joint_denoise_timestep_values
 from open_wam.models.common.joint_conditioning import (
     JointConditioningModeSemantics,

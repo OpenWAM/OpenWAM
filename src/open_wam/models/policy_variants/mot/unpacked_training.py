@@ -9,9 +9,11 @@ import torch
 
 from open_wam.configs import TrainingConfig
 from open_wam.configs.policy_mot import MoTPolicyConfig
-from open_wam.models.common.flow_matching import (
+from open_wam.models.common.flow_training import (
     build_action_flow_match_train_artifacts,
     build_video_flow_match_train_artifacts,
+)
+from open_wam.models.common.flow_supervision import (
     denoised_actions_from_flow,
     denoised_video_latents_from_flow,
 )

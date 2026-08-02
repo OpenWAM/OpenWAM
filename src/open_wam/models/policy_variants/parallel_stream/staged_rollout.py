@@ -20,7 +20,9 @@ from open_wam.configs.training import TrainingConfig
 from open_wam.models.common import (
     SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS,
 )
-from open_wam.models.common.flow_matching import FlowMatchScheduler
+from open_wam.models.common.flow_schedule import (
+    FlowMatchScheduler,
+)
 from open_wam.models.common.video_geometry import unpatchify_video_sequence
 from open_wam.models.visual_tower.exact_runtime import (
     prepare_exact_single_stream_input,

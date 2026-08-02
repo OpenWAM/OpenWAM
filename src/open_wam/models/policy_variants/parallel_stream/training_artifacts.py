@@ -20,7 +20,9 @@ from open_wam.configs.enums import (
 )
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.configs.training import TrainingConfig
-from open_wam.models.common.flow_matching import FlowMatchScheduler
+from open_wam.models.common.flow_schedule import (
+    FlowMatchScheduler,
+)
 from open_wam.models.common.flow_noise_plan import (
     clean_timestep_values,
     sample_joint_denoise_timestep_values,

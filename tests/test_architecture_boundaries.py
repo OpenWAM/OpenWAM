@@ -127,6 +127,15 @@ MIXED_VIDEO_CATALOG_ROLE_PATHS = {
 MIXED_VIDEO_CATALOG_FACADE_PATH = (
     PACKAGE_ROOT / "data" / "mixed_video_catalog.py"
 )
+FLOW_MATCHING_ROLE_PATHS = {
+    "inference": PACKAGE_ROOT / "models" / "common" / "flow_inference.py",
+    "schedule": PACKAGE_ROOT / "models" / "common" / "flow_schedule.py",
+    "supervision": PACKAGE_ROOT / "models" / "common" / "flow_supervision.py",
+    "training": PACKAGE_ROOT / "models" / "common" / "flow_training.py",
+}
+FLOW_MATCHING_FACADE_PATH = (
+    PACKAGE_ROOT / "models" / "common" / "flow_matching.py"
+)
 
 
 def _absolute_imports_for_file(path: Path) -> set[str]:
@@ -3283,7 +3292,7 @@ def test_mot_runtime_controls_have_role_owners() -> None:
 
     assert routing_functions <= _top_level_definitions(mot_root / "runtime_routing.py")
     assert flow_runtime_functions <= _top_level_definitions(
-        PACKAGE_ROOT / "models" / "common" / "flow_matching.py"
+        FLOW_MATCHING_ROLE_PATHS["schedule"]
     )
     assert flow_runtime_functions.isdisjoint(
         _top_level_definitions(mot_root / "runtime.py")
@@ -3294,6 +3303,160 @@ def test_mot_runtime_controls_have_role_owners() -> None:
     assert retired_variant_functions.isdisjoint(
         _top_level_definitions(mot_root / "variant.py")
     )
+
+
+def test_flow_matching_roles_have_one_owner() -> None:
+    import pickle
+
+    from open_wam.models import common as common_api
+    from open_wam.models.common import (
+        flow_inference,
+        flow_matching,
+        flow_schedule,
+        flow_supervision,
+        flow_training,
+    )
+
+    role_modules = {
+        "inference": flow_inference,
+        "schedule": flow_schedule,
+        "supervision": flow_supervision,
+        "training": flow_training,
+    }
+    owner_names = {
+        "inference": {
+            "build_action_flow_match_inference_scheduler",
+            "build_flow_unipc_inference_scheduler",
+            "build_video_flow_match_inference_scheduler",
+        },
+        "schedule": {
+            "FlowMatchScheduler",
+            "expand_scalar_timestep",
+            "explicit_sigma_euler_step",
+            "sample_timestep_id",
+            "timesteps_matching_sigmas",
+            "zero_terminal_next_sigma",
+        },
+        "supervision": {
+            "denoised_actions_from_flow",
+            "denoised_video_latents_from_flow",
+            "reduce_frame_aligned_action_flow_match_loss",
+            "reduce_slot_aligned_action_flow_match_loss",
+            "reduce_video_flow_match_loss",
+        },
+        "training": {
+            "ActionFlowMatchTrainArtifacts",
+            "BlockCoupledActionFlowMatchTrainArtifacts",
+            "FrameAlignedActionFlowMatchTrainArtifacts",
+            "VideoFlowMatchTrainArtifacts",
+            "build_action_flow_match_train_artifacts",
+            "build_block_coupled_action_flow_match_train_artifacts",
+            "build_frame_aligned_action_flow_match_train_artifacts",
+            "build_video_flow_match_train_artifacts",
+        },
+    }
+    expected_role_dependencies = {
+        "inference": {"flow_schedule", "flow_unipc_multistep_scheduler"},
+        "schedule": set(),
+        "supervision": {"flow_schedule"},
+        "training": {"flow_schedule"},
+    }
+
+    assert not _top_level_definitions(FLOW_MATCHING_FACADE_PATH)
+    all_owner_paths = tuple(FLOW_MATCHING_ROLE_PATHS.values())
+    all_owned_names = set().union(*owner_names.values())
+    assert len(all_owned_names) == 22
+    assert all(
+        sum(name in _top_level_definitions(path) for path in all_owner_paths) == 1
+        for name in all_owned_names
+    )
+    for role, names in owner_names.items():
+        owner_path = FLOW_MATCHING_ROLE_PATHS[role]
+        assert _top_level_definitions(owner_path) == names
+        assert _module_all_names(owner_path) == names
+        role_dependencies = {
+            imported
+            for imported in _absolute_imports_for_file(owner_path)
+            if imported.startswith("flow_")
+        }
+        assert role_dependencies == expected_role_dependencies[role]
+        for name in names:
+            assert getattr(flow_matching, name) is getattr(
+                role_modules[role], name
+            )
+
+    assert _module_all_names(FLOW_MATCHING_FACADE_PATH) == {
+        "ActionFlowMatchTrainArtifacts",
+        "BlockCoupledActionFlowMatchTrainArtifacts",
+        "FlowMatchScheduler",
+        "FlowUniPCMultistepScheduler",
+        "FrameAlignedActionFlowMatchTrainArtifacts",
+        "InferenceConfig",
+        "TrainingConfig",
+        "VideoFlowMatchTrainArtifacts",
+        "annotations",
+        "build_action_flow_match_inference_scheduler",
+        "build_action_flow_match_train_artifacts",
+        "build_block_coupled_action_flow_match_train_artifacts",
+        "build_flow_unipc_inference_scheduler",
+        "build_frame_aligned_action_flow_match_train_artifacts",
+        "build_video_flow_match_inference_scheduler",
+        "build_video_flow_match_train_artifacts",
+        "dataclass",
+        "denoised_actions_from_flow",
+        "denoised_video_latents_from_flow",
+        "expand_scalar_timestep",
+        "explicit_sigma_euler_step",
+        "math",
+        "reduce_frame_aligned_action_flow_match_loss",
+        "reduce_slot_aligned_action_flow_match_loss",
+        "reduce_video_flow_match_loss",
+        "sample_timestep_id",
+        "timesteps_matching_sigmas",
+        "torch",
+        "zero_terminal_next_sigma",
+    }
+    non_root_exports = {
+        "VideoFlowMatchTrainArtifacts",
+        "timesteps_matching_sigmas",
+    }
+    assert non_root_exports.isdisjoint(_module_all_names(
+        PACKAGE_ROOT / "models" / "common" / "__init__.py"
+    ))
+    for name in all_owned_names - non_root_exports:
+        owner = next(
+            role_modules[role]
+            for role, names in owner_names.items()
+            if name in names
+        )
+        assert getattr(common_api, name) is getattr(owner, name)
+
+    old_globals = {
+        "FlowMatchScheduler": flow_schedule.FlowMatchScheduler,
+        "ActionFlowMatchTrainArtifacts": flow_training.ActionFlowMatchTrainArtifacts,
+        "VideoFlowMatchTrainArtifacts": flow_training.VideoFlowMatchTrainArtifacts,
+        "FrameAlignedActionFlowMatchTrainArtifacts": (
+            flow_training.FrameAlignedActionFlowMatchTrainArtifacts
+        ),
+        "BlockCoupledActionFlowMatchTrainArtifacts": (
+            flow_training.BlockCoupledActionFlowMatchTrainArtifacts
+        ),
+    }
+    for name, expected in old_globals.items():
+        payload = f"copen_wam.models.common.flow_matching\n{name}\n.".encode()
+        assert pickle.loads(payload) is expected
+
+    facade_consumers = []
+    for path in PACKAGE_ROOT.rglob("*.py"):
+        if path == FLOW_MATCHING_FACADE_PATH:
+            continue
+        imports = _absolute_imports_for_file(path)
+        if {
+            "flow_matching",
+            "open_wam.models.common.flow_matching",
+        } & imports:
+            facade_consumers.append(path.relative_to(PACKAGE_ROOT).as_posix())
+    assert facade_consumers == []
 
 
 def test_mot_condition_latent_selection_has_one_owner() -> None:

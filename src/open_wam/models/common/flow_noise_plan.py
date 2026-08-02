@@ -6,7 +6,9 @@ from typing import Protocol
 import torch
 
 from open_wam.configs.enums import JointTimestepCoupling
-from open_wam.models.common.flow_matching import sample_timestep_id
+from open_wam.models.common.flow_schedule import (
+    sample_timestep_id,
+)
 
 
 class TimestepGridSchedulerLike(Protocol):

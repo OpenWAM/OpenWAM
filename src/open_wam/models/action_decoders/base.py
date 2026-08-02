@@ -9,10 +9,12 @@ import torch.nn.functional as F
 from torch import nn
 
 from open_wam.configs import InferenceConfig, TrainingConfig
-from open_wam.models.common.flow_matching import (
+from open_wam.models.common.flow_training import (
     ActionFlowMatchTrainArtifacts,
-    build_action_flow_match_inference_scheduler,
     build_action_flow_match_train_artifacts,
+)
+from open_wam.models.common.flow_inference import (
+    build_action_flow_match_inference_scheduler,
 )
 from open_wam.models.policy_variants.contracts import PolicyInferOutput, PolicyTrainBatch, PolicyTrainOutput
 

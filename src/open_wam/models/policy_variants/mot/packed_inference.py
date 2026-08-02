@@ -18,9 +18,11 @@ from open_wam.configs.policy_mot import MoTPolicyConfig
 from open_wam.models.common.attention_profiles import (
     CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
 )
-from open_wam.models.common.flow_matching import (
+from open_wam.models.common.flow_inference import (
     build_action_flow_match_inference_scheduler,
     build_video_flow_match_inference_scheduler,
+)
+from open_wam.models.common.flow_schedule import (
     expand_scalar_timestep as expand_mot_scalar_timestep,
     explicit_sigma_euler_step as step_mot_flow_with_sigmas,
     timesteps_matching_sigmas,

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import torch
 
-from open_wam.models.common.flow_matching import FlowMatchScheduler, sample_timestep_id
+from open_wam.models.common.flow_schedule import (
+    FlowMatchScheduler,
+    sample_timestep_id,
+)
 from open_wam.models.common.flow_noise_plan import (
     sample_coupled_timestep_values as sample_shared_coupled_timestep_values,
 )

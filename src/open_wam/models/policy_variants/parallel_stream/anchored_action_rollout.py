@@ -11,7 +11,9 @@ from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.configs.inference import InferenceConfig
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.configs.training import TrainingConfig
-from open_wam.models.common.flow_matching import FlowMatchScheduler
+from open_wam.models.common.flow_schedule import (
+    FlowMatchScheduler,
+)
 from open_wam.models.visual_tower.exact_runtime import (
     build_reference_mesh_id as get_mesh_id,
     clear_exact_prediction_cache as _clear_exact_prediction_cache,

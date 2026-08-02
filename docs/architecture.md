@@ -262,6 +262,13 @@ plain contracts:
   scheduler-grid adaptation, and tuple layouts for coupled timestep plans. It
   consumes the generic flow-noise plan from `models.common`; model execution
   and generalist mode selection remain in the policy runtime.
+- `models.common.flow_schedule` owns the generic flow-matching scheduler,
+  timestep sampling and lookup, sigma-grid termination, and explicit Euler
+  integration primitives. `flow_training` builds parameter-free noisy
+  action/video artifact records, `flow_inference` constructs configured
+  inference schedulers, and `flow_supervision` reconstructs denoised values and
+  reduces masked losses. `flow_matching` is only the stable historical import
+  and pickle facade; package code imports the role owners directly.
 - `parallel_stream.latent_conditioning` owns validation and selection of
   first-frame and full-window clean latent conditions. Generated decoder
   windows remain in `models.policy_variants.common.video_conditioning`;

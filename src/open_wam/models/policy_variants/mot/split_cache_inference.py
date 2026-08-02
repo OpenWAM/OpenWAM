@@ -15,8 +15,10 @@ from open_wam.configs import (
     TrainingConfig,
 )
 from open_wam.configs.policy_mot import MoTPolicyConfig
-from open_wam.models.common.flow_matching import (
+from open_wam.models.common.flow_schedule import (
     FlowMatchScheduler,
+)
+from open_wam.models.common.flow_inference import (
     build_action_flow_match_inference_scheduler,
 )
 from open_wam.models.common.joint_conditioning import (

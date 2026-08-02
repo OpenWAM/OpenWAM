@@ -12,8 +12,10 @@ from open_wam.models.action_decoders.base import (
     DirectActionDecoderTrainInputs,
 )
 from open_wam.models.action_decoders.sequence_base import SequenceActionDecoder
-from open_wam.models.common.flow_matching import (
+from open_wam.models.common.flow_inference import (
     build_action_flow_match_inference_scheduler,
+)
+from open_wam.models.common.flow_training import (
     build_action_flow_match_train_artifacts,
 )
 from open_wam.models.policy_variants.contracts import (

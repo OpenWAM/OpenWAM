@@ -8,10 +8,12 @@ import torch
 from open_wam.configs import InferenceConfig, TrainingConfig
 from open_wam.configs.policy_contracts import CausalVideoPredictionPolicyConfig
 from open_wam.contracts import VideoFrameMapping
-from open_wam.models.common.flow_matching import (
+from open_wam.models.common.flow_schedule import (
     FlowMatchScheduler,
-    denoised_video_latents_from_flow,
     sample_timestep_id,
+)
+from open_wam.models.common.flow_supervision import (
+    denoised_video_latents_from_flow,
 )
 from open_wam.models.video_backbone.contracts import TokenGridMetadata
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower

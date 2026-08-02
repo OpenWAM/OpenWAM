@@ -3,7 +3,7 @@
 Maintained code imports each symbol from its role-specific owner.
 """
 
-from open_wam.models.common.flow_matching import (
+from open_wam.models.common.flow_schedule import (
     expand_scalar_timestep as expand_mot_scalar_timestep,
     explicit_sigma_euler_step as step_mot_flow_with_sigmas,
     zero_terminal_next_sigma as mot_scheduler_next_sigma,
