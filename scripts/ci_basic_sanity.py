@@ -349,10 +349,7 @@ def _check_hardware_workflow() -> None:
         job = job[: next_job.start()]
     required = (
         "python -m compileall -q deployment",
-        "deployment/openwam",
-        "deployment/ros2/teleop",
-        "deployment/scripts/deploy_parallel_stream_fr3_serial.py",
-        "deployment/scripts/deploy_parallel_stream_fr3_parallel.py",
+        "python -m pyflakes deployment",
         'find_spec("torch") is None',
         'find_spec("rclpy") is None',
         "pytest deployment/tests -q",

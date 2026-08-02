@@ -126,8 +126,7 @@ Only choose a mitigation after the visual content-lag result is known:
 | `deployment/openwam/camera/femto_mega.py` | Fixed for observability. `CameraFrame` carries `arrival_host_ns` and `sys_timestamp_us`; Femto stamps `arrival_host_ns` only when a new SDK frame is acquired. |
 | `deployment/openwam/camera/d405.py` | Fixed for observability. D405 stamps `arrival_host_ns` after `wait_for_frames()` returns a fresh frame. |
 | `deployment/openwam/camera/sync.py` | Fixed. `CameraGrabThread` skips repeated `frame_id`s and prefers `frame.arrival_host_ns`, so cached Femto reads no longer look fresh. |
-| `deployment/scripts/deploy_parallel_stream_fr3_full.py` | Fixed for logging. `capture_obs()` records frame metadata, warns on cached-frame reuse, warns on large arrival gaps, and prints periodic `[obs]` lines. |
-| `deployment/scripts/deploy_parallel_stream_fr3.py` | Fixed for logging. The MVP single-inference path now prints the same camera metadata block. |
+| `deployment/scripts/deploy_parallel_stream_fr3_serial.py` and `deployment/scripts/deploy_parallel_stream_fr3_parallel.py` | Fixed for logging. `capture_obs()` records frame metadata, warns on cached-frame reuse and large arrival gaps, and prints periodic `[obs]` lines. |
 | `deployment/scripts/camera_sync_probe.py` | Added. Step-1 arrival-time probe; already run successfully on 2026-05-03. |
 | `deployment/scripts/camera_visual_lag.py` | Added. Step-2 visual content-lag analysis tool; waiting for an LED/motion recording. |
 

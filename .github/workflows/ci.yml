@@ -110,16 +110,7 @@ jobs:
           PY
       - name: Compile hardware workspace
         run: python -m compileall -q deployment
-      - name: Lint supported hardware runtime
-        run: |
-          python -m pyflakes \
-            deployment/launch.py \
-            deployment/openwam \
-            deployment/ros2/teleop \
-            deployment/ros2/leader_teleop_node.py \
-            deployment/ros2/direct_gripper_node.py \
-            deployment/scripts/deploy_parallel_stream_fr3_serial.py \
-            deployment/scripts/deploy_parallel_stream_fr3_parallel.py \
-            deployment/tests
+      - name: Lint hardware workspace
+        run: python -m pyflakes deployment
       - name: Run no-hardware tests
         run: pytest deployment/tests -q
