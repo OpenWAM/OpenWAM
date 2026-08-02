@@ -54,12 +54,27 @@ backbone:
   num_layers: 1
   num_heads: 8
 
-action_head:
-  name: contract_only
+policy_variant:
+  name: post_latent
+  hidden_size: 256
+  attach_site: post_visual_core
+  pooling_mode: compat_global_mean
+  query_count: 0
+  temporal_projection: interpolate
+  use_state_projection: true
+  compatibility_mode: true
+  video_condition_input_space: video_latent
+  train_video_condition_source: local_window
+  action_chunk_anchor_mode: current_plus_future
+  local_video_window_frames: 4
+  current_video_frame_index: 0
+
+action_decoder:
+  name: mlp_decoder
   hidden_size: 256
   action_dim: 7
   action_horizon: 6
-  state_dim: 8
+  dropout: 0.0
 
 training:
   video_num_train_timesteps: 1000

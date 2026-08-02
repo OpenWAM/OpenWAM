@@ -37,6 +37,7 @@ from open_wam.configs import (
     ParallelSequenceContract,
     ParallelStreamPolicyConfig,
     ParallelStreamVariantProfile,
+    PoolingMode,
     PostDecodedPolicyConfig,
     PostLatentPolicyConfig,
     AnchorPolicy,
@@ -104,12 +105,78 @@ def test_absolute_action_features_are_opt_in_for_legacy_libero_training_configs(
     assert getattr(config.action_decoder, "recovered_osc_loss_weight", 0.0) == 0.0
 
 
-def test_legacy_contract_only_maps_to_post_latent() -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/contract_only_robotwin.yaml")
+@pytest.mark.parametrize(
+    ("config_name", "action_dim"),
+    [
+        ("contract_only_libero.yaml", 7),
+        ("contract_only_libero_local.yaml", 7),
+        ("contract_only_robotwin.yaml", 30),
+    ],
+)
+def test_maintained_contract_only_configs_use_explicit_components(
+    config_name: str,
+    action_dim: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = REPO_ROOT / "configs" / "experiments" / config_name
+    monkeypatch.setenv(
+        "OPEN_WAM_LOCAL_PATHS",
+        str(REPO_ROOT / "configs" / "local_paths.sample.yaml"),
+    )
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config = load_experiment_config(config_path)
+
+    assert "action_head" not in raw
+    assert "policy_variant" in raw
+    assert "action_decoder" in raw
     assert isinstance(config.policy_variant, PostLatentPolicyConfig)
+    assert config.policy_variant.pooling_mode == PoolingMode.COMPAT_GLOBAL_MEAN
     assert config.policy_variant.compatibility_mode is True
-    assert config.action_decoder.name == "mlp_decoder"
+    assert config.action_decoder.name == ActionDecoderName.MLP
+    assert config.action_decoder.action_dim == action_dim
+    assert config.action_decoder.action_horizon == 6
     assert not hasattr(config, "action_head")
+
+
+def test_external_legacy_action_head_maps_to_explicit_components(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "legacy_action_head.yaml"
+    config_path.write_text(
+        """
+name: legacy_action_head
+data:
+  dataset_name: synthetic
+  dataset_type: synthetic_multiview
+  num_frames: 4
+  action_schema:
+    action_dim: 4
+    action_horizon: 2
+    state_dim: 3
+    state_horizon: 1
+backbone:
+  implementation: dummy
+  hidden_size: 32
+action_head:
+  name: contract_only
+  hidden_size: 32
+  action_dim: 4
+  action_horizon: 2
+  state_dim: 3
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    config = load_experiment_config(config_path)
+
+    assert isinstance(config.policy_variant, PostLatentPolicyConfig)
+    assert config.policy_variant.pooling_mode == PoolingMode.COMPAT_GLOBAL_MEAN
+    assert config.policy_variant.compatibility_mode is True
+    assert config.action_decoder.name == ActionDecoderName.MLP
+    assert config.action_decoder.action_dim == 4
+    assert config.action_decoder.action_horizon == 2
 
 
 def test_new_variant_yaml_configs_load() -> None:

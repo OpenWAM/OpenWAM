@@ -29,7 +29,8 @@ The repo currently includes:
 - a config-driven canonical RGB layout builder
 - a dataset registry keyed by `data.dataset_type`
 - a real LeRobot-v2 adapter for `physical-intelligence/libero`
-- legacy `contract_only` compatibility via config migration into the new stack
+- an explicit `contract_only` compatibility profile composed from
+  `post_latent` plus the MLP action decoder
 - one composable train runtime for single-device, DDP, and FSDP execution
 
 The first real dataset path is:

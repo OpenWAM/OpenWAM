@@ -3,11 +3,28 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from open_wam.configs.static_schema import validate_config_file, validate_config_files
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.unit
+def test_maintained_configs_use_explicit_policy_and_decoder_sections() -> None:
+    maintained_configs = tuple(
+        path
+        for directory in ("experiments", "examples")
+        for path in sorted((REPO_ROOT / "configs" / directory).glob("*.yaml"))
+    )
+
+    legacy_configs = tuple(
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in maintained_configs
+        if "action_head" in yaml.safe_load(path.read_text(encoding="utf-8"))
+    )
+    assert legacy_configs == ()
 
 
 @pytest.mark.unit
@@ -1008,8 +1025,35 @@ trainer:
 
 
 @pytest.mark.unit
-def test_static_validator_warns_for_legacy_action_head() -> None:
-    report = validate_config_file(REPO_ROOT / "configs/experiments/contract_only_robotwin.yaml")
+def test_static_validator_warns_for_legacy_action_head(tmp_path: Path) -> None:
+    config_path = tmp_path / "legacy_action_head.yaml"
+    config_path.write_text(
+        """
+name: legacy_action_head
+data:
+  dataset_name: synthetic
+  dataset_type: synthetic_multiview
+  action_schema:
+    action_dim: 4
+    action_horizon: 2
+    state_dim: 3
+    state_horizon: 1
+backbone:
+  implementation: dummy
+  hidden_size: 32
+action_head:
+  name: contract_only
+  hidden_size: 32
+  action_dim: 4
+  action_horizon: 2
+  state_dim: 3
+trainer:
+  accelerator: cpu
+""",
+        encoding="utf-8",
+    )
+
+    report = validate_config_file(config_path, repo_root=tmp_path)
 
     assert report.ok
     assert any(issue.path == "action_head" for issue in report.warnings)
