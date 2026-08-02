@@ -6886,6 +6886,22 @@ def test_bespoke_smoke_and_config_preset_aliases_are_retired() -> None:
         assert not any(path.name in source for path in retired_paths)
 
 
+def test_pre_variant_backbone_only_surface_is_retired() -> None:
+    retired_paths = (
+        PACKAGE_ROOT / "pipelines" / "backbone_only.py",
+        REPO_ROOT / "configs" / "experiments" / "backbone_only_robotwin.yaml",
+    )
+
+    assert not any(path.exists() for path in retired_paths)
+    pipelines_source = (PACKAGE_ROOT / "pipelines" / "__init__.py").read_text(
+        encoding="utf-8"
+    )
+    assert "BackboneOnlyPipeline" not in pipelines_source
+    assert (
+        REPO_ROOT / "configs" / "experiments" / "contract_only_robotwin.yaml"
+    ).is_file()
+
+
 def test_retained_pose_and_wan_diagnostics_use_owned_portable_contracts() -> None:
     pose_path = REPO_ROOT / "scripts" / "visualize_libero_pose_compare.py"
     assert "quaternion_angular_error_degrees" not in _top_level_definitions(

@@ -11,7 +11,6 @@ from typing import Any
 
 
 _EXPORTS: dict[str, str] = {
-    "BackboneOnlyPipeline": "open_wam.pipelines.backbone_only",
     "ACTION_DECODER_BUILDERS": "open_wam.pipelines.registries",
     "POLICY_VARIANT_BUILDERS": "open_wam.pipelines.registries",
     "register_action_decoder": "open_wam.pipelines.registries",
