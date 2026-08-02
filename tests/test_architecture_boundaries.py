@@ -142,6 +142,18 @@ ATTENTION_PROFILE_ROLE_PATHS = {
     "facade": PACKAGE_ROOT / "models" / "common" / "attention_profiles.py",
     "profiles": PACKAGE_ROOT / "models" / "common" / "chunked_attention.py",
 }
+CACHE_BACKEND_ROLE_PATHS = {
+    "layout": (
+        PACKAGE_ROOT / "models" / "common" / "cache_layout_policy.py"
+    ),
+    "contracts": (
+        PACKAGE_ROOT / "models" / "common" / "cache_backend_contracts.py"
+    ),
+    "facade": PACKAGE_ROOT / "models" / "common" / "cache_backends.py",
+    "lifecycle": (
+        PACKAGE_ROOT / "models" / "common" / "cache_backend_lifecycle.py"
+    ),
+}
 MOT_ATTENTION_ROLE_PATHS = {
     "cached": (
         PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "attention_cached.py"
@@ -4721,6 +4733,256 @@ def test_research_dynamics_diagnostics_are_checkout_only() -> None:
         assert not any(prefix in source for prefix in private_root_prefixes), path
 
 
+def test_cache_backend_roles_have_one_owner_and_a_stable_facade() -> None:
+    import pickle
+
+    from open_wam.models import common as common_api
+    from open_wam.models.common import (
+        cache_backend_contracts,
+        cache_backend_lifecycle,
+        cache_backends,
+        cache_layout_policy,
+    )
+
+    role_modules = {
+        "contracts": cache_backend_contracts,
+        "layout": cache_layout_policy,
+        "lifecycle": cache_backend_lifecycle,
+    }
+    owner_names = {
+        "layout": {
+            "merge_attention_cache_entries",
+            "packed_slot_pool_query_sequence_ids",
+            "prepend_cached_prefix_mask",
+            "prepare_sdpa_mask",
+            "resolve_slot_pool_prefix_visibility",
+            "retained_slot_pool_indices_for_current_write",
+        },
+        "contracts": {
+            "CacheBackendSpec",
+            "MergedPrefixCachePayload",
+            "SlotPoolCachePayload",
+            "SlotPoolLayerState",
+            "cache_backend_uses_slot_pool",
+            "resolve_cache_backend_spec",
+        },
+        "lifecycle": {
+            "allocate_slot_pool_slots",
+            "clear_cache_backend_payload",
+            "init_cache_backend_payload",
+            "materialize_cache_backend_entries",
+            "materialize_slot_pool_layer_entry",
+            "next_slot_pool_cache_id",
+            "restore_slot_pool_slots",
+            "update_slot_pool_layer_state",
+        },
+    }
+    exported_names = {
+        "contracts": owner_names["contracts"]
+        | {
+            "SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS",
+            "SLOT_POOL_DEFER_EVICTION_UNTIL_AFTER_WRITE_ATTENTION",
+        },
+        "layout": owner_names["layout"],
+        "lifecycle": owner_names["lifecycle"],
+    }
+    all_names = set().union(*owner_names.values())
+
+    assert len(all_names) == 20
+    assert not _top_level_definitions(CACHE_BACKEND_ROLE_PATHS["facade"])
+    assert all(
+        sum(
+            name in _top_level_definitions(path)
+            for path in CACHE_BACKEND_ROLE_PATHS.values()
+        )
+        == 1
+        for name in all_names
+    )
+    for role, names in owner_names.items():
+        assert _top_level_definitions(CACHE_BACKEND_ROLE_PATHS[role]) == names
+        assert _module_all_names(CACHE_BACKEND_ROLE_PATHS[role]) == exported_names[role]
+    assert _module_all_names(CACHE_BACKEND_ROLE_PATHS["facade"]) == set()
+
+    relative_imports: dict[str, set[str]] = {}
+    for role, path in CACHE_BACKEND_ROLE_PATHS.items():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        relative_imports[role] = {
+            node.module
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.level and node.module
+        }
+    assert relative_imports == {
+        "contracts": set(),
+        "facade": {
+            "cache_layout_policy",
+            "cache_backend_contracts",
+            "cache_backend_lifecycle",
+        },
+        "layout": {"cache_backend_contracts"},
+        "lifecycle": {"cache_backend_contracts"},
+    }
+
+    facade_module = "open_wam.models.common.cache_backends"
+    facade_consumers = []
+    for path in PACKAGE_ROOT.rglob("*.py"):
+        if path == CACHE_BACKEND_ROLE_PATHS["facade"]:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        imports_facade = any(
+            (
+                isinstance(node, ast.Import)
+                and any(alias.name == facade_module for alias in node.names)
+            )
+            or (
+                isinstance(node, ast.ImportFrom)
+                and (
+                    node.module == facade_module
+                    or (node.level and node.module == "cache_backends")
+                )
+            )
+            for node in ast.walk(tree)
+        )
+        if imports_facade:
+            facade_consumers.append(path.relative_to(PACKAGE_ROOT).as_posix())
+    assert facade_consumers == []
+
+    direct_consumers = {
+        "cache_layout_policy": {
+            "models/common/__init__.py",
+            "models/visual_tower/replica_core.py",
+            "models/visual_tower/shared_transformer_support.py",
+        },
+        "cache_backend_contracts": {
+            "models/common/__init__.py",
+            "models/common/cache_layout_policy.py",
+            "models/common/cache_backend_lifecycle.py",
+            "models/policy_variants/parallel_stream/cache_execution.py",
+            "models/policy_variants/parallel_stream/exact_cache.py",
+            "models/policy_variants/parallel_stream/forward_execution.py",
+            "models/visual_tower/cache_lifecycle.py",
+            "models/visual_tower/replica_core.py",
+            "models/visual_tower/runtime_tensor_transport.py",
+            "models/visual_tower/shared_transformer_support.py",
+        },
+        "cache_backend_lifecycle": {
+            "models/common/__init__.py",
+            "models/policy_variants/parallel_stream/cache_execution.py",
+            "models/policy_variants/parallel_stream/forward_execution.py",
+            "models/visual_tower/cache_lifecycle.py",
+            "models/visual_tower/replica_core.py",
+            "models/visual_tower/shared_transformer_support.py",
+        },
+    }
+    for role_module, expected_paths in direct_consumers.items():
+        actual_paths = set()
+        for path in PACKAGE_ROOT.rglob("*.py"):
+            if path == CACHE_BACKEND_ROLE_PATHS["facade"]:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            if any(
+                isinstance(node, ast.ImportFrom)
+                and node.module
+                in {
+                    f"open_wam.models.common.{role_module}",
+                    role_module,
+                }
+                for node in ast.walk(tree)
+            ):
+                actual_paths.add(path.relative_to(PACKAGE_ROOT).as_posix())
+        assert actual_paths == expected_paths
+
+    for role, names in owner_names.items():
+        for name in names:
+            owner_value = getattr(role_modules[role], name)
+            assert getattr(cache_backends, name) is owner_value
+            assert getattr(common_api, name) is owner_value
+            payload = f"c{facade_module}\n{name}\n.".encode()
+            assert pickle.loads(payload) is owner_value
+
+    for name in {
+        "SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS",
+        "SLOT_POOL_DEFER_EVICTION_UNTIL_AFTER_WRITE_ATTENTION",
+    }:
+        owner_value = getattr(cache_backend_contracts, name)
+        assert getattr(cache_backends, name) == owner_value
+        assert getattr(common_api, name) == owner_value
+
+    expected_direct_names = {
+        "Any",
+        "AttentionCacheEntry",
+        "CacheBackendSpec",
+        "MergedPrefixCachePayload",
+        "PreparedAttentionProfile",
+        "SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS",
+        "SLOT_POOL_DEFER_EVICTION_UNTIL_AFTER_WRITE_ATTENTION",
+        "SlotPoolCachePayload",
+        "SlotPoolLayerState",
+        "_CACHE_BACKEND_ALIASES",
+        "_CACHE_BACKEND_SPECS",
+        "allocate_slot_pool_slots",
+        "annotations",
+        "cache_backend_uses_slot_pool",
+        "clear_cache_backend_payload",
+        "dataclass",
+        "field",
+        "init_cache_backend_payload",
+        "materialize_cache_backend_entries",
+        "materialize_slot_pool_layer_entry",
+        "math",
+        "merge_attention_cache_entries",
+        "next_slot_pool_cache_id",
+        "packed_slot_pool_query_sequence_ids",
+        "prepare_sdpa_mask",
+        "prepend_cached_prefix_mask",
+        "resolve_cache_backend_spec",
+        "resolve_slot_pool_prefix_visibility",
+        "restore_slot_pool_slots",
+        "retained_slot_pool_indices_for_current_write",
+        "torch",
+        "update_slot_pool_layer_state",
+    }
+    assert {
+        name for name in vars(cache_backends) if not name.startswith("__")
+    } == expected_direct_names
+    assert _top_level_import_names(CACHE_BACKEND_ROLE_PATHS["facade"]) == (
+        expected_direct_names - {"annotations"}
+    )
+
+    expected_wildcard_names = {
+        name for name in expected_direct_names if not name.startswith("_")
+    }
+    wildcard_namespace: dict[str, object] = {}
+    exec("from open_wam.models.common.cache_backends import *", wildcard_namespace)
+    assert set(wildcard_namespace) - {"__builtins__"} == expected_wildcard_names
+
+    legacy_objects = (
+        cache_backend_contracts.CacheBackendSpec(
+            name="slot_pool_exact",
+            family="exact_runtime",
+            retention_style="slot_pool",
+        ),
+        cache_backend_contracts.MergedPrefixCachePayload(metadata={"stage": "probe"}),
+        cache_backend_contracts.SlotPoolLayerState(metadata={"layer": 0}),
+        cache_backend_contracts.SlotPoolCachePayload(
+            layer_states=(
+                cache_backend_contracts.SlotPoolLayerState(metadata={"layer": 0}),
+            ),
+            total_tokens=8,
+            num_heads=2,
+            head_dim=4,
+            batch_size=1,
+        ),
+    )
+    for value in legacy_objects:
+        payload = pickle.dumps(value, protocol=0).replace(
+            b"open_wam.models.common.cache_backend_contracts\n",
+            b"open_wam.models.common.cache_backends\n",
+        )
+        restored = pickle.loads(payload)
+        assert restored == value
+        assert type(restored) is type(value)
+
+
 def test_attention_cache_policy_has_one_implementation_owner() -> None:
     cache_policy_functions = {
         "merge_attention_cache_entries",
@@ -4730,7 +4992,7 @@ def test_attention_cache_policy_has_one_implementation_owner() -> None:
         "resolve_slot_pool_prefix_visibility",
         "retained_slot_pool_indices_for_current_write",
     }
-    cache_backend_path = PACKAGE_ROOT / "models" / "common" / "cache_backends.py"
+    cache_backend_path = CACHE_BACKEND_ROLE_PATHS["layout"]
     replica_core_path = PACKAGE_ROOT / "models" / "visual_tower" / "replica_core.py"
 
     assert cache_policy_functions <= _top_level_definitions(cache_backend_path)

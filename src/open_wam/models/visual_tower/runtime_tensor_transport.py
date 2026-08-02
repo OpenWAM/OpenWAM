@@ -8,9 +8,9 @@ import torch
 
 from open_wam.models.common import (
     PreparedAttentionProfile,
-    SlotPoolLayerState,
     build_chunked_temporal_exact_attention_profile,
 )
+from open_wam.models.common.cache_backend_contracts import SlotPoolLayerState
 
 
 def move_optional_tensor(

@@ -276,15 +276,31 @@ a genuinely new reusable block outside the built-in core.
 
 ### Cache Policy
 
-`open_wam.models.common.cache_backends` contains the parameter-free cache
-operations used by the shared visual runtime. Custom policies that retain the
-built-in cache formats can reuse:
+The parameter-free cache API is split by role:
+
+- `open_wam.models.common.cache_backend_contracts` defines backend specs,
+  payload records, and backend selection;
+- `open_wam.models.common.cache_layout_policy` defines attention-mask,
+  prefix-visibility, packed-sequence, slot-retention, and prefix-merge policy;
+- `open_wam.models.common.cache_backend_lifecycle` defines payload allocation,
+  mutation, reset, and materialization.
+
+`open_wam.models.common.cache_backends` remains a historical import and pickle
+facade. New integrations should import the role module that owns the operation.
+Custom policies that retain the built-in cache formats can reuse:
 
 - `prepare_sdpa_mask` and `prepend_cached_prefix_mask`;
 - `resolve_slot_pool_prefix_visibility`;
 - `packed_slot_pool_query_sequence_ids`;
 - `retained_slot_pool_indices_for_current_write`;
 - `merge_attention_cache_entries`.
+
+Custom runtime programs can use `init_cache_backend_payload`,
+`update_slot_pool_layer_state`, `clear_cache_backend_payload`, and
+`materialize_cache_backend_entries` from `cache_backend_lifecycle` without
+depending on transformer execution. The payload types come from
+`cache_backend_contracts`; do not duplicate their tensor-layout conventions in
+a policy variant.
 
 `open_wam.models.visual_tower.RuntimeCacheLifecycle` composes those backend
 operations into initialization, named-branch, retention, cursor-advance, and

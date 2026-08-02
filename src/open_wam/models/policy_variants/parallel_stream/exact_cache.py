@@ -9,7 +9,10 @@ from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.configs.enums import ParallelExactCacheWriteMode
 from open_wam.configs.inference import InferenceConfig
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
-from open_wam.models.common import SlotPoolLayerState, cache_backend_uses_slot_pool
+from open_wam.models.common.cache_backend_contracts import (
+    SlotPoolLayerState,
+    cache_backend_uses_slot_pool,
+)
 from open_wam.models.visual_tower.exact_runtime import (
     initialize_exact_runtime_cache,
     resolve_runtime_module_dtype,

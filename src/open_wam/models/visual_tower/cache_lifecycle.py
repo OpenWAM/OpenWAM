@@ -7,11 +7,11 @@ from typing import Any
 
 import torch
 
-from open_wam.models.common import (
-    RolloutCursor,
+from open_wam.models.common import RolloutCursor
+from open_wam.models.common.cache_backend_contracts import resolve_cache_backend_spec
+from open_wam.models.common.cache_backend_lifecycle import (
     clear_cache_backend_payload,
     init_cache_backend_payload,
-    resolve_cache_backend_spec,
 )
 from open_wam.models.video_backbone.contracts import (
     AttentionCacheEntry,

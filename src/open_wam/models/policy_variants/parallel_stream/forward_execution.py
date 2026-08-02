@@ -14,7 +14,9 @@ from open_wam.models.common import (
     AttentionProfileSpec,
     PreparedAttentionProfile,
     build_chunked_temporal_exact_attention_profile,
-    cache_backend_uses_slot_pool,
+)
+from open_wam.models.common.cache_backend_contracts import cache_backend_uses_slot_pool
+from open_wam.models.common.cache_backend_lifecycle import (
     materialize_cache_backend_entries,
 )
 from open_wam.models.video_backbone.contracts import CacheState

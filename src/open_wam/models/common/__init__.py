@@ -17,28 +17,32 @@ from .chunked_attention import (
     build_chunked_temporal_exact_attention_profile,
     build_lingbot_chunked_exact_attention_profile,
 )
-from .cache_backends import (
+from .cache_layout_policy import (
+    merge_attention_cache_entries,
+    packed_slot_pool_query_sequence_ids,
+    prepend_cached_prefix_mask,
+    prepare_sdpa_mask,
+    resolve_slot_pool_prefix_visibility,
+    retained_slot_pool_indices_for_current_write,
+)
+from .cache_backend_contracts import (
     CacheBackendSpec,
     MergedPrefixCachePayload,
     SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS,
     SLOT_POOL_DEFER_EVICTION_UNTIL_AFTER_WRITE_ATTENTION,
     SlotPoolCachePayload,
     SlotPoolLayerState,
-    allocate_slot_pool_slots,
     cache_backend_uses_slot_pool,
+    resolve_cache_backend_spec,
+)
+from .cache_backend_lifecycle import (
+    allocate_slot_pool_slots,
     clear_cache_backend_payload,
     init_cache_backend_payload,
     materialize_cache_backend_entries,
     materialize_slot_pool_layer_entry,
-    merge_attention_cache_entries,
     next_slot_pool_cache_id,
-    packed_slot_pool_query_sequence_ids,
-    prepend_cached_prefix_mask,
-    prepare_sdpa_mask,
-    resolve_cache_backend_spec,
-    resolve_slot_pool_prefix_visibility,
     restore_slot_pool_slots,
-    retained_slot_pool_indices_for_current_write,
     update_slot_pool_layer_state,
 )
 from .flow_training import (

@@ -12,10 +12,14 @@ from open_wam.configs.enums import (
 )
 from open_wam.models.common import (
     PreparedAttentionProfile,
+    build_chunked_temporal_exact_attention_profile,
+)
+from open_wam.models.common.cache_backend_contracts import (
     SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS,
     SLOT_POOL_DEFER_EVICTION_UNTIL_AFTER_WRITE_ATTENTION,
-    build_chunked_temporal_exact_attention_profile,
     cache_backend_uses_slot_pool,
+)
+from open_wam.models.common.cache_backend_lifecycle import (
     materialize_cache_backend_entries,
 )
 from open_wam.models.video_backbone.contracts import CacheState

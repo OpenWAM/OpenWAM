@@ -329,11 +329,15 @@ plain contracts:
   mapping. `models.common.video_geometry` owns Torch-backed video token-grid
   and unpatchifying transforms used by visual execution, policy variants, and
   decoders.
-- `models.common.cache_backends` owns parameter-free attention-cache policy:
-  dense-mask normalization, cached-prefix visibility, packed sequence ids,
-  slot retention, merged-prefix operations, and backend payloads. The visual
-  cache lifecycle applies those operations to runtime state; the shared
-  transformer owns projections and attention execution.
+- `models.common.cache_backend_contracts` owns cache-backend specifications,
+  payload records, and backend selection. `cache_layout_policy` owns dense
+  mask normalization, cached-prefix visibility, packed sequence ids, slot
+  retention, and merged-prefix layout. `cache_backend_lifecycle` owns payload
+  allocation, mutation, reset, and materialization. `cache_backends` is only
+  the stable historical import and pickle facade; package code imports the
+  role owners directly. The visual cache lifecycle composes those operations
+  with runtime state, while the shared transformer owns projections and
+  attention execution.
 
 The layout, conditioning, mode, and routing helpers are plain contracts, not
 model modules. They must not own parameters, buffers, visual execution, or

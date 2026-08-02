@@ -10,18 +10,24 @@ from torch import nn
 
 from open_wam.models.common import (
     PreparedAttentionProfile,
-    cache_backend_uses_slot_pool,
-    clear_cache_backend_payload,
-    init_cache_backend_payload,
-    materialize_cache_backend_entries,
+    unpatchify_video_tokens,
+)
+from open_wam.models.common.cache_layout_policy import (
     merge_attention_cache_entries as _merge_attention_cache_entries,
     packed_slot_pool_query_sequence_ids as _packed_slot_pool_query_sequence_ids,
     prepend_cached_prefix_mask as _prepend_cached_prefix_mask,
     prepare_sdpa_mask as _prepare_sdpa_mask,
-    resolve_cache_backend_spec,
     resolve_slot_pool_prefix_visibility as _resolve_slot_pool_prefix_visibility,
     retained_slot_pool_indices_for_current_write as _retained_slot_pool_indices_for_current_write,
-    unpatchify_video_tokens,
+)
+from open_wam.models.common.cache_backend_contracts import (
+    cache_backend_uses_slot_pool,
+    resolve_cache_backend_spec,
+)
+from open_wam.models.common.cache_backend_lifecycle import (
+    clear_cache_backend_payload,
+    init_cache_backend_payload,
+    materialize_cache_backend_entries,
 )
 from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.models.video_backbone.contracts import (

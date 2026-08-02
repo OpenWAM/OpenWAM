@@ -12,15 +12,21 @@ from torch import nn
 
 from open_wam.models.common import (
     PreparedAttentionProfile,
-    SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS,
     apply_attention_backend,
-    cache_backend_uses_slot_pool,
+    select_attention_profile_mask,
+)
+from open_wam.models.common.cache_layout_policy import (
     packed_slot_pool_query_sequence_ids as _packed_slot_pool_query_sequence_ids,
     prepend_cached_prefix_mask as _prepend_cached_prefix_mask,
     prepare_sdpa_mask as _prepare_sdpa_mask,
     resolve_slot_pool_prefix_visibility as _resolve_slot_pool_prefix_visibility,
     retained_slot_pool_indices_for_current_write as _retained_slot_pool_indices_for_current_write,
-    select_attention_profile_mask,
+)
+from open_wam.models.common.cache_backend_contracts import (
+    SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS,
+    cache_backend_uses_slot_pool,
+)
+from open_wam.models.common.cache_backend_lifecycle import (
     update_slot_pool_layer_state,
 )
 from open_wam.models.video_backbone.contracts import AttentionCacheEntry
