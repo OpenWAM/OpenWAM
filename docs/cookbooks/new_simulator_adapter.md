@@ -29,6 +29,12 @@ Adapters should provide:
 - optional render frame
 - close
 
+Keep environment lifecycle in the adapter and place nontrivial observation
+parsing, controller mutation, and action translation in role-based integration
+modules. Configuration records should remain dependency-light. This lets data
+conversion, offline diagnostics, and live rollout share explicit semantics
+without importing the simulator lifecycle.
+
 ## Validation
 
 Default CI should use fake adapters only. Real simulator checks belong in

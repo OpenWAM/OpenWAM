@@ -9,11 +9,14 @@ import numpy as np
 import torch
 
 from open_wam.data.action_pose import PoseSequence, reconstruct_absolute_pose_targets
-from open_wam.integrations.libero_control import (
-    LiberoControlConfig,
-    compute_osc_pose_action,
-    extract_pose_from_obs,
+from open_wam.integrations.libero_gripper_control import (
     project_libero_gripper_state,
+)
+from open_wam.integrations.libero_observations import (
+    extract_pose_from_obs,
+)
+from open_wam.integrations.libero_osc_control import (
+    compute_osc_pose_action,
     quaternion_angular_error_degrees,
 )
 from open_wam.integrations.libero_runtime import build_libero_offscreen_env
@@ -22,6 +25,7 @@ from open_wam.integrations.libero_tasks import (
     load_libero_task_init_states,
     resolve_libero_task,
 )
+from open_wam.integrations.simulator_configs import LiberoControlConfig
 
 
 __all__ = [

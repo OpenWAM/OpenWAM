@@ -60,6 +60,12 @@ remain lazy so importing the core does not require simulator dependencies.
 `open_wam.integrations.simulator_configs` owns the dependency-light LIBERO
 environment and control records plus the RoboTwin and CALVIN launch records;
 the historical adapter modules retain identity-preserving aliases.
+The LIBERO adapter composes four benchmark-side control roles:
+`libero_observations` parses simulator state, `libero_joint_control` translates
+joint targets and owns controller hooks, `libero_gripper_control` owns gripper
+command/state policy, and `libero_osc_control` translates pose targets and
+owns rotation geometry. `libero_control` is the stable compatibility import
+surface; new package code imports the role owner it consumes.
 `open_wam.integrations.realtime_contracts` owns immutable frame/action plan
 records, and `realtime_scheduling` owns planner selection and submission
 policy. `realtime_plan_queue` owns execution-cursor filtering and deterministic

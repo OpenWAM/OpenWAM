@@ -13,7 +13,11 @@ from open_wam.data.action_transforms import PoseSequence, axis_angle_to_quaterni
 from open_wam.integrations import (
     libero_control,
     libero_env,
+    libero_joint_control,
+    libero_observations,
+    libero_osc_control,
     libero_runtime,
+    simulator_configs,
     libero_tasks,
     libero_tracking,
 )
@@ -33,24 +37,32 @@ def test_libero_task_contract_has_one_canonical_owner() -> None:
 
 
 def test_libero_runtime_contracts_have_one_canonical_owner() -> None:
-    control_exports = (
-        "LiberoControlConfig",
-        "absolute_joint_position_to_libero_joint_delta_action",
-        "compute_osc_pose_action",
-        "disable_libero_joint_position_controller_interpolator",
-        "extract_gripper_positions_from_obs",
-        "extract_joint_positions_from_obs",
-        "extract_pose_from_obs",
-        "integrated_eef6d_target_to_osc_action",
-        "resolve_libero_joint_delta_limit",
-        "set_libero_joint_position_controller_gain",
-        "step_libero_absolute_joint_position_goal",
-    )
-    for name in control_exports:
-        canonical = getattr(libero_control, name)
+    control_owners = {
+        "LiberoControlConfig": simulator_configs,
+        "absolute_joint_position_to_libero_joint_delta_action": (
+            libero_joint_control
+        ),
+        "compute_osc_pose_action": libero_osc_control,
+        "disable_libero_joint_position_controller_interpolator": (
+            libero_joint_control
+        ),
+        "extract_gripper_positions_from_obs": libero_observations,
+        "extract_joint_positions_from_obs": libero_observations,
+        "extract_pose_from_obs": libero_observations,
+        "integrated_eef6d_target_to_osc_action": libero_osc_control,
+        "resolve_libero_joint_delta_limit": libero_joint_control,
+        "set_libero_joint_position_controller_gain": libero_joint_control,
+        "step_libero_absolute_joint_position_goal": libero_joint_control,
+    }
+    for name, owner in control_owners.items():
+        canonical = getattr(owner, name)
+        assert getattr(libero_control, name) is canonical
         assert getattr(integrations, name) is canonical
         assert getattr(libero_env, name) is canonical
-    assert libero_env.quaternion_angular_error_degrees is libero_control.quaternion_angular_error_degrees
+    assert (
+        libero_env.quaternion_angular_error_degrees
+        is libero_osc_control.quaternion_angular_error_degrees
+    )
 
     runtime_exports = (
         "build_libero_control_env",

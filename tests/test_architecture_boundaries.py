@@ -302,6 +302,13 @@ CHECKPOINT_ROLE_PATHS = {
     "manager": PACKAGE_ROOT / "training" / "checkpoints.py",
     "storage": PACKAGE_ROOT / "training" / "checkpoint_storage.py",
 }
+LIBERO_CONTROL_ROLE_PATHS = {
+    "facade": PACKAGE_ROOT / "integrations" / "libero_control.py",
+    "gripper": PACKAGE_ROOT / "integrations" / "libero_gripper_control.py",
+    "joint": PACKAGE_ROOT / "integrations" / "libero_joint_control.py",
+    "observations": PACKAGE_ROOT / "integrations" / "libero_observations.py",
+    "osc": PACKAGE_ROOT / "integrations" / "libero_osc_control.py",
+}
 
 
 def _absolute_imports_for_file(path: Path) -> set[str]:
@@ -7096,13 +7103,11 @@ def test_libero_mot_runtime_loading_has_one_owner() -> None:
 def test_libero_integration_roles_have_one_owner() -> None:
     task_path = PACKAGE_ROOT / "integrations" / "libero_tasks.py"
     runtime_path = PACKAGE_ROOT / "integrations" / "libero_runtime.py"
-    control_path = PACKAGE_ROOT / "integrations" / "libero_control.py"
     tracking_path = PACKAGE_ROOT / "integrations" / "libero_tracking.py"
     config_path = PACKAGE_ROOT / "integrations" / "simulator_configs.py"
     env_path = PACKAGE_ROOT / "integrations" / "libero_env.py"
     task_definitions = _top_level_definitions(task_path)
     runtime_definitions = _top_level_definitions(runtime_path)
-    control_definitions = _top_level_definitions(control_path)
     tracking_definitions = _top_level_definitions(tracking_path)
     config_definitions = _top_level_definitions(config_path)
     env_definitions = _top_level_definitions(env_path)
@@ -7123,32 +7128,52 @@ def test_libero_integration_roles_have_one_owner() -> None:
         "build_libero_control_env",
         "build_libero_offscreen_env",
     }
-    control_contract = {
-        "absolute_joint_position_to_libero_joint_delta_action",
-        "compute_osc_pose_action",
-        "disable_libero_joint_position_controller_interpolator",
-        "extract_gripper_positions_from_obs",
-        "extract_joint_positions_from_obs",
-        "extract_pose_from_obs",
-        "gripper_command_for_substep",
-        "gripper_qpos_tracking_command",
-        "integrated_eef6d_target_to_osc_action",
-        "integrated_eef6d_target_to_osc_action_from_arrays",
-        "project_libero_gripper_state",
-        "quaternion_angular_error_degrees",
-        "quaternion_xyzw_to_rotation_matrix",
-        "resolve_libero_joint_delta_limit",
-        "resolve_libero_joint_limit_array",
-        "resolve_libero_joint_scale_array",
-        "set_libero_joint_position_controller_gain",
-        "step_libero_absolute_joint_position_goal",
+    control_roles = {
+        "gripper": {
+            "_gripper_opening",
+            "gripper_command_for_substep",
+            "gripper_qpos_tracking_command",
+            "project_libero_gripper_state",
+        },
+        "joint": {
+            "_first_libero_robot",
+            "absolute_joint_position_to_libero_joint_delta_action",
+            "disable_libero_joint_position_controller_interpolator",
+            "resolve_libero_joint_delta_limit",
+            "resolve_libero_joint_limit_array",
+            "resolve_libero_joint_scale_array",
+            "set_libero_joint_position_controller_gain",
+            "step_libero_absolute_joint_position_goal",
+        },
+        "observations": {
+            "extract_gripper_positions_from_obs",
+            "extract_joint_positions_from_obs",
+            "extract_pose_from_obs",
+        },
+        "osc": {
+            "_continuous_6d_to_rotation_matrix_np",
+            "_normalize_np",
+            "_relative_rotation_matrix_to_axis_angle_np",
+            "_rotation_matrix_to_axis_angle_np",
+            "compute_osc_pose_action",
+            "integrated_eef6d_target_to_osc_action",
+            "integrated_eef6d_target_to_osc_action_from_arrays",
+            "quaternion_angular_error_degrees",
+            "quaternion_xyzw_to_rotation_matrix",
+        },
     }
+    control_contract = set().union(*control_roles.values())
     tracking_contract = {
         "LiberoTrackingResult",
         "track_relative_targets_in_libero_env",
     }
     assert runtime_contract <= runtime_definitions
-    assert control_contract <= control_definitions
+    assert _top_level_definitions(LIBERO_CONTROL_ROLE_PATHS["facade"]) == set()
+    for role, expected_definitions in control_roles.items():
+        assert (
+            _top_level_definitions(LIBERO_CONTROL_ROLE_PATHS[role])
+            == expected_definitions
+        )
     assert tracking_contract <= tracking_definitions
     assert config_definitions == {
         "CalvinEnvConfig",
@@ -7164,12 +7189,28 @@ def test_libero_integration_roles_have_one_owner() -> None:
         "_source_action_from_model_action",
     }
     assert {
-        "open_wam.integrations.libero_control",
+        "open_wam.integrations.libero_gripper_control",
+        "open_wam.integrations.libero_joint_control",
+        "open_wam.integrations.libero_observations",
+        "open_wam.integrations.libero_osc_control",
         "open_wam.integrations.libero_runtime",
         "open_wam.integrations.simulator_configs",
         "open_wam.integrations.libero_tasks",
         "open_wam.integrations.libero_tracking",
     } <= _absolute_imports_for_file(env_path)
+    assert {
+        "open_wam.integrations.libero_gripper_control",
+        "open_wam.integrations.libero_observations",
+        "open_wam.integrations.libero_osc_control",
+        "open_wam.integrations.simulator_configs",
+    } <= _absolute_imports_for_file(tracking_path)
+    for path in PACKAGE_ROOT.rglob("*.py"):
+        if path == LIBERO_CONTROL_ROLE_PATHS["facade"]:
+            continue
+        assert (
+            "open_wam.integrations.libero_control"
+            not in _absolute_imports_for_file(path)
+        ), path
 
     sampled_runner = REPO_ROOT / "scripts" / "run_libero_sampled_eval.py"
     sampled_source = sampled_runner.read_text(encoding="utf-8")
@@ -7235,6 +7276,125 @@ def test_simulator_configs_preserve_frozen_definitions_and_legacy_aliases() -> N
     assert pickle.loads(
         b"copen_wam.integrations.libero_control\nLiberoControlConfig\n."
     ) is owner_value
+
+
+def test_libero_control_roles_preserve_definitions_and_legacy_aliases() -> None:
+    import hashlib
+    import importlib
+    import pickle
+
+    from open_wam import integrations
+
+    assert {
+        "open_wam.integrations.libero_gripper_control",
+        "open_wam.integrations.libero_joint_control",
+        "open_wam.integrations.libero_observations",
+        "open_wam.integrations.libero_osc_control",
+    } <= integrations._OPTIONAL_RUNTIME_MODULES
+
+    role_contracts = {
+        "observations": (
+            "extract_pose_from_obs",
+            "extract_joint_positions_from_obs",
+            "extract_gripper_positions_from_obs",
+        ),
+        "joint": (
+            "resolve_libero_joint_delta_limit",
+            "absolute_joint_position_to_libero_joint_delta_action",
+            "step_libero_absolute_joint_position_goal",
+            "set_libero_joint_position_controller_gain",
+            "disable_libero_joint_position_controller_interpolator",
+            "resolve_libero_joint_limit_array",
+            "resolve_libero_joint_scale_array",
+            "_first_libero_robot",
+        ),
+        "gripper": (
+            "gripper_command_for_substep",
+            "gripper_qpos_tracking_command",
+            "project_libero_gripper_state",
+            "_gripper_opening",
+        ),
+        "osc": (
+            "compute_osc_pose_action",
+            "integrated_eef6d_target_to_osc_action",
+            "integrated_eef6d_target_to_osc_action_from_arrays",
+            "quaternion_xyzw_to_rotation_matrix",
+            "quaternion_angular_error_degrees",
+            "_continuous_6d_to_rotation_matrix_np",
+            "_normalize_np",
+            "_relative_rotation_matrix_to_axis_angle_np",
+            "_rotation_matrix_to_axis_angle_np",
+        ),
+    }
+    expected_role_hashes = {
+        "observations": (
+            "6af03029264ddf59566a7461dad928e0c3310b12f04c6e0264ec93599aebcedc"
+        ),
+        "joint": (
+            "0420b8b4fa4d0e1385b8358382fd53ec8ac7736a17cfe31fde37fded21ac926c"
+        ),
+        "gripper": (
+            "613d7d5f2baba09c527c7478ce72891775a6400c38fbf587e63ed10b9c57b782"
+        ),
+        "osc": (
+            "02f1486f727569713ae3aa2766adcf0717a574672e237f3d7da373eed4f0ebd0"
+        ),
+    }
+    aggregate_definitions: list[str] = []
+    owner_by_name: dict[str, object] = {}
+    for role, names in role_contracts.items():
+        path = LIBERO_CONTROL_ROLE_PATHS[role]
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        nodes = {
+            node.name: node
+            for node in tree.body
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef))
+        }
+        serialized = [f"{name}:{ast.dump(nodes[name])}" for name in names]
+        aggregate_definitions.extend(serialized)
+        assert hashlib.sha256("\n".join(serialized).encode()).hexdigest() == (
+            expected_role_hashes[role]
+        )
+        module = importlib.import_module(
+            f"open_wam.integrations.libero_{role}"
+            if role == "observations"
+            else f"open_wam.integrations.libero_{role}_control"
+        )
+        for name in _module_all_names(path):
+            owner_by_name[name] = getattr(module, name)
+
+    assert hashlib.sha256(
+        "\n".join(aggregate_definitions).encode()
+    ).hexdigest() == (
+        "29c14a2a71a77eae85e930d71ed9b393d9727f1a93e86f3d7ed756c20ff315d7"
+    )
+
+    facade = importlib.import_module("open_wam.integrations.libero_control")
+    assert _module_all_names(LIBERO_CONTROL_ROLE_PATHS["facade"]) == {
+        "LiberoControlConfig",
+        *owner_by_name,
+    }
+    for name, owner_value in owner_by_name.items():
+        assert getattr(facade, name) is owner_value
+        legacy_payload = (
+            f"copen_wam.integrations.libero_control\n{name}\n."
+        ).encode()
+        assert pickle.loads(legacy_payload) is owner_value
+
+    root_exports = {
+        "absolute_joint_position_to_libero_joint_delta_action",
+        "compute_osc_pose_action",
+        "disable_libero_joint_position_controller_interpolator",
+        "extract_gripper_positions_from_obs",
+        "extract_joint_positions_from_obs",
+        "extract_pose_from_obs",
+        "integrated_eef6d_target_to_osc_action",
+        "resolve_libero_joint_delta_limit",
+        "set_libero_joint_position_controller_gain",
+        "step_libero_absolute_joint_position_goal",
+    }
+    for name in root_exports:
+        assert getattr(integrations, name) is owner_by_name[name]
 
 
 def test_public_config_enums_are_declared_once() -> None:

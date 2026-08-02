@@ -19,12 +19,13 @@ from open_wam.configs import ActionTargetRepresentation, ExperimentConfig, Paral
 from open_wam.configs.enums import DeadlineMissPolicy
 from open_wam.data.action_pose import PoseSequence
 from open_wam.evals import realtime_history
-from open_wam.integrations import LiberoControlConfig, compute_osc_pose_action
 from open_wam.integrations import libero_rollout
+from open_wam.integrations.libero_osc_control import compute_osc_pose_action
 from open_wam.integrations.realtime_contracts import (
     PlannedControlStep,
     PlannedFrameAction,
 )
+from open_wam.integrations.simulator_configs import LiberoControlConfig
 from open_wam.integrations.realtime_control import (
     make_planned_frame_actions,
     planned_frame_actions_to_control_steps,

@@ -118,6 +118,13 @@ def test_simulator_config_and_backend_contracts_are_dependency_light() -> None:
 @pytest.mark.parametrize(
     ("package_name", "public_name", "missing_module"),
     [
+        (
+            "open_wam.integrations",
+            "absolute_joint_position_to_libero_joint_delta_action",
+            "numpy",
+        ),
+        ("open_wam.integrations", "compute_osc_pose_action", "numpy"),
+        ("open_wam.integrations", "extract_pose_from_obs", "numpy"),
         ("open_wam.integrations", "RobotwinBenchmarkAdapter", "numpy"),
         ("open_wam.simulators", "SimRolloutResult", "torch"),
     ],
