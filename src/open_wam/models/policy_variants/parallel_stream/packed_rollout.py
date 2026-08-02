@@ -27,10 +27,8 @@ from open_wam.models.common.flow_schedule import (
 from open_wam.models.common.video_geometry import unpatchify_video_sequence
 from open_wam.models.visual_tower.exact_runtime import build_reference_mesh_id
 
-from .cache_execution import (
-    summarize_slot_pool_cache_state,
-    write_exact_cache_chunk,
-)
+from .cache_diagnostics import summarize_slot_pool_cache_state
+from .cache_execution import write_exact_cache_chunk
 from .cache_lifecycle import commit_initial_observed_video_context
 from .conditional_rollout import (
     generalist_conditioning_chunk_size,

@@ -208,6 +208,36 @@ PARALLEL_TRAINING_ARTIFACT_ROLE_PATHS = {
         / "training_single_frame_artifacts.py"
     ),
 }
+PARALLEL_CACHE_EXECUTION_ROLE_PATHS = {
+    "attention": (
+        PACKAGE_ROOT
+        / "models"
+        / "policy_variants"
+        / "parallel_stream"
+        / "cache_attention.py"
+    ),
+    "clean_write": (
+        PACKAGE_ROOT
+        / "models"
+        / "policy_variants"
+        / "parallel_stream"
+        / "clean_cache_write.py"
+    ),
+    "diagnostics": (
+        PACKAGE_ROOT
+        / "models"
+        / "policy_variants"
+        / "parallel_stream"
+        / "cache_diagnostics.py"
+    ),
+    "execution": (
+        PACKAGE_ROOT
+        / "models"
+        / "policy_variants"
+        / "parallel_stream"
+        / "cache_execution.py"
+    ),
+}
 MOT_ATTENTION_ROLE_PATHS = {
     "cached": (
         PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "attention_cached.py"
@@ -4907,20 +4937,23 @@ def test_cache_backend_roles_have_one_owner_and_a_stable_facade() -> None:
             "models/visual_tower/shared_transformer_support.py",
         },
         "cache_backend_contracts": {
-            "models/common/__init__.py",
-            "models/common/cache_layout_policy.py",
-            "models/common/cache_backend_lifecycle.py",
-            "models/policy_variants/parallel_stream/cache_execution.py",
-            "models/policy_variants/parallel_stream/exact_cache.py",
+                "models/common/__init__.py",
+                "models/common/cache_layout_policy.py",
+                "models/common/cache_backend_lifecycle.py",
+                "models/policy_variants/parallel_stream/cache_diagnostics.py",
+                "models/policy_variants/parallel_stream/cache_execution.py",
+                "models/policy_variants/parallel_stream/clean_cache_write.py",
+                "models/policy_variants/parallel_stream/exact_cache.py",
             "models/policy_variants/parallel_stream/forward_execution.py",
             "models/visual_tower/cache_lifecycle.py",
             "models/visual_tower/replica_core.py",
             "models/visual_tower/runtime_tensor_transport.py",
             "models/visual_tower/shared_transformer_support.py",
         },
-        "cache_backend_lifecycle": {
-            "models/common/__init__.py",
-            "models/policy_variants/parallel_stream/cache_execution.py",
+            "cache_backend_lifecycle": {
+                "models/common/__init__.py",
+                "models/policy_variants/parallel_stream/clean_cache_write.py",
+                "models/policy_variants/parallel_stream/cache_execution.py",
             "models/policy_variants/parallel_stream/forward_execution.py",
             "models/visual_tower/cache_lifecycle.py",
             "models/visual_tower/replica_core.py",
@@ -5362,20 +5395,189 @@ def test_parallel_exact_cache_contract_has_one_implementation_owner() -> None:
 
 
 def test_parallel_cache_execution_has_one_implementation_owner() -> None:
-    execution_definitions = {
-        "build_joint_clean_cache_attention_mask",
-        "build_joint_clean_cache_attention_profile",
-        "summarize_slot_pool_cache_state",
-        "write_exact_cache_chunk",
-        "write_joint_clean_tokens_to_exact_cache",
+    import pickle
+
+    from open_wam.models.policy_variants.parallel_stream import (
+        cache_attention,
+        cache_diagnostics,
+        cache_execution,
+        clean_cache_write,
+        reference_runtime,
+    )
+
+    role_modules = {
+        "attention": cache_attention,
+        "clean_write": clean_cache_write,
+        "diagnostics": cache_diagnostics,
+        "execution": cache_execution,
     }
+    owner_names = {
+        "attention": {
+            "build_joint_clean_cache_attention_mask",
+            "build_joint_clean_cache_attention_profile",
+        },
+        "clean_write": {"write_joint_clean_tokens_to_exact_cache"},
+        "diagnostics": {"summarize_slot_pool_cache_state"},
+        "execution": {"write_exact_cache_chunk"},
+    }
+    all_owner_names = set().union(*owner_names.values())
     parallel_stream_root = (
         PACKAGE_ROOT / "models" / "policy_variants" / "parallel_stream"
     )
-    execution_path = parallel_stream_root / "cache_execution.py"
     reference_runtime_path = parallel_stream_root / "reference_runtime.py"
 
-    assert execution_definitions <= _top_level_definitions(execution_path)
+    assert len(all_owner_names) == 5
+    for role, names in owner_names.items():
+        path = PARALLEL_CACHE_EXECUTION_ROLE_PATHS[role]
+        assert _top_level_definitions(path) == names
+        expected_exports = all_owner_names if role == "execution" else names
+        assert _module_all_names(path) == expected_exports
+    assert all(
+        sum(
+            name in _top_level_definitions(path)
+            for path in PARALLEL_CACHE_EXECUTION_ROLE_PATHS.values()
+        )
+        == 1
+        for name in all_owner_names
+    )
+
+    relative_imports: dict[str, set[str]] = {}
+    for role, path in PARALLEL_CACHE_EXECUTION_ROLE_PATHS.items():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        relative_imports[role] = {
+            node.module
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.level and node.module
+        }
+    assert relative_imports == {
+        "attention": set(),
+        "clean_write": {"cache_attention", "exact_cache"},
+        "diagnostics": set(),
+        "execution": {
+            "cache_attention",
+            "cache_diagnostics",
+            "clean_cache_write",
+            "exact_cache",
+        },
+    }
+
+    expected_consumers = {
+        "cache_attention": {
+            "models/policy_variants/parallel_stream/cache_execution.py",
+            "models/policy_variants/parallel_stream/clean_cache_write.py",
+            "models/policy_variants/parallel_stream/reference_runtime.py",
+        },
+        "cache_diagnostics": {
+            "models/policy_variants/parallel_stream/cache_execution.py",
+            "models/policy_variants/parallel_stream/packed_rollout.py",
+            "models/policy_variants/parallel_stream/reference_runtime.py",
+        },
+        "cache_execution": {
+            "models/policy_variants/parallel_stream/cache_lifecycle.py",
+            "models/policy_variants/parallel_stream/packed_rollout.py",
+            "models/policy_variants/parallel_stream/reference_runtime.py",
+            "models/policy_variants/parallel_stream/staged_rollout.py",
+        },
+        "clean_cache_write": {
+            "models/policy_variants/parallel_stream/cache_execution.py",
+            "models/policy_variants/parallel_stream/reference_runtime.py",
+        },
+    }
+    for module_name, expected_paths in expected_consumers.items():
+        owner_path = next(
+            path
+            for path in PARALLEL_CACHE_EXECUTION_ROLE_PATHS.values()
+            if path.stem == module_name
+        )
+        actual_paths = set()
+        for path in PACKAGE_ROOT.rglob("*.py"):
+            if path == owner_path:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            if any(
+                isinstance(node, ast.ImportFrom)
+                and (
+                    node.module
+                    == f"open_wam.models.policy_variants.parallel_stream.{module_name}"
+                    or (
+                        path.parent == parallel_stream_root
+                        and node.level == 1
+                        and node.module == module_name
+                    )
+                )
+                for node in ast.walk(tree)
+            ):
+                actual_paths.add(path.relative_to(PACKAGE_ROOT).as_posix())
+        assert actual_paths == expected_paths
+
+    reference_names = {
+        "build_joint_clean_cache_attention_mask": (
+            "_build_joint_clean_cache_attention_mask"
+        ),
+        "build_joint_clean_cache_attention_profile": (
+            "_build_joint_clean_cache_attention_profile"
+        ),
+        "summarize_slot_pool_cache_state": "_summarize_slot_pool_cache_state",
+        "write_exact_cache_chunk": "_write_exact_cache_chunk",
+        "write_joint_clean_tokens_to_exact_cache": (
+            "_write_joint_clean_tokens_to_exact_cache"
+        ),
+    }
+    for role, names in owner_names.items():
+        for name in names:
+            owner_value = getattr(role_modules[role], name)
+            assert getattr(cache_execution, name) is owner_value
+            assert getattr(reference_runtime, reference_names[name]) is owner_value
+            payload = (
+                "copen_wam.models.policy_variants.parallel_stream.cache_execution\n"
+                f"{name}\n."
+            ).encode()
+            assert pickle.loads(payload) is owner_value
+
+    expected_direct_names = {
+        "Any",
+        "CacheState",
+        "CurrentBlockCoupling",
+        "ExactCacheInterfaceSpec",
+        "ParallelExactCacheWriteMode",
+        "ParallelHistoryStreamVisibility",
+        "PreparedAttentionProfile",
+        "SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS",
+        "SLOT_POOL_DEFER_EVICTION_UNTIL_AFTER_WRITE_ATTENTION",
+        "SharedVideoTransformerConfig",
+        "annotations",
+        "build_chunked_temporal_exact_attention_profile",
+        "build_clean_video_action_cache_stream_ids",
+        "build_joint_clean_cache_attention_mask",
+        "build_joint_clean_cache_attention_profile",
+        "cache_backend_uses_slot_pool",
+        "count_single_stream_action_tokens",
+        "materialize_cache_backend_entries",
+        "prepare_exact_single_stream_input",
+        "repeat_exact_single_stream_input_for_cfg",
+        "resolve_runtime_module_dtype",
+        "restore_slot_pool_layer_metadata",
+        "run_exact_single_stream_forward",
+        "set_slot_pool_layer_metadata",
+        "summarize_slot_pool_cache_state",
+        "torch",
+        "write_exact_cache_chunk",
+        "write_joint_clean_tokens_to_exact_cache",
+    }
+    assert {
+        name for name in vars(cache_execution) if not name.startswith("__")
+    } == expected_direct_names
+    wildcard_namespace: dict[str, object] = {}
+    exec(
+        "from open_wam.models.policy_variants.parallel_stream.cache_execution import *",
+        wildcard_namespace,
+    )
+    assert set(wildcard_namespace) - {"__builtins__"} == all_owner_names
+
+    # This historical dispatch point is intentionally patchable by rollout tests.
+    assert cache_execution.write_exact_cache_chunk.__globals__ is vars(
+        cache_execution
+    )
     assert {
         "_build_joint_clean_cache_attention_mask",
         "_build_joint_clean_cache_attention_profile",

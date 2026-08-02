@@ -302,6 +302,15 @@ plain contracts:
   metadata, text/CFG preparation, and attention-window compatibility checks.
   It delegates allocation and tensor execution to
   `visual_tower.exact_runtime`; it does not own backbone mechanics.
+- Parallel-stream cache writes are divided by execution role.
+  `cache_attention` projects joint training visibility onto clean cache-write
+  tokens; `clean_cache_write` embeds and commits one packed clean video/action
+  block; and `cache_diagnostics` reports parameter-free slot-pool occupancy.
+  `cache_execution` retains generic staged-versus-packed write dispatch and the
+  historical import/pickle surface. That dispatch remains in the compatibility
+  module intentionally because callers patch its clean-write function during
+  controlled rollout tests. Backend storage and lifecycle mechanics remain in
+  `models.common`; none of these policy roles owns learned state.
 - `parallel_stream.runtime_semantics` resolves enum-backed history visibility,
   condition-latent sources, block/timestep coupling, cache-prefix visibility,
   and attention-profile selection. Policy execution and dynamics evaluation
