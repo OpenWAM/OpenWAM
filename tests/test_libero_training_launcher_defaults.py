@@ -111,6 +111,110 @@ def _launcher_train_argv(
     return json.loads(result.stdout)
 
 
+def test_posttrain_launchers_delegate_to_shared_process_owner() -> None:
+    expected_projects = {
+        "scripts/run_causal_video_prediction_posttrain_libero.sh": "openwam-causal-video-libero",
+        "scripts/run_parallel_stream_posttrain_libero.sh": "lingbot-va-posttrain-libero",
+        "scripts/run_mot_posttrain_libero.sh": "openwam-method5-libero",
+        "scripts/run_post_decoded_posttrain_libero.sh": (
+            "openwam-method4-post-decoded-libero-video-conditioned"
+        ),
+        "scripts/run_post_latent_posttrain_libero.sh": (
+            "openwam-method4-post-latent-libero-video-conditioned"
+        ),
+        "scripts/run_mot_nonjoint_posttrain_libero.sh": "openwam-libero-policy-train",
+    }
+    helper_source = HELPER_PATH.read_text(encoding="utf-8")
+
+    assert set(expected_projects) == set(POSTTRAIN_LAUNCHERS)
+    assert helper_source.count("open_wam_launch_training()") == 1
+    assert helper_source.count("python -m torch.distributed.run") == 1
+    assert helper_source.count("python -m open_wam.training.train") == 1
+    assert "open_wam_append_fixed128_rollout_context_args" in helper_source
+    for relative_path, project in expected_projects.items():
+        source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+        assert "libero_fixed128_rollout_context_defaults.sh" in source
+        assert source.count("open_wam_launch_training") == 1
+        assert "torch.distributed.run" not in source
+        assert "OPEN_WAM_TRAIN_ARGS" not in source
+        assert project in source
+
+
+def test_shared_posttrain_process_owner_preserves_distributed_command_and_env(
+    tmp_path: Path,
+) -> None:
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text(
+        """#!/usr/bin/env bash
+printf 'ARG=%s\\n' "$@"
+printf 'TOKENIZERS_PARALLELISM=%s\\n' "${TOKENIZERS_PARALLELISM:-}"
+printf 'PYTORCH_CUDA_ALLOC_CONF=%s\\n' "${PYTORCH_CUDA_ALLOC_CONF:-}"
+printf 'WANDB_MODE=%s\\n' "${WANDB_MODE:-}"
+printf 'WANDB_PROJECT=%s\\n' "${WANDB_PROJECT:-}"
+""",
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+    env = os.environ.copy()
+    for variable in (
+        "TOKENIZERS_PARALLELISM",
+        "PYTORCH_CUDA_ALLOC_CONF",
+        "WANDB_MODE",
+        "WANDB_PROJECT",
+    ):
+        env.pop(variable, None)
+    env.update(
+        {
+            "PATH": f"{tmp_path}:{env['PATH']}",
+            "NGPU": "4",
+            "LOG_RANK": "2",
+            "MASTER_PORT": "29677",
+            "OPEN_WAM_ENABLE_FIXED128_ROLLOUT_CONTEXT": "0",
+        }
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(REPO_ROOT / "scripts/run_mot_posttrain_libero.sh"),
+            "--num-steps",
+            "17",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    lines = result.stdout.splitlines()
+    args = [line.removeprefix("ARG=") for line in lines if line.startswith("ARG=")]
+    assert args == [
+        "run",
+        "python",
+        "-m",
+        "torch.distributed.run",
+        "--nproc_per_node=4",
+        "--local-ranks-filter=2",
+        "--master_port",
+        "29677",
+        "--tee",
+        "3",
+        "-m",
+        "open_wam.training.train",
+        "--config-name",
+        "mot_libero_latent_local_joint_heng_compatible",
+        "--devices",
+        "4",
+        "--num-steps",
+        "17",
+    ]
+    assert "TOKENIZERS_PARALLELISM=false" in lines
+    assert "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True" in lines
+    assert "WANDB_MODE=online" in lines
+    assert "WANDB_PROJECT=openwam-method5-libero" in lines
+
+
 def _launcher_realtime_argv(
     relative_path: str,
     *script_args: str,
@@ -480,18 +584,6 @@ def test_launchers_reject_late_cli_config_overrides() -> None:
         assert "set CONFIG_NAME=... instead" in result.stderr
 
     assert _reject_config_override_result("--set", "training.num_steps=1").returncode == 0
-
-
-def test_libero_posttrain_launchers_inherit_shared_fixed128_defaults() -> None:
-    for relative_path in POSTTRAIN_LAUNCHERS:
-        text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
-
-        assert "libero_fixed128_rollout_context_defaults.sh" in text
-        assert "open_wam_reject_cli_config_override_args" in text
-        assert "open_wam_reject_removed_libero_policy_config" in text
-        assert "open_wam_append_fixed128_rollout_context_args" in text
-        assert "open_wam_maybe_print_train_argv" in text
-        assert '"${OPEN_WAM_FIXED128_ROLLOUT_CONTEXT_ARGS[@]}"' in text
 
 
 def test_mot_posttrain_launcher_defaults_to_strict_fixed128_joint_config() -> None:

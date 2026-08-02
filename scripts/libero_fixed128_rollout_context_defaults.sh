@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Shared LIBERO fixed-128 policy-training defaults. These are applied by the
-# maintained training launchers before user-provided CLI args, so explicit
-# `--set` values passed by the caller still win.
+# Shared LIBERO training-launcher contracts. Fixed-128 defaults are applied
+# before user-provided CLI args so explicit `--set` values still win; the
+# process owner at the end keeps all maintained presets on one launch path.
 
 OPEN_WAM_FIXED128_ROLLOUT_CONTEXT_DEFAULT_ARGS=(
   --set data.sample_construction.mode=hierarchical_fixed_segment
@@ -143,5 +143,43 @@ open_wam_maybe_print_train_argv() {
   if [[ "${OPEN_WAM_PRINT_TRAIN_ARGV:-0}" == "1" ]]; then
     open_wam_print_train_argv_json "$@"
     exit 0
+  fi
+}
+
+open_wam_launch_training() {
+  local config_name="${1:?Pass the experiment config name as the first argument.}"
+  shift
+  local ngpu="${NGPU:-1}"
+  local master_port="${MASTER_PORT:-29501}"
+  local log_rank="${LOG_RANK:-0}"
+  local -a rollout_context_args=()
+  local -a train_args=()
+
+  export TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM:-false}
+  export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-"expandable_segments:True"}
+  export WANDB_MODE=${WANDB_MODE:-"online"}
+
+  open_wam_reject_cli_config_override_args "$@"
+  open_wam_reject_removed_libero_policy_config "${config_name}"
+  open_wam_append_fixed128_rollout_context_args rollout_context_args "${config_name}"
+  train_args=(
+    --config-name "${config_name}"
+    --devices "${ngpu}"
+    "${rollout_context_args[@]}"
+    "$@"
+  )
+  open_wam_maybe_print_train_argv "${train_args[@]}"
+
+  if [ "${ngpu}" -gt 1 ]; then
+    uv run python -m torch.distributed.run \
+      --nproc_per_node="${ngpu}" \
+      --local-ranks-filter="${log_rank}" \
+      --master_port "${master_port}" \
+      --tee 3 \
+      -m open_wam.training.train \
+      "${train_args[@]}"
+  else
+    uv run python -m open_wam.training.train \
+      "${train_args[@]}"
   fi
 }
