@@ -16,12 +16,12 @@ from .action_mapping import (
     apply_action_mapping,
     resolve_action_source_dim,
 )
-from .action_transforms import (
+from .action_normalization import normalize_action_targets
+from .action_target_builders import (
     build_absolute_joint_position_targets,
     build_relative_pose_targets,
     expected_joint_position_target_dim,
     expected_pose_target_dim,
-    normalize_action_targets,
 )
 from .sequence_packing import pack_temporal_sequence
 

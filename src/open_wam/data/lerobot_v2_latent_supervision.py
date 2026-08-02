@@ -12,10 +12,10 @@ from open_wam.configs import (
     GripperRepresentation,
 )
 
-from .action_transforms import (
+from .action_normalization import normalize_action_targets
+from .action_target_builders import (
     build_absolute_joint_position_targets,
     expected_joint_position_target_dim,
-    normalize_action_targets,
 )
 from .lerobot_v2_latent_storage import LocalEpisodeWindow
 from .row_action_targets import build_row_action_targets, resolve_row_key

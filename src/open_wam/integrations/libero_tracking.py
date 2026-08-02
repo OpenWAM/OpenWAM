@@ -8,8 +8,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from open_wam.data import reconstruct_absolute_pose_targets
-from open_wam.data.action_transforms import PoseSequence
+from open_wam.data.action_pose import PoseSequence, reconstruct_absolute_pose_targets
 from open_wam.integrations.libero_control import (
     LiberoControlConfig,
     compute_osc_pose_action,

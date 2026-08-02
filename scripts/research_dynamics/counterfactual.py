@@ -15,7 +15,7 @@ import pyarrow.parquet as pq
 import torch
 
 from open_wam.configs import ActionSpace, ProprioContextMode
-from open_wam.data.action_transforms import quaternion_to_axis_angle
+from open_wam.data.action_pose import quaternion_to_axis_angle
 from open_wam.data.counterfactual_actions import (
     BRANCH_PRESETS,
     apply_action_branch,

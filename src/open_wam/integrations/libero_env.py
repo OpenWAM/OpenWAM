@@ -16,11 +16,13 @@ from open_wam.configs import (
     GripperRepresentation,
     LiberoAbsoluteJointExecutionMode,
 )
-from open_wam.data.action_transforms import (
-    PoseSequence,
-    axis_angle_to_quaternion,
+from open_wam.data.action_normalization import (
     denormalize_action_targets,
     denormalize_joint_positions,
+)
+from open_wam.data.action_pose import (
+    PoseSequence,
+    axis_angle_to_quaternion,
 )
 from open_wam.data.action_mapping import inverse_action_mapping
 from open_wam.integrations.libero_control import (

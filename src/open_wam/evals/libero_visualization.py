@@ -14,7 +14,7 @@ import numpy as np
 import torch
 
 from open_wam.configs import ProprioContextMode
-from open_wam.data.action_transforms import quaternion_to_axis_angle
+from open_wam.data.action_pose import quaternion_to_axis_angle
 from open_wam.evals.libero_rollout_artifacts import (
     to_uint8 as _artifact_to_uint8,
     with_title as _artifact_with_title,

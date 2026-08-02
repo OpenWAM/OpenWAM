@@ -238,7 +238,7 @@ def test_lazy_data_facade_preserves_representative_export_identities() -> None:
     import open_wam.data as public_data
 
     owners = {
-        "PoseSequence": "action_transforms",
+        "PoseSequence": "action_pose",
         "ActionMappingResult": "action_mapping",
         "WAMSample": "contracts",
         "GENERALIST_GJD_CHUNK_CONTRACT_T0_SINGLETON": "conditional_dynamics_layout",

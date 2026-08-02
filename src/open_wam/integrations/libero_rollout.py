@@ -7,11 +7,11 @@ import numpy as np
 import torch
 
 from open_wam.configs import ActionTargetStateEncoding
-from open_wam.data import reconstruct_absolute_pose_targets
-from open_wam.data.action_transforms import (
+from open_wam.data.action_pose import (
     PoseSequence,
     normalize_quaternion,
     quaternion_to_axis_angle,
+    reconstruct_absolute_pose_targets,
 )
 
 

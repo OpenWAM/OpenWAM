@@ -25,7 +25,7 @@ from open_wam.data.counterfactual_actions import (
     branch_seed_offset,
     expand_branch_names,
 )
-from open_wam.data.action_transforms import quaternion_to_axis_angle
+from open_wam.data.action_pose import quaternion_to_axis_angle
 from open_wam.data.latent_temporal import raw_window_frames_for_latents
 
 

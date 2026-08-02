@@ -17,7 +17,7 @@ from einops import rearrange
 
 from open_wam.configs import ActionTargetRepresentation, ExperimentConfig, ParallelRuntimeMode
 from open_wam.configs.enums import DeadlineMissPolicy
-from open_wam.data.action_transforms import PoseSequence
+from open_wam.data.action_pose import PoseSequence
 from open_wam.evals import realtime_history
 from open_wam.integrations import LiberoControlConfig, compute_osc_pose_action
 from open_wam.integrations import libero_rollout

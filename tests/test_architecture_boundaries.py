@@ -111,6 +111,13 @@ CONSORTIUM_INVENTORY_ROLE_PATHS = {
     "io": PACKAGE_ROOT / "data" / "lerobot_consortium_inventory_io.py",
     "targets": PACKAGE_ROOT / "data" / "lerobot_consortium_targets.py",
 }
+ACTION_TRANSFORM_ROLE_PATHS = {
+    "gripper": PACKAGE_ROOT / "data" / "action_gripper.py",
+    "normalization": PACKAGE_ROOT / "data" / "action_normalization.py",
+    "pose": PACKAGE_ROOT / "data" / "action_pose.py",
+    "targets": PACKAGE_ROOT / "data" / "action_target_builders.py",
+}
+ACTION_TRANSFORM_FACADE_PATH = PACKAGE_ROOT / "data" / "action_transforms.py"
 
 
 def _absolute_imports_for_file(path: Path) -> set[str]:
@@ -1070,6 +1077,161 @@ def test_lerobot_consortium_inventory_roles_have_one_owner() -> None:
     )
     assert "from .lerobot_consortium_inventory_io import" in contracts_source
     assert "from .lerobot_consortium_index import" not in contracts_source
+
+
+def test_action_transform_roles_have_one_owner() -> None:
+    import pickle
+
+    from open_wam import data as public_data
+    from open_wam.data import (
+        action_gripper,
+        action_normalization,
+        action_pose,
+        action_target_builders,
+        action_transforms,
+    )
+
+    role_modules = {
+        "gripper": action_gripper,
+        "normalization": action_normalization,
+        "pose": action_pose,
+        "targets": action_target_builders,
+    }
+    owner_names = {
+        "gripper": {
+            "collapse_gripper_state",
+            "extract_action_command_gripper_targets",
+            "extract_public_gripper_targets",
+        },
+        "normalization": {
+            "_gaussian_stats",
+            "_normalization_bounds",
+            "_quantile_bounds",
+            "denormalize_action_targets",
+            "denormalize_joint_positions",
+            "denormalize_joint_positions_by_limits",
+            "normalize_action_targets",
+            "normalize_joint_positions",
+            "normalize_joint_positions_by_limits",
+        },
+        "pose": {
+            "PoseSequence",
+            "_copy_sign",
+            "_normalize_vectors",
+            "_replace_degenerate_second_axis",
+            "axis_angle_to_quaternion",
+            "continuous_6d_to_rotation_matrix",
+            "normalize_quaternion",
+            "quaternion_inverse",
+            "quaternion_multiply",
+            "quaternion_to_axis_angle",
+            "quaternion_to_continuous_6d",
+            "quaternion_to_rotation_matrix",
+            "reconstruct_absolute_pose_targets",
+            "rotation_matrix_to_quaternion",
+            "state_sequence_to_pose_sequence",
+        },
+        "targets": {
+            "build_absolute_joint_position_targets",
+            "build_relative_pose_targets",
+            "expected_joint_position_target_dim",
+            "expected_pose_target_dim",
+        },
+    }
+    public_names = {
+        "gripper": owner_names["gripper"],
+        "normalization": owner_names["normalization"]
+        - {"_gaussian_stats", "_normalization_bounds", "_quantile_bounds"},
+        "pose": owner_names["pose"]
+        - {"_copy_sign", "_normalize_vectors", "_replace_degenerate_second_axis"},
+        "targets": owner_names["targets"],
+    }
+    root_exports = {
+        "PoseSequence": action_pose,
+        "build_absolute_joint_position_targets": action_target_builders,
+        "build_relative_pose_targets": action_target_builders,
+        "denormalize_action_targets": action_normalization,
+        "denormalize_joint_positions": action_normalization,
+        "expected_joint_position_target_dim": action_target_builders,
+        "expected_pose_target_dim": action_target_builders,
+        "normalize_action_targets": action_normalization,
+        "normalize_joint_positions": action_normalization,
+        "reconstruct_absolute_pose_targets": action_pose,
+        "state_sequence_to_pose_sequence": action_pose,
+    }
+
+    assert not _top_level_definitions(ACTION_TRANSFORM_FACADE_PATH)
+    all_owner_paths = tuple(ACTION_TRANSFORM_ROLE_PATHS.values())
+    all_owned_names = set().union(*owner_names.values())
+    assert all(
+        sum(name in _top_level_definitions(path) for path in all_owner_paths) == 1
+        for name in all_owned_names
+    )
+    for role, names in owner_names.items():
+        assert _top_level_definitions(ACTION_TRANSFORM_ROLE_PATHS[role]) == names
+        assert _module_all_names(ACTION_TRANSFORM_ROLE_PATHS[role]) == public_names[role]
+        assert "action_transforms" not in _absolute_imports_for_file(
+            ACTION_TRANSFORM_ROLE_PATHS[role]
+        )
+        for name in names:
+            assert getattr(action_transforms, name) is getattr(role_modules[role], name)
+
+    assert _compatibility_export_names(ACTION_TRANSFORM_FACADE_PATH) == {
+        "_copy_sign",
+        "_gaussian_stats",
+        "_normalization_bounds",
+        "_normalize_vectors",
+        "_quantile_bounds",
+        "_replace_degenerate_second_axis",
+    }
+    assert _module_all_names(ACTION_TRANSFORM_FACADE_PATH) == {
+        "ActionNormalizationConfig",
+        "ActionNormalizationMode",
+        "ActionTargetStateEncoding",
+        "GripperRepresentation",
+        "PoseSequence",
+        "RotationRepresentation",
+        "annotations",
+        "axis_angle_to_quaternion",
+        "build_absolute_joint_position_targets",
+        "build_relative_pose_targets",
+        "collapse_gripper_state",
+        "continuous_6d_to_rotation_matrix",
+        "dataclass",
+        "denormalize_action_targets",
+        "denormalize_joint_positions",
+        "denormalize_joint_positions_by_limits",
+        "expected_joint_position_target_dim",
+        "expected_pose_target_dim",
+        "extract_action_command_gripper_targets",
+        "extract_public_gripper_targets",
+        "normalize_action_targets",
+        "normalize_joint_positions",
+        "normalize_joint_positions_by_limits",
+        "normalize_quaternion",
+        "quaternion_inverse",
+        "quaternion_multiply",
+        "quaternion_to_axis_angle",
+        "quaternion_to_continuous_6d",
+        "quaternion_to_rotation_matrix",
+        "reconstruct_absolute_pose_targets",
+        "rotation_matrix_to_quaternion",
+        "state_sequence_to_pose_sequence",
+        "torch",
+    }
+    for name, owner in root_exports.items():
+        assert getattr(public_data, name) is getattr(owner, name)
+
+    old_pose_global = b"copen_wam.data.action_transforms\nPoseSequence\n."
+    assert pickle.loads(old_pose_global) is action_pose.PoseSequence
+
+    facade_consumers = []
+    for path in PACKAGE_ROOT.rglob("*.py"):
+        if path == ACTION_TRANSFORM_FACADE_PATH:
+            continue
+        if "action_transforms" in _absolute_imports_for_file(path):
+            facade_consumers.append(path.relative_to(PACKAGE_ROOT).as_posix())
+    assert facade_consumers == []
 
 
 def test_lerobot_consortium_planning_has_one_owner() -> None:

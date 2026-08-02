@@ -352,11 +352,21 @@ dataset class and train/validation windows. `lerobot_v2_latent` is only the
 stable import, wildcard, and old-pickle facade for those owners. Historical
 module-level helper imports remain identity aliases for compatibility, but new
 extensions should use the public `open_wam.data` contracts above.
-For row-oriented robot datasets, `row_action_targets` owns raw, relative-EEF,
-and absolute-joint target conversion, action mapping, normalization, and
-target metadata. `sequence_packing` owns the canonical float32 padded tensor
-and validity-mask layout. Each adapter still owns row decoding, empty-input
-policy, and whether an overlong source sequence may be truncated.
+For row-oriented robot datasets, `row_action_targets` owns adapter-independent
+orchestration from decoded rows through target construction, action mapping,
+and target metadata. `sequence_packing` owns the canonical float32 padded
+tensor and validity-mask layout. Each adapter still owns row decoding,
+empty-input policy, and whether an overlong source sequence may be truncated.
+Action transforms below that adapter boundary have one owner per numerical
+role. `action_pose` owns `PoseSequence`, state-to-pose decoding, relative-pose
+reconstruction, and rotation/quaternion geometry. `action_normalization` owns
+invertible action and joint normalization. `action_gripper` owns measured-state
+and command-channel projection. `action_target_builders` composes those three
+contracts into final pose or joint supervision and target dimensions. Dataset
+adapters should import those canonical owners directly; applications may use
+the corresponding lazy exports from `open_wam.data`. The historical
+`action_transforms` path remains an identity-preserving direct/wildcard import
+and old-pickle facade, but owns no implementation.
 For mixed conditional-dynamics training, `counterfactual_dynamics_dataset`
 owns encoded source resolution, hierarchical draws, final metadata, and
 `LatentWAMSample` construction. `counterfactual_dynamics_materialization` owns

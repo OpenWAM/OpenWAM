@@ -8,9 +8,9 @@ from typing import Any
 import numpy as np
 import torch
 
-from open_wam.data.action_transforms import (
+from open_wam.data.action_gripper import collapse_gripper_state
+from open_wam.data.action_pose import (
     PoseSequence,
-    collapse_gripper_state,
     normalize_quaternion,
     quaternion_inverse,
     quaternion_multiply,

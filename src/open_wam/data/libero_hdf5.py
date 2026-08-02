@@ -13,7 +13,8 @@ from torch.utils.data import Dataset
 
 from open_wam.configs import ActionTargetReferenceSource, ActionTargetRepresentation, DataConfig
 
-from .action_transforms import build_relative_pose_targets, expected_pose_target_dim, normalize_action_targets
+from .action_normalization import normalize_action_targets
+from .action_target_builders import build_relative_pose_targets, expected_pose_target_dim
 from .contracts import WAMSample
 from .replay_status import load_replay_status_records, split_episode_indices_by_replay_status
 from .sequence_packing import pack_temporal_sequence
