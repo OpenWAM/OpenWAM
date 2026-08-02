@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -17,6 +16,7 @@ from open_wam.data.action_pose import (
     quaternion_to_axis_angle,
     rotation_matrix_to_quaternion,
 )
+from open_wam.integrations.simulator_configs import LiberoControlConfig
 
 
 __all__ = [
@@ -40,28 +40,6 @@ __all__ = [
     "set_libero_joint_position_controller_gain",
     "step_libero_absolute_joint_position_goal",
 ]
-
-
-@dataclass(frozen=True)
-class LiberoControlConfig:
-    """Closed-loop gains for converting public targets to OSC actions.
-
-    `OSC_POSE` expects `[dx, dy, dz, dax, day, daz, gripper]`. The first six
-    channels are normalized and internally scaled by robosuite to +/- 0.05 m
-    and +/- 0.5 rad. Public WAM targets are reference-relative absolute EEF
-    targets, so replay reconstructs an absolute target, computes world-frame
-    pose error, and normalizes that error for the controller.
-    """
-
-    max_pos_delta_m: float = 0.05
-    max_rot_delta_rad: float = 0.5
-    max_gripper_delta: float = 0.005
-    control_substeps_per_target: int = 8
-    env_control_hz: int = 20
-    action_command_delay_steps: int = 1
-    gripper_open_threshold: float = 0.060
-    gripper_close_threshold: float = 0.030
-    gripper_position_tolerance: float = 0.002
 
 
 def extract_pose_from_obs(obs: dict[str, Any]) -> PoseSequence:

@@ -37,10 +37,8 @@ from open_wam.evals.libero_realtime_plans import (
     sequence_chunk_to_planned_steps,
 )
 from open_wam.integrations import libero_rollout
-from open_wam.integrations.realtime_control import (
-    PlannedFrameAction as PlannedFrameAction,
-    select_realtime_planner_job,
-)
+from open_wam.integrations.realtime_contracts import PlannedFrameAction as PlannedFrameAction
+from open_wam.integrations.realtime_scheduling import select_realtime_planner_job
 from open_wam.models.policy_variants import (
     PolicyInferContext,
 )

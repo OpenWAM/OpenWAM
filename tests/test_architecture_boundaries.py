@@ -6440,7 +6440,10 @@ def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
 
 def test_realtime_control_plan_has_one_package_owner() -> None:
     runner_path = REPO_ROOT / "scripts" / "run_libero_realtime_sandbox.py"
+    contracts_path = PACKAGE_ROOT / "integrations" / "realtime_contracts.py"
     control_path = PACKAGE_ROOT / "integrations" / "realtime_control.py"
+    queue_path = PACKAGE_ROOT / "integrations" / "realtime_plan_queue.py"
+    scheduling_path = PACKAGE_ROOT / "integrations" / "realtime_scheduling.py"
     enum_path = PACKAGE_ROOT / "configs" / "enums.py"
     runtime_path = PACKAGE_ROOT / "evals" / "libero_realtime_runtime.py"
     integration_exports_path = PACKAGE_ROOT / "integrations" / "__init__.py"
@@ -6462,21 +6465,13 @@ def test_realtime_control_plan_has_one_package_owner() -> None:
         "_should_submit_exact_realtime_planner",
         "_should_submit_sequence_realtime_planner",
     }
-    public_control_contracts = {
+    record_contracts = {
         "PlannedControlStep",
         "PlannedFrameAction",
         "RealtimeSchedulerDefaults",
-        "drop_control_steps_from",
-        "drop_partial_stale_control_chunk",
+    }
+    scheduling_contracts = {
         "frame_index_to_action_start",
-        "future_control_depth",
-        "future_control_steps",
-        "make_planned_frame_actions",
-        "merge_future_control_steps",
-        "merge_future_frame_actions",
-        "missing_control_action_indices",
-        "planned_frame_actions_to_control_steps",
-        "required_control_action_indices",
         "resolve_realtime_planner_mode",
         "resolve_realtime_scheduler_defaults",
         "select_realtime_planner_job",
@@ -6484,10 +6479,43 @@ def test_realtime_control_plan_has_one_package_owner() -> None:
         "should_submit_realtime_planner_job",
         "should_submit_sequence_planner",
     }
+    queue_contracts = {
+        "drop_control_steps_from",
+        "drop_partial_stale_control_chunk",
+        "future_control_depth",
+        "future_control_steps",
+        "merge_future_control_steps",
+        "merge_future_frame_actions",
+        "missing_control_action_indices",
+        "required_control_action_indices",
+    }
+    numpy_control_contracts = {
+        "make_planned_frame_actions",
+        "planned_frame_actions_to_control_steps",
+    }
+    public_control_contracts = (
+        record_contracts
+        | scheduling_contracts
+        | queue_contracts
+        | numpy_control_contracts
+    )
 
-    assert "from open_wam.integrations.realtime_control import (" in runner_source
+    assert (
+        "from open_wam.integrations.realtime_control import build_live_rollout_summary"
+        in runner_source
+    )
+    assert "from open_wam.integrations.realtime_contracts import" in runner_source
+    assert "from open_wam.integrations.realtime_plan_queue import (" in runner_source
+    assert "from open_wam.integrations.realtime_scheduling import (" in runner_source
     assert retired_runner_contracts.isdisjoint(_top_level_definitions(runner_path))
-    assert public_control_contracts <= _top_level_definitions(control_path)
+    assert record_contracts == _top_level_definitions(contracts_path)
+    assert queue_contracts == _top_level_definitions(queue_path)
+    assert scheduling_contracts == _top_level_definitions(scheduling_path)
+    assert numpy_control_contracts <= _top_level_definitions(control_path)
+    assert (record_contracts | scheduling_contracts | queue_contracts).isdisjoint(
+        _top_level_definitions(control_path)
+    )
+    assert public_control_contracts <= _module_all_names(control_path)
     assert {
         "RealtimeEmptyPlanPolicy",
         "RealtimePlannerJob",
@@ -6504,8 +6532,148 @@ def test_realtime_control_plan_has_one_package_owner() -> None:
     ):
         assert raw_choice not in runner_source
         assert raw_choice not in runtime_source
-    for contract in public_control_contracts:
-        assert f'"{contract}": "open_wam.integrations.realtime_control"' in integration_exports
+    for contract in record_contracts:
+        assert (
+            f'"{contract}": "open_wam.integrations.realtime_contracts"'
+            in integration_exports
+        )
+    for contract in scheduling_contracts:
+        assert (
+            f'"{contract}": "open_wam.integrations.realtime_scheduling"'
+            in integration_exports
+        )
+    for contract in queue_contracts:
+        assert (
+            f'"{contract}": "open_wam.integrations.realtime_plan_queue"'
+            in integration_exports
+        )
+    for contract in numpy_control_contracts:
+        assert (
+            f'"{contract}": "open_wam.integrations.realtime_control"'
+            in integration_exports
+        )
+
+
+def test_realtime_contract_split_preserves_definitions_and_legacy_aliases() -> None:
+    import hashlib
+    import importlib
+    import pickle
+
+    from open_wam import integrations
+    from open_wam.integrations import (
+        realtime_contracts,
+        realtime_plan_queue,
+        realtime_scheduling,
+    )
+
+    owners = {
+        "LiberoControlConfig": PACKAGE_ROOT
+        / "integrations"
+        / "simulator_configs.py",
+        "PlannedControlStep": PACKAGE_ROOT
+        / "integrations"
+        / "realtime_contracts.py",
+        "PlannedFrameAction": PACKAGE_ROOT
+        / "integrations"
+        / "realtime_contracts.py",
+        "RealtimeSchedulerDefaults": PACKAGE_ROOT
+        / "integrations"
+        / "realtime_contracts.py",
+        "frame_index_to_action_start": PACKAGE_ROOT
+        / "integrations"
+        / "realtime_scheduling.py",
+        "resolve_realtime_planner_mode": PACKAGE_ROOT
+        / "integrations"
+        / "realtime_scheduling.py",
+        "resolve_realtime_scheduler_defaults": PACKAGE_ROOT
+        / "integrations"
+        / "realtime_scheduling.py",
+        "select_realtime_planner_job": PACKAGE_ROOT
+        / "integrations"
+        / "realtime_scheduling.py",
+        "should_submit_frame_grouped_planner": PACKAGE_ROOT
+        / "integrations"
+        / "realtime_scheduling.py",
+        "should_submit_realtime_planner_job": PACKAGE_ROOT
+        / "integrations"
+        / "realtime_scheduling.py",
+        "should_submit_sequence_planner": PACKAGE_ROOT
+        / "integrations"
+        / "realtime_scheduling.py",
+    }
+    owner_nodes: dict[str, ast.ClassDef | ast.FunctionDef] = {}
+    for name, path in owners.items():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        owner_nodes[name] = next(
+            node
+            for node in tree.body
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name == name
+        )
+    serialized_definitions = "\n".join(
+        f"{name}:{ast.dump(owner_nodes[name])}" for name in sorted(owner_nodes)
+    ).encode()
+    assert hashlib.sha256(serialized_definitions).hexdigest() == (
+        "09547fddaae6cafe3e679d5162708d0510f1c7babf67cb5a84094d5034ff4981"
+    )
+
+    queue_names = (
+        "drop_control_steps_from",
+        "drop_partial_stale_control_chunk",
+        "future_control_depth",
+        "future_control_steps",
+        "merge_future_control_steps",
+        "merge_future_frame_actions",
+        "missing_control_action_indices",
+        "required_control_action_indices",
+    )
+    queue_tree = ast.parse(
+        (PACKAGE_ROOT / "integrations" / "realtime_plan_queue.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    queue_nodes = {
+        node.name: node
+        for node in queue_tree.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    serialized_queue = "\n".join(
+        f"{name}:{ast.dump(queue_nodes[name])}" for name in sorted(queue_names)
+    ).encode()
+    assert hashlib.sha256(serialized_queue).hexdigest() == (
+        "e09e12370defe0e51bcb64d50dddf60d5bdc01a24703c9c5205312bfbb056d69"
+    )
+
+    legacy_control = importlib.import_module("open_wam.integrations.realtime_control")
+    for name in (
+        "PlannedControlStep",
+        "PlannedFrameAction",
+        "RealtimeSchedulerDefaults",
+    ):
+        owner_value = getattr(realtime_contracts, name)
+        assert getattr(integrations, name) is owner_value
+        assert getattr(legacy_control, name) is owner_value
+        legacy_payload = f"copen_wam.integrations.realtime_control\n{name}\n.".encode()
+        assert pickle.loads(legacy_payload) is owner_value
+    for name in queue_names:
+        owner_value = getattr(realtime_plan_queue, name)
+        assert getattr(integrations, name) is owner_value
+        assert getattr(legacy_control, name) is owner_value
+        legacy_payload = f"copen_wam.integrations.realtime_control\n{name}\n.".encode()
+        assert pickle.loads(legacy_payload) is owner_value
+    for name in (
+        "frame_index_to_action_start",
+        "resolve_realtime_planner_mode",
+        "resolve_realtime_scheduler_defaults",
+        "select_realtime_planner_job",
+        "should_submit_frame_grouped_planner",
+        "should_submit_realtime_planner_job",
+        "should_submit_sequence_planner",
+    ):
+        owner_value = getattr(realtime_scheduling, name)
+        assert getattr(integrations, name) is owner_value
+        assert getattr(legacy_control, name) is owner_value
+        legacy_payload = f"copen_wam.integrations.realtime_control\n{name}\n.".encode()
+        assert pickle.loads(legacy_payload) is owner_value
 
 
 def test_realtime_speculation_has_one_package_owner() -> None:
@@ -6956,7 +7124,6 @@ def test_libero_integration_roles_have_one_owner() -> None:
         "build_libero_offscreen_env",
     }
     control_contract = {
-        "LiberoControlConfig",
         "absolute_joint_position_to_libero_joint_delta_action",
         "compute_osc_pose_action",
         "disable_libero_joint_position_controller_interpolator",
@@ -6985,6 +7152,7 @@ def test_libero_integration_roles_have_one_owner() -> None:
     assert tracking_contract <= tracking_definitions
     assert config_definitions == {
         "CalvinEnvConfig",
+        "LiberoControlConfig",
         "LiberoEnvConfig",
         "RobotwinEnvConfig",
     }
@@ -7055,6 +7223,18 @@ def test_simulator_configs_preserve_frozen_definitions_and_legacy_aliases() -> N
             f"copen_wam.integrations.{legacy_module_name}\n{class_name}\n."
         ).encode()
         assert pickle.loads(legacy_payload) is owner_value
+
+    libero_control_config = class_nodes["LiberoControlConfig"]
+    assert hashlib.sha256(ast.dump(libero_control_config).encode()).hexdigest() == (
+        "0bd9ac5e7fd39619af15332bd0f6b9cf8adf7e87a33f40f6785f8c20467bc218"
+    )
+    legacy_control = importlib.import_module("open_wam.integrations.libero_control")
+    owner_value = simulator_configs.LiberoControlConfig
+    assert integrations.LiberoControlConfig is owner_value
+    assert legacy_control.LiberoControlConfig is owner_value
+    assert pickle.loads(
+        b"copen_wam.integrations.libero_control\nLiberoControlConfig\n."
+    ) is owner_value
 
 
 def test_public_config_enums_are_declared_once() -> None:

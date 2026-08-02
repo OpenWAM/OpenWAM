@@ -236,8 +236,10 @@ uv sync --extra docs
 uv sync --extra full
 ```
 
-Simulator config records and the generic backend protocol are available from
-the base install; importing them does not load NumPy, Torch, or a benchmark.
+Simulator config records, realtime planner records, scheduling and plan-queue
+policy, and the generic backend protocol are available from the base install;
+importing them does not load NumPy, Torch, or a benchmark. NumPy-backed plan
+materialization and rollout reporting remain in the optional `[sim]` runtime.
 The `[libero]`, `[robotwin]`, and `[calvin]` extras are benchmark-side
 dependency overlays and do not include the model stack or upstream source
 checkouts. For a model-driven simulator rollout, use `[sim]` (or `[full]`)

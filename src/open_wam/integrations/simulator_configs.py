@@ -8,6 +8,28 @@ from open_wam.configs import LiberoAbsoluteJointExecutionMode
 
 
 @dataclass(frozen=True)
+class LiberoControlConfig:
+    """Closed-loop gains for converting public targets to OSC actions.
+
+    `OSC_POSE` expects `[dx, dy, dz, dax, day, daz, gripper]`. The first six
+    channels are normalized and internally scaled by robosuite to +/- 0.05 m
+    and +/- 0.5 rad. Public WAM targets are reference-relative absolute EEF
+    targets, so replay reconstructs an absolute target, computes world-frame
+    pose error, and normalizes that error for the controller.
+    """
+
+    max_pos_delta_m: float = 0.05
+    max_rot_delta_rad: float = 0.5
+    max_gripper_delta: float = 0.005
+    control_substeps_per_target: int = 8
+    env_control_hz: int = 20
+    action_command_delay_steps: int = 1
+    gripper_open_threshold: float = 0.060
+    gripper_close_threshold: float = 0.030
+    gripper_position_tolerance: float = 0.002
+
+
+@dataclass(frozen=True)
 class LiberoEnvConfig:
     """LIBERO simulator backend configuration.
 
@@ -111,4 +133,9 @@ class CalvinEnvConfig:
     show_gui: bool = False
 
 
-__all__ = ["CalvinEnvConfig", "LiberoEnvConfig", "RobotwinEnvConfig"]
+__all__ = [
+    "CalvinEnvConfig",
+    "LiberoControlConfig",
+    "LiberoEnvConfig",
+    "RobotwinEnvConfig",
+]

@@ -57,10 +57,17 @@ facades; new code imports `open_wam.contracts`.
 The `open_wam` wheel contains maintained configuration, data, model, training,
 runtime, evaluation-result, and extension contracts. Benchmark integrations
 remain lazy so importing the core does not require simulator dependencies.
-`open_wam.integrations.simulator_configs` owns the dependency-light LIBERO,
-RoboTwin, and CALVIN launch records; the historical adapter modules retain
-identity-preserving aliases. `open_wam.simulators.contracts` owns the generic
-backend and observation protocol without importing NumPy at runtime, while
+`open_wam.integrations.simulator_configs` owns the dependency-light LIBERO
+environment and control records plus the RoboTwin and CALVIN launch records;
+the historical adapter modules retain identity-preserving aliases.
+`open_wam.integrations.realtime_contracts` owns immutable frame/action plan
+records, and `realtime_scheduling` owns planner selection and submission
+policy. `realtime_plan_queue` owns execution-cursor filtering and deterministic
+future-plan replacement. All three are tensor-stack independent.
+`realtime_control` owns NumPy-backed plan materialization and rollout reporting
+while retaining the historical import surface. `open_wam.simulators.contracts`
+owns the generic backend and observation protocol without importing NumPy at
+runtime, while
 `open_wam.simulators.rollout` owns the NumPy/Torch execution layer. Lazy
 adapter and rollout exports use `open_wam.runtime.load_optional_module` so
 missing extras produce an actionable install command without hiding missing
@@ -105,9 +112,11 @@ benchmark-independent
 `realtime_history` contract owns copied observation windows, fallback
 quarantine and washout, model-timeline advancement, and proprio normalization;
 `realtime_speculation` owns session/RNG/visual-cache rollback. The integration
-contract in `open_wam.integrations.realtime_control` owns frame- and
-action-aligned plans, typed scheduler profiles and planner-job selection,
-execution-cursor filtering, and future-plan replacement;
+records in `open_wam.integrations.realtime_contracts` own frame- and
+action-aligned plans; `realtime_scheduling` owns typed scheduler profiles and
+planner-job selection; `realtime_plan_queue` owns execution-cursor filtering
+and future-plan replacement; and the NumPy-backed `realtime_control` layer owns
+plan materialization and reporting;
 `libero_rollout_artifacts` is the stable persistence facade over four explicit
 roles: `libero_rollout_artifact_contracts` owns immutable artifact envelopes,
 `libero_rollout_artifact_diagnostics` owns exact-startup fingerprints,

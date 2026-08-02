@@ -29,11 +29,14 @@ uv sync --extra robotwin
 uv sync --extra sim
 ```
 
-The base install can import `LiberoEnvConfig`, `RobotwinEnvConfig`,
-`CalvinEnvConfig`, and the generic `SimulatorBackend` contract without NumPy,
-Torch, or simulator packages. The three benchmark-named extras add only their
-benchmark-side dependency overlays; they do not include the Open-WAM model
-stack or upstream source trees. Use `[sim]` for model-driven closed-loop
+The base install can import `LiberoEnvConfig`, `LiberoControlConfig`,
+`RobotwinEnvConfig`, `CalvinEnvConfig`, the generic `SimulatorBackend`
+contract, and the realtime planner records and scheduling policy without
+NumPy, Torch, or simulator packages. Dependency-light plan-queue operations
+share that boundary. NumPy-backed plan materialization and rollout reporting
+remain in `[sim]`. The three benchmark-named extras add only
+their benchmark-side dependency overlays; they do not include the Open-WAM
+model stack or upstream source trees. Use `[sim]` for model-driven closed-loop
 rollouts, then install the selected benchmark source separately.
 
 For local documentation-site preview:
