@@ -142,6 +142,22 @@ ATTENTION_PROFILE_ROLE_PATHS = {
     "facade": PACKAGE_ROOT / "models" / "common" / "attention_profiles.py",
     "profiles": PACKAGE_ROOT / "models" / "common" / "chunked_attention.py",
 }
+MOT_ATTENTION_ROLE_PATHS = {
+    "cached": (
+        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "attention_cached.py"
+    ),
+    "facade": PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "attention.py",
+    "packed": (
+        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "attention_packed.py"
+    ),
+    "unpacked": (
+        PACKAGE_ROOT
+        / "models"
+        / "policy_variants"
+        / "mot"
+        / "attention_unpacked.py"
+    ),
+}
 CHECKPOINT_ROLE_PATHS = {
     "export": PACKAGE_ROOT / "training" / "checkpoint_export.py",
     "manager": PACKAGE_ROOT / "training" / "checkpoints.py",
@@ -4090,20 +4106,143 @@ def test_mot_unpacked_training_has_one_program_owner() -> None:
     )
 
 
-def test_mot_attention_layouts_have_one_owner() -> None:
-    attention_builders = {
+def test_mot_attention_layout_roles_have_one_owner_and_a_stable_facade() -> None:
+    import pickle
+
+    from open_wam.models.policy_variants import mot as mot_api
+    from open_wam.models.policy_variants.mot import (
+        attention,
+        attention_cached,
+        attention_packed,
+        attention_unpacked,
+        runtime,
+    )
+
+    role_modules = {
+        "cached": attention_cached,
+        "packed": attention_packed,
+        "unpacked": attention_unpacked,
+    }
+    owner_names = {
+        "cached": {"build_mot_inference_action_attention_mask"},
+        "packed": {
+            "build_mot_packed_coupling_attention_mask",
+            "build_mot_packed_coupling_attention_profile",
+            "build_packed_action_attention_mask",
+        },
+        "unpacked": {
+            "build_chunk_causal_video_mask",
+            "build_mot_attention_mask",
+        },
+    }
+    all_names = set().union(*owner_names.values())
+
+    assert len(all_names) == 6
+    assert not _top_level_definitions(MOT_ATTENTION_ROLE_PATHS["facade"])
+    assert all(
+        sum(
+            name in _top_level_definitions(path)
+            for path in MOT_ATTENTION_ROLE_PATHS.values()
+        )
+        == 1
+        for name in all_names
+    )
+    for role, names in owner_names.items():
+        assert _top_level_definitions(MOT_ATTENTION_ROLE_PATHS[role]) == names
+        assert _module_all_names(MOT_ATTENTION_ROLE_PATHS[role]) == names
+    assert _module_all_names(MOT_ATTENTION_ROLE_PATHS["facade"]) == set()
+
+    relative_imports: dict[str, set[str]] = {}
+    for role, path in MOT_ATTENTION_ROLE_PATHS.items():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        relative_imports[role] = {
+            node.module
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.level and node.module
+        }
+    assert relative_imports == {
+        "cached": set(),
+        "facade": {"attention_cached", "attention_packed", "attention_unpacked"},
+        "packed": set(),
+        "unpacked": set(),
+    }
+
+    facade_consumers = []
+    for path in PACKAGE_ROOT.rglob("*.py"):
+        if path == MOT_ATTENTION_ROLE_PATHS["facade"]:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        imports_facade = any(
+            (
+                isinstance(node, ast.Import)
+                and any(
+                    alias.name == "open_wam.models.policy_variants.mot.attention"
+                    for alias in node.names
+                )
+            )
+            or (
+                isinstance(node, ast.ImportFrom)
+                and (
+                    node.module == "open_wam.models.policy_variants.mot.attention"
+                    or (node.level and node.module == "attention")
+                )
+            )
+            for node in ast.walk(tree)
+        )
+        if imports_facade:
+            facade_consumers.append(path.relative_to(PACKAGE_ROOT).as_posix())
+    assert facade_consumers == []
+
+    expected_consumers = {
+        "attention_cached": {"split_cache_inference.py"},
+        "attention_packed": {"packed_inference.py", "packed_training.py"},
+        "attention_unpacked": {
+            "joint_denoise_inference.py",
+            "unpacked_training.py",
+        },
+    }
+    mot_root = PACKAGE_ROOT / "models" / "policy_variants" / "mot"
+    for role_module, filenames in expected_consumers.items():
+        for filename in filenames:
+            source = (mot_root / filename).read_text(encoding="utf-8")
+            assert f"from .{role_module} import" in source
+
+    for role, names in owner_names.items():
+        for name in names:
+            owner_value = getattr(role_modules[role], name)
+            assert getattr(attention, name) is owner_value
+            assert getattr(mot_api, name) is owner_value
+            assert getattr(runtime, name) is owner_value
+            payload = (
+                f"copen_wam.models.policy_variants.mot.attention\n{name}\n."
+            ).encode()
+            assert pickle.loads(payload) is owner_value
+
+    expected_module_names = {
+        "CurrentBlockCoupling",
+        "MoTConditionMode",
+        "PreparedAttentionProfile",
+        "annotations",
         "build_chunk_causal_video_mask",
+        "build_exact_packed_video_action_coupling_profile",
         "build_mot_attention_mask",
         "build_mot_inference_action_attention_mask",
         "build_mot_packed_coupling_attention_mask",
         "build_mot_packed_coupling_attention_profile",
         "build_packed_action_attention_mask",
+        "torch",
     }
-    mot_root = PACKAGE_ROOT / "models" / "policy_variants" / "mot"
-
-    assert attention_builders <= _top_level_definitions(mot_root / "attention.py")
-    assert attention_builders.isdisjoint(
-        _top_level_definitions(mot_root / "runtime.py")
+    wildcard_namespace: dict[str, object] = {}
+    exec(
+        "from open_wam.models.policy_variants.mot.attention import *",
+        wildcard_namespace,
+    )
+    assert set(wildcard_namespace) - {"__builtins__"} == expected_module_names
+    assert {
+        name for name in vars(attention) if not name.startswith("_")
+    } == expected_module_names
+    assert _top_level_import_names(MOT_ATTENTION_ROLE_PATHS["facade"]) == (
+        expected_module_names - {"annotations"}
     )
 
 

@@ -35,7 +35,7 @@ from open_wam.models.visual_tower.exact_runtime import (
 )
 
 from ..contracts import PolicyInferContext, PolicyInferOutput, PolicyInferState
-from .attention import build_mot_inference_action_attention_mask
+from .attention_cached import build_mot_inference_action_attention_mask
 from .cache_execution import forward_action_with_video_and_action_cache
 from .cache_state import (
     append_mot_action_cache,

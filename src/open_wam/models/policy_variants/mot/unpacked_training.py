@@ -24,7 +24,7 @@ from ..contracts import (
     PolicyTrainBatch,
     PolicyTrainOutput,
 )
-from .attention import build_chunk_causal_video_mask, build_mot_attention_mask
+from .attention_unpacked import build_chunk_causal_video_mask, build_mot_attention_mask
 from .cache_execution import (
     forward_action_with_video_cache,
     prefill_video_kv_cache,

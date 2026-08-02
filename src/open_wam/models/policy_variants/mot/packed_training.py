@@ -35,7 +35,7 @@ from open_wam.models.common.joint_conditioning import (
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
 from ..contracts import PolicyPreparedInputs, PolicyTrainOutput
-from .attention import build_mot_packed_coupling_attention_profile
+from .attention_packed import build_mot_packed_coupling_attention_profile
 from .conditioning import MoTConditioning
 from .contracts import (
     MoTActionTrainArtifacts,

@@ -38,7 +38,7 @@ from open_wam.models.common.rollout_startup import (
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
 from ..contracts import PolicyInferContext, PolicyInferOutput, PolicyInferState
-from .attention import build_mot_packed_coupling_attention_profile
+from .attention_packed import build_mot_packed_coupling_attention_profile
 from .conditioning import MoTConditioning
 from .contracts import MoTInferArtifacts, MoTRuntimeState
 from .dual_stream_execution import forward_mot_packed_coupling_denoise

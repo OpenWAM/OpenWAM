@@ -26,7 +26,7 @@ from open_wam.models.common.flow_schedule import (
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
 from ..contracts import PolicyInferContext, PolicyInferOutput, PolicyInferState
-from .attention import build_mot_attention_mask
+from .attention_unpacked import build_mot_attention_mask
 from .conditioning import MoTConditioning
 from .contracts import MoTInferArtifacts, MoTRuntimeState
 from .dual_stream_execution import forward_joint_video_action_denoise

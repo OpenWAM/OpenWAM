@@ -246,9 +246,12 @@ plain contracts:
 - `mot.runtime_routing` owns finite inference routes, coupling policy, and
   validated rollout overrides. Its implementation is configuration-only and
   contains no tensor execution.
-- `mot.attention` owns parameter-free MoT mask and prepared-profile
-  construction. Applications can select or replace these layouts without
-  modifying learned runtime execution.
+- `mot.attention_unpacked` owns dense layouts for unpacked training and joint
+  denoising; `mot.attention_packed` owns exact packed coupling profiles; and
+  `mot.attention_cached` owns split-cache action inference layouts. These
+  parameter-free roles define fixed built-in checkpoint semantics without
+  owning learned execution. `mot.attention` remains a historical import
+  facade; maintained package code imports the role owner it executes.
 - `mot.cache_state` owns typed cache movement, append, retention, and
   speculative rewind without executing model parameters.
 - `mot.cache_execution` owns learned video-cache prefill and action execution

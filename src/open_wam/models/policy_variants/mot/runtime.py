@@ -14,13 +14,17 @@ from open_wam.models.common.sharded_execution import (
     unshard_runtime_parameters as _unshard_runtime_params,
 )
 
-from .attention import (
-    build_chunk_causal_video_mask as build_chunk_causal_video_mask,
-    build_mot_attention_mask as build_mot_attention_mask,
+from .attention_cached import (
     build_mot_inference_action_attention_mask as build_mot_inference_action_attention_mask,
+)
+from .attention_packed import (
     build_mot_packed_coupling_attention_mask as build_mot_packed_coupling_attention_mask,
     build_mot_packed_coupling_attention_profile as build_mot_packed_coupling_attention_profile,
     build_packed_action_attention_mask as build_packed_action_attention_mask,
+)
+from .attention_unpacked import (
+    build_chunk_causal_video_mask as build_chunk_causal_video_mask,
+    build_mot_attention_mask as build_mot_attention_mask,
 )
 from .cache_execution import (
     forward_action_with_video_and_action_cache as forward_action_with_video_and_action_cache,

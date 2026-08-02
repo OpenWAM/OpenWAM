@@ -228,6 +228,20 @@ The built-in attention implementation has three parameter-free roles:
 facade. New integrations should depend on the role module matching what they
 extend, or on the stable `open_wam.models.common` public exports above.
 
+Built-in MoT checkpoint layouts are narrower policy-internal contracts:
+
+- `open_wam.models.policy_variants.mot.attention_unpacked` owns dense layouts
+  used by unpacked training and joint denoising;
+- `open_wam.models.policy_variants.mot.attention_packed` owns exact packed
+  coupling profiles; and
+- `open_wam.models.policy_variants.mot.attention_cached` owns split-cache
+  action inference layouts.
+
+`open_wam.models.policy_variants.mot.attention` remains a compatibility
+facade. Extensions implementing a new attention paradigm should normally
+construct a common `PreparedAttentionProfile`; depend on a MoT role only when
+the extension deliberately implements that exact built-in sequence layout.
+
 ### Shared Transformer Primitives
 
 `open_wam.models.visual_tower` exports the shared Wan-style transformer
