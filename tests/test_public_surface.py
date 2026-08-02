@@ -202,6 +202,11 @@ def test_base_dependencies_stay_minimal_and_extras_are_explicit() -> None:
     }
 
     assert base_deps == ["pyyaml>=6.0"]
+    assert extras["deployment"] == [
+        "numpy>=1.26",
+        "opencv-python>=4.10.0",
+        "pyarrow>=18.0",
+    ]
     assert not {dependency.split(">=", 1)[0] for dependency in base_deps}.intersection(heavy_base_names)
     assert {
         "core",

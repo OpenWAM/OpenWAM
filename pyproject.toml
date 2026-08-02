@@ -119,12 +119,9 @@ sim = [
     "transformers>=4.52.0",
 ]
 deployment = [
-    "cloudpickle>=3.1.2",
     "numpy>=1.26",
     "opencv-python>=4.10.0",
     "pyarrow>=18.0",
-    "pyzmq>=26.0",
-    "websockets>=15.0",
 ]
 docs = [
     "mkdocs==1.6.1",
@@ -151,14 +148,12 @@ full = [
     "opencv-python>=4.10.0",
     "pillow>=10.0",
     "pyarrow>=18.0",
-    "pyzmq>=26.0",
     "robosuite==1.4.0",
     "sentencepiece>=0.2.0",
     "termcolor>=3.3.0",
     "torch>=2.4",
     "transformers>=4.52.0",
     "wandb>=0.25.1",
-    "websockets>=15.0",
 ]
 
 [dependency-groups]
