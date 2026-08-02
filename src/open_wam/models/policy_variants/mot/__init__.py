@@ -34,7 +34,7 @@ from .inference_layout import (
     MoTPackedHistoryWindow,
     MoTPackedInferenceLayout,
 )
-from .runtime_routing import (
+from .runtime_routes import (
     MoTRuntimeRoute,
     MoTRuntimeRouteKind,
     resolve_mot_runtime_route,

@@ -51,7 +51,7 @@ from .generalist_modes import (
 )
 from .modules import MoTActionExpert
 from .packed_block import MoTPackedBlockStack
-from .runtime_routing import (
+from .coupling_semantics import (
     resolve_mot_current_block_coupling,
     resolve_mot_joint_timestep_coupling,
 )

@@ -37,7 +37,7 @@ from .contracts import (
 )
 from .dual_stream_execution import forward_joint_video_action_denoise
 from .modules import MoTActionExpert
-from .runtime_routing import (
+from .coupling_semantics import (
     is_mot_same_step_coupling,
     resolve_mot_current_block_coupling,
 )

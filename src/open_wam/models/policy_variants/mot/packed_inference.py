@@ -50,14 +50,16 @@ from .generalist_modes import (
 from .inference_layout import MoTPackedHistory, MoTPackedInferenceLayout
 from .modules import MoTActionExpert
 from .packed_block import MoTPackedBlockStack
-from .runtime_routing import (
-    resolve_mot_action_only_rollout,
+from .coupling_semantics import (
     resolve_mot_current_block_coupling,
-    resolve_mot_inference_window_size,
     resolve_mot_joint_timestep_coupling,
+    should_couple_mot_action_to_video_sigmas,
+)
+from .rollout_geometry import (
+    resolve_mot_action_only_rollout,
+    resolve_mot_inference_window_size,
     resolve_mot_rollout_cache_window_frames,
     resolve_mot_rollout_frame_chunk_size,
-    should_couple_mot_action_to_video_sigmas,
 )
 from .sequence_layout import build_action_grid_ids_for_sequence
 

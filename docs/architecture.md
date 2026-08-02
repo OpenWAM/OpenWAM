@@ -243,9 +243,16 @@ plain contracts:
   coordinates shared by training and recurrent inference.
 - `mot.generalist_modes` owns GJD mode selection and conditional tensor
   rewrites.
-- `mot.runtime_routing` owns finite inference routes, coupling policy, and
-  validated rollout overrides. Its implementation is configuration-only and
-  contains no tensor execution.
+- `mot.runtime_routes` owns the finite route taxonomy and deterministic route
+  selection. `mot.rollout_geometry` owns validated window/chunk overrides,
+  history/cache geometry, and executable-action alignment;
+  `mot.coupling_semantics` owns current-block and timestep coupling; and
+  `mot.inference_backend` owns packed-versus-split backend selection and the
+  one-way module-ownership restore needed by legacy split-cache rollout. These
+  roles are parameter-free and contain no tensor execution.
+- `mot.runtime_routing` is the historical direct-import, wildcard-import, and
+  pickle facade for those runtime-control roles. Maintained package code
+  imports the canonical role owner directly.
 - `mot.attention_unpacked` owns dense layouts for unpacked training and joint
   denoising; `mot.attention_packed` owns exact packed coupling profiles; and
   `mot.attention_cached` owns split-cache action inference layouts. These

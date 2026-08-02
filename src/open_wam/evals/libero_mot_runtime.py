@@ -21,7 +21,7 @@ from open_wam.evals.libero_visualization import resolve_device as _resolve_devic
 from open_wam.models.common.rollout_history import (
     resolve_execute_action_steps as _resolve_shared_execute_action_steps,
 )
-from open_wam.models.policy_variants.mot.runtime_routing import (
+from open_wam.models.policy_variants.mot.inference_backend import (
     ensure_mot_inference_backend,
 )
 from open_wam.pipelines import (

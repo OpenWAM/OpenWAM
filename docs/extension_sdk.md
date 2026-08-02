@@ -242,6 +242,23 @@ facade. Extensions implementing a new attention paradigm should normally
 construct a common `PreparedAttentionProfile`; depend on a MoT role only when
 the extension deliberately implements that exact built-in sequence layout.
 
+Built-in MoT runtime controls are also split by parameter-free role:
+
+- `open_wam.models.policy_variants.mot.runtime_routes` selects a typed runtime
+  route;
+- `open_wam.models.policy_variants.mot.rollout_geometry` resolves chunk,
+  history, cache, and action-execution geometry;
+- `open_wam.models.policy_variants.mot.coupling_semantics` resolves block and
+  timestep coupling; and
+- `open_wam.models.policy_variants.mot.inference_backend` validates and
+  restores the inference backend selected by a route.
+
+`open_wam.models.policy_variants.mot.runtime_routing` is a compatibility
+facade. These modules document the fixed built-in checkpoint contract; they
+are not a registration API. A custom policy should express its behavior through
+its `PolicyVariant`, runtime program, prepared attention profile, and decoder
+rather than adding method-specific branches to these MoT owners.
+
 ### Shared Transformer Primitives
 
 `open_wam.models.visual_tower` exports the shared Wan-style transformer

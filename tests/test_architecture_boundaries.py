@@ -158,6 +158,43 @@ MOT_ATTENTION_ROLE_PATHS = {
         / "attention_unpacked.py"
     ),
 }
+MOT_RUNTIME_CONTROL_ROLE_PATHS = {
+    "backend": (
+        PACKAGE_ROOT
+        / "models"
+        / "policy_variants"
+        / "mot"
+        / "inference_backend.py"
+    ),
+    "coupling": (
+        PACKAGE_ROOT
+        / "models"
+        / "policy_variants"
+        / "mot"
+        / "coupling_semantics.py"
+    ),
+    "facade": (
+        PACKAGE_ROOT
+        / "models"
+        / "policy_variants"
+        / "mot"
+        / "runtime_routing.py"
+    ),
+    "geometry": (
+        PACKAGE_ROOT
+        / "models"
+        / "policy_variants"
+        / "mot"
+        / "rollout_geometry.py"
+    ),
+    "routes": (
+        PACKAGE_ROOT
+        / "models"
+        / "policy_variants"
+        / "mot"
+        / "runtime_routes.py"
+    ),
+}
 CHECKPOINT_ROLE_PATHS = {
     "export": PACKAGE_ROOT / "training" / "checkpoint_export.py",
     "manager": PACKAGE_ROOT / "training" / "checkpoints.py",
@@ -3281,16 +3318,7 @@ def test_mot_conditioning_semantics_have_one_owner() -> None:
     assert "_uses_mot_legacy_prefix_contract" not in _top_level_definitions(variant_path)
 
 
-def test_mot_runtime_controls_have_role_owners() -> None:
-    routing_functions = {
-        "is_mot_same_step_coupling",
-        "resolve_mot_action_only_rollout",
-        "resolve_mot_current_block_coupling",
-        "resolve_mot_inference_window_size",
-        "resolve_mot_joint_timestep_coupling",
-        "resolve_mot_rollout_frame_chunk_size",
-        "should_couple_mot_action_to_video_sigmas",
-    }
+def test_mot_flow_runtime_controls_have_role_owners() -> None:
     flow_runtime_functions = {
         "expand_scalar_timestep",
         "explicit_sigma_euler_step",
@@ -3301,23 +3329,14 @@ def test_mot_runtime_controls_have_role_owners() -> None:
         "mot_scheduler_next_sigma",
         "step_mot_flow_with_sigmas",
     }
-    retired_variant_functions = (
-        routing_functions | flow_runtime_functions | flow_compatibility_names
-    ) | {
+    retired_variant_functions = (flow_runtime_functions | flow_compatibility_names) | {
         "_expand_scalar_timestep",
         "_flow_step_with_sigmas",
-        "_is_mot_same_step_coupling",
-        "_resolve_mot_action_only_rollout",
-        "_resolve_mot_inference_window_size",
-        "_resolve_mot_joint_timestep_coupling",
-        "_resolve_mot_rollout_frame_chunk_size",
         "_rewind_runtime_action_cache_to_frame",
         "_scheduler_next_sigma",
-        "_should_couple_mot_action_to_video_sigmas",
     }
     mot_root = PACKAGE_ROOT / "models" / "policy_variants" / "mot"
 
-    assert routing_functions <= _top_level_definitions(mot_root / "runtime_routing.py")
     assert flow_runtime_functions <= _top_level_definitions(
         FLOW_MATCHING_ROLE_PATHS["schedule"]
     )
@@ -3330,6 +3349,269 @@ def test_mot_runtime_controls_have_role_owners() -> None:
     assert retired_variant_functions.isdisjoint(
         _top_level_definitions(mot_root / "variant.py")
     )
+
+
+def test_mot_runtime_control_roles_have_one_owner_and_a_stable_facade() -> None:
+    import pickle
+
+    from open_wam.models.policy_variants import mot as mot_api
+    from open_wam.models.policy_variants.mot import (
+        coupling_semantics,
+        inference_backend,
+        rollout_geometry,
+        runtime_routes,
+        runtime_routing,
+    )
+
+    role_modules = {
+        "backend": inference_backend,
+        "coupling": coupling_semantics,
+        "geometry": rollout_geometry,
+        "routes": runtime_routes,
+    }
+    owner_names = {
+        "backend": {
+            "ensure_mot_inference_backend",
+            "ensure_mot_policy_variant_inference_backend",
+        },
+        "coupling": {
+            "is_mot_same_step_coupling",
+            "resolve_mot_current_block_coupling",
+            "resolve_mot_joint_timestep_coupling",
+            "should_couple_mot_action_to_video_sigmas",
+        },
+        "geometry": {
+            "_InferenceContextLike",
+            "mot_config_uses_strict_rollout_parity",
+            "resolve_mot_action_only_rollout",
+            "resolve_mot_inference_window_size",
+            "resolve_mot_rollout_cache_window_frames",
+            "resolve_mot_rollout_frame_chunk_size",
+            "resolve_mot_rollout_history_frames",
+            "resolve_mot_sequence_actions_per_frame",
+            "resolve_mot_sequence_execution_action_offset",
+        },
+        "routes": {
+            "MoTRuntimeRoute",
+            "MoTRuntimeRouteKind",
+            "_coerce_current_block_coupling",
+            "_coerce_runtime_mode",
+            "_enum_value",
+            "_looks_like_mot_policy_config",
+            "_policy_config",
+            "_resolve_current_block_coupling",
+            "mot_policy_requires_legacy_split_cache_inference",
+            "resolve_mot_runtime_route",
+            "should_use_mot_legacy_split_cache_inference",
+        },
+    }
+    exported_names = {
+        "backend": owner_names["backend"],
+        "coupling": owner_names["coupling"],
+        "geometry": (
+            owner_names["geometry"] - {"_InferenceContextLike"}
+        )
+        | {"MOT_ACTION_ONLY_ROLLOUT_COUPLINGS"},
+        "routes": (
+            owner_names["routes"]
+            - {
+                "_coerce_current_block_coupling",
+                "_coerce_runtime_mode",
+                "_enum_value",
+                "_looks_like_mot_policy_config",
+                "_policy_config",
+                "_resolve_current_block_coupling",
+            }
+        )
+        | {"MOT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS"},
+    }
+    all_names = set().union(*owner_names.values())
+
+    assert len(all_names) == 26
+    assert not _top_level_definitions(MOT_RUNTIME_CONTROL_ROLE_PATHS["facade"])
+    assert all(
+        sum(
+            name in _top_level_definitions(path)
+            for path in MOT_RUNTIME_CONTROL_ROLE_PATHS.values()
+        )
+        == 1
+        for name in all_names
+    )
+    for role, names in owner_names.items():
+        assert _top_level_definitions(MOT_RUNTIME_CONTROL_ROLE_PATHS[role]) == names
+        assert _module_all_names(MOT_RUNTIME_CONTROL_ROLE_PATHS[role]) == exported_names[role]
+    assert _module_all_names(MOT_RUNTIME_CONTROL_ROLE_PATHS["facade"]) == set()
+
+    relative_imports: dict[str, set[str]] = {}
+    for role, path in MOT_RUNTIME_CONTROL_ROLE_PATHS.items():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        relative_imports[role] = {
+            node.module
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.level and node.module
+        }
+    assert relative_imports == {
+        "backend": {"runtime_routes"},
+        "coupling": set(),
+        "facade": {
+            "coupling_semantics",
+            "inference_backend",
+            "rollout_geometry",
+            "runtime_routes",
+        },
+        "geometry": {"runtime_routes"},
+        "routes": set(),
+    }
+
+    facade_consumers = []
+    facade_module = "open_wam.models.policy_variants.mot.runtime_routing"
+    for path in PACKAGE_ROOT.rglob("*.py"):
+        if path == MOT_RUNTIME_CONTROL_ROLE_PATHS["facade"]:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        imports_facade = any(
+            (
+                isinstance(node, ast.Import)
+                and any(alias.name == facade_module for alias in node.names)
+            )
+            or (
+                isinstance(node, ast.ImportFrom)
+                and (
+                    node.module == facade_module
+                    or (node.level and node.module == "runtime_routing")
+                )
+            )
+            for node in ast.walk(tree)
+        )
+        if imports_facade:
+            facade_consumers.append(path.relative_to(PACKAGE_ROOT).as_posix())
+    assert facade_consumers == []
+
+    expected_consumers = {
+        "coupling_semantics": {
+            "joint_denoise_inference.py",
+            "packed_inference.py",
+            "packed_training.py",
+            "split_cache_inference.py",
+            "unpacked_training.py",
+            "variant.py",
+        },
+        "inference_backend": {"variant.py"},
+        "rollout_geometry": {
+            "joint_denoise_inference.py",
+            "observed_history.py",
+            "packed_inference.py",
+            "split_cache_inference.py",
+        },
+        "runtime_routes": {"__init__.py", "split_cache_inference.py", "variant.py"},
+    }
+    mot_root = PACKAGE_ROOT / "models" / "policy_variants" / "mot"
+    for role_module, filenames in expected_consumers.items():
+        for filename in filenames:
+            source = (mot_root / filename).read_text(encoding="utf-8")
+            assert f"from .{role_module} import" in source
+
+    external_consumers = {
+        "evals/libero_mot_runtime.py": "inference_backend",
+        "evals/libero_realtime_runtime.py": "rollout_geometry",
+        "evals/realtime_speculation.py": "runtime_routes",
+    }
+    for relative_path, role_module in external_consumers.items():
+        source = (PACKAGE_ROOT / relative_path).read_text(encoding="utf-8")
+        assert (
+            f"from open_wam.models.policy_variants.mot.{role_module} import"
+            in source
+        )
+
+    for role, names in owner_names.items():
+        for name in names:
+            owner_value = getattr(role_modules[role], name)
+            assert getattr(runtime_routing, name) is owner_value
+            payload = f"c{facade_module}\n{name}\n.".encode()
+            assert pickle.loads(payload) is owner_value
+
+    for name in {"MoTRuntimeRoute", "MoTRuntimeRouteKind", "resolve_mot_runtime_route"}:
+        assert getattr(mot_api, name) is getattr(runtime_routes, name)
+
+    expected_direct_names = {
+        "Any",
+        "CurrentBlockCoupling",
+        "Enum",
+        "JointTimestepCoupling",
+        "MOT_ACTION_ONLY_ROLLOUT_COUPLINGS",
+        "MOT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS",
+        "Mapping",
+        "MoTPolicyConfig",
+        "MoTRuntimeMode",
+        "MoTRuntimeRoute",
+        "MoTRuntimeRouteKind",
+        "PolicyVariantName",
+        "Protocol",
+        "RolloutContextPolicy",
+        "SampleTargetAlignment",
+        "_InferenceContextLike",
+        "_coerce_current_block_coupling",
+        "_coerce_runtime_mode",
+        "_enum_value",
+        "_looks_like_mot_policy_config",
+        "_policy_config",
+        "_resolve_current_block_coupling",
+        "annotations",
+        "dataclass",
+        "ensure_mot_inference_backend",
+        "ensure_mot_policy_variant_inference_backend",
+        "is_mot_same_step_coupling",
+        "mot_config_uses_strict_rollout_parity",
+        "mot_policy_requires_legacy_split_cache_inference",
+        "resolve_mot_action_only_rollout",
+        "resolve_mot_current_block_coupling",
+        "resolve_mot_inference_window_size",
+        "resolve_mot_joint_timestep_coupling",
+        "resolve_mot_rollout_cache_window_frames",
+        "resolve_mot_rollout_frame_chunk_size",
+        "resolve_mot_rollout_history_frames",
+        "resolve_mot_runtime_route",
+        "resolve_mot_sequence_actions_per_frame",
+        "resolve_mot_sequence_execution_action_offset",
+        "should_couple_mot_action_to_video_sigmas",
+        "should_use_mot_legacy_split_cache_inference",
+    }
+    assert {
+        name for name in vars(runtime_routing) if not name.startswith("__")
+    } == expected_direct_names
+    assert _top_level_import_names(MOT_RUNTIME_CONTROL_ROLE_PATHS["facade"]) == (
+        expected_direct_names - {"annotations"}
+    )
+
+    expected_wildcard_names = {
+        name for name in expected_direct_names if not name.startswith("_")
+    }
+    wildcard_namespace: dict[str, object] = {}
+    exec(
+        "from open_wam.models.policy_variants.mot.runtime_routing import *",
+        wildcard_namespace,
+    )
+    assert set(wildcard_namespace) - {"__builtins__"} == expected_wildcard_names
+
+    route = runtime_routes.MoTRuntimeRoute(
+        kind=runtime_routes.MoTRuntimeRouteKind.SPLIT_CACHE_NON_JOINT,
+        runtime_mode=runtime_routing.MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+        current_block_coupling=runtime_routing.CurrentBlockCoupling.VIDEO_THEN_ACTION,
+        resolved_current_block_coupling=(
+            runtime_routing.CurrentBlockCoupling.VIDEO_THEN_ACTION
+        ),
+        requires_legacy_block_restore=True,
+        uses_split_cache_rollout=True,
+        uses_stateful_realtime_session=True,
+        supports_realtime_history_controls=True,
+    )
+    legacy_payload = pickle.dumps(route, protocol=0).replace(
+        b"open_wam.models.policy_variants.mot.runtime_routes\n",
+        b"open_wam.models.policy_variants.mot.runtime_routing\n",
+    )
+    restored_route = pickle.loads(legacy_payload)
+    assert restored_route == route
+    assert type(restored_route) is runtime_routes.MoTRuntimeRoute
 
 
 def test_flow_matching_roles_have_one_owner() -> None:

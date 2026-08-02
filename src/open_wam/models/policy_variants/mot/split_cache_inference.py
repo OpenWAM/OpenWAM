@@ -59,12 +59,14 @@ from .generalist_modes import (
     resolve_generalist_rollout_mode as _resolve_mot_generalist_rollout_mode,
 )
 from .modules import MoTActionExpert
-from .runtime_routing import (
-    MOT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS,
+from .coupling_semantics import resolve_mot_current_block_coupling
+from .rollout_geometry import (
     resolve_mot_action_only_rollout,
-    resolve_mot_current_block_coupling,
     resolve_mot_inference_window_size,
     resolve_mot_rollout_frame_chunk_size,
+)
+from .runtime_routes import (
+    MOT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS,
 )
 from .sequence_layout import build_action_grid_ids_for_sequence
 

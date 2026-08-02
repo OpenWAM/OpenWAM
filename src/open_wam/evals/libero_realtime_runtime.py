@@ -44,12 +44,14 @@ from open_wam.integrations.realtime_control import (
 from open_wam.models.policy_variants import (
     PolicyInferContext,
 )
-from open_wam.models.policy_variants.mot.runtime_routing import (
-    MoTRuntimeRoute,
+from open_wam.models.policy_variants.mot.rollout_geometry import (
     mot_config_uses_strict_rollout_parity,
-    resolve_mot_runtime_route,
     resolve_mot_sequence_actions_per_frame,
     resolve_mot_sequence_execution_action_offset,
+)
+from open_wam.models.policy_variants.mot.runtime_routes import (
+    MoTRuntimeRoute,
+    resolve_mot_runtime_route,
 )
 from open_wam.models.visual_tower import VisualRuntimeStateSnapshot
 from open_wam.pipelines import VariantRolloutRunner, VariantRolloutSession

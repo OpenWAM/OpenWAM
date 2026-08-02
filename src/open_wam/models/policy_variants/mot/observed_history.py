@@ -10,7 +10,7 @@ from ..contracts import (
     PolicyObservedHistoryOutput,
 )
 from .contracts import MoTRuntimeState
-from .runtime_routing import (
+from .rollout_geometry import (
     resolve_mot_rollout_cache_window_frames,
     resolve_mot_sequence_actions_per_frame,
 )

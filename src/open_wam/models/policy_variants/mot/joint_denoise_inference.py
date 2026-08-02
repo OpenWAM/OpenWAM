@@ -36,13 +36,13 @@ from .generalist_modes import (
     resolve_generalist_rollout_mode as _resolve_mot_generalist_rollout_mode,
 )
 from .modules import MoTActionExpert
-from .runtime_routing import (
+from .coupling_semantics import (
     is_mot_same_step_coupling,
     resolve_mot_current_block_coupling,
     resolve_mot_joint_timestep_coupling,
-    resolve_mot_rollout_frame_chunk_size,
     should_couple_mot_action_to_video_sigmas,
 )
+from .rollout_geometry import resolve_mot_rollout_frame_chunk_size
 
 
 @dataclass(frozen=True)

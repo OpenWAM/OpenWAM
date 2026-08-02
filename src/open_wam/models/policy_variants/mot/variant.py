@@ -28,6 +28,7 @@ from ..contracts import (
 )
 from .conditioning import MoTConditioning
 from .contracts import MoTRuntimeState
+from .coupling_semantics import resolve_mot_current_block_coupling
 from .generalist_modes import (
     apply_generalist_training_mode as _apply_mot_generalist_training_mode,
     generalist_rollout_enabled as _mot_generalist_rollout_enabled,
@@ -36,15 +37,14 @@ from .generalist_modes import (
     sample_generalist_training_mode as _sample_mot_generalist_training_mode,
 )
 from .joint_denoise_inference import MoTJointDenoiseInferenceProgram
+from .inference_backend import ensure_mot_policy_variant_inference_backend
 from .modules import MoTActionExpert, init_action_expert_from_video_core
 from .observed_history import reconcile_mot_observed_history
 from .packed_block import MoTPackedBlockStack
 from .packed_inference import MoTPackedInferenceProgram
 from .packed_training import MoTPackedTrainingProgram
-from .runtime_routing import (
+from .runtime_routes import (
     MOT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS,
-    ensure_mot_policy_variant_inference_backend,
-    resolve_mot_current_block_coupling,
 )
 from .sequence_layout import MoTTrainingLayout
 from .split_cache_inference import MoTSplitCacheInferenceProgram

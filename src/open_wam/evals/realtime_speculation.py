@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Protocol, TypeVar
 import numpy as np
 import torch
 
-from open_wam.models.policy_variants.mot.runtime_routing import (
+from open_wam.models.policy_variants.mot.runtime_routes import (
     resolve_mot_runtime_route,
 )
 from open_wam.models.visual_tower import VisualRuntimeStateSnapshot
