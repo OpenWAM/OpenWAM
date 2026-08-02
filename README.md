@@ -287,10 +287,13 @@ backbone:
 uv run --extra eval open-wam-eval --cfg configs/experiments/parallel_stream_robotwin_smoke.yaml --device cpu
 ```
 
-Visualize the default LIBERO reference-relative EEF target in MuJoCo:
+Visualize the default LIBERO reference-relative EEF target reconstructed from
+the public action representation:
 
 ```bash
-uv run mjpython scripts/visualize_libero_reference_pose.py --cfg configs/experiments/contract_only_libero.yaml
+uv run mjpython scripts/visualize_libero_pose_compare.py \
+  --cfg configs/experiments/contract_only_libero.yaml \
+  --mode reconstructed
 ```
 
 Compare the original absolute LIBERO state rollout and the rollout reconstructed

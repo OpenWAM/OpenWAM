@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+"""Qualitatively compare explicit LingBot-format WAN checkpoints."""
+
 from __future__ import annotations
 
 import argparse
@@ -28,12 +30,6 @@ OPENWAM_TO_DIFFUSERS_REMAP = {
     "text_proj.linear_2.weight": "condition_embedder.text_embedder.linear_2.weight",
     "text_proj.linear_2.bias": "condition_embedder.text_embedder.linear_2.bias",
 }
-
-
-DEFAULT_CHECKPOINTS = [
-    "native_remap=/path/to/private-resource",
-    "diffusers_swap=/path/to/private-resource",
-]
 
 
 def _parse_dtype(name: str) -> torch.dtype:
@@ -249,16 +245,26 @@ def _run_one(
     return metrics
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compare LingBot-format Wan init checkpoints with Wan text-to-video generation.")
-    parser.add_argument("--base-root", type=Path, default=Path("/path/to/private-resource"))
+    parser.add_argument(
+        "--base-root",
+        type=Path,
+        required=True,
+        help="Model root containing the tokenizer, text_encoder, and VAE.",
+    )
     parser.add_argument(
         "--transformer-template",
         type=Path,
-        default=Path("/path/to/private-resource"),
+        required=True,
         help="Diffusers WanTransformer3DModel config directory used to instantiate the text-to-video transformer.",
     )
-    parser.add_argument("--checkpoint", action="append", default=None, help="Checkpoint spec, either LABEL=PATH or PATH. Can repeat.")
+    parser.add_argument(
+        "--checkpoint",
+        action="append",
+        required=True,
+        help="Checkpoint spec, either LABEL=PATH or PATH. Repeat to compare multiple checkpoints.",
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/text2video_wan_lingbot_init_compare"))
     parser.add_argument("--prompt", default="a robotic arm picking up a red cube on a wooden table, cinematic, smooth motion")
     parser.add_argument("--negative-prompt", default="")
@@ -283,14 +289,14 @@ def _parse_args() -> argparse.Namespace:
             "random target weights."
         ),
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def main() -> None:
     args = _parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     args.transformer_template = _resolve_transformer_dir(args.transformer_template)
-    checkpoints = _parse_checkpoint_specs(args.checkpoint or DEFAULT_CHECKPOINTS)
+    checkpoints = _parse_checkpoint_specs(args.checkpoint)
     dtype = _parse_dtype(args.dtype)
 
     print(f"[load] assets from {args.base_root}", flush=True)

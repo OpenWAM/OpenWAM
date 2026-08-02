@@ -23,6 +23,9 @@ from open_wam.data import (  # noqa: E402
     state_sequence_to_pose_sequence,
 )
 from open_wam.configs import load_experiment_config  # noqa: E402
+from open_wam.integrations.libero_osc_control import (  # noqa: E402
+    quaternion_angular_error_degrees,
+)
 
 
 def main() -> None:
@@ -533,13 +536,6 @@ def _set_mocap_pose(
 ) -> None:
     data.mocap_pos[mocap_index] = position.detach().cpu().numpy()
     data.mocap_quat[mocap_index] = _quat_wxyz_array(quaternion_xyzw)
-
-
-def quaternion_angular_error_degrees(lhs_xyzw: torch.Tensor, rhs_xyzw: torch.Tensor) -> torch.Tensor:
-    lhs = lhs_xyzw / torch.linalg.vector_norm(lhs_xyzw, dim=-1, keepdim=True).clamp_min(1e-8)
-    rhs = rhs_xyzw / torch.linalg.vector_norm(rhs_xyzw, dim=-1, keepdim=True).clamp_min(1e-8)
-    dot = (lhs * rhs).sum(dim=-1).abs().clamp(max=1.0)
-    return torch.rad2deg(2.0 * torch.arccos(dot))
 
 
 def _quat_wxyz(quaternion_xyzw: torch.Tensor) -> str:

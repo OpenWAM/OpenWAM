@@ -6816,6 +6816,9 @@ def test_private_local_posttraining_supervisor_is_retired() -> None:
 def test_orphaned_diagnostics_and_duplicate_aliases_are_retired() -> None:
     retired_paths = (
         REPO_ROOT / "scripts" / "visualize_libero_reference_pose_slurm.py",
+        REPO_ROOT / "scripts" / "visualize_libero_reference_pose.py",
+        REPO_ROOT / "scripts" / "run_viz_libero_reference_pose.sh",
+        REPO_ROOT / "scripts" / "run_viz_libero_pose_compare.sh",
         REPO_ROOT / "scripts" / "check_libero_proprio_state_alignment.py",
         REPO_ROOT / "scripts" / "smoke_parallel_stream_lingbot_replica.py",
         REPO_ROOT / "scripts" / "run_contract_only.sh",
@@ -6823,6 +6826,46 @@ def test_orphaned_diagnostics_and_duplicate_aliases_are_retired() -> None:
     )
 
     assert not any(path.exists() for path in retired_paths)
+
+
+def test_retained_pose_and_wan_diagnostics_use_owned_portable_contracts() -> None:
+    pose_path = REPO_ROOT / "scripts" / "visualize_libero_pose_compare.py"
+    assert "quaternion_angular_error_degrees" not in _top_level_definitions(
+        pose_path
+    )
+    assert (
+        "open_wam.integrations.libero_osc_control"
+        in _absolute_imports_for_file(pose_path)
+    )
+
+    wan_path = REPO_ROOT / "scripts" / "run_wan_lingbot_text2video_compare.py"
+    source = wan_path.read_text(encoding="utf-8")
+    assert not any(
+        fragment in source
+        for fragment in ("/simurgh", "/scr/", "/hai/", "private-user", "private-user")
+    )
+    assert "DEFAULT_CHECKPOINTS" not in _top_level_definitions(wan_path)
+
+    required_options: set[str] = set()
+    for node in ast.walk(ast.parse(source, filename=str(wan_path))):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+            and any(
+                keyword.arg == "required"
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value is True
+                for keyword in node.keywords
+            )
+        ):
+            required_options.add(node.args[0].value)
+    assert {"--base-root", "--transformer-template", "--checkpoint"} <= (
+        required_options
+    )
 
 
 def test_private_gjd_conditioning_study_driver_is_retired() -> None:
