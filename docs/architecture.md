@@ -268,8 +268,13 @@ plain contracts:
   executors for non-packed training without owning model parameters.
 - `mot.runtime` is a compatibility facade for historical internal imports; new
   code imports the role-specific owners directly.
-- common attention profiles own token visibility; the policy selects a profile
-  and supplies its resolved layout.
+- Common attention roles separate semantics from representation.
+  `attention_contracts` owns profile records and normalized finite choices;
+  `chunked_attention_visibility` owns the single token-pair visibility law for
+  all six exact couplings; and `chunked_attention` maps packed layouts into
+  dense SDPA masks or FlexAttention callbacks. Both backends therefore execute
+  the same visibility predicate. Policies select a profile and provide its
+  resolved layout; they do not reimplement mask logic.
 - `visual_tower.shared_transformer_support` owns learned attention and
   transformer-block execution, including the stable attention-backend patch
   point. `shared_transformer_embeddings` owns learned timestep and rotary

@@ -9,72 +9,23 @@ from open_wam.models.common.attention_backends import (
     create_block_mask,
 )
 from open_wam.models.common.attention_contracts import (
-    ACTION_NOISY_TO_VIDEO_COUPLING,
-    ACTION_THEN_VIDEO_COUPLING,
     AttentionProfileSpec,
-    CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
-    DECOUPLED_SAME_STEP_COUPLING,
-    HISTORY_STREAM_VISIBILITY_FULL,
-    HISTORY_STREAM_VISIBILITY_VIDEO_ONLY,
-    HISTORY_STREAM_VISIBILITY_VIDEO_QUERIES_VIDEO_ONLY,
     JOINT_COUPLING,
     PreparedAttentionProfile,
-    VIDEO_NOISY_TO_ACTION_COUPLING,
     VIDEO_THEN_ACTION_COUPLING,
     chunked_temporal_exact_profile_name_for_coupling,
     normalize_chunked_temporal_exact_coupling,
     normalize_conditional_history_policy,
     normalize_parallel_history_stream_visibility,
 )
+from open_wam.models.common.chunked_attention_visibility import (
+    _build_chunked_cross_attention_visibility,
+    _build_chunked_self_attention_visibility,
+    _effective_frame_ids_for_singleton_cutoff,
+)
 from open_wam.models.common.packed_token_layout import (
-    PackedTokenStream,
     build_exact_video_action_token_layout,
 )
-
-
-def _effective_frame_ids_for_singleton_cutoff(
-    frame_ids: torch.Tensor,
-    stream_ids: torch.Tensor,
-    *,
-    prefix_condition_frames: int,
-    singleton_chunk_frame: int | None,
-) -> torch.Tensor:
-    """Return sample-frame ids used by the CF t0 singleton history cutoff."""
-
-    if singleton_chunk_frame is None:
-        return frame_ids
-    effective_frame_ids = frame_ids
-    if int(prefix_condition_frames) > 0:
-        video_tokens = stream_ids == int(PackedTokenStream.VIDEO)
-        prefix_video_tokens = video_tokens & (frame_ids < int(prefix_condition_frames))
-        shifted_video_frame_ids = (frame_ids - int(prefix_condition_frames)).clamp_min(
-            0
-        )
-        effective_frame_ids = torch.where(
-            video_tokens, shifted_video_frame_ids, effective_frame_ids
-        )
-        effective_frame_ids = torch.where(
-            prefix_video_tokens,
-            torch.full_like(effective_frame_ids, int(singleton_chunk_frame) - 1),
-            effective_frame_ids,
-        )
-    return effective_frame_ids
-
-
-def _previous_boundary_frame_ids(
-    frame_ids: torch.Tensor,
-    *,
-    chunk_origin_frame: int,
-    chunk_size: int,
-) -> torch.Tensor:
-    """Return the immediately previous chunk-boundary frame for each query frame."""
-
-    chunk_ids = torch.div(
-        frame_ids - int(chunk_origin_frame),
-        max(1, int(chunk_size)),
-        rounding_mode="floor",
-    )
-    return int(chunk_origin_frame) + chunk_ids * max(1, int(chunk_size)) - 1
 
 
 def build_chunked_text_context_cross_attention_mask(
@@ -323,158 +274,39 @@ def build_chunked_temporal_exact_attention_profile(
         )
         q_effective_frame = effective_frame_ids[:, None]
         kv_effective_frame = effective_frame_ids[None, :]
-        if singleton_chunk_frame is None:
-            singleton_history_ok = torch.ones_like(q_seq, dtype=torch.bool)
-        else:
-            singleton_history_ok = (q_effective_frame < int(singleton_chunk_frame)) | (
-                kv_effective_frame >= int(singleton_chunk_frame)
-            )
-
-        same_seq = (q_seq == kv_seq) & (q_seq >= 0) & (kv_seq >= 0) & q_valid & kv_valid
-        if resolved_history_stream_visibility == HISTORY_STREAM_VISIBILITY_FULL:
-            history_stream_ok = torch.ones_like(q_seq, dtype=torch.bool)
-        elif (
-            resolved_history_stream_visibility
-            == HISTORY_STREAM_VISIBILITY_VIDEO_QUERIES_VIDEO_ONLY
-        ):
-            history_stream_ok = (q_stream == kv_stream) | (q_stream == 1)
-        elif resolved_history_stream_visibility == HISTORY_STREAM_VISIBILITY_VIDEO_ONLY:
-            history_stream_ok = kv_stream == 0
-        else:  # pragma: no cover - normalized above
-            raise ValueError(
-                f"Unsupported history stream visibility {resolved_history_stream_visibility!r}."
-            )
-        if (
-            resolved_conditional_history_policy
-            == CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY
-        ):
-            boundary_frame = _previous_boundary_frame_ids(
-                q_effective_frame,
-                chunk_origin_frame=chunk_origin_frame,
-                chunk_size=chunk_size,
-            )
-            history_stream_ok = (kv_stream == int(PackedTokenStream.VIDEO)) & (
-                kv_effective_frame == boundary_frame
-            )
-        if (
-            prefix_condition_frames > 0
-            or current_block_coupling == DECOUPLED_SAME_STEP_COUPLING
-        ):
-            clean_to_clean = (
-                (q_noise == 1)
-                & (kv_noise == 1)
-                & (
-                    ((kv_chunk < q_chunk) & history_stream_ok)
-                    | ((kv_chunk == q_chunk) & (kv_stream == q_stream))
-                )
-            )
-        else:
-            clean_to_clean = (
-                (q_noise == 1)
-                & (kv_noise == 1)
-                & (
-                    ((kv_chunk < q_chunk) & history_stream_ok)
-                    | ((kv_chunk == q_chunk) & (kv_block_id <= q_block_id))
-                )
-            )
-        joint_like_couplings = {
-            JOINT_COUPLING,
-            DECOUPLED_SAME_STEP_COUPLING,
-            VIDEO_NOISY_TO_ACTION_COUPLING,
-            ACTION_NOISY_TO_VIDEO_COUPLING,
-        }
-        prefix_action_then_video = (
-            prefix_condition_frames > 0
-            and current_block_coupling == ACTION_THEN_VIDEO_COUPLING
+        self_attention_mask = _build_chunked_self_attention_visibility(
+            q_seq=q_seq,
+            kv_seq=kv_seq,
+            q_block_id=q_block_id,
+            kv_block_id=kv_block_id,
+            q_chunk=q_chunk,
+            kv_chunk=kv_chunk,
+            q_noise=q_noise,
+            kv_noise=kv_noise,
+            q_stream=q_stream,
+            kv_stream=kv_stream,
+            q_effective_frame=q_effective_frame,
+            kv_effective_frame=kv_effective_frame,
+            q_valid=q_valid,
+            kv_valid=kv_valid,
+            window_size=window_size,
+            chunk_size=chunk_size,
+            chunk_origin_frame=chunk_origin_frame,
+            prefix_condition_frames=prefix_condition_frames,
+            singleton_chunk_frame=singleton_chunk_frame,
+            current_block_coupling=current_block_coupling,
+            history_stream_visibility=resolved_history_stream_visibility,
+            conditional_history_policy=resolved_conditional_history_policy,
         )
-        # History stream filter: when preserve_video_pretrain_history is on,
-        # current video queries see only same-stream (V) past clean; action
-        # queries keep full visibility.
-        if current_block_coupling in joint_like_couplings or prefix_action_then_video:
-            # Joint-like: noise_to_clean only fires on past chunks.
-            noise_to_clean = (
-                (q_noise == 0)
-                & (kv_noise == 1)
-                & (kv_chunk < q_chunk)
-                & history_stream_ok
-            )
-            if prefix_action_then_video:
-                noise_to_clean = noise_to_clean | (
-                    (q_noise == 0)
-                    & (q_stream == 0)
-                    & (kv_noise == 1)
-                    & (kv_stream == 1)
-                    & (kv_chunk == q_chunk)
-                )
-        else:
-            # Staged: split history (filtered) from current-chunk earlier-stage
-            # clean (unfiltered) so V_THEN_A's "A reads current Vc" and
-            # A_THEN_V's "V reads current Ac" still work after we tighten
-            # history visibility.
-            in_history = kv_chunk < q_chunk
-            in_current_chunk_earlier = (kv_chunk == q_chunk) & (
-                kv_block_id < q_block_id
-            )
-            noise_to_clean = (
-                (q_noise == 0)
-                & (kv_noise == 1)
-                & ((in_history & history_stream_ok) | in_current_chunk_earlier)
-            )
-        if current_block_coupling == JOINT_COUPLING:
-            noise_to_noise = (q_noise == 0) & (kv_noise == 0) & (kv_chunk == q_chunk)
-        elif current_block_coupling == VIDEO_NOISY_TO_ACTION_COUPLING:
-            noise_to_noise = (
-                (q_noise == 0)
-                & (kv_noise == 0)
-                & (kv_chunk == q_chunk)
-                & ((q_stream == kv_stream) | ((q_stream == 1) & (kv_stream == 0)))
-            )
-        elif current_block_coupling == ACTION_NOISY_TO_VIDEO_COUPLING:
-            noise_to_noise = (
-                (q_noise == 0)
-                & (kv_noise == 0)
-                & (kv_chunk == q_chunk)
-                & ((q_stream == kv_stream) | ((q_stream == 0) & (kv_stream == 1)))
-            )
-        else:
-            if prefix_condition_frames > 0:
-                noise_to_noise = (
-                    (q_noise == 0)
-                    & (kv_noise == 0)
-                    & (kv_chunk == q_chunk)
-                    & (q_stream == kv_stream)
-                )
-            else:
-                noise_to_noise = (
-                    (q_noise == 0) & (kv_noise == 0) & (kv_block_id == q_block_id)
-                )
-        within_window = (q_block_id - kv_block_id).abs() <= int(window_size)
-        self_attention_mask = (
-            same_seq
-            & within_window
-            & singleton_history_ok
-            & (clean_to_clean | noise_to_clean | noise_to_noise)
+        cross_attention_mask = _build_chunked_cross_attention_visibility(
+            q_seq=seq_ids[:, None],
+            text_seq=text_seq_ids[None, :],
+            q_chunk=q_chunk,
+            text_position=text_context_positions[None, :],
+            q_valid=token_valid_as_query[:, None],
+            base_text_token_count=resolved_base_text_token_count,
+            proprio_context_token_count=resolved_proprio_context_token_count,
         )
-        same_text_sample = (
-            (seq_ids[:, None] == text_seq_ids[None, :])
-            & (seq_ids[:, None] >= 0)
-            & (text_seq_ids[None, :] >= 0)
-            & token_valid_as_query[:, None]
-        )
-        if resolved_proprio_context_token_count > 0:
-            text_position = text_context_positions[None, :]
-            base_text_visible = text_position < resolved_base_text_token_count
-            proprio_index = text_position - resolved_base_text_token_count
-            proprio_visible = (
-                (proprio_index >= 0)
-                & (proprio_index < resolved_proprio_context_token_count)
-                & (proprio_index == q_chunk)
-            )
-            cross_attention_mask = same_text_sample & (
-                base_text_visible | proprio_visible
-            )
-        else:
-            cross_attention_mask = same_text_sample
 
     self_attention_block_mask = None
     cross_attention_block_mask = None
@@ -506,174 +338,29 @@ def build_chunked_temporal_exact_attention_profile(
             kv_idx: torch.Tensor,
         ) -> torch.Tensor:
             del b, h
-            same_seq = (
-                (seq_ids_flex[q_idx] == seq_ids_flex[kv_idx])
-                & (seq_ids_flex[q_idx] >= 0)
-                & (seq_ids_flex[kv_idx] >= 0)
-                & token_valid_as_query_flex[q_idx]
-                & token_valid_as_kv_flex[kv_idx]
-            )
-            q_chunk = chunk_ids_flex[q_idx]
-            kv_chunk = chunk_ids_flex[kv_idx]
-            q_block_id = block_ids_flex[q_idx]
-            kv_block_id = block_ids_flex[kv_idx]
-            if singleton_chunk_frame is None:
-                singleton_history_ok = torch.ones(
-                    (), dtype=torch.bool, device=q_idx.device
-                )
-            else:
-                singleton_history_ok = (
-                    effective_frame_ids_flex[q_idx] < int(singleton_chunk_frame)
-                ) | (effective_frame_ids_flex[kv_idx] >= int(singleton_chunk_frame))
-            if resolved_history_stream_visibility == HISTORY_STREAM_VISIBILITY_FULL:
-                history_stream_ok = torch.ones(
-                    (), dtype=torch.bool, device=q_idx.device
-                )
-            elif (
-                resolved_history_stream_visibility
-                == HISTORY_STREAM_VISIBILITY_VIDEO_QUERIES_VIDEO_ONLY
-            ):
-                history_stream_ok = (
-                    stream_ids_flex[q_idx] == stream_ids_flex[kv_idx]
-                ) | (stream_ids_flex[q_idx] == 1)
-            elif (
-                resolved_history_stream_visibility
-                == HISTORY_STREAM_VISIBILITY_VIDEO_ONLY
-            ):
-                history_stream_ok = stream_ids_flex[kv_idx] == 0
-            else:  # pragma: no cover - normalized above
-                raise ValueError(
-                    f"Unsupported history stream visibility {resolved_history_stream_visibility!r}."
-                )
-            if (
-                resolved_conditional_history_policy
-                == CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY
-            ):
-                boundary_frame = _previous_boundary_frame_ids(
-                    effective_frame_ids_flex[q_idx],
-                    chunk_origin_frame=chunk_origin_frame,
-                    chunk_size=chunk_size,
-                )
-                history_stream_ok = (
-                    stream_ids_flex[kv_idx] == int(PackedTokenStream.VIDEO)
-                ) & (effective_frame_ids_flex[kv_idx] == boundary_frame)
-            if (
-                prefix_condition_frames > 0
-                or current_block_coupling == DECOUPLED_SAME_STEP_COUPLING
-            ):
-                clean_to_clean = (
-                    (noise_ids_flex[q_idx] == 1)
-                    & (noise_ids_flex[kv_idx] == 1)
-                    & (
-                        ((kv_chunk < q_chunk) & history_stream_ok)
-                        | (
-                            (kv_chunk == q_chunk)
-                            & (stream_ids_flex[kv_idx] == stream_ids_flex[q_idx])
-                        )
-                    )
-                )
-            else:
-                clean_to_clean = (
-                    (noise_ids_flex[q_idx] == 1)
-                    & (noise_ids_flex[kv_idx] == 1)
-                    & (
-                        ((kv_chunk < q_chunk) & history_stream_ok)
-                        | (
-                            (kv_chunk == q_chunk)
-                            & (block_ids_flex[kv_idx] <= block_ids_flex[q_idx])
-                        )
-                    )
-                )
-            joint_like_couplings = {
-                JOINT_COUPLING,
-                DECOUPLED_SAME_STEP_COUPLING,
-                VIDEO_NOISY_TO_ACTION_COUPLING,
-                ACTION_NOISY_TO_VIDEO_COUPLING,
-            }
-            prefix_action_then_video = (
-                prefix_condition_frames > 0
-                and current_block_coupling == ACTION_THEN_VIDEO_COUPLING
-            )
-            if (
-                current_block_coupling in joint_like_couplings
-                or prefix_action_then_video
-            ):
-                noise_to_clean = (
-                    (noise_ids_flex[q_idx] == 0)
-                    & (noise_ids_flex[kv_idx] == 1)
-                    & (kv_chunk < q_chunk)
-                    & history_stream_ok
-                )
-                if prefix_action_then_video:
-                    noise_to_clean = noise_to_clean | (
-                        (noise_ids_flex[q_idx] == 0)
-                        & (stream_ids_flex[q_idx] == 0)
-                        & (noise_ids_flex[kv_idx] == 1)
-                        & (stream_ids_flex[kv_idx] == 1)
-                        & (kv_chunk == q_chunk)
-                    )
-            else:
-                in_history = kv_chunk < q_chunk
-                in_current_chunk_earlier = (kv_chunk == q_chunk) & (
-                    kv_block_id < q_block_id
-                )
-                noise_to_clean = (
-                    (noise_ids_flex[q_idx] == 0)
-                    & (noise_ids_flex[kv_idx] == 1)
-                    & ((in_history & history_stream_ok) | in_current_chunk_earlier)
-                )
-            if current_block_coupling == JOINT_COUPLING:
-                noise_to_noise = (
-                    (noise_ids_flex[q_idx] == 0)
-                    & (noise_ids_flex[kv_idx] == 0)
-                    & (kv_chunk == q_chunk)
-                )
-            elif current_block_coupling == VIDEO_NOISY_TO_ACTION_COUPLING:
-                noise_to_noise = (
-                    (noise_ids_flex[q_idx] == 0)
-                    & (noise_ids_flex[kv_idx] == 0)
-                    & (kv_chunk == q_chunk)
-                    & (
-                        (stream_ids_flex[q_idx] == stream_ids_flex[kv_idx])
-                        | (
-                            (stream_ids_flex[q_idx] == 1)
-                            & (stream_ids_flex[kv_idx] == 0)
-                        )
-                    )
-                )
-            elif current_block_coupling == ACTION_NOISY_TO_VIDEO_COUPLING:
-                noise_to_noise = (
-                    (noise_ids_flex[q_idx] == 0)
-                    & (noise_ids_flex[kv_idx] == 0)
-                    & (kv_chunk == q_chunk)
-                    & (
-                        (stream_ids_flex[q_idx] == stream_ids_flex[kv_idx])
-                        | (
-                            (stream_ids_flex[q_idx] == 0)
-                            & (stream_ids_flex[kv_idx] == 1)
-                        )
-                    )
-                )
-            else:
-                if prefix_condition_frames > 0:
-                    noise_to_noise = (
-                        (noise_ids_flex[q_idx] == 0)
-                        & (noise_ids_flex[kv_idx] == 0)
-                        & (kv_chunk == q_chunk)
-                        & (stream_ids_flex[q_idx] == stream_ids_flex[kv_idx])
-                    )
-                else:
-                    noise_to_noise = (
-                        (noise_ids_flex[q_idx] == 0)
-                        & (noise_ids_flex[kv_idx] == 0)
-                        & (block_ids_flex[kv_idx] == block_ids_flex[q_idx])
-                    )
-            within_window = (q_block_id - kv_block_id).abs() <= int(window_size)
-            return (
-                same_seq
-                & within_window
-                & singleton_history_ok
-                & (clean_to_clean | noise_to_clean | noise_to_noise)
+            return _build_chunked_self_attention_visibility(
+                q_seq=seq_ids_flex[q_idx],
+                kv_seq=seq_ids_flex[kv_idx],
+                q_block_id=block_ids_flex[q_idx],
+                kv_block_id=block_ids_flex[kv_idx],
+                q_chunk=chunk_ids_flex[q_idx],
+                kv_chunk=chunk_ids_flex[kv_idx],
+                q_noise=noise_ids_flex[q_idx],
+                kv_noise=noise_ids_flex[kv_idx],
+                q_stream=stream_ids_flex[q_idx],
+                kv_stream=stream_ids_flex[kv_idx],
+                q_effective_frame=effective_frame_ids_flex[q_idx],
+                kv_effective_frame=effective_frame_ids_flex[kv_idx],
+                q_valid=token_valid_as_query_flex[q_idx],
+                kv_valid=token_valid_as_kv_flex[kv_idx],
+                window_size=window_size,
+                chunk_size=chunk_size,
+                chunk_origin_frame=chunk_origin_frame,
+                prefix_condition_frames=prefix_condition_frames,
+                singleton_chunk_frame=singleton_chunk_frame,
+                current_block_coupling=current_block_coupling,
+                history_stream_visibility=resolved_history_stream_visibility,
+                conditional_history_policy=resolved_conditional_history_policy,
             )
 
         def cross_mask_mod(
@@ -683,23 +370,15 @@ def build_chunked_temporal_exact_attention_profile(
             kv_idx: torch.Tensor,
         ) -> torch.Tensor:
             del b, h
-            same_text_sample = (
-                (seq_ids_flex[q_idx] == text_seq_ids_flex[kv_idx])
-                & (seq_ids_flex[q_idx] >= 0)
-                & (text_seq_ids_flex[kv_idx] >= 0)
-                & token_valid_as_query_flex[q_idx]
+            return _build_chunked_cross_attention_visibility(
+                q_seq=seq_ids_flex[q_idx],
+                text_seq=text_seq_ids_flex[kv_idx],
+                q_chunk=chunk_ids_flex[q_idx],
+                text_position=text_context_positions_flex[kv_idx],
+                q_valid=token_valid_as_query_flex[q_idx],
+                base_text_token_count=resolved_base_text_token_count,
+                proprio_context_token_count=resolved_proprio_context_token_count,
             )
-            if resolved_proprio_context_token_count <= 0:
-                return same_text_sample
-            text_position = text_context_positions_flex[kv_idx]
-            base_text_visible = text_position < resolved_base_text_token_count
-            proprio_index = text_position - resolved_base_text_token_count
-            proprio_visible = (
-                (proprio_index >= 0)
-                & (proprio_index < resolved_proprio_context_token_count)
-                & (proprio_index == chunk_ids_flex[q_idx])
-            )
-            return same_text_sample & (base_text_visible | proprio_visible)
 
         total_seq_len = int(seq_ids.numel())
         total_text_len = int(text_seq_ids.numel())

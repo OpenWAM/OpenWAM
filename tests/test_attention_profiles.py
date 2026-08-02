@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
+import pytest
 import torch
 
+import open_wam.models.common.chunked_attention as chunked_attention
 from open_wam.models.common.attention_profiles import (
     build_chunked_temporal_exact_attention_profile,
     normalize_chunked_temporal_exact_coupling,
@@ -14,6 +19,219 @@ from open_wam.models.common.packed_token_layout import (
 from open_wam.models.policy_variants.parallel_stream.reference_runtime import get_mesh_id
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore
+
+
+_CHUNKED_ATTENTION_ORACLE_SHA256 = (
+    "328cfe465c21a42563d651be37214c912abe3e5dc1669e1a1ca3d1397157b8a9"
+)
+_CHUNKED_ATTENTION_COUPLINGS = (
+    "video_then_action",
+    "action_then_video",
+    "joint",
+    "decoupled_same_step",
+    "video_noisy_to_action",
+    "action_noisy_to_video",
+)
+_CHUNKED_ATTENTION_LAYOUTS = (
+    {
+        "name": "standard",
+        "latent_frames": 7,
+        "action_frames": 7,
+        "chunk_origin_frame": 0,
+        "prefix_condition_frames": 0,
+        "singleton_chunk_frame": None,
+    },
+    {
+        "name": "legacy_prefix",
+        "latent_frames": 8,
+        "action_frames": 7,
+        "chunk_origin_frame": 0,
+        "prefix_condition_frames": 1,
+        "singleton_chunk_frame": None,
+    },
+    {
+        "name": "target_singleton",
+        "latent_frames": 7,
+        "action_frames": 7,
+        "chunk_origin_frame": 1,
+        "prefix_condition_frames": 0,
+        "singleton_chunk_frame": 0,
+    },
+    {
+        "name": "legacy_prefix_singleton",
+        "latent_frames": 8,
+        "action_frames": 7,
+        "chunk_origin_frame": 1,
+        "prefix_condition_frames": 1,
+        "singleton_chunk_frame": 0,
+    },
+)
+
+
+def _build_chunked_attention_oracle_profile(
+    *,
+    coupling: str,
+    visibility: str,
+    policy: str | None,
+    layout: dict[str, object],
+    window_size: int,
+    chunk_size: int,
+    masked: bool,
+    build_flex_masks: bool = False,
+):
+    action_frames = int(layout["action_frames"])
+    action_context_mask = None
+    if masked:
+        action_context_mask = torch.ones(1, 1, action_frames, 1, 1)
+        action_context_mask[:, :, 0] = 0
+    return build_chunked_temporal_exact_attention_profile(
+        latent_shape=(1, 2, int(layout["latent_frames"]), 1, 1),
+        action_shape=(1, 2, action_frames, 1, 1),
+        padded_length=3,
+        chunk_size=chunk_size,
+        window_size=window_size,
+        patch_size=(1, 1, 1),
+        text_token_count=6,
+        base_text_token_count=2,
+        proprio_context_token_count=4,
+        chunk_origin_frame=int(layout["chunk_origin_frame"]),
+        device=torch.device("cpu"),
+        action_context_mask=action_context_mask,
+        build_dense_masks=True,
+        build_flex_masks=build_flex_masks,
+        current_block_coupling=coupling,
+        history_stream_visibility=visibility,
+        prefix_condition_frames=int(layout["prefix_condition_frames"]),
+        singleton_chunk_frame=layout["singleton_chunk_frame"],
+        conditional_history_policy=policy,
+    )
+
+
+def test_chunked_attention_exhaustive_frozen_visibility_oracle() -> None:
+    digest = hashlib.sha256()
+    case_count = 0
+    for coupling in _CHUNKED_ATTENTION_COUPLINGS:
+        for visibility in ("full", "video_queries_video_only", "video_only"):
+            for policy in (None, "previous_boundary_video_only"):
+                for layout in _CHUNKED_ATTENTION_LAYOUTS:
+                    for window_size in (3, 16):
+                        for chunk_size in (1, 2, 4):
+                            for masked in (False, True):
+                                case = {
+                                    "coupling": coupling,
+                                    "visibility": visibility,
+                                    "policy": policy,
+                                    "window_size": window_size,
+                                    "chunk_size": chunk_size,
+                                    "masked": masked,
+                                    **layout,
+                                }
+                                profile = _build_chunked_attention_oracle_profile(
+                                    coupling=coupling,
+                                    visibility=visibility,
+                                    policy=policy,
+                                    layout=layout,
+                                    window_size=window_size,
+                                    chunk_size=chunk_size,
+                                    masked=masked,
+                                )
+                                case_payload = json.dumps(
+                                    case,
+                                    sort_keys=True,
+                                    separators=(",", ":"),
+                                ).encode()
+                                digest.update(len(case_payload).to_bytes(4, "big"))
+                                digest.update(case_payload)
+                                for mask in (
+                                    profile.self_attention_mask,
+                                    profile.cross_attention_mask,
+                                ):
+                                    assert mask is not None
+                                    payload = (
+                                        mask.to(torch.uint8)
+                                        .contiguous()
+                                        .numpy()
+                                        .tobytes()
+                                    )
+                                    digest.update(len(payload).to_bytes(8, "big"))
+                                    digest.update(payload)
+                                metadata = {
+                                    key: profile.metadata[key]
+                                    for key in (
+                                        "current_block_coupling",
+                                        "history_stream_visibility",
+                                        "conditional_history_policy",
+                                        "chunk_origin_frame",
+                                        "prefix_condition_frames",
+                                        "singleton_chunk_frame",
+                                        "invalid_action_context_tokens",
+                                        "action_context_valid_tokens",
+                                    )
+                                }
+                                metadata_payload = json.dumps(
+                                    metadata,
+                                    sort_keys=True,
+                                    separators=(",", ":"),
+                                ).encode()
+                                digest.update(
+                                    len(metadata_payload).to_bytes(4, "big")
+                                )
+                                digest.update(metadata_payload)
+                                case_count += 1
+
+    assert case_count == 1728
+    assert digest.hexdigest() == _CHUNKED_ATTENTION_ORACLE_SHA256
+
+
+@pytest.mark.parametrize("coupling", _CHUNKED_ATTENTION_COUPLINGS)
+@pytest.mark.parametrize("layout", _CHUNKED_ATTENTION_LAYOUTS, ids=lambda value: value["name"])
+def test_chunked_attention_dense_and_flex_predicates_are_identical(
+    monkeypatch: pytest.MonkeyPatch,
+    coupling: str,
+    layout: dict[str, object],
+) -> None:
+    if chunked_attention.create_block_mask is None:
+        pytest.skip("FlexAttention is not available in this Torch build.")
+    monkeypatch.setattr(
+        chunked_attention,
+        "_resolve_compiled_create_block_mask",
+        lambda: None,
+    )
+    profile = _build_chunked_attention_oracle_profile(
+        coupling=coupling,
+        visibility="video_only",
+        policy="previous_boundary_video_only",
+        layout=layout,
+        window_size=3,
+        chunk_size=4,
+        masked=True,
+        build_flex_masks=True,
+    )
+    assert profile.self_attention_mask is not None
+    assert profile.cross_attention_mask is not None
+    assert profile.self_attention_block_mask is not None
+    assert profile.cross_attention_block_mask is not None
+
+    self_size = int(profile.self_attention_mask.shape[0])
+    self_query = torch.arange(self_size)[:, None]
+    self_key = torch.arange(self_size)[None, :]
+    self_from_flex = profile.self_attention_block_mask.mask_mod(
+        torch.zeros_like(self_query),
+        torch.zeros_like(self_query),
+        self_query,
+        self_key,
+    )
+    cross_query = torch.arange(profile.cross_attention_mask.shape[0])[:, None]
+    cross_key = torch.arange(profile.cross_attention_mask.shape[1])[None, :]
+    cross_from_flex = profile.cross_attention_block_mask.mask_mod(
+        torch.zeros_like(cross_query),
+        torch.zeros_like(cross_query),
+        cross_query,
+        cross_key,
+    )
+
+    assert torch.equal(self_from_flex, profile.self_attention_mask)
+    assert torch.equal(cross_from_flex, profile.cross_attention_mask)
 
 
 def test_build_chunked_temporal_exact_attention_profile_dense_masks() -> None:

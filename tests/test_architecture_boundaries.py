@@ -141,6 +141,12 @@ ATTENTION_PROFILE_ROLE_PATHS = {
     "contracts": PACKAGE_ROOT / "models" / "common" / "attention_contracts.py",
     "facade": PACKAGE_ROOT / "models" / "common" / "attention_profiles.py",
     "profiles": PACKAGE_ROOT / "models" / "common" / "chunked_attention.py",
+    "visibility": (
+        PACKAGE_ROOT
+        / "models"
+        / "common"
+        / "chunked_attention_visibility.py"
+    ),
 }
 CACHE_BACKEND_ROLE_PATHS = {
     "layout": (
@@ -4139,12 +4145,14 @@ def test_attention_profile_roles_have_one_owner_and_a_stable_facade() -> None:
         attention_contracts,
         attention_profiles,
         chunked_attention,
+        chunked_attention_visibility,
     )
 
     role_modules = {
         "backends": attention_backends,
         "contracts": attention_contracts,
         "profiles": chunked_attention,
+        "visibility": chunked_attention_visibility,
     }
     owner_names = {
         "backends": {
@@ -4165,16 +4173,20 @@ def test_attention_profile_roles_have_one_owner_and_a_stable_facade() -> None:
             "normalize_parallel_history_stream_visibility",
         },
         "profiles": {
-            "_effective_frame_ids_for_singleton_cutoff",
-            "_previous_boundary_frame_ids",
             "build_chunked_temporal_exact_attention_profile",
             "build_chunked_text_context_cross_attention_mask",
             "build_lingbot_chunked_exact_attention_profile",
         },
+        "visibility": {
+            "_build_chunked_cross_attention_visibility",
+            "_build_chunked_self_attention_visibility",
+            "_effective_frame_ids_for_singleton_cutoff",
+            "_previous_boundary_frame_ids",
+        },
     }
     all_names = set().union(*owner_names.values())
 
-    assert len(all_names) == 18
+    assert len(all_names) == 20
     assert not _top_level_definitions(ATTENTION_PROFILE_ROLE_PATHS["facade"])
     assert all(
         sum(
@@ -4218,6 +4230,7 @@ def test_attention_profile_roles_have_one_owner_and_a_stable_facade() -> None:
         "build_chunked_text_context_cross_attention_mask",
         "build_lingbot_chunked_exact_attention_profile",
     }
+    assert _module_all_names(ATTENTION_PROFILE_ROLE_PATHS["visibility"]) == set()
     assert _module_all_names(ATTENTION_PROFILE_ROLE_PATHS["facade"]) == set()
     assert all(
         "open_wam.models.common.attention_profiles"
@@ -4228,6 +4241,7 @@ def test_attention_profile_roles_have_one_owner_and_a_stable_facade() -> None:
         "open_wam.models.common.attention_backends",
         "open_wam.models.common.attention_contracts",
         "open_wam.models.common.chunked_attention",
+        "open_wam.models.common.chunked_attention_visibility",
     }
     role_imports = {
         role: _absolute_imports_for_file(path) & role_import_names
@@ -4240,7 +4254,9 @@ def test_attention_profile_roles_have_one_owner_and_a_stable_facade() -> None:
         "profiles": {
             "open_wam.models.common.attention_backends",
             "open_wam.models.common.attention_contracts",
+            "open_wam.models.common.chunked_attention_visibility",
         },
+        "visibility": {"open_wam.models.common.attention_contracts"},
     }
 
     facade_consumers = []
@@ -4255,9 +4271,16 @@ def test_attention_profile_roles_have_one_owner_and_a_stable_facade() -> None:
             facade_consumers.append(path.relative_to(PACKAGE_ROOT).as_posix())
     assert facade_consumers == []
 
+    internal_visibility_names = {
+        "_build_chunked_cross_attention_visibility",
+        "_build_chunked_self_attention_visibility",
+    }
     for role, names in owner_names.items():
         for name in names:
             owner_value = getattr(role_modules[role], name)
+            if name in internal_visibility_names:
+                assert not hasattr(attention_profiles, name)
+                continue
             assert getattr(attention_profiles, name) is owner_value
             payload = f"copen_wam.models.common.attention_profiles\n{name}\n.".encode()
             assert pickle.loads(payload) is owner_value

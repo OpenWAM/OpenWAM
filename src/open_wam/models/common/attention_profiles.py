@@ -50,11 +50,13 @@ from open_wam.models.common.attention_contracts import (
     normalize_parallel_history_stream_visibility as normalize_parallel_history_stream_visibility,
 )
 from open_wam.models.common.chunked_attention import (
-    _effective_frame_ids_for_singleton_cutoff as _effective_frame_ids_for_singleton_cutoff,
-    _previous_boundary_frame_ids as _previous_boundary_frame_ids,
     build_chunked_temporal_exact_attention_profile as build_chunked_temporal_exact_attention_profile,
     build_chunked_text_context_cross_attention_mask as build_chunked_text_context_cross_attention_mask,
     build_lingbot_chunked_exact_attention_profile as build_lingbot_chunked_exact_attention_profile,
+)
+from open_wam.models.common.chunked_attention_visibility import (
+    _effective_frame_ids_for_singleton_cutoff as _effective_frame_ids_for_singleton_cutoff,
+    _previous_boundary_frame_ids as _previous_boundary_frame_ids,
 )
 from open_wam.models.common.packed_token_layout import (
     PackedTokenStream as PackedTokenStream,
