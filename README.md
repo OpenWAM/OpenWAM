@@ -363,6 +363,7 @@ uv run python scripts/run_libero_realtime_sandbox.py \
   --output-dir outputs/libero_exact_visualization_chunks6_seeded
 
 uv run python scripts/run_heng_libero_exact_visualization.py \
+  --heng-repo-root <LINGBOT_VA_SOURCE_CHECKOUT> \
   --benchmark libero_10 \
   --task-id 8 \
   --episode-idx 0 \

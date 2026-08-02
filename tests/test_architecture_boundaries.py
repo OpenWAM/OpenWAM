@@ -349,6 +349,28 @@ def _top_level_import_names(path: Path) -> set[str]:
     return names
 
 
+def _required_argparse_options(path: Path) -> set[str]:
+    source = path.read_text(encoding="utf-8")
+    required_options: set[str] = set()
+    for node in ast.walk(ast.parse(source, filename=str(path))):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+            and any(
+                keyword.arg == "required"
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value is True
+                for keyword in node.keywords
+            )
+        ):
+            required_options.add(node.args[0].value)
+    return required_options
+
+
 def _module_all_names(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in tree.body:
@@ -6819,6 +6841,8 @@ def test_orphaned_diagnostics_and_duplicate_aliases_are_retired() -> None:
         REPO_ROOT / "scripts" / "visualize_libero_reference_pose.py",
         REPO_ROOT / "scripts" / "run_viz_libero_reference_pose.sh",
         REPO_ROOT / "scripts" / "run_viz_libero_pose_compare.sh",
+        REPO_ROOT / "scripts" / "run_lingbot_va_libero10_apple_to_apple_eval.sh",
+        REPO_ROOT / "scripts" / "run_lingbot_va_m1_proprio_finetune_libero10.sh",
         REPO_ROOT / "scripts" / "check_libero_proprio_state_alignment.py",
         REPO_ROOT / "scripts" / "smoke_parallel_stream_lingbot_replica.py",
         REPO_ROOT / "scripts" / "run_contract_only.sh",
@@ -6846,26 +6870,135 @@ def test_retained_pose_and_wan_diagnostics_use_owned_portable_contracts() -> Non
     )
     assert "DEFAULT_CHECKPOINTS" not in _top_level_definitions(wan_path)
 
-    required_options: set[str] = set()
-    for node in ast.walk(ast.parse(source, filename=str(wan_path))):
+    assert {"--base-root", "--transformer-template", "--checkpoint"} <= (
+        _required_argparse_options(wan_path)
+    )
+
+
+def test_retained_checkout_commands_require_machine_local_roots() -> None:
+    required_options = {
+        "build_libero_replay_metadata.py": {
+            "--dataset-root",
+            "--diagnostic-root",
+        },
+        "validate_libero_dataset_replay_labels.py": {
+            "--dataset-root",
+            "--diagnostic-root",
+            "--libero-repo-root",
+        },
+        "build_libero_fdm_counterfactual_demo_dataset.py": {
+            "--replay-status-path",
+            "--output-dir",
+        },
+        "run_heng_libero_exact_visualization.py": {"--heng-repo-root"},
+    }
+    for script_name, expected in required_options.items():
+        assert expected <= _required_argparse_options(
+            REPO_ROOT / "scripts" / script_name
+        )
+
+    heng_runner = REPO_ROOT / "scripts/run_heng_libero_exact_visualization.py"
+    assert "_configure_heng_runtime" in _top_level_definitions(heng_runner)
+    assert {
+        "benchmark",
+        "OffScreenRenderEnv",
+        "VA_CONFIGS",
+        "VA_Server",
+    }.isdisjoint(_top_level_import_names(heng_runner))
+
+
+def test_active_checkout_docs_and_tools_have_no_private_machine_defaults() -> None:
+    excluded = {
+        REPO_ROOT / "notes/production_core_inventory.md",
+        REPO_ROOT / "notes/production_core_pruning_roadmap.md",
+        REPO_ROOT / "scripts/build_docs_site.py",
+        REPO_ROOT / "scripts/check_release_metadata.py",
+        REPO_ROOT / "scripts/ci_basic_sanity.py",
+    }
+    roots = (
+        REPO_ROOT / "README.md",
+        REPO_ROOT / "baselines",
+        REPO_ROOT / "docs",
+        REPO_ROOT / "notes",
+        REPO_ROOT / "scripts",
+    )
+    private_fragments = (
+        "/simurgh",
+        "/scr/",
+        "/hai/",
+        "/afs/",
+        "/sailhome/",
+        "private-user",
+        "private-user",
+        "/home/private-user",
+    )
+    offenders: list[str] = []
+    for root in roots:
+        paths = (root,) if root.is_file() else root.rglob("*")
+        for path in paths:
+            if (
+                not path.is_file()
+                or path in excluded
+                or path.suffix not in {".md", ".py", ".sh"}
+                or "finished_roadmaps" in path.parts
+                or path.name.endswith(".tmp.md")
+            ):
+                continue
+            source = path.read_text(encoding="utf-8").lower()
+            if any(fragment in source for fragment in private_fragments):
+                offenders.append(str(path.relative_to(REPO_ROOT)))
+    assert offenders == []
+
+
+def test_active_checkout_tools_have_no_implicit_absolute_data_roots() -> None:
+    def is_absolute_data_root(value: str) -> bool:
+        return value == "/data" or value.startswith("/data/")
+
+    def literal_path(node: ast.expr) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
         if (
             isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "add_argument"
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "Path"
             and node.args
-            and isinstance(node.args[0], ast.Constant)
-            and isinstance(node.args[0].value, str)
-            and any(
-                keyword.arg == "required"
-                and isinstance(keyword.value, ast.Constant)
-                and keyword.value.value is True
-                for keyword in node.keywords
-            )
         ):
-            required_options.add(node.args[0].value)
-    assert {"--base-root", "--transformer-template", "--checkpoint"} <= (
-        required_options
-    )
+            return literal_path(node.args[0])
+        return None
+
+    offenders: list[str] = []
+    for path in (REPO_ROOT / "scripts").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in tree.body:
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                value = literal_path(node.value) if node.value is not None else None
+                if value is not None and is_absolute_data_root(value):
+                    offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "add_argument"
+            ):
+                continue
+            for keyword in node.keywords:
+                value = literal_path(keyword.value)
+                if (
+                    keyword.arg == "default"
+                    and value is not None
+                    and is_absolute_data_root(value)
+                ):
+                    offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
+
+    for path in (REPO_ROOT / "scripts").rglob("*.sh"):
+        source = path.read_text(encoding="utf-8")
+        if any(
+            marker in source
+            for marker in (":-/data}", ":-/data/", '="/data"', '="/data/')
+        ):
+            offenders.append(str(path.relative_to(REPO_ROOT)))
+
+    assert offenders == []
 
 
 def test_private_gjd_conditioning_study_driver_is_retired() -> None:

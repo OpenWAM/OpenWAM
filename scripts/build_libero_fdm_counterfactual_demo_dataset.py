@@ -29,11 +29,6 @@ from open_wam.data.action_pose import quaternion_to_axis_angle
 from open_wam.data.latent_temporal import raw_window_frames_for_latents
 
 
-DEFAULT_REPLAY_STATUS = (
-    "/path/to/private-resource"
-    "libero_replay_metadata_20260502_final_top12_plus_top50/libero_10/replay_status.jsonl"
-)
-DEFAULT_OUTPUT_DIR = "/path/to/private-resource"
 DEFAULT_BRANCHES = BRANCH_PRESETS["training_10"]
 DEFAULT_CONTEXT_WINDOW_FRAMES = 16
 DEFAULT_HORIZON_FRAMES = 32
@@ -1015,8 +1010,8 @@ def _resolve_output_root(args: argparse.Namespace) -> Path:
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build a LIBERO-10 counterfactual FDM demo dataset.")
     parser.add_argument("--benchmark", default="libero_10")
-    parser.add_argument("--replay-status-path", default=DEFAULT_REPLAY_STATUS)
-    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--replay-status-path", required=True)
+    parser.add_argument("--output-dir", required=True)
     parser.add_argument("--run-id", default="libero10_fdm_counterfactual_coverage_10000_h32_ctx16_random_t0_seed0")
     parser.add_argument("--task-ids", default="0,1,2,3,4,5,6,7,8,9")
     parser.add_argument("--target-transitions", type=int, default=10000)

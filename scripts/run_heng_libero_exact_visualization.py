@@ -8,6 +8,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import cv2
 import imageio.v2 as imageio
@@ -17,12 +18,9 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
-HENG_REPO_ROOT = Path("/path/to/private-resource")
-HENG_WAN_ROOT = HENG_REPO_ROOT / "wan_va"
 
-for path in (SRC_ROOT, HENG_REPO_ROOT, HENG_WAN_ROOT):
-    if str(path) not in sys.path:
-        sys.path.insert(0, str(path))
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 from open_wam.third_party.lingbot import _ensure_flash_attn_shims  # noqa: E402
 from open_wam.integrations import (  # noqa: E402
@@ -32,13 +30,10 @@ from open_wam.integrations import (  # noqa: E402
 )
 from open_wam.utils import seed_everywhere  # noqa: E402
 
-_ensure_flash_attn_shims()
-ensure_local_libero_config(REPO_ROOT)
-
-from libero.libero import benchmark  # noqa: E402
-from libero.libero.envs import OffScreenRenderEnv  # noqa: E402
-from wan_va.configs import VA_CONFIGS  # noqa: E402
-from wan_va.wan_va_server import VA_Server  # noqa: E402
+benchmark: Any = None
+OffScreenRenderEnv: Any = None
+VA_CONFIGS: Any = None
+VA_Server: Any = None
 
 
 LIBERO_OBS_KEYS = (
@@ -50,6 +45,12 @@ LIBERO_OBS_KEYS = (
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run Heng's LIBERO exact pipeline for one or more chunks and save a comparison video."
+    )
+    parser.add_argument(
+        "--heng-repo-root",
+        type=Path,
+        required=True,
+        help="Source checkout containing the upstream wan_va package.",
     )
     parser.add_argument("--benchmark", type=str, default="libero_10")
     parser.add_argument("--task-id", type=int, default=8)
@@ -73,6 +74,8 @@ def main() -> None:
         help="Optional trained transformer directory to mount under Heng's expected pretrained root layout.",
     )
     args = parser.parse_args()
+
+    _configure_heng_runtime(args.heng_repo_root)
 
     if not torch.cuda.is_available():
         raise RuntimeError("Heng comparison runner expects CUDA to be available.")
@@ -231,6 +234,35 @@ def main() -> None:
             env.close()
         del model
         torch.cuda.empty_cache()
+
+
+def _configure_heng_runtime(heng_repo_root: Path) -> None:
+    """Load the explicitly selected upstream comparison runtime."""
+
+    global benchmark, OffScreenRenderEnv, VA_CONFIGS, VA_Server
+
+    repo_root = heng_repo_root.expanduser().resolve()
+    wan_root = repo_root / "wan_va"
+    if not repo_root.is_dir():
+        raise FileNotFoundError(f"Heng source checkout not found: {repo_root}")
+    if not wan_root.is_dir():
+        raise FileNotFoundError(f"Heng wan_va package root not found: {wan_root}")
+    for path in (repo_root, wan_root):
+        if str(path) not in sys.path:
+            sys.path.insert(0, str(path))
+
+    _ensure_flash_attn_shims()
+    ensure_local_libero_config(REPO_ROOT)
+
+    from libero.libero import benchmark as libero_benchmark
+    from libero.libero.envs import OffScreenRenderEnv as libero_offscreen_env
+    from wan_va.configs import VA_CONFIGS as upstream_va_configs
+    from wan_va.wan_va_server import VA_Server as upstream_va_server
+
+    benchmark = libero_benchmark
+    OffScreenRenderEnv = libero_offscreen_env
+    VA_CONFIGS = upstream_va_configs
+    VA_Server = upstream_va_server
 
 
 def _build_heng_model(

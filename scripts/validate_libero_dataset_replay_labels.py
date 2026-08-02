@@ -35,9 +35,6 @@ from open_wam.integrations.libero_tasks import (  # noqa: E402
 )
 
 
-DEFAULT_DATASET_ROOT = Path("/path/to/private-resource")
-DEFAULT_DIAGNOSTIC_ROOT = Path("/path/to/private-resource")
-DEFAULT_LIBERO_REPO_ROOT = Path("/path/to/private-resource")
 DEFAULT_SUBSETS = ("libero_10", "libero_90", "libero_goal", "libero_object", "libero_spatial")
 REPLAY_SCHEMA_VERSION = 1
 LIBERO_DEMOS_PER_TASK = 50
@@ -76,9 +73,9 @@ def main() -> None:
             "replay-status metadata candidates."
         )
     )
-    parser.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)
-    parser.add_argument("--diagnostic-root", type=Path, default=DEFAULT_DIAGNOSTIC_ROOT)
-    parser.add_argument("--libero-repo-root", type=Path, default=DEFAULT_LIBERO_REPO_ROOT)
+    parser.add_argument("--dataset-root", type=Path, required=True)
+    parser.add_argument("--diagnostic-root", type=Path, required=True)
+    parser.add_argument("--libero-repo-root", type=Path, required=True)
     parser.add_argument("--subsets", type=str, default=",".join(DEFAULT_SUBSETS))
     parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--collect-run", type=str, default=None)

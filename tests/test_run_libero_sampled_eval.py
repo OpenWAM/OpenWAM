@@ -755,6 +755,68 @@ def test_parse_target_requests_accepts_method_key_label_and_checkpoint() -> None
     ]
 
 
+def test_default_target_requests_requires_complete_implicit_matrix() -> None:
+    method = next(method for method in sampled_eval.METHODS if method.key == "m5")
+    args = argparse.Namespace(
+        m5_base_checkpoint="/models/m5_base",
+        m5_posttrained_checkpoint=None,
+        base_checkpoint=None,
+        posttrained_checkpoint=None,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"Missing checkpoint paths for implicit targets: m5:posttrained",
+    ):
+        sampled_eval.default_target_requests(args=args, selected_methods=[method])
+
+
+def test_default_target_requests_preserves_m1_legacy_checkpoint_aliases() -> None:
+    method = next(method for method in sampled_eval.METHODS if method.key == "m1")
+    args = argparse.Namespace(
+        m1_base_checkpoint=None,
+        m1_posttrained_checkpoint=None,
+        base_checkpoint="/models/m1_base",
+        posttrained_checkpoint="/models/m1_posttrained",
+    )
+
+    requests = sampled_eval.default_target_requests(
+        args=args,
+        selected_methods=[method],
+    )
+
+    assert [request.checkpoint for request in requests] == [
+        "/models/m1_base",
+        "/models/m1_posttrained",
+    ]
+
+
+def test_explicit_target_resolution_does_not_require_implicit_checkpoint_args(
+    tmp_path: Path,
+) -> None:
+    checkpoint = tmp_path / "checkpoint_step_1"
+    checkpoint.mkdir()
+    (checkpoint / "model_state.pt").write_bytes(b"weights")
+    method = next(method for method in sampled_eval.METHODS if method.key == "m5")
+    args = argparse.Namespace(cfg=None, reference_assets_device_policy=None)
+
+    [spec] = sampled_eval.resolve_checkpoint_specs(
+        args=args,
+        selected_methods=[method],
+        target_requests=[
+            sampled_eval.TargetRequest(
+                method_key="m5",
+                checkpoint_key="candidate",
+                label=None,
+                checkpoint=str(checkpoint),
+            )
+        ],
+    )
+
+    assert spec.key == "m5_candidate"
+    assert spec.checkpoint_file == str((checkpoint / "model_state.pt").resolve())
+
+
 def test_sampled_eval_rejects_gjd_configs() -> None:
     spec = sampled_eval.CheckpointSpec(
         key="m5_mode_token",

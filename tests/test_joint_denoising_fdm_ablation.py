@@ -500,6 +500,10 @@ def test_counterfactual_dataset_builder_random_t0_count_and_defaults() -> None:
     builder = _load_repo_script("scripts/build_libero_fdm_counterfactual_demo_dataset.py")
     args = builder._parse_args(
         [
+            "--replay-status-path",
+            "/tmp/replay_status.jsonl",
+            "--output-dir",
+            "/tmp/counterfactual-output",
             "--t0-sampling-mode",
             "uniform_random",
             "--t0-samples-per-episode",
@@ -520,7 +524,14 @@ def test_counterfactual_dataset_builder_random_t0_count_and_defaults() -> None:
 def test_counterfactual_dataset_builder_defaults_to_16_context_32_future() -> None:
     builder = _load_repo_script("scripts/build_libero_fdm_counterfactual_demo_dataset.py")
 
-    args = builder._parse_args([])
+    args = builder._parse_args(
+        [
+            "--replay-status-path",
+            "/tmp/replay_status.jsonl",
+            "--output-dir",
+            "/tmp/counterfactual-output",
+        ]
+    )
 
     assert args.context_window_frames == 16
     assert args.horizon_frames == 32

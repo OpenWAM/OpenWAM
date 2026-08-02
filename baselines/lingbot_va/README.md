@@ -17,15 +17,19 @@ action-channel compatibility override is part of this baseline.
 
 ## Download
 
-Place the released checkpoint outside the repo under the shared research tree:
+Place the released checkpoint outside the repo:
 
 ```bash
-/path/to/private-resource - <<'PY'
+export LINGBOT_BASELINE_PYTHON=/path/to/lingbot-va-env/bin/python
+export LINGBOT_VA_MODEL_ROOT=/path/to/lingbot-va-posttrain-libero-long
+
+"$LINGBOT_BASELINE_PYTHON" - <<'PY'
+import os
 from huggingface_hub import snapshot_download
 
 snapshot_download(
     repo_id="robbyant/lingbot-va-posttrain-libero-long",
-    local_dir="/path/to/private-resource",
+    local_dir=os.environ["LINGBOT_VA_MODEL_ROOT"],
 )
 PY
 ```
@@ -38,12 +42,13 @@ The model root must contain `vae/`, `text_encoder/`, `tokenizer/`, and
 Full upstream-style LIBERO-10 evaluation is 10 tasks x 50 init states:
 
 ```bash
-export LINGBOT_VA_MODEL_ROOT=/path/to/private-resource
+export LINGBOT_BASELINE_PYTHON=/path/to/lingbot-va-env/bin/python
+export LINGBOT_VA_MODEL_ROOT=/path/to/lingbot-va-posttrain-libero-long
 
 PYTHONPATH=src:outputs/lingbot_va_pydeps \
 PYTHONUNBUFFERED=1 MUJOCO_GL=egl TOKENIZERS_PARALLELISM=false \
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=0 \
-  /path/to/private-resource \
+  "$LINGBOT_BASELINE_PYTHON" \
   -m baselines.lingbot_va.run_libero10_baseline \
     --suite baselines/lingbot_va/suites/libero10_env_template.yaml
 ```
@@ -54,10 +59,10 @@ Single smoke episode:
 PYTHONPATH=src:outputs/lingbot_va_pydeps \
 PYTHONUNBUFFERED=1 MUJOCO_GL=egl TOKENIZERS_PARALLELISM=false \
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=0 \
-  /path/to/private-resource \
+  "$LINGBOT_BASELINE_PYTHON" \
   -m baselines.lingbot_va.run_libero10_baseline \
     --source-repo previous_works/lingbot-va \
-    --model-root /path/to/private-resource \
+    --model-root "$LINGBOT_VA_MODEL_ROOT" \
     --checkpoint-name lingbot_va_posttrain_libero_long \
     --benchmark libero_10 \
     --task-ids 0 \
@@ -106,7 +111,7 @@ Two-GPU full evaluations can be merged after both shards finish:
 
 ```bash
 PYTHONPATH=src:outputs/lingbot_va_pydeps \
-  /path/to/private-resource \
+  "$LINGBOT_BASELINE_PYTHON" \
   -m baselines.lingbot_va.summarize_results \
   --results-jsonl \
     outputs/lingbot_va_posttrain_libero_long_libero10_full_20260429/gpu0_tasks0_4/results.jsonl \
@@ -118,7 +123,7 @@ PYTHONPATH=src:outputs/lingbot_va_pydeps \
   --require-null-seed \
   --require-unique \
   --require-hf-revision 0e89d1e753019988aba484e8da2dc0810e264d9f \
-  --require-model-root /path/to/private-resource \
+  --require-model-root "$LINGBOT_VA_MODEL_ROOT" \
   --output-dir outputs/lingbot_va_posttrain_libero_long_libero10_full_20260429/combined
 ```
 
@@ -149,10 +154,10 @@ Start one model server per GPU:
 ```bash
 PYTHONPATH=src:outputs/lingbot_va_pydeps \
 PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0 \
-  /path/to/private-resource \
+  "$LINGBOT_BASELINE_PYTHON" \
   -m baselines.lingbot_va.run_robotwin_server \
     --source-repo previous_works/lingbot-va \
-    --model-root /path/to/private-resource \
+    --model-root /path/to/lingbot-va-posttrain-robotwin \
     --save-root outputs/lingbot_va_robotwin/server_gpu0 \
     --port 29056
 ```

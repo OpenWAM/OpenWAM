@@ -10,8 +10,6 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_DATASET_ROOT = Path("/path/to/private-resource")
-DEFAULT_DIAGNOSTIC_ROOT = Path("/path/to/private-resource")
 DEFAULT_SUBSETS = ("libero_10", "libero_90", "libero_goal", "libero_object", "libero_spatial")
 DEFAULT_INIT_STATE_COUNT = 50
 INIT_COVERAGE_SCHEMA_VERSION = 2
@@ -24,8 +22,8 @@ def main() -> None:
             "per-task/init-state successful-GT coverage."
         )
     )
-    parser.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)
-    parser.add_argument("--diagnostic-root", type=Path, default=DEFAULT_DIAGNOSTIC_ROOT)
+    parser.add_argument("--dataset-root", type=Path, required=True)
+    parser.add_argument("--diagnostic-root", type=Path, required=True)
     parser.add_argument("--subsets", type=str, default=",".join(DEFAULT_SUBSETS))
     parser.add_argument(
         "--source-run",

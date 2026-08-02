@@ -100,15 +100,6 @@ transformer_dir_from_resolved_config = checkpoint_artifacts.transformer_dir_from
 _has_transformer_weights = checkpoint_artifacts.has_transformer_weights
 
 DEFAULT_CONFIG = sampled_eval_planning.SAMPLED_EVAL_DEFAULT_CONFIG
-DEFAULT_BASE_CHECKPOINT = (
-    "/data/openwam_exp/runs/parallel_stream_libero_lingbot_exact_heng_compatible/checkpoints/checkpoint_step_400"
-)
-DEFAULT_POSTTRAINED_CHECKPOINT = (
-    "/data/openwam_exp/runs/m1_exact_libero10_from_all_subsets_step400_wandb_online_from1200_modelonly/"
-    "checkpoints/checkpoint_step_900"
-)
-DEFAULT_DATASET_ROOT = "/data/lingbot_data_exp/libero_heng/libero_10"
-DEFAULT_LIBERO_REPO_ROOT = "/data/lingbot_data_exp/LIBERO"
 DEFAULT_LOCAL_PATHS = "configs/local_paths.yaml"
 SAMPLE_MODE_CHOICES = sampled_eval_sampling.SAMPLE_MODE_CHOICES
 GJD_CONFIG_MARKERS = ("generalist_joint_denoising",)
@@ -175,7 +166,12 @@ def main() -> None:
     )
     parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--run-label", type=str, default="sampled_eval")
-    parser.add_argument("--dataset-root", type=Path, default=Path(DEFAULT_DATASET_ROOT))
+    parser.add_argument(
+        "--dataset-root",
+        type=Path,
+        default=None,
+        help="LeRobot dataset root. Required unless --collect is used.",
+    )
     parser.add_argument("--benchmark", type=str, default="libero_10")
     parser.add_argument(
         "--num-episodes",
@@ -302,8 +298,18 @@ def main() -> None:
             "When omitted, base/posttrained targets are built for --methods from method-specific args/env."
         ),
     )
-    parser.add_argument("--base-checkpoint", type=str, default=DEFAULT_BASE_CHECKPOINT)
-    parser.add_argument("--posttrained-checkpoint", type=str, default=DEFAULT_POSTTRAINED_CHECKPOINT)
+    parser.add_argument(
+        "--base-checkpoint",
+        type=str,
+        default=None,
+        help="Legacy M1 base checkpoint fallback used when --target is omitted.",
+    )
+    parser.add_argument(
+        "--posttrained-checkpoint",
+        type=str,
+        default=None,
+        help="Legacy M1 posttrained checkpoint fallback used when --target is omitted.",
+    )
     parser.add_argument("--m1-base-checkpoint", type=str, default=None)
     parser.add_argument("--m1-posttrained-checkpoint", type=str, default=None)
     parser.add_argument("--m2-base-checkpoint", type=str, default=None)
@@ -318,7 +324,12 @@ def main() -> None:
     )
     parser.add_argument("--output-root", type=Path, default=None)
     parser.add_argument("--local-paths", type=Path, default=Path(DEFAULT_LOCAL_PATHS))
-    parser.add_argument("--libero-repo-root", type=Path, default=Path(DEFAULT_LIBERO_REPO_ROOT))
+    parser.add_argument(
+        "--libero-repo-root",
+        type=Path,
+        default=None,
+        help="Upstream LIBERO checkout root. Required unless --collect is used.",
+    )
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
     parser.add_argument("--devices", type=str, default="cuda:0,cuda:1")
     parser.add_argument(
@@ -416,6 +427,20 @@ def main() -> None:
         summary = collect_run(args.collect)
         print(json.dumps(summary, indent=2))
         raise SystemExit(0)
+
+    missing_roots = [
+        option
+        for option, value in (
+            ("--dataset-root", args.dataset_root),
+            ("--libero-repo-root", args.libero_repo_root),
+        )
+        if value is None
+    ]
+    if missing_roots:
+        parser.error(
+            "the following arguments are required unless --collect is used: "
+            + ", ".join(missing_roots)
+        )
 
     if args.num_episodes <= 0:
         raise ValueError("--num-episodes must be positive.")
@@ -657,17 +682,30 @@ def resolve_checkpoint_specs(
 
 def default_target_requests(*, args: argparse.Namespace, selected_methods: list[MethodSpec]) -> list[TargetRequest]:
     requests: list[TargetRequest] = []
+    missing: list[str] = []
     for method in selected_methods:
         for checkpoint_key in ("base", "posttrained"):
             checkpoint = checkpoint_arg_for_method_stage(method.key, checkpoint_key, args)
+            if not checkpoint:
+                missing.append(f"{method.key}:{checkpoint_key}")
+                continue
             requests.append(
                 TargetRequest(
                     method_key=method.key,
                     checkpoint_key=checkpoint_key,
                     label=f"{method.label} {checkpoint_key}",
-                    checkpoint=checkpoint or "",
+                    checkpoint=checkpoint,
                 )
             )
+    if missing:
+        missing_text = ", ".join(missing)
+        raise ValueError(
+            f"Missing checkpoint paths for implicit targets: {missing_text}. "
+            "Pass one or more --target METHOD:KEY=CHECKPOINT arguments, or configure every selected "
+            "method stage with --METHOD-base-checkpoint/--METHOD-posttrained-checkpoint (or the matching "
+            "OPEN_WAM_*_CHECKPOINT environment variables). The legacy --base-checkpoint and "
+            "--posttrained-checkpoint aliases apply only to M1."
+        )
     return requests
 
 
