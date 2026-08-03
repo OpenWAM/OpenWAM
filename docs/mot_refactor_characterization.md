@@ -471,10 +471,30 @@ scripts must not call private `VariantPipeline` methods or carry a second copy
 of the model loop. The batch driver may differ only in task/episode/seed and
 environment-reuse scheduling plus coordinate-rich logs.
 
-For a shorter wiring check, select one `--asset-id` and pass
-`--max-timestep 64 --max-chunks 3`. This still exercises startup, recurrent
+The maintained refactor sentinel is deliberately shorter than a production
+rollout. Record it with an explicit horizon:
+
+```bash
+uv run python -m tests.characterization.run_mot_refactor_characterization \
+  libero-rollout \
+  --assets /path/to/mot_assets.yaml \
+  --output-root /path/to/current_sentinel_rollouts \
+  --cuda-devices 0,1,2,3 \
+  --task-id 0 --episode-idx 0 --seed 0 \
+  --max-timestep 64 --max-chunks 3
+
+uv run python -m tests.characterization.run_mot_refactor_characterization \
+  verify-libero-rollout \
+  --actual-root /path/to/current_sentinel_rollouts \
+  --golden-root /path/to/sentinel_rollout_goldens
+```
+
+For the maintained task-0/episode-0 fixtures, those limits produce three chunks
+and 48 simulator actions after startup. The sentinel still exercises recurrent
 policy state, streaming VAE updates, simulator actions, packed-history warmup,
-and video/debug artifact writing.
+and video/debug artifact writing. The horizon is part of the golden contract:
+do not compare a production-horizon report against sentinel goldens or replace
+either golden to hide an invocation mismatch.
 
 ## Refactor Use
 
