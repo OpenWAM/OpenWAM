@@ -37,8 +37,8 @@ result schemas, artifact manifests, and checkpoint layout expectations.
 ### Removed
 
 - Private cluster orchestration and machine-specific launch supervision.
-- Superseded Method 2/3 implementations, unreachable model prototypes, and
-  stale deployment diagnostics.
+- Superseded traditional Method 2 and experimental Method 3 implementations,
+  unreachable model prototypes, and stale deployment diagnostics.
 - Duplicate launchers and research-only utilities without a maintained runtime
   owner.
 
