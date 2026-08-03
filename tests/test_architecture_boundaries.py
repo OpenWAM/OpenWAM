@@ -7219,6 +7219,43 @@ def test_private_gjd_conditioning_study_driver_is_retired() -> None:
     assert "attention_diagnostics" not in packed_runtime
 
 
+def test_libero_mot_input_preparation_has_one_package_owner() -> None:
+    from open_wam.evals import libero_mot_inputs, libero_mot_rollout
+
+    input_path = PACKAGE_ROOT / "evals" / "libero_mot_inputs.py"
+    rollout_path = PACKAGE_ROOT / "evals" / "libero_mot_rollout.py"
+    input_helpers = {
+        "_build_infer_context",
+        "_encode_video_window_offline",
+        "_prepare_mot_visual_outputs",
+        "_prepare_visual_outputs_offline",
+        "_select_model_obs_window",
+    }
+
+    assert input_helpers <= _top_level_definitions(input_path)
+    assert input_helpers.isdisjoint(_top_level_definitions(rollout_path))
+    assert (
+        "open_wam.evals.libero_mot_rollout"
+        not in _absolute_imports_for_file(input_path)
+    )
+    assert "from open_wam.evals.libero_mot_inputs import" in rollout_path.read_text(
+        encoding="utf-8"
+    )
+    for helper_name in input_helpers:
+        assert getattr(libero_mot_rollout, helper_name) is getattr(
+            libero_mot_inputs,
+            helper_name,
+        )
+    assert _compatibility_export_names(rollout_path) == {
+        "LIVE_SIM_MOT_GENERALIST_ROLLOUT_MODES",
+        "OFFLINE_DIAGNOSTIC_MOT_GENERALIST_ROLLOUT_MODES",
+        "_encode_video_window_offline",
+        "_maybe_merge_checkpoint_runtime_config",
+        "_prepare_visual_outputs_offline",
+        "_require_current_frontend_encode_mode",
+    }
+
+
 def test_libero_mot_drivers_delegate_to_the_package_episode_runner() -> None:
     single_source = (
         REPO_ROOT / "scripts" / "run_libero_mot_visualization.py"

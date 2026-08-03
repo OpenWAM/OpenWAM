@@ -102,6 +102,15 @@ and task IDs but do not instantiate upstream benchmark classes or reconstruct
 init-state paths themselves. The integration remains lazy: importing the core
 package does not import LIBERO or Torch.
 
+Checkpoint-backed MoT/GJD evaluation has three package owners before it enters
+the simulator: `libero_mot_runtime` composes the config, checkpoint, devices,
+pipeline, and inference backend; `libero_mot_inputs` prepares observation
+windows, proprio context, and streaming or offline visual inputs; and
+`libero_mot_rollout` owns the episode session, simulator stepping, observed
+history reconciliation, and artifact handoff. The single-episode and batch
+commands are CLI adapters over these owners rather than separate rollout
+implementations.
+
 The maintained LIBERO realtime runner follows the same boundary. Package code
 in `libero_realtime_runtime` executes both frame-grouped and action-sequence
 planner jobs and owns encoded-history preparation, cache/RNG execution,
