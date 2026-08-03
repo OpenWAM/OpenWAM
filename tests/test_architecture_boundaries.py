@@ -6393,6 +6393,7 @@ def test_action_decoder_rollout_plan_has_one_model_owner() -> None:
 
 def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
     from open_wam.evals import (
+        libero_realtime_history_inputs,
         libero_realtime_plans,
         libero_realtime_runtime,
         libero_realtime_sequence,
@@ -6400,6 +6401,9 @@ def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
 
     runner_path = REPO_ROOT / "scripts" / "run_libero_realtime_sandbox.py"
     runtime_path = PACKAGE_ROOT / "evals" / "libero_realtime_runtime.py"
+    history_inputs_path = (
+        PACKAGE_ROOT / "evals" / "libero_realtime_history_inputs.py"
+    )
     plans_path = PACKAGE_ROOT / "evals" / "libero_realtime_plans.py"
     sequence_path = PACKAGE_ROOT / "evals" / "libero_realtime_sequence.py"
     runner_source = runner_path.read_text(encoding="utf-8")
@@ -6480,6 +6484,16 @@ def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
         "validate_sequence_startup_inputs",
         "validate_sequence_startup_open_loop_support",
     }
+    history_input_contracts = {"copy_history_record_for_worker"}
+    history_input_helpers = {
+        "_count_history_raw_observations",
+        "_history_records_to_action_history",
+        "_history_records_to_obs_sequence",
+        "_history_records_to_precomputed_video_latents",
+        "_history_records_to_proprio_state",
+        "_prepare_history_runtime_inputs",
+        *history_input_contracts,
+    }
     retired_planner_runner_helpers = {
         "_collect_decoder_runtime_metadata",
         "_consume_exact_future_result",
@@ -6512,11 +6526,18 @@ def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
     assert "from open_wam.evals import libero_realtime_runtime as realtime_runtime" in runner_source
     assert "realtime_runtime._" not in runner_source
     runtime_definitions = _top_level_definitions(runtime_path)
+    history_input_definitions = _top_level_definitions(history_inputs_path)
     plans_definitions = _top_level_definitions(plans_path)
     sequence_definitions = _top_level_definitions(sequence_path)
     assert public_runtime_contracts <= (
-        runtime_definitions | plans_definitions | sequence_definitions
+        runtime_definitions
+        | history_input_definitions
+        | plans_definitions
+        | sequence_definitions
     )
+    assert history_input_contracts == _module_all_names(history_inputs_path)
+    assert history_input_helpers <= history_input_definitions
+    assert history_input_helpers.isdisjoint(runtime_definitions)
     assert plan_contracts == _module_all_names(plans_path)
     assert plan_contracts <= plans_definitions
     assert plan_contracts.isdisjoint(runtime_definitions)
@@ -6535,6 +6556,13 @@ def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
     assert "from .libero_realtime_sequence import" in runtime_path.read_text(
         encoding="utf-8"
     )
+    assert "from .libero_realtime_history_inputs import" in runtime_path.read_text(
+        encoding="utf-8"
+    )
+    assert (
+        "open_wam.evals.libero_realtime_runtime"
+        not in _absolute_imports_for_file(history_inputs_path)
+    )
     assert (
         "open_wam.evals.libero_realtime_runtime"
         not in _absolute_imports_for_file(sequence_path)
@@ -6549,9 +6577,15 @@ def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
             libero_realtime_sequence,
             contract_name,
         )
+    for contract_name in history_input_helpers:
+        assert getattr(libero_realtime_runtime, contract_name) is getattr(
+            libero_realtime_history_inputs,
+            contract_name,
+        )
     assert _compatibility_export_names(runtime_path) == {
         "ActionTargetRepresentation",
         "PlannedFrameAction",
+        "exact_viz",
     }
     assert (
         libero_realtime_runtime.ActionTargetRepresentation
@@ -6560,6 +6594,10 @@ def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
     assert (
         libero_realtime_runtime.PlannedFrameAction
         is libero_realtime_plans.PlannedFrameAction
+    )
+    assert (
+        libero_realtime_runtime.exact_viz
+        is libero_realtime_history_inputs.exact_viz
     )
     assert retired_planner_runner_helpers.isdisjoint(
         _top_level_definitions(runner_path)
