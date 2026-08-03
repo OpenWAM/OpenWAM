@@ -41,6 +41,7 @@ def main() -> None:
     _check_release_build_config(pyproject)
     _check_optional_dependency_duplicates(pyproject["project"].get("dependencies", ()), optional_deps)
     _check_public_local_paths_sample()
+    _check_baseline_templates_are_portable()
     _check_artifact_manifest()
     _check_docs_and_cards()
     _check_docs_site_source()
@@ -145,6 +146,22 @@ def _check_public_local_paths_sample() -> None:
         raise SystemExit(f"configs/local_paths.sample.yaml contains private path fragments: {leaks!r}")
     if "paths" not in _top_level_keys(REPO_ROOT / "configs" / "local_paths.sample.yaml"):
         raise SystemExit("configs/local_paths.sample.yaml must define top-level paths.")
+
+
+def _check_baseline_templates_are_portable() -> None:
+    forbidden = ("/afs/", "/hai/", "/scr/", "/simurgh2/")
+    violations: list[str] = []
+    for path in sorted((REPO_ROOT / "baselines").rglob("*")):
+        if path.suffix not in {".md", ".py", ".sh", ".yaml", ".yml"}:
+            continue
+        source = path.read_text(encoding="utf-8")
+        if any(prefix in source for prefix in forbidden):
+            violations.append(str(path.relative_to(REPO_ROOT)))
+    if violations:
+        raise SystemExit(
+            "Tracked baseline templates contain private absolute paths: "
+            f"{violations!r}"
+        )
 
 
 def _check_artifact_manifest() -> None:

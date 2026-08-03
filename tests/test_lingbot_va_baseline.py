@@ -10,6 +10,7 @@ from baselines.lingbot_va.config import (
     expand_env_vars,
     iter_episode_specs,
     load_episode_manifest,
+    load_suite_config,
     parse_int_selection,
     suite_config_from_mapping,
 )
@@ -161,6 +162,23 @@ def test_expand_env_vars_supports_default(monkeypatch) -> None:
     assert expand_env_vars("${LINGBOT_TEST_PATH:-fallback}/x") == "fallback/x"
     monkeypatch.setenv("LINGBOT_TEST_PATH", "real")
     assert expand_env_vars("${LINGBOT_TEST_PATH:-fallback}/x") == "real/x"
+
+
+def test_tracked_suite_template_uses_portable_model_root(monkeypatch, tmp_path: Path) -> None:
+    template = (
+        Path(__file__).resolve().parents[1]
+        / "baselines"
+        / "lingbot_va"
+        / "suites"
+        / "libero10_env_template.yaml"
+    )
+    source = template.read_text(encoding="utf-8")
+    assert not any(prefix in source for prefix in ("/afs/", "/hai/", "/scr/", "/simurgh2/"))
+
+    monkeypatch.setenv("LINGBOT_VA_MODEL_ROOT", str(tmp_path))
+    config = load_suite_config(template)
+
+    assert config.checkpoints[0].model_root == tmp_path
 
 
 def test_summary_validation_rejects_bad_full_eval_rows(tmp_path: Path) -> None:

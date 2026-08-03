@@ -2,7 +2,7 @@
 #
 # Export the machine-local paths before running:
 #
-#   export LINGBOT_VA_MODEL_ROOT=/path/to/private-resource
+#   export LINGBOT_VA_MODEL_ROOT=/path/to/lingbot-va-posttrain-libero-long
 #
 # Then run:
 #
@@ -11,7 +11,7 @@
 #       --suite baselines/lingbot_va/suites/libero10_env_template.yaml
 
 source_repo: previous_works/lingbot-va
-model_root: ${LINGBOT_VA_MODEL_ROOT:-/path/to/private-resource}
+model_root: ${LINGBOT_VA_MODEL_ROOT:-/path/to/lingbot-va-posttrain-libero-long}
 hf_repo_id: robbyant/lingbot-va-posttrain-libero-long
 hf_revision: 0e89d1e753019988aba484e8da2dc0810e264d9f
 output_dir: outputs/lingbot_va_posttrain_libero_long_libero10
