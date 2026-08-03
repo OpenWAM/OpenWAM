@@ -49,6 +49,7 @@ VOLATILE_REPORT_KEYS = frozenset(
     }
 )
 NONZERO_GRADIENT_DENSITY_PRECISION = 6
+TENSOR_FINGERPRINT_REDUCTION_KEYS = frozenset({"l1", "l2", "mean", "std"})
 CONTENT_PROBE_CHUNK_BYTES = 64 * 1024
 CONTENT_PROBE_COUNT = 17
 DISTRIBUTED_AGGREGATE_TOLERANCE = ComparisonTolerance(
@@ -782,11 +783,13 @@ def _comparison_projection(
     _path: tuple[str, ...] = (),
 ) -> Any:
     if isinstance(value, dict):
+        tensor_fingerprint = _is_tensor_fingerprint(value)
         projected = {
             key: _comparison_projection(item, _path=(*_path, str(key)))
             for key, item in value.items()
             if key not in VOLATILE_REPORT_KEYS
             and key != "nonzero_elements"
+            and not (tensor_fingerprint and key in TENSOR_FINGERPRINT_REDUCTION_KEYS)
             and not (
                 key == "size_bytes"
                 and len(_path) >= 3
@@ -812,6 +815,19 @@ def _comparison_projection(
             for index, item in enumerate(value)
         ]
     return value
+
+
+def _is_tensor_fingerprint(value: dict[str, Any]) -> bool:
+    return {
+        "content_sha256",
+        "dtype",
+        "finite_count",
+        "local_shape",
+        "numel",
+        "probe_indices",
+        "probe_values",
+        "shape",
+    }.issubset(value)
 
 
 def _numeric_tolerance_resolver(

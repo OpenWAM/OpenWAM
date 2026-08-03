@@ -1752,6 +1752,40 @@ def test_comparison_projection_quantizes_parallel_gradient_nonzero_count() -> No
     assert _comparison_projection(first)["nonzero_density"] == 1.0
 
 
+def test_comparison_projection_uses_tensor_content_as_portable_identity() -> None:
+    first = {
+        "content_sha256": "a" * 64,
+        "dtype": "torch.float32",
+        "finite_count": 2,
+        "l1": 3.0,
+        "l2": 2.236,
+        "local_shape": [1, 2],
+        "max": 2.0,
+        "mean": 1.5,
+        "min": 1.0,
+        "numel": 2,
+        "probe_indices": [0, 1],
+        "probe_values": [1.0, 2.0],
+        "shape": [1, 2],
+        "std": 0.5,
+    }
+    second = json.loads(json.dumps(first))
+    second.update(
+        {"l1": 3.0001, "l2": 2.2359, "mean": 1.5001, "std": 0.4999}
+    )
+
+    assert _comparison_projection(first) == _comparison_projection(second)
+
+    second["content_sha256"] = "b" * 64
+    assert _comparison_projection(first) != _comparison_projection(second)
+
+
+def test_comparison_projection_keeps_non_fingerprint_metrics_exact() -> None:
+    assert _comparison_projection({"mean": 1.0}) != _comparison_projection(
+        {"mean": 1.0001}
+    )
+
+
 def test_comparison_projection_ignores_path_sized_resume_metadata() -> None:
     first = {
         "checkpoint_artifacts": {

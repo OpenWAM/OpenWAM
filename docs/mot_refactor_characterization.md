@@ -315,9 +315,12 @@ uv run python -m tests.characterization.run_mot_refactor_characterization \
 
 Structure, shapes, dtypes, checkpoint compatibility, configs, losses, model
 outputs, cache schemas, action execution, state progression, optimizer schema,
-scheduler values, and all other non-distributed fields compare exactly,
-including floating-point values. Tensor fingerprints include SHA-256 over all
-normalized tensor bytes in addition to diagnostic statistics and probes.
+scheduler values, and all other non-distributed semantic fields compare
+exactly. Tensor fingerprints compare SHA-256 over all normalized tensor bytes,
+shape, dtype, finiteness, extrema, and probes exactly. Their retained
+`mean`/`std`/`l1`/`l2` diagnostics are not comparison inputs: threaded CPU
+reduction order can change their final bits across hosts even when the full
+tensor hash is identical.
 Explicit absolute/relative tolerance applies to gradient summaries, gradient
 norms, and selected gradient probes, where NCCL reduction order can change the
 final low bits. All-reduced post-step parameter-group aggregates use a fixed
