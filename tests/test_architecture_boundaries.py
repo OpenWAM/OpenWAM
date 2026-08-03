@@ -3644,7 +3644,7 @@ def test_mot_runtime_control_roles_have_one_owner_and_a_stable_facade() -> None:
 
     external_consumers = {
         "evals/libero_mot_runtime.py": "inference_backend",
-        "evals/libero_realtime_runtime.py": "rollout_geometry",
+        "evals/libero_realtime_sequence.py": "rollout_geometry",
         "evals/realtime_speculation.py": "runtime_routes",
     }
     for relative_path, role_module in external_consumers.items():
@@ -6392,11 +6392,16 @@ def test_action_decoder_rollout_plan_has_one_model_owner() -> None:
 
 
 def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
-    from open_wam.evals import libero_realtime_plans, libero_realtime_runtime
+    from open_wam.evals import (
+        libero_realtime_plans,
+        libero_realtime_runtime,
+        libero_realtime_sequence,
+    )
 
     runner_path = REPO_ROOT / "scripts" / "run_libero_realtime_sandbox.py"
     runtime_path = PACKAGE_ROOT / "evals" / "libero_realtime_runtime.py"
     plans_path = PACKAGE_ROOT / "evals" / "libero_realtime_plans.py"
+    sequence_path = PACKAGE_ROOT / "evals" / "libero_realtime_sequence.py"
     runner_source = runner_path.read_text(encoding="utf-8")
     public_runtime_contracts = {
         "FramePlannerJobResult",
@@ -6456,6 +6461,25 @@ def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
         "resolve_next_exact_history_base_session",
         "sequence_chunk_to_planned_steps",
     }
+    sequence_contracts = {
+        "build_sequence_startup_observation_window",
+        "collect_decoder_runtime_metadata",
+        "resolve_observation_conditioned_replan_session",
+        "resolve_sequence_action_cache_rewind_frame",
+        "resolve_sequence_actions_per_frame",
+        "resolve_sequence_condition_frame_start",
+        "resolve_sequence_execution_action_offset",
+        "resolve_sequence_model_observation_window_frames",
+        "resolve_sequence_startup_environment_frames",
+        "sequence_buffer_tail_ready_for_history_promotion",
+        "sequence_history_replan_ready",
+        "should_use_sequence_open_loop_extension",
+        "uses_mot_split_cache_sequence",
+        "uses_strict_mot_one_frame_history",
+        "uses_strict_mot_split_cache_startup",
+        "validate_sequence_startup_inputs",
+        "validate_sequence_startup_open_loop_support",
+    }
     retired_planner_runner_helpers = {
         "_collect_decoder_runtime_metadata",
         "_consume_exact_future_result",
@@ -6489,10 +6513,16 @@ def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
     assert "realtime_runtime._" not in runner_source
     runtime_definitions = _top_level_definitions(runtime_path)
     plans_definitions = _top_level_definitions(plans_path)
-    assert public_runtime_contracts <= runtime_definitions | plans_definitions
+    sequence_definitions = _top_level_definitions(sequence_path)
+    assert public_runtime_contracts <= (
+        runtime_definitions | plans_definitions | sequence_definitions
+    )
     assert plan_contracts == _module_all_names(plans_path)
     assert plan_contracts <= plans_definitions
     assert plan_contracts.isdisjoint(runtime_definitions)
+    assert sequence_contracts == _module_all_names(sequence_path)
+    assert sequence_contracts <= sequence_definitions
+    assert sequence_contracts.isdisjoint(runtime_definitions)
     assert public_runtime_contracts <= _module_all_names(runtime_path)
     assert (
         "open_wam.evals.libero_realtime_plans"
@@ -6502,9 +6532,21 @@ def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
         "open_wam.evals.libero_realtime_runtime"
         not in _absolute_imports_for_file(plans_path)
     )
+    assert "from .libero_realtime_sequence import" in runtime_path.read_text(
+        encoding="utf-8"
+    )
+    assert (
+        "open_wam.evals.libero_realtime_runtime"
+        not in _absolute_imports_for_file(sequence_path)
+    )
     for contract_name in plan_contracts:
         assert getattr(libero_realtime_runtime, contract_name) is getattr(
             libero_realtime_plans,
+            contract_name,
+        )
+    for contract_name in sequence_contracts:
+        assert getattr(libero_realtime_runtime, contract_name) is getattr(
+            libero_realtime_sequence,
             contract_name,
         )
     assert _compatibility_export_names(runtime_path) == {
