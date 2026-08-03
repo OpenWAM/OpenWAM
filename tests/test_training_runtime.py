@@ -862,6 +862,8 @@ def test_full_state_resume_preserves_sparse_adamw_state(tmp_path: Path) -> None:
         scheduler=None,
         train_state=TrainState(global_step=1, optimizer_step=1),
     )
+    assert (checkpoint_dir / "full_training_state.pt").exists()
+    assert (checkpoint_dir / "model_state.pt").exists()
 
     resumed_model = SparseOptimizerModel()
     resumed_optimizer = torch.optim.AdamW(resumed_model.parameters(), lr=1e-3)

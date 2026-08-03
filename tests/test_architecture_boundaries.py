@@ -7005,6 +7005,18 @@ def test_private_checkpoint_distribution_surface_is_retired() -> None:
                 assert not any(fragment in source for fragment in fragments)
 
 
+def test_unowned_checkout_utilities_are_retired() -> None:
+    retired_paths = (
+        REPO_ROOT / "scripts" / "compute_lerobot_action_stats.py",
+        REPO_ROOT / "scripts" / "extract_model_state_checkpoint.py",
+        REPO_ROOT / "scripts" / "run_gpu_method_family_sanity.sh",
+    )
+
+    assert not any(path.exists() for path in retired_paths)
+    testing_guide = (REPO_ROOT / "docs" / "testing.md").read_text(encoding="utf-8")
+    assert "OPEN_WAM_RUN_GPU_SANITY=1 uv run pytest -m gpu" in testing_guide
+
+
 def test_orphaned_diagnostics_and_duplicate_aliases_are_retired() -> None:
     retired_paths = (
         REPO_ROOT / "scripts" / "visualize_libero_reference_pose_slurm.py",
