@@ -444,6 +444,30 @@ def test_method4_video_conditioned_decoder_reuses_chunk_when_configured(tmp_path
 def test_method4_current_frame_regression_direct_latent_train_path_uses_current_frame_only() -> None:
     config_path = REPO_ROOT / "configs/experiments/post_latent_libero_latent_local_current_frame_regression.yaml"
     config = load_experiment_config(config_path)
+    config = replace(
+        config,
+        backbone=replace(
+            config.backbone,
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            load_wan_vae_frontend=False,
+            load_text_conditioning=False,
+            load_reference_core_weights=False,
+        ),
+        policy_variant=replace(config.policy_variant, hidden_size=32),
+        action_decoder=replace(
+            config.action_decoder,
+            hidden_size=32,
+            context_dim=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+        ),
+    )
     pipeline = build_variant_pipeline_from_config(config)
     latent_batch = build_synthetic_latent_batch(config.data, batch_size=2)
     train_batch = PolicyTrainBatch(
