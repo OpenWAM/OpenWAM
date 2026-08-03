@@ -27,6 +27,60 @@ EXCLUDED_PUBLIC_PATHS = frozenset({"configs/local_paths.yaml"})
 PUBLIC_TEXT_SUFFIXES = frozenset(
     {"", ".jinja", ".json", ".md", ".py", ".sh", ".toml", ".txt", ".yaml", ".yml"}
 )
+REQUIRED_PROJECT_URLS = {
+    "Documentation": "https://daivdyuan.github.io/Open-WAM/",
+    "Issues": "https://github.com/DaivdYuan/Open-WAM/issues",
+    "Repository": "https://github.com/DaivdYuan/Open-WAM",
+}
+REQUIRED_PROJECT_CLASSIFIERS = frozenset(
+    {
+        "Development Status :: 3 - Alpha",
+        "Intended Audience :: Science/Research",
+        "Operating System :: POSIX :: Linux",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    }
+)
+REQUIRED_PROJECT_KEYWORDS = frozenset({"robotics", "world action models", "world models"})
+
+
+def validate_project_metadata(pyproject: dict[str, Any]) -> None:
+    project = pyproject.get("project")
+    if not isinstance(project, dict):
+        raise ValueError("Project metadata must be a TOML table.")
+    expected_scalars = {
+        "name": "open-wam",
+        "readme": "README.md",
+        "license": "MIT",
+    }
+    for key, expected in expected_scalars.items():
+        if project.get(key) != expected:
+            raise ValueError(
+                f"Project metadata {key!r} must be {expected!r}, got {project.get(key)!r}."
+            )
+
+    if project.get("license-files") != ["LICENSE"]:
+        raise ValueError("Project metadata `license-files` must be exactly ['LICENSE'].")
+    authors = project.get("authors", ())
+    if not authors or not all(isinstance(author, dict) and author.get("name") for author in authors):
+        raise ValueError("Project metadata must declare at least one named author.")
+    if project.get("urls") != REQUIRED_PROJECT_URLS:
+        raise ValueError(
+            "Project metadata URL mismatch: "
+            f"expected {REQUIRED_PROJECT_URLS!r}, got {project.get('urls')!r}."
+        )
+    missing_classifiers = REQUIRED_PROJECT_CLASSIFIERS - set(project.get("classifiers", ()))
+    if missing_classifiers:
+        raise ValueError(
+            f"Project metadata is missing classifiers: {sorted(missing_classifiers)!r}."
+        )
+    missing_keywords = REQUIRED_PROJECT_KEYWORDS - set(project.get("keywords", ()))
+    if missing_keywords:
+        raise ValueError(
+            f"Project metadata is missing keywords: {sorted(missing_keywords)!r}."
+        )
 
 
 def validate_release_build_config(pyproject: dict[str, Any]) -> None:
@@ -80,6 +134,7 @@ def main() -> None:
     if missing:
         raise SystemExit(f"Missing release-facing docs: {missing}")
     try:
+        validate_project_metadata(pyproject)
         validate_release_build_config(pyproject)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc

@@ -13,6 +13,7 @@ from typing import Any
 
 from check_release_metadata import (
     private_sdist_path_violations,
+    validate_project_metadata,
     validate_release_build_config,
 )
 
@@ -71,6 +72,7 @@ def _read_toml(path: Path) -> dict[str, Any]:
 
 def _check_release_build_config(pyproject: dict[str, Any]) -> None:
     try:
+        validate_project_metadata(pyproject)
         validate_release_build_config(pyproject)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc

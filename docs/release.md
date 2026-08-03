@@ -26,6 +26,7 @@ Treat these as compatibility-managed:
 
 ```bash
 OPEN_WAM_CI_NO_TORCH=1 python scripts/ci_basic_sanity.py
+python scripts/check_release_metadata.py
 python scripts/validate_configs_static.py configs/experiments configs/evals configs/examples --quiet
 python scripts/build_docs_site.py --output .docs_site
 mkdocs build --strict
