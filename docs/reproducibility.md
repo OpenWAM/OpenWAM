@@ -23,7 +23,7 @@ New structured result files should include:
 {
   "schema_version": "open_wam.result.v1",
   "command": "open-wam-eval",
-  "config": "configs/evals/example.yaml",
+  "config": "configs/evals/<evaluation>.yaml",
   "checkpoint": null,
   "benchmark": null,
   "device": "cpu",

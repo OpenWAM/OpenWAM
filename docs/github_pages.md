@@ -1,8 +1,10 @@
 # GitHub Pages Documentation Site
 
 Open-WAM publishes documentation through a generated MkDocs source tree. The
-tracked public site source lives in `docs/`. Internal research and engineering
-notes under `notes/` are intentionally not published to GitHub Pages.
+tracked public site source is the explicit allowlist in
+`scripts/build_docs_site.py`. Its pages live in `docs/`; internal research and
+engineering notes under `notes/` are intentionally not published to GitHub
+Pages.
 
 ## Local Preview
 
@@ -40,8 +42,10 @@ with stable commands, placeholders, and current repo paths. Do not publish raw
 run logs, local machine paths, private checkpoint locations, or obsolete
 roadmaps.
 
-The build fails if known private cluster roots, AFS roots, home-directory roots,
-or local usernames remain in the generated site source.
+The build fails if a page under `docs/` has not been classified in the public
+allowlist, if a local link is missing or escapes the generated site, or if known
+private cluster roots, AFS roots, home-directory roots, or local usernames
+remain in the generated source.
 
 ## Required GitHub Setting
 

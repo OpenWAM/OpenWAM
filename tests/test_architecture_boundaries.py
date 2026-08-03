@@ -6982,6 +6982,29 @@ def test_private_local_posttraining_supervisor_is_retired() -> None:
     assert not any(path.exists() for path in retired_paths)
 
 
+def test_private_checkpoint_distribution_surface_is_retired() -> None:
+    retired_paths = (
+        REPO_ROOT / "scripts" / "download_checkpoint.py",
+        REPO_ROOT / "examples" / "inference_libero_oxe.md",
+        REPO_ROOT / "docs" / "CHECKPOINT.md",
+    )
+    assert not any(path.exists() for path in retired_paths)
+
+    roots = (
+        REPO_ROOT / "README.md",
+        REPO_ROOT / "docs",
+        REPO_ROOT / "scripts",
+        REPO_ROOT / "examples",
+    )
+    fragments = ("openwam-data/libero-oxe-pretrain-5k", "yaofeng1995@gmail.com")
+    for root in roots:
+        paths = (root,) if root.is_file() else root.rglob("*")
+        for path in paths:
+            if path.is_file() and path.suffix in {".md", ".py", ".sh"}:
+                source = path.read_text(encoding="utf-8").lower()
+                assert not any(fragment in source for fragment in fragments)
+
+
 def test_orphaned_diagnostics_and_duplicate_aliases_are_retired() -> None:
     retired_paths = (
         REPO_ROOT / "scripts" / "visualize_libero_reference_pose_slurm.py",

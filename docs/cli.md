@@ -42,7 +42,7 @@ decoder registrations:
 ```bash
 uv run --extra train open-wam-train \
   --extension acme_open_wam \
-  --cfg configs/experiments/acme_joint.yaml
+  --cfg /path/to/acme_joint.yaml
 ```
 
 ```bash

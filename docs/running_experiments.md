@@ -62,7 +62,7 @@ Load an external dataset or method extension before config construction:
 ```bash
 uv run --extra train open-wam-train \
   --extension acme_open_wam \
-  --cfg configs/experiments/acme_experiment.yaml
+  --cfg /path/to/acme_experiment.yaml
 ```
 
 ### Initialization And Exact Resume
