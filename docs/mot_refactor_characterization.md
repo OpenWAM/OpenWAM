@@ -296,6 +296,11 @@ avoid leaving one rank-local async compiler pool per GPU after a completed
 report. Set the environment variable explicitly to benchmark another compiler
 parallelism level; it is not changed by production training commands.
 
+The runner rejects a mixed-checkout import before launching model work. When a
+worktree shares an editable virtual environment with another checkout, set
+`PYTHONPATH=/path/to/worktree/src:/path/to/worktree` explicitly (or install the
+worktree itself) so both the runner and `open_wam` resolve from the same tree.
+
 For diagnosis only, `--allow-checkpoint-provenance-mismatch` records a stale
 checkpoint and includes every mismatch in the report. Do not use that option
 to establish strict refactor goldens: it proves execution compatibility, not

@@ -73,6 +73,7 @@ from tests.characterization.mot_refactor_worker import (
 )
 from tests.characterization.run_mot_refactor_characterization import (
     RESUME_POST_UPDATE_METRIC_TOLERANCE,
+    _assert_checkout_import_provenance,
     _comparison_projection,
     _initialize_golden_files,
     _numeric_tolerance_resolver,
@@ -86,6 +87,18 @@ from tests.characterization.run_mot_refactor_characterization import (
 )
 
 CONFIG_ROOT = Path(__file__).resolve().parents[1] / "configs" / "experiments"
+
+
+def test_characterization_requires_package_from_runner_checkout(
+    tmp_path: Path,
+) -> None:
+    _assert_checkout_import_provenance()
+    foreign_package = tmp_path / "foreign" / "src" / "open_wam" / "__init__.py"
+    foreign_package.parent.mkdir(parents=True)
+    foreign_package.write_text("", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="checkout/import mismatch"):
+        _assert_checkout_import_provenance(package_file=foreign_package)
 
 
 def _load_method_config(config_name: str):

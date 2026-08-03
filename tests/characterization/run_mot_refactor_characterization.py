@@ -13,6 +13,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+import open_wam
+
 from .mot_refactor_artifacts import (
     EXACT_COMPARISON_TOLERANCE,
     ComparisonTolerance,
@@ -38,6 +40,7 @@ from .mot_refactor_provenance import (
     checkpoint_provenance_report,
 )
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PHASES = ("training", "inference")
 INFRASTRUCTURE_PHASES = ("cache_rollover", "resume")
 ALL_PHASES = DEFAULT_PHASES + INFRASTRUCTURE_PHASES
@@ -67,6 +70,25 @@ RESUME_POST_UPDATE_METRIC_TOLERANCE = ComparisonTolerance(
     absolute=2**-16,
     relative=0.0,
 )
+
+
+def _assert_checkout_import_provenance(
+    *,
+    package_file: Path | None = None,
+) -> None:
+    expected_package_root = (REPO_ROOT / "src" / "open_wam").resolve()
+    imported_package_file = Path(
+        open_wam.__file__ if package_file is None else package_file
+    ).resolve()
+    imported_package_root = imported_package_file.parent
+    if imported_package_root == expected_package_root:
+        return
+    raise RuntimeError(
+        "Characterization checkout/import mismatch: runner checkout "
+        f"{REPO_ROOT} expects open_wam under {expected_package_root}, but it was "
+        f"imported from {imported_package_root}. Activate/install this checkout "
+        f"or set PYTHONPATH={REPO_ROOT / 'src'}:{REPO_ROOT}."
+    )
 
 
 def record_characterization(args: argparse.Namespace) -> None:
@@ -1044,6 +1066,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    _assert_checkout_import_provenance()
     args = _parse_args()
     args.handler(args)
 
