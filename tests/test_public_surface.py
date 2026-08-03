@@ -208,6 +208,8 @@ def test_base_dependencies_stay_minimal_and_extras_are_explicit() -> None:
         "pyarrow>=18.0",
         "scipy>=1.11",
     ]
+    for model_extra in ("torch", "train", "eval", "sim", "full"):
+        assert "safetensors>=0.4.3" in extras[model_extra]
     assert not {dependency.split(">=", 1)[0] for dependency in base_deps}.intersection(heavy_base_names)
     assert {
         "core",
