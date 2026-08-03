@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, replace
 import os
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -11,11 +11,14 @@ from open_wam.configs import (
     ExperimentConfig,
     apply_parallel_sequence_contract,
     load_experiment_config,
+    resolve_config_path_alias,
     validate_parallel_sequence_contract_override_keys,
 )
 from open_wam.extensions import load_extension_modules
-from open_wam.utils.config_overrides import apply_config_overrides, parse_override_assignments
-
+from open_wam.utils.config_overrides import (
+    apply_config_overrides,
+    parse_override_assignments,
+)
 
 EXPERIMENT_CONFIG_ROOT = Path(__file__).resolve().parents[3] / "configs" / "experiments"
 
@@ -132,16 +135,16 @@ def parse_train_cli(argv: list[str] | None = None) -> TrainCliOverrides:
 
 def resolve_experiment_config_path(overrides: TrainCliOverrides) -> Path:
     if overrides.config is not None:
-        return Path(overrides.config).expanduser()
+        return resolve_config_path_alias(overrides.config)
     if overrides.config_name is None:
         raise ValueError("Either `config` or `config_name` must be provided.")
     raw_name = overrides.config_name
     candidate = Path(raw_name).expanduser()
     if candidate.is_absolute() or candidate.suffix in {".yaml", ".yml"} or len(candidate.parts) > 1:
         if candidate.suffix:
-            return candidate
-        return candidate.with_suffix(".yaml")
-    return EXPERIMENT_CONFIG_ROOT / f"{raw_name}.yaml"
+            return resolve_config_path_alias(candidate)
+        return resolve_config_path_alias(candidate.with_suffix(".yaml"))
+    return resolve_config_path_alias(EXPERIMENT_CONFIG_ROOT / f"{raw_name}.yaml")
 
 
 def load_training_cli_config(

@@ -2213,7 +2213,7 @@ def test_lingbot_exact_actions_use_wan_causal_latent_anchors(tmp_path: Path) -> 
         payload["frame_ids"] = list(range(15))
         torch.save(payload, latent_path)
 
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml")
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact.yaml")
     config = replace(
         config,
         data=replace(
@@ -2259,7 +2259,7 @@ def test_hierarchical_exact_actions_use_wan_causal_latent_anchors(tmp_path: Path
         payload["frame_ids"] = list(range(31))
         torch.save(payload, latent_path)
 
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml")
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact.yaml")
     config = replace(
         config,
         data=replace(
@@ -2737,7 +2737,7 @@ def test_local_lerobot_latent_dataset_uses_pose_source_key_for_state(tmp_path: P
         camera_names=("observation.images.agentview_rgb", "observation.images.eye_in_hand_rgb"),
     )
 
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml")
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact.yaml")
     config = replace(
         config,
         data=replace(

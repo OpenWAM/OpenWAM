@@ -88,7 +88,7 @@ def test_find_checkpoint_resolved_config_uses_checkpoint_dir(tmp_path: Path) -> 
 
 
 def test_merge_runtime_config_from_checkpoint_keeps_data_sources_but_restores_runtime_contract(tmp_path: Path) -> None:
-    base_config_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
+    base_config_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact.yaml"
     base_config = load_experiment_config(base_config_path)
     base_config = replace(
         base_config,

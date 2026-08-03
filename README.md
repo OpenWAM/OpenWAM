@@ -361,11 +361,11 @@ metadata path:
 uv run python -m open_wam.training.train --cfg configs/experiments/contract_only_libero_local.yaml
 ```
 
-Run a current Heng-compatible exact LIBERO realtime rollout with a fixed seed:
+Run the current LingBot-reference exact LIBERO realtime rollout with a fixed seed:
 
 ```bash
 uv run python scripts/run_libero_realtime_sandbox.py \
-  --cfg configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml \
+  --cfg configs/experiments/parallel_stream_libero_lingbot_exact.yaml \
   --checkpoint <CURRENT_METHOD1_CHECKPOINT>/model_state.pt \
   --merge-checkpoint-runtime-config \
   --benchmark libero_10 \
@@ -376,8 +376,8 @@ uv run python scripts/run_libero_realtime_sandbox.py \
   --artifact-profile standard \
   --output-dir outputs/libero_exact_visualization_chunks6_seeded
 
-uv run python scripts/run_heng_libero_exact_visualization.py \
-  --heng-repo-root <LINGBOT_VA_SOURCE_CHECKOUT> \
+uv run python scripts/run_lingbot_reference_visualization.py \
+  --reference-repo-root <LINGBOT_VA_SOURCE_CHECKOUT> \
   --benchmark libero_10 \
   --task-id 8 \
   --episode-idx 0 \

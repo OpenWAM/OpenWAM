@@ -9,18 +9,22 @@ import yaml
 
 from open_wam.contracts import find_repo_root
 
+from .config_paths import resolve_config_path_alias
 
 REPO_ROOT = find_repo_root(Path(__file__))
 LOCAL_PATHS_ENV_VAR = "OPEN_WAM_LOCAL_PATHS"
 LOCAL_PATHS_SAMPLE_PATH = REPO_ROOT / "configs" / "local_paths.sample.yaml"
 LOCAL_PATHS_PATH = REPO_ROOT / "configs" / "local_paths.yaml"
 _LOCAL_PATH_PATTERN = re.compile(r"\$\{paths\.([A-Za-z0-9_.-]+)\}")
+_LOCAL_PATH_KEY_ALIASES = {
+    "datasets.libero_heng_root": "datasets.libero_root",
+}
 
 
 def read_yaml_with_local_paths(path: str | Path, *, env: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Read one YAML mapping and expand `${paths.*}` placeholders."""
 
-    path = Path(path)
+    path = resolve_config_path_alias(path)
     with path.open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle) or {}
     if not isinstance(data, dict):
@@ -36,7 +40,14 @@ def load_local_path_registry(*, env: Mapping[str, str] | None = None) -> dict[st
     raw_registry: dict[str, str] = {}
     for path in _iter_local_path_files(resolved_env):
         raw = _read_registry_yaml(path)
-        raw_registry.update(_flatten_registry(raw))
+        flattened = _flatten_registry(raw)
+        for old_key, canonical_key in _LOCAL_PATH_KEY_ALIASES.items():
+            if old_key in flattened and canonical_key not in flattened:
+                flattened[canonical_key] = flattened[old_key]
+        raw_registry.update(flattened)
+    for old_key, canonical_key in _LOCAL_PATH_KEY_ALIASES.items():
+        if canonical_key in raw_registry:
+            raw_registry[old_key] = raw_registry[canonical_key]
     return _resolve_registry_aliases(raw_registry, source_path=LOCAL_PATHS_PATH)
 
 

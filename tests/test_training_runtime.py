@@ -768,7 +768,7 @@ def test_training_runtime_initializes_mot_variant_before_strategy_wrap(
 def test_generalist_checkpoint_writes_yaml_safe_enum_dict_keys(tmp_path: Path) -> None:
     config = load_experiment_config(
         REPO_ROOT
-        / "configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml"
+        / "configs/experiments/mot_libero_generalist_joint_denoising.yaml"
     )
     manager = CheckpointManager(
         root_dir=tmp_path / "checkpoints",

@@ -152,11 +152,11 @@ case "${GJD_ABLATION}" in
 esac
 
 if [[ "${GJD_METHOD}" == "m1" ]]; then
-  GJD_CONFIG_NAME="parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible"
+  GJD_CONFIG_NAME="parallel_stream_libero_lingbot_m1_generalist_joint_denoising"
   GJD_TRAIN_LAUNCHER="${SCRIPT_DIR}/run_parallel_stream_posttrain_libero.sh"
   GJD_PROB_PREFIX="policy_variant.joint_denoise_training_mode_probs"
 else
-  GJD_CONFIG_NAME="mot_libero_latent_local_generalist_joint_denoising_heng_compatible"
+  GJD_CONFIG_NAME="mot_libero_generalist_joint_denoising"
   GJD_TRAIN_LAUNCHER="${SCRIPT_DIR}/run_mot_nonjoint_posttrain_libero.sh"
   GJD_PROB_PREFIX="policy_variant.mot_generalist_training_mode_probs"
 fi

@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_libero_paradigm_guard_flags_no_proprio_strict_m1_config() -> None:
-    config_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
+    config_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact.yaml"
     config = load_experiment_config(config_path)
 
     issues = collect_current_libero_policy_paradigm_issues(config, config_path=config_path)
@@ -31,7 +31,7 @@ def test_libero_paradigm_guard_flags_no_proprio_strict_m1_config() -> None:
 
 
 def test_libero_paradigm_guard_rejects_deprecated_text_token_proprio() -> None:
-    config_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
+    config_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact.yaml"
     config = load_experiment_config(config_path)
     config = replace(
         config,
@@ -47,7 +47,7 @@ def test_libero_paradigm_guard_rejects_deprecated_text_token_proprio() -> None:
 
 
 def test_libero_paradigm_guard_accepts_strict_m1_config_with_per_chunk_proprio() -> None:
-    config_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
+    config_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact.yaml"
     config = load_experiment_config(config_path)
     config = replace(
         config,
@@ -63,8 +63,8 @@ def test_libero_paradigm_guard_accepts_strict_m1_config_with_per_chunk_proprio()
 def test_libero_paradigm_guard_accepts_fullseg_w64_gjd_configs() -> None:
     for config_path in (
         REPO_ROOT
-        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml",
-        REPO_ROOT / "configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml",
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising.yaml",
+        REPO_ROOT / "configs/experiments/mot_libero_generalist_joint_denoising.yaml",
     ):
         config = load_experiment_config(config_path)
 
@@ -74,7 +74,7 @@ def test_libero_paradigm_guard_accepts_fullseg_w64_gjd_configs() -> None:
 def test_libero_paradigm_guard_flags_fixed128_gjd_config() -> None:
     config_path = (
         REPO_ROOT
-        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising.yaml"
     )
     config = load_experiment_config(config_path)
     config = replace(
@@ -107,7 +107,7 @@ def test_libero_paradigm_guard_flags_fixed128_gjd_config() -> None:
 
 
 def test_libero_paradigm_guard_prefers_resolved_config_over_legacy_wrapper_path() -> None:
-    config_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
+    config_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact.yaml"
     legacy_wrapper_path = REPO_ROOT / "configs/experiments/deprecated/parallel_stream_libero_lingbot_exact_local.yaml"
     config = load_experiment_config(config_path)
     config = replace(
@@ -123,7 +123,7 @@ def test_libero_paradigm_guard_prefers_resolved_config_over_legacy_wrapper_path(
 
 def test_libero_paradigm_guard_rejects_known_legacy_m5_config() -> None:
     config_path = REPO_ROOT / "configs/experiments/deprecated/mot_libero_latent_local_joint.yaml"
-    current_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_joint_heng_compatible.yaml"
+    current_path = REPO_ROOT / "configs/experiments/mot_libero_joint.yaml"
     config = load_experiment_config(current_path)
     config = replace(
         config,

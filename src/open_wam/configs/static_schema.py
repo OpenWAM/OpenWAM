@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable
 
+from .config_paths import resolve_config_path_alias
 from .enums import (
     ActionDecoderName,
     ActionMappingLossMaskMode,
@@ -16,8 +17,8 @@ from .enums import (
     AttachSite,
     AttentionMode,
     AuxiliaryValidationSource,
-    BatchAdapterName,
     BackboneImplementation,
+    BatchAdapterName,
     CurrentBlockCoupling,
     DataSplit,
     EvalMode,
@@ -29,12 +30,12 @@ from .enums import (
     MoTConditionMode,
     MoTGeneralistTrainingMode,
     MoTRuntimeMode,
+    PaddedTargetPolicy,
     ParallelContextConditionLatentSource,
     ParallelHistoryStreamVisibility,
     ParallelRuntimeMode,
     ParallelSequenceContract,
     ParallelStreamVariantProfile,
-    PaddedTargetPolicy,
     PolicyVariantName,
     ProprioContextMode,
     ReplayStatusPolicy,
@@ -50,7 +51,11 @@ from .enums import (
     TrainerPrecision,
     WindowSamplingMode,
 )
-from .static_validation_contracts import StaticConfigIssue, StaticConfigReport, _IssueBuilder
+from .static_validation_contracts import (
+    StaticConfigIssue,
+    StaticConfigReport,
+    _IssueBuilder,
+)
 from .static_validation_primitives import (
     ENUM_VALUE_ALIASES,
     LOCAL_PATH_PATTERN,
@@ -65,7 +70,7 @@ from .variant_semantics import probability_map_static_issues
 def validate_config_file(path: str | Path, *, repo_root: str | Path | None = None) -> StaticConfigReport:
     """Validate one Open-WAM YAML config without importing model/runtime code."""
 
-    source_path = Path(path).expanduser().resolve()
+    source_path = resolve_config_path_alias(path).resolve()
     root = Path(repo_root).expanduser().resolve() if repo_root is not None else _find_repo_root(source_path)
     raw = _read_yaml_mapping(source_path)
     builder = _IssueBuilder(source_path=source_path, repo_root=root)

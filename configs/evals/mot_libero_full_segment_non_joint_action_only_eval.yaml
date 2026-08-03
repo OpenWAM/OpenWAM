@@ -11,7 +11,7 @@ checkpoint_path: null
 data:
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
-  local_root: "${paths.datasets.libero_heng_root}"
+  local_root: "${paths.datasets.libero_root}"
   empty_text_embedding_path: "${paths.datasets.empty_text_embedding}"
   latent_window_profile: exact_chunked_window
   split: train

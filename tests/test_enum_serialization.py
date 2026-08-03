@@ -28,7 +28,7 @@ def test_serialize_enum_values_converts_mapping_keys_for_yaml() -> None:
 
 def test_generalist_joint_denoising_config_serializes_for_checkpoint_yaml() -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising.yaml"
     )
 
     serialized = serialize_enum_values(asdict(config))

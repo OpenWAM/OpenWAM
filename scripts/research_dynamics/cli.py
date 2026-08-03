@@ -746,7 +746,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run offline FDM/IDM diagnostics for a joint-denoising policy."
     )
-    parser.add_argument("--config", "--cfg", default="configs/experiments/parallel_stream_libero_lingbot_joint_denoise_heng_compatible.yaml")
+    parser.add_argument("--config", "--cfg", default="configs/experiments/parallel_stream_libero_lingbot_joint_denoise.yaml")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--output-dir", default="outputs/joint_denoising_fdm")
     parser.add_argument("--run-id", default=None)

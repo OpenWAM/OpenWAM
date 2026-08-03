@@ -11,7 +11,7 @@ source "${SCRIPT_DIR}/libero_fixed128_rollout_context_defaults.sh"
 
 # Default to the maintained strict fixed-128 M5 video-then-action config.
 # Historical config names are permanently rejected; use a maintained config.
-CONFIG_NAME=${CONFIG_NAME:-"mot_libero_latent_local_video_then_action_heng_compatible"}
+CONFIG_NAME=${CONFIG_NAME:-"mot_libero_video_then_action"}
 
 export WANDB_PROJECT=${WANDB_PROJECT:-"openwam-libero-policy-train"}
 # M5 packed-coupling configs jointly train video DiT (~5B) + action expert

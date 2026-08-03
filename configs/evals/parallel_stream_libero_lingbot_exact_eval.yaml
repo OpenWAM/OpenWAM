@@ -1,0 +1,7 @@
+name: parallel_stream_libero_lingbot_exact_eval
+experiment_config: configs/experiments/parallel_stream_libero_lingbot_exact.yaml
+checkpoint_path: "${paths.checkpoints.parallel_stream_exact_libero_step_1100_0402}/full_training_state.pt"
+mode: batch
+split: val
+batch_size: 1
+max_batches: 1

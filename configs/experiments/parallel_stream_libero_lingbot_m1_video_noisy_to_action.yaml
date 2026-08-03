@@ -1,10 +1,10 @@
-name: mot_libero_latent_local_decoupled_same_step_heng_compatible
+name: parallel_stream_libero_lingbot_m1_video_noisy_to_action
 
 data:
-  # Shared fixed-128 hierarchical LIBERO training windows
+  # Dataset source knobs
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
-  local_root: "${paths.datasets.libero_heng_root}"
+  local_root: "${paths.datasets.libero_root}"
   replay_status_path: "${paths.datasets.libero_replay_status_path}"
   replay_status_policy: successful_only
   val_replay_status_policy: failure_only
@@ -12,6 +12,7 @@ data:
   val_require_replay_status: true
   empty_text_embedding_path: "${paths.datasets.empty_text_embedding}"
   split: train
+  # View + latent layout knobs
   camera_names: [observation.images.agentview_rgb, observation.images.eye_in_hand_rgb]
   latent_camera_names: [observation.images.agentview_rgb, observation.images.eye_in_hand_rgb]
   canonical_height: 128
@@ -19,9 +20,12 @@ data:
   num_frames: 4
   frame_stride: 1
   sample_stride: 1
-  # Match the M1 benchmark-facing strict sampler: task/trajectory/start are
-  # sampled hierarchically, one real context frame precedes the 128 supervised
-  # targets, tail overflow is metadata-only, and chunk geometry is fixed at 4.
+  episode_cache_size: 2
+  train_fraction: 1.0
+  split_seed: 0
+  # Strict fixed-128 rollout-parity segments. One real context frame is
+  # materialized before the 128 supervised targets. Tail overflow remains
+  # metadata-only, unavailable targets are masked, and chunk geometry is fixed at 4.
   sample_construction:
     mode: hierarchical_fixed_segment
     segment_frames: 128
@@ -36,9 +40,6 @@ data:
     task_start_power: 0.5
     demo_count_power: 0.0
     trajectory_start_power: 1.0
-  episode_cache_size: 2
-  train_fraction: 1.0
-  split_seed: 0
   train_batch_size: 1
   val_batch_size: 1
   num_workers: 8
@@ -81,49 +82,45 @@ backbone:
   attention_head_dim: 128
   ffn_dim: 14336
   pretrained_model_name_or_path: "${paths.models.lingbot_va_base}"
-  transformer_subdir: transformer
+  transformer_subdir: "${paths.checkpoints.parallel_stream_joint_libero_step_600_0402}/transformer"
   max_text_tokens: 512
   load_wan_vae_frontend: true
   load_text_conditioning: true
-  load_reference_core_weights: true
-  reference_core_init_mode: video_only
   reference_assets_device_policy: cpu_offload
 
 policy_variant:
-  # M5-native packed coupling over one shared fixed-128 history window
-  name: mot
+  # Keep LingBot exact token layout; current noisy video is visible to current noisy action only.
+  name: parallel_stream
+  runtime_mode: lingbot_exact_action_conditioned
+  current_block_coupling: video_noisy_to_action
+  reference_profile: libero_joint
   hidden_size: 3072
-  attach_site: post_visual_core
-  preset: fastwam_joint
-  runtime_mode: non_joint_two_stream
-  current_block_coupling: decoupled_same_step
-  joint_timestep_coupling: independent
-  condition_mode: teacher_forcing_cond_video
-  video_prefix_frames: 1
-  action_expert_init_mode: video_weight_interpolate
-  num_action_layers: 30
-  action_hidden_size: 2048
-  action_ffn_dim: 8192
-  video_can_attend_action: false
-  use_text_conditioning: true
-  use_state_conditioning: false
-  use_activation_checkpointing: true
+  frame_chunk_size: 4
+  action_per_frame: 4
+  attn_window: 30
+  sequence_order: [video_noisy, video_condition, action_noisy, action_condition]
+  mask_mode: lingbot_chunked
+  cache_mode: metadata_only
+  video_condition_on_action: true
+  video_action_condition_source: noisy_action
+  video_action_attention_scope: block_local
+  joint_timestep_coupling: match_sigma
+  preserve_video_pretrain_history: true
 
 action_decoder:
-  name: mot_decoder
+  name: lingbot_parallel_decoder
   hidden_size: 3072
-  action_dim: 7
+  action_dim: 30
   action_horizon: 16
 
 training:
-  # Uniformly train both action expert and video backbone for six-coupling ablations
   video_num_train_timesteps: 1000
   action_num_train_timesteps: 1000
   video_sigma_shift: 5.0
   action_sigma_shift: 1.0
   use_teacher_forcing: false
   chunk_size: 4
-  window_size: 30
+  window_size: 64
   optimizer_name: adamw
   scheduler_name: constant_with_warmup
   learning_rate: 1.0e-5
@@ -131,23 +128,31 @@ training:
   beta2: 0.95
   weight_decay: 0.1
   warmup_steps: 10
-  # Keep Method1-compatible effective batch size; packed M5 runs may need
-  # FSDP CPU offload / activation checkpointing for 4xL40S headroom.
   gradient_accumulation_steps: 10
   max_grad_norm: 2.0
   num_steps: 5000
   text_condition_dropout_prob: 0.1
-  enabled_objectives: [action, latent]
+  enabled_objectives: [latent, action]
   latent_loss_weight: 1.0
   action_loss_weight: 1.0
-  trainable_components: [policy_variant.action_expert, visual_tower.runtime_backbone]
+  trainable_components: [visual_tower.runtime_backbone]
+  # PR88 per-sample loss weighting: scale loss by valid_action_steps so longer
+  # masked-clean segments contribute more (and short ones less), normalized by
+  # the dataset mean. Clamped to [0.25, 4.0].
+  sample_loss_weight_mode: valid_action_steps
+  sample_loss_weight_reference_steps: null
+  sample_loss_weight_min: 0.25
+  sample_loss_weight_max: 4.0
 
 inference:
+  # Joint denoise mode needs one shared step count.
   video_num_inference_steps: 20
   action_num_inference_steps: 20
   frame_chunk_size: 4
   use_cache: true
   guidance_scale: 5.0
+  action_guidance_scale: 1.0
+  video_exec_step: -1
 
 trainer:
   max_epochs: 1
@@ -163,10 +168,10 @@ trainer:
   batch_adapter: latents
   loop_policy: steps
   strategy: fsdp
-  save_interval: 100
+  save_interval: 100 #100
   checkpoint_mode: full_training_state
   export_runtime_backbone: true
   enable_jsonl_logging: true
   enable_wandb: true
-  wandb_project: openwam-libero-policy-train
+  wandb_project: openwam-method1-libero
   wandb_mode: online

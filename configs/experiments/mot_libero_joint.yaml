@@ -1,10 +1,10 @@
-name: mot_libero_latent_local_video_then_action_heng_compatible
+name: mot_libero_joint
 
 data:
   # Shared fixed-128 hierarchical LIBERO training windows
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
-  local_root: "${paths.datasets.libero_heng_root}"
+  local_root: "${paths.datasets.libero_root}"
   replay_status_path: "${paths.datasets.libero_replay_status_path}"
   replay_status_policy: successful_only
   val_replay_status_policy: failure_only
@@ -96,8 +96,8 @@ policy_variant:
   attach_site: post_visual_core
   preset: fastwam_joint
   runtime_mode: non_joint_two_stream
-  current_block_coupling: video_then_action
-  joint_timestep_coupling: independent
+  current_block_coupling: joint
+  joint_timestep_coupling: match_sigma
   condition_mode: teacher_forcing_cond_video
   video_prefix_frames: 1
   action_expert_init_mode: video_weight_interpolate

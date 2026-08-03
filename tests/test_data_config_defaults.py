@@ -31,7 +31,7 @@ def test_data_config_defaults_use_all_valid_training_episodes() -> None:
 
 def test_libero_lingbot_exact_config_uses_all_valid_training_episodes() -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact.yaml"
     )
 
     assert config.data.train_fraction == 1.0

@@ -25,6 +25,15 @@ open_wam_normalize_config_name() {
   config_name="${config_name##*/}"
   config_name="${config_name%.yaml}"
   config_name="${config_name%.yml}"
+  case "${config_name}" in
+    mot_libero_latent_local_*_heng_compatible)
+      config_name="${config_name#mot_libero_latent_local_}"
+      config_name="mot_libero_${config_name%_heng_compatible}"
+      ;;
+    parallel_stream_libero_lingbot_*_heng_compatible)
+      config_name="${config_name%_heng_compatible}"
+      ;;
+  esac
   printf '%s\n' "${config_name}"
 }
 
@@ -48,16 +57,16 @@ open_wam_should_apply_fixed128_rollout_context() {
   fi
   case "${config_name}" in
     *generalist_joint_denoising*) return 1 ;;
-    parallel_stream_libero_lingbot_exact_heng_compatible) return 0 ;;
-    parallel_stream_libero_lingbot_joint_denoise_heng_compatible) return 0 ;;
-    parallel_stream_libero_lingbot_m1_*_heng_compatible) return 0 ;;
+    parallel_stream_libero_lingbot_exact) return 0 ;;
+    parallel_stream_libero_lingbot_joint_denoise) return 0 ;;
+    parallel_stream_libero_lingbot_m1_*) return 0 ;;
     mot_libero_latent_local_full_segment_non_joint_action_only) return 0 ;;
-    mot_libero_latent_local_action_noisy_to_video_heng_compatible) return 0 ;;
-    mot_libero_latent_local_action_then_video_heng_compatible) return 0 ;;
-    mot_libero_latent_local_decoupled_same_step_heng_compatible) return 0 ;;
-    mot_libero_latent_local_joint_heng_compatible) return 0 ;;
-    mot_libero_latent_local_video_noisy_to_action_heng_compatible) return 0 ;;
-    mot_libero_latent_local_video_then_action_heng_compatible) return 0 ;;
+    mot_libero_action_noisy_to_video) return 0 ;;
+    mot_libero_action_then_video) return 0 ;;
+    mot_libero_decoupled_same_step) return 0 ;;
+    mot_libero_joint) return 0 ;;
+    mot_libero_video_noisy_to_action) return 0 ;;
+    mot_libero_video_then_action) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -86,10 +95,10 @@ open_wam_removed_libero_launcher_replacement() {
   launcher_name="${launcher_name##*/}"
   case "${launcher_name}" in
     run_mot_non_joint_aligned_libero_A.sh)
-      echo "scripts/run_mot_nonjoint_posttrain_libero.sh with a current *_heng_compatible CONFIG_NAME"
+      echo "scripts/run_mot_nonjoint_posttrain_libero.sh with a current canonical CONFIG_NAME"
       ;;
     run_mot_non_joint_action_only_libero_B.sh)
-      echo "scripts/run_mot_nonjoint_posttrain_libero.sh with a current *_heng_compatible CONFIG_NAME"
+      echo "scripts/run_mot_nonjoint_posttrain_libero.sh with a current canonical CONFIG_NAME"
       ;;
     run_mot_full_segment_nonjoint_libero.sh)
       echo "scripts/run_mot_nonjoint_posttrain_libero.sh"
@@ -116,7 +125,7 @@ open_wam_reject_removed_libero_policy_config() {
   if reason="$(open_wam_removed_libero_policy_config_reason "${config_name}")"; then
     echo "Removed LIBERO M1/M5 config '${config_name}': ${reason}." >&2
     echo "Current non-GJD launchers require strict fixed-128 rollout parity; current GJD launchers require full-segment W64 sampling." >&2
-    echo "Use a current *_heng_compatible config. Git history retains the historical YAML." >&2
+    echo "Use a current canonical config. Git history retains the historical YAML." >&2
     return 2
   fi
 }

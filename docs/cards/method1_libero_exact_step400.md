@@ -5,8 +5,8 @@
 - family: method1
 - variant: `parallel_stream_lingbot_exact`
 - benchmark: `libero_10`
-- config: `configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml`
-- eval config: `configs/evals/parallel_stream_libero_lingbot_exact_heng_eval.yaml`
+- config: `configs/experiments/parallel_stream_libero_lingbot_exact.yaml`
+- eval config: `configs/evals/parallel_stream_libero_lingbot_exact_eval.yaml`
 - artifact id: `method1-libero-exact-step400`
 
 ## Dimensions
@@ -29,8 +29,8 @@
 
 ```bash
 open-wam-validate-config \
-  configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml \
-  configs/evals/parallel_stream_libero_lingbot_exact_heng_eval.yaml
+  configs/experiments/parallel_stream_libero_lingbot_exact.yaml \
+  configs/evals/parallel_stream_libero_lingbot_exact_eval.yaml
 ```
 
 Expected outcome: static config validation passes. Public checkpoint hosting,
@@ -45,7 +45,7 @@ checkpoints carry their strict rollout/proprio runtime settings into eval:
 
 ```bash
 uv run --extra sim python scripts/run_libero_realtime_sandbox.py \
-  --cfg configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml \
+  --cfg configs/experiments/parallel_stream_libero_lingbot_exact.yaml \
   --checkpoint /absolute/path/to/checkpoint_step_400/model_state.pt \
   --merge-checkpoint-runtime-config \
   --benchmark libero_10 \

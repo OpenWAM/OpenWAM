@@ -28,18 +28,26 @@ The generic runtime covers these representative maintained families:
 
 | Family | Experiment config |
 | --- | --- |
-| Method 1 exact | `parallel_stream_libero_lingbot_exact_heng_compatible.yaml` |
-| Method 2 action-conditioned | `parallel_stream_libero_lingbot_joint_denoise_heng_compatible.yaml` |
+| Method 1 exact | `parallel_stream_libero_lingbot_exact.yaml` |
+| Method 2 action-conditioned | `parallel_stream_libero_lingbot_joint_denoise.yaml` |
 | Method 4 latent | `post_latent_libero_latent_local_video_conditioned.yaml` |
 | Method 4 decoded | `post_decoded_libero_latent_local_video_conditioned.yaml` |
-| M5 video then action | `mot_libero_latent_local_video_then_action_heng_compatible.yaml` |
-| M5 action then video | `mot_libero_latent_local_action_then_video_heng_compatible.yaml` |
-| M5 joint | `mot_libero_latent_local_joint_heng_compatible.yaml` |
-| M5 decoupled | `mot_libero_latent_local_decoupled_same_step_heng_compatible.yaml` |
-| M5 video-noisy to action | `mot_libero_latent_local_video_noisy_to_action_heng_compatible.yaml` |
-| M5 action-noisy to video | `mot_libero_latent_local_action_noisy_to_video_heng_compatible.yaml` |
-| M5 GJD | `mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml` |
+| M5 video then action | `mot_libero_video_then_action.yaml` |
+| M5 action then video | `mot_libero_action_then_video.yaml` |
+| M5 joint | `mot_libero_joint.yaml` |
+| M5 decoupled | `mot_libero_decoupled_same_step.yaml` |
+| M5 video-noisy to action | `mot_libero_video_noisy_to_action.yaml` |
+| M5 action-noisy to video | `mot_libero_action_noisy_to_video.yaml` |
+| M5 GJD | `mot_libero_generalist_joint_denoising.yaml` |
 | Video-only | `causal_video_prediction_libero_latent_local.yaml` |
+
+Maintained config names describe the method contract and do not carry a
+contributor-specific compatibility suffix. Retired `*_heng_compatible` and
+`*_heng_eval` names still resolve to these canonical files with a deprecation
+warning, so old commands remain usable during migration. Existing copied YAMLs
+and checkpoint-local `resolved_config.yaml` files are loaded as written and are
+never redirected by the alias resolver. Use canonical names for all new runs,
+reports, and automation.
 
 ## Training
 

@@ -170,7 +170,7 @@ def main() -> None:
         "--config",
         dest="config",
         type=str,
-        default="configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml",
+        default="configs/experiments/parallel_stream_libero_lingbot_exact.yaml",
     )
     parser.add_argument(
         "--checkpoint",

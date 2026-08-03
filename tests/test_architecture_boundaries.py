@@ -7122,21 +7122,26 @@ def test_retained_checkout_commands_require_machine_local_roots() -> None:
             "--replay-status-path",
             "--output-dir",
         },
-        "run_heng_libero_exact_visualization.py": {"--heng-repo-root"},
+        "run_lingbot_reference_visualization.py": {"--reference-repo-root"},
     }
     for script_name, expected in required_options.items():
         assert expected <= _required_argparse_options(
             REPO_ROOT / "scripts" / script_name
         )
 
-    heng_runner = REPO_ROOT / "scripts/run_heng_libero_exact_visualization.py"
-    assert "_configure_heng_runtime" in _top_level_definitions(heng_runner)
+    reference_runner = REPO_ROOT / "scripts/run_lingbot_reference_visualization.py"
+    assert "_configure_reference_runtime" in _top_level_definitions(reference_runner)
     assert {
         "benchmark",
         "OffScreenRenderEnv",
         "VA_CONFIGS",
         "VA_Server",
-    }.isdisjoint(_top_level_import_names(heng_runner))
+    }.isdisjoint(_top_level_import_names(reference_runner))
+
+    legacy_runner = REPO_ROOT / "scripts/run_heng_libero_exact_visualization.py"
+    legacy_source = legacy_runner.read_text(encoding="utf-8")
+    assert "run_lingbot_reference_visualization.py" in legacy_source
+    assert "deprecated" in legacy_source
 
 
 def test_active_checkout_docs_and_tools_have_no_private_machine_defaults() -> None:

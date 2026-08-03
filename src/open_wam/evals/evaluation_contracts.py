@@ -6,7 +6,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from open_wam.configs import DataSplit, EvalMode, EvalPredictionSource, read_yaml_with_local_paths
+from open_wam.configs import (
+    DataSplit,
+    EvalMode,
+    EvalPredictionSource,
+    read_yaml_with_local_paths,
+    resolve_config_path_alias,
+)
 
 
 @dataclass(frozen=True)
@@ -63,10 +69,10 @@ def _resolve_relative_path(base_path: Path, value: str | None) -> Path | None:
     candidate = Path(value)
     if candidate.is_absolute():
         return candidate
-    local_candidate = (base_path.parent / candidate).resolve()
+    local_candidate = resolve_config_path_alias(base_path.parent / candidate).resolve()
     if local_candidate.exists():
         return local_candidate
-    cwd_candidate = (Path.cwd() / candidate).resolve()
+    cwd_candidate = resolve_config_path_alias(Path.cwd() / candidate).resolve()
     if cwd_candidate.exists():
         return cwd_candidate
     raise FileNotFoundError(
@@ -116,7 +122,7 @@ def resolve_evaluation_request(
     checkpoint path, and batch count.
     """
 
-    config_path = Path(config_path).resolve()
+    config_path = resolve_config_path_alias(config_path).resolve()
     raw = _read_yaml(config_path)
     experiment_config_path = (
         _resolve_relative_path(config_path, raw.get("experiment_config"))

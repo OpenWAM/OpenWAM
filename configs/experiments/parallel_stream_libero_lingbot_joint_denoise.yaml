@@ -1,10 +1,10 @@
-name: parallel_stream_libero_lingbot_m1_action_noisy_to_video_heng_compatible
+name: parallel_stream_libero_lingbot_joint_denoise
 
 data:
   # Dataset source knobs
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
-  local_root: "${paths.datasets.libero_heng_root}"
+  local_root: "${paths.datasets.libero_root}"
   replay_status_path: "${paths.datasets.libero_replay_status_path}"
   replay_status_policy: successful_only
   val_replay_status_policy: failure_only
@@ -89,10 +89,9 @@ backbone:
   reference_assets_device_policy: cpu_offload
 
 policy_variant:
-  # Keep LingBot exact token layout; current noisy action is visible to current noisy video only.
+  # Keep LingBot exact token layout; only change rollout to joint denoising.
   name: parallel_stream
   runtime_mode: lingbot_exact_action_conditioned
-  current_block_coupling: action_noisy_to_video
   reference_profile: libero_joint
   hidden_size: 3072
   frame_chunk_size: 4
@@ -105,7 +104,6 @@ policy_variant:
   video_action_condition_source: noisy_action
   video_action_attention_scope: block_local
   joint_timestep_coupling: match_sigma
-  preserve_video_pretrain_history: true
 
 action_decoder:
   name: lingbot_parallel_decoder
@@ -136,9 +134,8 @@ training:
   latent_loss_weight: 1.0
   action_loss_weight: 1.0
   trainable_components: [visual_tower.runtime_backbone]
-  # PR88 per-sample loss weighting: scale loss by valid_action_steps so longer
-  # masked-clean segments contribute more (and short ones less), normalized by
-  # the dataset mean. Clamped to [0.25, 4.0].
+  # Per-sample loss weighting keeps fixed-128 tail-masked segments from giving
+  # short valid-action spans the same optimizer scale as long spans.
   sample_loss_weight_mode: valid_action_steps
   sample_loss_weight_reference_steps: null
   sample_loss_weight_min: 0.25

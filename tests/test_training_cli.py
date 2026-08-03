@@ -83,7 +83,7 @@ def test_legacy_lightning_training_choices_fail_with_migration(
 def test_cli_overrides_map_save_root_and_env_defaults(tmp_path: Path) -> None:
     overrides = TrainCliOverrides(
         config_name="parallel_stream_robotwin_smoke",
-        save_root=str(tmp_path / "heng_style_run"),
+        save_root=str(tmp_path / "reference_style_run"),
         checkpoint_root="/checkpoints/checkpoint_step_400",
         dataset_root="/datasets/local_libero",
         latent_root="/datasets/local_libero/latents",
@@ -111,8 +111,8 @@ def test_cli_overrides_map_save_root_and_env_defaults(tmp_path: Path) -> None:
     )
 
     assert config.trainer.default_root_dir == str(tmp_path)
-    assert config.trainer.run_name == "heng_style_run"
-    assert config.trainer.checkpoint_dir == str(tmp_path / "heng_style_run" / "checkpoints")
+    assert config.trainer.run_name == "reference_style_run"
+    assert config.trainer.checkpoint_dir == str(tmp_path / "reference_style_run" / "checkpoints")
     assert config.data.local_root == "/datasets/local_libero"
     assert config.data.latent_root == "/datasets/local_libero/latents"
     assert config.trainer.resume_from == "/checkpoints/checkpoint_step_400/full_training_state.pt"
@@ -185,7 +185,7 @@ def test_checkpoint_root_falls_back_to_model_state_for_legacy_checkpoint(tmp_pat
 
 def test_cli_overrides_apply_dependent_sample_construction_fields_together() -> None:
     overrides = TrainCliOverrides(
-        config_name="parallel_stream_libero_lingbot_m1_decoupled_same_step_heng_compatible",
+        config_name="parallel_stream_libero_lingbot_m1_decoupled_same_step",
         overrides=(
             "data.sample_construction.mode=uniform_segment",
             "data.sample_construction.sample_order_mode=replacement",
@@ -211,7 +211,7 @@ def test_cli_overrides_apply_dependent_sample_construction_fields_together() -> 
 
 def test_cli_contract_override_expands_after_set_overrides() -> None:
     overrides = TrainCliOverrides(
-        config_name="parallel_stream_libero_lingbot_m1_decoupled_same_step_heng_compatible",
+        config_name="parallel_stream_libero_lingbot_m1_decoupled_same_step",
         overrides=(
             "policy_variant.parallel_sequence_contract=rollout_parity_single_frame_perchunk_proprio",
         ),
@@ -234,7 +234,7 @@ def test_cli_contract_override_expands_after_set_overrides() -> None:
 
 def test_cli_legacy_prefix_contract_override_restores_target_only_sampling() -> None:
     overrides = TrainCliOverrides(
-        config_name="parallel_stream_libero_lingbot_m1_video_then_action_heng_compatible",
+        config_name="parallel_stream_libero_lingbot_m1_video_then_action",
         overrides=(
             "policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio",
         ),
@@ -259,7 +259,7 @@ def test_cli_legacy_prefix_contract_override_restores_target_only_sampling() -> 
 
 def test_cli_legacy_prefix_contract_allows_scheduler_override() -> None:
     overrides = TrainCliOverrides(
-        config_name="parallel_stream_libero_lingbot_m1_video_then_action_heng_compatible",
+        config_name="parallel_stream_libero_lingbot_m1_video_then_action",
         overrides=(
             "policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio",
             "policy_variant.joint_timestep_coupling=shared_video_schedule",
@@ -273,7 +273,7 @@ def test_cli_legacy_prefix_contract_allows_scheduler_override() -> None:
 
 def test_cli_legacy_prefix_contract_allows_noisy_condition_prob_override() -> None:
     overrides = TrainCliOverrides(
-        config_name="parallel_stream_libero_lingbot_m1_video_then_action_heng_compatible",
+        config_name="parallel_stream_libero_lingbot_m1_video_then_action",
         overrides=(
             "policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio",
             "policy_variant.noisy_video_condition_prob=0.0",
@@ -287,7 +287,7 @@ def test_cli_legacy_prefix_contract_allows_noisy_condition_prob_override() -> No
 
 def test_cli_legacy_prefix_contract_defaults_joint_coupling_to_independent() -> None:
     overrides = TrainCliOverrides(
-        config_name="mot_libero_latent_local_joint_heng_compatible",
+        config_name="mot_libero_joint",
         overrides=(
             "policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio",
         ),
@@ -300,7 +300,7 @@ def test_cli_legacy_prefix_contract_defaults_joint_coupling_to_independent() -> 
 
 def test_cli_legacy_prefix_contract_allows_joint_coupling_override() -> None:
     overrides = TrainCliOverrides(
-        config_name="mot_libero_latent_local_joint_heng_compatible",
+        config_name="mot_libero_joint",
         overrides=(
             "policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio",
             "policy_variant.joint_timestep_coupling=shared_video_schedule",
@@ -314,7 +314,7 @@ def test_cli_legacy_prefix_contract_allows_joint_coupling_override() -> None:
 
 def test_cli_legacy_prefix_contract_allows_match_sigma_joint_coupling_override() -> None:
     overrides = TrainCliOverrides(
-        config_name="mot_libero_latent_local_joint_heng_compatible",
+        config_name="mot_libero_joint",
         overrides=(
             "policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio",
             "policy_variant.joint_timestep_coupling=match_sigma",
@@ -328,7 +328,7 @@ def test_cli_legacy_prefix_contract_allows_match_sigma_joint_coupling_override()
 
 def test_cli_contract_override_rejects_managed_field_override() -> None:
     overrides = TrainCliOverrides(
-        config_name="parallel_stream_libero_lingbot_m1_decoupled_same_step_heng_compatible",
+        config_name="parallel_stream_libero_lingbot_m1_decoupled_same_step",
         overrides=(
             "policy_variant.parallel_sequence_contract=rollout_parity_single_frame_perchunk_proprio",
             "policy_variant.proprio_context_mode=none",
@@ -342,7 +342,7 @@ def test_cli_contract_override_rejects_managed_field_override() -> None:
 def test_cli_overrides_coerce_quoted_bool_strings() -> None:
     config = load_training_cli_config(
         TrainCliOverrides(
-            config_name="parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible",
+            config_name="parallel_stream_libero_lingbot_m1_generalist_joint_denoising",
             overrides=(
                 'policy_variant.generalist_mode_text_token="false"',
                 'trainer.enable_wandb="false"',

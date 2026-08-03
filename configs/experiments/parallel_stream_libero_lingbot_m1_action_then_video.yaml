@@ -1,11 +1,11 @@
-name: parallel_stream_libero_lingbot_m1_decoupled_same_step_heng_compatible
+name: parallel_stream_libero_lingbot_m1_action_then_video
 
 data:
   # Dataset source knobs
   # - pick the dataset family and where samples/latents live locally
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
-  local_root: "${paths.datasets.libero_heng_root}"
+  local_root: "${paths.datasets.libero_root}"
   replay_status_path: "${paths.datasets.libero_replay_status_path}"
   replay_status_policy: successful_only
   val_replay_status_policy: failure_only
@@ -105,7 +105,7 @@ policy_variant:
   # - these control chunk geometry, rollout layout, and exact-runtime behavior
   name: parallel_stream
   runtime_mode: lingbot_exact
-  current_block_coupling: decoupled_same_step
+  current_block_coupling: action_then_video
   joint_timestep_coupling: independent
   reference_profile: libero
   hidden_size: 3072

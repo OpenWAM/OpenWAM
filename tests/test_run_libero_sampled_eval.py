@@ -823,7 +823,7 @@ def test_sampled_eval_rejects_gjd_configs() -> None:
         label="M5 GJD mode token",
         checkpoint="/tmp/checkpoint_step_100",
         method_key="m5",
-        config="configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml",
+        config="configs/experiments/mot_libero_generalist_joint_denoising.yaml",
     )
 
     with pytest.raises(ValueError, match="does not implement the current GJD rollout contract"):
@@ -833,12 +833,12 @@ def test_sampled_eval_rejects_gjd_configs() -> None:
 def test_sampled_eval_rejects_renamed_semantic_gjd_config(tmp_path: Path) -> None:
     source_path = (
         Path(__file__).resolve().parents[1]
-        / "configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml"
+        / "configs/experiments/mot_libero_generalist_joint_denoising.yaml"
     )
     renamed_config = tmp_path / "custom_m5_eval.yaml"
     renamed_config.write_text(
         source_path.read_text(encoding="utf-8").replace(
-            "name: mot_libero_latent_local_generalist_joint_denoising_heng_compatible",
+            "name: mot_libero_generalist_joint_denoising",
             "name: custom_m5_eval",
         ),
         encoding="utf-8",

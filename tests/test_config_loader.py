@@ -86,11 +86,11 @@ def _instantiate_parallel_stream_variant(config) -> ParallelStreamPolicyVariant:
 @pytest.mark.parametrize(
     "config_name",
     [
-        "parallel_stream_libero_lingbot_exact_heng_compatible.yaml",
-        "parallel_stream_libero_lingbot_m1_video_then_action_heng_compatible.yaml",
-        "parallel_stream_libero_lingbot_m1_action_then_video_heng_compatible.yaml",
-        "parallel_stream_libero_lingbot_joint_denoise_heng_compatible.yaml",
-        "mot_libero_latent_local_video_then_action_heng_compatible.yaml",
+        "parallel_stream_libero_lingbot_exact.yaml",
+        "parallel_stream_libero_lingbot_m1_video_then_action.yaml",
+        "parallel_stream_libero_lingbot_m1_action_then_video.yaml",
+        "parallel_stream_libero_lingbot_joint_denoise.yaml",
+        "mot_libero_video_then_action.yaml",
     ],
 )
 def test_absolute_action_features_are_opt_in_for_legacy_libero_training_configs(config_name: str) -> None:
@@ -834,10 +834,10 @@ def test_latent_libero_local_training_yaml_configs_load() -> None:
     assert post_decoded.data.dataset_type == "lerobot_v2_latent_local"
     assert post_latent_video_conditioned.data.dataset_type == "lerobot_v2_latent_local"
     assert post_decoded_video_conditioned.data.dataset_type == "lerobot_v2_latent_local"
-    assert post_latent.data.local_root.endswith("/libero_heng/libero_10")
-    assert post_decoded.data.local_root.endswith("/libero_heng/libero_10")
-    assert post_latent_video_conditioned.data.local_root.endswith("/libero_heng/libero_10")
-    assert post_decoded_video_conditioned.data.local_root.endswith("/libero_heng/libero_10")
+    assert Path(post_latent.data.local_root).name == "libero_10"
+    assert Path(post_decoded.data.local_root).name == "libero_10"
+    assert Path(post_latent_video_conditioned.data.local_root).name == "libero_10"
+    assert Path(post_decoded_video_conditioned.data.local_root).name == "libero_10"
     assert post_latent.trainer.batch_adapter == BatchAdapterName.LATENTS
     assert post_decoded.trainer.batch_adapter == BatchAdapterName.LATENTS
     assert post_latent_video_conditioned.trainer.batch_adapter == BatchAdapterName.LATENTS
@@ -1032,52 +1032,52 @@ def test_local_libero_yaml_config_loads() -> None:
     assert Path(local_libero.data.local_root).name == "libero_10"
 
 
-def test_heng_compatible_libero_yaml_config_loads() -> None:
-    heng_libero = load_experiment_config(
-        REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
+def test_lingbot_reference_libero_yaml_config_loads() -> None:
+    lingbot_libero = load_experiment_config(
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact.yaml"
     )
 
-    assert isinstance(heng_libero.policy_variant, ParallelStreamPolicyConfig)
-    assert heng_libero.data.dataset_type == "lerobot_v2_latent_local"
-    assert heng_libero.data.local_root.endswith("libero_heng/libero_10")
-    assert heng_libero.data.empty_text_embedding_path.endswith("empty_emb.pt")
-    assert heng_libero.data.camera_names == (
+    assert isinstance(lingbot_libero.policy_variant, ParallelStreamPolicyConfig)
+    assert lingbot_libero.data.dataset_type == "lerobot_v2_latent_local"
+    assert Path(lingbot_libero.data.local_root).name == "libero_10"
+    assert lingbot_libero.data.empty_text_embedding_path.endswith("empty_emb.pt")
+    assert lingbot_libero.data.camera_names == (
         "observation.images.agentview_rgb",
         "observation.images.eye_in_hand_rgb",
     )
-    assert heng_libero.data.latent_camera_names == (
+    assert lingbot_libero.data.latent_camera_names == (
         "observation.images.agentview_rgb",
         "observation.images.eye_in_hand_rgb",
     )
-    assert heng_libero.data.action_target.source_key == "action"
-    assert heng_libero.data.action_target.pose_source_key == "observation.state"
-    assert heng_libero.data.latent_window_profile == LatentWindowProfile.EXACT_CHUNKED_WINDOW
-    assert heng_libero.data.replay_status_policy == ReplayStatusPolicy.SUCCESSFUL_ONLY
-    assert heng_libero.data.val_replay_status_policy == ReplayStatusPolicy.FAILURE_ONLY
-    assert heng_libero.data.require_replay_status is True
-    assert heng_libero.data.val_require_replay_status is True
-    assert heng_libero.training.learning_rate == 1e-5
-    assert heng_libero.training.gradient_accumulation_steps == 10
-    assert heng_libero.training.num_steps == 5000
-    assert heng_libero.training.enabled_objectives == ("latent", "action")
-    assert heng_libero.training.action_loss_weight == 1.0
-    assert heng_libero.training.trainable_components == ("visual_tower.runtime_backbone",)
-    assert heng_libero.training.sample_loss_weight_mode == SampleLossWeightMode.VALID_ACTION_STEPS
-    assert heng_libero.training.sample_loss_weight_min == 0.25
-    assert heng_libero.training.sample_loss_weight_max == 4.0
-    assert heng_libero.trainer.runtime == "composable"
-    assert heng_libero.trainer.batch_adapter == "latents"
-    assert heng_libero.trainer.loop_policy == "steps"
-    assert heng_libero.trainer.strategy == "fsdp"
-    assert heng_libero.trainer.save_interval == 100
-    assert heng_libero.trainer.enable_wandb is True
-    assert heng_libero.trainer.wandb_project == "openwam-method1-libero"
+    assert lingbot_libero.data.action_target.source_key == "action"
+    assert lingbot_libero.data.action_target.pose_source_key == "observation.state"
+    assert lingbot_libero.data.latent_window_profile == LatentWindowProfile.EXACT_CHUNKED_WINDOW
+    assert lingbot_libero.data.replay_status_policy == ReplayStatusPolicy.SUCCESSFUL_ONLY
+    assert lingbot_libero.data.val_replay_status_policy == ReplayStatusPolicy.FAILURE_ONLY
+    assert lingbot_libero.data.require_replay_status is True
+    assert lingbot_libero.data.val_require_replay_status is True
+    assert lingbot_libero.training.learning_rate == 1e-5
+    assert lingbot_libero.training.gradient_accumulation_steps == 10
+    assert lingbot_libero.training.num_steps == 5000
+    assert lingbot_libero.training.enabled_objectives == ("latent", "action")
+    assert lingbot_libero.training.action_loss_weight == 1.0
+    assert lingbot_libero.training.trainable_components == ("visual_tower.runtime_backbone",)
+    assert lingbot_libero.training.sample_loss_weight_mode == SampleLossWeightMode.VALID_ACTION_STEPS
+    assert lingbot_libero.training.sample_loss_weight_min == 0.25
+    assert lingbot_libero.training.sample_loss_weight_max == 4.0
+    assert lingbot_libero.trainer.runtime == "composable"
+    assert lingbot_libero.trainer.batch_adapter == "latents"
+    assert lingbot_libero.trainer.loop_policy == "steps"
+    assert lingbot_libero.trainer.strategy == "fsdp"
+    assert lingbot_libero.trainer.save_interval == 100
+    assert lingbot_libero.trainer.enable_wandb is True
+    assert lingbot_libero.trainer.wandb_project == "openwam-method1-libero"
 
 
 def test_current_frame_action_chunk_libero_yaml_config_loads() -> None:
     config = load_experiment_config(
         REPO_ROOT
-        / "configs/experiments/parallel_stream_libero_lingbot_m1_current_frame_action_chunk_heng_compatible.yaml"
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_current_frame_action_chunk.yaml"
     )
 
     assert isinstance(config.policy_variant, ParallelStreamPolicyConfig)
@@ -1102,7 +1102,7 @@ def test_current_frame_action_chunk_libero_yaml_config_loads() -> None:
 
 def test_fastwam_first_frame_libero_yaml_config_loads() -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_fastwam_first_frame_heng_compatible.yaml"
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_fastwam_first_frame.yaml"
     )
 
     assert isinstance(config.policy_variant, ParallelStreamPolicyConfig)
@@ -1126,9 +1126,9 @@ def test_fastwam_first_frame_libero_yaml_config_loads() -> None:
     _instantiate_parallel_stream_variant(config)
 
 
-def test_m1_non_generalist_heng_compatible_configs_instantiate_reference_variant() -> None:
+def test_m1_non_generalist_configs_instantiate_reference_variant() -> None:
     config_paths = sorted(
-        (REPO_ROOT / "configs/experiments").glob("parallel_stream_libero_lingbot_m1_*_heng_compatible.yaml")
+        (REPO_ROOT / "configs/experiments").glob("parallel_stream_libero_lingbot_m1_*.yaml")
     )
     config_paths = [path for path in config_paths if "generalist_joint_denoising" not in path.name]
     assert len(config_paths) == 8
@@ -1143,7 +1143,7 @@ def test_m1_non_generalist_heng_compatible_configs_instantiate_reference_variant
 def test_m1_generalist_joint_denoising_keeps_guidance_scale_strict() -> None:
     config = load_experiment_config(
         REPO_ROOT
-        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising.yaml"
     )
     config = replace(config, inference=replace(config.inference, guidance_scale=1.0))
 
@@ -1154,7 +1154,7 @@ def test_m1_generalist_joint_denoising_keeps_guidance_scale_strict() -> None:
 def test_m1_generalist_joint_denoising_yaml_config_loads() -> None:
     config = load_experiment_config(
         REPO_ROOT
-        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising.yaml"
     )
 
     assert isinstance(config.policy_variant, ParallelStreamPolicyConfig)
@@ -1184,7 +1184,7 @@ def test_m1_generalist_joint_denoising_yaml_config_loads() -> None:
 
 
 def test_m5_generalist_joint_denoising_defaults_independent_joint_coupling(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml"
+    source_path = REPO_ROOT / "configs/experiments/mot_libero_generalist_joint_denoising.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
     raw["policy_variant"].pop("joint_timestep_coupling", None)
@@ -1200,7 +1200,7 @@ def test_m5_generalist_joint_denoising_defaults_independent_joint_coupling(tmp_p
 
 
 def test_m5_generalist_joint_denoising_rejects_multi_sample_batches(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml"
+    source_path = REPO_ROOT / "configs/experiments/mot_libero_generalist_joint_denoising.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
     raw["data"]["train_batch_size"] = 2
@@ -1214,7 +1214,7 @@ def test_m5_generalist_joint_denoising_rejects_multi_sample_batches(tmp_path: Pa
 
 
 def test_m5_generalist_joint_denoising_mode_text_token_flag_loads(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml"
+    source_path = REPO_ROOT / "configs/experiments/mot_libero_generalist_joint_denoising.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
     raw["policy_variant"]["generalist_mode_text_token"] = True
@@ -1229,7 +1229,7 @@ def test_m5_generalist_joint_denoising_mode_text_token_flag_loads(tmp_path: Path
 
 
 def test_m5_generalist_mode_text_token_rejects_non_gjd_config(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_joint_heng_compatible.yaml"
+    source_path = REPO_ROOT / "configs/experiments/mot_libero_joint.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
     raw["policy_variant"]["generalist_mode_text_token"] = True
@@ -1245,7 +1245,7 @@ def test_m5_generalist_mode_text_token_rejects_non_gjd_config(tmp_path: Path) ->
 def test_m1_generalist_joint_denoising_mode_text_token_flag_loads(tmp_path: Path) -> None:
     source_path = (
         REPO_ROOT
-        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising.yaml"
     )
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
@@ -1265,7 +1265,7 @@ def test_m1_generalist_joint_denoising_mode_text_token_string_false_loads_false(
 ) -> None:
     source_path = (
         REPO_ROOT
-        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising.yaml"
     )
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
@@ -1283,7 +1283,7 @@ def test_m1_generalist_joint_denoising_mode_text_token_string_false_loads_false(
 def test_m1_generalist_mode_text_token_rejects_non_generalist_profile(tmp_path: Path) -> None:
     source_path = (
         REPO_ROOT
-        / "configs/experiments/parallel_stream_libero_lingbot_m1_video_then_action_heng_compatible.yaml"
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_video_then_action.yaml"
     )
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
@@ -1300,7 +1300,7 @@ def test_m1_generalist_mode_text_token_rejects_non_generalist_profile(tmp_path: 
 def test_m1_step3500_variant_yaml_configs_preserve_video_pretrain_history() -> None:
     config_paths = sorted(
         (REPO_ROOT / "configs/experiments").glob(
-            "parallel_stream_libero_lingbot_m1_*_heng_compatible.yaml"
+            "parallel_stream_libero_lingbot_m1_*.yaml"
         )
     )
     config_paths = [
@@ -1318,7 +1318,7 @@ def test_m1_step3500_variant_yaml_configs_preserve_video_pretrain_history() -> N
 def test_m1_generalist_joint_denoising_defaults_mode_probabilities(tmp_path: Path) -> None:
     source_path = (
         REPO_ROOT
-        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising.yaml"
     )
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
@@ -1339,7 +1339,7 @@ def test_m1_generalist_joint_denoising_defaults_mode_probabilities(tmp_path: Pat
 def test_m1_generalist_joint_denoising_rejects_invalid_probabilities(tmp_path: Path) -> None:
     source_path = (
         REPO_ROOT
-        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising.yaml"
     )
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
@@ -1364,7 +1364,7 @@ def test_m1_generalist_joint_denoising_rejects_non_numeric_probabilities(
 ) -> None:
     source_path = (
         REPO_ROOT
-        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising.yaml"
     )
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
@@ -1412,6 +1412,7 @@ def test_local_path_registry_override_can_reference_sample_aliases(monkeypatch, 
         yaml.safe_dump(
             {
                 "paths": {
+                    "datasets": {"libero_root": "/tmp/canonical_libero_root"},
                     "tests": {
                         "derived_checkpoint": "${paths.datasets.libero_heng_root}/derived/checkpoint_step_1/transformer"
                     }
@@ -1444,10 +1445,10 @@ def test_local_path_registry_override_can_reference_sample_aliases(monkeypatch, 
 
     resolved = read_yaml_with_local_paths(config_path)
 
-    assert resolved["data"]["local_root"].endswith("libero_heng/libero_10")
+    assert resolved["data"]["local_root"] == "/tmp/canonical_libero_root"
     assert resolved["backbone"]["pretrained_model_name_or_path"].endswith("lingbot-va-base")
     assert resolved["tests"]["derived_checkpoint"].endswith(
-        "libero_heng/libero_10/derived/checkpoint_step_1/transformer"
+        "canonical_libero_root/derived/checkpoint_step_1/transformer"
     )
 
 
@@ -1476,7 +1477,7 @@ def test_missing_local_path_alias_raises_clear_error(monkeypatch, tmp_path: Path
 
 
 def test_loaded_enum_like_fields_are_real_enum_members() -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml")
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact.yaml")
 
     assert isinstance(config.backbone.train_attn_mode, AttentionMode)
 
@@ -1486,7 +1487,7 @@ def test_loaded_enum_like_fields_are_real_enum_members() -> None:
     ("random_subwindow", "contextual_subwindow", "aligned_subwindow"),
 )
 def test_removed_window_sampling_modes_are_rejected(tmp_path: Path, removed_mode: str) -> None:
-    source_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_joint_heng_compatible.yaml"
+    source_path = REPO_ROOT / "configs/experiments/mot_libero_joint.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -1500,7 +1501,7 @@ def test_removed_window_sampling_modes_are_rejected(tmp_path: Path, removed_mode
 
 
 def test_deprecated_equal_bucket_latent_temporal_layout_is_rejected(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
+    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_exact.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -1516,7 +1517,7 @@ def test_deprecated_equal_bucket_latent_temporal_layout_is_rejected(tmp_path: Pa
 
 
 def test_backbone_exported_runtime_action_init_mode_loads_as_enum(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_joint_denoise_heng_compatible.yaml"
+    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_joint_denoise.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -1533,7 +1534,7 @@ def test_backbone_exported_runtime_action_init_mode_loads_as_enum(tmp_path: Path
 
 
 def test_parallel_stream_single_frame_context_flag_enables_condition_latents(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_decoupled_same_step_heng_compatible.yaml"
+    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_decoupled_same_step.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -1558,7 +1559,7 @@ def test_parallel_stream_single_frame_context_flag_enables_condition_latents(tmp
 
 
 def test_parallel_stream_single_frame_context_rejects_default_condition_offset(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_decoupled_same_step_heng_compatible.yaml"
+    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_decoupled_same_step.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -1574,7 +1575,7 @@ def test_parallel_stream_single_frame_context_rejects_default_condition_offset(t
 
 
 def test_parallel_stream_per_chunk_additive_proprio_flag_loads(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_decoupled_same_step_heng_compatible.yaml"
+    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_decoupled_same_step.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -1595,7 +1596,7 @@ def test_parallel_stream_per_chunk_additive_proprio_flag_loads(tmp_path: Path) -
 
 
 def test_mot_per_chunk_single_frame_context_flags_load(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_decoupled_same_step_heng_compatible.yaml"
+    source_path = REPO_ROOT / "configs/experiments/mot_libero_decoupled_same_step.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -1623,7 +1624,7 @@ def test_mot_per_chunk_single_frame_context_flags_load(tmp_path: Path) -> None:
 
 
 def test_parallel_sequence_contract_expands_parallel_stream_rollout_parity_defaults(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_decoupled_same_step_heng_compatible.yaml"
+    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_decoupled_same_step.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -1669,7 +1670,7 @@ def test_parallel_sequence_contract_expands_parallel_stream_rollout_parity_defau
 
 
 def test_parallel_sequence_contract_expands_mot_rollout_parity_defaults(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_video_then_action_heng_compatible.yaml"
+    source_path = REPO_ROOT / "configs/experiments/mot_libero_video_then_action.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -1711,7 +1712,7 @@ def test_parallel_sequence_contract_expands_mot_rollout_parity_defaults(tmp_path
 
 
 def test_parallel_sequence_contract_legacy_prefix_restores_target_only_sampling(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_video_then_action_heng_compatible.yaml"
+    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_video_then_action.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -1754,7 +1755,7 @@ def test_parallel_sequence_contract_legacy_prefix_restores_target_only_sampling(
 
 
 def test_parallel_sequence_contract_expands_mot_legacy_prefix_defaults(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_video_then_action_heng_compatible.yaml"
+    source_path = REPO_ROOT / "configs/experiments/mot_libero_video_then_action.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -1801,7 +1802,7 @@ def test_parallel_sequence_contract_expands_mot_legacy_prefix_defaults(tmp_path:
 
 
 def test_parallel_sequence_contract_legacy_prefix_rejects_fastwam_runtime(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_fastwam_first_frame_heng_compatible.yaml"
+    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_fastwam_first_frame.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -1816,7 +1817,7 @@ def test_parallel_sequence_contract_legacy_prefix_rejects_fastwam_runtime(tmp_pa
 
 
 def test_parallel_sequence_contract_legacy_prefix_preserves_explicit_noisy_condition_prob(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_video_then_action_heng_compatible.yaml"
+    source_path = REPO_ROOT / "configs/experiments/mot_libero_video_then_action.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -1842,7 +1843,7 @@ def test_parallel_sequence_contract_legacy_prefix_preserves_explicit_noisy_condi
 
 
 def test_parallel_sequence_contract_legacy_prefix_preserves_explicit_joint_coupling(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_joint_heng_compatible.yaml"
+    source_path = REPO_ROOT / "configs/experiments/mot_libero_joint.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -1870,7 +1871,7 @@ def test_parallel_sequence_contract_legacy_prefix_preserves_explicit_joint_coupl
 def test_parallel_sequence_contract_legacy_prefix_preserves_explicit_match_sigma_joint_coupling(
     tmp_path: Path,
 ) -> None:
-    source_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_joint_heng_compatible.yaml"
+    source_path = REPO_ROOT / "configs/experiments/mot_libero_joint.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -1896,7 +1897,7 @@ def test_parallel_sequence_contract_legacy_prefix_preserves_explicit_match_sigma
 
 
 def test_parallel_sequence_contract_rejects_conflicting_explicit_values(tmp_path: Path) -> None:
-    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_decoupled_same_step_heng_compatible.yaml"
+    source_path = REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_decoupled_same_step.yaml"
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
@@ -1914,7 +1915,7 @@ def test_parallel_sequence_contract_rejects_conflicting_explicit_values(tmp_path
 def test_parallel_stream_generalist_rejects_single_frame_context_source(tmp_path: Path) -> None:
     source_path = (
         REPO_ROOT
-        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising.yaml"
     )
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)

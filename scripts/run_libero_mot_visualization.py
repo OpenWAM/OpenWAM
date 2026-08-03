@@ -34,7 +34,7 @@ def main() -> None:
         "--config",
         dest="config",
         type=str,
-        default="configs/experiments/mot_libero_latent_local_joint_heng_compatible.yaml",
+        default="configs/experiments/mot_libero_joint.yaml",
     )
     parser.add_argument("--benchmark", type=str, default="libero_10")
     parser.add_argument(

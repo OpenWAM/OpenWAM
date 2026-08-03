@@ -39,8 +39,8 @@ checkpoint exists.
 method_family: method1
 variant: parallel_stream_lingbot_exact
 benchmark: libero_10
-train_config: configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml
-eval_config: configs/evals/parallel_stream_libero_lingbot_exact_heng_eval.yaml
+train_config: configs/experiments/parallel_stream_libero_lingbot_exact.yaml
+eval_config: configs/evals/parallel_stream_libero_lingbot_exact_eval.yaml
 checkpoint_artifact_id: method1-libero-exact-step400
 dataset_artifact_id: null
 hardware:

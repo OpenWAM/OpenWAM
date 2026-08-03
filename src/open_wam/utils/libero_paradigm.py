@@ -44,10 +44,10 @@ _REMOVED_LIBERO_SCRIPT_REPLACEMENTS = {
     "run_libero_exact_visualization.py": "scripts/run_libero_realtime_sandbox.py",
     "run_libero_realtime_ablation.py": "scripts/run_libero_sampled_eval.py",
     "run_mot_non_joint_aligned_libero_A.sh": (
-        "scripts/run_mot_nonjoint_posttrain_libero.sh with a current *_heng_compatible CONFIG_NAME"
+        "scripts/run_mot_nonjoint_posttrain_libero.sh with a current canonical CONFIG_NAME"
     ),
     "run_mot_non_joint_action_only_libero_B.sh": (
-        "scripts/run_mot_nonjoint_posttrain_libero.sh with a current *_heng_compatible CONFIG_NAME"
+        "scripts/run_mot_nonjoint_posttrain_libero.sh with a current canonical CONFIG_NAME"
     ),
     "run_mot_full_segment_nonjoint_libero.sh": "scripts/run_mot_nonjoint_posttrain_libero.sh",
 }
@@ -229,7 +229,7 @@ def require_current_libero_policy_paradigm(
         "The current training/eval paradigm requires strict fixed-128 samples for non-GJD configs, "
         "full-segment W64 sampling for GJD configs, and a supported proprio context mode.\n"
         f"Issues:\n{issue_lines}\n"
-        f"Use a current *_heng_compatible config with proprio enabled, or set "
+        f"Use a current canonical config with proprio enabled, or set "
         f"{ALLOW_DEPRECATED_LIBERO_CONFIG_ENV}=1 / pass --allow-deprecated-libero-config "
         "only for historical debugging."
     )

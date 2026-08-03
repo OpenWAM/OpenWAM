@@ -1,10 +1,10 @@
-name: mot_libero_latent_local_action_noisy_to_video_heng_compatible
+name: mot_libero_action_noisy_to_video
 
 data:
   # Shared fixed-128 hierarchical LIBERO training windows
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
-  local_root: "${paths.datasets.libero_heng_root}"
+  local_root: "${paths.datasets.libero_root}"
   replay_status_path: "${paths.datasets.libero_replay_status_path}"
   replay_status_policy: successful_only
   val_replay_status_policy: failure_only

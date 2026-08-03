@@ -203,7 +203,7 @@ printf 'WANDB_PROJECT=%s\\n' "${WANDB_PROJECT:-}"
         "-m",
         "open_wam.training.train",
         "--config-name",
-        "mot_libero_latent_local_joint_heng_compatible",
+        "mot_libero_joint",
         "--devices",
         "4",
         "--num-steps",
@@ -347,11 +347,11 @@ def _gjd_raw_config(*, method: str) -> dict:
     if method == "m1":
         config_path = (
             REPO_ROOT
-            / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
+            / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising.yaml"
         )
     elif method == "m5":
         config_path = (
-            REPO_ROOT / "configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml"
+            REPO_ROOT / "configs/experiments/mot_libero_generalist_joint_denoising.yaml"
         )
     else:
         raise AssertionError(f"Unexpected method {method!r}")
@@ -423,11 +423,11 @@ def _deprecated_launcher_result(
 
 def test_fixed128_rollout_context_defaults_apply_to_supported_policy_training_configs() -> None:
     for config_name in (
-        "parallel_stream_libero_lingbot_exact_heng_compatible",
-        "parallel_stream_libero_lingbot_m1_joint_heng_compatible",
+        "parallel_stream_libero_lingbot_exact",
+        "parallel_stream_libero_lingbot_m1_joint",
         "mot_libero_latent_local_full_segment_non_joint_action_only",
-        "mot_libero_latent_local_video_then_action_heng_compatible",
-        "mot_libero_latent_local_joint_heng_compatible",
+        "mot_libero_video_then_action",
+        "mot_libero_joint",
     ):
         args = _default_args_for(config_name)
 
@@ -440,7 +440,7 @@ def test_m1_gjd_config_deprecates_fixed128_for_fullseg_w64() -> None:
 
     assert argv[:4] == [
         "--config-name",
-        "parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible",
+        "parallel_stream_libero_lingbot_m1_generalist_joint_denoising",
         "--devices",
         "1",
     ]
@@ -494,7 +494,7 @@ def test_m1_gjd_launcher_prints_known_issue_notice() -> None:
     argv = json.loads(result.stdout)
     assert argv[:2] == [
         "--config-name",
-        "parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible",
+        "parallel_stream_libero_lingbot_m1_generalist_joint_denoising",
     ]
     assert "known M1 GJD issue" in result.stderr
     assert "M5 is the maintained standard GJD contract" in result.stderr
@@ -509,7 +509,7 @@ def test_m5_gjd_config_deprecates_fixed128_for_legacy_prefix_fullseg_w64() -> No
 
     assert argv[:4] == [
         "--config-name",
-        "mot_libero_latent_local_generalist_joint_denoising_heng_compatible",
+        "mot_libero_generalist_joint_denoising",
         "--devices",
         "1",
     ]
@@ -548,8 +548,10 @@ def test_m5_gjd_mode_token_launcher_keeps_fullseg_w64_sampler() -> None:
 
 def test_fixed128_rollout_context_defaults_normalize_config_paths() -> None:
     for config_name in (
+        "parallel_stream_libero_lingbot_exact.yaml",
+        "configs/experiments/parallel_stream_libero_lingbot_exact.yaml",
+        "/tmp/configs/experiments/mot_libero_video_then_action.yml",
         "parallel_stream_libero_lingbot_exact_heng_compatible.yaml",
-        "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml",
         "/tmp/configs/experiments/mot_libero_latent_local_video_then_action_heng_compatible.yml",
     ):
         args = _default_args_for(config_name)
@@ -560,15 +562,15 @@ def test_fixed128_rollout_context_defaults_normalize_config_paths() -> None:
 
 def test_fixed128_rollout_context_defaults_are_gated_and_disableable() -> None:
     assert _default_args_for("causal_video_prediction_libero_latent_local") == []
-    assert _default_args_for("parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible") == []
+    assert _default_args_for("parallel_stream_libero_lingbot_m1_generalist_joint_denoising") == []
     assert _default_args_for("mot_libero_latent_local_joint") == []
-    assert _default_args_for("mot_libero_latent_local_generalist_joint_denoising_heng_compatible") == []
+    assert _default_args_for("mot_libero_generalist_joint_denoising") == []
     assert _default_args_for("mot_libero_latent_local_full_segment") == []
     assert _default_args_for("mot_libero_latent_local_full_segment_non_joint_aligned") == []
     assert _default_args_for("parallel_stream_libero_lingbot_exact_local") == []
-    assert _default_args_for("parallel_stream_libero_lingbot_joint_denoise_heng_compatible_contextual_subwindow") == []
-    assert _default_args_for("parallel_stream_libero_lingbot_joint_denoise_heng_compatible_random_subwindow") == []
-    assert _default_args_for("parallel_stream_libero_lingbot_exact_heng_compatible", enabled=False) == []
+    assert _default_args_for("parallel_stream_libero_lingbot_joint_denoise_contextual_subwindow") == []
+    assert _default_args_for("parallel_stream_libero_lingbot_joint_denoise_random_subwindow") == []
+    assert _default_args_for("parallel_stream_libero_lingbot_exact", enabled=False) == []
 
 
 def test_launchers_reject_late_cli_config_overrides() -> None:
@@ -591,7 +593,7 @@ def test_mot_posttrain_launcher_defaults_to_strict_fixed128_joint_config() -> No
 
     assert argv[:4] == [
         "--config-name",
-        "mot_libero_latent_local_joint_heng_compatible",
+        "mot_libero_joint",
         "--devices",
         "1",
     ]
@@ -604,7 +606,7 @@ def test_mot_nonjoint_launcher_defaults_to_strict_fixed128_video_then_action_con
 
     assert argv[:4] == [
         "--config-name",
-        "mot_libero_latent_local_video_then_action_heng_compatible",
+        "mot_libero_video_then_action",
         "--devices",
         "1",
     ]
@@ -616,7 +618,7 @@ def test_mot_gjd_posttrain_launcher_exposes_named_ablation_overrides() -> None:
     vanilla = _launcher_train_argv("scripts/run_mot_gjd_posttrain_libero.sh")
     assert vanilla[:4] == [
         "--config-name",
-        "mot_libero_latent_local_generalist_joint_denoising_heng_compatible",
+        "mot_libero_generalist_joint_denoising",
         "--devices",
         "1",
     ]
@@ -643,8 +645,8 @@ def test_mot_gjd_posttrain_launcher_exposes_named_ablation_overrides() -> None:
 
 def test_unified_gjd_train_launcher_covers_m1_and_m5_ablation_surfaces() -> None:
     expected_configs = {
-        "m1": "parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible",
-        "m5": "mot_libero_latent_local_generalist_joint_denoising_heng_compatible",
+        "m1": "parallel_stream_libero_lingbot_m1_generalist_joint_denoising",
+        "m5": "mot_libero_generalist_joint_denoising",
     }
     expected_prob_prefixes = {
         "m1": "policy_variant.joint_denoise_training_mode_probs=",
@@ -805,7 +807,7 @@ def test_mot_gjd_realtime_launcher_exposes_named_ablation_overrides() -> None:
     assert argv[:3] == [
         str(REPO_ROOT / "scripts/run_libero_mot_visualization.py"),
         "--cfg",
-        "configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml",
+        "configs/experiments/mot_libero_generalist_joint_denoising.yaml",
     ]
     assert _arg_value(argv, "--frontend-encode-mode") == "lingbot_streaming_vae"
     assert _arg_value(argv, "--mot-inference-window-size") == "30"
@@ -849,8 +851,8 @@ def test_unified_gjd_realtime_launcher_assigns_safe_default_artifact_identity() 
 
 def test_unified_gjd_realtime_launcher_covers_m1_and_m5_ablation_surfaces() -> None:
     expected_cfgs = {
-        "m1": "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml",
-        "m5": "configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml",
+        "m1": "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising.yaml",
+        "m5": "configs/experiments/mot_libero_generalist_joint_denoising.yaml",
     }
     expected_prob_prefixes = {
         "m1": "policy_variant.joint_denoise_training_mode_probs=",
@@ -1038,7 +1040,7 @@ def test_libero_posttrain_launcher_can_print_exact_train_argv_without_running() 
     env.update(
         {
             "OPEN_WAM_PRINT_TRAIN_ARGV": "1",
-            "CONFIG_NAME": "parallel_stream_libero_lingbot_m1_joint_heng_compatible",
+            "CONFIG_NAME": "parallel_stream_libero_lingbot_m1_joint",
             "NGPU": "4",
         }
     )
@@ -1060,7 +1062,7 @@ def test_libero_posttrain_launcher_can_print_exact_train_argv_without_running() 
 
     assert argv[:4] == [
         "--config-name",
-        "parallel_stream_libero_lingbot_m1_joint_heng_compatible",
+        "parallel_stream_libero_lingbot_m1_joint",
         "--devices",
         "4",
     ]
@@ -1072,7 +1074,7 @@ def test_libero_posttrain_launcher_dry_run_uses_python3_without_venv_path() -> N
     env = {
         "PATH": "/usr/bin:/bin",
         "OPEN_WAM_PRINT_TRAIN_ARGV": "1",
-        "CONFIG_NAME": "parallel_stream_libero_lingbot_m1_joint_heng_compatible",
+        "CONFIG_NAME": "parallel_stream_libero_lingbot_m1_joint",
         "NGPU": "4",
     }
     result = subprocess.run(
@@ -1092,7 +1094,7 @@ def test_libero_posttrain_launcher_dry_run_uses_python3_without_venv_path() -> N
 
     assert argv[:4] == [
         "--config-name",
-        "parallel_stream_libero_lingbot_m1_joint_heng_compatible",
+        "parallel_stream_libero_lingbot_m1_joint",
         "--devices",
         "4",
     ]

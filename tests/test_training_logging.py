@@ -216,7 +216,7 @@ def test_legacy_sample_construction_does_not_emit_rollout_context_tag(tmp_path: 
 
 def test_method1_coupling_and_segment_sampling_are_tracked(tmp_path: Path) -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_video_then_action_heng_compatible.yaml"
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_video_then_action.yaml"
     )
     metadata = build_run_tracking_metadata(config, run_name=config.name, output_dir=tmp_path / config.name)
 
@@ -266,7 +266,7 @@ def test_non_default_sample_order_is_tracked(tmp_path: Path) -> None:
 def test_method1_generalist_joint_denoising_tracking_metadata(tmp_path: Path) -> None:
     config = load_experiment_config(
         REPO_ROOT
-        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising_heng_compatible.yaml"
+        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising.yaml"
     )
     config = replace(
         config,
@@ -295,7 +295,7 @@ def test_method1_generalist_joint_denoising_tracking_metadata(tmp_path: Path) ->
 
 def test_method5_generalist_joint_denoising_tracking_metadata(tmp_path: Path) -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/mot_libero_latent_local_generalist_joint_denoising_heng_compatible.yaml"
+        REPO_ROOT / "configs/experiments/mot_libero_generalist_joint_denoising.yaml"
     )
     config = replace(
         config,

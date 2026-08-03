@@ -467,7 +467,7 @@ class LingbotReferenceAssets:
     ) -> torch.Tensor:
         vae_device = next(self.vae.parameters()).device
         vae_dtype = next(self.vae.parameters()).dtype
-        # Match Heng's reference path exactly: normalize RGB to [-1, 1] in
+        # Match the LingBot reference path exactly: normalize RGB to [-1, 1] in
         # float32 first, then cast to the VAE runtime dtype. Doing the math
         # directly in bf16 perturbs the conditioned first-frame latent enough
         # to break exact rollout parity.
@@ -529,7 +529,7 @@ class LingbotReferenceAssets:
             current_dtype = next(module.parameters()).dtype
         except StopIteration:
             current_dtype = preferred_reference_dtype(target_device)
-        # Heng keeps CPU-offloaded VAE/text assets in their checkpoint dtype
+        # The LingBot runtime keeps CPU-offloaded VAE/text assets in checkpoint dtype
         # (bf16 for the released Wan/LingBot assets) instead of upcasting them
         # to fp32 when they live on CPU.
         if target_device.type == "cpu":

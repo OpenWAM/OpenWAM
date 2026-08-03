@@ -19,7 +19,7 @@ from open_wam.runtime.checkpoint_artifacts import resolve_checkpoint_artifacts
 
 
 SAMPLED_EVAL_DEFAULT_CONFIG = (
-    "configs/experiments/parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
+    "configs/experiments/parallel_stream_libero_lingbot_exact.yaml"
 )
 
 
@@ -192,7 +192,7 @@ SAMPLED_EVAL_METHODS: tuple[SampledEvalMethodSpec, ...] = (
         label="M2 joint denoise",
         config=(
             "configs/experiments/"
-            "parallel_stream_libero_lingbot_joint_denoise_heng_compatible.yaml"
+            "parallel_stream_libero_lingbot_joint_denoise.yaml"
         ),
         reference_assets_device_policy=ReferenceAssetsDevicePolicy.RUNTIME,
         async_low_watermark=12,

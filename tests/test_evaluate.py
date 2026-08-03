@@ -99,23 +99,23 @@ def test_method4_video_conditioned_eval_wrappers_resolve_experiment_configs() ->
     ("wrapper_name", "experiment_name", "checkpoint_alias_suffix"),
     [
         (
-            "parallel_stream_libero_lingbot_exact_heng_eval.yaml",
-            "parallel_stream_libero_lingbot_exact_heng_compatible.yaml",
-            "parallel_stream_libero_lingbot_exact_heng_compatible_0402/checkpoints/checkpoint_step_1100/full_training_state.pt",
+            "parallel_stream_libero_lingbot_exact_eval.yaml",
+            "parallel_stream_libero_lingbot_exact.yaml",
+            "parallel_stream_exact_libero_step_1100_0402/full_training_state.pt",
         ),
         (
-            "parallel_stream_libero_lingbot_joint_denoise_heng_eval.yaml",
-            "parallel_stream_libero_lingbot_joint_denoise_heng_compatible.yaml",
-            "parallel_stream_libero_lingbot_joint_denoise_heng_compatible_0402/checkpoints/checkpoint_step_600/full_training_state.pt",
+            "parallel_stream_libero_lingbot_joint_denoise_eval.yaml",
+            "parallel_stream_libero_lingbot_joint_denoise.yaml",
+            "parallel_stream_joint_libero_step_600_0402/full_training_state.pt",
         ),
         (
-            "parallel_stream_libero_lingbot_joint_denoise_heng_eval_legacy.yaml",
-            "parallel_stream_libero_lingbot_joint_denoise_heng_compatible.yaml",
-            "parallel_stream_libero_lingbot_joint_denoise_heng_compatible/checkpoints/checkpoint_step_300/full_training_state.pt",
+            "parallel_stream_libero_lingbot_joint_denoise_eval_legacy.yaml",
+            "parallel_stream_libero_lingbot_joint_denoise.yaml",
+            "parallel_stream_joint_libero_step_300/full_training_state.pt",
         ),
     ],
 )
-def test_libero_heng_eval_wrappers_resolve_experiment_configs_and_checkpoints(
+def test_libero_reference_eval_wrappers_resolve_experiment_configs_and_checkpoints(
     wrapper_name: str,
     experiment_name: str,
     checkpoint_alias_suffix: str,

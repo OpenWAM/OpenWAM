@@ -1,26 +1,10 @@
-name: mot_libero_latent_local_generalist_joint_denoising_heng_compatible
-
-# M5 generalist joint-denoise variant.
-# Per training segment, samples one of three regimes from the categorical
-# in `policy_variant.mot_generalist_training_mode_probs`:
-#   - joint (0.6): both modalities noisy; standard packed M5 joint denoising.
-#     Clean condition slots are preserved so the train path matches M5
-#     chunk-by-chunk rollout history.
-#   - action_conditioned_video (0.2): clean action overrides A_noisy slot,
-#     action timesteps=0, action loss masked, and clean history slots remain
-#     visible through the local-history attention window. Model learns to
-#     predict video given clean action condition.
-#   - video_conditioned_action (0.2): clean video overrides V_noisy slot,
-#     V_clean/A_clean history slots preserved, video timesteps=0, video loss
-#     masked. Model learns to predict action given clean video condition.
-# Coupling stays JOINT throughout — conditional regimes rely on
-# clean-in-noisy-slot + timestep=0 + loss masking, not directional
-# attention masks.
+name: parallel_stream_libero_lingbot_m1_generalist_joint_denoising
 
 data:
+  # Dataset source knobs
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
-  local_root: "${paths.datasets.libero_heng_root}"
+  local_root: "${paths.datasets.libero_root}"
   replay_status_path: "${paths.datasets.libero_replay_status_path}"
   replay_status_policy: include_all
   val_replay_status_policy: null
@@ -28,6 +12,7 @@ data:
   val_require_replay_status: false
   empty_text_embedding_path: "${paths.datasets.empty_text_embedding}"
   split: train
+  # View + latent layout knobs
   camera_names: [observation.images.agentview_rgb, observation.images.eye_in_hand_rgb]
   latent_camera_names: [observation.images.agentview_rgb, observation.images.eye_in_hand_rgb]
   canonical_height: 128
@@ -35,6 +20,11 @@ data:
   num_frames: 4
   frame_stride: 1
   sample_stride: 1
+  episode_cache_size: 2
+  train_fraction: 1.0
+  split_seed: 0
+  # Current GJD sampler. Fixed-128 GJD training is deprecated; the maintained
+  # setup follows the #150-style full-segment W64 contract.
   sample_construction:
     mode: uniform_segment
     sample_order_mode: replacement
@@ -52,9 +42,6 @@ data:
     demo_count_power: 0.0
     trajectory_start_power: 0.0
     sample_weight_mode: uniform
-  episode_cache_size: 2
-  train_fraction: 1.0
-  split_seed: 0
   train_batch_size: 1
   val_batch_size: 1
   num_workers: 8
@@ -115,50 +102,53 @@ backbone:
   max_text_tokens: 512
   load_wan_vae_frontend: true
   load_text_conditioning: true
-  load_reference_core_weights: true
-  reference_core_init_mode: video_only
   reference_assets_device_policy: cpu_offload
 
 policy_variant:
-  name: mot
-  hidden_size: 3072
-  attach_site: post_visual_core
-  preset: fastwam_joint
+  # Method-1 variant 7: generalist joint denoising.
+  # The packed noisy video/action slots are authoritative. Conditional modes
+  # place the clean supplied modality in its normal noisy slot at timestep 0 and
+  # mask that modality's loss.
+  name: parallel_stream
+  runtime_mode: lingbot_exact_action_conditioned
+  variant_profile: generalist_joint_denoising
   generalist_training_paradigm: mixed_dynamics
-  runtime_mode: non_joint_two_stream
-  # JOINT visibility is required for the A1 conditional sub-modes; validated
-  # by `MoTPolicyConfig.__post_init__` when generalist probs are set.
   current_block_coupling: joint
-  condition_mode: teacher_forcing_cond_video
-  video_prefix_frames: 1
-  parallel_sequence_contract: legacy_prefix_single_frame_perchunk_proprio
-  action_expert_init_mode: video_weight_interpolate
-  num_action_layers: 30
-  action_hidden_size: 2048
-  action_ffn_dim: 8192
-  video_can_attend_action: false
-  use_text_conditioning: true
-  use_state_conditioning: false
-  use_activation_checkpointing: true
-  noisy_video_condition_prob: 0.5
+  reference_profile: libero_joint
+  hidden_size: 3072
+  frame_chunk_size: 4
+  action_per_frame: 4
+  attn_window: 30
+  sequence_order: [video_noisy, video_condition, action_noisy, action_condition]
+  mask_mode: lingbot_chunked
+  cache_mode: metadata_only
+  video_condition_on_action: true
+  video_action_condition_source: noisy_action
+  video_action_attention_scope: block_local
+  proprio_context_mode: per_chunk_additive
+  # Known M1 GJD issue: M5 is the standard GJD contract and uses
+  # legacy-prefix single-frame condition latents. M1 keeps full clean modality
+  # slots for conditional FDM/IDM; forcing the M5 single-frame condition source
+  # onto current M1 legacy full-segment samples would require a pre-target
+  # context/loss boundary, while this legacy uniform segment path has
+  # loss_frame_start=0.
   # Current GJD uses independent video/action noise clocks for parity with the
   # standard M5 legacy-prefix W64 joint baseline. Use `match_sigma` only for a
   # sigma-matched ablation.
   joint_timestep_coupling: independent
-  # A1 generalist mixing — per-segment categorical over the three regimes.
-  # Probabilities mirror the M1 PR #95 default (0.6 / 0.2 / 0.2).
-  mot_generalist_training_mode_probs:
+  preserve_video_pretrain_history: true
+  joint_denoise_training_mode_probs:
     joint: 0.6
     action_conditioned_video: 0.2
     video_conditioned_action: 0.2
   # Ablation knob. Leave false for vanilla/pure-joint; set true for the
-  # explicit mode-token M5 GJD ablation.
+  # explicit mode-token M1 GJD ablation.
   generalist_mode_text_token: false
 
 action_decoder:
-  name: mot_decoder
+  name: lingbot_parallel_decoder
   hidden_size: 3072
-  action_dim: 7
+  action_dim: 30
   action_horizon: 16
 
 training:
@@ -180,18 +170,22 @@ training:
   max_grad_norm: 2.0
   num_steps: 20000
   text_condition_dropout_prob: 0.1
-  enabled_objectives: [action, latent]
+  enabled_objectives: [latent, action]
   latent_loss_weight: 1.0
   action_loss_weight: 1.0
+  trainable_components: [visual_tower.runtime_backbone]
   sample_loss_weight_mode: none
-  trainable_components: [policy_variant.action_expert, visual_tower.runtime_backbone]
 
 inference:
+  # Online rollout controls for conditional generation are intentionally later.
+  # Current autonomous rollout still uses joint generation with matched steps.
   video_num_inference_steps: 20
   action_num_inference_steps: 20
   frame_chunk_size: 4
   use_cache: true
   guidance_scale: 5.0
+  action_guidance_scale: 1.0
+  video_exec_step: -1
 
 validation:
   # Auxiliary held-out conditional probes. Primary trainer validation remains
@@ -233,5 +227,5 @@ trainer:
   export_runtime_backbone: true
   enable_jsonl_logging: true
   enable_wandb: true
-  wandb_project: openwam-libero-policy-train
+  wandb_project: openwam-method1-libero
   wandb_mode: online

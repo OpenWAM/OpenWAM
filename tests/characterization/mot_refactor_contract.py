@@ -71,32 +71,32 @@ class MoTInferenceContract:
 NON_GJD_METHODS: tuple[MoTMethodSpec, ...] = (
     MoTMethodSpec(
         asset_id="mot_video_then_action",
-        config_name="mot_libero_latent_local_video_then_action_heng_compatible",
+        config_name="mot_libero_video_then_action",
         coupling="video_then_action",
     ),
     MoTMethodSpec(
         asset_id="mot_action_then_video",
-        config_name="mot_libero_latent_local_action_then_video_heng_compatible",
+        config_name="mot_libero_action_then_video",
         coupling="action_then_video",
     ),
     MoTMethodSpec(
         asset_id="mot_joint",
-        config_name="mot_libero_latent_local_joint_heng_compatible",
+        config_name="mot_libero_joint",
         coupling="joint",
     ),
     MoTMethodSpec(
         asset_id="mot_decoupled_same_step",
-        config_name="mot_libero_latent_local_decoupled_same_step_heng_compatible",
+        config_name="mot_libero_decoupled_same_step",
         coupling="decoupled_same_step",
     ),
     MoTMethodSpec(
         asset_id="mot_video_noisy_to_action",
-        config_name="mot_libero_latent_local_video_noisy_to_action_heng_compatible",
+        config_name="mot_libero_video_noisy_to_action",
         coupling="video_noisy_to_action",
     ),
     MoTMethodSpec(
         asset_id="mot_action_noisy_to_video",
-        config_name="mot_libero_latent_local_action_noisy_to_video_heng_compatible",
+        config_name="mot_libero_action_noisy_to_video",
         coupling="action_noisy_to_video",
     ),
 )
@@ -104,19 +104,19 @@ NON_GJD_METHODS: tuple[MoTMethodSpec, ...] = (
 GJD_METHODS: tuple[MoTMethodSpec, ...] = (
     MoTMethodSpec(
         asset_id="gjd_vanilla",
-        config_name="mot_libero_latent_local_generalist_joint_denoising_heng_compatible",
+        config_name="mot_libero_generalist_joint_denoising",
         coupling="joint",
         gjd_ablation="vanilla",
     ),
     MoTMethodSpec(
         asset_id="gjd_pure_joint",
-        config_name="mot_libero_latent_local_generalist_joint_denoising_heng_compatible",
+        config_name="mot_libero_generalist_joint_denoising",
         coupling="joint",
         gjd_ablation="pure_joint",
     ),
     MoTMethodSpec(
         asset_id="gjd_mode_token",
-        config_name="mot_libero_latent_local_generalist_joint_denoising_heng_compatible",
+        config_name="mot_libero_generalist_joint_denoising",
         coupling="joint",
         gjd_ablation="mode_token",
         mode_token=True,
