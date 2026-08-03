@@ -1,13 +1,18 @@
 # Open-WAM
 
-Open-WAM is a research codebase for studying **where and how to attach action
-policy logic** in a world action model while keeping the **video backbone
-fixed**.
+Open-WAM is an extensible library for training and evaluating world action
+models. It keeps the shared LingBot-compatible visual path stable while policy
+experiments select typed sequence, attention, cache, scheduler, and decoder
+contracts.
 
-The current implementation is organized around one constraint:
+The maintained runtime boundary is:
 
-- the shared visual path should remain LingBot-compatible
-- policy attachment structure and placement are the main research variable
+```text
+ExperimentConfig -> VariantPipeline -> VisualTower -> PolicyVariant -> ActionDecoder
+```
+
+Applications can register custom dataset adapters, policy variants, action
+decoders, and simulator backends without modifying the shared runtime.
 
 ## Current Status
 
@@ -33,9 +38,9 @@ The repo currently includes:
   `post_latent` plus the MLP action decoder
 - one composable train runtime for single-device, DDP, and FSDP execution
 
-The first real dataset path is:
-
-- `physical-intelligence/libero`
+Maintained data and simulator boundaries cover LIBERO, RoboTwin, CALVIN,
+heterogeneous LeRobot sources, and synthetic fixtures. Benchmark packages and
+model dependencies remain optional extras.
 
 ## Repo Layout
 
@@ -47,7 +52,7 @@ deployment/      separate FR3/SO-101 hardware operations workspace
                  (checkout-only, separately tested; see deployment/README.md)
 AGENTS.md        repo-level contributor and agent style guide
 src/open_wam/third_party/  vendored external modules kept inside the repo
-scripts/         thin wrappers, smoke tests, and inspection scripts
+scripts/         benchmark adapters, data tools, and checkout diagnostics
 src/open_wam/    all source code
 ```
 

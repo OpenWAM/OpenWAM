@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "open-wam"
 version = "0.1.0"
-description = "Unified WAM research framework with a fixed LingBot-compatible video backbone."
+description = "Extensible world-action-model training and evaluation with a LingBot-compatible visual core."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

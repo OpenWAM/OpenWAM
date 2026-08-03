@@ -1,9 +1,9 @@
 # Open-WAM Documentation
 
-Open-WAM is a research framework for studying world-action-model policy
-attachments while keeping the shared visual backbone stable. The public docs
-focus on reproducible usage, extension points, and benchmark contracts. Internal
-engineering notes are not published as part of this site.
+Open-WAM is an extensible library for training and evaluating world action
+models while keeping the shared visual backbone stable. The public docs focus
+on reproducible usage, typed extension points, and benchmark contracts.
+Internal engineering notes are not published as part of this site.
 
 ## Start Here
 
@@ -14,7 +14,7 @@ engineering notes are not published as part of this site.
 - [Training and Inference](running_experiments.md): maintained train, resume,
   eval, sanity, and rollout commands.
 
-## Research Extension
+## Extension Points
 
 - [Extension SDK](extension_sdk.md): registry surfaces for datasets, policy variants, and decoders.
 - [Cookbooks](cookbooks/new_method.md): concrete recipes for adding new research components.
