@@ -39,7 +39,7 @@ policy_variant:
   cache_mode: metadata_only
 
 action_decoder:
-  name: lingbot_parallel_decoder
+  name: parallel_stream_decoder
   hidden_size: 3072
   action_dim: 30
   action_horizon: 8

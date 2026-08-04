@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, is_dataclass
 from enum import Enum
-from typing import Any, Callable, Mapping, TypeAlias, TypeVar
+from typing import Any, TypeAlias, TypeVar
 
 try:
     from enum import StrEnum
@@ -11,7 +12,6 @@ except ImportError:  # pragma: no cover - exercised in RoboTwin's Python 3.10 en
     class StrEnum(str, Enum):
         """Python 3.10 fallback matching the string behavior of stdlib StrEnum."""
 
-        pass
 
 
 EnumT = TypeVar("EnumT", bound=StrEnum)
@@ -26,8 +26,14 @@ class ActionDecoderName(StrEnum):
     MLP = "mlp_decoder"
     DECODED_FEATURE = "decoded_feature_decoder"
     VIDEO_CONDITIONED = "video_conditioned_action_decoder"
+    PARALLEL_STREAM = "parallel_stream_decoder"
+    # Deprecated Python/value compatibility. Raw legacy values are normalized
+    # to PARALLEL_STREAM at the config boundary.
     LINGBOT_PARALLEL = "lingbot_parallel_decoder"
-    MOT = "mot_decoder"
+    DUAL_EXPERT = "dual_expert_decoder"
+    # Deprecated Python symbol alias. Raw `mot_decoder` config values are
+    # normalized at the config boundary.
+    MOT = "dual_expert_decoder"
     VIDEO_ONLY = "video_only_decoder"
     EXTENSION = "extension"
 
@@ -48,21 +54,21 @@ class ActionExpertInitMode(StrEnum):
 
 
 class VideoConditionInputSpace(StrEnum):
-    """Which video-space family a method-4 action decoder should treat as input."""
+    """Which video-space family a video-conditioned decoder treats as input."""
 
     VIDEO_LATENT = "video_latent"
     RGB_VIDEO = "rgb_video"
 
 
 class VideoConditionSource(StrEnum):
-    """Source used to build method-4 local video-conditioning windows."""
+    """Source used to build local video-conditioning windows."""
 
     LOCAL_WINDOW = "local_window"
     GENERATED_FUTURE = "generated_future"
 
 
 class VideoConditionTrainMode(StrEnum):
-    """How a method-4 video-conditioned decoder is trained."""
+    """How a video-conditioned decoder is trained."""
 
     ROLLOUT_WINDOW_DIFFUSION = "rollout_window_diffusion"
     CURRENT_FRAME_REGRESSION = "current_frame_regression"
@@ -455,27 +461,30 @@ class PolicyVariantName(StrEnum):
     POST_LATENT = "post_latent"
     POST_DECODED = "post_decoded"
     CAUSAL_VIDEO_PREDICTION = "causal_video_prediction"
-    MOT = "mot"
+    DUAL_EXPERT = "dual_expert"
+    # Deprecated Python symbol alias. Raw `mot` config values are normalized
+    # before enum coercion.
+    MOT = "dual_expert"
     PARALLEL_STREAM = "parallel_stream"
     EXTENSION = "extension"
 
 
-class MoTRuntimeMode(StrEnum):
-    """Execution mode for the MoT policy family.
+class DualExpertRuntimeMode(StrEnum):
+    """Execution mode for the DualExpert policy family.
 
     `VIDEO_PREFILL_ACTION_DENOISE` keeps the video branch clean during training
     and only denoises actions against a cached video prefix — useful as a
     stage-0 / action-only posttrain on top of a frozen video backbone.
 
-    `NON_JOINT_TWO_STREAM` aligns with method-1 `lingbot_exact` (non-joint):
+    `NON_JOINT_TWO_STREAM` aligns with the exact parallel-stream non-joint backend:
     both streams get a history-clean / current-noisy split and are denoised
     simultaneously, but the mask disallows same-chunk noisy-to-noisy cross-
     stream attention (video blocks are even, action blocks are odd, so
     `kv_block == q_block` only fires within the same stream). Combined with
-    `video_can_attend_action=false` this gives the MoT analogue of method-1
+    `video_can_attend_action=false` this gives the dual-expert analogue of the parallel-stream
     non-joint (minus the unavoidable "video sees earlier clean action" delta).
 
-    `JOINT_DENOISE` aligns with method-1 `lingbot_exact_action_conditioned`
+    `JOINT_DENOISE` aligns with the exact action-conditioned parallel-stream
     (joint): both streams noisy, and the mask allows same-chunk noisy-to-noisy
     cross-stream attention (subject to `video_can_attend_action`).
     """
@@ -485,29 +494,37 @@ class MoTRuntimeMode(StrEnum):
     JOINT_DENOISE = "joint_denoise"
 
 
-class MoTActionExpertInitMode(StrEnum):
-    """How the MoT action expert should initialize from the video expert."""
+class DualExpertActionExpertInitMode(StrEnum):
+    """How the DualExpert action expert should initialize from the video expert."""
 
     RANDOM = "random"
     VIDEO_WEIGHT_COPY = "video_weight_copy"
     VIDEO_WEIGHT_INTERPOLATE = "video_weight_interpolate"
 
 
-class MoTConditionMode(StrEnum):
-    """Which video branch the MoT action expert conditions on."""
+class DualExpertConditionMode(StrEnum):
+    """Which video branch the DualExpert action expert conditions on."""
 
     FIRST_FRAME = "first_frame"
     FULL_VIDEO = "full_video"
     TEACHER_FORCING_COND_VIDEO = "teacher_forcing_cond_video"
 
 
-class MoTPreset(StrEnum):
-    """High-level FastWAM-style preset families for MoT policy defaults."""
+class DualExpertPreset(StrEnum):
+    """High-level FastWAM-style preset families for DualExpert policy defaults."""
 
     FASTWAM = "fastwam"
     FASTWAM_JOINT = "fastwam_joint"
     FASTWAM_IDM = "fastwam_idm"
     FASTWAM_NON_JOINT = "fastwam_non_joint"
+
+
+# Deprecated Method-5/MoT type names. Keeping class identity preserves old
+# imports and enum-bearing serialized objects without creating two semantics.
+MoTRuntimeMode = DualExpertRuntimeMode
+MoTActionExpertInitMode = DualExpertActionExpertInitMode
+MoTConditionMode = DualExpertConditionMode
+MoTPreset = DualExpertPreset
 
 
 class AttachSite(StrEnum):
@@ -557,7 +574,7 @@ class DecodeFeatureMode(StrEnum):
 
 
 class ParallelRuntimeMode(StrEnum):
-    """Execution mode for the method-1 parallel-stream variant."""
+    """Numerical execution backend for the parallel-stream architecture."""
 
     LINGBOT_EXACT = "lingbot_exact"
     LINGBOT_EXACT_ACTION_CONDITIONED = "lingbot_exact_action_conditioned"
@@ -568,14 +585,20 @@ class ParallelRuntimeMode(StrEnum):
 
 
 class ParallelStreamVariantProfile(StrEnum):
-    """Named Method-1 variant profile layered on the exact parallel runtime."""
+    """Named semantic profile layered on the exact parallel-stream runtime."""
 
     STANDARD = "standard"
     GENERALIST_JOINT_DENOISING = "generalist_joint_denoising"
 
 
-class JointDenoiseTrainingMode(StrEnum):
-    """Per-segment training mode for generalist joint video/action denoising."""
+class GeneralistDenoisingMode(StrEnum):
+    """Architecture-independent video/action denoising program.
+
+    Under a fixed joint coupling, each training segment samples one regime.
+    ``joint`` denoises both modalities. The conditional modes place the clean
+    supplied modality in its noisy slot at timestep zero, mask that modality's
+    loss, remove task text, and retain one local clean video-history anchor.
+    """
 
     JOINT = "joint"
     ACTION_CONDITIONED_VIDEO = "action_conditioned_video"
@@ -596,15 +619,15 @@ class ParallelActionAttentionScope(StrEnum):
     BLOCK_LOCAL = "block_local"
 
 
-class ParallelContextConditionLatentSource(StrEnum):
+class ContextConditionLatentSource(StrEnum):
     """Which latent source supplies clean pre-target video context frames."""
 
     VIDEO_LATENTS = "video_latents"
     SINGLE_FRAME_CONDITION_LATENT = "single_frame_condition_latent"
 
 
-class ParallelHistoryStreamVisibility(StrEnum):
-    """Which clean history streams exact Method-1 queries may attend."""
+class HistoryStreamVisibility(StrEnum):
+    """Which clean video/action history streams a query may attend."""
 
     FULL = "full"
     # Backward-compatible behavior of `preserve_video_pretrain_history=true`:
@@ -614,7 +637,7 @@ class ParallelHistoryStreamVisibility(StrEnum):
     VIDEO_ONLY = "video_only"
 
 
-class ParallelSequenceContract(StrEnum):
+class VideoActionSequenceContract(StrEnum):
     """Shared sequence semantics layered on top of video/action coupling modes."""
 
     DEFAULT = "default"
@@ -622,7 +645,7 @@ class ParallelSequenceContract(StrEnum):
     # use a single-frame condition latent before the target segment, inject
     # proprio per chunk, and restrict clean history attention to video tokens.
     ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO = "rollout_parity_single_frame_perchunk_proprio"
-    # Legacy exact-prefix contract used by the original parallel-proprio M1
+    # Legacy exact-prefix contract used by the original parallel-stream proprio
     # modes: data samples contain target frames only, and runtime prepends one
     # clean condition latent before the target video stream.
     LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO = "legacy_prefix_single_frame_perchunk_proprio"
@@ -640,6 +663,18 @@ class CurrentBlockCoupling(StrEnum):
     ACTION_NOISY_TO_VIDEO = "action_noisy_to_video"
 
 
+class VideoActionProgram(StrEnum):
+    """Architecture-independent video/action conditioning program."""
+
+    VIDEO_THEN_ACTION = "video_then_action"
+    ACTION_THEN_VIDEO = "action_then_video"
+    JOINT = "joint"
+    DECOUPLED_SAME_STEP = "decoupled_same_step"
+    VIDEO_NOISY_TO_ACTION = "video_noisy_to_action"
+    ACTION_NOISY_TO_VIDEO = "action_noisy_to_video"
+    GENERALIST_JOINT_DENOISING = "generalist_joint_denoising"
+
+
 class JointTimestepCoupling(StrEnum):
     """How joint video/action denoising synchronizes modality noise clocks."""
 
@@ -653,7 +688,7 @@ class JointTimestepCoupling(StrEnum):
     INDEPENDENT = "independent"
 
 
-# Backward-compatible export for early Method-1 configs/code paths.
+# Backward-compatible export for early parallel-stream configs/code paths.
 ParallelCurrentBlockCoupling = CurrentBlockCoupling
 
 
@@ -667,23 +702,6 @@ class ProprioContextMode(StrEnum):
     PER_CHUNK_ADDITIVE = "per_chunk_additive"
 
 
-class MoTGeneralistTrainingMode(StrEnum):
-    """Per-segment training regime for the M5 generalist joint-denoise variant.
-
-    Under a fixed JOINT coupling, each training segment samples one regime.
-    ``joint`` denoises both modalities with the same packed clean-history
-    condition slots used by plain M5 joint rollout. The conditional modes place
-    the clean modality into its noisy slot, force its per-frame timesteps to 0,
-    and mask its loss. Clean history slots remain real context; attention
-    windowing and loss masks, not zeroed context slots, define the local
-    conditional objective.
-    """
-
-    JOINT = "joint"
-    ACTION_CONDITIONED_VIDEO = "action_conditioned_video"
-    VIDEO_CONDITIONED_ACTION = "video_conditioned_action"
-
-
 class GeneralistTrainingParadigm(StrEnum):
     """High-level data/objective mixture used by generalist video-action methods."""
 
@@ -691,8 +709,18 @@ class GeneralistTrainingParadigm(StrEnum):
     MIXED_DYNAMICS = "mixed_dynamics"
 
 
+# Deprecated symbol aliases. They intentionally preserve class identity so old
+# imports and serialized config objects remain loadable without duplicating the
+# public semantic types.
+JointDenoiseTrainingMode = GeneralistDenoisingMode
+MoTGeneralistTrainingMode = GeneralistDenoisingMode
+ParallelContextConditionLatentSource = ContextConditionLatentSource
+ParallelHistoryStreamVisibility = HistoryStreamVisibility
+ParallelSequenceContract = VideoActionSequenceContract
+
+
 class ParallelSequenceComponent(StrEnum):
-    """Sequence components packed by the exact method-1 runtime."""
+    """Sequence components packed by the exact parallel-stream runtime."""
 
     VIDEO_NOISY = "video_noisy"
     VIDEO_CONDITION = "video_condition"
@@ -701,13 +729,13 @@ class ParallelSequenceComponent(StrEnum):
 
 
 class ParallelMaskMode(StrEnum):
-    """Mask profile used by the exact method-1 runtime."""
+    """Mask profile used by the exact parallel-stream runtime."""
 
     LINGBOT_CHUNKED = "lingbot_chunked"
 
 
 class ParallelCacheMode(StrEnum):
-    """How much cache metadata/state the exact method-1 runtime stores locally."""
+    """How much cache metadata/state the exact parallel-stream runtime stores locally."""
 
     METADATA_ONLY = "metadata_only"
 
@@ -783,7 +811,7 @@ class RolloutArtifactProfile(StrEnum):
 
 
 class ActionNormMethod(StrEnum):
-    """Raw-to-model action normalization strategy for exact method-1 paths."""
+    """Raw-to-model action normalization strategy for exact parallel-stream paths."""
 
     PROFILE = "profile"
     NONE = "none"

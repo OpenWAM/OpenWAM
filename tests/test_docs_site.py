@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "build_docs_site.py"
 
@@ -34,7 +33,7 @@ def test_docs_site_stages_curated_public_docs_only(tmp_path: Path) -> None:
     assert (output / builder.OUTPUT_SENTINEL).is_file()
     assert (output / "quickstart.md").is_file()
     assert (output / "architecture.md").is_file()
-    assert (output / "method_families.md").is_file()
+    assert (output / "policy_architectures.md").is_file()
     assert (output / "benchmarks.md").is_file()
     assert (output / "running_experiments.md").is_file()
     assert not (output / "engineering-notes").exists()

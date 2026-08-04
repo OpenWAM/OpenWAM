@@ -11,7 +11,7 @@ from einops import rearrange
 from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.configs.enums import (
     CurrentBlockCoupling,
-    JointDenoiseTrainingMode,
+    GeneralistDenoisingMode,
     ParallelExactCacheWriteMode,
 )
 from open_wam.configs.inference import InferenceConfig
@@ -101,7 +101,7 @@ def run_parallel_staged_inference_rollout(
     )
     generalist_mode = None
     if uses_generalist_mode_text_token(policy_config):
-        generalist_mode = JointDenoiseTrainingMode.JOINT
+        generalist_mode = GeneralistDenoisingMode.JOINT
         text_emb, negative_text_emb = append_generalist_mode_text_context(
             transformer,
             policy_config=policy_config,
@@ -127,7 +127,7 @@ def run_parallel_staged_inference_rollout(
     }
     if current_block_coupling in joint_packed_couplings:
         raise ValueError(
-            "Joint-like M1 coupling must use `run_parallel_action_conditioned_inference_rollout`; "
+            "Joint-like parallel-stream coupling must use `run_parallel_action_conditioned_inference_rollout`; "
             "the staged exact rollout only supports ordered or decoupled same-step coupling."
         )
     if skip_video_prediction and current_block_coupling == CurrentBlockCoupling.VIDEO_THEN_ACTION:
@@ -391,7 +391,7 @@ def run_parallel_staged_inference_rollout(
                 action_hidden_context=action_hidden_context,
             )
     else:  # pragma: no cover - enum guard
-        raise ValueError(f"Unsupported M1 current-block coupling: {current_block_coupling!r}")
+        raise ValueError(f"Unsupported parallel-stream current-block coupling: {current_block_coupling!r}")
 
     next_cache = {
         "runtime_mode": "lingbot_exact",

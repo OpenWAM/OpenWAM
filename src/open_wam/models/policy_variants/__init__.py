@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 from .base import PolicyVariant
 from .contracts import (
+    DecoderArtifactEnvelope,
     DecoderSequenceContext,
     PolicyInferContext,
     PolicyInferOutput,
@@ -19,16 +20,18 @@ from .contracts import (
 
 if TYPE_CHECKING:
     from .causal_video_prediction import CausalVideoPredictionPolicyVariant
-    from .mot import MoTPolicyVariant
+    from .dual_expert import DualExpertPolicyVariant
     from .parallel_stream import ParallelStreamPolicyVariant
     from .post_decoded import PostDecodedPolicyVariant
     from .post_latent import PostLatentPolicyVariant
 
 __all__ = [
-    "ParallelStreamPolicyVariant",
     "CausalVideoPredictionPolicyVariant",
+    "DecoderArtifactEnvelope",
     "DecoderSequenceContext",
+    "DualExpertPolicyVariant",
     "MoTPolicyVariant",
+    "ParallelStreamPolicyVariant",
     "PolicyInferContext",
     "PolicyInferOutput",
     "PolicyInferState",
@@ -37,11 +40,11 @@ __all__ = [
     "PolicyPreparedInputs",
     "PolicyTrainBatch",
     "PolicyTrainOutput",
-    "RolloutCursor",
-    "VideoConditionWindowContext",
     "PolicyVariant",
     "PostDecodedPolicyVariant",
     "PostLatentPolicyVariant",
+    "RolloutCursor",
+    "VideoConditionWindowContext",
 ]
 
 
@@ -50,10 +53,14 @@ def __getattr__(name: str):
         from .causal_video_prediction import CausalVideoPredictionPolicyVariant
 
         return CausalVideoPredictionPolicyVariant
-    if name == "MoTPolicyVariant":
-        from .mot import MoTPolicyVariant
+    if name == "DualExpertPolicyVariant":
+        from .dual_expert import DualExpertPolicyVariant
 
-        return MoTPolicyVariant
+        return DualExpertPolicyVariant
+    if name == "MoTPolicyVariant":
+        from .dual_expert import DualExpertPolicyVariant
+
+        return DualExpertPolicyVariant
     if name == "ParallelStreamPolicyVariant":
         from .parallel_stream import ParallelStreamPolicyVariant
 

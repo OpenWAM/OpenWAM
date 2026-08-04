@@ -9,7 +9,7 @@ import torch
 from open_wam.configs import ActionSpace, CurrentBlockCoupling, ProprioContextMode
 from open_wam.models.common import RolloutCursor
 from open_wam.models.policy_variants import PolicyInferContext, PolicyInferState
-from open_wam.models.policy_variants.mot.contracts import MoTRuntimeState
+from open_wam.models.policy_variants.dual_expert.contracts import DualExpertRuntimeState
 from open_wam.models.policy_variants.parallel_stream.runtime_semantics import (
     resolve_parallel_current_block_coupling,
 )
@@ -39,14 +39,14 @@ def should_drop_task_text_for_fdm_mode(mode: FdmAblationMode) -> bool:
 
 
 class JointDenoisingFdmRollout:
-    """Offline chunk rollout wrapper for maintained M1.2 joint denoising."""
+    """Offline chunk rollout wrapper for parallel-stream joint denoising."""
 
     def __init__(self, runner: Any) -> None:
         self.runner = runner
         coupling = resolve_parallel_current_block_coupling(runner.policy_variant.config)
         if coupling != CurrentBlockCoupling.JOINT:
             raise ValueError(
-                "JointDenoisingFdmRollout requires maintained M1.2 joint denoising, "
+                "JointDenoisingFdmRollout requires parallel-stream joint denoising, "
                 f"got current_block_coupling={coupling.value!r}."
             )
 
@@ -310,20 +310,26 @@ class JointDenoisingFdmRollout:
         )
 
 
-class MotGeneralistDenoisingFdmRollout:
-    """Offline chunk rollout wrapper for M5 generalist joint denoising."""
+class DualExpertGeneralistDenoisingFdmRollout:
+    """Offline chunk rollout wrapper for dual-expert generalist joint denoising."""
 
     def __init__(self, runner: Any) -> None:
         self.runner = runner
         policy_variant = runner.pipeline.policy_variant
-        if str(getattr(policy_variant.config, "name", "")) != "mot":
-            raise TypeError("MotGeneralistDenoisingFdmRollout requires an M5/MoT policy variant.")
-        if getattr(policy_variant.config, "mot_generalist_training_mode_probs", None) is None:
-            raise ValueError("MotGeneralistDenoisingFdmRollout requires an M5 GJD config with mode probabilities.")
+        if str(getattr(policy_variant.config, "name", "")) != "dual_expert":
+            raise TypeError(
+                "DualExpertGeneralistDenoisingFdmRollout requires a dual-expert "
+                "policy variant."
+            )
+        if policy_variant.config.generalist_denoising_mode_probs is None:
+            raise ValueError(
+                "DualExpertGeneralistDenoisingFdmRollout requires a dual-expert "
+                "GJD config with mode probabilities."
+            )
         coupling = CurrentBlockCoupling(getattr(policy_variant.config, "current_block_coupling", None))
         if coupling != CurrentBlockCoupling.JOINT:
             raise ValueError(
-                "MotGeneralistDenoisingFdmRollout requires packed joint coupling so FDM/IDM "
+                "DualExpertGeneralistDenoisingFdmRollout requires packed joint coupling so FDM/IDM "
                 f"matches GJD training semantics, got current_block_coupling={coupling.value!r}."
             )
 
@@ -353,12 +359,12 @@ class MotGeneralistDenoisingFdmRollout:
         del action_space
         if video_context.ndim != 5:
             raise ValueError(
-                "M5 GJD warmup video_context must have shape [B, C, T, H, W], "
+                "Dual-expert GJD warmup video_context must have shape [B, C, T, H, W], "
                 f"got {tuple(video_context.shape)}."
             )
         if action_context.ndim != 3:
             raise ValueError(
-                "M5 GJD warmup action_context must have shape [B, T, D], "
+                "Dual-expert GJD warmup action_context must have shape [B, T, D], "
                 f"got {tuple(action_context.shape)}."
             )
         text_context, negative_text_context = self._resolve_warmup_text_context(
@@ -378,7 +384,7 @@ class MotGeneralistDenoisingFdmRollout:
         expected_action_tokens = context_frames * action_tokens_per_frame
         if int(action_context.shape[1]) != expected_action_tokens:
             raise ValueError(
-                "M5 GJD warmup action history must align with video context frames, "
+                "Dual-expert GJD warmup action history must align with video context frames, "
                 f"got action_tokens={action_context.shape[1]}, context_frames={context_frames}, "
                 f"action_per_frame={action_tokens_per_frame}."
             )
@@ -390,22 +396,26 @@ class MotGeneralistDenoisingFdmRollout:
         if hidden_proprio_history is not None:
             if hidden_proprio_history.ndim != 3:
                 raise ValueError(
-                    "M5 GJD warmup hidden_proprio_history must have shape [B, T, state_dim], "
+                    "Dual-expert GJD warmup hidden_proprio_history must have shape "
+                    "[B, T, state_dim], "
                     f"got {tuple(hidden_proprio_history.shape)}."
                 )
             if int(hidden_proprio_history.shape[0]) != int(video_context.shape[0]):
                 raise ValueError(
-                    "M5 GJD warmup hidden proprio history batch size must match video context, "
+                    "Dual-expert GJD warmup hidden proprio history batch size must match "
+                    "video context, "
                     f"got hidden={tuple(hidden_proprio_history.shape)}, video={tuple(video_context.shape)}."
                 )
             if int(hidden_proprio_history.shape[1]) != context_frames:
                 raise ValueError(
-                    "M5 GJD warmup hidden proprio history must align with video context frames, "
+                    "Dual-expert GJD warmup hidden proprio history must align with "
+                    "video context frames, "
                     f"got hidden_frames={hidden_proprio_history.shape[1]}, context_frames={context_frames}."
                 )
         elif uses_hidden_proprio and context_frames > 0:
             raise ValueError(
-                "M5 GJD offline rollout with proprio_context_mode=per_chunk_additive requires "
+                "Dual-expert GJD offline rollout with "
+                "proprio_context_mode=per_chunk_additive requires "
                 "hidden_proprio_history aligned to the warmup video context."
             )
         current_start_frame = int(context_start_frame) + context_frames
@@ -416,7 +426,7 @@ class MotGeneralistDenoisingFdmRollout:
                 block_index=0,
                 chunk_size=self.frame_chunk_size,
             ),
-            variant_state=MoTRuntimeState(
+            variant_state=DualExpertRuntimeState(
                 text_context=text_context,
                 past_clean_latents=video_context.detach().clone(),
                 past_clean_actions=action_context.detach().clone(),
@@ -454,27 +464,27 @@ class MotGeneralistDenoisingFdmRollout:
                 torch.cuda.manual_seed_all(int(seed))
         extra: dict[str, Any] = {
             "action_conditioning_mode": mode.value,
-            "mot_generalist_rollout_mode": mode.value,
+            "dual_expert_generalist_rollout_mode": mode.value,
         }
         if mode == FdmAblationMode.VIDEO_CONDITIONED_ACTION:
             if video_condition_latents is None:
                 raise ValueError("Mode 'video_conditioned_action' requires a ground-truth video latent chunk.")
             if raw_action_chunk is None and not allow_generated_action_commit:
                 raise ValueError("Mode 'video_conditioned_action' requires clean action history to commit.")
-            extra["mot_video_condition_latents"] = video_condition_latents
+            extra["dual_expert_video_condition_latents"] = video_condition_latents
             if raw_action_chunk is not None:
-                extra["mot_commit_action_latents"] = raw_action_chunk
+                extra["dual_expert_commit_action_latents"] = raw_action_chunk
             video_latents = video_condition_latents
         elif mode == FdmAblationMode.FORCED_ACTION_JOINT_FDM:
             if raw_action_chunk is None:
                 raise ValueError("Mode 'forced_action_joint_fdm' requires a ground-truth raw action chunk.")
-            extra["mot_forced_action_latents"] = raw_action_chunk
-            extra["mot_commit_action_latents"] = raw_action_chunk
+            extra["dual_expert_forced_action_latents"] = raw_action_chunk
+            extra["dual_expert_commit_action_latents"] = raw_action_chunk
             video_latents = self._history_video_template(session, video_condition_latents)
         elif mode == FdmAblationMode.CLEAN_ACTION_FEEDBACK:
             if raw_action_chunk is None:
                 raise ValueError("Mode 'clean_action_feedback' requires a ground-truth raw action chunk.")
-            extra["mot_commit_action_latents"] = raw_action_chunk
+            extra["dual_expert_commit_action_latents"] = raw_action_chunk
             video_latents = self._history_video_template(session, video_condition_latents)
         elif mode == FdmAblationMode.VANILLA_JOINT_ROLLOUT:
             video_latents = self._history_video_template(session, video_condition_latents)
@@ -495,7 +505,9 @@ class MotGeneralistDenoisingFdmRollout:
         policy_aux = step.infer_output.policy_output.aux
         predicted_latents = decoder_aux.get("predicted_latents", policy_aux.get("predicted_latents"))
         if not isinstance(predicted_latents, torch.Tensor):
-            raise RuntimeError("M5 GJD FDM rollout did not return predicted video latents.")
+            raise RuntimeError(
+                "Dual-expert GJD FDM rollout did not return predicted video latents."
+            )
         action_pred = step.infer_output.decoder_output.action_pred
         return FdmChunkOutput(
             session=step.session,
@@ -507,13 +519,15 @@ class MotGeneralistDenoisingFdmRollout:
 
     def _history_video_template(self, session: Any, fallback: torch.Tensor | None) -> torch.Tensor:
         state = session.policy_state
-        runtime_state = state.variant_state if isinstance(state.variant_state, MoTRuntimeState) else None
+        runtime_state = state.variant_state if isinstance(state.variant_state, DualExpertRuntimeState) else None
         past = None if runtime_state is None else runtime_state.past_clean_latents
         if isinstance(past, torch.Tensor) and past.shape[2] > 0:
             return past[:, :, -min(self.frame_chunk_size, int(past.shape[2])) :].contiguous()
         if fallback is not None:
             return fallback
-        raise ValueError("M5 GJD rollout requires warm video history before infer_chunk.")
+        raise ValueError(
+            "Dual-expert GJD rollout requires warm video history before infer_chunk."
+        )
 
     def _resolve_warmup_text_context(
         self,

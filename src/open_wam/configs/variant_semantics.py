@@ -6,14 +6,10 @@ from dataclasses import dataclass
 from typing import TypeVar
 
 from open_wam.contracts.sample_metadata import (
-    GENERALIST_TRAINING_BUCKET_METADATA_KEY
-    as GENERALIST_TRAINING_BUCKET_METADATA_KEY,
-    GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY
-    as GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY,
-    GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY
-    as GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY,
-    GENERALIST_TRAINING_SOURCE_METADATA_KEY
-    as GENERALIST_TRAINING_SOURCE_METADATA_KEY,
+    GENERALIST_TRAINING_BUCKET_METADATA_KEY,
+    GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY,
+    GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY,
+    GENERALIST_TRAINING_SOURCE_METADATA_KEY,
 )
 
 from .enums import StrEnum
@@ -54,11 +50,11 @@ def default_video_action_conditioning_mode_probs(
     *,
     generalist: bool,
 ) -> dict[ModeEnumT, float]:
-    """Return M1/M5 defaults for the three video/action conditioning modes.
+    """Return defaults for the three video/action conditioning modes.
 
     `enum_cls` must expose `joint`, `action_conditioned_video`, and
     `video_conditioned_action`. This helper is intentionally for the mirrored
-    M1/M5 generalist semantics, not arbitrary enum-backed probabilities.
+    shared generalist semantics, not arbitrary enum-backed probabilities.
     """
 
     source = (
@@ -74,7 +70,7 @@ def default_conditioning_mode_probs(
     *,
     generalist: bool,
 ) -> dict[ModeEnumT, float]:
-    """Compatibility alias for M1/M5 video/action conditioning defaults."""
+    """Compatibility alias for video/action conditioning defaults."""
 
     return default_video_action_conditioning_mode_probs(enum_cls, generalist=generalist)
 
@@ -88,8 +84,8 @@ def coerce_probability_map(
     """Coerce and normalize an enum-backed probability map.
 
     Missing enum values default to 0. The returned probabilities always sum to
-    one. Error messages intentionally include `field_name` so legacy M1/M5
-    config tests keep the same public failure surface.
+    one. Error messages include `field_name` so config failures identify the
+    owning contract.
     """
 
     if not isinstance(raw_value, dict):

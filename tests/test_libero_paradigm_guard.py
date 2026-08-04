@@ -5,15 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from open_wam.configs import ProprioContextMode
-from open_wam.configs import load_experiment_config
+from open_wam.configs import ProprioContextMode, load_experiment_config
 from open_wam.utils.libero_paradigm import (
     collect_current_libero_policy_paradigm_issues,
+    removed_libero_policy_config_reason,
     require_current_libero_policy_paradigm,
     require_current_libero_script,
-    removed_libero_policy_config_reason,
 )
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -63,8 +61,8 @@ def test_libero_paradigm_guard_accepts_strict_m1_config_with_per_chunk_proprio()
 def test_libero_paradigm_guard_accepts_fullseg_w64_gjd_configs() -> None:
     for config_path in (
         REPO_ROOT
-        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising.yaml",
-        REPO_ROOT / "configs/experiments/mot_libero_generalist_joint_denoising.yaml",
+        / "configs/experiments/parallel_stream_libero_generalist_joint_denoising.yaml",
+        REPO_ROOT / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml",
     ):
         config = load_experiment_config(config_path)
 
@@ -74,7 +72,7 @@ def test_libero_paradigm_guard_accepts_fullseg_w64_gjd_configs() -> None:
 def test_libero_paradigm_guard_flags_fixed128_gjd_config() -> None:
     config_path = (
         REPO_ROOT
-        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising.yaml"
+        / "configs/experiments/parallel_stream_libero_generalist_joint_denoising.yaml"
     )
     config = load_experiment_config(config_path)
     config = replace(
@@ -123,7 +121,7 @@ def test_libero_paradigm_guard_prefers_resolved_config_over_legacy_wrapper_path(
 
 def test_libero_paradigm_guard_rejects_known_legacy_m5_config() -> None:
     config_path = REPO_ROOT / "configs/experiments/deprecated/mot_libero_latent_local_joint.yaml"
-    current_path = REPO_ROOT / "configs/experiments/mot_libero_joint.yaml"
+    current_path = REPO_ROOT / "configs/experiments/dual_expert_libero_joint.yaml"
     config = load_experiment_config(current_path)
     config = replace(
         config,
@@ -136,7 +134,7 @@ def test_libero_paradigm_guard_rejects_known_legacy_m5_config() -> None:
         ),
     )
 
-    with pytest.raises(ValueError, match="Refuses deprecated LIBERO M1/M5 config|refuses deprecated LIBERO M1/M5 config"):
+    with pytest.raises(ValueError, match="refuses deprecated LIBERO policy config"):
         require_current_libero_policy_paradigm(
             config,
             config_path=config_path,
@@ -144,7 +142,7 @@ def test_libero_paradigm_guard_rejects_known_legacy_m5_config() -> None:
         )
 
     assert removed_libero_policy_config_reason(config_path) == (
-        "legacy M5 joint config without strict one-frame fixed-128 rollout parity"
+        "legacy dual-expert joint config without strict one-frame fixed-128 rollout parity"
     )
 
 
@@ -173,4 +171,4 @@ def test_libero_script_guard_never_allows_removed_entrypoints(script_name: str) 
 
 def test_libero_script_guard_allows_current_entrypoints_and_explicit_opt_in() -> None:
     require_current_libero_script("scripts/run_libero_realtime_sandbox.py")
-    require_current_libero_script("scripts/run_libero_mot_visualization.py")
+    require_current_libero_script("scripts/run_libero_dual_expert_visualization.py")

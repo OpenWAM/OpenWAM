@@ -53,7 +53,7 @@ def uses_zero_based_generation_start(config: ExperimentConfig) -> bool:
     if policy_variant is None:
         return False
     policy_name = getattr(policy_variant, "name", None)
-    if policy_name == PolicyVariantName.MOT:
+    if policy_name == PolicyVariantName.DUAL_EXPERT:
         return True
     train_source = getattr(policy_variant, "train_video_condition_source", None)
     return train_source == VideoConditionSource.GENERATED_FUTURE
@@ -99,7 +99,7 @@ def build_sequence_rollout_infer_extra(
         )
         if sample_seed is not None:
             extra["video_condition_sample_seed"] = int(sample_seed)
-    if policy_name == PolicyVariantName.MOT and runtime_device is not None:
+    if policy_name == PolicyVariantName.DUAL_EXPERT and runtime_device is not None:
         extra["action_device"] = str(runtime_device)
     return extra
 

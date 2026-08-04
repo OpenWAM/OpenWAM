@@ -5,8 +5,8 @@ import torch
 
 from open_wam.configs import (
     CurrentBlockCoupling,
-    JointDenoiseTrainingMode,
-    ParallelHistoryStreamVisibility,
+    GeneralistDenoisingMode,
+    HistoryStreamVisibility,
     ParallelRuntimeMode,
     ParallelStreamPolicyConfig,
     ParallelStreamVariantProfile,
@@ -61,32 +61,32 @@ def test_reference_runtime_conditional_rollout_names_alias_canonical_contract() 
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
-        ("joint", JointDenoiseTrainingMode.JOINT),
-        ("vanilla_joint_rollout", JointDenoiseTrainingMode.JOINT),
-        ("clean_action_feedback", JointDenoiseTrainingMode.JOINT),
-        ("fdm", JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO),
+        ("joint", GeneralistDenoisingMode.JOINT),
+        ("vanilla_joint_rollout", GeneralistDenoisingMode.JOINT),
+        ("clean_action_feedback", GeneralistDenoisingMode.JOINT),
+        ("fdm", GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO),
         (
             "forced_action_joint_fdm",
-            JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
         ),
-        ("idm", JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION),
+        ("idm", GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION),
         (
-            JointDenoiseTrainingMode.JOINT,
-            JointDenoiseTrainingMode.JOINT,
-        ),
-        (
-            JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
-            JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+            GeneralistDenoisingMode.JOINT,
+            GeneralistDenoisingMode.JOINT,
         ),
         (
-            JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
-            JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
+            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
+            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
+        ),
+        (
+            GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
+            GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
         ),
     ],
 )
 def test_resolve_action_conditioning_mode_supports_runtime_labels(
-    value: JointDenoiseTrainingMode | str,
-    expected: JointDenoiseTrainingMode,
+    value: GeneralistDenoisingMode | str,
+    expected: GeneralistDenoisingMode,
 ) -> None:
     assert resolve_action_conditioning_mode(value) == expected
 
@@ -102,15 +102,15 @@ def test_resolve_action_conditioning_mode_rejects_unknown_label() -> None:
 @pytest.mark.parametrize(
     ("mode", "is_conditional", "window_size", "chunk_size"),
     [
-        (JointDenoiseTrainingMode.JOINT, False, 30, 4),
+        (GeneralistDenoisingMode.JOINT, False, 30, 4),
         (
-            JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
             True,
             3,
             1,
         ),
         (
-            JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
+            GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
             True,
             3,
             1,
@@ -118,7 +118,7 @@ def test_resolve_action_conditioning_mode_rejects_unknown_label() -> None:
     ],
 )
 def test_conditional_rollout_geometry_matches_shared_gjd_contract(
-    mode: JointDenoiseTrainingMode,
+    mode: GeneralistDenoisingMode,
     is_conditional: bool,
     window_size: int,
     chunk_size: int,
@@ -143,22 +143,22 @@ def test_conditional_rollout_geometry_matches_shared_gjd_contract(
 @pytest.mark.parametrize(
     "mode",
     [
-        JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
-        JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
+        GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
+        GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
     ],
 )
 def test_conditional_modes_force_video_only_history(
-    mode: JointDenoiseTrainingMode,
+    mode: GeneralistDenoisingMode,
 ) -> None:
     config = _policy_config(
         history_stream_visibility=(
-            ParallelHistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
+            HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
         )
     )
 
     assert (
         generalist_conditioning_history_stream_visibility(mode, config)
-        == ParallelHistoryStreamVisibility.VIDEO_ONLY
+        == HistoryStreamVisibility.VIDEO_ONLY
     )
     assert (
         generalist_conditioning_prefix_visibility_mode(mode, config)
@@ -169,20 +169,20 @@ def test_conditional_modes_force_video_only_history(
 def test_joint_mode_preserves_policy_history_contract() -> None:
     config = _policy_config(
         history_stream_visibility=(
-            ParallelHistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
+            HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
         )
     )
 
     assert (
         generalist_conditioning_history_stream_visibility(
-            JointDenoiseTrainingMode.JOINT,
+            GeneralistDenoisingMode.JOINT,
             config,
         )
-        == ParallelHistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
+        == HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
     )
     assert (
         generalist_conditioning_prefix_visibility_mode(
-            JointDenoiseTrainingMode.JOINT,
+            GeneralistDenoisingMode.JOINT,
             config,
         )
         == "preserve_video_pretrain_history"
@@ -199,7 +199,7 @@ def test_joint_warmup_history_is_returned_by_identity() -> None:
             action_latents=action_latents,
             frame_start=7,
             frame_chunk_size=2,
-            mode=JointDenoiseTrainingMode.JOINT,
+            mode=GeneralistDenoisingMode.JOINT,
         )
     )
 
@@ -219,7 +219,7 @@ def test_conditional_warmup_keeps_latest_local_chunk() -> None:
             action_latents=action_latents,
             frame_start=7,
             frame_chunk_size=2,
-            mode=JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+            mode=GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
         )
     )
 
@@ -251,7 +251,7 @@ def test_conditional_warmup_handles_empty_history() -> None:
             action_latents=action_latents,
             frame_start=7,
             frame_chunk_size=0,
-            mode=JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
+            mode=GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
         )
     )
 

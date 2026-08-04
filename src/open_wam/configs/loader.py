@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from open_wam.contracts import VideoFrameMapping
+
 from . import enums as config_enums
 from .action_decoder import parse_action_decoder_config
 from .backbone import (
@@ -15,28 +17,29 @@ from .data_mixed_video import MixedVideoDataConfig
 from .data_parsing import parse_data_config
 from .experiment import ExperimentConfig
 from .inference import parse_inference_config
+from .local_paths import read_yaml_with_local_paths
+from .policy_compatibility import normalize_video_action_config_fields
 from .policy_contracts import CausalVideoPredictionPolicyConfig, PolicyVariantConfig
 from .policy_parsing import parse_policy_variant_config
 from .sequence_contracts import (
-    apply_parallel_sequence_contract,
-    expand_parallel_sequence_contract as _apply_parallel_sequence_contract,
+    apply_video_action_sequence_contract,
+    expand_video_action_sequence_contract,
     validate_experiment_config_runtime_contract,
-    validate_parallel_sequence_contract_override_keys,
     validate_policy_data_sequence_contract,
+    validate_video_action_sequence_contract_override_keys,
 )
 from .trainer import TrainerConfig, parse_trainer_config
 from .training import parse_training_config
 from .validation import parse_validation_config
 
-from open_wam.contracts import VideoFrameMapping
-
-from .local_paths import read_yaml_with_local_paths
-
-
 # These names were historically importable from this module.
+apply_parallel_sequence_contract = apply_video_action_sequence_contract
+validate_parallel_sequence_contract_override_keys = (
+    validate_video_action_sequence_contract_override_keys
+)
+
 _SEQUENCE_CONTRACT_COMPATIBILITY_EXPORTS = (
     validate_experiment_config_runtime_contract,
-    validate_parallel_sequence_contract_override_keys,
 )
 
 
@@ -137,7 +140,8 @@ def load_experiment_config(path: str | Path, *, checkpoint_runtime_compat: bool 
     raw = _read_yaml(path)
     if checkpoint_runtime_compat:
         raw = _apply_checkpoint_runtime_compat(raw)
-    raw = _apply_parallel_sequence_contract(raw)
+    raw = normalize_video_action_config_fields(raw)
+    raw = expand_video_action_sequence_contract(raw)
     data_config = parse_data_config(raw.get("data", {}))
     backbone_config = parse_shared_video_transformer_config(raw.get("backbone", {}))
 
@@ -177,7 +181,7 @@ def load_experiment_config(path: str | Path, *, checkpoint_runtime_compat: bool 
         trainer_config=trainer_config,
     )
 
-    return apply_parallel_sequence_contract(
+    return apply_video_action_sequence_contract(
         ExperimentConfig(
             name=raw.get("name", "unnamed_experiment"),
             data=data_config,

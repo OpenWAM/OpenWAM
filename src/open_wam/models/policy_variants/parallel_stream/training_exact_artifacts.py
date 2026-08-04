@@ -10,10 +10,10 @@ from open_wam.configs.backbone import (
     resolve_stage_attention_mode,
 )
 from open_wam.configs.enums import (
+    ContextConditionLatentSource,
     CurrentBlockCoupling,
-    JointDenoiseTrainingMode,
+    GeneralistDenoisingMode,
     JointTimestepCoupling,
-    ParallelContextConditionLatentSource,
     ParallelStreamVariantProfile,
 )
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
@@ -29,17 +29,27 @@ from .latent_conditioning import (
 )
 from .runtime_semantics import (
     attention_profile_name_for_current_block_coupling as _attention_profile_name_for_current_block_coupling,
+)
+from .runtime_semantics import (
     resolve_parallel_context_condition_latent_source,
     resolve_parallel_current_block_coupling,
     resolve_parallel_history_stream_visibility,
     resolve_parallel_joint_timestep_coupling,
 )
-from .training_artifact_contracts import LingbotParallelTrainArtifacts
+from .training_artifact_contracts import ParallelTrainArtifacts
 from .training_noise import (
     build_parallel_flow_noise_artifacts as _add_noise,
+)
+from .training_noise import (
     sample_coupled_parallel_timestep_values as _sample_coupled_timestep_values,
+)
+from .training_noise import (
     sample_index_matched_timestep_values as _sample_index_matched_timestep_values,
+)
+from .training_noise import (
     sample_shared_video_schedule_timestep_values as _sample_shared_video_schedule_timestep_values,
+)
+from .training_noise import (
     share_video_scheduler_grid_with_action_scheduler as _share_video_scheduler_grid_with_action_scheduler,
 )
 
@@ -67,14 +77,14 @@ def prepare_parallel_exact_train_artifacts(
     singleton_chunk_frame: int | None = None,
     conditional_history_policy: str | None = None,
     force_clean_video_condition: bool = False,
-) -> LingbotParallelTrainArtifacts:
+) -> ParallelTrainArtifacts:
     batch_size, _, num_frames, _, _ = video_latents.shape
     context_condition_source = resolve_parallel_context_condition_latent_source(
         policy_config
     )
     if (
         context_condition_source
-        == ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+        == ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
     ):
         if condition_latents is None:
             raise ValueError(
@@ -329,7 +339,7 @@ def prepare_parallel_exact_train_artifacts(
             resolve_parallel_current_block_coupling(policy_config)
         )
 
-    return LingbotParallelTrainArtifacts(
+    return ParallelTrainArtifacts(
         input_dict={
             "latent_dict": latent_dict,
             "action_dict": action_dict,
@@ -393,10 +403,10 @@ def prepare_parallel_action_conditioned_train_artifacts(
     singleton_chunk_frame: int | None = None,
     conditional_history_policy: str | None = None,
     force_clean_video_condition: bool = False,
-    generalist_training_mode_override: JointDenoiseTrainingMode | str | None = None,
+    generalist_training_mode_override: GeneralistDenoisingMode | str | None = None,
     generalist_drop_text_conditioning: bool | None = None,
     generalist_training_source: str | None = None,
-) -> LingbotParallelTrainArtifacts:
+) -> ParallelTrainArtifacts:
     coupling = resolve_parallel_current_block_coupling(policy_config)
     if (
         coupling

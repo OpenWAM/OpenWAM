@@ -15,7 +15,11 @@ import numpy as np
 import torch
 from einops import rearrange
 
-from open_wam.configs import ActionTargetRepresentation, ExperimentConfig, ParallelRuntimeMode
+from open_wam.configs import (
+    ActionTargetRepresentation,
+    ExperimentConfig,
+    ParallelRuntimeMode,
+)
 from open_wam.configs.enums import DeadlineMissPolicy
 from open_wam.data.action_pose import PoseSequence
 from open_wam.evals import realtime_history
@@ -25,7 +29,6 @@ from open_wam.integrations.realtime_contracts import (
     PlannedControlStep,
     PlannedFrameAction,
 )
-from open_wam.integrations.simulator_configs import LiberoControlConfig
 from open_wam.integrations.realtime_control import (
     make_planned_frame_actions,
     planned_frame_actions_to_control_steps,
@@ -35,13 +38,13 @@ from open_wam.integrations.realtime_plan_queue import (
     future_control_steps,
     merge_future_control_steps,
 )
+from open_wam.integrations.simulator_configs import LiberoControlConfig
 from open_wam.models.common.rollout_startup import (
     require_strict_startup_generation_frame,
 )
 from open_wam.models.policy_variants import PolicyInferState, RolloutCursor
 from open_wam.models.visual_tower import VisualRuntimeStateSnapshot
 from open_wam.pipelines import VariantRolloutSession
-
 
 __all__ = [
     "FramePlannerJobResult",
@@ -99,8 +102,8 @@ class SequenceReplanJobOptions:
     reset_observation_conditioned_session: bool = True
     use_observation_update: bool = True
     runtime_cache_snapshot: VisualRuntimeStateSnapshot | None = None
-    mot_condition_frame_start: int | None = None
-    mot_action_cache_rewind_frame_start: int | None = None
+    dual_expert_condition_frame_start: int | None = None
+    dual_expert_action_cache_rewind_frame_start: int | None = None
     preserve_rng_state: bool = False
 
 
@@ -368,7 +371,7 @@ def apply_frame_planner_result(
     result.trace["planned_action_indices"] = [
         int(step.absolute_action_index) for step in planned_steps
     ]
-    result.trace["future_planned_actions"] = int(len(future_planned_steps))
+    result.trace["future_planned_actions"] = len(future_planned_steps)
     result.trace["stale_planned_actions"] = int(
         len(planned_steps) - len(future_planned_steps)
     )
@@ -460,7 +463,7 @@ def annotate_sequence_planner_acceptance(
         result.planned_steps,
         next_action_to_execute=next_action_to_execute,
     )
-    result.trace["future_planned_actions"] = int(len(future_steps))
+    result.trace["future_planned_actions"] = len(future_steps)
     result.trace["stale_planned_actions"] = int(
         len(result.planned_steps) - len(future_steps)
     )

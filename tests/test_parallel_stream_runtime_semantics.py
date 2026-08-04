@@ -3,20 +3,18 @@ from __future__ import annotations
 import pytest
 
 from open_wam.configs import (
+    ContextConditionLatentSource,
     CurrentBlockCoupling,
+    HistoryStreamVisibility,
     JointTimestepCoupling,
-    ParallelContextConditionLatentSource,
-    ParallelHistoryStreamVisibility,
     ParallelRuntimeMode,
-    ParallelSequenceContract,
     ParallelStreamPolicyConfig,
+    VideoActionSequenceContract,
 )
-from scripts.research_dynamics import rollout as dynamics_rollout
 from open_wam.models.common import (
     chunked_temporal_exact_profile_name_for_coupling,
 )
-from open_wam.models.policy_variants.parallel_stream import reference_runtime
-from open_wam.models.policy_variants.parallel_stream import variant
+from open_wam.models.policy_variants.parallel_stream import reference_runtime, variant
 from open_wam.models.policy_variants.parallel_stream.runtime_semantics import (
     attention_profile_name_for_current_block_coupling,
     prefix_visibility_mode_for_policy,
@@ -26,6 +24,7 @@ from open_wam.models.policy_variants.parallel_stream.runtime_semantics import (
     resolve_parallel_joint_timestep_coupling,
     uses_legacy_prefix_per_chunk_proprio_contract,
 )
+from scripts.research_dynamics import rollout as dynamics_rollout
 
 
 def _policy_config(**overrides: object) -> ParallelStreamPolicyConfig:
@@ -161,10 +160,10 @@ def test_joint_like_programs_preserve_configured_timestep_coupling(
 
 @pytest.mark.parametrize(
     "visibility",
-    list(ParallelHistoryStreamVisibility),
+    list(HistoryStreamVisibility),
 )
 def test_explicit_history_stream_visibility_is_preserved(
-    visibility: ParallelHistoryStreamVisibility,
+    visibility: HistoryStreamVisibility,
 ) -> None:
     assert (
         resolve_parallel_history_stream_visibility(
@@ -176,13 +175,13 @@ def test_explicit_history_stream_visibility_is_preserved(
 
 def test_legacy_preserve_video_history_flag_maps_full_visibility() -> None:
     config = _policy_config(
-        history_stream_visibility=ParallelHistoryStreamVisibility.FULL,
+        history_stream_visibility=HistoryStreamVisibility.FULL,
         preserve_video_pretrain_history=True,
     )
 
     assert (
         resolve_parallel_history_stream_visibility(config)
-        == ParallelHistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
+        == HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
     )
     assert (
         prefix_visibility_mode_for_policy(config)
@@ -193,16 +192,16 @@ def test_legacy_preserve_video_history_flag_maps_full_visibility() -> None:
 @pytest.mark.parametrize(
     ("visibility", "expected"),
     [
-        (ParallelHistoryStreamVisibility.FULL, "full_history"),
-        (ParallelHistoryStreamVisibility.VIDEO_ONLY, "video_history_only"),
+        (HistoryStreamVisibility.FULL, "full_history"),
+        (HistoryStreamVisibility.VIDEO_ONLY, "video_history_only"),
         (
-            ParallelHistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY,
+            HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY,
             "preserve_video_pretrain_history",
         ),
     ],
 )
 def test_history_visibility_maps_to_exact_cache_contract(
-    visibility: ParallelHistoryStreamVisibility,
+    visibility: HistoryStreamVisibility,
     expected: str,
 ) -> None:
     assert (
@@ -215,10 +214,10 @@ def test_history_visibility_maps_to_exact_cache_contract(
 
 @pytest.mark.parametrize(
     "source",
-    list(ParallelContextConditionLatentSource),
+    list(ContextConditionLatentSource),
 )
 def test_context_condition_latent_source_is_preserved(
-    source: ParallelContextConditionLatentSource,
+    source: ContextConditionLatentSource,
 ) -> None:
     assert (
         resolve_parallel_context_condition_latent_source(
@@ -232,8 +231,8 @@ def test_legacy_prefix_per_chunk_proprio_contract_is_explicit() -> None:
     assert not uses_legacy_prefix_per_chunk_proprio_contract(_policy_config())
     assert uses_legacy_prefix_per_chunk_proprio_contract(
         _policy_config(
-            parallel_sequence_contract=(
-                ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
+            sequence_contract=(
+                VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
             )
         )
     )

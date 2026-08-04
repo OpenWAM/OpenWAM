@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,56 +15,80 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from open_wam.configs import (
-    InferenceConfig,
+    ContextConditionLatentSource,
     CurrentBlockCoupling,
-    JointDenoiseTrainingMode,
+    GeneralistDenoisingMode,
+    HistoryStreamVisibility,
+    InferenceConfig,
     JointTimestepCoupling,
-    ParallelContextConditionLatentSource,
     ParallelExactCacheWriteMode,
-    ParallelHistoryStreamVisibility,
     ParallelRuntimeMode,
-    ParallelSequenceContract,
     ParallelStreamPolicyConfig,
     ParallelStreamVariantProfile,
     ProprioContextMode,
     TrainingConfig,
+    VideoActionSequenceContract,
 )
-from open_wam.models.action_decoders.lingbot_parallel_decoder import LingbotParallelActionDecoder
+from open_wam.models.action_decoders.parallel_stream_decoder import (
+    ParallelStreamActionDecoder,
+)
 from open_wam.models.common import (
     SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS,
     SLOT_POOL_DEFER_EVICTION_UNTIL_AFTER_WRITE_ATTENTION,
     SlotPoolLayerState,
     build_chunked_temporal_exact_attention_profile,
 )
-from open_wam.models.common.flow_matching import FlowMatchScheduler as SharedFlowMatchScheduler
-from open_wam.models.policy_variants.contracts import PolicyTrainBatch, PolicyTrainOutput
+from open_wam.models.common.flow_matching import (
+    FlowMatchScheduler as SharedFlowMatchScheduler,
+)
+from open_wam.models.policy_variants.contracts import (
+    DecoderArtifactEnvelope,
+    PolicyTrainBatch,
+    PolicyTrainOutput,
+)
+from open_wam.models.policy_variants.parallel_stream import (
+    anchored_action_rollout as anchored_action_rollout_module,
+)
+from open_wam.models.policy_variants.parallel_stream import (
+    cache_execution as cache_execution_module,
+)
+from open_wam.models.policy_variants.parallel_stream import (
+    cache_lifecycle as cache_lifecycle_module,
+)
+from open_wam.models.policy_variants.parallel_stream import (
+    forward_execution as forward_execution_module,
+)
+from open_wam.models.policy_variants.parallel_stream import (
+    packed_rollout as packed_rollout_module,
+)
+from open_wam.models.policy_variants.parallel_stream import (
+    reference_runtime as reference_runtime_module,
+)
+from open_wam.models.policy_variants.parallel_stream import (
+    staged_rollout as staged_rollout_module,
+)
+from open_wam.models.policy_variants.parallel_stream.cache_lifecycle import (
+    run_parallel_exact_cache_warmup,
+)
+from open_wam.models.policy_variants.parallel_stream.decoder_artifacts import (
+    PARALLEL_STREAM_DECODER_ARTIFACT_CONTRACT,
+    ParallelDecoderTrainArtifacts,
+)
+from open_wam.models.policy_variants.parallel_stream.inference_conditioning import (
+    append_generalist_mode_text_context,
+)
 from open_wam.models.policy_variants.parallel_stream.reference_runtime import (
     ExactCacheInterfaceSpec,
     FlowMatchScheduler,
     _write_exact_cache_chunk,
     initialize_reference_cache,
     repeat_input_for_cfg,
-    run_parallel_current_frame_action_chunk_inference_rollout,
     run_parallel_action_conditioned_action_override_inference_rollout,
     run_parallel_action_conditioned_inference_rollout,
+    run_parallel_current_frame_action_chunk_inference_rollout,
     run_parallel_exact_inference_rollout,
     run_parallel_fastwam_first_frame_train,
     run_reference_single_stream_forward,
-)
-from open_wam.models.policy_variants.parallel_stream import (
-    anchored_action_rollout as anchored_action_rollout_module,
-)
-from open_wam.models.policy_variants.parallel_stream import cache_execution as cache_execution_module
-from open_wam.models.policy_variants.parallel_stream import cache_lifecycle as cache_lifecycle_module
-from open_wam.models.policy_variants.parallel_stream import forward_execution as forward_execution_module
-from open_wam.models.policy_variants.parallel_stream import packed_rollout as packed_rollout_module
-from open_wam.models.policy_variants.parallel_stream import reference_runtime as reference_runtime_module
-from open_wam.models.policy_variants.parallel_stream import staged_rollout as staged_rollout_module
-from open_wam.models.policy_variants.parallel_stream.cache_lifecycle import (
-    run_parallel_exact_cache_warmup,
-)
-from open_wam.models.policy_variants.parallel_stream.inference_conditioning import (
-    append_generalist_mode_text_context,
 )
 from open_wam.models.policy_variants.parallel_stream.training_artifacts import (
     prepare_parallel_action_conditioned_train_artifacts,
@@ -73,16 +97,32 @@ from open_wam.models.policy_variants.parallel_stream.training_artifacts import (
     prepare_parallel_fastwam_first_frame_train_artifacts,
     prepare_parallel_prefix_condition_exact_train_artifacts,
 )
-from open_wam.models.policy_variants.parallel_stream.variant import ParallelStreamPolicyVariant
-from open_wam.models.video_backbone.contracts import ChunkMetadata, ConditioningState, TokenGridMetadata
-from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig, SharedVideoTransformerConfig
-from open_wam.models.visual_tower.contracts import VisualFrontendOutput, VisualStageOutputs
-from open_wam.models.visual_tower import shared_transformer_support as transformer_support_module
+from open_wam.models.policy_variants.parallel_stream.variant import (
+    ParallelStreamPolicyVariant,
+)
+from open_wam.models.video_backbone.config import (
+    LingbotCompatibleVideoBackboneConfig,
+    SharedVideoTransformerConfig,
+)
+from open_wam.models.video_backbone.contracts import (
+    ChunkMetadata,
+    ConditioningState,
+    TokenGridMetadata,
+)
+from open_wam.models.visual_tower import (
+    shared_transformer_support as transformer_support_module,
+)
+from open_wam.models.visual_tower.contracts import (
+    VisualFrontendOutput,
+    VisualStageOutputs,
+)
 from open_wam.models.visual_tower.replica_core import (
     SharedVideoTransformerCore,
     _retained_slot_pool_indices_for_current_write,
 )
-from open_wam.models.visual_tower.sequence_adapters import prepare_exact_dual_stream_train_sequence
+from open_wam.models.visual_tower.sequence_adapters import (
+    prepare_exact_dual_stream_train_sequence,
+)
 from open_wam.models.visual_tower.tower import VisualTower
 
 
@@ -309,7 +349,7 @@ def test_generalist_mode_context_injection_preserves_cfg_negative_branch() -> No
         policy_config=policy_config,
         text_emb=text_emb,
         negative_text_emb=negative_text_emb,
-        mode=JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+        mode=GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
     )
 
     assert appended.shape == (1, 5, 16)
@@ -322,29 +362,29 @@ def test_generalist_mode_context_injection_preserves_cfg_negative_branch() -> No
     torch.testing.assert_close(appended[:, 4:], appended_negative[:, 4:])
     assert (
         reference_runtime_module._generalist_mode_for_action_conditioning("forced_action_joint_fdm")
-        == JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO
+        == GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO
     )
     assert (
         reference_runtime_module._generalist_mode_for_action_conditioning("vanilla_joint_rollout")
-        == JointDenoiseTrainingMode.JOINT
+        == GeneralistDenoisingMode.JOINT
     )
 
 
 @pytest.mark.parametrize(
     ("rollout_mode", "expected_mode"),
     [
-        ("joint", JointDenoiseTrainingMode.JOINT),
-        ("vanilla_joint_rollout", JointDenoiseTrainingMode.JOINT),
-        ("clean_action_feedback", JointDenoiseTrainingMode.JOINT),
-        ("fdm", JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO),
-        ("forced_action_joint_fdm", JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO),
-        ("idm", JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION),
-        ("video_conditioned_action", JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION),
+        ("joint", GeneralistDenoisingMode.JOINT),
+        ("vanilla_joint_rollout", GeneralistDenoisingMode.JOINT),
+        ("clean_action_feedback", GeneralistDenoisingMode.JOINT),
+        ("fdm", GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO),
+        ("forced_action_joint_fdm", GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO),
+        ("idm", GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION),
+        ("video_conditioned_action", GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION),
     ],
 )
 def test_generalist_mode_context_maps_rollout_modes(
     rollout_mode: str,
-    expected_mode: JointDenoiseTrainingMode,
+    expected_mode: GeneralistDenoisingMode,
 ) -> None:
     assert reference_runtime_module._generalist_mode_for_action_conditioning(rollout_mode) == expected_mode
 
@@ -367,7 +407,7 @@ def test_generalist_conditional_local_window_sees_one_previous_video_frame_only(
         device=torch.device("cpu"),
         build_dense_masks=True,
         current_block_coupling=CurrentBlockCoupling.JOINT,
-        history_stream_visibility=ParallelHistoryStreamVisibility.VIDEO_ONLY,
+        history_stream_visibility=HistoryStreamVisibility.VIDEO_ONLY,
     )
     assert profile.self_attention_mask is not None
     mask = profile.self_attention_mask
@@ -402,7 +442,7 @@ def test_generalist_conditional_local_window_sees_one_previous_video_frame_only(
         device=torch.device("cpu"),
         build_dense_masks=True,
         current_block_coupling=CurrentBlockCoupling.JOINT,
-        history_stream_visibility=ParallelHistoryStreamVisibility.VIDEO_ONLY,
+        history_stream_visibility=HistoryStreamVisibility.VIDEO_ONLY,
     )
     assert too_narrow_profile.self_attention_mask is not None
     assert not too_narrow_profile.self_attention_mask[current_action_noisy_frame4, previous_video_clean_frame3]
@@ -419,28 +459,28 @@ def test_generalist_conditional_rollout_modes_use_one_frame_history_window() -> 
 
     assert (
         reference_runtime_module._window_size_for_generalist_conditioning(
-            JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
             fallback_window_size=policy_config.attn_window,
         )
         == 3
     )
     assert (
         reference_runtime_module._window_size_for_generalist_conditioning(
-            JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
+            GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
             fallback_window_size=policy_config.attn_window,
         )
         == 3
     )
     assert (
         reference_runtime_module._chunk_size_for_generalist_conditioning(
-            JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
             fallback_chunk_size=4,
         )
         == 1
     )
     assert (
         reference_runtime_module._window_size_for_generalist_conditioning(
-            JointDenoiseTrainingMode.JOINT,
+            GeneralistDenoisingMode.JOINT,
             fallback_window_size=policy_config.attn_window,
         )
         == 30
@@ -478,7 +518,7 @@ def test_generalist_mode_context_requires_configured_encoder() -> None:
             policy_config=policy_config,
             text_emb=torch.randn(1, 4, 16),
             negative_text_emb=None,
-            mode=JointDenoiseTrainingMode.JOINT,
+            mode=GeneralistDenoisingMode.JOINT,
         )
 
 
@@ -832,7 +872,7 @@ def test_deprecated_parallel_stream_text_token_proprio_adds_state_to_train_artif
     )
 
     prepared = variant.prepare_train_inputs(visual_outputs, batch)
-    artifacts = prepared.variant_inputs["lingbot_train_artifacts"]
+    artifacts = prepared.variant_inputs["parallel_train_artifacts"]
 
     torch.testing.assert_close(
         artifacts.input_dict["proprio_state"],
@@ -901,7 +941,7 @@ def test_fastwam_first_frame_per_chunk_proprio_context_uses_first_window_state()
     )
 
     prepared = variant.prepare_train_inputs(visual_outputs, batch)
-    artifacts = prepared.variant_inputs["lingbot_train_artifacts"]
+    artifacts = prepared.variant_inputs["parallel_train_artifacts"]
 
     torch.testing.assert_close(artifacts.input_dict["per_chunk_proprio_state"], proprio_context_state)
     assert artifacts.input_dict["per_chunk_proprio_state_granularity"] == "chunk"
@@ -1746,7 +1786,6 @@ def test_decoupled_clean_cache_cfg_keeps_text_context_separate() -> None:
 
         def _resolve_exact_cache_state(self, cache_name: str):
             del cache_name
-            return None
 
     block = _RecordingBlock()
     transformer = _FakeJointCacheTransformer(block)
@@ -2209,7 +2248,7 @@ def test_generalist_action_conditioned_override_drops_text_and_masks_action_loss
         actions=actions,
         action_mask=action_mask,
         text_emb=text_emb,
-        generalist_training_mode_override=JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+        generalist_training_mode_override=GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
         generalist_drop_text_conditioning=True,
         generalist_training_source="counterfactual_dynamics",
     )
@@ -2582,7 +2621,7 @@ def test_parallel_exact_train_artifacts_can_use_single_frame_context_condition_l
         action_per_frame=2,
         attn_window=8,
         noisy_video_condition_prob=0.0,
-        context_condition_latent_source=ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
+        context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
     )
     training_config = TrainingConfig(
         chunk_size=2,
@@ -2634,7 +2673,7 @@ def test_parallel_exact_train_artifacts_require_single_frame_context_condition_l
         frame_chunk_size=2,
         action_per_frame=2,
         attn_window=8,
-        context_condition_latent_source=ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
+        context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
     )
     training_config = TrainingConfig(chunk_size=2, window_size=4)
 
@@ -2673,8 +2712,8 @@ def test_parallel_prefix_condition_train_artifacts_match_legacy_prefix_semantics
         frame_chunk_size=2,
         action_per_frame=2,
         attn_window=4,
-        parallel_sequence_contract=ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
-        context_condition_latent_source=ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
+        sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
+        context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
         noisy_video_condition_prob=1.0,
     )
     training_config = TrainingConfig(chunk_size=2, window_size=4)
@@ -2734,8 +2773,8 @@ def test_parallel_prefix_condition_train_artifacts_honor_shared_video_schedule()
         frame_chunk_size=2,
         action_per_frame=2,
         attn_window=4,
-        parallel_sequence_contract=ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
-        context_condition_latent_source=ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
+        sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
+        context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
         joint_timestep_coupling=JointTimestepCoupling.SHARED_VIDEO_SCHEDULE,
     )
     training_config = TrainingConfig(
@@ -2793,8 +2832,8 @@ def test_parallel_prefix_condition_train_artifacts_honor_match_sigma_coupling() 
         frame_chunk_size=2,
         action_per_frame=2,
         attn_window=4,
-        parallel_sequence_contract=ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
-        context_condition_latent_source=ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
+        sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
+        context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
         joint_timestep_coupling=JointTimestepCoupling.MATCH_SIGMA,
     )
     training_config = TrainingConfig(
@@ -2852,11 +2891,11 @@ def test_parallel_prefix_condition_generalist_joint_is_pure_joint_metadata() -> 
         frame_chunk_size=2,
         action_per_frame=2,
         attn_window=4,
-        parallel_sequence_contract=ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
-        context_condition_latent_source=ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
+        sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
+        context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
         video_condition_on_action=True,
         joint_timestep_coupling=JointTimestepCoupling.MATCH_SIGMA,
-        joint_denoise_training_mode_probs={JointDenoiseTrainingMode.JOINT: 1.0},
+        generalist_denoising_mode_probs={GeneralistDenoisingMode.JOINT: 1.0},
     )
     training_config = TrainingConfig(
         chunk_size=2,
@@ -2882,11 +2921,11 @@ def test_parallel_prefix_condition_generalist_joint_is_pure_joint_metadata() -> 
 
     input_dict = artifacts.input_dict
     assert input_dict["prefix_condition_frames"] == 1
-    assert input_dict["joint_denoise_training_mode"] == JointDenoiseTrainingMode.JOINT.value
-    assert input_dict["joint_denoise_training_mode_probs"] == {
-        JointDenoiseTrainingMode.JOINT.value: 1.0,
-        JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO.value: 0.0,
-        JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION.value: 0.0,
+    assert input_dict["joint_denoise_training_mode"] == GeneralistDenoisingMode.JOINT.value
+    assert input_dict["generalist_denoising_mode_probs"] == {
+        GeneralistDenoisingMode.JOINT.value: 1.0,
+        GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO.value: 0.0,
+        GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION.value: 0.0,
     }
     assert input_dict["video_condition_source"] == "condition_latents_prefix"
     assert input_dict["joint_denoise_shared_sigmas"].shape == (4,)
@@ -2902,12 +2941,12 @@ def test_parallel_prefix_condition_generalist_rejects_conditional_modes() -> Non
             frame_chunk_size=2,
             action_per_frame=2,
             attn_window=4,
-            parallel_sequence_contract=ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
-            context_condition_latent_source=ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
+            sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
+            context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
             video_condition_on_action=True,
-            joint_denoise_training_mode_probs={
-                JointDenoiseTrainingMode.JOINT: 0.5,
-                JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO: 0.5,
+            generalist_denoising_mode_probs={
+                GeneralistDenoisingMode.JOINT: 0.5,
+                GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO: 0.5,
             },
         )
 
@@ -2931,8 +2970,8 @@ def test_legacy_prefix_variant_preserves_chunk_level_proprio_state() -> None:
         action_per_frame=2,
         attn_window=4,
         proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
-        parallel_sequence_contract=ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
-        context_condition_latent_source=ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
+        sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
+        context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
         use_condition_latents=True,
         require_condition_latents=True,
     )
@@ -2982,7 +3021,7 @@ def test_legacy_prefix_variant_preserves_chunk_level_proprio_state() -> None:
     )
 
     prepared = variant.prepare_train_inputs(visual_outputs, batch)
-    input_dict = prepared.variant_inputs["lingbot_train_artifacts"].input_dict
+    input_dict = prepared.variant_inputs["parallel_train_artifacts"].input_dict
 
     assert input_dict["per_chunk_proprio_state_granularity"] == "chunk"
     assert input_dict["per_chunk_proprio_state"].shape == (1, 3, 8)
@@ -3469,7 +3508,7 @@ def test_parallel_exact_train_artifacts_split_video_and_action_loss_masks() -> N
     assert torch.all(artifacts.input_dict["action_dict"]["loss_mask"] == 1)
 
 
-def test_lingbot_parallel_decoder_ignores_history_frames_outside_loss_mask() -> None:
+def test_parallel_stream_decoder_ignores_history_frames_outside_loss_mask() -> None:
     backbone_config = LingbotCompatibleVideoBackboneConfig(
         hidden_size=32,
         num_layers=1,
@@ -3518,17 +3557,20 @@ def test_lingbot_parallel_decoder_ignores_history_frames_outside_loss_mask() -> 
     corrupted_latent_pred = target_latent_pred.clone()
     corrupted_latent_pred[:, :1] += 100.0
 
-    decoder = LingbotParallelActionDecoder(hidden_size=32, action_dim=5, action_horizon=4)
+    decoder = ParallelStreamActionDecoder(hidden_size=32, action_dim=5, action_horizon=4)
     output = decoder.forward_train(
         PolicyTrainOutput(
             policy_features=corrupted_action_pred,
             metrics={},
-            aux={
-                "latent_pred": corrupted_latent_pred,
-                "lingbot_train_artifacts": artifacts,
-                "loss_weights": {"latent": 0.0, "action": 1.0},
-                "patch_size": (1, 1, 1),
-            },
+            decoder_artifacts=DecoderArtifactEnvelope(
+                contract=PARALLEL_STREAM_DECODER_ARTIFACT_CONTRACT,
+                payload=ParallelDecoderTrainArtifacts(
+                    latent_pred=corrupted_latent_pred,
+                    runtime=artifacts,
+                    loss_weights={"latent": 0.0, "action": 1.0},
+                    patch_size=(1, 1, 1),
+                ),
+            ),
         ),
         PolicyTrainBatch(actions=actions),
     )
@@ -3537,7 +3579,7 @@ def test_lingbot_parallel_decoder_ignores_history_frames_outside_loss_mask() -> 
     assert torch.isclose(output.metrics["action_mse"], torch.tensor(0.0), atol=1e-5)
 
 
-def test_lingbot_parallel_decoder_accepts_prefix_video_action_frame_mismatch() -> None:
+def test_parallel_stream_decoder_accepts_prefix_video_action_frame_mismatch() -> None:
     backbone_config = LingbotCompatibleVideoBackboneConfig(
         hidden_size=32,
         num_layers=1,
@@ -3555,8 +3597,8 @@ def test_lingbot_parallel_decoder_accepts_prefix_video_action_frame_mismatch() -
         frame_chunk_size=2,
         action_per_frame=2,
         attn_window=4,
-        parallel_sequence_contract=ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
-        context_condition_latent_source=ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
+        sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
+        context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
     )
     training_config = TrainingConfig(
         chunk_size=2,
@@ -3589,17 +3631,20 @@ def test_lingbot_parallel_decoder_accepts_prefix_video_action_frame_mismatch() -
         artifacts.input_dict["latent_dict"]["targets"].permute(0, 2, 3, 4, 1).reshape(1, 20, 3)
     )
 
-    decoder = LingbotParallelActionDecoder(hidden_size=32, action_dim=5, action_horizon=8)
+    decoder = ParallelStreamActionDecoder(hidden_size=32, action_dim=5, action_horizon=8)
     output = decoder.forward_train(
         PolicyTrainOutput(
             policy_features=target_action_pred,
             metrics={},
-            aux={
-                "latent_pred": target_latent_pred,
-                "lingbot_train_artifacts": artifacts,
-                "loss_weights": {"latent": 1.0, "action": 1.0},
-                "patch_size": (1, 1, 1),
-            },
+            decoder_artifacts=DecoderArtifactEnvelope(
+                contract=PARALLEL_STREAM_DECODER_ARTIFACT_CONTRACT,
+                payload=ParallelDecoderTrainArtifacts(
+                    latent_pred=target_latent_pred,
+                    runtime=artifacts,
+                    loss_weights={"latent": 1.0, "action": 1.0},
+                    patch_size=(1, 1, 1),
+                ),
+            ),
         ),
         PolicyTrainBatch(actions=actions),
     )
@@ -4711,7 +4756,7 @@ def test_coupled_inference_steps_action_on_shared_video_sigma_schedule() -> None
 
 
 def _generalist_policy_config(
-    mode: JointDenoiseTrainingMode,
+    mode: GeneralistDenoisingMode,
     *,
     joint_timestep_coupling: JointTimestepCoupling = JointTimestepCoupling.MATCH_SIGMA,
     generalist_mode_text_token: bool = False,
@@ -4727,13 +4772,13 @@ def _generalist_policy_config(
         video_condition_on_action=True,
         video_action_condition_source="noisy_action",
         joint_timestep_coupling=joint_timestep_coupling,
-        joint_denoise_training_mode_probs={mode: 1.0},
+        generalist_denoising_mode_probs={mode: 1.0},
         generalist_mode_text_token=generalist_mode_text_token,
     )
 
 
 def _small_generalist_artifacts(
-    mode: JointDenoiseTrainingMode,
+    mode: GeneralistDenoisingMode,
     *,
     joint_timestep_coupling: JointTimestepCoupling = JointTimestepCoupling.MATCH_SIGMA,
     drop_text_conditioning: bool | None = None,
@@ -4774,11 +4819,11 @@ def _small_generalist_artifacts(
 
 
 def test_parallel_variant_appends_generalist_mode_token_before_deprecated_text_token_proprio() -> None:
-    artifacts, _, _ = _small_generalist_artifacts(JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO)
+    artifacts, _, _ = _small_generalist_artifacts(GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO)
     original_text = artifacts.input_dict["latent_dict"]["text_emb"]
     policy_config = replace(
         _generalist_policy_config(
-            JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
             generalist_mode_text_token=True,
         ),
         proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,  # deprecated compatibility
@@ -4838,7 +4883,7 @@ def test_parallel_variant_appends_generalist_mode_token_before_deprecated_text_t
 
 def test_generalist_joint_denoising_action_conditioned_video_uses_clean_action_slot() -> None:
     artifacts, video_latents, action_latents = _small_generalist_artifacts(
-        JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO
+        GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO
     )
     input_dict = artifacts.input_dict
 
@@ -4853,7 +4898,7 @@ def test_generalist_joint_denoising_action_conditioned_video_uses_clean_action_s
     assert torch.equal(input_dict["action_dict"]["latent"], action_latents)
     assert input_dict["chunk_size"] == 2
     assert input_dict["window_size"] == 3
-    assert input_dict["history_stream_visibility"] == ParallelHistoryStreamVisibility.VIDEO_ONLY.value
+    assert input_dict["history_stream_visibility"] == HistoryStreamVisibility.VIDEO_ONLY.value
     assert input_dict["conditional_history_policy"] == "previous_boundary_video_only"
     assert input_dict["generalist_conditional_history_chunks"] == 1
     shared_sigmas = input_dict["joint_denoise_shared_sigmas"]
@@ -4863,7 +4908,7 @@ def test_generalist_joint_denoising_action_conditioned_video_uses_clean_action_s
 
 def test_generalist_joint_denoising_video_conditioned_action_uses_clean_video_slot() -> None:
     artifacts, video_latents, _ = _small_generalist_artifacts(
-        JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION
+        GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION
     )
     input_dict = artifacts.input_dict
 
@@ -4877,7 +4922,7 @@ def test_generalist_joint_denoising_video_conditioned_action_uses_clean_video_sl
     assert torch.count_nonzero(input_dict["action_dict"]["latent"]) > 0
     assert input_dict["chunk_size"] == 2
     assert input_dict["window_size"] == 3
-    assert input_dict["history_stream_visibility"] == ParallelHistoryStreamVisibility.VIDEO_ONLY.value
+    assert input_dict["history_stream_visibility"] == HistoryStreamVisibility.VIDEO_ONLY.value
     assert input_dict["conditional_history_policy"] == "previous_boundary_video_only"
     assert input_dict["generalist_conditional_history_chunks"] == 1
     shared_sigmas = input_dict["joint_denoise_shared_sigmas"]
@@ -4886,7 +4931,7 @@ def test_generalist_joint_denoising_video_conditioned_action_uses_clean_video_sl
 
 
 def test_generalist_joint_denoising_joint_mode_matches_standard_m1_joint_artifacts() -> None:
-    artifacts, video_latents, action_latents = _small_generalist_artifacts(JointDenoiseTrainingMode.JOINT)
+    artifacts, video_latents, action_latents = _small_generalist_artifacts(GeneralistDenoisingMode.JOINT)
     input_dict = artifacts.input_dict
 
     torch.manual_seed(7)
@@ -4902,7 +4947,7 @@ def test_generalist_joint_denoising_joint_mode_matches_standard_m1_joint_artifac
         patch_size_w=1,
     )
     standard_policy = replace(
-        _generalist_policy_config(JointDenoiseTrainingMode.JOINT),
+        _generalist_policy_config(GeneralistDenoisingMode.JOINT),
         variant_profile=ParallelStreamVariantProfile.STANDARD,
     )
     training_config = TrainingConfig(
@@ -4951,13 +4996,13 @@ def test_generalist_joint_denoising_joint_mode_matches_standard_m1_joint_artifac
 
 
 def test_generalist_joint_denoising_conditional_modes_drop_text_by_default() -> None:
-    joint_artifacts, _, _ = _small_generalist_artifacts(JointDenoiseTrainingMode.JOINT)
+    joint_artifacts, _, _ = _small_generalist_artifacts(GeneralistDenoisingMode.JOINT)
     assert joint_artifacts.input_dict["joint_denoise_text_dropped"] is False
     assert torch.count_nonzero(joint_artifacts.input_dict["latent_dict"]["text_emb"]) > 0
 
     for mode in (
-        JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
-        JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
+        GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
+        GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
     ):
         artifacts, _, _ = _small_generalist_artifacts(mode)
         input_dict = artifacts.input_dict
@@ -4975,7 +5020,7 @@ def test_generalist_joint_denoising_conditional_modes_drop_text_by_default() -> 
 
 def test_generalist_joint_denoising_conditional_modes_drop_text_even_with_false_override() -> None:
     artifacts, _, _ = _small_generalist_artifacts(
-        JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+        GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
         drop_text_conditioning=False,
     )
 
@@ -4984,22 +5029,25 @@ def test_generalist_joint_denoising_conditional_modes_drop_text_even_with_false_
     assert torch.count_nonzero(artifacts.input_dict["action_dict"]["text_emb"]) == 0
 
 
-def test_lingbot_parallel_decoder_logs_generalist_mode_sums_and_counts() -> None:
-    artifacts, _, _ = _small_generalist_artifacts(JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO)
+def test_parallel_stream_decoder_logs_generalist_mode_sums_and_counts() -> None:
+    artifacts, _, _ = _small_generalist_artifacts(GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO)
     action_targets = artifacts.input_dict["action_dict"]["targets"].squeeze(-1).permute(0, 2, 3, 1).reshape(1, 8, 5)
     latent_targets = artifacts.input_dict["latent_dict"]["targets"].permute(0, 2, 3, 4, 1).reshape(1, 16, 3)
-    decoder = LingbotParallelActionDecoder(hidden_size=32, action_dim=5, action_horizon=8)
+    decoder = ParallelStreamActionDecoder(hidden_size=32, action_dim=5, action_horizon=8)
 
     output = decoder.forward_train(
         PolicyTrainOutput(
             policy_features=action_targets,
             metrics={},
-            aux={
-                "latent_pred": latent_targets,
-                "lingbot_train_artifacts": artifacts,
-                "loss_weights": {"latent": 1.0, "action": 1.0},
-                "patch_size": (1, 1, 1),
-            },
+            decoder_artifacts=DecoderArtifactEnvelope(
+                contract=PARALLEL_STREAM_DECODER_ARTIFACT_CONTRACT,
+                payload=ParallelDecoderTrainArtifacts(
+                    latent_pred=latent_targets,
+                    runtime=artifacts,
+                    loss_weights={"latent": 1.0, "action": 1.0},
+                    patch_size=(1, 1, 1),
+                ),
+            ),
         ),
         PolicyTrainBatch(actions=torch.zeros(1, 8, 5)),
     )

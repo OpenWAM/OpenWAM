@@ -22,7 +22,7 @@ from open_wam.models.common.cache_backend_lifecycle import (
 from open_wam.models.video_backbone.contracts import CacheState
 from open_wam.models.visual_tower import (
     RuntimeStepInput,
-    build_chunked_dual_stream_exact_train_program,
+    build_parallel_stream_exact_train_program,
 )
 from open_wam.models.visual_tower.exact_runtime import resolve_runtime_module_dtype
 from open_wam.models.visual_tower.sequence_adapters import (
@@ -493,7 +493,7 @@ def run_parallel_exact_train(
     if hasattr(transformer, "execute_runtime_step"):
         step_output = transformer.execute_runtime_step(
             RuntimeStepInput(
-                program=build_chunked_dual_stream_exact_train_program(
+                program=build_parallel_stream_exact_train_program(
                     attention_profile_name=input_dict.get("attention_profile_name"),  # type: ignore[arg-type]
                     cache_backend_name="slot_pool_exact",
                 ),

@@ -16,19 +16,19 @@ from open_wam.configs.backbone import (
     resolve_stage_attention_mode,
 )
 from open_wam.configs.enums import (
+    ContextConditionLatentSource,
     CurrentBlockCoupling,
-    JointDenoiseTrainingMode,
+    GeneralistDenoisingMode,
     JointTimestepCoupling,
-    ParallelContextConditionLatentSource,
     ParallelStreamVariantProfile,
 )
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.configs.training import TrainingConfig
-from open_wam.models.common.flow_schedule import FlowMatchScheduler
 from open_wam.models.common.flow_noise_plan import (
     clean_timestep_values,
     sample_joint_denoise_timestep_values,
 )
+from open_wam.models.common.flow_schedule import FlowMatchScheduler
 from open_wam.models.common.modality_slots import (
     force_clean_noisy_slot,
     zero_condition_slot,
@@ -37,14 +37,20 @@ from open_wam.models.visual_tower.reference_transformer import preferred_referen
 
 from .generalist_training import (
     apply_generalist_joint_denoise_training_mode as _apply_generalist_joint_denoise_training_mode,
+)
+from .generalist_training import (
     apply_generalist_legacy_prefix_joint_training_mode as _apply_generalist_legacy_prefix_joint_training_mode,
 )
 from .latent_conditioning import (
     resolve_full_window_condition_latents as _resolve_full_condition_latents,
+)
+from .latent_conditioning import (
     select_first_frame_condition_latents as _select_first_frame_condition_latents,
 )
 from .runtime_semantics import (
     attention_profile_name_for_current_block_coupling as _attention_profile_name_for_current_block_coupling,
+)
+from .runtime_semantics import (
     resolve_parallel_context_condition_latent_source,
     resolve_parallel_current_block_coupling,
     resolve_parallel_history_stream_visibility,
@@ -60,9 +66,17 @@ from .training_exact_artifacts import (
 )
 from .training_noise import (
     build_parallel_flow_noise_artifacts as _add_noise,
+)
+from .training_noise import (
     sample_coupled_parallel_timestep_values as _sample_coupled_timestep_values,
+)
+from .training_noise import (
     sample_index_matched_timestep_values as _sample_index_matched_timestep_values,
+)
+from .training_noise import (
     sample_shared_video_schedule_timestep_values as _sample_shared_video_schedule_timestep_values,
+)
+from .training_noise import (
     share_video_scheduler_grid_with_action_scheduler as _share_video_scheduler_grid_with_action_scheduler,
 )
 from .training_prefix_artifacts import (
@@ -76,9 +90,9 @@ from .training_single_frame_artifacts import (
 (
     CurrentBlockCoupling,
     FlowMatchScheduler,
-    JointDenoiseTrainingMode,
+    GeneralistDenoisingMode,
     JointTimestepCoupling,
-    ParallelContextConditionLatentSource,
+    ContextConditionLatentSource,
     ParallelStreamPolicyConfig,
     ParallelStreamVariantProfile,
     SharedVideoTransformerConfig,

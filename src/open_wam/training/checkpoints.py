@@ -559,11 +559,11 @@ class CheckpointManager:
         backbone_state_dict = get_model_state_dict(
             backbone, options=_save_state_dict_options()
         )
-        # MoT packed-coupling path: video_block weights live under
+        # DualExpert packed-coupling path: video_block weights live under
         # policy_variant.packed_block_stack.packed_blocks.{i}.video_block.* and
         # visual_tower.core.blocks is empty. Re-key those into blocks.{i}.* so
         # the exported transformer/ matches the LingBot loader layout that
-        # method-1 / visualization scripts expect.
+        # exact parallel-stream and visualization scripts expect.
         policy_variant = getattr(pipeline, "policy_variant", None)
         packed_block_stack = getattr(policy_variant, "packed_block_stack", None)
         if packed_block_stack is not None:

@@ -1,0 +1,194 @@
+name: dual_expert_libero_latent_local_full_segment_non_joint_action_only
+
+# Non-joint two-stream DualExpert, action-only trainable.
+#
+# Runtime is the parallel-stream-aligned `non_joint_two_stream` path: both
+# streams carry a history-clean / current-noisy split and share the Branch-1
+# mask (noisy-to-noisy cross-stream disallowed). The difference vs
+# `..._non_joint_aligned` is the trainability + loss surface:
+#
+#   - video backbone is frozen (`trainable_components` excludes
+#     `visual_tower.runtime_backbone`)
+#   - only action flow-match loss contributes
+#
+# So the action expert sees the same *noisy* video K/V distribution it will
+# see at inference, but the video backbone is not updated. This is the
+# Train/inference-matched counterpart of the full-segment DualExpert profile.
+# (which keeps video clean at training time).
+
+data:
+  dataset_name: libero
+  dataset_type: lerobot_v2_latent_local
+  local_root: "${paths.datasets.libero_root}"
+  replay_status_path: "${paths.datasets.libero_replay_status_path}"
+  replay_status_policy: successful_only
+  val_replay_status_policy: failure_only
+  require_replay_status: true
+  val_require_replay_status: true
+  empty_text_embedding_path: "${paths.datasets.empty_text_embedding}"
+  split: train
+  camera_names: [observation.images.agentview_rgb, observation.images.eye_in_hand_rgb]
+  latent_camera_names: [observation.images.agentview_rgb, observation.images.eye_in_hand_rgb]
+  canonical_height: 128
+  canonical_width: 256
+  num_frames: 4
+  frame_stride: 1
+  sample_stride: 1
+  # Strict fixed-128 rollout-parity segments. One real context frame is
+  # materialized before the 128 supervised targets. Tail overflow remains
+  # metadata-only, unavailable targets are masked, and chunk geometry is fixed at 4.
+  sample_construction:
+    mode: hierarchical_fixed_segment
+    segment_frames: 128
+    chunk_size: 4
+    window_size: 30
+    randomize_geometry: false
+    start_padding_frames: 0
+    target_alignment: next_after_context
+    rollout_context_policy: one_frame
+    tail_padding_policy: zero_order_hold
+    padded_target_policy: mask_loss
+    task_start_power: 0.5
+    demo_count_power: 0.0
+    trajectory_start_power: 1.0
+  episode_cache_size: 2
+  train_fraction: 1.0
+  split_seed: 0
+  train_batch_size: 1
+  val_batch_size: 1
+  num_workers: 8
+  view_layout:
+    - source_name: observation.images.agentview_rgb
+      canonical_name: image
+      top: 0
+      left: 0
+      height: 128
+      width: 128
+    - source_name: observation.images.eye_in_hand_rgb
+      canonical_name: wrist_image
+      top: 0
+      left: 128
+      height: 128
+      width: 128
+  action_schema:
+    action_dim: 7
+    action_horizon: 16
+    state_dim: 8
+    state_horizon: 1
+  action_target:
+    representation: raw
+    source_key: action
+    pose_source_key: observation.state
+    state_encoding: eef_pos_axisangle_gripper_2d
+    reference_source: anchor_state
+    rotation_representation: axis_angle
+    include_gripper: true
+    gripper_representation: action_command
+    gripper_action_index: -1
+
+backbone:
+  # Video backbone is frozen here, so the starting checkpoint matters more
+  # than it does for `_non_joint_aligned`. Point `transformer_subdir` at a
+  # LIBERO video-only pretrain for the best action-only baseline.
+  implementation: shared_transformer
+  train_attn_mode: flex
+  infer_attn_mode: torch
+  hidden_size: 3072
+  num_layers: 30
+  num_heads: 24
+  attention_head_dim: 128
+  ffn_dim: 14336
+  pretrained_model_name_or_path: "${paths.models.lingbot_va_base}"
+  transformer_subdir: transformer
+  max_text_tokens: 512
+  load_wan_vae_frontend: true
+  load_text_conditioning: true
+  load_reference_core_weights: true
+  reference_core_init_mode: video_only
+  reference_assets_device_policy: cpu_offload
+
+policy_variant:
+  # Same non-joint two-stream runtime as `_non_joint_aligned`. The only
+  # training-semantic difference lives in `training.*` below.
+  name: dual_expert
+  hidden_size: 3072
+  attach_site: post_visual_core
+  preset: fastwam_non_joint
+  runtime_mode: non_joint_two_stream
+  condition_mode: teacher_forcing_cond_video
+  video_prefix_frames: 1
+  action_expert_init_mode: video_weight_interpolate
+  num_action_layers: 30
+  action_hidden_size: 2048
+  action_ffn_dim: 8192
+  video_can_attend_action: false
+  use_text_conditioning: true
+  use_state_conditioning: false
+
+action_decoder:
+  name: dual_expert_decoder
+  hidden_size: 3072
+  action_dim: 7
+  action_horizon: 16
+
+training:
+  # Action-only supervision. Video is still noised and forward-passed (so the
+  # action expert sees the noisy-video K/V distribution), but the video
+  # backbone does not receive gradients.
+  video_num_train_timesteps: 1000
+  action_num_train_timesteps: 1000
+  video_sigma_shift: 5.0
+  action_sigma_shift: 1.0
+  use_teacher_forcing: false
+  chunk_size: 4
+  window_size: 30
+  optimizer_name: adamw
+  scheduler_name: constant_with_warmup
+  learning_rate: 1.0e-5
+  beta1: 0.9
+  beta2: 0.95
+  weight_decay: 0.1
+  warmup_steps: 10
+  gradient_accumulation_steps: 10
+  max_grad_norm: 2.0
+  num_steps: 5000
+  text_condition_dropout_prob: 0.1
+  enabled_objectives: [action]
+  latent_loss_weight: 0.0
+  action_loss_weight: 1.0
+  # Full-segment losses are averaged per sample; scale by valid action steps so
+  # long compositional episodes carry transition-proportional signal.
+  sample_loss_weight_mode: valid_action_steps
+  sample_loss_weight_reference_steps: null
+  sample_loss_weight_min: 0.25
+  sample_loss_weight_max: 4.0
+  trainable_components: [policy_variant.action_expert]
+
+inference:
+  video_num_inference_steps: 20
+  action_num_inference_steps: 20
+  frame_chunk_size: 4
+  use_cache: true
+  guidance_scale: 5.0
+
+trainer:
+  max_epochs: 1
+  limit_train_batches: null
+  limit_val_batches: 0
+  log_every_n_steps: 1
+  accelerator: gpu
+  devices: 1
+  precision: bf16-mixed
+  enable_checkpointing: true
+  enable_model_summary: false
+  runtime: composable
+  batch_adapter: latents
+  loop_policy: steps
+  strategy: fsdp
+  save_interval: 100
+  checkpoint_mode: full_training_state
+  export_runtime_backbone: true
+  enable_jsonl_logging: true
+  enable_wandb: true
+  wandb_project: openwam-libero-policy-train
+  wandb_mode: online

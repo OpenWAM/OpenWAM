@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
 import inspect
+from dataclasses import dataclass, replace
 
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -57,7 +57,7 @@ class AuxiliaryValidationDataset(Dataset):
             if hasattr(sample, "task_text"):
                 updates["task_text"] = None
             if hasattr(sample, "text_context"):
-                text_context = getattr(sample, "text_context")
+                text_context = sample.text_context
                 negative_text_context = getattr(sample, "negative_text_context", None)
                 if negative_text_context is not None:
                     updates["text_context"] = negative_text_context.clone()
@@ -172,7 +172,7 @@ def _auxiliary_validation_summary_metrics(
     batch_count: float,
 ) -> dict[str, float]:
     summary: dict[str, float] = {"count": float(batch_count)}
-    for namespace in ("joint_denoise", "mot_generalist"):
+    for namespace in ("joint_denoise", "dual_expert_generalist"):
         action_active_key = f"{namespace}/action_loss_active"
         latent_active_key = f"{namespace}/latent_loss_active"
         if action_active_key in metrics:

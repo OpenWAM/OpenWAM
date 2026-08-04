@@ -3,12 +3,12 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
 import tempfile
 import tomllib
+from pathlib import Path
 from typing import Any
 
 from check_release_metadata import (
@@ -16,7 +16,6 @@ from check_release_metadata import (
     validate_project_metadata,
     validate_release_build_config,
 )
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -167,7 +166,7 @@ def _check_baseline_templates_are_portable() -> None:
 def _check_artifact_manifest() -> None:
     required = {
         "artifact_id",
-        "method_family",
+        "architecture",
         "variant",
         "benchmark",
         "config",
@@ -194,9 +193,9 @@ def _check_docs_and_cards() -> None:
         "docs/release.md",
         "docs/architecture.md",
         "docs/benchmarks.md",
-        "docs/method_families.md",
+        "docs/policy_architectures.md",
         "docs/running_experiments.md",
-        "docs/cookbooks/new_method.md",
+        "docs/cookbooks/new_policy_architecture.md",
         "docs/cookbooks/new_action_decoder.md",
         "docs/cookbooks/new_dataset.md",
         "docs/cookbooks/new_simulator_adapter.md",
@@ -230,7 +229,7 @@ def _check_docs_site_source() -> None:
             "index.md",
             "quickstart.md",
             "architecture.md",
-            "method_families.md",
+            "policy_architectures.md",
             "benchmarks.md",
             "running_experiments.md",
         )

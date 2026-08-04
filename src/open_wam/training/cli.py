@@ -2,18 +2,20 @@ from __future__ import annotations
 
 import argparse
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import open_wam.configs.enums as config_enums
 from open_wam.configs import (
     ExperimentConfig,
-    apply_parallel_sequence_contract,
+    apply_video_action_sequence_contract,
     load_experiment_config,
     resolve_config_path_alias,
-    validate_parallel_sequence_contract_override_keys,
+    validate_video_action_sequence_contract_override_keys,
 )
+from open_wam.configs.policy_compatibility import normalize_video_action_override_keys
 from open_wam.extensions import load_extension_modules
 from open_wam.utils.config_overrides import (
     apply_config_overrides,
@@ -213,16 +215,20 @@ def apply_train_cli_overrides(
         update_map["trainer.wandb_mode"] = overrides.wandb_mode
 
     update_map.update(parse_override_assignments(overrides.overrides))
-    validate_parallel_sequence_contract_override_keys(
+    update_map = normalize_video_action_override_keys(update_map)
+    validate_video_action_sequence_contract_override_keys(
         update_map,
         contract_value=getattr(
             config.policy_variant,
-            "parallel_sequence_contract",
-            config_enums.ParallelSequenceContract.DEFAULT,
+            "sequence_contract",
+            config_enums.VideoActionSequenceContract.DEFAULT,
         ),
     )
     config = apply_config_overrides(config, update_map)
-    config = apply_parallel_sequence_contract(config, explicit_override_keys=set(update_map))
+    config = apply_video_action_sequence_contract(
+        config,
+        explicit_override_keys=set(update_map),
+    )
     return apply_wandb_env_defaults(
         config,
         env=env or os.environ,

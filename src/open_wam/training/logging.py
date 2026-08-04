@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 import json
 import os
 from pathlib import Path
 from typing import Any, Protocol
 
-from open_wam.configs import ExperimentConfig
-from open_wam.configs.enums import serialize_enum_values
+from open_wam.configs import ExperimentConfig, serialize_experiment_config
 
 from .run_tracking import (
     build_run_title,
@@ -162,7 +160,7 @@ def build_log_sink(*, config: ExperimentConfig, output_dir: Path, run_name: str,
     if config.trainer.enable_jsonl_logging:
         sinks.append(JsonlLogSink(output_dir / config.trainer.metrics_filename))
     if config.trainer.enable_wandb:
-        config_payload = serialize_enum_values(asdict(config))
+        config_payload = serialize_experiment_config(config)
         config_payload["tracking"] = tracking_metadata
         sinks.append(
             WandBLogSink(

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from typing import Mapping
 
 import torch
 from torch import nn
 
-from open_wam.data import CanonicalVideoBatch, ConfiguredCanonicalVideoPreprocessor, RobotWinCanonicalVideoPreprocessor
+from open_wam.data import (
+    CanonicalVideoBatch,
+    ConfiguredCanonicalVideoPreprocessor,
+    RobotWinCanonicalVideoPreprocessor,
+)
 from open_wam.models.action_decoders import (
     ActionDecoder,
     ActionDecoderInferOutput,
@@ -147,15 +151,6 @@ class VariantPipeline(nn.Module):
         policy_output: PolicyTrainOutput,
         train_batch: PolicyTrainBatch,
     ) -> ActionDecoderTrainOutput:
-        # Variants may optionally own the full decoder contract themselves.
-        # Keep a temporary `aux["decoder_output"]` fallback for compatibility
-        # with older branches while the explicit `owned_decoder_output` field
-        # becomes the canonical path.
-        direct_decoder_output = policy_output.owned_decoder_output
-        if direct_decoder_output is None:
-            direct_decoder_output = policy_output.aux.get("decoder_output")
-        if isinstance(direct_decoder_output, ActionDecoderTrainOutput):
-            return direct_decoder_output
         return self.action_decoder.forward_train(policy_output, train_batch)
 
     def _supports_direct_train_inputs(self) -> bool:
@@ -195,7 +190,9 @@ class VariantPipeline(nn.Module):
                 resolved_canonical = self.canonicalize(views).video
             current_frame = resolved_canonical[:, :, current_frame_index]
         else:
-            raise ValueError(f"Unsupported direct-train method-4 input space {input_space!r}.")
+            raise ValueError(
+                f"Unsupported direct video-conditioned training input space {input_space!r}."
+            )
         return DirectActionDecoderTrainInputs(
             current_frame=current_frame,
             input_space=input_space,
@@ -256,12 +253,6 @@ class VariantPipeline(nn.Module):
         *,
         previous_decoder_state: object | None = None,
     ) -> ActionDecoderInferOutput:
-        # The infer-side rule mirrors the train-side rule above.
-        direct_decoder_output = policy_output.owned_decoder_output
-        if direct_decoder_output is None:
-            direct_decoder_output = policy_output.aux.get("decoder_output")
-        if isinstance(direct_decoder_output, ActionDecoderInferOutput):
-            return self._apply_action_sampler_mask_to_infer_output(direct_decoder_output)
         return self._apply_action_sampler_mask_to_infer_output(
             self.action_decoder.forward_infer(policy_output, previous_state=previous_decoder_state)
         )

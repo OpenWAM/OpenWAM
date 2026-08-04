@@ -9,19 +9,30 @@ from open_wam.configs import (
     load_local_path_registry,
     read_yaml_with_local_paths,
 )
+from open_wam.configs.variant_semantics import (
+    GENERALIST_TRAINING_BUCKET_METADATA_KEY as LegacyGeneralistTrainingBucketMetadataKey,
+)
+from open_wam.configs.variant_semantics import (
+    GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY as LegacyGeneralistTrainingDropTextMetadataKey,
+)
+from open_wam.configs.variant_semantics import (
+    GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY as LegacyGeneralistTrainingModeOverrideMetadataKey,
+)
+from open_wam.configs.variant_semantics import (
+    GENERALIST_TRAINING_SOURCE_METADATA_KEY as LegacyGeneralistTrainingSourceMetadataKey,
+)
 from open_wam.contracts import (
     GENERALIST_TRAINING_BUCKET_METADATA_KEY,
     GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY,
     GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY,
     GENERALIST_TRAINING_SOURCE_METADATA_KEY,
-    REPO_ROOT as ContractRepoRoot,
+    WAN_TEMPORAL_CHUNK_SIZE,
     GeneralistTrainingSampleMetadata,
     ResolvedSourceFps,
     ResolvedVideoClip,
     SampleConstructionMetadata,
-    ViewPlacement,
     VideoFrameMapping,
-    WAN_TEMPORAL_CHUNK_SIZE,
+    ViewPlacement,
     find_repo_root,
     normalized_video_frame_count,
     resolve_repo_path,
@@ -31,28 +42,29 @@ from open_wam.contracts import (
     wan_raw_frame_count_to_latent_count,
     wan_safe_temporal_frame_count,
 )
-from open_wam.models.video_backbone.config import (
-    SharedVideoTransformerConfig as LegacySharedVideoTransformerConfig,
-)
-from open_wam.configs.variant_semantics import (
-    GENERALIST_TRAINING_BUCKET_METADATA_KEY
-    as LegacyGeneralistTrainingBucketMetadataKey,
-    GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY
-    as LegacyGeneralistTrainingDropTextMetadataKey,
-    GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY
-    as LegacyGeneralistTrainingModeOverrideMetadataKey,
-    GENERALIST_TRAINING_SOURCE_METADATA_KEY
-    as LegacyGeneralistTrainingSourceMetadataKey,
+from open_wam.contracts import (
+    REPO_ROOT as ContractRepoRoot,
 )
 from open_wam.data.raw_video import ViewPlacement as LegacyViewPlacement
 from open_wam.data.sample_metadata import (
     GeneralistTrainingSampleMetadata as LegacyGeneralistTrainingSampleMetadata,
+)
+from open_wam.data.sample_metadata import (
     SampleConstructionMetadata as LegacySampleConstructionMetadata,
+)
+from open_wam.data.sample_metadata import (
     single_sample_metadata_mapping as legacy_single_sample_metadata_mapping,
+)
+from open_wam.models.video_backbone.config import (
+    SharedVideoTransformerConfig as LegacySharedVideoTransformerConfig,
 )
 from open_wam.runtime.paths import (
     REPO_ROOT as LegacyRepoRoot,
+)
+from open_wam.runtime.paths import (
     find_repo_root as LegacyFindRepoRoot,
+)
+from open_wam.runtime.paths import (
     resolve_repo_path as LegacyResolveRepoPath,
 )
 from open_wam.utils.config_loader import (
@@ -60,19 +72,35 @@ from open_wam.utils.config_loader import (
 )
 from open_wam.utils.local_paths import (
     load_local_path_registry as LegacyLoadLocalPathRegistry,
+)
+from open_wam.utils.local_paths import (
     read_yaml_with_local_paths as LegacyReadYamlWithLocalPaths,
 )
 from open_wam.utils.video_timeline import (
     ResolvedSourceFps as LegacyResolvedSourceFps,
+)
+from open_wam.utils.video_timeline import (
     ResolvedVideoClip as LegacyResolvedVideoClip,
+)
+from open_wam.utils.video_timeline import (
     VideoFrameMapping as LegacyVideoFrameMapping,
+)
+from open_wam.utils.video_timeline import (
     normalized_video_frame_count as legacy_normalized_video_frame_count,
+)
+from open_wam.utils.video_timeline import (
     resolve_video_source_fps as legacy_resolve_video_source_fps,
 )
 from open_wam.utils.wan_geometry import (
     WAN_TEMPORAL_CHUNK_SIZE as LEGACY_WAN_TEMPORAL_CHUNK_SIZE,
+)
+from open_wam.utils.wan_geometry import (
     wan_fully_observed_latent_count as legacy_wan_fully_observed_latent_count,
+)
+from open_wam.utils.wan_geometry import (
     wan_raw_frame_count_to_latent_count as legacy_wan_raw_frame_count_to_latent_count,
+)
+from open_wam.utils.wan_geometry import (
     wan_safe_temporal_frame_count as legacy_wan_safe_temporal_frame_count,
 )
 
@@ -244,56 +272,56 @@ PARALLEL_CACHE_EXECUTION_ROLE_PATHS = {
         / "cache_execution.py"
     ),
 }
-MOT_ATTENTION_ROLE_PATHS = {
+DUAL_EXPERT_ATTENTION_ROLE_PATHS = {
     "cached": (
-        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "attention_cached.py"
+        PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "attention_cached.py"
     ),
-    "facade": PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "attention.py",
+    "facade": PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "attention.py",
     "packed": (
-        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "attention_packed.py"
+        PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "attention_packed.py"
     ),
     "unpacked": (
         PACKAGE_ROOT
         / "models"
         / "policy_variants"
-        / "mot"
+        / "dual_expert"
         / "attention_unpacked.py"
     ),
 }
-MOT_RUNTIME_CONTROL_ROLE_PATHS = {
+DUAL_EXPERT_RUNTIME_CONTROL_ROLE_PATHS = {
     "backend": (
         PACKAGE_ROOT
         / "models"
         / "policy_variants"
-        / "mot"
+        / "dual_expert"
         / "inference_backend.py"
     ),
     "coupling": (
         PACKAGE_ROOT
         / "models"
         / "policy_variants"
-        / "mot"
+        / "dual_expert"
         / "coupling_semantics.py"
     ),
     "facade": (
         PACKAGE_ROOT
         / "models"
         / "policy_variants"
-        / "mot"
+        / "dual_expert"
         / "runtime_routing.py"
     ),
     "geometry": (
         PACKAGE_ROOT
         / "models"
         / "policy_variants"
-        / "mot"
+        / "dual_expert"
         / "rollout_geometry.py"
     ),
     "routes": (
         PACKAGE_ROOT
         / "models"
         / "policy_variants"
-        / "mot"
+        / "dual_expert"
         / "runtime_routes.py"
     ),
 }
@@ -320,6 +348,20 @@ def _absolute_imports_for_file(path: Path) -> set[str]:
         elif isinstance(node, ast.ImportFrom) and node.module:
             imports.add(node.module)
     return imports
+
+
+def _imports_qualified_name(path: Path, qualified_name: str) -> bool:
+    """Return whether an import binds one exact module or public symbol."""
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(alias.name == qualified_name for alias in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            if any(f"{node.module}.{alias.name}" == qualified_name for alias in node.names):
+                return True
+    return False
 
 
 def _absolute_imports(package: str) -> set[str]:
@@ -563,7 +605,7 @@ def test_visual_tower_runtime_backbone_policy_has_one_owner() -> None:
         "get_lingbot_reference_transformer",
         "reset_exact_runtime_cache",
         "reset_lingbot_reference_runtime",
-        "run_mot_packed_video_forward",
+        "run_dual_expert_packed_video_forward",
     }.isdisjoint(tower_methods)
     tower_source = tower_path.read_text(encoding="utf-8")
     assert "from .runtime_backbone import" in tower_source
@@ -578,14 +620,45 @@ def test_visual_tower_runtime_backbone_policy_has_one_owner() -> None:
         assert loading_helper not in tower_source
 
 
-def test_mot_policy_does_not_depend_on_parallel_stream_implementation() -> None:
+def test_dual_expert_policy_does_not_depend_on_parallel_stream_implementation() -> None:
     violations = sorted(
         imported
-        for imported in _absolute_imports("models/policy_variants/mot")
+        for imported in _absolute_imports("models/policy_variants/dual_expert")
         if imported.startswith("open_wam.models.policy_variants.parallel_stream")
     )
 
     assert violations == []
+
+
+def test_parallel_stream_policy_does_not_depend_on_dual_expert_implementation() -> None:
+    violations = sorted(
+        imported
+        for imported in _absolute_imports("models/policy_variants/parallel_stream")
+        if imported.startswith("open_wam.models.policy_variants.dual_expert")
+    )
+
+    assert violations == []
+
+
+def test_variant_pipeline_depends_only_on_shared_policy_decoder_contracts() -> None:
+    pipeline_path = PACKAGE_ROOT / "pipelines" / "variant_pipeline.py"
+    imports = _absolute_imports_for_file(pipeline_path)
+    forbidden_imports = {
+        imported
+        for imported in imports
+        if imported.startswith(
+            (
+                "open_wam.models.policy_variants.dual_expert",
+                "open_wam.models.policy_variants.parallel_stream",
+            )
+        )
+    }
+    source = pipeline_path.read_text(encoding="utf-8")
+
+    assert forbidden_imports == set()
+    assert "dual_expert_artifacts" not in source
+    assert "parallel_train_artifacts" not in source
+    assert "lingbot_train_artifacts" not in source
 
 
 def test_core_packages_do_not_depend_on_optional_runtime_surfaces() -> None:
@@ -1688,9 +1761,17 @@ def test_mixed_video_catalog_has_one_owner() -> None:
     )
     from open_wam.data.mixed_video import (
         MixedVideoCatalog as LegacyMixedVideoCatalog,
+    )
+    from open_wam.data.mixed_video import (
         MixedVideoEpisodeRecord as LegacyMixedVideoEpisodeRecord,
+    )
+    from open_wam.data.mixed_video import (
         MixedVideoStreamRecord as LegacyMixedVideoStreamRecord,
+    )
+    from open_wam.data.mixed_video import (
         load_mixed_video_catalog as legacy_load_mixed_video_catalog,
+    )
+    from open_wam.data.mixed_video import (
         split_mixed_video_episodes as legacy_split_mixed_video_episodes,
     )
     role_modules = {
@@ -1833,23 +1914,43 @@ def test_mixed_video_catalog_has_one_owner() -> None:
 def test_mixed_video_decode_has_explicit_package_owners() -> None:
     from open_wam.data import (
         decode_video_frames as public_decode_video_frames,
+    )
+    from open_wam.data import (
+        mixed_video_decode,
+        mixed_video_decode_backends,
+        mixed_video_decode_frames,
+        mixed_video_decode_timeline,
+    )
+    from open_wam.data import (
         transform_frame as public_transform_frame,
     )
     from open_wam.data.mixed_video import (
         MixedVideoResolvedDecodeSize as LegacyMixedVideoResolvedDecodeSize,
+    )
+    from open_wam.data.mixed_video import (
         decode_mixed_video_stream_frame_chunk as legacy_decode_stream_chunk,
+    )
+    from open_wam.data.mixed_video import (
         decode_video_frames as legacy_decode_video_frames,
+    )
+    from open_wam.data.mixed_video import (
         iter_mixed_video_stream_frame_chunks as legacy_iter_stream_chunks,
+    )
+    from open_wam.data.mixed_video import (
         normalized_video_frame_count as legacy_normalized_frame_count,
+    )
+    from open_wam.data.mixed_video import (
         resample_video_frames_to_fps as legacy_resample_frames,
+    )
+    from open_wam.data.mixed_video import (
         resolve_mixed_video_decode_size as legacy_resolve_decode_size,
+    )
+    from open_wam.data.mixed_video import (
         resolve_mixed_video_observation_fps as legacy_resolve_fps,
+    )
+    from open_wam.data.mixed_video import (
         transform_frame as legacy_transform_frame,
     )
-    from open_wam.data import mixed_video_decode
-    from open_wam.data import mixed_video_decode_backends
-    from open_wam.data import mixed_video_decode_frames
-    from open_wam.data import mixed_video_decode_timeline
 
     facade_path = PACKAGE_ROOT / "data" / "mixed_video_decode.py"
     backends_path = PACKAGE_ROOT / "data" / "mixed_video_decode_backends.py"
@@ -2027,23 +2128,47 @@ def test_mixed_video_encoding_has_explicit_package_owners() -> None:
     from open_wam.configs import MixedVideoEncodingSplit
     from open_wam.data import (
         MixedVideoEncodedEpisode as PublicMixedVideoEncodedEpisode,
+    )
+    from open_wam.data import (
         MixedVideoEncodingReport as PublicMixedVideoEncodingReport,
+    )
+    from open_wam.data import (
         MixedVideoEncodingSelection as PublicMixedVideoEncodingSelection,
+    )
+    from open_wam.data import (
         MixedVideoEncodingTarget as PublicMixedVideoEncodingTarget,
+    )
+    from open_wam.data import (
         MixedVideoLatentEncoder as PublicMixedVideoLatentEncoder,
+    )
+    from open_wam.data import (
         encode_mixed_video_latent_sources as public_encode_mixed_video_latent_sources,
+    )
+    from open_wam.data import (
+        mixed_video_encoding,
+        mixed_video_encoding_contracts,
+        mixed_video_encoding_planning,
+        mixed_video_encoding_runtime,
+        mixed_video_encoding_sidecars,
+    )
+    from open_wam.data import (
         plan_mixed_video_episode_encoding_targets as public_plan_encoding_targets,
+    )
+    from open_wam.data import (
         plan_mixed_video_streaming_chunks as public_plan_streaming_chunks,
+    )
+    from open_wam.data import (
         preflight_mixed_video_encoding_outputs as public_preflight_encoding_outputs,
+    )
+    from open_wam.data import (
         resolve_existing_mixed_video_encoding_target as public_resolve_existing_target,
+    )
+    from open_wam.data import (
         resolve_mixed_video_encoding_config as public_resolve_encoding_config,
+    )
+    from open_wam.data import (
         select_mixed_video_encoding_episodes as public_select_encoding_episodes,
     )
-    from open_wam.data import mixed_video_encoding
-    from open_wam.data import mixed_video_encoding_contracts
-    from open_wam.data import mixed_video_encoding_planning
-    from open_wam.data import mixed_video_encoding_runtime
-    from open_wam.data import mixed_video_encoding_sidecars
 
     facade_path = PACKAGE_ROOT / "data" / "mixed_video_encoding.py"
     contracts_path = (
@@ -2539,11 +2664,11 @@ def test_counterfactual_dataset_and_mixture_have_separate_owners() -> None:
         "build_generalist_dynamics_mixture_datasets",
     } <= mixture_definitions
 
-    from open_wam.data.counterfactual_dynamics_dataset import (
-        EncodedCounterfactualDynamicsLatentDataset as CanonicalDataset,
-    )
     from open_wam.data import (
         EncodedCounterfactualDynamicsLatentDataset as PublicDataset,
+    )
+    from open_wam.data.counterfactual_dynamics_dataset import (
+        EncodedCounterfactualDynamicsLatentDataset as CanonicalDataset,
     )
     from open_wam.data.generalist_dynamics import (
         EncodedCounterfactualDynamicsLatentDataset as LegacyDataset,
@@ -2619,18 +2744,22 @@ def test_latent_view_assembly_has_one_owner() -> None:
 def test_sequence_contract_semantics_have_one_config_owner() -> None:
     from open_wam.configs.loader import (
         validate_experiment_config_runtime_contract as LoaderValidateRuntimeContract,
-        validate_parallel_sequence_contract_override_keys as LoaderValidateOverrideKeys,
+    )
+    from open_wam.configs.loader import (
+        validate_video_action_sequence_contract_override_keys as LoaderValidateOverrideKeys,
     )
     from open_wam.configs.sequence_contracts import (
         validate_experiment_config_runtime_contract as CanonicalValidateRuntimeContract,
-        validate_parallel_sequence_contract_override_keys as CanonicalValidateOverrideKeys,
+    )
+    from open_wam.configs.sequence_contracts import (
+        validate_video_action_sequence_contract_override_keys as CanonicalValidateOverrideKeys,
     )
 
     contract_functions = {
-        "apply_parallel_sequence_contract",
-        "expand_parallel_sequence_contract",
+        "apply_video_action_sequence_contract",
+        "expand_video_action_sequence_contract",
         "validate_experiment_config_runtime_contract",
-        "validate_parallel_sequence_contract_override_keys",
+        "validate_video_action_sequence_contract_override_keys",
         "validate_policy_data_sequence_contract",
     }
     config_definitions = _top_level_definitions(PACKAGE_ROOT / "configs" / "sequence_contracts.py")
@@ -2794,13 +2923,14 @@ def test_policy_configuration_contracts_have_role_specific_owners() -> None:
     from typing import get_type_hints
 
     import open_wam.configs as public_configs
-    from open_wam.configs import policy_variant as policy_facade
     from open_wam.configs import (
         policy_contracts,
-        policy_mot,
+        policy_dual_expert,
         policy_parallel_stream,
         policy_parsing,
+        policy_video_action,
     )
+    from open_wam.configs import policy_variant as policy_facade
 
     owner_names = {
         "policy_contracts.py": {
@@ -2810,15 +2940,20 @@ def test_policy_configuration_contracts_have_role_specific_owners() -> None:
             "PostDecodedPolicyConfig",
             "PostLatentPolicyConfig",
         },
-        "policy_mot.py": {"MoTPolicyConfig"},
+        "policy_dual_expert.py": {"DualExpertPolicyConfig"},
         "policy_parallel_stream.py": {"ParallelStreamPolicyConfig"},
         "policy_parsing.py": {"parse_policy_variant_config"},
+        "policy_video_action.py": {
+            "VideoActionPolicyConfig",
+            "resolve_video_action_program_semantics",
+        },
     }
     owner_modules = {
         "policy_contracts.py": policy_contracts,
-        "policy_mot.py": policy_mot,
+        "policy_dual_expert.py": policy_dual_expert,
         "policy_parallel_stream.py": policy_parallel_stream,
         "policy_parsing.py": policy_parsing,
+        "policy_video_action.py": policy_video_action,
     }
     compatibility_names = {
         "ActionChunkAnchorMode",
@@ -2829,8 +2964,13 @@ def test_policy_configuration_contracts_have_role_specific_owners() -> None:
         "DecodeFeatureMode",
         "GeneralistTrainingParadigm",
         "InferenceConfig",
+        "GeneralistDenoisingMode",
         "JointDenoiseTrainingMode",
         "JointTimestepCoupling",
+        "DualExpertActionExpertInitMode",
+        "DualExpertConditionMode",
+        "DualExpertPreset",
+        "DualExpertRuntimeMode",
         "MoTActionExpertInitMode",
         "MoTConditionMode",
         "MoTGeneralistTrainingMode",
@@ -2840,11 +2980,14 @@ def test_policy_configuration_contracts_have_role_specific_owners() -> None:
         "ParallelActionConditionSource",
         "ParallelCacheMode",
         "ParallelContextConditionLatentSource",
+        "ContextConditionLatentSource",
         "ParallelHistoryStreamVisibility",
+        "HistoryStreamVisibility",
         "ParallelMaskMode",
         "ParallelRuntimeMode",
         "ParallelSequenceComponent",
         "ParallelSequenceContract",
+        "VideoActionSequenceContract",
         "ParallelStreamVariantProfile",
         "PolicyVariantName",
         "PoolingMode",
@@ -2890,7 +3033,7 @@ def test_policy_configuration_contracts_have_role_specific_owners() -> None:
     assert policy_facade.VisualReadoutConfig is public_configs.VisualReadoutConfig
     assert (
         policy_facade._coerce_mot_generalist_training_mode_probs
-        is policy_mot._coerce_mot_generalist_training_mode_probs
+        is policy_dual_expert._coerce_mot_generalist_training_mode_probs
     )
     assert (
         policy_facade._coerce_joint_denoise_training_mode_probs
@@ -2902,25 +3045,41 @@ def test_policy_configuration_contracts_have_role_specific_owners() -> None:
     )
 
     old_global = b"copen_wam.configs.policy_variant\nMoTPolicyConfig\n."
-    assert pickle.loads(old_global) is policy_mot.MoTPolicyConfig
+    assert pickle.loads(old_global) is policy_dual_expert.DualExpertPolicyConfig
 
     contract_imports = _absolute_imports_for_file(
         PACKAGE_ROOT / "configs" / "policy_contracts.py"
     )
-    mot_imports = _absolute_imports_for_file(PACKAGE_ROOT / "configs" / "policy_mot.py")
+    dual_expert_imports = _absolute_imports_for_file(PACKAGE_ROOT / "configs" / "policy_dual_expert.py")
     parallel_imports = _absolute_imports_for_file(
         PACKAGE_ROOT / "configs" / "policy_parallel_stream.py"
+    )
+    video_action_imports = _absolute_imports_for_file(
+        PACKAGE_ROOT / "configs" / "policy_video_action.py"
     )
     parser_imports = _absolute_imports_for_file(
         PACKAGE_ROOT / "configs" / "policy_parsing.py"
     )
-    owner_imports = contract_imports | mot_imports | parallel_imports | parser_imports
+    owner_imports = (
+        contract_imports
+        | dual_expert_imports
+        | parallel_imports
+        | video_action_imports
+        | parser_imports
+    )
     assert "policy_variant" not in owner_imports
     assert "policy_contracts" not in contract_imports
-    assert "policy_contracts" in mot_imports
-    assert "policy_contracts" in parallel_imports
-    assert {"policy_contracts", "policy_mot", "policy_parallel_stream"} <= parser_imports
-    assert "policy_parsing" not in contract_imports | mot_imports | parallel_imports
+    assert "policy_contracts" in video_action_imports
+    assert "policy_video_action" in dual_expert_imports
+    assert "policy_video_action" in parallel_imports
+    assert "policy_compatibility" in dual_expert_imports
+    assert "policy_compatibility" in parallel_imports
+    assert "policy_compatibility" in video_action_imports
+    assert {"policy_contracts", "policy_dual_expert", "policy_parallel_stream"} <= parser_imports
+    assert "policy_compatibility" in parser_imports
+    assert "policy_parsing" not in (
+        contract_imports | dual_expert_imports | parallel_imports | video_action_imports
+    )
 
     allowed_facade_consumers = {
         PACKAGE_ROOT / "configs" / "__init__.py",
@@ -2986,12 +3145,13 @@ def test_static_configuration_validation_has_role_specific_owners() -> None:
             "_validate_sample_construction",
         },
         "static_validation_policy.py": {
+            "_resolved_static_video_action_coupling",
             "_validate_action_horizons",
-            "_validate_joint_denoise_training_mode_probs",
-            "_validate_mot_generalist_training_mode_probs",
-            "_validate_parallel_sequence_contract_static",
+            "_validate_generalist_denoising_mode_probs",
             "_validate_probability_map",
             "_validate_single_frame_condition_offset",
+            "_validate_video_action_program_coupling",
+            "_validate_video_action_sequence_contract_static",
             "_warn_deprecated_text_proprio_context",
         },
         "static_validation_rules.py": {
@@ -3026,19 +3186,18 @@ def test_static_configuration_validation_has_role_specific_owners() -> None:
         "ENUM_VALUE_ALIASES",
         "EvalMode",
         "GeneralistTrainingParadigm",
-        "JointDenoiseTrainingMode",
+        "GeneralistDenoisingMode",
         "JointTimestepCoupling",
         "LOCAL_PATH_PATTERN",
         "LatentTemporalLayout",
-        "MoTActionExpertInitMode",
-        "MoTConditionMode",
-        "MoTGeneralistTrainingMode",
-        "MoTRuntimeMode",
+        "DualExpertActionExpertInitMode",
+        "DualExpertConditionMode",
+        "DualExpertRuntimeMode",
         "PaddedTargetPolicy",
-        "ParallelContextConditionLatentSource",
-        "ParallelHistoryStreamVisibility",
+        "ContextConditionLatentSource",
+        "HistoryStreamVisibility",
         "ParallelRuntimeMode",
-        "ParallelSequenceContract",
+        "VideoActionSequenceContract",
         "ParallelStreamVariantProfile",
         "PolicyVariantName",
         "ProprioContextMode",
@@ -3053,6 +3212,7 @@ def test_static_configuration_validation_has_role_specific_owners() -> None:
         "TailPaddingPolicy",
         "TrainerAccelerator",
         "TrainerPrecision",
+        "VideoActionProgram",
         "WindowSamplingMode",
         "probability_map_static_issues",
     }
@@ -3192,8 +3352,14 @@ def test_project_path_contracts_have_one_dependency_free_owner() -> None:
 def test_video_timeline_contracts_have_one_dependency_free_owner() -> None:
     from open_wam.models.common.video_geometry import (
         WAN_TEMPORAL_CHUNK_SIZE as MODEL_WAN_TEMPORAL_CHUNK_SIZE,
+    )
+    from open_wam.models.common.video_geometry import (
         wan_fully_observed_latent_count as model_wan_fully_observed_latent_count,
+    )
+    from open_wam.models.common.video_geometry import (
         wan_raw_frame_count_to_latent_count as model_wan_raw_frame_count_to_latent_count,
+    )
+    from open_wam.models.common.video_geometry import (
         wan_safe_temporal_frame_count as model_wan_safe_temporal_frame_count,
     )
 
@@ -3324,7 +3490,7 @@ def test_typed_component_parsers_live_beside_their_contracts() -> None:
         assert parser_name not in loader_definitions
 
 
-def test_mot_generalist_mode_semantics_have_one_owner() -> None:
+def test_dual_expert_generalist_mode_semantics_have_one_owner() -> None:
     mode_functions = {
         "apply_generalist_training_mode",
         "generalist_forces_clean_video_condition",
@@ -3336,17 +3502,17 @@ def test_mot_generalist_mode_semantics_have_one_owner() -> None:
         "sample_generalist_training_mode",
     }
     mode_definitions = _top_level_definitions(
-        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "generalist_modes.py"
+        PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "generalist_modes.py"
     )
     variant_definitions = _top_level_definitions(
-        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "variant.py"
+        PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "variant.py"
     )
 
     assert mode_functions <= mode_definitions
     assert mode_functions.isdisjoint(variant_definitions)
 
 
-def test_mot_training_layout_semantics_have_one_owner() -> None:
+def test_dual_expert_training_layout_semantics_have_one_owner() -> None:
     layout_methods = {
         "apply_history_action_condition",
         "build_effective_action_mask",
@@ -3362,8 +3528,8 @@ def test_mot_training_layout_semantics_have_one_owner() -> None:
         "resolve_singleton_chunk_frame",
         "sample_full_segment_geometry",
     }
-    layout_path = PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "sequence_layout.py"
-    variant_path = PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "variant.py"
+    layout_path = PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "sequence_layout.py"
+    variant_path = PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "variant.py"
     retired_variant_methods = {
         "_apply_train_history_action_condition",
         "_build_action_grid_ids_for_sequence",
@@ -3381,14 +3547,14 @@ def test_mot_training_layout_semantics_have_one_owner() -> None:
         "_sample_full_segment_train_geometry",
     }
 
-    assert layout_methods <= _class_method_definitions(layout_path, "MoTTrainingLayout")
+    assert layout_methods <= _class_method_definitions(layout_path, "DualExpertTrainingLayout")
     assert "build_action_grid_ids_for_sequence" in _top_level_definitions(layout_path)
     assert retired_variant_methods.isdisjoint(
-        _class_method_definitions(variant_path, "MoTPolicyVariant")
+        _class_method_definitions(variant_path, "DualExpertPolicyVariant")
     )
 
 
-def test_mot_conditioning_semantics_have_one_owner() -> None:
+def test_dual_expert_conditioning_semantics_have_one_owner() -> None:
     conditioning_methods = {
         "action_hidden_context_for_tokens",
         "append_generalist_mode_text_token",
@@ -3436,29 +3602,29 @@ def test_mot_conditioning_semantics_have_one_owner() -> None:
         "_video_condition_source",
         "_video_hidden_context_for_tokens",
     }
-    conditioning_path = PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "conditioning.py"
-    variant_path = PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "variant.py"
+    conditioning_path = PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "conditioning.py"
+    variant_path = PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "variant.py"
 
     assert conditioning_methods <= _class_method_definitions(
         conditioning_path,
-        "MoTConditioning",
+        "DualExpertConditioning",
     )
     assert retired_variant_methods.isdisjoint(
-        _class_method_definitions(variant_path, "MoTPolicyVariant")
+        _class_method_definitions(variant_path, "DualExpertPolicyVariant")
     )
-    assert "_uses_mot_legacy_prefix_contract" not in _top_level_definitions(variant_path)
+    assert "_uses_dual_expert_legacy_prefix_contract" not in _top_level_definitions(variant_path)
 
 
-def test_mot_flow_runtime_controls_have_role_owners() -> None:
+def test_dual_expert_flow_runtime_controls_have_role_owners() -> None:
     flow_runtime_functions = {
         "expand_scalar_timestep",
         "explicit_sigma_euler_step",
         "zero_terminal_next_sigma",
     }
     flow_compatibility_names = {
-        "expand_mot_scalar_timestep",
-        "mot_scheduler_next_sigma",
-        "step_mot_flow_with_sigmas",
+        "expand_dual_expert_scalar_timestep",
+        "dual_expert_scheduler_next_sigma",
+        "step_dual_expert_flow_with_sigmas",
     }
     retired_variant_functions = (flow_runtime_functions | flow_compatibility_names) | {
         "_expand_scalar_timestep",
@@ -3466,27 +3632,27 @@ def test_mot_flow_runtime_controls_have_role_owners() -> None:
         "_rewind_runtime_action_cache_to_frame",
         "_scheduler_next_sigma",
     }
-    mot_root = PACKAGE_ROOT / "models" / "policy_variants" / "mot"
+    dual_expert_root = PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert"
 
     assert flow_runtime_functions <= _top_level_definitions(
         FLOW_MATCHING_ROLE_PATHS["schedule"]
     )
     assert flow_runtime_functions.isdisjoint(
-        _top_level_definitions(mot_root / "runtime.py")
+        _top_level_definitions(dual_expert_root / "runtime.py")
     )
     assert flow_compatibility_names.isdisjoint(
-        _top_level_definitions(mot_root / "runtime.py")
+        _top_level_definitions(dual_expert_root / "runtime.py")
     )
     assert retired_variant_functions.isdisjoint(
-        _top_level_definitions(mot_root / "variant.py")
+        _top_level_definitions(dual_expert_root / "variant.py")
     )
 
 
-def test_mot_runtime_control_roles_have_one_owner_and_a_stable_facade() -> None:
+def test_dual_expert_runtime_control_roles_have_one_owner_and_a_stable_facade() -> None:
     import pickle
 
-    from open_wam.models.policy_variants import mot as mot_api
-    from open_wam.models.policy_variants.mot import (
+    from open_wam.models.policy_variants import dual_expert as dual_expert_api
+    from open_wam.models.policy_variants.dual_expert import (
         coupling_semantics,
         inference_backend,
         rollout_geometry,
@@ -3502,38 +3668,38 @@ def test_mot_runtime_control_roles_have_one_owner_and_a_stable_facade() -> None:
     }
     owner_names = {
         "backend": {
-            "ensure_mot_inference_backend",
-            "ensure_mot_policy_variant_inference_backend",
+            "ensure_dual_expert_inference_backend",
+            "ensure_dual_expert_policy_variant_inference_backend",
         },
         "coupling": {
-            "is_mot_same_step_coupling",
-            "resolve_mot_current_block_coupling",
-            "resolve_mot_joint_timestep_coupling",
-            "should_couple_mot_action_to_video_sigmas",
+            "is_dual_expert_same_step_coupling",
+            "resolve_dual_expert_current_block_coupling",
+            "resolve_dual_expert_joint_timestep_coupling",
+            "should_couple_dual_expert_action_to_video_sigmas",
         },
         "geometry": {
             "_InferenceContextLike",
-            "mot_config_uses_strict_rollout_parity",
-            "resolve_mot_action_only_rollout",
-            "resolve_mot_inference_window_size",
-            "resolve_mot_rollout_cache_window_frames",
-            "resolve_mot_rollout_frame_chunk_size",
-            "resolve_mot_rollout_history_frames",
-            "resolve_mot_sequence_actions_per_frame",
-            "resolve_mot_sequence_execution_action_offset",
+            "dual_expert_config_uses_strict_rollout_parity",
+            "resolve_dual_expert_action_only_rollout",
+            "resolve_dual_expert_inference_window_size",
+            "resolve_dual_expert_rollout_cache_window_frames",
+            "resolve_dual_expert_rollout_frame_chunk_size",
+            "resolve_dual_expert_rollout_history_frames",
+            "resolve_dual_expert_sequence_actions_per_frame",
+            "resolve_dual_expert_sequence_execution_action_offset",
         },
         "routes": {
-            "MoTRuntimeRoute",
-            "MoTRuntimeRouteKind",
+            "DualExpertRuntimeRoute",
+            "DualExpertRuntimeRouteKind",
             "_coerce_current_block_coupling",
             "_coerce_runtime_mode",
             "_enum_value",
-            "_looks_like_mot_policy_config",
+            "_looks_like_dual_expert_policy_config",
             "_policy_config",
             "_resolve_current_block_coupling",
-            "mot_policy_requires_legacy_split_cache_inference",
-            "resolve_mot_runtime_route",
-            "should_use_mot_legacy_split_cache_inference",
+            "dual_expert_policy_requires_legacy_split_cache_inference",
+            "resolve_dual_expert_runtime_route",
+            "should_use_dual_expert_legacy_split_cache_inference",
         },
     }
     exported_names = {
@@ -3542,39 +3708,39 @@ def test_mot_runtime_control_roles_have_one_owner_and_a_stable_facade() -> None:
         "geometry": (
             owner_names["geometry"] - {"_InferenceContextLike"}
         )
-        | {"MOT_ACTION_ONLY_ROLLOUT_COUPLINGS"},
+        | {"DUAL_EXPERT_ACTION_ONLY_ROLLOUT_COUPLINGS"},
         "routes": (
             owner_names["routes"]
             - {
                 "_coerce_current_block_coupling",
                 "_coerce_runtime_mode",
                 "_enum_value",
-                "_looks_like_mot_policy_config",
+                "_looks_like_dual_expert_policy_config",
                 "_policy_config",
                 "_resolve_current_block_coupling",
             }
         )
-        | {"MOT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS"},
+        | {"DUAL_EXPERT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS"},
     }
     all_names = set().union(*owner_names.values())
 
     assert len(all_names) == 26
-    assert not _top_level_definitions(MOT_RUNTIME_CONTROL_ROLE_PATHS["facade"])
+    assert not _top_level_definitions(DUAL_EXPERT_RUNTIME_CONTROL_ROLE_PATHS["facade"])
     assert all(
         sum(
             name in _top_level_definitions(path)
-            for path in MOT_RUNTIME_CONTROL_ROLE_PATHS.values()
+            for path in DUAL_EXPERT_RUNTIME_CONTROL_ROLE_PATHS.values()
         )
         == 1
         for name in all_names
     )
     for role, names in owner_names.items():
-        assert _top_level_definitions(MOT_RUNTIME_CONTROL_ROLE_PATHS[role]) == names
-        assert _module_all_names(MOT_RUNTIME_CONTROL_ROLE_PATHS[role]) == exported_names[role]
-    assert _module_all_names(MOT_RUNTIME_CONTROL_ROLE_PATHS["facade"]) == set()
+        assert _top_level_definitions(DUAL_EXPERT_RUNTIME_CONTROL_ROLE_PATHS[role]) == names
+        assert _module_all_names(DUAL_EXPERT_RUNTIME_CONTROL_ROLE_PATHS[role]) == exported_names[role]
+    assert _module_all_names(DUAL_EXPERT_RUNTIME_CONTROL_ROLE_PATHS["facade"]) == set()
 
     relative_imports: dict[str, set[str]] = {}
-    for role, path in MOT_RUNTIME_CONTROL_ROLE_PATHS.items():
+    for role, path in DUAL_EXPERT_RUNTIME_CONTROL_ROLE_PATHS.items():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         relative_imports[role] = {
             node.module
@@ -3595,9 +3761,9 @@ def test_mot_runtime_control_roles_have_one_owner_and_a_stable_facade() -> None:
     }
 
     facade_consumers = []
-    facade_module = "open_wam.models.policy_variants.mot.runtime_routing"
+    facade_module = "open_wam.models.policy_variants.dual_expert.runtime_routing"
     for path in PACKAGE_ROOT.rglob("*.py"):
-        if path == MOT_RUNTIME_CONTROL_ROLE_PATHS["facade"]:
+        if path == DUAL_EXPERT_RUNTIME_CONTROL_ROLE_PATHS["facade"]:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         imports_facade = any(
@@ -3636,21 +3802,21 @@ def test_mot_runtime_control_roles_have_one_owner_and_a_stable_facade() -> None:
         },
         "runtime_routes": {"__init__.py", "split_cache_inference.py", "variant.py"},
     }
-    mot_root = PACKAGE_ROOT / "models" / "policy_variants" / "mot"
+    dual_expert_root = PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert"
     for role_module, filenames in expected_consumers.items():
         for filename in filenames:
-            source = (mot_root / filename).read_text(encoding="utf-8")
+            source = (dual_expert_root / filename).read_text(encoding="utf-8")
             assert f"from .{role_module} import" in source
 
     external_consumers = {
-        "evals/libero_mot_runtime.py": "inference_backend",
+        "evals/libero_dual_expert_runtime.py": "inference_backend",
         "evals/libero_realtime_sequence.py": "rollout_geometry",
         "evals/realtime_speculation.py": "runtime_routes",
     }
     for relative_path, role_module in external_consumers.items():
         source = (PACKAGE_ROOT / relative_path).read_text(encoding="utf-8")
         assert (
-            f"from open_wam.models.policy_variants.mot.{role_module} import"
+            f"from open_wam.models.policy_variants.dual_expert.{role_module} import"
             in source
         )
 
@@ -3661,21 +3827,21 @@ def test_mot_runtime_control_roles_have_one_owner_and_a_stable_facade() -> None:
             payload = f"c{facade_module}\n{name}\n.".encode()
             assert pickle.loads(payload) is owner_value
 
-    for name in {"MoTRuntimeRoute", "MoTRuntimeRouteKind", "resolve_mot_runtime_route"}:
-        assert getattr(mot_api, name) is getattr(runtime_routes, name)
+    for name in ("DualExpertRuntimeRoute", "DualExpertRuntimeRouteKind", "resolve_dual_expert_runtime_route"):
+        assert getattr(dual_expert_api, name) is getattr(runtime_routes, name)
 
     expected_direct_names = {
         "Any",
         "CurrentBlockCoupling",
         "Enum",
         "JointTimestepCoupling",
-        "MOT_ACTION_ONLY_ROLLOUT_COUPLINGS",
-        "MOT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS",
+        "DUAL_EXPERT_ACTION_ONLY_ROLLOUT_COUPLINGS",
+        "DUAL_EXPERT_LEGACY_SPLIT_CACHE_INFERENCE_COUPLINGS",
         "Mapping",
-        "MoTPolicyConfig",
-        "MoTRuntimeMode",
-        "MoTRuntimeRoute",
-        "MoTRuntimeRouteKind",
+        "DualExpertPolicyConfig",
+        "DualExpertRuntimeMode",
+        "DualExpertRuntimeRoute",
+        "DualExpertRuntimeRouteKind",
         "PolicyVariantName",
         "Protocol",
         "RolloutContextPolicy",
@@ -3684,33 +3850,33 @@ def test_mot_runtime_control_roles_have_one_owner_and_a_stable_facade() -> None:
         "_coerce_current_block_coupling",
         "_coerce_runtime_mode",
         "_enum_value",
-        "_looks_like_mot_policy_config",
+        "_looks_like_dual_expert_policy_config",
         "_policy_config",
         "_resolve_current_block_coupling",
         "annotations",
         "dataclass",
-        "ensure_mot_inference_backend",
-        "ensure_mot_policy_variant_inference_backend",
-        "is_mot_same_step_coupling",
-        "mot_config_uses_strict_rollout_parity",
-        "mot_policy_requires_legacy_split_cache_inference",
-        "resolve_mot_action_only_rollout",
-        "resolve_mot_current_block_coupling",
-        "resolve_mot_inference_window_size",
-        "resolve_mot_joint_timestep_coupling",
-        "resolve_mot_rollout_cache_window_frames",
-        "resolve_mot_rollout_frame_chunk_size",
-        "resolve_mot_rollout_history_frames",
-        "resolve_mot_runtime_route",
-        "resolve_mot_sequence_actions_per_frame",
-        "resolve_mot_sequence_execution_action_offset",
-        "should_couple_mot_action_to_video_sigmas",
-        "should_use_mot_legacy_split_cache_inference",
+        "ensure_dual_expert_inference_backend",
+        "ensure_dual_expert_policy_variant_inference_backend",
+        "is_dual_expert_same_step_coupling",
+        "dual_expert_config_uses_strict_rollout_parity",
+        "dual_expert_policy_requires_legacy_split_cache_inference",
+        "resolve_dual_expert_action_only_rollout",
+        "resolve_dual_expert_current_block_coupling",
+        "resolve_dual_expert_inference_window_size",
+        "resolve_dual_expert_joint_timestep_coupling",
+        "resolve_dual_expert_rollout_cache_window_frames",
+        "resolve_dual_expert_rollout_frame_chunk_size",
+        "resolve_dual_expert_rollout_history_frames",
+        "resolve_dual_expert_runtime_route",
+        "resolve_dual_expert_sequence_actions_per_frame",
+        "resolve_dual_expert_sequence_execution_action_offset",
+        "should_couple_dual_expert_action_to_video_sigmas",
+        "should_use_dual_expert_legacy_split_cache_inference",
     }
     assert {
         name for name in vars(runtime_routing) if not name.startswith("__")
     } == expected_direct_names
-    assert _top_level_import_names(MOT_RUNTIME_CONTROL_ROLE_PATHS["facade"]) == (
+    assert _top_level_import_names(DUAL_EXPERT_RUNTIME_CONTROL_ROLE_PATHS["facade"]) == (
         expected_direct_names - {"annotations"}
     )
 
@@ -3719,14 +3885,14 @@ def test_mot_runtime_control_roles_have_one_owner_and_a_stable_facade() -> None:
     }
     wildcard_namespace: dict[str, object] = {}
     exec(
-        "from open_wam.models.policy_variants.mot.runtime_routing import *",
+        "from open_wam.models.policy_variants.dual_expert.runtime_routing import *",
         wildcard_namespace,
     )
     assert set(wildcard_namespace) - {"__builtins__"} == expected_wildcard_names
 
-    route = runtime_routes.MoTRuntimeRoute(
-        kind=runtime_routes.MoTRuntimeRouteKind.SPLIT_CACHE_NON_JOINT,
-        runtime_mode=runtime_routing.MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+    route = runtime_routes.DualExpertRuntimeRoute(
+        kind=runtime_routes.DualExpertRuntimeRouteKind.SPLIT_CACHE_NON_JOINT,
+        runtime_mode=runtime_routing.DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
         current_block_coupling=runtime_routing.CurrentBlockCoupling.VIDEO_THEN_ACTION,
         resolved_current_block_coupling=(
             runtime_routing.CurrentBlockCoupling.VIDEO_THEN_ACTION
@@ -3737,12 +3903,12 @@ def test_mot_runtime_control_roles_have_one_owner_and_a_stable_facade() -> None:
         supports_realtime_history_controls=True,
     )
     legacy_payload = pickle.dumps(route, protocol=0).replace(
-        b"open_wam.models.policy_variants.mot.runtime_routes\n",
-        b"open_wam.models.policy_variants.mot.runtime_routing\n",
+        b"open_wam.models.policy_variants.dual_expert.runtime_routes\n",
+        b"open_wam.models.policy_variants.dual_expert.runtime_routing\n",
     )
     restored_route = pickle.loads(legacy_payload)
     assert restored_route == route
-    assert type(restored_route) is runtime_routes.MoTRuntimeRoute
+    assert type(restored_route) is runtime_routes.DualExpertRuntimeRoute
 
 
 def test_flow_matching_roles_have_one_owner() -> None:
@@ -3928,9 +4094,9 @@ def test_pipeline_factory_roles_have_one_owner() -> None:
         "decoder": {
             "_build_decoded_feature_action_decoder",
             "_build_extension_action_decoder",
-            "_build_lingbot_parallel_action_decoder",
+            "_build_parallel_stream_action_decoder",
             "_build_mlp_action_decoder",
-            "_build_mot_action_decoder",
+            "_build_dual_expert_action_decoder",
             "_build_video_conditioned_action_decoder",
             "_build_video_only_action_decoder",
             "build_action_decoder",
@@ -3938,7 +4104,7 @@ def test_pipeline_factory_roles_have_one_owner() -> None:
         "policy": {
             "_build_causal_video_prediction_policy_variant",
             "_build_extension_policy_variant",
-            "_build_mot_policy_variant",
+            "_build_dual_expert_policy_variant",
             "_build_parallel_stream_policy_variant",
             "_build_post_decoded_policy_variant",
             "_build_post_latent_policy_variant",
@@ -3998,12 +4164,12 @@ def test_pipeline_factory_roles_have_one_owner() -> None:
         "ExtensionActionDecoderConfig",
         "ExtensionPolicyConfig",
         "LingbotExactRunner",
-        "LingbotParallelActionDecoder",
+        "ParallelStreamActionDecoder",
         "MLPActionDecoder",
-        "MoTActionDecoder",
-        "MoTPolicyConfig",
-        "MoTPolicyVariant",
-        "MoTRuntimeMode",
+        "DualExpertActionDecoder",
+        "DualExpertPolicyConfig",
+        "DualExpertPolicyVariant",
+        "DualExpertRuntimeMode",
         "POLICY_VARIANT_BUILDERS",
         "ParallelRuntimeMode",
         "ParallelStreamPolicyConfig",
@@ -4420,12 +4586,12 @@ def test_attention_profile_roles_have_one_owner_and_a_stable_facade() -> None:
     ) | expected_private_names
 
 
-def test_mot_condition_latent_selection_has_one_owner() -> None:
-    function_name = "resolve_mot_condition_latents"
-    mot_root = PACKAGE_ROOT / "models" / "policy_variants" / "mot"
+def test_dual_expert_condition_latent_selection_has_one_owner() -> None:
+    function_name = "resolve_dual_expert_condition_latents"
+    dual_expert_root = PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert"
 
-    assert function_name in _top_level_definitions(mot_root / "conditioning.py")
-    assert function_name not in _top_level_definitions(mot_root / "runtime.py")
+    assert function_name in _top_level_definitions(dual_expert_root / "conditioning.py")
+    assert function_name not in _top_level_definitions(dual_expert_root / "runtime.py")
 
 
 def test_sharded_execution_contexts_have_one_owner() -> None:
@@ -4442,68 +4608,68 @@ def test_sharded_execution_contexts_have_one_owner() -> None:
         "_unshard_runtime_params",
     }
     common_root = PACKAGE_ROOT / "models" / "common"
-    mot_runtime = (
-        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "runtime.py"
+    dual_expert_runtime = (
+        PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "runtime.py"
     )
 
     assert public_contexts <= _top_level_definitions(
         common_root / "sharded_execution.py"
     )
     assert (public_contexts | retired_runtime_definitions).isdisjoint(
-        _top_level_definitions(mot_runtime)
+        _top_level_definitions(dual_expert_runtime)
     )
 
 
-def test_mot_cache_state_operations_have_one_owner() -> None:
+def test_dual_expert_cache_state_operations_have_one_owner() -> None:
     cache_operations = {
-        "append_mot_action_cache",
-        "move_mot_action_cache",
-        "move_mot_video_cache",
-        "rewind_mot_runtime_action_cache_to_frame",
-        "trim_mot_action_cache_prefix",
-        "trim_mot_action_cache_tail",
-        "trim_mot_video_cache_tail",
+        "append_dual_expert_action_cache",
+        "move_dual_expert_action_cache",
+        "move_dual_expert_video_cache",
+        "rewind_dual_expert_runtime_action_cache_to_frame",
+        "trim_dual_expert_action_cache_prefix",
+        "trim_dual_expert_action_cache_tail",
+        "trim_dual_expert_video_cache_tail",
     }
-    mot_root = PACKAGE_ROOT / "models" / "policy_variants" / "mot"
+    dual_expert_root = PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert"
 
-    assert cache_operations <= _top_level_definitions(mot_root / "cache_state.py")
+    assert cache_operations <= _top_level_definitions(dual_expert_root / "cache_state.py")
     assert cache_operations.isdisjoint(
-        _top_level_definitions(mot_root / "runtime.py")
+        _top_level_definitions(dual_expert_root / "runtime.py")
     )
 
 
-def test_mot_cache_execution_has_one_owner() -> None:
+def test_dual_expert_cache_execution_has_one_owner() -> None:
     cache_execution_functions = {
         "forward_action_with_video_and_action_cache",
         "forward_action_with_video_cache",
         "prefill_video_kv_cache",
     }
-    mot_root = PACKAGE_ROOT / "models" / "policy_variants" / "mot"
+    dual_expert_root = PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert"
 
     assert cache_execution_functions <= _top_level_definitions(
-        mot_root / "cache_execution.py"
+        dual_expert_root / "cache_execution.py"
     )
     assert cache_execution_functions.isdisjoint(
-        _top_level_definitions(mot_root / "runtime.py")
+        _top_level_definitions(dual_expert_root / "runtime.py")
     )
     for consumer_name in ("split_cache_inference.py", "unpacked_training.py"):
         assert "from .cache_execution import" in (
-            mot_root / consumer_name
+            dual_expert_root / consumer_name
         ).read_text(encoding="utf-8")
 
 
-def test_mot_dual_stream_execution_has_one_owner() -> None:
+def test_dual_expert_dual_stream_execution_has_one_owner() -> None:
     execution_functions = {
         "forward_joint_video_action_denoise",
-        "forward_mot_packed_coupling_denoise",
+        "forward_dual_expert_packed_coupling_denoise",
     }
-    mot_root = PACKAGE_ROOT / "models" / "policy_variants" / "mot"
+    dual_expert_root = PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert"
 
     assert execution_functions <= _top_level_definitions(
-        mot_root / "dual_stream_execution.py"
+        dual_expert_root / "dual_stream_execution.py"
     )
     assert execution_functions.isdisjoint(
-        _top_level_definitions(mot_root / "runtime.py")
+        _top_level_definitions(dual_expert_root / "runtime.py")
     )
     for consumer_name in (
         "joint_denoise_inference.py",
@@ -4512,35 +4678,35 @@ def test_mot_dual_stream_execution_has_one_owner() -> None:
         "unpacked_training.py",
     ):
         assert "from .dual_stream_execution import" in (
-            mot_root / consumer_name
+            dual_expert_root / consumer_name
         ).read_text(encoding="utf-8")
 
 
-def test_mot_unpacked_training_has_one_program_owner() -> None:
-    mot_root = PACKAGE_ROOT / "models" / "policy_variants" / "mot"
-    variant_path = mot_root / "variant.py"
-    unpacked_path = mot_root / "unpacked_training.py"
+def test_dual_expert_unpacked_training_has_one_program_owner() -> None:
+    dual_expert_root = PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert"
+    variant_path = dual_expert_root / "variant.py"
+    unpacked_path = dual_expert_root / "unpacked_training.py"
 
     assert {
         "_build_video_train_rollout",
         "run_joint_denoise",
         "run_prefill_action_denoise",
-    } <= _class_method_definitions(unpacked_path, "MoTUnpackedTrainingProgram")
+    } <= _class_method_definitions(unpacked_path, "DualExpertUnpackedTrainingProgram")
     assert {
         "_build_video_train_rollout",
         "_forward_train_joint_denoise",
         "_forward_train_prefill_action_denoise",
-    }.isdisjoint(_class_method_definitions(variant_path, "MoTPolicyVariant"))
+    }.isdisjoint(_class_method_definitions(variant_path, "DualExpertPolicyVariant"))
     assert "from .unpacked_training import" in variant_path.read_text(
         encoding="utf-8"
     )
 
 
-def test_mot_attention_layout_roles_have_one_owner_and_a_stable_facade() -> None:
+def test_dual_expert_attention_layout_roles_have_one_owner_and_a_stable_facade() -> None:
     import pickle
 
-    from open_wam.models.policy_variants import mot as mot_api
-    from open_wam.models.policy_variants.mot import (
+    from open_wam.models.policy_variants import dual_expert as dual_expert_api
+    from open_wam.models.policy_variants.dual_expert import (
         attention,
         attention_cached,
         attention_packed,
@@ -4554,36 +4720,36 @@ def test_mot_attention_layout_roles_have_one_owner_and_a_stable_facade() -> None
         "unpacked": attention_unpacked,
     }
     owner_names = {
-        "cached": {"build_mot_inference_action_attention_mask"},
+        "cached": {"build_dual_expert_inference_action_attention_mask"},
         "packed": {
-            "build_mot_packed_coupling_attention_mask",
-            "build_mot_packed_coupling_attention_profile",
+            "build_dual_expert_packed_coupling_attention_mask",
+            "build_dual_expert_packed_coupling_attention_profile",
             "build_packed_action_attention_mask",
         },
         "unpacked": {
             "build_chunk_causal_video_mask",
-            "build_mot_attention_mask",
+            "build_dual_expert_attention_mask",
         },
     }
     all_names = set().union(*owner_names.values())
 
     assert len(all_names) == 6
-    assert not _top_level_definitions(MOT_ATTENTION_ROLE_PATHS["facade"])
+    assert not _top_level_definitions(DUAL_EXPERT_ATTENTION_ROLE_PATHS["facade"])
     assert all(
         sum(
             name in _top_level_definitions(path)
-            for path in MOT_ATTENTION_ROLE_PATHS.values()
+            for path in DUAL_EXPERT_ATTENTION_ROLE_PATHS.values()
         )
         == 1
         for name in all_names
     )
     for role, names in owner_names.items():
-        assert _top_level_definitions(MOT_ATTENTION_ROLE_PATHS[role]) == names
-        assert _module_all_names(MOT_ATTENTION_ROLE_PATHS[role]) == names
-    assert _module_all_names(MOT_ATTENTION_ROLE_PATHS["facade"]) == set()
+        assert _top_level_definitions(DUAL_EXPERT_ATTENTION_ROLE_PATHS[role]) == names
+        assert _module_all_names(DUAL_EXPERT_ATTENTION_ROLE_PATHS[role]) == names
+    assert _module_all_names(DUAL_EXPERT_ATTENTION_ROLE_PATHS["facade"]) == set()
 
     relative_imports: dict[str, set[str]] = {}
-    for role, path in MOT_ATTENTION_ROLE_PATHS.items():
+    for role, path in DUAL_EXPERT_ATTENTION_ROLE_PATHS.items():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         relative_imports[role] = {
             node.module
@@ -4599,21 +4765,21 @@ def test_mot_attention_layout_roles_have_one_owner_and_a_stable_facade() -> None
 
     facade_consumers = []
     for path in PACKAGE_ROOT.rglob("*.py"):
-        if path == MOT_ATTENTION_ROLE_PATHS["facade"]:
+        if path == DUAL_EXPERT_ATTENTION_ROLE_PATHS["facade"]:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         imports_facade = any(
             (
                 isinstance(node, ast.Import)
                 and any(
-                    alias.name == "open_wam.models.policy_variants.mot.attention"
+                    alias.name == "open_wam.models.policy_variants.dual_expert.attention"
                     for alias in node.names
                 )
             )
             or (
                 isinstance(node, ast.ImportFrom)
                 and (
-                    node.module == "open_wam.models.policy_variants.mot.attention"
+                    node.module == "open_wam.models.policy_variants.dual_expert.attention"
                     or (node.level and node.module == "attention")
                 )
             )
@@ -4631,54 +4797,54 @@ def test_mot_attention_layout_roles_have_one_owner_and_a_stable_facade() -> None
             "unpacked_training.py",
         },
     }
-    mot_root = PACKAGE_ROOT / "models" / "policy_variants" / "mot"
+    dual_expert_root = PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert"
     for role_module, filenames in expected_consumers.items():
         for filename in filenames:
-            source = (mot_root / filename).read_text(encoding="utf-8")
+            source = (dual_expert_root / filename).read_text(encoding="utf-8")
             assert f"from .{role_module} import" in source
 
     for role, names in owner_names.items():
         for name in names:
             owner_value = getattr(role_modules[role], name)
             assert getattr(attention, name) is owner_value
-            assert getattr(mot_api, name) is owner_value
+            assert getattr(dual_expert_api, name) is owner_value
             assert getattr(runtime, name) is owner_value
             payload = (
-                f"copen_wam.models.policy_variants.mot.attention\n{name}\n."
+                f"copen_wam.models.policy_variants.dual_expert.attention\n{name}\n."
             ).encode()
             assert pickle.loads(payload) is owner_value
 
     expected_module_names = {
         "CurrentBlockCoupling",
-        "MoTConditionMode",
+        "DualExpertConditionMode",
         "PreparedAttentionProfile",
         "annotations",
         "build_chunk_causal_video_mask",
         "build_exact_packed_video_action_coupling_profile",
-        "build_mot_attention_mask",
-        "build_mot_inference_action_attention_mask",
-        "build_mot_packed_coupling_attention_mask",
-        "build_mot_packed_coupling_attention_profile",
+        "build_dual_expert_attention_mask",
+        "build_dual_expert_inference_action_attention_mask",
+        "build_dual_expert_packed_coupling_attention_mask",
+        "build_dual_expert_packed_coupling_attention_profile",
         "build_packed_action_attention_mask",
         "torch",
     }
     wildcard_namespace: dict[str, object] = {}
     exec(
-        "from open_wam.models.policy_variants.mot.attention import *",
+        "from open_wam.models.policy_variants.dual_expert.attention import *",
         wildcard_namespace,
     )
     assert set(wildcard_namespace) - {"__builtins__"} == expected_module_names
     assert {
         name for name in vars(attention) if not name.startswith("_")
     } == expected_module_names
-    assert _top_level_import_names(MOT_ATTENTION_ROLE_PATHS["facade"]) == (
+    assert _top_level_import_names(DUAL_EXPERT_ATTENTION_ROLE_PATHS["facade"]) == (
         expected_module_names - {"annotations"}
     )
 
 
 def test_superseded_exact_runtime_helpers_are_retired() -> None:
-    mot_runtime_definitions = _top_level_definitions(
-        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "runtime.py"
+    dual_expert_runtime_definitions = _top_level_definitions(
+        PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "runtime.py"
     )
     parallel_runtime_definitions = _top_level_definitions(
         PACKAGE_ROOT
@@ -4689,11 +4855,11 @@ def test_superseded_exact_runtime_helpers_are_retired() -> None:
     )
 
     assert {
-        "append_mot_video_cache",
+        "append_dual_expert_video_cache",
         "build_packed_video_self_attention_mask",
         "forward_packed_action_with_video_cache",
         "forward_packed_video_denoise",
-    }.isdisjoint(mot_runtime_definitions)
+    }.isdisjoint(dual_expert_runtime_definitions)
     assert {
         "_build_action_condition_volume",
         "_build_next_exact_cache_state",
@@ -4704,54 +4870,54 @@ def test_superseded_exact_runtime_helpers_are_retired() -> None:
     }.isdisjoint(parallel_runtime_definitions)
 
 
-def test_mot_packed_inference_layout_has_one_owner() -> None:
+def test_dual_expert_packed_inference_layout_has_one_owner() -> None:
     inference_layout_path = (
-        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "inference_layout.py"
+        PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "inference_layout.py"
     )
-    variant_path = PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "variant.py"
+    variant_path = PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "variant.py"
 
     assert {
-        "MoTConditionalRolloutInputs",
-        "MoTPackedHistory",
-        "MoTPackedHistoryWindow",
-        "MoTPackedInferenceLayout",
+        "DualExpertConditionalRolloutInputs",
+        "DualExpertPackedHistory",
+        "DualExpertPackedHistoryWindow",
+        "DualExpertPackedInferenceLayout",
     } <= _top_level_definitions(inference_layout_path)
     assert {
         "from_runtime_state",
         "select_window",
-    } <= _class_method_definitions(inference_layout_path, "MoTPackedHistory")
+    } <= _class_method_definitions(inference_layout_path, "DualExpertPackedHistory")
     assert {
         "compose_current_action_sequence",
         "resolve_conditional_rollout_inputs",
     } <= _class_method_definitions(
         inference_layout_path,
-        "MoTPackedInferenceLayout",
+        "DualExpertPackedInferenceLayout",
     )
     assert {
-        "MoTConditionalRolloutInputs",
-        "MoTPackedHistory",
-        "MoTPackedHistoryWindow",
-        "MoTPackedInferenceLayout",
+        "DualExpertConditionalRolloutInputs",
+        "DualExpertPackedHistory",
+        "DualExpertPackedHistoryWindow",
+        "DualExpertPackedInferenceLayout",
     }.isdisjoint(_top_level_definitions(variant_path))
 
 
-def test_mot_packed_inference_program_has_one_execution_owner() -> None:
+def test_dual_expert_packed_inference_program_has_one_execution_owner() -> None:
     packed_inference_path = (
-        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "packed_inference.py"
+        PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "packed_inference.py"
     )
-    variant_path = PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "variant.py"
+    variant_path = PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "variant.py"
 
-    assert "MoTPackedInferenceProgram" in _top_level_definitions(
+    assert "DualExpertPackedInferenceProgram" in _top_level_definitions(
         packed_inference_path
     )
     assert "run" in _class_method_definitions(
         packed_inference_path,
-        "MoTPackedInferenceProgram",
+        "DualExpertPackedInferenceProgram",
     )
 
     delegate = _class_method(
         variant_path,
-        "MoTPolicyVariant",
+        "DualExpertPolicyVariant",
         "_forward_infer_packed_coupling",
     )
     assert len(delegate.body) == 1
@@ -4762,26 +4928,26 @@ def test_mot_packed_inference_program_has_one_execution_owner() -> None:
     assert run_call.func.attr == "run"
     assert isinstance(run_call.func.value, ast.Call)
     assert isinstance(run_call.func.value.func, ast.Name)
-    assert run_call.func.value.func.id == "MoTPackedInferenceProgram"
+    assert run_call.func.value.func.id == "DualExpertPackedInferenceProgram"
 
 
-def test_mot_packed_training_program_has_one_execution_owner() -> None:
+def test_dual_expert_packed_training_program_has_one_execution_owner() -> None:
     packed_training_path = (
-        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "packed_training.py"
+        PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "packed_training.py"
     )
-    variant_path = PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "variant.py"
+    variant_path = PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "variant.py"
 
-    assert "MoTPackedTrainingProgram" in _top_level_definitions(
+    assert "DualExpertPackedTrainingProgram" in _top_level_definitions(
         packed_training_path
     )
     assert "run" in _class_method_definitions(
         packed_training_path,
-        "MoTPackedTrainingProgram",
+        "DualExpertPackedTrainingProgram",
     )
 
     delegate = _class_method(
         variant_path,
-        "MoTPolicyVariant",
+        "DualExpertPolicyVariant",
         "_forward_train_packed_coupling",
     )
     assert len(delegate.body) == 1
@@ -4792,15 +4958,15 @@ def test_mot_packed_training_program_has_one_execution_owner() -> None:
     assert run_call.func.attr == "run"
     assert isinstance(run_call.func.value, ast.Call)
     assert isinstance(run_call.func.value.func, ast.Name)
-    assert run_call.func.value.func.id == "MoTPackedTrainingProgram"
+    assert run_call.func.value.func.id == "DualExpertPackedTrainingProgram"
 
 
-def test_mot_non_packed_inference_programs_have_one_execution_owner() -> None:
-    mot_root = PACKAGE_ROOT / "models" / "policy_variants" / "mot"
-    variant_path = mot_root / "variant.py"
+def test_dual_expert_non_packed_inference_programs_have_one_execution_owner() -> None:
+    dual_expert_root = PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert"
+    variant_path = dual_expert_root / "variant.py"
     program_owners = {
-        "MoTJointDenoiseInferenceProgram": mot_root / "joint_denoise_inference.py",
-        "MoTSplitCacheInferenceProgram": mot_root / "split_cache_inference.py",
+        "DualExpertJointDenoiseInferenceProgram": dual_expert_root / "joint_denoise_inference.py",
+        "DualExpertSplitCacheInferenceProgram": dual_expert_root / "split_cache_inference.py",
     }
     for class_name, owner_path in program_owners.items():
         assert class_name in _top_level_definitions(owner_path)
@@ -4808,7 +4974,7 @@ def test_mot_non_packed_inference_programs_have_one_execution_owner() -> None:
 
     dispatcher = _class_method(
         variant_path,
-        "MoTPolicyVariant",
+        "DualExpertPolicyVariant",
         "forward_infer_step",
     )
     constructed_programs = {
@@ -4821,8 +4987,8 @@ def test_mot_non_packed_inference_programs_have_one_execution_owner() -> None:
         and isinstance(node.func.value.func, ast.Name)
     }
     assert constructed_programs == {
-        "MoTJointDenoiseInferenceProgram",
-        "MoTSplitCacheInferenceProgram",
+        "DualExpertJointDenoiseInferenceProgram",
+        "DualExpertSplitCacheInferenceProgram",
     }
     assert any(
         isinstance(node, ast.Call)
@@ -5038,10 +5204,10 @@ def test_cache_backend_roles_have_one_owner_and_a_stable_facade() -> None:
             payload = f"c{facade_module}\n{name}\n.".encode()
             assert pickle.loads(payload) is owner_value
 
-    for name in {
+    for name in (
         "SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS",
         "SLOT_POOL_DEFER_EVICTION_UNTIL_AFTER_WRITE_ATTENTION",
-    }:
+    ):
         owner_value = getattr(cache_backend_contracts, name)
         assert getattr(cache_backends, name) == owner_value
         assert getattr(common_api, name) == owner_value
@@ -5216,23 +5382,23 @@ def test_shared_transformer_support_has_one_implementation_owner() -> None:
     direct_consumers = {
         "shared_transformer_embeddings": {
             "models/action_decoders/video_conditioned_expert.py",
-            "models/policy_variants/mot/packed_block.py",
+            "models/policy_variants/dual_expert/packed_block.py",
             "models/visual_tower/__init__.py",
             "models/visual_tower/replica_core.py",
             "models/visual_tower/shared_transformer_support.py",
         },
         "shared_transformer_layout": {
             "models/action_decoders/video_conditioned_expert.py",
-            "models/policy_variants/mot/dual_stream_execution.py",
-            "models/policy_variants/mot/packed_block.py",
+            "models/policy_variants/dual_expert/dual_stream_execution.py",
+            "models/policy_variants/dual_expert/packed_block.py",
             "models/visual_tower/__init__.py",
             "models/visual_tower/replica_core.py",
             "models/visual_tower/shared_transformer_support.py",
         },
         "runtime_parameter_ops": {
             "models/action_decoders/video_conditioned_expert.py",
-            "models/policy_variants/mot/cache_execution.py",
-            "models/policy_variants/mot/dual_stream_execution.py",
+            "models/policy_variants/dual_expert/cache_execution.py",
+            "models/policy_variants/dual_expert/dual_stream_execution.py",
             "models/visual_tower/__init__.py",
             "models/visual_tower/replica_core.py",
             "models/visual_tower/shared_transformer_support.py",
@@ -5302,6 +5468,7 @@ def test_shared_transformer_support_has_one_implementation_owner() -> None:
         "SharedTransformerTimeEmbedding",
         "TimestepEmbedding",
         "Timesteps",
+        "_COMPATIBILITY_EXPORTS",
         "_apply_rotary_emb",
         "_feed_forward_with_materialized_params",
         "_layer_norm_with_materialized_params",
@@ -5592,7 +5759,7 @@ def test_parallel_cache_execution_has_one_implementation_owner() -> None:
         "CurrentBlockCoupling",
         "ExactCacheInterfaceSpec",
         "ParallelExactCacheWriteMode",
-        "ParallelHistoryStreamVisibility",
+        "HistoryStreamVisibility",
         "PreparedAttentionProfile",
         "SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS",
         "SLOT_POOL_DEFER_EVICTION_UNTIL_AFTER_WRITE_ATTENTION",
@@ -5802,7 +5969,7 @@ def test_compatibility_export_anchors_only_reference_imported_symbols() -> None:
 
 def test_runtime_compatibility_facades_anchor_every_import() -> None:
     facade_paths = (
-        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "runtime.py",
+        PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "runtime.py",
         PACKAGE_ROOT
         / "models"
         / "policy_variants"
@@ -5819,8 +5986,8 @@ def test_parallel_training_artifacts_have_one_implementation_owner() -> None:
 
     import torch
 
-    from open_wam.models.policy_variants.parallel_stream import reference_runtime
     from open_wam.models.policy_variants.parallel_stream import (
+        reference_runtime,
         training_artifact_contracts,
         training_artifacts,
         training_exact_artifacts,
@@ -5835,7 +6002,7 @@ def test_parallel_training_artifacts_have_one_implementation_owner() -> None:
         "single_frame": training_single_frame_artifacts,
     }
     owner_names = {
-        "contracts": {"LingbotParallelTrainArtifacts"},
+        "contracts": {"ParallelTrainArtifacts"},
         "exact": {
             "prepare_parallel_action_conditioned_train_artifacts",
             "prepare_parallel_exact_train_artifacts",
@@ -5847,7 +6014,7 @@ def test_parallel_training_artifacts_have_one_implementation_owner() -> None:
         },
     }
     all_owner_names = set().union(*owner_names.values())
-    all_public_names = all_owner_names | {"ParallelTrainArtifacts"}
+    all_public_names = all_owner_names | {"LingbotParallelTrainArtifacts"}
 
     assert len(all_owner_names) == 6
     assert not _top_level_definitions(
@@ -5857,7 +6024,7 @@ def test_parallel_training_artifacts_have_one_implementation_owner() -> None:
         path = PARALLEL_TRAINING_ARTIFACT_ROLE_PATHS[role]
         assert _top_level_definitions(path) == names
         expected_exports = names | (
-            {"ParallelTrainArtifacts"} if role == "contracts" else set()
+            {"LingbotParallelTrainArtifacts"} if role == "contracts" else set()
         )
         assert _module_all_names(path) == expected_exports
     assert _module_all_names(
@@ -5914,6 +6081,7 @@ def test_parallel_training_artifacts_have_one_implementation_owner() -> None:
 
     expected_consumers = {
         "training_artifact_contracts": {
+            "models/policy_variants/parallel_stream/decoder_artifacts.py",
             "models/policy_variants/parallel_stream/reference_runtime.py",
             "models/policy_variants/parallel_stream/training_artifacts.py",
             "models/policy_variants/parallel_stream/training_exact_artifacts.py",
@@ -5976,16 +6144,16 @@ def test_parallel_training_artifacts_have_one_implementation_owner() -> None:
     )
     assert (
         training_artifacts.ParallelTrainArtifacts
-        is training_artifact_contracts.LingbotParallelTrainArtifacts
+        is training_artifact_contracts.ParallelTrainArtifacts
     )
 
     expected_direct_names = {
         "CurrentBlockCoupling",
         "FlowMatchScheduler",
-        "JointDenoiseTrainingMode",
+        "GeneralistDenoisingMode",
         "JointTimestepCoupling",
         "LingbotParallelTrainArtifacts",
-        "ParallelContextConditionLatentSource",
+        "ContextConditionLatentSource",
         "ParallelStreamPolicyConfig",
         "ParallelStreamVariantProfile",
         "ParallelTrainArtifacts",
@@ -6031,7 +6199,7 @@ def test_parallel_training_artifacts_have_one_implementation_owner() -> None:
     )
     assert set(wildcard_namespace) - {"__builtins__"} == all_public_names
 
-    value = training_artifact_contracts.LingbotParallelTrainArtifacts(
+    value = training_artifact_contracts.ParallelTrainArtifacts(
         input_dict={"probe": torch.tensor([1.0])},
         latent_scheduler=object(),
         action_scheduler=object(),
@@ -6039,7 +6207,7 @@ def test_parallel_training_artifacts_have_one_implementation_owner() -> None:
     payload = pickle.dumps(value, protocol=0)
     canonical_global = (
         b"copen_wam.models.policy_variants.parallel_stream.training_artifact_contracts\n"
-        b"LingbotParallelTrainArtifacts\n"
+        b"ParallelTrainArtifacts\n"
     )
     historical_global = (
         b"copen_wam.models.policy_variants.parallel_stream.training_artifacts\n"
@@ -6443,9 +6611,9 @@ def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
         "should_use_sequence_open_loop_extension",
         "submit_planner_job_with_snapshot",
         "synchronize_devices",
-        "uses_mot_split_cache_sequence",
-        "uses_strict_mot_one_frame_history",
-        "uses_strict_mot_split_cache_startup",
+        "uses_dual_expert_split_cache_sequence",
+        "uses_strict_dual_expert_one_frame_history",
+        "uses_strict_dual_expert_split_cache_startup",
         "validate_sequence_startup_inputs",
         "validate_sequence_startup_open_loop_support",
     }
@@ -6478,9 +6646,9 @@ def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
         "sequence_buffer_tail_ready_for_history_promotion",
         "sequence_history_replan_ready",
         "should_use_sequence_open_loop_extension",
-        "uses_mot_split_cache_sequence",
-        "uses_strict_mot_one_frame_history",
-        "uses_strict_mot_split_cache_startup",
+        "uses_dual_expert_split_cache_sequence",
+        "uses_strict_dual_expert_one_frame_history",
+        "uses_strict_dual_expert_split_cache_startup",
         "validate_sequence_startup_inputs",
         "validate_sequence_startup_open_loop_support",
     }
@@ -6499,11 +6667,11 @@ def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
         "_consume_exact_future_result",
         "_exact_chunk_to_planned_steps",
         "_exact_startup_conditioning_history_record",
-        "_is_mot_non_joint_two_stream",
+        "_is_dual_expert_non_joint_two_stream",
         "_materialize_sequence_control_action",
-        "_mot_action_cache_rewind_for_sequence_submit",
-        "_mot_condition_frame_start_for_generation",
-        "_mot_history_replan_ready",
+        "_dual_expert_action_cache_rewind_for_sequence_submit",
+        "_dual_expert_condition_frame_start_for_generation",
+        "_dual_expert_history_replan_ready",
         "_resolve_observation_conditioned_replan_session",
         "_run_sequence_replan_job",
         "_apply_sequence_replan_result",
@@ -6515,11 +6683,11 @@ def test_libero_realtime_planner_execution_has_one_package_owner() -> None:
         "_sequence_model_obs_window_frames",
         "_sequence_startup_env_init_frames",
         "_sequence_startup_model_obs_window",
-        "_should_use_mot_open_loop_extension",
-        "_uses_strict_mot_one_frame_history",
-        "_uses_strict_mot_split_cache_startup",
-        "_validate_mot_startup_open_loop_support",
-        "_validate_strict_mot_split_cache_startup_inputs",
+        "_should_use_dual_expert_open_loop_extension",
+        "_uses_strict_dual_expert_one_frame_history",
+        "_uses_strict_dual_expert_split_cache_startup",
+        "_validate_dual_expert_startup_open_loop_support",
+        "_validate_strict_dual_expert_split_cache_startup_inputs",
     }
 
     assert not (REPO_ROOT / "scripts" / "libero_exact_realtime_common.py").exists()
@@ -6676,13 +6844,22 @@ def test_realtime_control_plan_has_one_package_owner() -> None:
         | numpy_control_contracts
     )
 
-    assert (
-        "from open_wam.integrations.realtime_control import build_live_rollout_summary"
-        in runner_source
+    assert _imports_qualified_name(
+        runner_path,
+        "open_wam.integrations.realtime_control.build_live_rollout_summary",
     )
-    assert "from open_wam.integrations.realtime_contracts import" in runner_source
-    assert "from open_wam.integrations.realtime_plan_queue import (" in runner_source
-    assert "from open_wam.integrations.realtime_scheduling import (" in runner_source
+    assert _imports_qualified_name(
+        runner_path,
+        "open_wam.integrations.realtime_contracts.PlannedControlStep",
+    )
+    assert _imports_qualified_name(
+        runner_path,
+        "open_wam.integrations.realtime_plan_queue.merge_future_control_steps",
+    )
+    assert _imports_qualified_name(
+        runner_path,
+        "open_wam.integrations.realtime_scheduling.resolve_realtime_planner_mode",
+    )
     assert retired_runner_contracts.isdisjoint(_top_level_definitions(runner_path))
     assert record_contracts == _top_level_definitions(contracts_path)
     assert queue_contracts == _top_level_definitions(queue_path)
@@ -6890,7 +7067,10 @@ def test_realtime_speculation_has_one_package_owner() -> None:
     }
 
     assert speculation_path.exists()
-    assert "from open_wam.evals import realtime_speculation" in runner_source
+    assert _imports_qualified_name(
+        runner_path,
+        "open_wam.evals.realtime_speculation",
+    )
     assert "realtime_speculation._" not in runner_source
     assert retired_runner_contracts.isdisjoint(_top_level_definitions(runner_path))
     assert public_speculation_contracts <= _top_level_definitions(speculation_path)
@@ -6941,7 +7121,10 @@ def test_realtime_fallback_history_has_one_package_owner() -> None:
     }
 
     assert history_path.exists()
-    assert "from open_wam.evals import realtime_history" in runner_source
+    assert _imports_qualified_name(
+        runner_path,
+        "open_wam.evals.realtime_history",
+    )
     assert "realtime_history._" not in runner_source
     assert retired_runner_contracts.isdisjoint(_top_level_definitions(runner_path))
     assert public_history_contracts <= _top_level_definitions(history_path)
@@ -7050,7 +7233,7 @@ def test_bespoke_smoke_and_config_preset_aliases_are_retired() -> None:
             "run_eval_causal_video_prediction_robotwin_smoke.sh",
             "run_eval_contract_only.sh",
             "run_eval_contract_only_libero_trajectory.sh",
-            "run_eval_mot_robotwin_smoke.sh",
+            "run_eval_dual_expert_robotwin_smoke.sh",
             "run_eval_parallel_stream_robotwin_smoke.sh",
             "run_eval_post_decoded_video_conditioned_libero_trajectory.sh",
             "run_eval_post_latent_video_conditioned_libero_trajectory.sh",
@@ -7146,7 +7329,6 @@ def test_retained_checkout_commands_require_machine_local_roots() -> None:
 
 def test_active_checkout_docs_and_tools_have_no_private_machine_defaults() -> None:
     excluded = {
-        REPO_ROOT / "notes/production_core_inventory.md",
         REPO_ROOT / "notes/production_core_pruning_roadmap.md",
         REPO_ROOT / "scripts/build_docs_site.py",
         REPO_ROOT / "scripts/check_release_metadata.py",
@@ -7244,30 +7426,30 @@ def test_private_gjd_conditioning_study_driver_is_retired() -> None:
         REPO_ROOT / "notes" / "gjd_attention_and_rollout_parity_overnight_20260708.md",
     )
     packed_block = (
-        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "packed_block.py"
+        PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "packed_block.py"
     ).read_text(encoding="utf-8")
     packed_runtime = (
-        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "runtime.py"
+        PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "runtime.py"
     ).read_text(encoding="utf-8")
     variant = (
-        PACKAGE_ROOT / "models" / "policy_variants" / "mot" / "variant.py"
+        PACKAGE_ROOT / "models" / "policy_variants" / "dual_expert" / "variant.py"
     ).read_text(encoding="utf-8")
 
     assert not any(path.exists() for path in retired_paths)
-    assert "mot_collect_attention_focus" not in variant
+    assert "dual_expert_collect_attention_focus" not in variant
     assert "attention_diagnostics" not in packed_block
     assert "attention_diagnostics" not in packed_runtime
 
 
-def test_libero_mot_input_preparation_has_one_package_owner() -> None:
-    from open_wam.evals import libero_mot_inputs, libero_mot_rollout
+def test_libero_dual_expert_input_preparation_has_one_package_owner() -> None:
+    from open_wam.evals import libero_dual_expert_inputs, libero_dual_expert_rollout
 
-    input_path = PACKAGE_ROOT / "evals" / "libero_mot_inputs.py"
-    rollout_path = PACKAGE_ROOT / "evals" / "libero_mot_rollout.py"
+    input_path = PACKAGE_ROOT / "evals" / "libero_dual_expert_inputs.py"
+    rollout_path = PACKAGE_ROOT / "evals" / "libero_dual_expert_rollout.py"
     input_helpers = {
         "_build_infer_context",
         "_encode_video_window_offline",
-        "_prepare_mot_visual_outputs",
+        "_prepare_dual_expert_visual_outputs",
         "_prepare_visual_outputs_offline",
         "_select_model_obs_window",
     }
@@ -7275,20 +7457,20 @@ def test_libero_mot_input_preparation_has_one_package_owner() -> None:
     assert input_helpers <= _top_level_definitions(input_path)
     assert input_helpers.isdisjoint(_top_level_definitions(rollout_path))
     assert (
-        "open_wam.evals.libero_mot_rollout"
+        "open_wam.evals.libero_dual_expert_rollout"
         not in _absolute_imports_for_file(input_path)
     )
-    assert "from open_wam.evals.libero_mot_inputs import" in rollout_path.read_text(
+    assert "from open_wam.evals.libero_dual_expert_inputs import" in rollout_path.read_text(
         encoding="utf-8"
     )
     for helper_name in input_helpers:
-        assert getattr(libero_mot_rollout, helper_name) is getattr(
-            libero_mot_inputs,
+        assert getattr(libero_dual_expert_rollout, helper_name) is getattr(
+            libero_dual_expert_inputs,
             helper_name,
         )
     assert _compatibility_export_names(rollout_path) == {
-        "LIVE_SIM_MOT_GENERALIST_ROLLOUT_MODES",
-        "OFFLINE_DIAGNOSTIC_MOT_GENERALIST_ROLLOUT_MODES",
+        "LIVE_SIM_DUAL_EXPERT_GENERALIST_ROLLOUT_MODES",
+        "OFFLINE_DIAGNOSTIC_DUAL_EXPERT_GENERALIST_ROLLOUT_MODES",
         "_encode_video_window_offline",
         "_maybe_merge_checkpoint_runtime_config",
         "_prepare_visual_outputs_offline",
@@ -7296,15 +7478,15 @@ def test_libero_mot_input_preparation_has_one_package_owner() -> None:
     }
 
 
-def test_libero_mot_drivers_delegate_to_the_package_episode_runner() -> None:
+def test_libero_dual_expert_drivers_delegate_to_the_package_episode_runner() -> None:
     single_source = (
-        REPO_ROOT / "scripts" / "run_libero_mot_visualization.py"
+        REPO_ROOT / "scripts" / "run_libero_dual_expert_visualization.py"
     ).read_text(encoding="utf-8")
     batch_source = (
-        REPO_ROOT / "scripts" / "run_libero_mot_batch_visualization.py"
+        REPO_ROOT / "scripts" / "run_libero_dual_expert_batch_visualization.py"
     ).read_text(encoding="utf-8")
     package_source = (
-        PACKAGE_ROOT / "evals" / "libero_mot_rollout.py"
+        PACKAGE_ROOT / "evals" / "libero_dual_expert_rollout.py"
     ).read_text(encoding="utf-8")
     artifact_source = (
         PACKAGE_ROOT / "evals" / "libero_rollout_artifacts.py"
@@ -7319,14 +7501,14 @@ def test_libero_mot_drivers_delegate_to_the_package_episode_runner() -> None:
         PACKAGE_ROOT
         / "models"
         / "policy_variants"
-        / "mot"
+        / "dual_expert"
         / "observed_history.py"
     ).read_text(encoding="utf-8")
 
-    assert "run_mot_libero_episode(" in single_source
-    assert "run_mot_libero_episode(" in batch_source
+    assert "run_dual_expert_libero_episode(" in single_source
+    assert "run_dual_expert_libero_episode(" in batch_source
     assert "importlib.util" not in batch_source
-    assert "mot_viz._" not in batch_source
+    assert "dual_expert_viz._" not in batch_source
     assert "._forward_infer_with_visual_outputs(" not in package_source
     assert "runner.reconcile_observed_history(" in package_source
     assert "persist_libero_rollout_artifacts(" in package_source
@@ -7504,37 +7686,37 @@ def test_sanity_command_has_one_package_owner() -> None:
     assert not (PACKAGE_ROOT / "cli" / "_legacy_script.py").exists()
 
 
-def test_libero_mot_runtime_loading_has_one_owner() -> None:
-    runtime_path = PACKAGE_ROOT / "evals" / "libero_mot_runtime.py"
-    rollout_path = PACKAGE_ROOT / "evals" / "libero_mot_rollout.py"
-    single_driver_path = REPO_ROOT / "scripts" / "run_libero_mot_visualization.py"
+def test_libero_dual_expert_runtime_loading_has_one_owner() -> None:
+    runtime_path = PACKAGE_ROOT / "evals" / "libero_dual_expert_runtime.py"
+    rollout_path = PACKAGE_ROOT / "evals" / "libero_dual_expert_rollout.py"
+    single_driver_path = REPO_ROOT / "scripts" / "run_libero_dual_expert_visualization.py"
     batch_driver_path = (
-        REPO_ROOT / "scripts" / "run_libero_mot_batch_visualization.py"
+        REPO_ROOT / "scripts" / "run_libero_dual_expert_batch_visualization.py"
     )
     runtime_definitions = _top_level_definitions(runtime_path)
     rollout_definitions = _top_level_definitions(rollout_path)
     runtime_contract = {
-        "MotLiberoLoadOptions",
-        "MotLiberoRuntime",
+        "DualExpertLiberoLoadOptions",
+        "DualExpertLiberoRuntime",
         "_action_per_frame",
         "_build_component_report",
         "_frame_chunk_size",
         "_maybe_merge_checkpoint_runtime_config",
         "_require_current_frontend_encode_mode",
-        "_resolve_mot_checkpoint_path",
-        "_validate_live_sim_mot_generalist_rollout_mode",
-        "_validate_mot_config",
-        "load_mot_libero_runtime",
+        "_resolve_dual_expert_checkpoint_path",
+        "_validate_live_sim_dual_expert_generalist_rollout_mode",
+        "_validate_dual_expert_config",
+        "load_dual_expert_libero_runtime",
         "print_rollout_event",
     }
 
     assert runtime_contract <= runtime_definitions
     assert runtime_contract.isdisjoint(rollout_definitions)
-    assert "open_wam.evals.libero_mot_runtime" in _absolute_imports_for_file(
+    assert "open_wam.evals.libero_dual_expert_runtime" in _absolute_imports_for_file(
         rollout_path
     )
     for driver_path in (single_driver_path, batch_driver_path):
-        assert "open_wam.evals.libero_mot_runtime" in _absolute_imports_for_file(
+        assert "open_wam.evals.libero_dual_expert_runtime" in _absolute_imports_for_file(
             driver_path
         )
     runtime_source = runtime_path.read_text(encoding="utf-8")
@@ -7883,8 +8065,9 @@ def test_sampled_eval_reporting_has_one_package_owner() -> None:
         "write_summary_md",
         "write_status_note",
     }.isdisjoint(runner_definitions)
-    assert "open_wam.evals.sampled_eval_reporting" in _absolute_imports_for_file(
-        runner_path
+    assert _imports_qualified_name(
+        runner_path,
+        "open_wam.evals.sampled_eval_reporting",
     )
 
 
@@ -7935,8 +8118,9 @@ def test_sampled_eval_sampling_has_one_package_owner() -> None:
         "select_sampled_episodes",
         "select_task_episode_axis",
     }.isdisjoint(runner_definitions)
-    assert "open_wam.evals.sampled_eval_sampling" in _absolute_imports_for_file(
-        runner_path
+    assert _imports_qualified_name(
+        runner_path,
+        "open_wam.evals.sampled_eval_sampling",
     )
     assert "argparse" not in _absolute_imports_for_file(sampling_path)
     assert "open_wam.integrations.libero_tasks" not in _absolute_imports_for_file(
@@ -7991,8 +8175,9 @@ def test_sampled_eval_planning_has_one_lightweight_package_owner() -> None:
         "scheduler_suffix_for",
         "select_by_key",
     }.isdisjoint(runner_definitions)
-    assert "open_wam.evals.sampled_eval_planning" in _absolute_imports_for_file(
-        runner_path
+    assert _imports_qualified_name(
+        runner_path,
+        "open_wam.evals.sampled_eval_planning",
     )
     planning_imports = _absolute_imports_for_file(planning_path)
     assert "argparse" not in planning_imports
@@ -8157,8 +8342,9 @@ def test_checkpoint_artifact_discovery_has_one_lightweight_owner() -> None:
     assert artifact_contract - {"CHECKPOINT_FILENAMES"} <= artifact_definitions
     assert artifact_contract == _module_all_names(artifact_path)
     assert moved_runner_definitions.isdisjoint(_top_level_definitions(runner_path))
-    assert "open_wam.runtime.checkpoint_artifacts" in _absolute_imports_for_file(
-        runner_path
+    assert _imports_qualified_name(
+        runner_path,
+        "open_wam.runtime.checkpoint_artifacts",
     )
     assert "open_wam.runtime.checkpoint_artifacts" in _absolute_imports_for_file(
         loader_path

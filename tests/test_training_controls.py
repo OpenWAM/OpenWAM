@@ -6,24 +6,29 @@ from pathlib import Path
 import pytest
 from torch import nn
 
-from open_wam.configs import MoTPolicyConfig, ParallelStreamPolicyConfig, TrainingConfig
+from open_wam.configs import (
+    DualExpertPolicyConfig,
+    ParallelStreamPolicyConfig,
+    TrainingConfig,
+    load_experiment_config,
+)
 from open_wam.configs.enums import (
-    CurrentBlockCoupling,
     AttachSite,
-    MoTGeneralistTrainingMode,
-    MoTRuntimeMode,
+    CurrentBlockCoupling,
+    DualExpertRuntimeMode,
+    GeneralistDenoisingMode,
     ParallelRuntimeMode,
     TrainingComponentSelector,
 )
 from open_wam.data import build_synthetic_latent_batch
-from open_wam.models.policy_variants.mot.packed_block import MoTPackedBlockStack
 from open_wam.models.policy_variants import PolicyTrainBatch
-from open_wam.pipelines import build_variant_pipeline_from_config
-from open_wam.training import apply_training_component_controls
-from open_wam.configs import load_experiment_config
+from open_wam.models.policy_variants.dual_expert.packed_block import (
+    DualExpertPackedBlockStack,
+)
 from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
 from open_wam.models.visual_tower.replica_core import SharedVideoTransformerCore
-
+from open_wam.pipelines import build_variant_pipeline_from_config
+from open_wam.training import apply_training_component_controls
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -87,8 +92,8 @@ def test_parallel_stream_enabled_objectives_can_disable_action_loss() -> None:
     )
 
 
-def test_apply_training_component_controls_supports_mot_action_expert_selector() -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/mot_robotwin_smoke.yaml")
+def test_apply_training_component_controls_supports_dual_expert_action_expert_selector() -> None:
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml")
     pipeline = build_variant_pipeline_from_config(config)
 
     report = apply_training_component_controls(pipeline, config.training)
@@ -99,10 +104,10 @@ def test_apply_training_component_controls_supports_mot_action_expert_selector()
     assert all(parameter.requires_grad for parameter in pipeline.policy_variant.action_expert.parameters())
 
 
-def _build_mot_packed_smoke_pipeline():
-    """Build the MoT smoke pipeline with packed coupling on (CPU-only).
+def _build_dual_expert_packed_smoke_pipeline():
+    """Build the DualExpert smoke pipeline with packed coupling on (CPU-only).
 
-    ``mot_robotwin_smoke.yaml`` keeps the backbone/action-expert tiny (1
+    ``dual_expert_robotwin_smoke.yaml`` keeps the backbone/action-expert tiny (1
     layer, hidden=256), so the pipeline is cheap to construct and we can
     exercise the ownership-transfer surgery and selector resolution without
     spinning up the full LingBot-scale stack.
@@ -112,15 +117,15 @@ def _build_mot_packed_smoke_pipeline():
 
     from open_wam.configs.enums import (
         CurrentBlockCoupling,
-        MoTRuntimeMode,
+        DualExpertRuntimeMode,
         ProprioContextMode,
     )
 
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/mot_robotwin_smoke.yaml")
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml")
     policy_variant_config = _replace(
         config.policy_variant,
         current_block_coupling=CurrentBlockCoupling.VIDEO_THEN_ACTION,
-        runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+        runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
         proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
     )
     config = _replace(config, policy_variant=policy_variant_config)
@@ -138,7 +143,7 @@ def _non_proprio_core_parameters(pipeline):
 
 
 def test_packed_coupling_action_expert_selector_only_trains_action_side() -> None:
-    config, pipeline = _build_mot_packed_smoke_pipeline()
+    config, pipeline = _build_dual_expert_packed_smoke_pipeline()
     assert pipeline.policy_variant.packed_block_stack is not None
     config = replace(
         config,
@@ -170,7 +175,7 @@ def test_packed_coupling_action_expert_selector_only_trains_action_side() -> Non
 
 
 def test_packed_coupling_runtime_backbone_selector_only_trains_video_side() -> None:
-    config, pipeline = _build_mot_packed_smoke_pipeline()
+    config, pipeline = _build_dual_expert_packed_smoke_pipeline()
     assert pipeline.policy_variant.packed_block_stack is not None
     config = replace(
         config,
@@ -199,7 +204,7 @@ def test_packed_coupling_runtime_backbone_selector_only_trains_video_side() -> N
 
 
 def test_packed_coupling_combined_selector_trains_both_sides() -> None:
-    config, pipeline = _build_mot_packed_smoke_pipeline()
+    config, pipeline = _build_dual_expert_packed_smoke_pipeline()
     assert pipeline.policy_variant.packed_block_stack is not None
     config = replace(
         config,
@@ -227,7 +232,7 @@ def test_packed_coupling_combined_selector_trains_both_sides() -> None:
 
 
 def test_packed_coupling_freeze_video_train_action() -> None:
-    config, pipeline = _build_mot_packed_smoke_pipeline()
+    config, pipeline = _build_dual_expert_packed_smoke_pipeline()
     assert pipeline.policy_variant.packed_block_stack is not None
     config = replace(
         config,
@@ -257,7 +262,7 @@ def test_packed_coupling_freeze_video_train_action() -> None:
 
 
 def test_packed_legacy_restore_transfers_block_ownership_once() -> None:
-    _, pipeline = _build_mot_packed_smoke_pipeline()
+    _, pipeline = _build_dual_expert_packed_smoke_pipeline()
     packed_stack = pipeline.policy_variant.packed_block_stack
     assert packed_stack is not None
     video_block_ids = [id(packed_block.video_block) for packed_block in packed_stack.packed_blocks]
@@ -271,7 +276,7 @@ def test_packed_legacy_restore_transfers_block_ownership_once() -> None:
     assert pipeline.policy_variant.packed_block_stack is None
     assert [id(block) for block in pipeline.visual_tower.core.blocks] == video_block_ids
     assert [id(block) for block in pipeline.policy_variant.action_expert.blocks] == action_block_ids
-    assert not any(isinstance(module, MoTPackedBlockStack) for module in pipeline.modules())
+    assert not any(isinstance(module, DualExpertPackedBlockStack) for module in pipeline.modules())
     assert not any("packed_block_stack" in key for key in pipeline.state_dict())
     assert pipeline.policy_variant.restore_packed_blocks_for_legacy_inference(pipeline.visual_tower) is False
 
@@ -300,7 +305,7 @@ def test_apply_training_component_controls_supports_action_decoder_adapter_selec
 
 
 def test_additive_proprio_context_encoder_trains_with_action_only_selector() -> None:
-    config, pipeline = _build_mot_packed_smoke_pipeline()
+    config, pipeline = _build_dual_expert_packed_smoke_pipeline()
     encoder = pipeline.visual_tower.core.proprio_hidden_context_encoder
     assert encoder is not None
     config = replace(
@@ -318,7 +323,7 @@ def test_additive_proprio_context_encoder_trains_with_action_only_selector() -> 
 
 
 def test_additive_proprio_context_encoder_can_be_explicitly_frozen() -> None:
-    config, pipeline = _build_mot_packed_smoke_pipeline()
+    config, pipeline = _build_dual_expert_packed_smoke_pipeline()
     encoder = pipeline.visual_tower.core.proprio_hidden_context_encoder
     assert encoder is not None
     config = replace(
@@ -336,7 +341,7 @@ def test_additive_proprio_context_encoder_can_be_explicitly_frozen() -> None:
 
 
 def test_additive_proprio_context_encoder_respects_broad_visual_core_freeze() -> None:
-    config, pipeline = _build_mot_packed_smoke_pipeline()
+    config, pipeline = _build_dual_expert_packed_smoke_pipeline()
     encoder = pipeline.visual_tower.core.proprio_hidden_context_encoder
     assert encoder is not None
     config = replace(
@@ -402,14 +407,14 @@ def test_generalist_mode_context_encoder_trains_with_frozen_backbone_selector() 
     assert all(not parameter.requires_grad for parameter in pipeline.visual_tower.core.patch_embedding_mlp.parameters())
 
 
-def test_mot_generalist_mode_context_encoder_trains_with_frozen_backbone_selector() -> None:
+def test_dual_expert_generalist_mode_context_encoder_trains_with_frozen_backbone_selector() -> None:
     pipeline = _TinyGeneralistModePipeline()
-    pipeline.policy_variant.config = MoTPolicyConfig(
+    pipeline.policy_variant.config = DualExpertPolicyConfig(
         hidden_size=16,
         attach_site=AttachSite.POST_VISUAL_CORE,
-        runtime_mode=MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+        runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
         current_block_coupling=CurrentBlockCoupling.JOINT,
-        mot_generalist_training_mode_probs={MoTGeneralistTrainingMode.JOINT: 1.0},
+        generalist_denoising_mode_probs={GeneralistDenoisingMode.JOINT: 1.0},
         generalist_mode_text_token=True,
     )
     encoder = pipeline.visual_tower.core.generalist_mode_context_encoder

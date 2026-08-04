@@ -9,7 +9,7 @@ import torch
 from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.configs.enums import (
     CurrentBlockCoupling,
-    ParallelHistoryStreamVisibility,
+    HistoryStreamVisibility,
 )
 from open_wam.models.common.cache_backend_contracts import (
     SLOT_POOL_DEFER_EVICTION_UNTIL_AFTER_WRITE_ATTENTION,
@@ -50,7 +50,7 @@ def write_joint_clean_tokens_to_exact_cache(
     window_size: int,
     current_block_coupling: CurrentBlockCoupling | str,
     preserve_video_pretrain_history: bool,
-    history_stream_visibility: ParallelHistoryStreamVisibility | str | None = None,
+    history_stream_visibility: HistoryStreamVisibility | str | None = None,
     video_hidden_context: torch.Tensor | None = None,
     action_hidden_context: torch.Tensor | None = None,
     allow_cache_prefix_during_update_write: bool = False,

@@ -8,8 +8,8 @@ from einops import rearrange
 from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.configs.training import TrainingConfig
-from open_wam.models.common.flow_schedule import FlowMatchScheduler
 from open_wam.models.common.flow_noise_plan import clean_timestep_values
+from open_wam.models.common.flow_schedule import FlowMatchScheduler
 from open_wam.models.common.modality_slots import (
     force_clean_noisy_slot,
     zero_condition_slot,
@@ -19,7 +19,7 @@ from open_wam.models.visual_tower.reference_transformer import preferred_referen
 from .latent_conditioning import (
     select_first_frame_condition_latents as _select_first_frame_condition_latents,
 )
-from .training_artifact_contracts import LingbotParallelTrainArtifacts
+from .training_artifact_contracts import ParallelTrainArtifacts
 from .training_noise import build_parallel_flow_noise_artifacts as _add_noise
 
 
@@ -34,7 +34,7 @@ def prepare_parallel_current_frame_action_chunk_train_artifacts(
     text_emb: torch.Tensor | None,
     condition_latents: torch.Tensor | None = None,
     frame_shift: int = 0,
-) -> LingbotParallelTrainArtifacts:
+) -> ParallelTrainArtifacts:
     batch_size, _, observed_frames, _, _ = video_latents.shape
     target_frames = int(policy_config.frame_chunk_size)
     if observed_frames < target_frames:
@@ -160,7 +160,7 @@ def prepare_parallel_current_frame_action_chunk_train_artifacts(
     )
     action_dict["loss_mask"] = action_dict["actions_mask"].clone()
 
-    return LingbotParallelTrainArtifacts(
+    return ParallelTrainArtifacts(
         input_dict={
             "latent_dict": latent_dict,
             "action_dict": action_dict,
@@ -196,7 +196,7 @@ def prepare_parallel_fastwam_first_frame_train_artifacts(
     text_emb: torch.Tensor | None,
     condition_latents: torch.Tensor | None = None,
     frame_shift: int = 0,
-) -> LingbotParallelTrainArtifacts:
+) -> ParallelTrainArtifacts:
     batch_size, _, num_frames, _, _ = video_latents.shape
     if num_frames <= 1:
         raise ValueError(
@@ -321,7 +321,7 @@ def prepare_parallel_fastwam_first_frame_train_artifacts(
     latent_dict["loss_mask"] = latent_loss_mask
     action_dict["loss_mask"] = action_dict["actions_mask"].clone()
 
-    return LingbotParallelTrainArtifacts(
+    return ParallelTrainArtifacts(
         input_dict={
             "latent_dict": latent_dict,
             "action_dict": action_dict,

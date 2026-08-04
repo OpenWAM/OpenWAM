@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from .config_paths import resolve_config_path_alias
 from .enums import (
@@ -19,22 +19,20 @@ from .enums import (
     AuxiliaryValidationSource,
     BackboneImplementation,
     BatchAdapterName,
+    ContextConditionLatentSource,
     CurrentBlockCoupling,
     DataSplit,
+    DualExpertActionExpertInitMode,
+    DualExpertConditionMode,
+    DualExpertRuntimeMode,
     EvalMode,
+    GeneralistDenoisingMode,
     GeneralistTrainingParadigm,
-    JointDenoiseTrainingMode,
+    HistoryStreamVisibility,
     JointTimestepCoupling,
     LatentTemporalLayout,
-    MoTActionExpertInitMode,
-    MoTConditionMode,
-    MoTGeneralistTrainingMode,
-    MoTRuntimeMode,
     PaddedTargetPolicy,
-    ParallelContextConditionLatentSource,
-    ParallelHistoryStreamVisibility,
     ParallelRuntimeMode,
-    ParallelSequenceContract,
     ParallelStreamVariantProfile,
     PolicyVariantName,
     ProprioContextMode,
@@ -49,7 +47,14 @@ from .enums import (
     TailPaddingPolicy,
     TrainerAccelerator,
     TrainerPrecision,
+    VideoActionProgram,
+    VideoActionSequenceContract,
     WindowSamplingMode,
+)
+from .policy_compatibility import (
+    LEGACY_VIDEO_ACTION_POLICY_FIELD_ALIASES,
+    LEGACY_VIDEO_ACTION_POLICY_FIELDS,
+    normalize_video_action_config_fields,
 )
 from .static_validation_contracts import (
     StaticConfigIssue,
@@ -74,6 +79,21 @@ def validate_config_file(path: str | Path, *, repo_root: str | Path | None = Non
     root = Path(repo_root).expanduser().resolve() if repo_root is not None else _find_repo_root(source_path)
     raw = _read_yaml_mapping(source_path)
     builder = _IssueBuilder(source_path=source_path, repo_root=root)
+    raw_policy = raw.get("policy_variant")
+    if isinstance(raw_policy, dict):
+        for legacy_name in sorted(LEGACY_VIDEO_ACTION_POLICY_FIELDS.intersection(raw_policy)):
+            canonical_name = LEGACY_VIDEO_ACTION_POLICY_FIELD_ALIASES.get(
+                legacy_name,
+                "joint_timestep_coupling",
+            )
+            builder.warning(
+                f"policy_variant.{legacy_name}",
+                f"Deprecated field; use `policy_variant.{canonical_name}`.",
+            )
+    try:
+        raw = normalize_video_action_config_fields(raw, warn=False)
+    except (TypeError, ValueError) as exc:
+        builder.error("policy_variant", str(exc))
     if "experiment_config" in raw:
         _validate_eval_config(raw, builder)
     else:
@@ -128,18 +148,17 @@ _STATIC_SCHEMA_COMPATIBILITY_EXPORTS = (
     ENUM_VALUE_ALIASES,
     EvalMode,
     GeneralistTrainingParadigm,
-    JointDenoiseTrainingMode,
+    GeneralistDenoisingMode,
     JointTimestepCoupling,
     LOCAL_PATH_PATTERN,
     LatentTemporalLayout,
-    MoTActionExpertInitMode,
-    MoTConditionMode,
-    MoTGeneralistTrainingMode,
-    MoTRuntimeMode,
-    ParallelContextConditionLatentSource,
-    ParallelHistoryStreamVisibility,
+    DualExpertActionExpertInitMode,
+    DualExpertConditionMode,
+    DualExpertRuntimeMode,
+    ContextConditionLatentSource,
+    HistoryStreamVisibility,
     ParallelRuntimeMode,
-    ParallelSequenceContract,
+    VideoActionSequenceContract,
     ParallelStreamVariantProfile,
     PaddedTargetPolicy,
     PolicyVariantName,
@@ -155,6 +174,7 @@ _STATIC_SCHEMA_COMPATIBILITY_EXPORTS = (
     TailPaddingPolicy,
     TrainerAccelerator,
     TrainerPrecision,
+    VideoActionProgram,
     WindowSamplingMode,
     probability_map_static_issues,
 )

@@ -8,14 +8,14 @@ from open_wam.configs import (
     ExperimentConfig,
     ExtensionActionDecoderConfig,
 )
-from open_wam.configs.policy_mot import MoTPolicyConfig
+from open_wam.configs.policy_dual_expert import DualExpertPolicyConfig
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.models.action_decoders import (
     ActionDecoder,
     DecodedFeatureActionDecoder,
-    LingbotParallelActionDecoder,
+    DualExpertActionDecoder,
     MLPActionDecoder,
-    MoTActionDecoder,
+    ParallelStreamActionDecoder,
     VideoConditionedActionDecoder,
     VideoOnlyActionDecoder,
 )
@@ -23,17 +23,17 @@ from open_wam.models.policy_variants.parallel_stream.action_adapter import (
     build_action_adapter_spec,
 )
 
-from .registries import ACTION_DECODER_BUILDERS, _EXTENSION_ACTION_DECODER_BUILDERS
+from .registries import _EXTENSION_ACTION_DECODER_BUILDERS, ACTION_DECODER_BUILDERS
 
 
 def _build_mlp_action_decoder(config: ExperimentConfig):
     decoder_config = config.action_decoder
-    mot_compat_decoder = (
-        isinstance(config.policy_variant, MoTPolicyConfig)
+    dual_expert_compat_decoder = (
+        isinstance(config.policy_variant, DualExpertPolicyConfig)
         and decoder_config.name == ActionDecoderName.MLP
     )
-    if mot_compat_decoder:
-        return MoTActionDecoder(
+    if dual_expert_compat_decoder:
+        return DualExpertActionDecoder(
             hidden_size=decoder_config.hidden_size,
             action_dim=decoder_config.action_dim,
             action_horizon=decoder_config.action_horizon,
@@ -94,7 +94,7 @@ def _build_video_conditioned_action_decoder(config: ExperimentConfig):
     )
 
 
-def _build_lingbot_parallel_action_decoder(config: ExperimentConfig):
+def _build_parallel_stream_action_decoder(config: ExperimentConfig):
     decoder_config = config.action_decoder
     source_action_channel_ids: tuple[int, ...] = ()
     if isinstance(config.policy_variant, ParallelStreamPolicyConfig):
@@ -110,7 +110,7 @@ def _build_lingbot_parallel_action_decoder(config: ExperimentConfig):
     if action_normalization.mode == ActionNormalizationMode.GAUSSIAN:
         source_action_mean = action_normalization.mean
         source_action_std = action_normalization.std
-    return LingbotParallelActionDecoder(
+    return ParallelStreamActionDecoder(
         hidden_size=decoder_config.hidden_size,
         action_dim=decoder_config.action_dim,
         action_horizon=decoder_config.action_horizon,
@@ -124,9 +124,13 @@ def _build_lingbot_parallel_action_decoder(config: ExperimentConfig):
     )
 
 
-def _build_mot_action_decoder(config: ExperimentConfig):
+# Deprecated factory alias for direct imports.
+_build_lingbot_parallel_action_decoder = _build_parallel_stream_action_decoder
+
+
+def _build_dual_expert_action_decoder(config: ExperimentConfig):
     decoder_config = config.action_decoder
-    return MoTActionDecoder(
+    return DualExpertActionDecoder(
         hidden_size=decoder_config.hidden_size,
         action_dim=decoder_config.action_dim,
         action_horizon=decoder_config.action_horizon,

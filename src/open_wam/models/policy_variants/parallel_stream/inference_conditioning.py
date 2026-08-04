@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from open_wam.configs.enums import JointDenoiseTrainingMode
+from open_wam.configs.enums import GeneralistDenoisingMode
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 
 
@@ -14,7 +14,7 @@ def append_generalist_mode_text_context(
     policy_config: ParallelStreamPolicyConfig,
     text_emb: torch.Tensor,
     negative_text_emb: torch.Tensor | None,
-    mode: JointDenoiseTrainingMode | str,
+    mode: GeneralistDenoisingMode | str,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     if not bool(getattr(policy_config, "generalist_mode_text_token", False)):
         return text_emb, negative_text_emb
@@ -24,7 +24,7 @@ def append_generalist_mode_text_context(
             "Generalist mode text-token ablation requires the runtime transformer "
             "to support mode-token appending."
         )
-    mode_value = JointDenoiseTrainingMode(mode).value
+    mode_value = GeneralistDenoisingMode(mode).value
     base_text_tokens = int(text_emb.shape[1])
     text_emb = append(text_emb, mode_value)
     token_count = int(text_emb.shape[1] - base_text_tokens)

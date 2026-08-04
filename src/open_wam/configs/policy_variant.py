@@ -11,9 +11,16 @@ from .enums import (
     ActionChunkAnchorMode,
     ActionNormMethod,
     AttachSite,
+    ContextConditionLatentSource,
     CurrentBlockCoupling,
     DecodeFeatureMode,
+    DualExpertActionExpertInitMode,
+    DualExpertConditionMode,
+    DualExpertPreset,
+    DualExpertRuntimeMode,
+    GeneralistDenoisingMode,
     GeneralistTrainingParadigm,
+    HistoryStreamVisibility,
     JointDenoiseTrainingMode,
     JointTimestepCoupling,
     MoTActionExpertInitMode,
@@ -36,6 +43,7 @@ from .enums import (
     ProprioContextMode,
     TemporalPositionMode,
     TemporalProjection,
+    VideoActionSequenceContract,
     VideoConditionInputSpace,
     VideoConditionSource,
     coerce_fields,
@@ -48,29 +56,48 @@ from .policy_contracts import (
     PostDecodedPolicyConfig,
     PostLatentPolicyConfig,
 )
-from .policy_mot import MoTPolicyConfig, _coerce_mot_generalist_training_mode_probs
+from .policy_dual_expert import (
+    DualExpertPolicyConfig,
+    _coerce_mot_generalist_training_mode_probs,
+)
 from .policy_parallel_stream import (
     ParallelStreamPolicyConfig,
     _coerce_joint_denoise_training_mode_probs,
     _default_joint_denoise_training_mode_probs,
 )
 from .policy_parsing import parse_policy_variant_config
+from .policy_video_action import (
+    VideoActionPolicyConfig,
+    resolve_video_action_program_semantics,
+)
 from .training import TrainingConfig
-from .variant_semantics import coerce_probability_map, default_video_action_conditioning_mode_probs
+from .variant_semantics import (
+    coerce_probability_map,
+    default_video_action_conditioning_mode_probs,
+)
 from .visual_readout import VisualReadoutConfig, parse_visual_readout_config
+
+MoTPolicyConfig = DualExpertPolicyConfig
 
 
 _POLICY_COMPATIBILITY_EXPORTS = (
     ActionChunkAnchorMode,
     ActionNormMethod,
     AttachSite,
+    ContextConditionLatentSource,
     CurrentBlockCoupling,
     DataConfig,
     DecodeFeatureMode,
     GeneralistTrainingParadigm,
+    HistoryStreamVisibility,
     InferenceConfig,
     JointDenoiseTrainingMode,
     JointTimestepCoupling,
+    DualExpertActionExpertInitMode,
+    DualExpertConditionMode,
+    GeneralistDenoisingMode,
+    DualExpertPreset,
+    DualExpertRuntimeMode,
     MoTActionExpertInitMode,
     MoTConditionMode,
     MoTGeneralistTrainingMode,
@@ -95,6 +122,7 @@ _POLICY_COMPATIBILITY_EXPORTS = (
     TrainingConfig,
     VideoConditionInputSpace,
     VideoConditionSource,
+    VideoActionSequenceContract,
     VisualReadoutConfig,
     coerce_fields,
     coerce_probability_map,
@@ -107,11 +135,13 @@ _POLICY_COMPATIBILITY_EXPORTS = (
 
 __all__ = [
     "CausalVideoPredictionPolicyConfig",
+    "DualExpertPolicyConfig",
     "ExtensionPolicyConfig",
-    "MoTPolicyConfig",
     "ParallelStreamPolicyConfig",
     "PolicyVariantConfig",
     "PostDecodedPolicyConfig",
     "PostLatentPolicyConfig",
+    "VideoActionPolicyConfig",
     "parse_policy_variant_config",
+    "resolve_video_action_program_semantics",
 ]

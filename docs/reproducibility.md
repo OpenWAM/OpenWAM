@@ -12,7 +12,7 @@ Every public result should be traceable to:
 - random seed
 - result schema version
 
-Use [experiment_cards.md](experiment_cards.md) for method-family result cards
+Use [experiment_cards.md](experiment_cards.md) for architecture/program result cards
 and `configs/artifacts.sample.yaml` for artifact layout metadata.
 
 ## Result Schema
@@ -40,7 +40,7 @@ compatibility window. Remove legacy fields only in a later legacy-removal PR.
 
 WandB is optional. When enabled, use stable naming:
 
-- project: `openwam-<benchmark-or-method>`
-- group: `<method-family>/<benchmark>/<dataset-or-artifact>`
+- project: `openwam-<benchmark-or-workload>`
+- group: `<benchmark>/<architecture>/<program-or-profile>`
 - run name: `<config-name>_<short-commit>_<timestamp-or-step>`
-- tags: method family, benchmark, dataset type, checkpoint source
+- tags: architecture, program, benchmark, dataset type, checkpoint source

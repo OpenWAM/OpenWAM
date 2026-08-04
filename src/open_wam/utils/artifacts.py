@@ -6,11 +6,20 @@ from typing import Any
 
 import yaml
 
+_LEGACY_ARTIFACT_ARCHITECTURES = {
+    "method1": "parallel_stream",
+    "method_1": "parallel_stream",
+    "m1": "parallel_stream",
+    "method5": "dual_expert",
+    "method_5": "dual_expert",
+    "m5": "dual_expert",
+}
+
 
 @dataclass(frozen=True)
 class ArtifactManifestEntry:
     artifact_id: str
-    method_family: str
+    architecture: str
     variant: str
     benchmark: str | None
     config: str
@@ -21,6 +30,12 @@ class ArtifactManifestEntry:
     license: str | None
     source: str | None
     notes: str | None
+
+    @property
+    def method_family(self) -> str:
+        """Compatibility alias for manifests created before schema v2."""
+
+        return self.architecture
 
 
 def load_artifact_manifest(path: str | Path) -> tuple[ArtifactManifestEntry, ...]:
@@ -56,15 +71,40 @@ def validate_artifact_layout(root: str | Path, expected_layout: dict[str, Any]) 
 def _coerce_artifact_entry(raw: Any, *, source_path: Path) -> ArtifactManifestEntry:
     if not isinstance(raw, dict):
         raise ValueError(f"Expected artifact entries in {source_path} to be mappings.")
-    required = ("artifact_id", "method_family", "variant", "config", "expected_layout")
+    required = ("artifact_id", "variant", "config", "expected_layout")
     missing = [key for key in required if key not in raw]
+    architecture = raw.get("architecture")
+    legacy_method_family = raw.get("method_family")
+    if architecture is None and legacy_method_family is None:
+        missing.append("architecture")
     if missing:
         raise ValueError(f"Artifact entry in {source_path} is missing required fields: {missing}")
+    normalized_legacy_architecture = (
+        None
+        if legacy_method_family is None
+        else _LEGACY_ARTIFACT_ARCHITECTURES.get(
+            str(legacy_method_family),
+            str(legacy_method_family),
+        )
+    )
+    if (
+        architecture is not None
+        and normalized_legacy_architecture is not None
+        and str(architecture) != normalized_legacy_architecture
+    ):
+        raise ValueError(
+            f"Artifact {raw.get('artifact_id')!r} has conflicting `architecture` "
+            "and deprecated `method_family` values."
+        )
     if not isinstance(raw["expected_layout"], dict):
         raise ValueError(f"Artifact {raw.get('artifact_id')!r} expected_layout must be a mapping.")
     return ArtifactManifestEntry(
         artifact_id=str(raw["artifact_id"]),
-        method_family=str(raw["method_family"]),
+        architecture=str(
+            architecture
+            if architecture is not None
+            else normalized_legacy_architecture
+        ),
         variant=str(raw["variant"]),
         benchmark=None if raw.get("benchmark") is None else str(raw["benchmark"]),
         config=str(raw["config"]),

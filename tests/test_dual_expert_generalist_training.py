@@ -1,0 +1,1484 @@
+"""Tests for dual-expert generalist joint denoising.
+
+Covers:
+- Config validation: opt-in dict requires JOINT coupling; rejects
+  non-finite / negative probs; default opt-out keeps existing 6-mode path.
+- Sampling helper: respects the categorical and degenerate-prob shortcuts.
+- 4-piece kit application: ACTION_CONDITIONED_VIDEO and
+  VIDEO_CONDITIONED_ACTION rewrite the right tensors; JOINT is a no-op.
+- Variant integration: when generalist probs are None, the existing 6-mode
+  path is unchanged; per-mode metrics show up only when the segment ran in
+  generalist mode.
+"""
+
+from __future__ import annotations
+
+import math
+from collections import Counter
+from dataclasses import replace as _dataclass_replace
+
+import pytest
+import torch
+
+from open_wam.configs import TrainingConfig
+from open_wam.configs.enums import (
+    AttachSite,
+    ContextConditionLatentSource,
+    CurrentBlockCoupling,
+    DualExpertRuntimeMode,
+    GeneralistDenoisingMode,
+    HistoryStreamVisibility,
+    JointTimestepCoupling,
+    PolicyVariantName,
+    ProprioContextMode,
+    VideoActionSequenceContract,
+)
+from open_wam.configs.policy_dual_expert import (
+    DualExpertPolicyConfig,
+    _coerce_generalist_denoising_mode_probs,
+)
+from open_wam.configs.variant_semantics import (
+    GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY,
+)
+from open_wam.models.common.attention_profiles import (
+    build_chunked_text_context_cross_attention_mask,
+)
+from open_wam.models.common.flow_matching import (
+    VideoFlowMatchTrainArtifacts,
+    build_frame_aligned_action_flow_match_train_artifacts,
+    build_video_flow_match_train_artifacts,
+)
+from open_wam.models.policy_variants.contracts import PolicyInferContext
+from open_wam.models.policy_variants.dual_expert.attention import (
+    build_dual_expert_packed_coupling_attention_profile,
+)
+from open_wam.models.policy_variants.dual_expert.decoder_artifacts import (
+    DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT,
+    DualExpertTrainArtifacts,
+)
+from open_wam.models.policy_variants.dual_expert.generalist_modes import (
+    apply_generalist_training_mode,
+    generalist_rollout_mode_from_value,
+    resolve_generalist_rollout_mode,
+    sample_generalist_training_mode,
+)
+from open_wam.models.policy_variants.dual_expert.runtime_routing import (
+    should_couple_dual_expert_action_to_video_sigmas,
+)
+from open_wam.models.policy_variants.dual_expert.variant import (
+    _apply_dual_expert_generalist_training_mode,
+    _dual_expert_generalist_rollout_mode_from_value,
+    _resolve_dual_expert_generalist_rollout_mode,
+    _sample_dual_expert_generalist_training_mode,
+)
+
+
+def test_legacy_generalist_helpers_are_identity_preserving_aliases() -> None:
+    assert _apply_dual_expert_generalist_training_mode is apply_generalist_training_mode
+    assert _dual_expert_generalist_rollout_mode_from_value is generalist_rollout_mode_from_value
+    assert _resolve_dual_expert_generalist_rollout_mode is resolve_generalist_rollout_mode
+    assert _sample_dual_expert_generalist_training_mode is sample_generalist_training_mode
+
+
+def _make_dual_expert_policy_config(**overrides) -> DualExpertPolicyConfig:
+    base = dict(
+        name=PolicyVariantName.DUAL_EXPERT,
+        hidden_size=256,
+        attach_site=AttachSite.POST_VISUAL_CORE,
+    )
+    base.update(overrides)
+    return DualExpertPolicyConfig(**base)
+
+
+# ---------------------------------------------------------------------------
+# Config validation
+# ---------------------------------------------------------------------------
+
+
+def test_default_opt_out_keeps_existing_six_mode_path() -> None:
+    cfg = _make_dual_expert_policy_config()
+    assert cfg.generalist_denoising_mode_probs is None
+
+
+def test_opt_in_dict_normalizes_and_keeps_joint_coupling() -> None:
+    cfg = _make_dual_expert_policy_config(
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        generalist_denoising_mode_probs={
+            "joint": 6.0,
+            "action_conditioned_video": 2.0,
+            "video_conditioned_action": 2.0,
+        },
+    )
+    probs = cfg.generalist_denoising_mode_probs
+    assert probs is not None
+    assert math.isclose(sum(probs.values()), 1.0)
+    assert math.isclose(probs[GeneralistDenoisingMode.JOINT], 0.6)
+    assert math.isclose(probs[GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO], 0.2)
+    assert math.isclose(probs[GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION], 0.2)
+    assert cfg.joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA
+
+
+def test_generalist_sigma_coupling_is_explicitly_configurable() -> None:
+    cfg = _make_dual_expert_policy_config(
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        generalist_denoising_mode_probs={"joint": 1.0},
+    )
+    assert should_couple_dual_expert_action_to_video_sigmas(cfg, CurrentBlockCoupling.JOINT) is True
+
+    cfg = _make_dual_expert_policy_config(
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        generalist_denoising_mode_probs={"joint": 1.0},
+        joint_timestep_coupling=JointTimestepCoupling.SHARED_VIDEO_SCHEDULE,
+    )
+    assert should_couple_dual_expert_action_to_video_sigmas(cfg, CurrentBlockCoupling.JOINT) is True
+
+    cfg = _make_dual_expert_policy_config(
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        generalist_denoising_mode_probs={"joint": 1.0},
+        joint_timestep_coupling=JointTimestepCoupling.INDEPENDENT,
+    )
+    assert should_couple_dual_expert_action_to_video_sigmas(cfg, CurrentBlockCoupling.JOINT) is False
+
+    cfg = _make_dual_expert_policy_config(
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        generalist_denoising_mode_probs={"joint": 1.0},
+        joint_timestep_coupling=JointTimestepCoupling.MATCH_INDEX,
+    )
+    assert should_couple_dual_expert_action_to_video_sigmas(cfg, CurrentBlockCoupling.JOINT) is False
+
+    cfg = _make_dual_expert_policy_config(current_block_coupling=CurrentBlockCoupling.DECOUPLED_SAME_STEP)
+    assert (
+        should_couple_dual_expert_action_to_video_sigmas(
+            cfg,
+            CurrentBlockCoupling.DECOUPLED_SAME_STEP,
+        )
+        is False
+    )
+
+
+def test_opt_in_without_explicit_joint_coupling_is_rejected() -> None:
+    with pytest.raises(ValueError, match=r"current_block_coupling"):
+        _make_dual_expert_policy_config(
+            generalist_denoising_mode_probs={"joint": 1.0},
+        )
+
+def test_opt_in_with_directional_coupling_is_rejected() -> None:
+    with pytest.raises(ValueError, match=r"current_block_coupling"):
+        _make_dual_expert_policy_config(
+            current_block_coupling=CurrentBlockCoupling.VIDEO_NOISY_TO_ACTION,
+            generalist_denoising_mode_probs={"joint": 1.0},
+        )
+    with pytest.raises(ValueError, match=r"current_block_coupling"):
+        _make_dual_expert_policy_config(
+            current_block_coupling=CurrentBlockCoupling.ACTION_THEN_VIDEO,
+            generalist_denoising_mode_probs={"joint": 1.0},
+        )
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [
+        {"joint": float("nan")},
+        {"joint": float("inf")},
+        {"joint": -0.1},
+        {"joint": True},
+        {"joint": 0.0, "action_conditioned_video": 0.0, "video_conditioned_action": 0.0},
+    ],
+)
+def test_invalid_probs_rejected(bad_value: dict) -> None:
+    with pytest.raises(ValueError, match=r"generalist_denoising_mode_probs"):
+        _coerce_generalist_denoising_mode_probs(bad_value)
+
+
+def test_unknown_mode_key_rejected() -> None:
+    with pytest.raises(ValueError):
+        _coerce_generalist_denoising_mode_probs({"not_a_mode": 1.0})
+
+
+def test_existing_six_mode_yamls_are_not_disturbed() -> None:
+    """Sanity: any of the 6 fixed couplings keeps loading without generalist probs."""
+
+    for coupling in CurrentBlockCoupling:
+        cfg = _make_dual_expert_policy_config(current_block_coupling=coupling)
+        assert cfg.generalist_denoising_mode_probs is None
+        assert cfg.current_block_coupling == coupling
+
+
+def test_dual_expert_generalist_mode_text_token_requires_gjd_probs() -> None:
+    cfg = _make_dual_expert_policy_config(
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        generalist_denoising_mode_probs={"joint": 1.0},
+        generalist_mode_text_token=True,
+    )
+    assert cfg.generalist_mode_text_token is True
+
+    with pytest.raises(ValueError, match="generalist_mode_text_token"):
+        _make_dual_expert_policy_config(
+            current_block_coupling=CurrentBlockCoupling.JOINT,
+            generalist_mode_text_token=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Sampling
+# ---------------------------------------------------------------------------
+
+
+def test_sample_respects_categorical_distribution() -> None:
+    torch.manual_seed(0)
+    probs = {
+        GeneralistDenoisingMode.JOINT: 0.6,
+        GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO: 0.2,
+        GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION: 0.2,
+    }
+    counts: Counter[GeneralistDenoisingMode] = Counter()
+    for _ in range(2000):
+        mode = _sample_dual_expert_generalist_training_mode(probs, device=torch.device("cpu"))
+        counts[mode] += 1
+    total = sum(counts.values())
+    assert total == 2000
+    # Wide tolerance — just confirm none of the modes is missing and the
+    # ordering matches the expected weights.
+    joint_freq = counts[GeneralistDenoisingMode.JOINT] / total
+    acv_freq = counts[GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO] / total
+    vca_freq = counts[GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION] / total
+    assert 0.55 <= joint_freq <= 0.65
+    assert 0.15 <= acv_freq <= 0.25
+    assert 0.15 <= vca_freq <= 0.25
+
+
+def test_sample_degenerate_to_single_mode() -> None:
+    torch.manual_seed(0)
+    probs = {
+        GeneralistDenoisingMode.JOINT: 0.0,
+        GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO: 1.0,
+        GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION: 0.0,
+    }
+    for _ in range(50):
+        assert (
+            _sample_dual_expert_generalist_training_mode(probs, device=torch.device("cpu"))
+            == GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO
+        )
+
+
+def test_chunked_text_mask_keeps_mode_suffix_global() -> None:
+    # Legacy text-mask layout: 3 task-text tokens, 2 deprecated chunk-local
+    # proprio text tokens, 1 global mode token.
+    mask = build_chunked_text_context_cross_attention_mask(
+        query_chunk_ids=torch.tensor([0, 0, 1, 1]),
+        batch_size=1,
+        text_token_count=6,
+        base_text_token_count=3,
+        proprio_context_token_count=2,
+        global_suffix_token_count=1,
+        device=torch.device("cpu"),
+    )[0]
+
+    assert torch.all(mask[:, :3])
+    assert torch.equal(mask[:, 3], torch.tensor([True, True, False, False]))
+    assert torch.equal(mask[:, 4], torch.tensor([False, False, True, True]))
+    assert torch.all(mask[:, 5])
+
+
+def test_joint_generalist_can_share_video_action_sigma_values() -> None:
+    torch.manual_seed(0)
+    training_config = TrainingConfig(video_sigma_shift=3.0, action_sigma_shift=5.0)
+    video_latents = torch.randn(2, 4, 3, 2, 2)
+    actions = torch.randn(2, 6, 7)
+
+    video_artifacts = build_video_flow_match_train_artifacts(
+        video_latents,
+        training_config=training_config,
+        noisy_condition_prob=0.0,
+    )
+    video_sigma_values = video_artifacts.scheduler.sigma_for_timesteps(video_artifacts.timesteps)
+    action_artifacts = build_frame_aligned_action_flow_match_train_artifacts(
+        actions,
+        None,
+        training_config=training_config,
+        num_frames=3,
+        action_per_frame=2,
+        frame_sigma_values=video_sigma_values,
+    )
+
+    action_sigma_values = action_artifacts.scheduler.sigma_for_timesteps(action_artifacts.frame_timesteps)
+    assert torch.allclose(action_sigma_values, video_sigma_values, atol=2e-3, rtol=2e-3)
+
+
+# ---------------------------------------------------------------------------
+# 4-piece kit application
+# ---------------------------------------------------------------------------
+
+
+def _make_video_artifacts(*, B: int = 1, F: int = 4, H: int = 4, W: int = 4) -> VideoFlowMatchTrainArtifacts:
+    torch.manual_seed(1)
+    return VideoFlowMatchTrainArtifacts(
+        timesteps=torch.full((B, F), 0.7),
+        noisy_latents=torch.randn(B, 16, F, H, W),
+        targets=torch.randn(B, 16, F, H, W),
+        condition_latents=torch.randn(B, 16, F, H, W),
+        condition_timesteps=torch.full((B, F), 0.05),
+        scheduler=None,  # sched is irrelevant for the kit application logic.
+    )
+
+
+def test_joint_mode_preserves_plain_joint_condition_slots() -> None:
+    video_artifacts = _make_video_artifacts()
+    noisy_actions = torch.randn(1, 64, 7)
+    clean_actions = torch.randn(1, 64, 7)
+    noisy_slot_timesteps = torch.full((1, 64), 0.5)
+    future_loss_mask = torch.ones(1, 1, 4, 1, 1)
+    effective_action_mask = torch.ones_like(noisy_actions)
+
+    out = _apply_dual_expert_generalist_training_mode(
+        sampled_mode=GeneralistDenoisingMode.JOINT,
+        video_artifacts=video_artifacts,
+        noisy_actions=noisy_actions,
+        clean_actions=clean_actions,
+        noisy_slot_timesteps=noisy_slot_timesteps,
+        future_loss_mask=future_loss_mask,
+        effective_action_mask=effective_action_mask,
+    )
+
+    (out_video, out_noisy_actions, out_clean_actions,
+     out_noisy_ts, out_future_mask, out_action_mask) = out
+    assert out_video is video_artifacts
+    assert out_noisy_actions is noisy_actions
+    assert out_clean_actions is clean_actions
+    assert out_noisy_ts is noisy_slot_timesteps
+    assert out_future_mask is future_loss_mask
+    assert out_action_mask is effective_action_mask
+
+
+def test_action_conditioned_video_replaces_action_slots() -> None:
+    video_artifacts = _make_video_artifacts()
+    noisy_actions = torch.randn(1, 64, 7)
+    clean_actions = torch.randn(1, 64, 7)
+    noisy_slot_timesteps = torch.full((1, 64), 0.5)
+    future_loss_mask = torch.ones(1, 1, 4, 1, 1)
+    effective_action_mask = torch.ones_like(noisy_actions)
+
+    out = _apply_dual_expert_generalist_training_mode(
+        sampled_mode=GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
+        video_artifacts=video_artifacts,
+        noisy_actions=noisy_actions,
+        clean_actions=clean_actions,
+        noisy_slot_timesteps=noisy_slot_timesteps,
+        future_loss_mask=future_loss_mask,
+        effective_action_mask=effective_action_mask,
+    )
+
+    (out_video, out_noisy_actions, out_clean_actions,
+     out_noisy_ts, out_future_mask, out_action_mask) = out
+
+    # Video branch keeps clean condition slots as history context.
+    assert out_video is video_artifacts
+    assert out_future_mask is future_loss_mask
+    # A_noisy slot now holds the clean values.
+    assert torch.equal(out_noisy_actions, clean_actions)
+    # A_clean remains real clean context; visibility is controlled by masks.
+    assert out_clean_actions is clean_actions
+    # Action timesteps forced to 0.
+    assert torch.all(out_noisy_ts == 0)
+    # Action loss masked off.
+    assert out_action_mask is not None
+    assert torch.all(out_action_mask == 0)
+
+
+def test_action_conditioned_video_uses_valid_mask_not_loss_mask_for_clean_action_conditioning() -> None:
+    video_artifacts = _make_video_artifacts()
+    noisy_actions = torch.randn(1, 4, 3)
+    clean_actions = torch.arange(12, dtype=torch.float32).view(1, 4, 3)
+    noisy_slot_timesteps = torch.full((1, 4), 0.5)
+    future_loss_mask = torch.ones(1, 1, 4, 1, 1)
+    action_loss_mask = torch.tensor(
+        [[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 1.0]]]
+    )
+    clean_action_condition_mask = torch.tensor(
+        [[[1.0, 0.0, 1.0], [0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 1.0]]]
+    )
+
+    out = _apply_dual_expert_generalist_training_mode(
+        sampled_mode=GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
+        video_artifacts=video_artifacts,
+        noisy_actions=noisy_actions,
+        clean_actions=clean_actions,
+        noisy_slot_timesteps=noisy_slot_timesteps,
+        future_loss_mask=future_loss_mask,
+        effective_action_mask=action_loss_mask,
+        clean_action_condition_mask=clean_action_condition_mask,
+    )
+
+    out_noisy_actions = out[1]
+    out_clean_actions = out[2]
+    out_action_mask = out[5]
+    assert torch.equal(out_noisy_actions, clean_actions * clean_action_condition_mask)
+    assert out_clean_actions is clean_actions
+    assert out_action_mask is not None
+    assert torch.all(out_action_mask == 0)
+
+
+def test_video_conditioned_action_replaces_video_slots() -> None:
+    video_artifacts = _make_video_artifacts()
+    original_condition = video_artifacts.condition_latents.clone()
+    noisy_actions = torch.randn(1, 64, 7)
+    clean_actions = torch.randn(1, 64, 7)
+    noisy_slot_timesteps = torch.full((1, 64), 0.5)
+    future_loss_mask = torch.ones(1, 1, 4, 1, 1)
+    effective_action_mask = torch.ones_like(noisy_actions)
+
+    out = _apply_dual_expert_generalist_training_mode(
+        sampled_mode=GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
+        video_artifacts=video_artifacts,
+        noisy_actions=noisy_actions,
+        clean_actions=clean_actions,
+        noisy_slot_timesteps=noisy_slot_timesteps,
+        future_loss_mask=future_loss_mask,
+        effective_action_mask=effective_action_mask,
+    )
+
+    (out_video, out_noisy_actions, out_clean_actions,
+     out_noisy_ts, out_future_mask, out_action_mask) = out
+
+    # V_noisy slot now holds clean condition values.
+    assert torch.equal(out_video.noisy_latents, original_condition)
+    # V_clean remains available as clean history context.
+    assert torch.equal(out_video.condition_latents, original_condition)
+    # V_noisy timestep track is forced to 0; condition timesteps stay as supplied.
+    assert torch.all(out_video.timesteps == 0)
+    assert torch.equal(out_video.condition_timesteps, video_artifacts.condition_timesteps)
+    # Future video loss mask zeroed.
+    assert torch.all(out_future_mask == 0)
+    # Action noisy slot remains active; clean actions remain available as past context.
+    assert out_noisy_actions is noisy_actions
+    assert out_clean_actions is clean_actions
+    assert out_noisy_ts is noisy_slot_timesteps
+    assert out_action_mask is effective_action_mask
+
+
+def test_action_conditioned_video_with_no_clean_action_mask_uses_full_clean_actions() -> None:
+    video_artifacts = _make_video_artifacts()
+    noisy_actions = torch.randn(1, 64, 7)
+    clean_actions = torch.randn(1, 64, 7)
+    noisy_slot_timesteps = torch.full((1, 64), 0.5)
+    future_loss_mask = torch.ones(1, 1, 4, 1, 1)
+
+    out = _apply_dual_expert_generalist_training_mode(
+        sampled_mode=GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
+        video_artifacts=video_artifacts,
+        noisy_actions=noisy_actions,
+        clean_actions=clean_actions,
+        noisy_slot_timesteps=noisy_slot_timesteps,
+        future_loss_mask=future_loss_mask,
+        effective_action_mask=None,
+    )
+
+    out_noisy_actions = out[1]
+    out_action_mask = out[5]
+    assert torch.equal(out_noisy_actions, clean_actions)
+    assert out_action_mask is not None
+    assert out_action_mask.shape == noisy_actions.shape
+    assert torch.all(out_action_mask == 0)
+
+
+# ---------------------------------------------------------------------------
+# Forced-mode integration (end-to-end forward_train through the variant +
+# the DualExpert decoder, with the categorical pinned to a single mode so we can
+# pattern-match on the loss/active flags deterministically).
+# ---------------------------------------------------------------------------
+
+
+def _build_tiny_generalist_pipeline(
+    forced_mode: GeneralistDenoisingMode,
+    *,
+    joint_timestep_coupling: JointTimestepCoupling = JointTimestepCoupling.MATCH_SIGMA,
+    action_hidden_size: int | None = None,
+    generalist_mode_text_token: bool = False,
+    proprio_context_mode: ProprioContextMode = ProprioContextMode.NONE,
+):
+    """Construct a tiny CPU pipeline pinned to one generalist mode."""
+
+    from open_wam.configs import (
+        ActionSchemaConfig,
+        DualExpertActionDecoderConfig,
+        DualExpertActionExpertInitMode,
+        DualExpertRuntimeMode,
+        ExperimentConfig,
+        InferenceConfig,
+        RobotWinDataConfig,
+        TrainingConfig,
+    )
+    from open_wam.configs import (
+        DualExpertPolicyConfig as TopLevelDualExpertPolicyConfig,
+    )
+    from open_wam.models.policy_variants.contracts import PolicyTrainBatch
+    from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
+    from open_wam.pipelines import build_variant_pipeline_from_config
+
+    forced_probs = {mode: 0.0 for mode in GeneralistDenoisingMode}
+    forced_probs[forced_mode] = 1.0
+
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=TopLevelDualExpertPolicyConfig(
+            hidden_size=32,
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.JOINT,
+            video_prefix_frames=1,
+            num_action_layers=1,
+            action_hidden_size=action_hidden_size,
+            action_expert_init_mode=(
+                DualExpertActionExpertInitMode.VIDEO_WEIGHT_INTERPOLATE
+                if action_hidden_size is not None
+                else DualExpertActionExpertInitMode.VIDEO_WEIGHT_COPY
+            ),
+            generalist_denoising_mode_probs=forced_probs,
+            generalist_mode_text_token=generalist_mode_text_token,
+            proprio_context_mode=proprio_context_mode,
+            joint_timestep_coupling=joint_timestep_coupling,
+        ),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(
+            chunk_size=2,
+            window_size=8,
+            enabled_objectives=("action", "latent"),
+            action_loss_weight=1.0,
+            latent_loss_weight=1.0,
+        ),
+        inference=InferenceConfig(frame_chunk_size=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    batch = PolicyTrainBatch(actions=torch.randn(1, 4, 4))
+    video_latents = torch.randn(1, 48, 4, 8, 8)
+    text_context = torch.randn(1, 5, 16)
+    return pipeline, batch, video_latents, text_context
+
+
+def test_forced_joint_training_respects_timestep_coupling_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import open_wam.models.policy_variants.dual_expert.packed_training as dual_expert_packed_training_module
+
+    original_build_action_artifacts = (
+        dual_expert_packed_training_module.build_frame_aligned_action_flow_match_train_artifacts
+    )
+    saw_action_coupling_inputs: list[tuple[bool, bool, bool]] = []
+
+    def spy_build_action_artifacts(*args, **kwargs):
+        saw_action_coupling_inputs.append(
+            (
+                kwargs.get("frame_sigma_values") is not None,
+                kwargs.get("frame_timestep_ids") is not None,
+                kwargs.get("scheduler_override") is not None,
+            )
+        )
+        return original_build_action_artifacts(*args, **kwargs)
+
+    monkeypatch.setattr(
+        dual_expert_packed_training_module,
+        "build_frame_aligned_action_flow_match_train_artifacts",
+        spy_build_action_artifacts,
+    )
+
+    pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        GeneralistDenoisingMode.JOINT,
+        joint_timestep_coupling=JointTimestepCoupling.MATCH_SIGMA,
+    )
+    pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        GeneralistDenoisingMode.JOINT,
+        joint_timestep_coupling=JointTimestepCoupling.MATCH_INDEX,
+    )
+    pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        GeneralistDenoisingMode.JOINT,
+        joint_timestep_coupling=JointTimestepCoupling.SHARED_VIDEO_SCHEDULE,
+    )
+    pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        GeneralistDenoisingMode.JOINT,
+        joint_timestep_coupling=JointTimestepCoupling.INDEPENDENT,
+    )
+    pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    assert saw_action_coupling_inputs == [
+        (True, False, False),
+        (False, True, False),
+        (False, True, True),
+        (False, False, False),
+    ]
+
+
+def test_dual_expert_generalist_mode_token_is_appended_in_train_path() -> None:
+    torch.manual_seed(0)
+    pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        GeneralistDenoisingMode.JOINT,
+        generalist_mode_text_token=True,
+    )
+
+    assert pipeline.visual_tower.core.generalist_mode_context_encoder is not None
+    output = pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    assert output.policy_output.aux["dual_expert_generalist_training_mode"] == GeneralistDenoisingMode.JOINT.value
+    assert output.policy_output.aux["dual_expert_generalist_mode_text_token"] == GeneralistDenoisingMode.JOINT.value
+    assert output.policy_output.aux["dual_expert_generalist_mode_text_token_count"] == 1
+
+
+def test_generalist_match_sigma_uses_video_clock_for_all_modes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import open_wam.models.policy_variants.dual_expert.packed_training as dual_expert_packed_training_module
+
+    original_build_action_artifacts = (
+        dual_expert_packed_training_module.build_frame_aligned_action_flow_match_train_artifacts
+    )
+    saw_action_coupling_inputs: list[tuple[bool, bool]] = []
+
+    def spy_build_action_artifacts(*args, **kwargs):
+        saw_action_coupling_inputs.append(
+            (
+                kwargs.get("frame_sigma_values") is not None,
+                kwargs.get("frame_timestep_ids") is not None,
+            )
+        )
+        return original_build_action_artifacts(*args, **kwargs)
+
+    monkeypatch.setattr(
+        dual_expert_packed_training_module,
+        "build_frame_aligned_action_flow_match_train_artifacts",
+        spy_build_action_artifacts,
+    )
+
+    for mode in (
+        GeneralistDenoisingMode.JOINT,
+        GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
+        GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
+    ):
+        pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+            mode,
+            joint_timestep_coupling=JointTimestepCoupling.MATCH_SIGMA,
+        )
+        pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    assert saw_action_coupling_inputs == [(True, False), (True, False), (True, False)]
+
+
+@pytest.mark.parametrize(
+    ("raw_mode", "expected"),
+    [
+        ("joint", GeneralistDenoisingMode.JOINT),
+        ("vanilla_joint_rollout", GeneralistDenoisingMode.JOINT),
+        ("clean_action_feedback", GeneralistDenoisingMode.JOINT),
+        ("fdm", GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO),
+        ("forced_action_joint_fdm", GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO),
+        ("action_conditioned_video", GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO),
+        ("idm", GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION),
+        ("video_conditioned_action", GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION),
+    ],
+)
+def test_dual_expert_gjd_rollout_mode_aliases_match_training_modes(
+    raw_mode: str,
+    expected: GeneralistDenoisingMode,
+) -> None:
+    assert _dual_expert_generalist_rollout_mode_from_value(raw_mode) is expected
+    assert _resolve_dual_expert_generalist_rollout_mode(
+        PolicyInferContext(extra={"action_conditioning_mode": raw_mode})
+    ) is expected
+
+
+def test_dual_expert_gjd_rollout_mode_rejects_unknown_alias() -> None:
+    with pytest.raises(ValueError, match="Unsupported dual-expert GJD rollout mode"):
+        _dual_expert_generalist_rollout_mode_from_value("not_a_mode")
+
+
+def test_dual_expert_gjd_fdm_inference_matches_conditional_training_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import open_wam.models.policy_variants.dual_expert.packed_inference as dual_expert_packed_inference_module
+    from open_wam.models.common import RolloutCursor
+    from open_wam.models.policy_variants.contracts import PolicyInferState
+    from open_wam.models.policy_variants.dual_expert.contracts import (
+        DualExpertRuntimeState,
+    )
+    from open_wam.models.policy_variants.dual_expert.modules import (
+        DualExpertActionExpert,
+    )
+
+    pipeline, _, _, _ = _build_tiny_generalist_pipeline(GeneralistDenoisingMode.JOINT)
+    pipeline.policy_variant.inference_config = _dataclass_replace(
+        pipeline.policy_variant.inference_config,
+        action_num_inference_steps=pipeline.policy_variant.inference_config.video_num_inference_steps,
+    )
+    history_video = torch.randn(1, 48, 2, 8, 8)
+    history_actions = torch.randn(1, 4, 4)
+    forced_actions = torch.randn(1, 4, 4)
+    text_context = torch.randn(1, 5, 16)
+    infer_state = PolicyInferState(
+        step_index=1,
+        cursor=RolloutCursor(current_start_frame=2, block_index=0, chunk_size=2),
+        variant_state=DualExpertRuntimeState(
+            past_clean_latents=history_video,
+            past_clean_actions=history_actions,
+            next_condition_frame_start=2,
+            chunk_advance_frames=2,
+        ),
+    )
+    observed_pre: list[dict[str, torch.Tensor]] = []
+    observed_profiles: list[dict[str, object]] = []
+    original_pre_dit = DualExpertActionExpert.pre_dit
+
+    def spy_pre_dit(self, *args, **kwargs):
+        observed_pre.append(
+            {
+                "action_tokens": kwargs["action_tokens"].detach().clone(),
+                "timestep": kwargs["timestep"].detach().clone(),
+                "context": kwargs["context"].detach().clone(),
+            }
+        )
+        return original_pre_dit(self, *args, **kwargs)
+
+    def fake_forward_dual_expert_packed_coupling_denoise(**kwargs):
+        observed_profiles.append(dict(kwargs["attention_profile"].metadata))
+        return torch.zeros_like(kwargs["noisy_video_latents"]), torch.zeros_like(kwargs["packed_action_pre"].tokens)
+
+    monkeypatch.setattr(DualExpertActionExpert, "pre_dit", spy_pre_dit)
+    monkeypatch.setattr(
+        dual_expert_packed_inference_module,
+        "forward_dual_expert_packed_coupling_denoise",
+        fake_forward_dual_expert_packed_coupling_denoise,
+    )
+
+    output = pipeline.forward_infer_step_from_latents(
+        torch.randn(1, 48, 2, 8, 8),
+        PolicyInferContext(
+            extra={
+                "action_conditioning_mode": "forced_action_joint_fdm",
+                "dual_expert_forced_action_latents": forced_actions,
+            }
+        ),
+        infer_state=infer_state,
+        text_context=text_context,
+    )
+
+    assert observed_pre
+    first_pre = observed_pre[0]
+    # Packed action order is [A_noisy(history,current), A_clean(history,current)].
+    torch.testing.assert_close(first_pre["action_tokens"][:, :4], history_actions)
+    torch.testing.assert_close(first_pre["action_tokens"][:, 4:8], forced_actions)
+    torch.testing.assert_close(first_pre["action_tokens"][:, 8:12], history_actions)
+    torch.testing.assert_close(first_pre["action_tokens"][:, 12:16], forced_actions)
+    torch.testing.assert_close(first_pre["timestep"], torch.zeros_like(first_pre["timestep"]))
+    torch.testing.assert_close(first_pre["context"], torch.zeros_like(first_pre["context"]))
+    assert observed_profiles[0]["window_size"] == 3
+    assert observed_profiles[0]["history_stream_visibility"] == "video_only"
+    assert observed_profiles[0]["conditional_history_policy"] == "previous_boundary_video_only"
+    assert output.policy_output.aux["dual_expert_generalist_rollout_mode"] == "action_conditioned_video"
+    assert output.policy_output.aux["cache_action_source"] == "commit_action_override"
+    torch.testing.assert_close(
+        output.policy_output.next_state.variant_state.past_clean_actions[:, -4:],
+        forced_actions,
+    )
+
+
+def test_dual_expert_gjd_idm_inference_matches_conditional_training_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import open_wam.models.policy_variants.dual_expert.packed_inference as dual_expert_packed_inference_module
+    from open_wam.models.common import RolloutCursor
+    from open_wam.models.policy_variants.contracts import PolicyInferState
+    from open_wam.models.policy_variants.dual_expert.contracts import (
+        DualExpertRuntimeState,
+    )
+    from open_wam.models.policy_variants.dual_expert.modules import (
+        DualExpertActionExpert,
+    )
+
+    pipeline, _, _, _ = _build_tiny_generalist_pipeline(GeneralistDenoisingMode.JOINT)
+    pipeline.policy_variant.inference_config = _dataclass_replace(
+        pipeline.policy_variant.inference_config,
+        action_num_inference_steps=pipeline.policy_variant.inference_config.video_num_inference_steps,
+    )
+    history_video = torch.randn(1, 48, 2, 8, 8)
+    history_actions = torch.randn(1, 4, 4)
+    clean_video = torch.randn(1, 48, 2, 8, 8)
+    commit_actions = torch.randn(1, 4, 4)
+    text_context = torch.randn(1, 5, 16)
+    infer_state = PolicyInferState(
+        step_index=1,
+        cursor=RolloutCursor(current_start_frame=2, block_index=0, chunk_size=2),
+        variant_state=DualExpertRuntimeState(
+            past_clean_latents=history_video,
+            past_clean_actions=history_actions,
+            next_condition_frame_start=2,
+            chunk_advance_frames=2,
+        ),
+    )
+    observed_pre: list[dict[str, torch.Tensor]] = []
+    observed_runtime: list[dict[str, torch.Tensor | dict[str, object]]] = []
+    original_pre_dit = DualExpertActionExpert.pre_dit
+
+    def spy_pre_dit(self, *args, **kwargs):
+        observed_pre.append(
+            {
+                "context": kwargs["context"].detach().clone(),
+            }
+        )
+        return original_pre_dit(self, *args, **kwargs)
+
+    def fake_forward_dual_expert_packed_coupling_denoise(**kwargs):
+        observed_runtime.append(
+            {
+                "noisy_video_latents": kwargs["noisy_video_latents"].detach().clone(),
+                "clean_video_latents": kwargs["clean_video_latents"].detach().clone(),
+                "noisy_video_timesteps": kwargs["noisy_video_timesteps"].detach().clone(),
+                "metadata": dict(kwargs["attention_profile"].metadata),
+            }
+        )
+        return torch.zeros_like(kwargs["noisy_video_latents"]), torch.zeros_like(kwargs["packed_action_pre"].tokens)
+
+    monkeypatch.setattr(DualExpertActionExpert, "pre_dit", spy_pre_dit)
+    monkeypatch.setattr(
+        dual_expert_packed_inference_module,
+        "forward_dual_expert_packed_coupling_denoise",
+        fake_forward_dual_expert_packed_coupling_denoise,
+    )
+
+    output = pipeline.forward_infer_step_from_latents(
+        clean_video,
+        PolicyInferContext(
+            extra={
+                "action_conditioning_mode": "video_conditioned_action",
+                "dual_expert_video_condition_latents": clean_video,
+                "dual_expert_commit_action_latents": commit_actions,
+            }
+        ),
+        infer_state=infer_state,
+        text_context=text_context,
+    )
+
+    assert observed_pre
+    torch.testing.assert_close(observed_pre[0]["context"], torch.zeros_like(observed_pre[0]["context"]))
+    first_runtime = observed_runtime[0]
+    torch.testing.assert_close(first_runtime["noisy_video_latents"][:, :, :2], history_video)
+    torch.testing.assert_close(first_runtime["noisy_video_latents"][:, :, 2:], clean_video)
+    torch.testing.assert_close(first_runtime["clean_video_latents"][:, :, :2], history_video)
+    torch.testing.assert_close(first_runtime["clean_video_latents"][:, :, 2:], clean_video)
+    torch.testing.assert_close(
+        first_runtime["noisy_video_timesteps"],
+        torch.zeros_like(first_runtime["noisy_video_timesteps"]),
+    )
+    metadata = first_runtime["metadata"]
+    assert metadata["window_size"] == 3
+    assert metadata["history_stream_visibility"] == "video_only"
+    assert metadata["conditional_history_policy"] == "previous_boundary_video_only"
+    assert output.policy_output.aux["dual_expert_generalist_rollout_mode"] == "video_conditioned_action"
+    assert output.policy_output.aux["cache_action_source"] == "commit_action_override"
+    torch.testing.assert_close(
+        output.policy_output.next_state.variant_state.past_clean_actions[:, -4:],
+        commit_actions,
+    )
+
+
+def test_forced_joint_preserves_configured_noisy_video_condition_prob(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import open_wam.models.policy_variants.dual_expert.packed_training as dual_expert_packed_training_module
+
+    original_build_video_artifacts = (
+        dual_expert_packed_training_module.build_video_flow_match_train_artifacts
+    )
+    observed_probs: list[float] = []
+
+    def spy_build_video_artifacts(*args, **kwargs):
+        observed_probs.append(float(kwargs.get("noisy_condition_prob", 0.0)))
+        return original_build_video_artifacts(*args, **kwargs)
+
+    monkeypatch.setattr(
+        dual_expert_packed_training_module,
+        "build_video_flow_match_train_artifacts",
+        spy_build_video_artifacts,
+    )
+
+    pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        GeneralistDenoisingMode.JOINT,
+    )
+    pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    assert observed_probs == [pytest.approx(0.5)]
+
+
+def test_conditional_generalist_modes_force_clean_video_condition_prob(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import open_wam.models.policy_variants.dual_expert.packed_training as dual_expert_packed_training_module
+
+    original_build_video_artifacts = (
+        dual_expert_packed_training_module.build_video_flow_match_train_artifacts
+    )
+    observed_probs: list[float] = []
+
+    def spy_build_video_artifacts(*args, **kwargs):
+        observed_probs.append(float(kwargs.get("noisy_condition_prob", 0.0)))
+        return original_build_video_artifacts(*args, **kwargs)
+
+    monkeypatch.setattr(
+        dual_expert_packed_training_module,
+        "build_video_flow_match_train_artifacts",
+        spy_build_video_artifacts,
+    )
+
+    for mode in (
+        GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
+        GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
+    ):
+        pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(mode)
+        pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    assert observed_probs == [pytest.approx(0.0), pytest.approx(0.0)]
+
+
+def test_forced_joint_keeps_both_losses_active() -> None:
+    pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        GeneralistDenoisingMode.JOINT
+    )
+    output = pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    metrics = output.decoder_output.metrics
+    assert metrics["dual_expert_generalist/joint/count"].item() == 1.0
+    assert metrics["dual_expert_generalist/action_conditioned_video/count"].item() == 0.0
+    assert metrics["dual_expert_generalist/video_conditioned_action/count"].item() == 0.0
+    assert metrics["dual_expert_generalist/action_loss_active"].item() == 1.0
+    assert metrics["dual_expert_generalist/latent_loss_active"].item() == 1.0
+    assert output.policy_output.aux["dual_expert_generalist_text_dropped"] is False
+    assert "dual_expert_generalist/joint/action_denoised_mse_sum" in metrics
+    assert "dual_expert_generalist/joint/action_mse_sum" in metrics
+    assert torch.equal(
+        metrics["dual_expert_generalist/joint/action_mse_sum"],
+        metrics["dual_expert_generalist/joint/action_denoised_mse_sum"],
+    )
+    assert metrics["weighted_action_diffusion_loss"].item() > 0.0
+    assert metrics["weighted_video_diffusion_loss"].item() > 0.0
+    assert output.policy_output.aux["sampled_window_size"] >= 4
+
+
+def test_generalist_training_rejects_multi_sample_batches() -> None:
+    pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        GeneralistDenoisingMode.JOINT
+    )
+    multi_batch = _dataclass_replace(batch, actions=batch.actions.repeat(2, 1, 1))
+
+    with pytest.raises(ValueError, match="rank-local train_batch_size=1"):
+        pipeline.forward_train_from_latents(
+            video_latents.repeat(2, 1, 1, 1, 1),
+            multi_batch,
+            text_context=text_context.repeat(2, 1, 1),
+        )
+
+
+def test_dual_expert_generalist_conditional_local_window_sees_one_previous_video_frame_only() -> None:
+    profile = build_dual_expert_packed_coupling_attention_profile(
+        num_video_frames=8,
+        video_tokens_per_frame=1,
+        num_action_frames=8,
+        action_tokens_per_frame=1,
+        chunk_size_frames=1,
+        attention_window_size=3,
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        device=torch.device("cpu"),
+        build_dense_masks=True,
+        history_stream_visibility=HistoryStreamVisibility.VIDEO_ONLY,
+    )
+    assert profile.self_attention_mask is not None
+    mask = profile.self_attention_mask
+    latent_tokens = 8
+    action_tokens = 8
+    current_video_noisy_frame4 = 4
+    current_video_clean_frame4 = latent_tokens + 4
+    current_action_noisy_frame4 = 2 * latent_tokens + 4
+    previous_video_clean_frame3 = latent_tokens + 3
+    older_video_clean_frame2 = latent_tokens + 2
+    previous_action_clean_frame3 = 2 * latent_tokens + action_tokens + 3
+    current_action_clean_frame4 = 2 * latent_tokens + action_tokens + 4
+
+    assert mask[current_video_noisy_frame4, previous_video_clean_frame3]
+    assert not mask[current_video_noisy_frame4, older_video_clean_frame2]
+    assert not mask[current_video_noisy_frame4, previous_action_clean_frame3]
+    assert mask[current_action_noisy_frame4, previous_video_clean_frame3]
+    assert not mask[current_action_noisy_frame4, older_video_clean_frame2]
+    assert not mask[current_action_noisy_frame4, previous_action_clean_frame3]
+    assert not mask[current_video_noisy_frame4, current_video_clean_frame4]
+    assert not mask[current_action_noisy_frame4, current_action_clean_frame4]
+
+
+def test_forced_action_conditioned_video_zeros_action_loss() -> None:
+    pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO
+    )
+    output = pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    metrics = output.decoder_output.metrics
+    assert metrics["dual_expert_generalist/action_conditioned_video/count"].item() == 1.0
+    assert metrics["dual_expert_generalist/joint/count"].item() == 0.0
+    assert metrics["dual_expert_generalist/video_conditioned_action/count"].item() == 0.0
+    # Action loss is fully masked off; video loss carries the gradient.
+    assert metrics["dual_expert_generalist/action_loss_active"].item() == 0.0
+    assert metrics["dual_expert_generalist/latent_loss_active"].item() == 1.0
+    assert output.policy_output.aux["dual_expert_generalist_text_dropped"] is True
+    assert 1 <= output.policy_output.aux["sampled_chunk_size"] <= 2
+    assert output.policy_output.aux["sampled_window_size"] == 3
+    assert metrics["weighted_action_diffusion_loss"].item() == pytest.approx(0.0, abs=1e-6)
+    assert metrics["weighted_video_diffusion_loss"].item() > 0.0
+
+
+def test_forced_action_conditioned_video_drops_text_even_with_false_override() -> None:
+    pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO
+    )
+    batch.extra["metadata"] = {GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY: False}
+    output = pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    assert output.policy_output.aux["dual_expert_generalist_text_dropped"] is True
+
+
+@pytest.mark.parametrize(
+    ("metadata", "expected_text_dropped"),
+    [
+        (None, True),
+        ({GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY: False}, True),
+    ],
+)
+def test_forced_action_conditioned_video_threads_resolved_text_to_m5_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    metadata: dict[str, bool] | None,
+    expected_text_dropped: bool,
+) -> None:
+    import open_wam.models.policy_variants.dual_expert.packed_training as dual_expert_packed_training_module
+    from open_wam.models.policy_variants.dual_expert.modules import (
+        DualExpertActionExpert,
+    )
+
+    pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO
+    )
+    if metadata is not None:
+        batch.extra["metadata"] = metadata
+    assert torch.count_nonzero(text_context) > 0
+
+    action_pre_dit_contexts: list[torch.Tensor] = []
+    packed_runtime_contexts: list[torch.Tensor] = []
+    original_pre_dit = DualExpertActionExpert.pre_dit
+
+    def spy_pre_dit(self, *args, **kwargs):
+        action_pre_dit_contexts.append(kwargs["context"].detach().clone())
+        return original_pre_dit(self, *args, **kwargs)
+
+    def fake_forward_dual_expert_packed_coupling_denoise(**kwargs):
+        packed_runtime_contexts.append(kwargs["text_context"].detach().clone())
+        return torch.zeros_like(kwargs["noisy_video_latents"]), torch.zeros_like(kwargs["packed_action_pre"].tokens)
+
+    monkeypatch.setattr(DualExpertActionExpert, "pre_dit", spy_pre_dit)
+    monkeypatch.setattr(
+        dual_expert_packed_training_module,
+        "forward_dual_expert_packed_coupling_denoise",
+        fake_forward_dual_expert_packed_coupling_denoise,
+    )
+
+    output = pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    expected_text = torch.zeros_like(text_context) if expected_text_dropped else text_context
+    assert output.policy_output.aux["dual_expert_generalist_text_dropped"] is expected_text_dropped
+    assert len(action_pre_dit_contexts) == 1
+    assert len(packed_runtime_contexts) == 1
+    assert torch.equal(action_pre_dit_contexts[0], expected_text)
+    assert torch.equal(packed_runtime_contexts[0], expected_text)
+
+
+def test_dual_expert_per_chunk_additive_proprio_threads_hidden_context_to_packed_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import open_wam.models.policy_variants.dual_expert.packed_training as dual_expert_packed_training_module
+    from open_wam.models.policy_variants.dual_expert.modules import (
+        DualExpertActionExpert,
+    )
+
+    pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        GeneralistDenoisingMode.JOINT,
+        action_hidden_size=16,
+    )
+    object.__setattr__(
+        pipeline.policy_variant.config,
+        "proprio_context_mode",
+        ProprioContextMode.PER_CHUNK_ADDITIVE,
+    )
+    pipeline.policy_variant.attach_visual_tower(pipeline.visual_tower)
+    batch.extra["proprio_context_state"] = torch.randn(1, 4, 4)
+    batch.extra["proprio_context_state_mask"] = torch.ones(1, 4, 4)
+
+    action_hidden_contexts: list[torch.Tensor | None] = []
+    video_hidden_contexts: list[torch.Tensor | None] = []
+    original_pre_dit = DualExpertActionExpert.pre_dit
+
+    def spy_pre_dit(self, *args, **kwargs):
+        hidden_context = kwargs.get("hidden_context")
+        action_hidden_contexts.append(None if hidden_context is None else hidden_context.detach().clone())
+        return original_pre_dit(self, *args, **kwargs)
+
+    def fake_forward_dual_expert_packed_coupling_denoise(**kwargs):
+        video_hidden_context = kwargs.get("video_hidden_context")
+        video_hidden_contexts.append(
+            None if video_hidden_context is None else video_hidden_context.detach().clone()
+        )
+        return torch.zeros_like(kwargs["noisy_video_latents"]), torch.zeros_like(kwargs["packed_action_pre"].tokens)
+
+    monkeypatch.setattr(DualExpertActionExpert, "pre_dit", spy_pre_dit)
+    monkeypatch.setattr(
+        dual_expert_packed_training_module,
+        "forward_dual_expert_packed_coupling_denoise",
+        fake_forward_dual_expert_packed_coupling_denoise,
+    )
+
+    pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    assert len(action_hidden_contexts) == 1
+    assert action_hidden_contexts[0] is not None
+    assert action_hidden_contexts[0].shape == (1, 8, 32)
+    assert pipeline.policy_variant.action_expert.hidden_context_dim == 32
+    assert pipeline.policy_variant.action_expert.hidden_size == 16
+    assert len(video_hidden_contexts) == 1
+    assert video_hidden_contexts[0] is not None
+    assert video_hidden_contexts[0].shape == (1, 128, 32)
+
+
+def test_dual_expert_legacy_prefix_contract_prepends_video_only_condition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import open_wam.models.policy_variants.dual_expert.packed_training as dual_expert_packed_training_module
+    from open_wam.configs import (
+        ActionSchemaConfig,
+        DualExpertActionDecoderConfig,
+        ExperimentConfig,
+        InferenceConfig,
+        RobotWinDataConfig,
+    )
+    from open_wam.configs import (
+        DualExpertPolicyConfig as TopLevelDualExpertPolicyConfig,
+    )
+    from open_wam.models.policy_variants.contracts import PolicyTrainBatch
+    from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
+    from open_wam.pipelines import build_variant_pipeline_from_config
+
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=TopLevelDualExpertPolicyConfig(
+            hidden_size=32,
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.VIDEO_THEN_ACTION,
+            video_prefix_frames=1,
+            num_action_layers=1,
+            sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
+            proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
+            context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
+            history_stream_visibility=HistoryStreamVisibility.VIDEO_ONLY,
+            use_condition_latents=True,
+            require_condition_latents=True,
+            noisy_video_condition_prob=0.0,
+            joint_timestep_coupling=JointTimestepCoupling.INDEPENDENT,
+        ),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(
+            chunk_size=2,
+            window_size=8,
+            enabled_objectives=("action", "latent"),
+            action_loss_weight=1.0,
+            latent_loss_weight=1.0,
+        ),
+        inference=InferenceConfig(frame_chunk_size=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    video_latents = torch.randn(1, 48, 4, 8, 8)
+    condition_latents = torch.full_like(video_latents, 3.0)
+    batch = PolicyTrainBatch(
+        actions=torch.randn(1, 4, 4),
+        state=torch.randn(1, 4),
+        extra={
+            "condition_latents": condition_latents,
+            "proprio_context_frames": torch.randn(1, 4, 4),
+            "proprio_context_frames_mask": torch.ones(1, 4, 4),
+        },
+    )
+    observed: dict[str, object] = {}
+
+    def fake_forward_dual_expert_packed_coupling_denoise(**kwargs):
+        observed["noisy_video_shape"] = tuple(kwargs["noisy_video_latents"].shape)
+        observed["clean_video_shape"] = tuple(kwargs["clean_video_latents"].shape)
+        observed["packed_action_shape"] = tuple(kwargs["packed_action_pre"].tokens.shape)
+        observed["prefix_condition_frames"] = kwargs["attention_profile"].metadata["prefix_condition_frames"]
+        observed["conditional_history_policy"] = kwargs["attention_profile"].metadata["conditional_history_policy"]
+        observed["video_hidden_context"] = kwargs["video_hidden_context"]
+        observed["frame_start"] = kwargs["frame_start"]
+        return torch.zeros_like(kwargs["noisy_video_latents"]), torch.zeros_like(kwargs["packed_action_pre"].tokens)
+
+    monkeypatch.setattr(
+        dual_expert_packed_training_module,
+        "forward_dual_expert_packed_coupling_denoise",
+        fake_forward_dual_expert_packed_coupling_denoise,
+    )
+
+    output = pipeline.forward_train_from_latents(
+        video_latents,
+        batch,
+        text_context=torch.randn(1, 5, 16),
+    )
+
+    assert torch.isfinite(output.decoder_output.loss)
+    assert observed["noisy_video_shape"] == (1, 48, 5, 8, 8)
+    assert observed["clean_video_shape"] == (1, 48, 5, 8, 8)
+    assert observed["packed_action_shape"] == (1, 8, 32)
+    assert observed["prefix_condition_frames"] == 1
+    assert observed["conditional_history_policy"] == "none"
+    assert observed["video_hidden_context"] is None
+    assert observed["frame_start"] == -1
+    assert output.policy_output.aux["video_condition_source"] == "condition_latents_prefix"
+    assert output.decoder_output.aux["predicted_latents"].shape == (1, 48, 5, 8, 8)
+
+
+def test_dual_expert_legacy_prefix_fdm_shifts_explicit_video_loss_range(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import open_wam.models.policy_variants.dual_expert.packed_training as dual_expert_packed_training_module
+    from open_wam.configs import (
+        ActionSchemaConfig,
+        DualExpertActionDecoderConfig,
+        DualExpertActionExpertInitMode,
+        ExperimentConfig,
+        InferenceConfig,
+        RobotWinDataConfig,
+    )
+    from open_wam.configs import (
+        DualExpertPolicyConfig as TopLevelDualExpertPolicyConfig,
+    )
+    from open_wam.models.policy_variants.contracts import PolicyTrainBatch
+    from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
+    from open_wam.pipelines import build_variant_pipeline_from_config
+
+    forced_probs = {mode: 0.0 for mode in GeneralistDenoisingMode}
+    forced_probs[GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO] = 1.0
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=6,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=6, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=TopLevelDualExpertPolicyConfig(
+            hidden_size=32,
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.JOINT,
+            video_prefix_frames=1,
+            num_action_layers=1,
+            action_expert_init_mode=DualExpertActionExpertInitMode.VIDEO_WEIGHT_COPY,
+            generalist_denoising_mode_probs=forced_probs,
+            sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
+            proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
+            context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
+            history_stream_visibility=HistoryStreamVisibility.VIDEO_ONLY,
+            use_condition_latents=True,
+            require_condition_latents=True,
+            noisy_video_condition_prob=0.0,
+            joint_timestep_coupling=JointTimestepCoupling.INDEPENDENT,
+        ),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=6),
+        training=TrainingConfig(
+            chunk_size=2,
+            window_size=8,
+            enabled_objectives=("action", "latent"),
+            action_loss_weight=1.0,
+            latent_loss_weight=1.0,
+        ),
+        inference=InferenceConfig(frame_chunk_size=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    video_latents = torch.randn(1, 48, 6, 4, 4)
+    condition_latents = torch.full_like(video_latents, 3.0)
+    batch = PolicyTrainBatch(
+        actions=torch.randn(1, 6, 4),
+        state=torch.randn(1, 4),
+        extra={
+            "condition_latents": condition_latents,
+            "metadata": {
+                "latent_loss_frame_start": 2,
+                "latent_loss_frame_end": 5,
+                "action_loss_frame_start": 2,
+                "action_loss_frame_end": 5,
+            },
+            "proprio_context_frames": torch.randn(1, 6, 4),
+            "proprio_context_frames_mask": torch.ones(1, 6, 4),
+        },
+    )
+
+    def fake_forward_dual_expert_packed_coupling_denoise(**kwargs):
+        return torch.zeros_like(kwargs["noisy_video_latents"]), torch.zeros_like(kwargs["packed_action_pre"].tokens)
+
+    monkeypatch.setattr(
+        dual_expert_packed_training_module,
+        "forward_dual_expert_packed_coupling_denoise",
+        fake_forward_dual_expert_packed_coupling_denoise,
+    )
+
+    output = pipeline.forward_train_from_latents(
+        video_latents,
+        batch,
+        text_context=torch.randn(1, 5, 16),
+    )
+
+    assert output.policy_output.decoder_artifacts is not None
+    train_artifacts = output.policy_output.decoder_artifacts.require(
+        contract=DUAL_EXPERT_DECODER_ARTIFACT_CONTRACT,
+        payload_type=DualExpertTrainArtifacts,
+    )
+    assert "dual_expert_train_artifacts" not in output.policy_output.aux
+    mask = train_artifacts.video.future_loss_mask.flatten()
+    expected = torch.tensor([0, 0, 0, 1, 1, 1, 0], device=mask.device, dtype=mask.dtype)
+
+    torch.testing.assert_close(mask, expected)
+    assert output.policy_output.aux["dual_expert_generalist_training_mode"] == "action_conditioned_video"
+    assert output.policy_output.aux["conditional_history_policy"] == "previous_boundary_video_only"
+    assert output.decoder_output.metrics["dual_expert_generalist/action_loss_active"].item() == 0.0
+
+
+def test_forced_video_conditioned_action_zeros_video_loss() -> None:
+    pipeline, batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION
+    )
+    output = pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    metrics = output.decoder_output.metrics
+    assert metrics["dual_expert_generalist/video_conditioned_action/count"].item() == 1.0
+    assert metrics["dual_expert_generalist/joint/count"].item() == 0.0
+    assert metrics["dual_expert_generalist/action_conditioned_video/count"].item() == 0.0
+    # Video loss is fully masked off; action loss carries the gradient.
+    assert metrics["dual_expert_generalist/latent_loss_active"].item() == 0.0
+    assert metrics["dual_expert_generalist/action_loss_active"].item() == 1.0
+    assert output.policy_output.aux["dual_expert_generalist_text_dropped"] is True
+    assert output.policy_output.aux["conditional_history_policy"] == "previous_boundary_video_only"
+    assert 1 <= output.policy_output.aux["sampled_chunk_size"] <= 2
+    assert output.policy_output.aux["sampled_window_size"] == 3
+    assert metrics["weighted_video_diffusion_loss"].item() == pytest.approx(0.0, abs=1e-6)
+    assert metrics["weighted_action_diffusion_loss"].item() > 0.0
+
+
+def test_no_generalist_metrics_when_probs_unset() -> None:
+    """Sanity: existing 6-mode path emits no dual_expert_generalist/* metrics."""
+
+    from open_wam.configs import (
+        ActionSchemaConfig,
+        DualExpertActionDecoderConfig,
+        DualExpertRuntimeMode,
+        ExperimentConfig,
+        InferenceConfig,
+        RobotWinDataConfig,
+        TrainingConfig,
+    )
+    from open_wam.configs import (
+        DualExpertPolicyConfig as TopLevelDualExpertPolicyConfig,
+    )
+    from open_wam.models.policy_variants.contracts import PolicyTrainBatch
+    from open_wam.models.video_backbone.config import SharedVideoTransformerConfig
+    from open_wam.pipelines import build_variant_pipeline_from_config
+
+    config = ExperimentConfig(
+        data=RobotWinDataConfig(
+            num_frames=4,
+            action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
+        ),
+        backbone=SharedVideoTransformerConfig(
+            implementation="shared_transformer",
+            hidden_size=32,
+            num_layers=1,
+            num_heads=4,
+            attention_head_dim=8,
+            ffn_dim=64,
+            text_dim=16,
+            freq_dim=8,
+            load_reference_core_weights=False,
+            load_text_conditioning=False,
+            load_wan_vae_frontend=False,
+        ),
+        policy_variant=TopLevelDualExpertPolicyConfig(
+            hidden_size=32,
+            runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            current_block_coupling=CurrentBlockCoupling.VIDEO_THEN_ACTION,
+            video_prefix_frames=1,
+            num_action_layers=1,
+            # generalist_denoising_mode_probs left as default None
+        ),
+        action_decoder=DualExpertActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        training=TrainingConfig(
+            chunk_size=2,
+            window_size=8,
+            enabled_objectives=("action", "latent"),
+            action_loss_weight=1.0,
+            latent_loss_weight=1.0,
+        ),
+        inference=InferenceConfig(frame_chunk_size=2),
+    )
+    pipeline = build_variant_pipeline_from_config(config)
+    batch = PolicyTrainBatch(actions=torch.randn(1, 4, 4))
+    video_latents = torch.randn(1, 48, 4, 8, 8)
+    text_context = torch.randn(1, 5, 16)
+
+    output = pipeline.forward_train_from_latents(video_latents, batch, text_context=text_context)
+
+    metrics = output.decoder_output.metrics
+    for key in metrics:
+        assert not key.startswith("dual_expert_generalist/"), (
+            f"dual_expert_generalist metrics should not appear when probs are unset, got {key}"
+        )
+    # And the aux key is None (not the string).
+    assert output.policy_output.aux.get("dual_expert_generalist_training_mode") is None

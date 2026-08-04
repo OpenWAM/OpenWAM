@@ -23,7 +23,7 @@ and checkpoints. Machine-local or private manifests should use
 `configs/artifacts.yaml`, which is gitignored.
 
 - `artifact_id`
-- `method_family`
+- `architecture`
 - `variant`
 - `benchmark`
 - `config`
@@ -38,6 +38,9 @@ and checkpoints. Machine-local or private manifests should use
 Entries with `download_url: null` are layout documentation only. They should not
 be advertised as reproducible public checkpoints until hosting, checksum, and
 license fields are filled.
+
+Manifest schema v2 uses `architecture`. The loader still accepts the retired
+`method_family` key in private manifests, but new manifests should not emit it.
 
 The `public-tiny-synthetic-contract` entry is an exception in purpose: it is a
 checked-in structural fixture under `tests/fixtures/public_tiny/`, not a real

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from open_wam.configs import (
-    expand_parallel_sequence_contract,
+    expand_video_action_sequence_contract,
     load_experiment_config,
     parse_action_decoder_config,
     parse_data_config,
@@ -17,7 +17,6 @@ from open_wam.configs import (
     parse_validation_config,
     read_yaml_with_local_paths,
 )
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXPERIMENT_CONFIGS = tuple(
@@ -31,7 +30,7 @@ EXPERIMENT_CONFIGS = tuple(
     ids=lambda path: path.stem,
 )
 def test_component_parsers_match_full_experiment_loading(config_path: Path) -> None:
-    raw = expand_parallel_sequence_contract(read_yaml_with_local_paths(config_path))
+    raw = expand_video_action_sequence_contract(read_yaml_with_local_paths(config_path))
     config = load_experiment_config(config_path)
 
     assert parse_data_config(raw.get("data")) == config.data

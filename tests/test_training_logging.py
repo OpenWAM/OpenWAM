@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import replace
 from pathlib import Path
-import sys
 
 import open_wam.training.logging as logging_module
+from open_wam.configs import load_experiment_config
 from open_wam.training.logging import WandBLogSink
 from open_wam.training.run_tracking import (
     build_default_wandb_project,
@@ -15,8 +16,6 @@ from open_wam.training.run_tracking import (
     build_wandb_tags,
     resolve_wandb_project,
 )
-from open_wam.configs import load_experiment_config
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -69,15 +68,15 @@ def test_wandb_log_sink_can_use_contiguous_global_step(monkeypatch) -> None:
     assert log_calls[0][2] == {}
 
 
-def test_run_tracking_metadata_normalizes_method_families(tmp_path: Path) -> None:
+def test_run_tracking_metadata_uses_policy_architectures(tmp_path: Path) -> None:
     cases = [
-        ("parallel_stream_robotwin_smoke.yaml", "method_1", "parallel_stream"),
-        ("post_latent_robotwin_video_conditioned.yaml", "method_4", "post_latent"),
-        ("mot_robotwin_smoke.yaml", "method_5", "mot"),
-        ("causal_video_prediction_robotwin_smoke.yaml", "causal_video_prediction", "causal_video_prediction"),
+        ("parallel_stream_robotwin_smoke.yaml", "parallel_stream"),
+        ("post_latent_robotwin_video_conditioned.yaml", "post_latent"),
+        ("dual_expert_robotwin_smoke.yaml", "dual_expert"),
+        ("causal_video_prediction_robotwin_smoke.yaml", "causal_video_prediction"),
     ]
 
-    for config_name, expected_method_family, expected_job_type in cases:
+    for config_name, expected_architecture in cases:
         config = load_experiment_config(REPO_ROOT / "configs/experiments" / config_name)
         output_dir = tmp_path / config.name
 
@@ -87,9 +86,9 @@ def test_run_tracking_metadata_normalizes_method_families(tmp_path: Path) -> Non
         assert metadata["experiment_name"] == config.name
         assert metadata["run_name"] == config.name
         assert metadata["run_slug"] == config.name
-        assert metadata["method_family"] == expected_method_family
-        assert metadata["method_label"] in {"m1", "m2", "m4", "m5", "causal"}
-        assert metadata["policy_variant"] == expected_job_type
+        assert metadata["tracking_schema_version"] == 2
+        assert metadata["architecture"] == expected_architecture
+        assert metadata["policy_variant"] == expected_architecture
         assert metadata["run_title"] == build_run_title(metadata)
         assert metadata["dataset_name"] == config.data.dataset_name
         assert metadata["dataset_type"] == config.data.dataset_type
@@ -155,34 +154,33 @@ def test_build_log_sink_passes_standardized_wandb_tracking_context(monkeypatch, 
 
     assert captured["project"] == "open-wam"
     assert captured["mode"] == "offline"
-    assert captured["run_name"] == "robotwin · m4 · post_decoded · track-run"
-    assert captured["group"] == "robotwin/m4/post_decoded"
+    assert captured["run_name"] == "robotwin · post_decoded · track-run"
+    assert captured["group"] == "robotwin/post_decoded"
     assert captured["job_type"] == "policy_train"
     assert "framework:open_wam" in captured["tags"]
-    assert "method:m4" in captured["tags"]
-    assert "method_family:method_4" in captured["tags"]
+    assert "architecture:post_decoded" in captured["tags"]
     assert "variant:post_decoded" in captured["tags"]
     assert "decoder:video_conditioned_action_decoder" in captured["tags"]
     assert "dataset:robotwin" in captured["tags"]
 
     config_payload = captured["config_payload"]
     assert isinstance(config_payload, dict)
-    assert config_payload["tracking"]["method_family"] == "method_4"
-    assert config_payload["tracking"]["method_label"] == "m4"
+    assert config_payload["tracking"]["architecture"] == "post_decoded"
+    assert config_payload["tracking"]["program"] is None
     assert config_payload["tracking"]["policy_variant"] == "post_decoded"
     assert config_payload["tracking"]["action_decoder"] == "video_conditioned_action_decoder"
-    assert config_payload["tracking"]["wandb_group"] == "robotwin/m4/post_decoded"
+    assert config_payload["tracking"]["wandb_group"] == "robotwin/post_decoded"
     assert config_payload["tracking"]["wandb_job_type"] == "policy_train"
     assert config_payload["tracking"]["output_dir"] == str(output_dir)
 
 
 def test_wandb_group_job_type_and_tags_follow_tracking_metadata(tmp_path: Path) -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/mot_robotwin_smoke.yaml")
-    metadata = build_run_tracking_metadata(config, run_name="mot-run", output_dir=tmp_path / "mot-run")
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml")
+    metadata = build_run_tracking_metadata(config, run_name="dual_expert-run", output_dir=tmp_path / "dual_expert-run")
 
-    assert build_wandb_group(metadata) == "robotwin/m5/mot"
+    assert build_wandb_group(metadata) == "robotwin/dual_expert"
     assert build_wandb_job_type(metadata) == "policy_train"
-    assert build_run_title(metadata) == "robotwin · m5 · mot · mot-run"
+    assert build_run_title(metadata) == "robotwin · dual_expert · dual_expert-run"
     tags = build_wandb_tags(metadata)
     assert tags[:4] == (
         "framework:open_wam",
@@ -190,12 +188,12 @@ def test_wandb_group_job_type_and_tags_follow_tracking_metadata(tmp_path: Path) 
         "dataset_type:synthetic_robotwin",
         "workload:policy_train",
     )
-    assert "decoder:mot_decoder" in tags
-    assert "method:m5" in tags
+    assert "decoder:dual_expert_decoder" in tags
+    assert "architecture:dual_expert" in tags
     assert "segment_frames:None" not in tags
 
 
-def test_method4_generated_video_condition_source_is_tracked(tmp_path: Path) -> None:
+def test_generated_video_condition_source_is_tracked(tmp_path: Path) -> None:
     config = load_experiment_config(
         REPO_ROOT / "configs/experiments/post_latent_libero_latent_local_generated_video_conditioned.yaml"
     )
@@ -214,13 +212,15 @@ def test_legacy_sample_construction_does_not_emit_rollout_context_tag(tmp_path: 
     assert "rollout_context:one_frame" not in build_wandb_tags(metadata)
 
 
-def test_method1_coupling_and_segment_sampling_are_tracked(tmp_path: Path) -> None:
+def test_parallel_stream_program_and_segment_sampling_are_tracked(tmp_path: Path) -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_video_then_action.yaml"
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_video_then_action.yaml"
     )
     metadata = build_run_tracking_metadata(config, run_name=config.name, output_dir=tmp_path / config.name)
 
     assert metadata["runtime_mode"] == "lingbot_exact"
+    assert metadata["architecture"] == "parallel_stream"
+    assert metadata["program"] == "video_then_action"
     assert metadata["current_block_coupling"] == "video_then_action"
     assert metadata["reference_profile"] == "libero"
     assert metadata["sample_construction_mode"] == "hierarchical_fixed_segment"
@@ -238,10 +238,9 @@ def test_method1_coupling_and_segment_sampling_are_tracked(tmp_path: Path) -> No
     assert "target_alignment:next_after_context" in tags
     assert "rollout_context:one_frame" in tags
     assert metadata["gjd_ablation"] is None
-    assert metadata["m1_generalist_ablation"] is None
-    assert build_wandb_group(metadata) == "libero/m1/parallel_stream"
+    assert build_wandb_group(metadata) == "libero/parallel_stream/video_then_action"
     assert "gjd:" not in build_run_title(metadata)
-    assert not any(tag.startswith("gjd:") or tag.startswith("m1_gjd:") for tag in tags)
+    assert not any(tag.startswith("gjd:") for tag in tags)
 
 
 def test_non_default_sample_order_is_tracked(tmp_path: Path) -> None:
@@ -263,10 +262,10 @@ def test_non_default_sample_order_is_tracked(tmp_path: Path) -> None:
     assert "sample_order:replacement" in build_wandb_tags(metadata)
 
 
-def test_method1_generalist_joint_denoising_tracking_metadata(tmp_path: Path) -> None:
+def test_parallel_stream_generalist_joint_denoising_tracking_metadata(tmp_path: Path) -> None:
     config = load_experiment_config(
         REPO_ROOT
-        / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising.yaml"
+        / "configs/experiments/parallel_stream_libero_generalist_joint_denoising.yaml"
     )
     config = replace(
         config,
@@ -274,28 +273,30 @@ def test_method1_generalist_joint_denoising_tracking_metadata(tmp_path: Path) ->
     )
     metadata = build_run_tracking_metadata(config, run_name=config.name, output_dir=tmp_path / config.name)
 
-    assert metadata["method_family"] == "method_1"
+    assert metadata["architecture"] == "parallel_stream"
+    assert metadata["program"] == "generalist_joint_denoising"
     assert metadata["variant_profile"] == "generalist_joint_denoising"
     assert metadata["gjd_ablation"] == "mode_token"
-    assert metadata["m1_generalist_ablation"] == "mode_token"
     assert metadata["generalist_mode_text_token"] is True
-    assert metadata["joint_denoise_training_mode_probs"] == {
+    assert metadata["generalist_denoising_mode_probs"] == {
         "joint": 0.6,
         "action_conditioned_video": 0.2,
         "video_conditioned_action": 0.2,
     }
-    assert build_wandb_group(metadata) == "libero/m1/parallel_stream/mode_token"
+    assert (
+        build_wandb_group(metadata)
+        == "libero/parallel_stream/generalist_joint_denoising/mode_token"
+    )
     assert "gjd:mode_token" in build_run_title(metadata)
     tags = build_wandb_tags(metadata)
     assert "variant_profile:generalist_joint_denoising" in tags
-    assert "gjd:m1:mode_token" in tags
-    assert "m1_gjd:mode_token" in tags
+    assert "gjd:parallel_stream:mode_token" in tags
     assert "generalist_mode_text_token" in tags
 
 
-def test_method5_generalist_joint_denoising_tracking_metadata(tmp_path: Path) -> None:
+def test_dual_expert_generalist_joint_denoising_tracking_metadata(tmp_path: Path) -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/mot_libero_generalist_joint_denoising.yaml"
+        REPO_ROOT / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
     )
     config = replace(
         config,
@@ -303,27 +304,29 @@ def test_method5_generalist_joint_denoising_tracking_metadata(tmp_path: Path) ->
     )
     metadata = build_run_tracking_metadata(config, run_name=config.name, output_dir=tmp_path / config.name)
 
-    assert metadata["method_family"] == "method_5"
+    assert metadata["architecture"] == "dual_expert"
+    assert metadata["program"] == "generalist_joint_denoising"
     assert metadata["gjd_ablation"] == "mode_token"
-    assert metadata["mot_generalist_ablation"] == "mode_token"
     assert metadata["generalist_mode_text_token"] is True
-    assert metadata["mot_generalist_training_mode_probs"] == {
+    assert metadata["generalist_denoising_mode_probs"] == {
         "joint": 0.6,
         "action_conditioned_video": 0.2,
         "video_conditioned_action": 0.2,
     }
-    assert build_wandb_group(metadata) == "libero/m5/mot/mode_token"
+    assert (
+        build_wandb_group(metadata)
+        == "libero/dual_expert/generalist_joint_denoising/mode_token"
+    )
     assert "gjd:mode_token" in build_run_title(metadata)
     tags = build_wandb_tags(metadata)
-    assert "gjd:m5:mode_token" in tags
-    assert "mot_gjd:mode_token" in tags
+    assert "gjd:dual_expert:mode_token" in tags
     assert "generalist_mode_text_token" in tags
 
 
 def test_wandb_project_defaults_to_dataset_and_workload_bin(tmp_path: Path) -> None:
-    config = load_experiment_config(REPO_ROOT / "configs/experiments/mot_robotwin_smoke.yaml")
+    config = load_experiment_config(REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml")
     config = replace(config, trainer=replace(config.trainer, enable_wandb=True, wandb_project=None))
-    metadata = build_run_tracking_metadata(config, run_name="mot-run", output_dir=tmp_path / "mot-run")
+    metadata = build_run_tracking_metadata(config, run_name="dual_expert-run", output_dir=tmp_path / "dual_expert-run")
 
     assert build_default_wandb_project(metadata) == "openwam-robotwin-policy-train"
     assert resolve_wandb_project(config, metadata) == "openwam-robotwin-policy-train"

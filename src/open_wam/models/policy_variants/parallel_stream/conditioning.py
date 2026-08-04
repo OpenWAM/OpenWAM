@@ -6,7 +6,7 @@ from typing import Any, Protocol
 import torch
 
 from open_wam.configs import (
-    JointDenoiseTrainingMode,
+    GeneralistDenoisingMode,
     ParallelRuntimeMode,
     ProprioContextMode,
 )
@@ -26,7 +26,7 @@ class ParallelConditioningTrainArtifacts(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ParallelStreamConditioning:
-    """Resolve M1 video, text, mode, and proprio conditioning inputs."""
+    """Resolve parallel-stream video, text, mode, and proprio conditioning inputs."""
 
     config: ParallelStreamPolicyConfig
 
@@ -286,7 +286,7 @@ class ParallelStreamConditioning:
             prefix_state = self.select_anchor_state(batch.state)
             if prefix_state is None:
                 raise ValueError(
-                    "`parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio` prefix "
+                    "`sequence_contract=legacy_prefix_single_frame_perchunk_proprio` prefix "
                     "conditioning requires batch.state for the condition frame."
                 )
             if per_chunk_proprio_granularity == self._CHUNK_GRANULARITY:
@@ -337,7 +337,7 @@ class ParallelStreamConditioning:
                 "`generalist_mode_text_token = true` requires `joint_denoise_training_mode` "
                 "in parallel-stream train artifacts."
             )
-        mode = JointDenoiseTrainingMode(raw_mode).value
+        mode = GeneralistDenoisingMode(raw_mode).value
         latent_dict = artifacts.input_dict["latent_dict"]
         action_dict = artifacts.input_dict["action_dict"]
         text_emb = latent_dict["text_emb"]

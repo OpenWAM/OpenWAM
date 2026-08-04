@@ -7,17 +7,19 @@ import pytest
 import torch
 import yaml
 
-from open_wam.configs import ParallelStreamPolicyConfig, VideoConditionSource
+from open_wam.configs import (
+    ParallelStreamPolicyConfig,
+    VideoConditionSource,
+    load_experiment_config,
+)
 from open_wam.data import build_synthetic_batch, build_synthetic_latent_batch
+from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
 from open_wam.models.policy_variants.common.layouts import tokens_to_frame_major
 from open_wam.models.policy_variants.common.video_conditioning import (
     resolve_video_condition_frame_start,
     resolve_video_condition_sample_seed,
 )
-from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
 from open_wam.pipelines import build_variant_pipeline_from_config
-from open_wam.configs import load_experiment_config
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -58,7 +60,7 @@ def _build_pipeline(config_path: Path) -> tuple:
         ("post_latent_robotwin_video_conditioned.yaml", 6),
         ("post_decoded_robotwin_video_conditioned.yaml", 6),
         ("parallel_stream_robotwin_smoke.yaml", 8),
-        ("mot_robotwin_smoke.yaml", 8),
+        ("dual_expert_robotwin_smoke.yaml", 8),
     ],
 )
 def test_variant_pipeline_train_and_infer_shapes(config_name: str, expected_horizon: int) -> None:

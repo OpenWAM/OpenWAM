@@ -2,21 +2,46 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 
 from open_wam.configs import InferenceConfig, TrainingConfig
+from open_wam.models.common.flow_inference import (
+    build_action_flow_match_inference_scheduler,
+)
 from open_wam.models.common.flow_training import (
     ActionFlowMatchTrainArtifacts,
     build_action_flow_match_train_artifacts,
 )
-from open_wam.models.common.flow_inference import (
-    build_action_flow_match_inference_scheduler,
+from open_wam.models.policy_variants.contracts import (
+    PolicyInferOutput,
+    PolicyTrainBatch,
+    PolicyTrainOutput,
 )
-from open_wam.models.policy_variants.contracts import PolicyInferOutput, PolicyTrainBatch, PolicyTrainOutput
+
+_DecoderArtifactT = TypeVar("_DecoderArtifactT")
+
+
+def require_decoder_artifact_payload(
+    policy_output: PolicyTrainOutput | PolicyInferOutput,
+    *,
+    contract: str,
+    payload_type: type[_DecoderArtifactT],
+) -> _DecoderArtifactT:
+    """Resolve a typed payload crossing the policy-to-decoder boundary."""
+
+    if policy_output.decoder_artifacts is not None:
+        return policy_output.decoder_artifacts.require(
+            contract=contract,
+            payload_type=payload_type,
+        )
+    raise ValueError(
+        f"Decoder requires artifact contract {contract!r} with payload "
+        f"{payload_type.__name__}."
+    )
 
 
 @dataclass

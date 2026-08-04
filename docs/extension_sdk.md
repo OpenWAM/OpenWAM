@@ -212,8 +212,9 @@ result = visual_tower.execute_runtime_step(
 The profile may provide dense boolean masks, FlexAttention block masks, or
 both. Keep sequence packing and mask construction in the policy extension;
 the shared visual runtime applies backend-ready profiles and owns backbone
-execution. The exact dual-stream M1/M5 programs are checkpoint-compatibility
-contracts with fixed layout semantics, not general attention extension points.
+execution. The exact parallel-stream and dual-expert backends are checkpoint
+compatibility contracts with fixed layout semantics, not general attention
+extension points.
 
 The built-in attention implementation has three parameter-free roles:
 
@@ -228,36 +229,36 @@ The built-in attention implementation has three parameter-free roles:
 facade. New integrations should depend on the role module matching what they
 extend, or on the stable `open_wam.models.common` public exports above.
 
-Built-in MoT checkpoint layouts are narrower policy-internal contracts:
+Built-in DualExpert checkpoint layouts are narrower policy-internal contracts:
 
-- `open_wam.models.policy_variants.mot.attention_unpacked` owns dense layouts
+- `open_wam.models.policy_variants.dual_expert.attention_unpacked` owns dense layouts
   used by unpacked training and joint denoising;
-- `open_wam.models.policy_variants.mot.attention_packed` owns exact packed
+- `open_wam.models.policy_variants.dual_expert.attention_packed` owns exact packed
   coupling profiles; and
-- `open_wam.models.policy_variants.mot.attention_cached` owns split-cache
+- `open_wam.models.policy_variants.dual_expert.attention_cached` owns split-cache
   action inference layouts.
 
-`open_wam.models.policy_variants.mot.attention` remains a compatibility
+`open_wam.models.policy_variants.dual_expert.attention` remains a compatibility
 facade. Extensions implementing a new attention paradigm should normally
-construct a common `PreparedAttentionProfile`; depend on a MoT role only when
+construct a common `PreparedAttentionProfile`; depend on a DualExpert role only when
 the extension deliberately implements that exact built-in sequence layout.
 
-Built-in MoT runtime controls are also split by parameter-free role:
+Built-in DualExpert runtime controls are also split by parameter-free role:
 
-- `open_wam.models.policy_variants.mot.runtime_routes` selects a typed runtime
+- `open_wam.models.policy_variants.dual_expert.runtime_routes` selects a typed runtime
   route;
-- `open_wam.models.policy_variants.mot.rollout_geometry` resolves chunk,
+- `open_wam.models.policy_variants.dual_expert.rollout_geometry` resolves chunk,
   history, cache, and action-execution geometry;
-- `open_wam.models.policy_variants.mot.coupling_semantics` resolves block and
+- `open_wam.models.policy_variants.dual_expert.coupling_semantics` resolves block and
   timestep coupling; and
-- `open_wam.models.policy_variants.mot.inference_backend` validates and
+- `open_wam.models.policy_variants.dual_expert.inference_backend` validates and
   restores the inference backend selected by a route.
 
-`open_wam.models.policy_variants.mot.runtime_routing` is a compatibility
+`open_wam.models.policy_variants.dual_expert.runtime_routing` is a compatibility
 facade. These modules document the fixed built-in checkpoint contract; they
 are not a registration API. A custom policy should express its behavior through
 its `PolicyVariant`, runtime program, prepared attention profile, and decoder
-rather than adding method-specific branches to these MoT owners.
+rather than adding architecture-specific branches to these DualExpert owners.
 
 ### Shared Transformer Primitives
 
@@ -348,7 +349,7 @@ policy variant or transformer block.
 
 ## Cookbooks
 
-- `docs/cookbooks/new_method.md`
+- `docs/cookbooks/new_policy_architecture.md`
 - `docs/cookbooks/new_action_decoder.md`
 - `docs/cookbooks/new_dataset.md`
 - `docs/cookbooks/new_simulator_adapter.md`

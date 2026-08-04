@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from concurrent.futures import Future
 import random
+from concurrent.futures import Future
 from types import SimpleNamespace
 
 import numpy as np
@@ -42,7 +42,7 @@ def _runner_with_tower(tower: _RecordingVisualTower) -> SimpleNamespace:
 def _split_cache_config() -> SimpleNamespace:
     return SimpleNamespace(
         policy_variant=SimpleNamespace(
-            name="mot",
+            name="dual_expert",
             runtime_mode="non_joint_two_stream",
             current_block_coupling="video_then_action",
         )
@@ -64,7 +64,7 @@ def test_visual_runtime_cache_name_uses_split_cache_fallback() -> None:
     assert realtime_speculation.visual_runtime_cache_name_for_session(
         config=_split_cache_config(),
         session=SimpleNamespace(policy_state=None),
-    ) == "mot_non_joint_two_stream_cache"
+    ) == "dual_expert_non_joint_two_stream_cache"
 
 
 def test_visual_runtime_snapshot_delegates_through_tower_contract() -> None:

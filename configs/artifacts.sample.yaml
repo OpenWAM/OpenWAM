@@ -1,6 +1,6 @@
 artifacts:
-  - artifact_id: method1-libero-exact-step400
-    method_family: method1
+  - artifact_id: parallel-stream-libero-exact-step400
+    architecture: parallel_stream
     variant: parallel_stream_lingbot_exact
     benchmark: libero_10
     config: configs/experiments/parallel_stream_libero_lingbot_exact.yaml
@@ -19,7 +19,7 @@ artifacts:
     notes: "Replace with a public URL/checksum before documenting as reproducible."
 
   - artifact_id: public-tiny-synthetic-contract
-    method_family: fixture
+    architecture: fixture
     variant: public_tiny_synthetic_contract
     benchmark: synthetic
     config: configs/examples/public_tiny_synthetic_contract.yaml

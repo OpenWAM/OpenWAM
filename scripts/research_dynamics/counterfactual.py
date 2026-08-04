@@ -37,15 +37,21 @@ from open_wam.utils import (
     resolve_transformer_dir_override,
     seed_everywhere,
 )
-from open_wam.utils.config_overrides import apply_config_overrides, parse_override_assignments
+from open_wam.utils.config_overrides import (
+    apply_config_overrides,
+    parse_override_assignments,
+)
 
 from .cli import _repair_runtime_config_for_local_eval
 from .metrics import rgb_mse_per_frame, simple_ssim_per_frame
-from .rollout import JointDenoisingFdmRollout, make_rollout_cursor, should_drop_task_text_for_fdm_mode
+from .rollout import (
+    JointDenoisingFdmRollout,
+    make_rollout_cursor,
+    should_drop_task_text_for_fdm_mode,
+)
 from .sampling import require_chunk_aligned_horizon
 from .types import FdmAblationMode
 from .visualization import decode_latent_video, write_prediction_video
-
 
 DEFAULT_BRANCHES = BRANCH_PRESETS["diagnostic"]
 DEFAULT_COUNTERFACTUAL_MODES = (
@@ -845,7 +851,7 @@ def _summarize_counterfactual_metric_rows(rows: list[dict[str, Any]]) -> list[di
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run simulator-counterfactual FDM evaluation on LIBERO.")
-    parser.add_argument("--config", "--cfg", default="configs/experiments/parallel_stream_libero_lingbot_joint_denoise.yaml")
+    parser.add_argument("--config", "--cfg", default="configs/experiments/parallel_stream_libero_joint_denoise.yaml")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--benchmark", default="libero_10")
     parser.add_argument("--replay-status-path", required=True)

@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import copy
+import random
+from collections.abc import Mapping
 from concurrent.futures import Future
 from dataclasses import dataclass
-import random
-from typing import TYPE_CHECKING, Any, Mapping, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 import numpy as np
 import torch
 
-from open_wam.models.policy_variants.mot.runtime_routes import (
-    resolve_mot_runtime_route,
+from open_wam.models.policy_variants.dual_expert.runtime_routes import (
+    resolve_dual_expert_runtime_route,
 )
 from open_wam.models.visual_tower import VisualRuntimeStateSnapshot
 
@@ -89,8 +90,8 @@ def visual_runtime_cache_name_for_session(
         cache_name = cache.get("cache_name")
         if cache_name is not None:
             return str(cache_name)
-    if resolve_mot_runtime_route(config).uses_split_cache_rollout:
-        return "mot_non_joint_two_stream_cache"
+    if resolve_dual_expert_runtime_route(config).uses_split_cache_rollout:
+        return "dual_expert_non_joint_two_stream_cache"
     return None
 
 
@@ -161,7 +162,7 @@ def snapshot_sequence_visual_runtime(
 ) -> VisualRuntimeStateSnapshot | None:
     """Snapshot global visual state only when the session does not own it."""
 
-    if resolve_mot_runtime_route(config).uses_stateful_realtime_session:
+    if resolve_dual_expert_runtime_route(config).uses_stateful_realtime_session:
         return None
     return snapshot_visual_runtime(
         runner=runner,

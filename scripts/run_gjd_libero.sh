@@ -9,7 +9,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${SCRIPT_DIR}/libero_fixed128_rollout_context_defaults.sh"
 
 GJD_STAGE=${GJD_STAGE:-train}
-GJD_METHOD=${GJD_METHOD:-m5}
+GJD_ARCHITECTURE=${GJD_ARCHITECTURE:-${GJD_METHOD:-dual_expert}}
 GJD_ABLATION=${GJD_ABLATION:-${M5_GJD_ABLATION:-vanilla}}
 PASSTHROUGH_ARGS=()
 
@@ -32,12 +32,20 @@ while [[ $# -gt 0 ]]; do
       GJD_STAGE="${1#--stage=}"
       shift
       ;;
+    --architecture)
+      GJD_ARCHITECTURE="${2:?--architecture requires parallel_stream or dual_expert}"
+      shift 2
+      ;;
+    --architecture=*)
+      GJD_ARCHITECTURE="${1#--architecture=}"
+      shift
+      ;;
     --method)
-      GJD_METHOD="${2:?--method requires m1 or m5}"
+      GJD_ARCHITECTURE="${2:?--method requires m1 or m5}"
       shift 2
       ;;
     --method=*)
-      GJD_METHOD="${1#--method=}"
+      GJD_ARCHITECTURE="${1#--method=}"
       shift
       ;;
     --ablation)
@@ -51,55 +59,59 @@ while [[ $# -gt 0 ]]; do
     --help|-h)
       cat <<'EOF'
 Usage:
-  bash scripts/run_gjd_libero.sh [train|rollout] [--method m1|m5] [--ablation vanilla|pure_joint|mode_token] [args...]
+  bash scripts/run_gjd_libero.sh [train|rollout] [--architecture parallel_stream|dual_expert] [--ablation vanilla|pure_joint|mode_token] [args...]
 
 Defaults:
-  stage=train, method=m5, ablation=vanilla
+  stage=train, architecture=dual_expert, ablation=vanilla
 
 Examples:
-  bash scripts/run_gjd_libero.sh train --method m1 --ablation pure_joint
-  bash scripts/run_gjd_libero.sh train --method m5 --ablation mode_token
-  bash scripts/run_gjd_libero.sh rollout --method m5 --ablation pure_joint --checkpoint /path/to/checkpoint_step_N
+  bash scripts/run_gjd_libero.sh train --architecture parallel_stream --ablation pure_joint
+  bash scripts/run_gjd_libero.sh train --architecture dual_expert --ablation mode_token
+  bash scripts/run_gjd_libero.sh rollout --architecture dual_expert --ablation pure_joint --checkpoint /path/to/checkpoint_step_N
+
+Compatibility:
+  --method m1|m5 and GJD_METHOD remain accepted aliases.
 
 Contracts:
-  - M5 is the maintained standard GJD contract. Treat M1 GJD as a
-    compatibility/diagnostic path until its known context contract issue is
-    resolved.
-  - M1 and M5 GJD both use the current full-segment W64 training setup.
+  - dual_expert is the maintained standard GJD architecture. Treat
+    parallel_stream GJD as a compatibility/diagnostic path until its known
+    context contract issue is resolved.
+  - Both architectures use the current full-segment W64 training setup.
   - Vanilla and mode-token training default to the mixed real/counterfactual
     dynamics source mixer; configure the counterfactual latent roots through
     configs/local_paths.yaml or explicit --set overrides.
   - pure_joint disables the mixed source mixer and stays demo-only.
   - Fixed-128 GJD training is deprecated; use this launcher for GJD comparisons.
-  - M5 GJD uses the legacy-prefix per-chunk proprio contract and requires
+  - dual_expert GJD uses the legacy-prefix per-chunk proprio contract and requires
     single-frame condition latents:
-      policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio
+      policy_variant.sequence_contract=legacy_prefix_single_frame_perchunk_proprio
       policy_variant.context_condition_latent_source=single_frame_condition_latent
       policy_variant.use_condition_latents=true
       policy_variant.require_condition_latents=true
       data.sample_construction.condition_source_frame_offset=-1
       data.sample_construction.start_padding_frames=0
       data.sample_construction.target_alignment=legacy
-  - Known M1 GJD issue: M1 does not use the M5 legacy-prefix/single-frame
+  - Known parallel_stream GJD issue: parallel_stream does not use the dual_expert
+    legacy-prefix/single-frame
     condition-latent default. It keeps full clean modality slots so conditional
-    FDM/IDM modes are representable. Forcing the M5 single-frame condition
-    source on current M1 legacy full-segment samples would require a pre-target
+    FDM/IDM modes are representable. Forcing the dual_expert single-frame condition
+    source on current parallel_stream legacy full-segment samples would require a pre-target
     context/loss frame; the current legacy uniform segment path has
-    loss_frame_start=0, and M1's legacy-prefix path supports only pure joint.
-    Current M1 differences from M5:
-      policy_variant.parallel_sequence_contract=default
+    loss_frame_start=0, and parallel_stream's legacy-prefix path supports only
+    pure joint. Current parallel_stream differences from dual_expert:
+      policy_variant.sequence_contract=default
       policy_variant.context_condition_latent_source=video_latents
       policy_variant.require_condition_latents=false
       data.sample_construction.condition_source_frame_offset=0
-      rollout uses run_libero_realtime_sandbox.py, not the M5 MoT visualization path
-  - M5 GJD rollout uses the standard MoT visualization path with the same
-    compatibility opt-in as maintained M5 joint rollout: LingBot streaming VAE,
-    MoT inference window 30, one startup model frame, five env init steps, max
+      rollout uses run_libero_realtime_sandbox.py, not the dual-expert visualization path
+  - dual_expert GJD rollout uses the standard dual-expert visualization path with
+    the same compatibility opt-in as maintained dual-expert joint rollout: LingBot
+    streaming VAE, inference window 30, one startup model frame, five env init steps, max
     timestep 1500, and max chunks 100 unless explicitly overridden.
   - Defaults to the maintained video-only LIBERO step-3500 transformer in the config.
-  - Auto-creates a method+ablation-specific save root unless --save-root/--run-name is supplied.
-  - Auto-creates a method+ablation-specific rollout suffix unless --suffix is supplied.
-  - `pure_joint` stays on the GJD code path; it is not the ordinary M1/M5 joint config.
+  - Auto-creates an architecture+ablation-specific save root unless --save-root/--run-name is supplied.
+  - Auto-creates an architecture+ablation-specific rollout suffix unless --suffix is supplied.
+  - `pure_joint` stays on the GJD code path; it is not the ordinary joint program.
 EOF
       exit 0
       ;;
@@ -123,7 +135,7 @@ normalize_choice() {
 }
 
 GJD_STAGE="$(normalize_choice "${GJD_STAGE}")"
-GJD_METHOD="$(normalize_choice "${GJD_METHOD}")"
+GJD_ARCHITECTURE="$(normalize_choice "${GJD_ARCHITECTURE}")"
 GJD_ABLATION="$(normalize_choice "${GJD_ABLATION}")"
 
 case "${GJD_STAGE}" in
@@ -134,11 +146,15 @@ case "${GJD_STAGE}" in
     ;;
 esac
 
-case "${GJD_METHOD}" in
-  m1|method1|method_1) GJD_METHOD="m1" ;;
-  m5|method5|method_5) GJD_METHOD="m5" ;;
+case "${GJD_ARCHITECTURE}" in
+  parallel_stream|m1|method1|method_1)
+    GJD_ARCHITECTURE="parallel_stream"
+    ;;
+  dual_expert|m5|method5|method_5|mot)
+    GJD_ARCHITECTURE="dual_expert"
+    ;;
   *)
-    echo "Unknown GJD method '${GJD_METHOD}'. Expected m1 or m5." >&2
+    echo "Unknown GJD architecture '${GJD_ARCHITECTURE}'. Expected parallel_stream or dual_expert." >&2
     exit 2
     ;;
 esac
@@ -151,39 +167,39 @@ case "${GJD_ABLATION}" in
     ;;
 esac
 
-if [[ "${GJD_METHOD}" == "m1" ]]; then
-  GJD_CONFIG_NAME="parallel_stream_libero_lingbot_m1_generalist_joint_denoising"
+if [[ "${GJD_ARCHITECTURE}" == "parallel_stream" ]]; then
+  GJD_CONFIG_NAME="parallel_stream_libero_generalist_joint_denoising"
   GJD_TRAIN_LAUNCHER="${SCRIPT_DIR}/run_parallel_stream_posttrain_libero.sh"
-  GJD_PROB_PREFIX="policy_variant.joint_denoise_training_mode_probs"
+  GJD_PROB_PREFIX="policy_variant.generalist_denoising_mode_probs"
 else
-  GJD_CONFIG_NAME="mot_libero_generalist_joint_denoising"
-  GJD_TRAIN_LAUNCHER="${SCRIPT_DIR}/run_mot_nonjoint_posttrain_libero.sh"
-  GJD_PROB_PREFIX="policy_variant.mot_generalist_training_mode_probs"
+  GJD_CONFIG_NAME="dual_expert_libero_generalist_joint_denoising"
+  GJD_TRAIN_LAUNCHER="${SCRIPT_DIR}/run_dual_expert_posttrain_libero.sh"
+  GJD_PROB_PREFIX="policy_variant.generalist_denoising_mode_probs"
 fi
 GJD_VANILLA_PROB_MAP='{"joint": 0.6, "action_conditioned_video": 0.2, "video_conditioned_action": 0.2}'
 GJD_PURE_JOINT_PROB_MAP='{"joint": 1.0, "action_conditioned_video": 0.0, "video_conditioned_action": 0.0}'
 GJD_CFG_PATH="configs/experiments/${GJD_CONFIG_NAME}.yaml"
-GJD_M5_CURRENT_FRONTEND_ENCODE_MODE="lingbot_streaming_vae"
+GJD_DUAL_EXPERT_CURRENT_FRONTEND_ENCODE_MODE="lingbot_streaming_vae"
 
-print_gjd_method_contract_notice() {
-  if [[ "${GJD_METHOD}" != "m1" ]]; then
+print_gjd_architecture_contract_notice() {
+  if [[ "${GJD_ARCHITECTURE}" != "parallel_stream" ]]; then
     return 0
   fi
   cat >&2 <<'EOF'
-[run_gjd_libero] known M1 GJD issue:
-[run_gjd_libero]   M5 is the maintained standard GJD contract. M5 uses legacy-prefix
+[run_gjd_libero] known parallel_stream GJD issue (historical M1 path):
+[run_gjd_libero]   dual_expert is the maintained standard GJD architecture. It uses legacy-prefix
 [run_gjd_libero]   single-frame condition latents with condition_source_frame_offset=-1,
 [run_gjd_libero]   start_padding_frames=0, and target_alignment=legacy.
-[run_gjd_libero]   M1 GJD is a compatibility/diagnostic path. It does not default to
-[run_gjd_libero]   M5's single-frame condition-latent contract because current M1
-[run_gjd_libero]   conditional FDM/IDM needs full clean modality slots, while M1
+[run_gjd_libero]   parallel_stream GJD is a compatibility/diagnostic path. It does not
+[run_gjd_libero]   default to the dual-expert single-frame condition-latent contract
+[run_gjd_libero]   because its conditional FDM/IDM needs full clean modality slots, while its
 [run_gjd_libero]   legacy-prefix only supports pure joint and the current legacy
 [run_gjd_libero]   full-segment samples have loss_frame_start=0.
-[run_gjd_libero]   Current M1 differences: parallel_sequence_contract=default,
+[run_gjd_libero]   Current parallel_stream differences: sequence_contract=default,
 [run_gjd_libero]   context_condition_latent_source=video_latents,
 [run_gjd_libero]   require_condition_latents=false, condition_source_frame_offset=0,
 [run_gjd_libero]   and rollout uses run_libero_realtime_sandbox.py instead of the
-[run_gjd_libero]   M5 MoT visualization path.
+[run_gjd_libero]   dual-expert visualization path.
 EOF
 }
 
@@ -236,7 +252,7 @@ build_default_train_identity_args() {
   fi
   local run_id
   local save_root
-  run_id="${GJD_RUN_ID:-gjd_libero_${GJD_METHOD}_${GJD_ABLATION}_$(date +%Y%m%d_%H%M%S)_$$}"
+  run_id="${GJD_RUN_ID:-gjd_libero_${GJD_ARCHITECTURE}_${GJD_ABLATION}_$(date +%Y%m%d_%H%M%S)_$$}"
   if [[ -n "${GJD_SAVE_ROOT:-}" ]]; then
     target_args+=(--save-root "${GJD_SAVE_ROOT}")
   elif gjd_has_explicit_parent_or_checkpoint_root "${PASSTHROUGH_ARGS[@]}"; then
@@ -293,7 +309,7 @@ build_default_rollout_identity_args() {
   if gjd_has_explicit_rollout_suffix "${PASSTHROUGH_ARGS[@]}"; then
     return 0
   fi
-  target_args+=(--suffix "${GJD_ROLLOUT_SUFFIX:-gjd_libero_${GJD_METHOD}_${GJD_ABLATION}}")
+  target_args+=(--suffix "${GJD_ROLLOUT_SUFFIX:-gjd_libero_${GJD_ARCHITECTURE}_${GJD_ABLATION}}")
 }
 
 gjd_has_cli_arg() {
@@ -329,14 +345,14 @@ gjd_cli_arg_value() {
   return 1
 }
 
-gjd_reject_deprecated_m5_frontend_encode_mode() {
-  local requested="${GJD_M5_FRONTEND_ENCODE_MODE:-}"
+gjd_reject_deprecated_dual_expert_frontend_encode_mode() {
+  local requested="${GJD_DUAL_EXPERT_FRONTEND_ENCODE_MODE:-${GJD_M5_FRONTEND_ENCODE_MODE:-}}"
   local explicit_requested
   if explicit_requested="$(gjd_cli_arg_value --frontend-encode-mode "${PASSTHROUGH_ARGS[@]}")"; then
     requested="${explicit_requested}"
   fi
-  if [[ -n "${requested}" && "${requested}" != "${GJD_M5_CURRENT_FRONTEND_ENCODE_MODE}" ]]; then
-    echo "GJD M5 rollout requires --frontend-encode-mode ${GJD_M5_CURRENT_FRONTEND_ENCODE_MODE}; '${requested}' is deprecated." >&2
+  if [[ -n "${requested}" && "${requested}" != "${GJD_DUAL_EXPERT_CURRENT_FRONTEND_ENCODE_MODE}" ]]; then
+    echo "dual_expert GJD rollout requires --frontend-encode-mode ${GJD_DUAL_EXPERT_CURRENT_FRONTEND_ENCODE_MODE}; '${requested}' is deprecated." >&2
     exit 2
   fi
 }
@@ -350,15 +366,15 @@ gjd_append_default_arg() {
   fi
 }
 
-build_default_m5_rollout_semantic_args() {
+build_default_dual_expert_rollout_semantic_args() {
   local -n rollout_semantic_args_ref="$1"
-  gjd_reject_deprecated_m5_frontend_encode_mode
-  gjd_append_default_arg rollout_semantic_args_ref --frontend-encode-mode "${GJD_M5_CURRENT_FRONTEND_ENCODE_MODE}"
-  gjd_append_default_arg rollout_semantic_args_ref --mot-inference-window-size "${GJD_M5_MOT_INFERENCE_WINDOW_SIZE:-30}"
-  gjd_append_default_arg rollout_semantic_args_ref --startup-model-obs-frames "${GJD_M5_STARTUP_MODEL_OBS_FRAMES:-1}"
-  gjd_append_default_arg rollout_semantic_args_ref --startup-env-init-steps "${GJD_M5_STARTUP_ENV_INIT_STEPS:-5}"
-  gjd_append_default_arg rollout_semantic_args_ref --max-timestep "${GJD_M5_MAX_TIMESTEP:-1500}"
-  gjd_append_default_arg rollout_semantic_args_ref --max-chunks "${GJD_M5_MAX_CHUNKS:-100}"
+  gjd_reject_deprecated_dual_expert_frontend_encode_mode
+  gjd_append_default_arg rollout_semantic_args_ref --frontend-encode-mode "${GJD_DUAL_EXPERT_CURRENT_FRONTEND_ENCODE_MODE}"
+  gjd_append_default_arg rollout_semantic_args_ref --dual-expert-inference-window-size "${GJD_DUAL_EXPERT_INFERENCE_WINDOW_SIZE:-${GJD_M5_DUAL_EXPERT_INFERENCE_WINDOW_SIZE:-30}}"
+  gjd_append_default_arg rollout_semantic_args_ref --startup-model-obs-frames "${GJD_DUAL_EXPERT_STARTUP_MODEL_OBS_FRAMES:-${GJD_M5_STARTUP_MODEL_OBS_FRAMES:-1}}"
+  gjd_append_default_arg rollout_semantic_args_ref --startup-env-init-steps "${GJD_DUAL_EXPERT_STARTUP_ENV_INIT_STEPS:-${GJD_M5_STARTUP_ENV_INIT_STEPS:-5}}"
+  gjd_append_default_arg rollout_semantic_args_ref --max-timestep "${GJD_DUAL_EXPERT_MAX_TIMESTEP:-${GJD_M5_MAX_TIMESTEP:-1500}}"
+  gjd_append_default_arg rollout_semantic_args_ref --max-chunks "${GJD_DUAL_EXPERT_MAX_CHUNKS:-${GJD_M5_MAX_CHUNKS:-100}}"
 }
 
 build_ablation_args() {
@@ -397,7 +413,7 @@ if [[ "${GJD_STAGE}" == "train" ]]; then
   if [[ -n "${CONFIG_NAME:-}" ]]; then
     CONFIG_NAME_NORMALIZED="$(open_wam_normalize_config_name "${CONFIG_NAME}")"
     if [[ "${CONFIG_NAME_NORMALIZED}" != "${GJD_CONFIG_NAME}" ]]; then
-      echo "GJD ${GJD_METHOD} train requires CONFIG_NAME=${GJD_CONFIG_NAME}; got ${CONFIG_NAME}." >&2
+      echo "GJD ${GJD_ARCHITECTURE} train requires CONFIG_NAME=${GJD_CONFIG_NAME}; got ${CONFIG_NAME}." >&2
       exit 2
     fi
   fi
@@ -406,8 +422,8 @@ if [[ "${GJD_STAGE}" == "train" ]]; then
   build_default_train_identity_args GJD_DEFAULT_TRAIN_IDENTITY_ARGS
   GJD_DEFAULT_TRAIN_TRACKING_ARGS=()
   build_default_train_tracking_args GJD_DEFAULT_TRAIN_TRACKING_ARGS
-  echo "[run_gjd_libero] stage=train method=${GJD_METHOD} ablation=${GJD_ABLATION} config=${GJD_CONFIG_NAME}" >&2
-  print_gjd_method_contract_notice
+  echo "[run_gjd_libero] stage=train architecture=${GJD_ARCHITECTURE} ablation=${GJD_ABLATION} config=${GJD_CONFIG_NAME}" >&2
+  print_gjd_architecture_contract_notice
   exec bash "${GJD_TRAIN_LAUNCHER}" \
     "${GJD_DEFAULT_TRAIN_IDENTITY_ARGS[@]}" \
     "${GJD_DEFAULT_TRAIN_TRACKING_ARGS[@]}" \
@@ -419,7 +435,7 @@ open_wam_reject_cli_config_override_args "${PASSTHROUGH_ARGS[@]}"
 if [[ -n "${CFG:-}" ]]; then
   CFG_NORMALIZED="$(open_wam_normalize_config_name "${CFG}")"
   if [[ "${CFG_NORMALIZED}" != "${GJD_CONFIG_NAME}" ]]; then
-    echo "GJD ${GJD_METHOD} rollout requires CFG=${GJD_CFG_PATH}; got ${CFG}." >&2
+    echo "GJD ${GJD_ARCHITECTURE} rollout requires CFG=${GJD_CFG_PATH}; got ${CFG}." >&2
     exit 2
   fi
   GJD_CFG_PATH="${CFG}"
@@ -428,15 +444,15 @@ GJD_ROLLOUT_CONTEXT_ARGS=()
 open_wam_append_fixed128_rollout_context_args GJD_ROLLOUT_CONTEXT_ARGS "${GJD_CONFIG_NAME}"
 GJD_DEFAULT_ROLLOUT_IDENTITY_ARGS=()
 build_default_rollout_identity_args GJD_DEFAULT_ROLLOUT_IDENTITY_ARGS
-if [[ "${GJD_METHOD}" == "m5" ]]; then
-  GJD_M5_ROLLOUT_SEMANTIC_ARGS=()
-  build_default_m5_rollout_semantic_args GJD_M5_ROLLOUT_SEMANTIC_ARGS
+if [[ "${GJD_ARCHITECTURE}" == "dual_expert" ]]; then
+  GJD_DUAL_EXPERT_ROLLOUT_SEMANTIC_ARGS=()
+  build_default_dual_expert_rollout_semantic_args GJD_DUAL_EXPERT_ROLLOUT_SEMANTIC_ARGS
   GJD_REALTIME_ARGS=(
-    "${REPO_ROOT}/scripts/run_libero_mot_visualization.py"
+    "${REPO_ROOT}/scripts/run_libero_dual_expert_visualization.py"
     --cfg "${GJD_CFG_PATH}"
     "${GJD_ROLLOUT_CONTEXT_ARGS[@]}"
     "${GJD_DEFAULT_ROLLOUT_IDENTITY_ARGS[@]}"
-    "${GJD_M5_ROLLOUT_SEMANTIC_ARGS[@]}"
+    "${GJD_DUAL_EXPERT_ROLLOUT_SEMANTIC_ARGS[@]}"
     "${PASSTHROUGH_ARGS[@]}"
     "${GJD_ABLATION_ARGS[@]}"
   )
@@ -451,8 +467,8 @@ else
   )
 fi
 
-echo "[run_gjd_libero] stage=rollout method=${GJD_METHOD} ablation=${GJD_ABLATION} cfg=${GJD_CFG_PATH}" >&2
-print_gjd_method_contract_notice
+echo "[run_gjd_libero] stage=rollout architecture=${GJD_ARCHITECTURE} ablation=${GJD_ABLATION} cfg=${GJD_CFG_PATH}" >&2
+print_gjd_architecture_contract_notice
 if [[ "${OPEN_WAM_PRINT_REALTIME_ARGV:-0}" == "1" ]]; then
   open_wam_print_train_argv_json "${GJD_REALTIME_ARGS[@]}"
   exit 0

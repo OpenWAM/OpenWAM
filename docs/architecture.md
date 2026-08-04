@@ -1,577 +1,226 @@
 # Architecture
 
-Open-WAM keeps one stable top-level runtime boundary:
+Open-WAM composes every maintained model through one boundary:
 
 ```text
-ExperimentConfig -> VariantPipeline -> VisualTower -> PolicyVariant -> ActionDecoder
+ExperimentConfig
+  -> VariantPipeline
+  -> VisualTower
+  -> PolicyVariant
+  -> ActionDecoder
 ```
 
-The goal is to compare policy-attachment strategies without changing the
-shared visual execution path for every experiment.
+The boundary separates shared visual execution from policy experiments. A new
+dataset, attention pattern, policy architecture, or decoder should fit one of
+these roles instead of adding a parallel training or inference stack.
 
-## Core Pieces
+## Configuration Axes
 
-| Component | Responsibility |
-| --- | --- |
-| `ExperimentConfig` | Typed config boundary loaded from YAML. String choices are coerced into enums before runtime use. |
-| `VariantPipeline` | Orchestrates data batches, visual stages, policy-variant execution, and decoder loss/output calls. |
-| `VisualTower` | Owns visual preprocessing, shared frontend/core/decode hooks, and backbone-facing runtime outputs. |
-| `PolicyVariant` | Defines method semantics: required visual stages, train inputs, infer state, rollout-step behavior, and reconciliation of executed observations with recurrent state. |
-| `ActionDecoder` | Converts variant outputs into supervised action predictions and losses, then owns model-space rollout-plan slicing and decoder-state commit. |
+Video-action experiments are described by independent choices:
 
-## Design Principles
+| Axis | Meaning | Examples |
+| --- | --- | --- |
+| Architecture | Parameter ownership and execution topology | `parallel_stream`, `dual_expert` |
+| Program | Same-chunk video/action conditioning and supervision | `video_then_action`, `action_then_video`, `joint`, `decoupled_same_step`, `video_noisy_to_action`, `action_noisy_to_video`, `generalist_joint_denoising` |
+| Sequence contract | Prefix, history, proprio, loss range, and chunk semantics | `default`, `legacy_prefix_single_frame_perchunk_proprio` |
+| Numerical backend | Packing, attention implementation, cache writes, and denoising execution | exact packed stream, packed dual expert, split cache |
+| Decoder | Final predictions, supervised losses, and rollout plan | `parallel_stream_decoder`, `dual_expert_decoder` |
 
-- Keep method differences in policy variants, runtime programs, cache policy,
-  sequence semantics, schedulers, and decoders.
-- Keep dataset-specific parsing inside dataset adapters selected by
-  `data.dataset_type`.
-- Keep canonical RGB layout construction in the data layer.
-- Keep public finite choices enum-backed at the typed config boundary.
-- Do not add method-named infrastructure when the abstraction is generic.
+`policy_variant.program` is the public switch for the six standard
+video-action programs. The loader derives the lower-level
+`current_block_coupling`; users do not need to set both. For example:
 
-## Foundational Contracts
+```bash
+open-wam-train \
+  --cfg configs/experiments/dual_expert_libero_joint.yaml \
+  --set policy_variant.program=video_then_action
+```
 
-`open_wam.contracts` is the dependency-free layer shared by configuration,
-data, models, and runtime code. It contains only standard-library value
-contracts and deterministic transforms:
+Named YAMLs remain available for reproducible runs. The override above and the
+matching named config resolve to the same typed program and coupling.
 
-- `contracts.paths` owns source-root discovery and repository-relative path
-  resolution.
-- `contracts.video` owns WAN raw/latent temporal geometry, typed video timeline
-  records, frame mapping, FPS normalization, and camera placement inside a
-  canonical RGB canvas.
-- `contracts.sample_metadata` owns serialized GJD metadata keys and the typed
-  runtime view of sample geometry, loss ranges, and generalist mode metadata.
+## Built-In Architectures
 
-These contracts do not import another `open_wam` package. Higher layers may
-depend on them, but they must not depend back on configuration, datasets,
-models, or runtime implementations. Model code therefore consumes view
-placement and sample metadata without importing dataset implementations.
-Historical `runtime.paths`, `utils.video_timeline`, `utils.wan_geometry`,
-`data.raw_video.ViewPlacement`, `data.sample_metadata`, and generalist metadata
-keys under `configs.variant_semantics` remain identity-preserving compatibility
-facades; new code imports `open_wam.contracts`.
+### Parallel Stream
 
-## Installed And Checkout-Only Boundaries
+`parallel_stream` packs video and action streams into one shared transformer.
+Its architecture package owns stream packing, exact attention layouts, cache
+lifecycle, proprio insertion, and recurrent inference:
 
-The `open_wam` wheel contains maintained configuration, data, model, training,
-runtime, evaluation-result, and extension contracts. Benchmark integrations
-remain lazy so importing the core does not require simulator dependencies.
-`open_wam.integrations.simulator_configs` owns the dependency-light LIBERO
-environment and control records plus the RoboTwin and CALVIN launch records;
-the historical adapter modules retain identity-preserving aliases.
-The LIBERO adapter composes four benchmark-side control roles:
-`libero_observations` parses simulator state, `libero_joint_control` translates
-joint targets and owns controller hooks, `libero_gripper_control` owns gripper
-command/state policy, and `libero_osc_control` translates pose targets and
-owns rotation geometry. `libero_control` is the stable compatibility import
-surface; new package code imports the role owner it consumes.
-`open_wam.integrations.realtime_contracts` owns immutable frame/action plan
-records, and `realtime_scheduling` owns planner selection and submission
-policy. `realtime_plan_queue` owns execution-cursor filtering and deterministic
-future-plan replacement. All three are tensor-stack independent.
-`realtime_control` owns NumPy-backed plan materialization and rollout reporting
-while retaining the historical import surface. `open_wam.simulators.contracts`
-owns the generic backend and observation protocol without importing NumPy at
-runtime, while
-`open_wam.simulators.rollout` owns the NumPy/Torch execution layer. Lazy
-adapter and rollout exports use `open_wam.runtime.load_optional_module` so
-missing extras produce an actionable install command without hiding missing
-internal package modules.
+```text
+src/open_wam/models/policy_variants/parallel_stream/
+```
 
-Reusable result schemas, rollout artifact policies, and maintained renderers
-live under `open_wam.evals`. Large experiment analyses remain under `scripts/`;
-in particular, `scripts/research_dynamics/` contains checkout-only FDM/IDM
-diagnostics and is not a public import surface. Stable top-level scripts own
-their command interfaces and import reusable policy and data behavior from the
-installed package. Research tools must require machine-local checkpoints and
-datasets explicitly rather than embedding private defaults.
+The `lingbot_exact` runtime name denotes a checkpoint-compatible numerical
+backend. It is not a separate architecture and does not determine the
+video/action program.
 
-`open_wam.runtime.checkpoint_artifacts` owns dependency-light filesystem
-discovery for model-only and full-training-state files, run/step layouts,
-standalone transformer exports, and checkpoint-local or configured transformer
-fallbacks. It returns a frozen preflight record and can be imported without
-Torch. `open_wam.runtime.checkpoints` composes that contract with tensor
-deserialization, state-dict normalization, and runtime-config restoration; it
-does not implement a second checkpoint directory search.
+### Dual Expert
 
-`open_wam.integrations.libero_tasks` owns non-interactive LIBERO installation
-bootstrap, typed task specs, ordered benchmark inventories, task-text and
-task-id resolution, and init-state loading/counting. Callers choose benchmark
-and task IDs but do not instantiate upstream benchmark classes or reconstruct
-init-state paths themselves. The integration remains lazy: importing the core
-package does not import LIBERO or Torch.
+`dual_expert` uses separate video and action transformer parameters and
+executes paired blocks under the selected visibility program. Its package owns
+expert initialization, packed and split-cache execution, recurrent history,
+and checkpoint-compatible block routing:
 
-Checkpoint-backed MoT/GJD evaluation has three package owners before it enters
-the simulator: `libero_mot_runtime` composes the config, checkpoint, devices,
-pipeline, and inference backend; `libero_mot_inputs` prepares observation
-windows, proprio context, and streaming or offline visual inputs; and
-`libero_mot_rollout` owns the episode session, simulator stepping, observed
-history reconciliation, and artifact handoff. The single-episode and batch
-commands are CLI adapters over these owners rather than separate rollout
-implementations.
+```text
+src/open_wam/models/policy_variants/dual_expert/
+```
 
-The maintained LIBERO realtime runner follows the same boundary. Package code
-in `libero_realtime_runtime` executes both frame-grouped and action-sequence
-planner jobs and owns encoded-history preparation, cache/RNG execution,
-route-aware sequence startup, and worker submission. The sibling
-`libero_realtime_plans` contract owns typed planner handoffs, model-action
-projection, exact startup session progression, result acceptance, LIBERO
-action materialization, and fallback plan construction. Frame-grouped jobs
-return `FramePlannerJobResult` and apply through
-`FramePlannerResultApplication`; action-sequence jobs use
-`SequenceReplanJobOptions` and `SequenceReplanJobResult`. These frozen
-envelopes make session/cache ownership explicit. Their trace mappings remain
-mutable so the scheduler can append acceptance and wait metadata. The
-benchmark-independent
-`realtime_history` contract owns copied observation windows, fallback
-quarantine and washout, model-timeline advancement, and proprio normalization;
-`realtime_speculation` owns session/RNG/visual-cache rollback. The integration
-records in `open_wam.integrations.realtime_contracts` own frame- and
-action-aligned plans; `realtime_scheduling` owns typed scheduler profiles and
-planner-job selection; `realtime_plan_queue` owns execution-cursor filtering
-and future-plan replacement; and the NumPy-backed `realtime_control` layer owns
-plan materialization and reporting;
-`libero_rollout_artifacts` is the stable persistence facade over four explicit
-roles: `libero_rollout_artifact_contracts` owns immutable artifact envelopes,
-`libero_rollout_artifact_diagnostics` owns exact-startup fingerprints,
-`libero_rollout_artifact_rendering` owns frame composition and VAE decode, and
-`libero_rollout_artifact_storage` owns paths and trace serialization. The
-checkout script owns CLI composition and the benchmark-specific simulator
-control loop; it passes typed metadata and payloads into that acyclic artifact
-stack instead of implementing a second serialization contract. Its remaining
-control loops compose package operations with wall-clock scheduling and
-simulator stepping; they do not encode policy-route or model-output semantics.
+The two architecture packages must not import one another. Shared semantics
+belong in `models/common`, typed policy contracts, or the data layer.
 
-Multi-checkpoint sampled evaluation follows the same installed/checkout split.
-`open_wam.evals.sampled_eval_reporting` owns the JSON-native case-report
-contract, status/rollout joins, aggregate metrics, summary discovery, and
-deterministic JSON, CSV, and Markdown artifacts.
-`open_wam.evals.sampled_eval_sampling` owns the frozen `DatasetEpisode`
-contract, enum-backed sample modes and task-local strategies, metadata-to-axis
-ranking, replay-status attachment/filtering, proportional allocation, explicit
-selector parsing, and distribution/task-axis/full-grid selection. It accepts
-resolved metadata and does not import CLI or simulator integrations.
-`open_wam.evals.sampled_eval_planning` owns typed method, scheduler, target,
-checkpoint, case, and preflight contracts. Given explicit options and resolved
-dataset episodes, it parses targets, resolves checkpoint artifacts, applies
-enum-backed scheduler/device/artifact policy, and constructs deterministic
-rollout command matrices without importing argparse, environment state, or a
-simulator. Its stable contracts are lazily available from `open_wam.evals`.
-The checkout-only `run_libero_sampled_eval.py` command owns LeRobot filesystem
-loading, environment and legacy-argument precedence, GJD routing safeguards,
-metadata-versus-upstream task-ID safety policy, temporary machine-path
-overrides, process claims, worker scheduling, and child environments. It
-adapts argparse values into package planning options, delegates checkpoint
-discovery to the runtime artifact contract, and delegates benchmark
-inventory/init counting to the LIBERO integration. Process status is created
-by that runner because it records live subprocess state; completed status and
-rollout summaries cross into the package as data records, not as script imports
-or benchmark objects.
+## Runtime Ownership
 
-## Configuration Contract
+### ExperimentConfig
 
-`open_wam.configs.load_experiment_config` is the public YAML-to-dataclass
-entrypoint, and `open_wam.configs.local_paths` owns machine-local path
-expansion over the shared project-path contract.
-`open_wam.configs.coercion` owns reusable YAML/CLI-to-type conversion.
-`open_wam.configs.sequence_contracts` owns defaults and cross-section
-validation for sequence semantics. Shared action, sampling, and dataset fields
-live in `open_wam.configs.data_contracts`; direct benchmark presets live in
-`data_benchmarks`; heterogeneous consortium and manifest-backed video choices
-live in `data_consortium` and `data_mixed_video`. The established
-`open_wam.configs.data` path is an import-only facade over those acyclic
-owners. Shared and attachment-specific policy envelopes live in
-`policy_contracts`; M5/MoT and M1/parallel-stream choices live in `policy_mot`
-and `policy_parallel_stream`; and `policy_parsing` alone composes raw mappings
-with data, backbone, training, and inference defaults. The established
-`open_wam.configs.policy_variant` path is an import-only compatibility facade.
-Each typed component module owns its mapping-to-dataclass parser; the larger
-data and policy sections use explicit parser owners. The root loader only reads
-YAML, composes those parsers, and runs cross-section checks. Historical
-`open_wam.utils` loader/path imports are compatibility aliases only.
-Configuration parsing does not own policy runtime behavior.
+`open_wam.configs.load_experiment_config` is the YAML-to-dataclass boundary.
+Finite public choices are enums. Dataset names, paths, extension identifiers,
+and free-form labels remain strings. Compatibility normalization accepts old
+config names and fields before typed construction; runtime code consumes only
+canonical values.
 
-Static validation follows the same dependency direction without importing
-model or runtime code. `static_validation_contracts` owns immutable issue and
-report records; `static_validation_primitives` owns YAML, enum, scalar, and
-path checks; `static_validation_data` and `static_validation_policy` own their
-respective section rules; and `static_validation_rules` composes experiment,
-evaluation, and auxiliary-validation checks. The established
-`open_wam.configs.static_schema` module is the public validation facade used by
-the package root and `open-wam-validate-config`. Add section-specific checks to
-their owner and reserve the facade for file/report orchestration.
+### VariantPipeline
 
-## Pipeline Construction Contract
+`VariantPipeline` orchestrates the stable sequence:
 
-Pipeline construction is divided by role before learned modules enter the
-stable runtime boundary. `pipelines.factory_validation` owns cross-component
-preflight and model/state-dimension resolution. `policy_factory` selects and
-constructs one `PolicyVariant`; `action_decoder_factory` does the same for one
-`ActionDecoder`. Both consume the typed built-in and extension registries.
+1. canonicalize input views;
+2. request the visual stages needed by the policy;
+3. let the policy prepare and execute architecture-specific tensors;
+4. pass a typed policy output to the decoder;
+5. return common train or inference outputs.
 
-`pipelines.factory` remains the supported composition owner and historical
-import surface. It installs built-in registry entries, constructs the shared
-`VisualTower`, invokes policy attachment hooks before sharding, constructs the
-decoder and sampler mask, and returns `VariantPipeline`. Applications add
-open-string extension builders through `register_policy_variant` and
-`register_action_decoder`; they do not branch the composition code. These
-factory roles own no learned parameters or checkpoint state.
+It does not inspect architecture-specific artifact keys. Policies hand decoder
+payloads across `DecoderArtifactEnvelope`, and each decoder validates its own
+contract and payload type.
 
-## Training Checkpoint Contract
+### VisualTower
 
-`training.checkpoints.CheckpointManager` is the stable persistence owner. It
-coordinates distributed model and optimizer state collection, sparse optimizer
-restoration, mixed-device full-state loading, checkpoint retention, and runtime
-backbone export. The distributed-checkpoint functions remain globals in that
-module so tests and advanced runtimes can patch the established lookup seam.
+`VisualTower` owns the shared visual frontend, transformer-facing runtime
+hooks, optional decode stage, and common runtime-program execution. It accepts
+prepared attention profiles and runtime inputs; it does not decide policy
+conditioning or supervision semantics.
 
-Two internal leaf roles keep format mechanics out of the manager without
-changing ownership:
+### PolicyVariant
 
-- `training.checkpoint_storage` owns typed config serialization, rank-aware
-  marker waits, atomic Torch writes, and model-only sibling train-state
-  recovery.
-- `training.checkpoint_export` owns the pure packed-video-block projection used
-  to produce a LingBot-compatible runtime backbone state dictionary.
+A policy variant owns:
 
-Neither leaf imports the manager, owns learned state, or defines checkpoint
-keys. Full-training-state saves continue to write an exact-resume payload plus
-a lightweight sibling `model_state.pt`; consumers use `CheckpointManager`
-through `open_wam.training` rather than calling the private leaf helpers.
+- required visual stages;
+- train input preparation;
+- parameter topology and runtime-program selection;
+- recurrent inference state and cache reconciliation;
+- architecture-specific decoder artifacts.
 
-## Visual Tower Contract
+It does not own final supervised action losses.
 
-The shared visual stack exposes stage-aware outputs rather than allowing policy
-variants to reach into arbitrary backbone internals. Common stage families are:
+### ActionDecoder
 
-- current visual features for action-conditioned policies
-- post-core token or latent features for feature-attached policies
-- generated future visual features for video-conditioned action heads
-- decode-stage outputs for post-decoded baselines
+An action decoder owns final action predictions, supervised losses, decoder
+state, and the model-space action plan committed by rollout. Generic rollout
+code asks the decoder for a plan instead of branching on an architecture.
 
-Policy variants request stages through `required_visual_stages()` and consume
-prepared inputs through explicit variant contracts.
+## Generalist Joint Denoising
 
-## MoT Internal Contracts
+GJD is the `generalist_joint_denoising` program inside either architecture. A
+sample selects one `GeneralistDenoisingMode`:
 
-The built-in MoT policy keeps method routing and visual execution in
-`MoTPolicyVariant`, but delegates deterministic preparation to role-specific
-plain contracts:
+| Mode | Clean supplied modality | Active loss | Task text |
+| --- | --- | --- | --- |
+| `joint` | neither | video and action | retained |
+| `action_conditioned_video` (FDM) | action in the action-noisy slot at timestep zero | video only | removed |
+| `video_conditioned_action` (IDM) | video in the video-noisy slot at timestep zero | action only | removed |
 
-- `MoTTrainingLayout` converts typed batch metadata into loss ranges, history
-  length, chunk/window geometry, and action/video supervision masks.
-- `MoTConditioning` prepares condition latents, prefix layout, text/proprio
-  tensors, mode tokens, and cross-attention gating. Learned conditioning
-  encoders remain owned by the visual core.
-- `MoTPackedInferenceLayout` validates current-chunk FDM/IDM tensor overrides.
-  `MoTPackedHistory` selects one frame-aligned recurrent video/action/proprio
-  window without owning or mutating policy state.
-- `mot.observed_history` owns replacement of speculative packed video/action/
-  proprio tails after an environment executes a chunk. Benchmark integrations
-  supply canonical observations through `VariantRolloutRunner`; they do not
-  mutate `MoTRuntimeState` fields.
-- `build_action_grid_ids_for_sequence` owns the frame-aligned action
-  coordinates shared by training and recurrent inference.
-- `mot.generalist_modes` owns GJD mode selection and conditional tensor
-  rewrites.
-- `mot.runtime_routes` owns the finite route taxonomy and deterministic route
-  selection. `mot.rollout_geometry` owns validated window/chunk overrides,
-  history/cache geometry, and executable-action alignment;
-  `mot.coupling_semantics` owns current-block and timestep coupling; and
-  `mot.inference_backend` owns packed-versus-split backend selection and the
-  one-way module-ownership restore needed by legacy split-cache rollout. These
-  roles are parameter-free and contain no tensor execution.
-- `mot.runtime_routing` is the historical direct-import, wildcard-import, and
-  pickle facade for those runtime-control roles. Maintained package code
-  imports the canonical role owner directly.
-- `mot.attention_unpacked` owns dense layouts for unpacked training and joint
-  denoising; `mot.attention_packed` owns exact packed coupling profiles; and
-  `mot.attention_cached` owns split-cache action inference layouts. These
-  parameter-free roles define fixed built-in checkpoint semantics without
-  owning learned execution. `mot.attention` remains a historical import
-  facade; maintained package code imports the role owner it executes.
-- `mot.cache_state` owns typed cache movement, append, retention, and
-  speculative rewind without executing model parameters.
-- `mot.cache_execution` owns learned video-cache prefill and action execution
-  against video-only or combined video/action caches.
-- `mot.dual_stream_execution` owns learned packed coupling and simultaneous
-  joint video/action execution. `mot.unpacked_training` composes those
-  executors for non-packed training without owning model parameters.
-- `mot.runtime` is a compatibility facade for historical internal imports; new
-  code imports the role-specific owners directly.
-- Common attention roles separate semantics from representation.
-  `attention_contracts` owns profile records and normalized finite choices;
-  `chunked_attention_visibility` owns the single token-pair visibility law for
-  all six exact couplings; and `chunked_attention` maps packed layouts into
-  dense SDPA masks or FlexAttention callbacks. Both backends therefore execute
-  the same visibility predicate. Policies select a profile and provide its
-  resolved layout; they do not reimplement mask logic.
-- `visual_tower.shared_transformer_support` owns learned attention and
-  transformer-block execution, including the stable attention-backend patch
-  point. `shared_transformer_embeddings` owns learned timestep and rotary
-  embedding modules; `shared_transformer_layout` owns parameter-free chunk
-  and stream slicing; and `runtime_parameter_ops` owns FSDP-safe explicit
-  linear, normalization, and feed-forward execution. The support module keeps
-  the historical aggregate import surface, while maintained visual and action
-  consumers import each canonical role directly.
-- `visual_tower.context_encoders` owns learned proprio and GJD mode
-  projections. `SharedVideoTransformerCore` attaches them under stable
-  checkpoint names and owns their execution lifecycle.
-- `visual_tower.runtime_tensor_transport` owns parameter-free tensor,
-  attention-profile, and slot-pool-state movement across block devices. The
-  core binds model patch geometry but does not reimplement transport policy.
-- `visual_tower.cache_lifecycle` composes backend operations into the shared
-  `CacheState` lifecycle: initialization, named branches, retention, cursor
-  advancement, and reset. `VisualTower` keeps the stable public facade and
-  supplies its current capability and layer count; the lifecycle owns no
-  modules or tensors.
-- `visual_tower.runtime_backbone` owns checkpoint-source selection, one-time
-  loading diagnostics, action-dimension access validation, runtime
-  device/dtype normalization, and current/legacy cache reset. It borrows the
-  tower-owned module for each operation and cannot register checkpoint state.
-- `visual_tower.exact_runtime` owns shared exact single-stream input
-  preparation, CFG duplication, dtype selection, and execution. Policy
-  runtimes may select when to use it but do not reimplement these backbone
-  operations.
-- `parallel_stream.exact_cache` owns the typed policy-side cache context,
-  write-interface selection, cache-token stream labels, scoped slot-pool
-  metadata, text/CFG preparation, and attention-window compatibility checks.
-  It delegates allocation and tensor execution to
-  `visual_tower.exact_runtime`; it does not own backbone mechanics.
-- Parallel-stream cache writes are divided by execution role.
-  `cache_attention` projects joint training visibility onto clean cache-write
-  tokens; `clean_cache_write` embeds and commits one packed clean video/action
-  block; and `cache_diagnostics` reports parameter-free slot-pool occupancy.
-  `cache_execution` retains generic staged-versus-packed write dispatch and the
-  historical import/pickle surface. That dispatch remains in the compatibility
-  module intentionally because callers patch its clean-write function during
-  controlled rollout tests. Backend storage and lifecycle mechanics remain in
-  `models.common`; none of these policy roles owns learned state.
-- `parallel_stream.runtime_semantics` resolves enum-backed history visibility,
-  condition-latent sources, block/timestep coupling, cache-prefix visibility,
-  and attention-profile selection. Policy execution and dynamics evaluation
-  consume the same resolver instead of defining local compatibility rules.
-- `parallel_stream.conditional_rollout` maps rollout labels to GJD modes and
-  owns parameter-free conditional window/chunk, history, warmup-suffix, and
-  conditioning-slice layout. Learned mode-token injection and model execution
-  remain in the policy runtime.
-- `parallel_stream.training_noise` owns parameter-free exact-stream noising,
-  scheduler-grid adaptation, and tuple layouts for coupled timestep plans. It
-  consumes the generic flow-noise plan from `models.common`; model execution
-  and generalist mode selection remain in the policy runtime.
-- Parallel-stream training assembly is divided by tensor layout.
-  `training_artifact_contracts` owns the typed result record;
-  `training_exact_artifacts` owns standard exact and action-conditioned
-  assembly; `training_prefix_artifacts` owns the single clean-prefix layout;
-  and `training_single_frame_artifacts` owns current-frame action-chunk and
-  FastWAM first-frame layouts. `training_artifacts` is only the stable
-  historical import and pickle facade. Policy code imports the layout owner
-  directly, while scheduler/noise policy remains in `training_noise` and GJD
-  mode mutation remains in `generalist_training`.
-- `models.common.flow_schedule` owns the generic flow-matching scheduler,
-  timestep sampling and lookup, sigma-grid termination, and explicit Euler
-  integration primitives. `flow_training` builds parameter-free noisy
-  action/video artifact records, `flow_inference` constructs configured
-  inference schedulers, and `flow_supervision` reconstructs denoised values and
-  reduces masked losses. `flow_matching` is only the stable historical import
-  and pickle facade; package code imports the role owners directly.
-- `parallel_stream.latent_conditioning` owns validation and selection of
-  first-frame and full-window clean latent conditions. Generated decoder
-  windows remain in `models.policy_variants.common.video_conditioning`;
-  M5 text and proprio conditioning remain in `mot.conditioning`.
-- `parallel_stream.generalist_training` owns FSDP-coordinated GJD mode
-  selection and policy-local joint/FDM/IDM artifact mutation. Artifact
-  construction, model execution, caches, and decoder losses remain in their
-  existing runtime owners; generic flow schedulers remain in `models.common`.
-- `open_wam.contracts.video` owns dependency-free WAN raw/latent temporal
-  mapping. `models.common.video_geometry` owns Torch-backed video token-grid
-  and unpatchifying transforms used by visual execution, policy variants, and
-  decoders.
-- `models.common.cache_backend_contracts` owns cache-backend specifications,
-  payload records, and backend selection. `cache_layout_policy` owns dense
-  mask normalization, cached-prefix visibility, packed sequence ids, slot
-  retention, and merged-prefix layout. `cache_backend_lifecycle` owns payload
-  allocation, mutation, reset, and materialization. `cache_backends` is only
-  the stable historical import and pickle facade; package code imports the
-  role owners directly. The visual cache lifecycle composes those operations
-  with runtime state, while the shared transformer owns projections and
-  attention execution.
+Conditional real-demo and counterfactual samples share one rollout-style data
+contract:
 
-The layout, conditioning, mode, and routing helpers are plain contracts, not
-model modules. They must not own parameters, buffers, visual execution, or
-decoder losses, so extracting or replacing orchestration cannot change
-checkpoint keys. `MoTPolicyVariant` selects these contracts and orchestrates
-the learned runtime; it does not redefine their control or tensor mechanics.
+```text
+latent frame 0     observed t0, clean history, no loss
+latent frames 1..N future targets, supervised according to FDM or IDM mode
+```
 
-## Data Contract
+The t0 frame is always a singleton chunk. Future chunks retain the sampled GJD
+geometry, including the maintained 1-to-4 frame randomization where configured.
+Conditional attention exposes only the most recent clean video boundary, not a
+long demonstration prefix. The data layer projects real-demo conditional
+samples to this target-only layout and validates counterfactual metadata before
+either architecture executes it.
 
-Dataset adapters are selected by `data.dataset_type`. One adapter identity may
-provide a raw-RGB builder, a pre-encoded latent builder, or both. External
-adapters register explicitly through `module[:hook]` extensions before
-experiment construction.
+The shared owner of mode semantics is
+`open_wam.models.common.joint_conditioning`. Architecture code applies those
+decisions to its own packing and cache representation. Joint-mode behavior is
+unchanged by the conditional target-only transform.
 
-The public `open_wam.data` facade is fully lazy. Importing the namespace or a
-lightweight submodule such as `data.replay_status` does not load Torch, NumPy,
-PyArrow, or simulator packages; resolving a tensor-backed export loads its
-role module on demand and preserves object identity. Keep new public data
-exports in the facade registry rather than adding eager package imports.
+`dual_expert` is the maintained standard GJD architecture. The
+`parallel_stream` GJD config remains a diagnostic compatibility path because
+its full clean-slot condition contract does not yet match every dual-expert
+legacy-prefix behavior. The unified launcher prints this distinction:
 
-Raw adapters normalize source records into one public batch contract:
+```bash
+bash scripts/run_gjd_libero.sh train \
+  --architecture dual_expert \
+  --ablation mode_token
+```
 
-- canonical RGB tensors with a configured camera/layout policy
-- action tensors with explicit source and model dimensions
-- optional state tensors
-- text/task metadata when available
-- adapter metadata that documents action mapping and benchmark identity
+## Data Boundary
 
-This lets LIBERO, RoboTwin, CALVIN, synthetic fixtures, and future datasets use
-the same train/eval/runtime stack.
+Dataset-specific parsing belongs in adapters selected by `data.dataset_type`.
+Adapters emit the uniform `WAMSample` or `LatentWAMSample` contract. The data
+layer owns:
 
-Dataset storage and sample semantics are separate responsibilities. For the
-local LeRobot latent adapter, `LocalLatentRepository` in
-`lerobot_v2_latent_storage` owns repository discovery, episode-row and
-per-camera latent I/O, condition-payload validation, canonical latent-canvas
-assembly, and bounded I/O caches;
-`latent_segment_geometry` owns pure eligible-start, materialized-bound, and
-loss-bound calculations; `latent_segment_materialization` combines those
-bounds with raw-frame anchors and zero-order-hold latent slicing through a
-public typed plan; `lerobot_v2_latent_split` owns local repository-window
-discovery, replay-status filtering, explicit validation roots, and
-train/validation partitioning; `lerobot_v2_latent_weighting` owns physical
-window statistics and normalized physical/virtual sample weights;
-`lerobot_v2_latent_uniform_policy` owns uniform-segment eligibility, virtual
-starts, ordering, geometry, and sampling metadata;
-`lerobot_v2_latent_hierarchical_policy` owns hierarchical task/trajectory mass
-tables, split-salted draws, and draw metadata; and
-`lerobot_v2_latent_sampler_adapters` binds those policies to the shared
-distributed samplers. `lerobot_v2_latent_sampling` is only the stable import
-and old-pickle facade for those four owners. `latent_hierarchical_sampling`
-composes hierarchical draws with local chunk candidates, clean-context policy,
-eligible start ranges, resolved segment boundaries, and a typed diagnostic
-sample key;
-`latent_causal_sampling` owns tensor-free causal prefix/suffix candidate
-geometry, split-aware draw order, and typed raw/latent window plans;
-`lerobot_v2_latent_supervision` owns deterministic local row alignment,
-LingBot action-sequence assembly, adapter-specific sequence extraction, state
-history, and per-frame/per-chunk proprio assembly;
-`lerobot_v2_latent_segment` combines one selected materialization with those
-latent and supervision tensors through `LocalLatentSegment`;
-`lerobot_v2_latent_source` loads one physical window through the repository,
-exposes canonical video/condition payloads, applies source frame-ID fallback,
-and resolves frame-indexed task/text conditioning.
-`lerobot_v2_latent_base_dataset` composes those repository, source,
-supervision, segment, and weighting contracts for full-segment samples;
-`lerobot_v2_latent_uniform_dataset`,
-`lerobot_v2_latent_hierarchical_dataset`, and
-`lerobot_v2_latent_causal_dataset` each own one sample-construction mode and
-its final metadata; and `lerobot_v2_latent_factory` selects the configured
-dataset class and train/validation windows. `lerobot_v2_latent` is only the
-stable import, wildcard, and old-pickle facade for those owners. Historical
-module-level helper imports remain identity aliases for compatibility, but new
-extensions should use the public `open_wam.data` contracts above.
-For row-oriented robot datasets, `row_action_targets` owns adapter-independent
-orchestration from decoded rows through target construction, action mapping,
-and target metadata. `sequence_packing` owns the canonical float32 padded
-tensor and validity-mask layout. Each adapter still owns row decoding,
-empty-input policy, and whether an overlong source sequence may be truncated.
-Action transforms below that adapter boundary have one owner per numerical
-role. `action_pose` owns `PoseSequence`, state-to-pose decoding, relative-pose
-reconstruction, and rotation/quaternion geometry. `action_normalization` owns
-invertible action and joint normalization. `action_gripper` owns measured-state
-and command-channel projection. `action_target_builders` composes those three
-contracts into final pose or joint supervision and target dimensions. Dataset
-adapters should import those canonical owners directly; applications may use
-the corresponding lazy exports from `open_wam.data`. The historical
-`action_transforms` path remains an identity-preserving direct/wildcard import
-and old-pickle facade, but owns no implementation.
-For mixed conditional-dynamics training, `counterfactual_dynamics_dataset`
-owns encoded source resolution, hierarchical draws, final metadata, and
-`LatentWAMSample` construction. `counterfactual_dynamics_materialization` owns
-payload tensors, raw-state/action packing, condition shifts, edge-hold
-padding, attention geometry, and the counterfactual target-only
-`t0 + future` segment contract. `counterfactual_source_order` owns
-deterministic task/branch-balanced source traversal. `generalist_dynamics`
-owns source-mixture sampling and FDM/IDM mode routing, while
-`conditional_dynamics_layout` owns the parameter-free projection of real
-demonstrations to the same rollout-style tensor and metadata contract. Joint
-samples bypass that projection.
-`latent_view_assembly` owns the public, dataset-independent 1-4-view latent
-canvas contract. Dataset adapters choose slots and sampling weights, then call
-`assemble_latent_views`; backbones receive only the assembled canonical tensor.
-For manifest-backed video pretraining, `mixed_video_catalog_contracts` owns
-immutable stream, episode, and catalog records. `mixed_video_manifest` owns
-source CSV parsing plus path, FPS, clip, and target-slot resolution;
-`mixed_video_catalog_assembly` groups streams into validated logical episodes
-and merges task metadata; and `mixed_video_catalog_split` owns leak-free
-physical-episode train/validation splits. `mixed_video_catalog` is an
-identity-preserving direct/wildcard import and old-pickle facade only.
-`mixed_video_decode` owns video-file materialization, timestamp clipping,
-target-FPS interpolation, adaptive sizing, frame transforms, and imageio/decord
-backend selection. `mixed_video_latent_storage` owns latent-sidecar
-materialization, payload validation, and bounded LRU caching.
-`mixed_video_planning` owns deterministic causal-window geometry, latent-view
-eligibility and repetition, source weighting, epoch RNG, and source-balanced
-global orders. `mixed_video_encoding` owns the reusable offline RGB-to-latent
-boundary: typed episode selection, canonical/per-view target planning,
-streaming VAE calls, sidecar writes, and strict resume validation.
-`mixed_video_encoding_artifacts` owns dependency-light latent path and manifest
-construction, raw-to-latent bucket conversion, generated training configs, and
-backbone compatibility checks. The encoding facade accepts a
-`MixedVideoLatentEncoder` capability and does not construct model assets,
-parse command-line arguments, or launch processes. `mixed_video` owns RGB
-frame-cache lifetime, RGB/latent tensor selection and padding, latent view
-assembly, and final sample construction. It calls the latent repository and
-window planner directly rather than exposing dataset-private storage/cache
-compatibility facades.
-Historical catalog imports from `mixed_video_catalog` and `mixed_video`, plus
-decode and window-record imports from `mixed_video`, remain identity aliases.
-For heterogeneous LeRobot consortium training,
-`ConsortiumEpochOrderPlan` freezes member index groups, per-member weights,
-the typed weight/random modes, and the sampling seed. It owns fixed-length
-largest-remainder allocation, member-local seeded shuffling, and deterministic
-global interleaving. `lerobot_consortium_storage` owns source discovery,
-local/remote resolution, JSON/JSONL/Parquet reads, and optional local/cloud
-write-through caches. `lerobot_consortium_catalog` owns immutable member and
-channel contracts, source membership, metadata parsing, local index-snapshot
-validation/refresh, and catalog construction. `lerobot_consortium_planning`
-owns canonical member-ID resolution, train/validation split membership,
-channel-to-slot selection, frame/slot packing decisions, and window geometry
-without materializing source rows or tensors. `lerobot_consortium` owns cache
-lifetime, structured-row and image decoding, action/state supervision, and
-final sample construction. Consortium inventory tooling has a separate
-extension boundary: `lerobot_consortium_inventory_contracts` owns
-dependency-light records and scalar coercion, `lerobot_consortium_targets`
-owns deterministic repo-list parsing and persistence,
-`lerobot_consortium_inventory_io` owns CSV/JSON/Markdown representation, and
-`lerobot_consortium_index` owns optional Hugging Face/PyArrow inspection and
-parallel orchestration. Historical index imports and old pickle globals remain
-identity aliases. Historical catalog, planning, and storage imports from
-`lerobot_consortium` remain identity aliases. This policy is intentionally
-distinct from mixed-video source balancing, whose rounded target counts may
-change epoch length.
-`distributed_sampling` owns rank sharding and epoch coordination; adapters
-supply weights or deterministic global index orders without embedding
-distributed control flow. Equal-rank padded orders, intentionally unpadded
-orders, dataset-span draw keys, and padded-span draw keys are separate
-contracts rather than implicit adapter conventions. The same module owns the
-stable task/trajectory/start draw primitive used by real and counterfactual
-hierarchical datasets; adapters still own eligibility and probability mass.
+- camera decoding and canonical RGB assembly;
+- action and state transforms;
+- temporal and latent alignment;
+- sample geometry and loss-range metadata;
+- mixed-source and counterfactual routing.
 
-## Operations Boundary
+The model receives canonical tensors and typed metadata. It does not know a
+dataset's native camera names, storage format, or simulator schema.
 
-Open-WAM owns scheduler-agnostic train, eval, sanity, and rollout commands.
-Cluster repositories own accounts, partitions, environment modules, scratch
-paths, queue monitoring, and retry policy. Scheduler adapters should invoke the
-same public commands and must not redefine experiment or model semantics.
+## Attention And Cache Boundary
 
-## What Not To Extend
+Common attention contracts separate visibility from execution:
 
-The legacy `ActionHead` and `UnifiedWAMPipeline` paradigms are intentionally
-not part of the current runtime. New research should extend:
+- `attention_contracts` defines typed profiles and normalized choices;
+- `chunked_attention_visibility` defines token-pair visibility;
+- `chunked_attention` produces dense or FlexAttention representations;
+- `attention_backends` executes the selected representation.
 
-- `PolicyVariant` for method semantics
-- `ActionDecoder` for supervised action outputs
-- dataset adapters for new data sources
-- simulator adapters for new rollout environments
-- config enums and static validation for public config choices
+Architecture packages own their exact packed layouts and cache payloads. A
+custom policy should submit a common prepared attention profile through a
+runtime program instead of modifying the shared backbone.
+
+## Training And Checkpoints
+
+The generic training runtime owns optimizer, scheduler, logging, validation,
+distributed strategy, and checkpoint lifecycle. Policy differences enter only
+through configured batches and pipeline outputs.
+
+`CheckpointManager` writes model state and, when configured, exact-resume
+training state. Architecture refactors must preserve parameter names,
+registration order, state-dict keys, optimizer mapping, and recurrent cache
+semantics for maintained checkpoints.
+
+## Extension Boundary
+
+Applications can register:
+
+- dataset adapters with `register_dataset_adapter`;
+- policy variants with `register_policy_variant`;
+- action decoders with `register_action_decoder`;
+- simulator backends through the simulator extension contract.
+
+Extensions use open string identifiers and parse their own typed options.
+Built-in finite choices remain enums. See [Extension SDK](extension_sdk.md) and
+the cookbooks under `docs/cookbooks/`.
+
+## Compatibility Policy
+
+Historical `mot`, `MoT*`, `M1`, `M5`, and `*_heng_compatible` names are input
+compatibility labels only. They resolve to canonical architecture names at the
+config, import, or launcher boundary. Maintained implementation code, new
+configs, run metadata, artifact manifests, and documentation use
+`parallel_stream`, `dual_expert`, and explicit program names.
+
+Compatibility may change labels and metadata, but it must not change model
+numerics. The strict characterization suite compares outputs, losses,
+gradients, optimizer updates, recurrent caches, checkpoint resume, and rollout
+artifacts against immutable checkpoint-backed goldens.

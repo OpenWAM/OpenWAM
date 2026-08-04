@@ -13,7 +13,7 @@ from open_wam.configs.backbone import (
 )
 from open_wam.configs.enums import (
     CurrentBlockCoupling,
-    JointDenoiseTrainingMode,
+    GeneralistDenoisingMode,
     JointTimestepCoupling,
     ParallelExactCacheWriteMode,
     ProprioContextMode,
@@ -279,7 +279,7 @@ def _run_parallel_packed_inference_rollout_impl(
         if action_denoise_mask is not None:
             commit_action_latents = commit_action_latents * action_denoise_mask
     forced_video_latents = None
-    if rollout_mode == JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION:
+    if rollout_mode == GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION:
         if condition_latents is None:
             raise ValueError("video_conditioned_action rollout requires current video condition latents.")
         forced_video_latents = condition_latents.to(device=device, dtype=model_dtype)
@@ -294,7 +294,7 @@ def _run_parallel_packed_inference_rollout_impl(
         and infer_cache.get("step_index", 0) == 0
         and condition_latents is not None
         and generation_frame_start == 0
-        and rollout_mode != JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION
+        and rollout_mode != GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION
     ):
         initial_observed_video_anchor = condition_latents[:, :, 0:1].to(device=device, dtype=model_dtype)
     # Keep the packed four-branch sequence contract for compatibility with the
@@ -313,7 +313,7 @@ def _run_parallel_packed_inference_rollout_impl(
     )
     forced_clean_action_conditioning = (
         forced_action_latents is not None
-        and rollout_mode == JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO
+        and rollout_mode == GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO
     )
     if forced_clean_action_conditioning:
         condition_action_latents = forced_action_latents
@@ -648,7 +648,7 @@ def run_parallel_packed_inference_rollout(
     action_channel_mask: torch.Tensor | None,
     infer_cache: dict[str, Any],
     advance_frame_start: bool = False,
-    action_conditioning_mode: JointDenoiseTrainingMode | str = "vanilla_joint_rollout",
+    action_conditioning_mode: GeneralistDenoisingMode | str = "vanilla_joint_rollout",
     proprio_state: torch.Tensor | None = None,
     hidden_proprio_state: torch.Tensor | None = None,
 ) -> ParallelInferArtifacts:

@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any
 
 from .coercion import coerce_enum, coerce_optional_enum
-from .enums import AuxiliaryValidationSource, DataSplit, JointDenoiseTrainingMode, coerce_fields
+from .enums import (
+    AuxiliaryValidationSource,
+    DataSplit,
+    GeneralistDenoisingMode,
+    coerce_fields,
+)
 
 
 @dataclass(frozen=True)
@@ -12,7 +18,7 @@ class AuxiliaryValidationTaskConfig:
     """One optional validation probe run alongside the primary validation set."""
 
     name: str
-    mode_override: JointDenoiseTrainingMode | None = None
+    mode_override: GeneralistDenoisingMode | None = None
     dataset_split: DataSplit = DataSplit.VAL
     source: AuxiliaryValidationSource = AuxiliaryValidationSource.DATASET
     max_batches: int | None = 16
@@ -24,7 +30,7 @@ class AuxiliaryValidationTaskConfig:
         coerce_fields(
             self,
             enum_fields={"dataset_split": DataSplit, "source": AuxiliaryValidationSource},
-            optional_enum_fields={"mode_override": JointDenoiseTrainingMode},
+            optional_enum_fields={"mode_override": GeneralistDenoisingMode},
         )
         if not isinstance(self.name, str) or not self.name:
             raise ValueError("`validation.auxiliary_tasks[].name` must be non-empty.")
@@ -51,8 +57,8 @@ class AuxiliaryValidationTaskConfig:
         if self.drop_text_conditioning is not None:
             return bool(self.drop_text_conditioning)
         return self.mode_override in {
-            JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
-            JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
+            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
+            GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
         }
 
 
@@ -99,7 +105,7 @@ def parse_validation_config(raw_value: Mapping[str, Any] | None) -> ValidationCo
             AuxiliaryValidationTaskConfig(
                 name=item["name"],
                 mode_override=coerce_optional_enum(
-                    JointDenoiseTrainingMode,
+                    GeneralistDenoisingMode,
                     item.get("mode_override"),
                 ),
                 dataset_split=coerce_enum(

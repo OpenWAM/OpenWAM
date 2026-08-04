@@ -14,8 +14,8 @@ import torch
 from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.configs.enums import (
     CurrentBlockCoupling,
+    HistoryStreamVisibility,
     ParallelExactCacheWriteMode,
-    ParallelHistoryStreamVisibility,
 )
 from open_wam.models.common import (
     PreparedAttentionProfile,
@@ -37,6 +37,12 @@ from open_wam.models.visual_tower.exact_runtime import (
     run_exact_single_stream_forward,
 )
 
+from .cache_attention import (
+    build_joint_clean_cache_attention_mask,
+    build_joint_clean_cache_attention_profile,
+)
+from .cache_diagnostics import summarize_slot_pool_cache_state
+from .clean_cache_write import write_joint_clean_tokens_to_exact_cache
 from .exact_cache import (
     ExactCacheInterfaceSpec,
     build_clean_video_action_cache_stream_ids,
@@ -44,12 +50,6 @@ from .exact_cache import (
     restore_slot_pool_layer_metadata,
     set_slot_pool_layer_metadata,
 )
-from .cache_attention import (
-    build_joint_clean_cache_attention_mask,
-    build_joint_clean_cache_attention_profile,
-)
-from .cache_diagnostics import summarize_slot_pool_cache_state
-from .clean_cache_write import write_joint_clean_tokens_to_exact_cache
 
 (
     Any,
@@ -57,7 +57,7 @@ from .clean_cache_write import write_joint_clean_tokens_to_exact_cache
     CurrentBlockCoupling,
     ExactCacheInterfaceSpec,
     ParallelExactCacheWriteMode,
-    ParallelHistoryStreamVisibility,
+    HistoryStreamVisibility,
     PreparedAttentionProfile,
     SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS,
     SLOT_POOL_DEFER_EVICTION_UNTIL_AFTER_WRITE_ATTENTION,
@@ -96,7 +96,7 @@ def write_exact_cache_chunk(
     current_block_coupling: CurrentBlockCoupling
     | str = CurrentBlockCoupling.VIDEO_THEN_ACTION,
     preserve_video_pretrain_history: bool = False,
-    history_stream_visibility: ParallelHistoryStreamVisibility | str | None = None,
+    history_stream_visibility: HistoryStreamVisibility | str | None = None,
     video_hidden_context: torch.Tensor | None = None,
     action_hidden_context: torch.Tensor | None = None,
     allow_cache_prefix_during_update_write: bool = False,

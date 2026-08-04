@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Iterable
 import json
-from pathlib import Path
 import re
 import shutil
+from collections.abc import Iterable
+from pathlib import Path
 from urllib.parse import unquote, urlsplit
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = REPO_ROOT / ".docs_site"
@@ -19,12 +18,12 @@ PUBLIC_MARKDOWN_PATHS = (
     Path("artifacts.md"),
     Path("benchmarks.md"),
     Path("cards/README.md"),
-    Path("cards/method1_libero_exact_step400.md"),
+    Path("cards/parallel_stream_libero_exact_step400.md"),
     Path("cards/public_tiny_synthetic_contract.md"),
     Path("cli.md"),
     Path("cookbooks/new_action_decoder.md"),
     Path("cookbooks/new_dataset.md"),
-    Path("cookbooks/new_method.md"),
+    Path("cookbooks/new_policy_architecture.md"),
     Path("cookbooks/new_simulator_adapter.md"),
     Path("cookbooks/reproduce_result.md"),
     Path("deployment_namespace.md"),
@@ -33,8 +32,8 @@ PUBLIC_MARKDOWN_PATHS = (
     Path("github_pages.md"),
     Path("index.md"),
     Path("m5_gjd_uva_libero10_comparison.md"),
-    Path("method_families.md"),
-    Path("mot_refactor_characterization.md"),
+    Path("policy_architectures.md"),
+    Path("dual_expert_refactor_characterization.md"),
     Path("quickstart.md"),
     Path("release.md"),
     Path("reproducibility.md"),

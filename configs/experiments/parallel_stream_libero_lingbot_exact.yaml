@@ -101,7 +101,7 @@ backbone:
   reference_assets_device_policy: cpu_offload
 
 policy_variant:
-  # Method-1 runtime knobs
+  # Parallel-stream architecture knobs
   # - these control chunk geometry, rollout layout, and exact-runtime behavior
   name: parallel_stream
   runtime_mode: lingbot_exact
@@ -116,8 +116,8 @@ policy_variant:
 
 action_decoder:
   # Decoder surface knobs
-  # - for exact method 1 this stays on the LingBot-compatible parallel decoder
-  name: lingbot_parallel_decoder
+  # - the parallel-stream decoder owns final action outputs and losses
+  name: parallel_stream_decoder
   hidden_size: 3072
   action_dim: 30
   action_horizon: 16
@@ -199,5 +199,5 @@ trainer:
   # Logging + experiment tracking knobs
   enable_jsonl_logging: true
   enable_wandb: true
-  wandb_project: openwam-method1-libero
+  wandb_project: openwam-parallel-stream-libero
   wandb_mode: online

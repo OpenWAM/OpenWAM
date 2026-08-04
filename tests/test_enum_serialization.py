@@ -5,18 +5,16 @@ from pathlib import Path
 
 import yaml
 
-from open_wam.configs import JointDenoiseTrainingMode
+from open_wam.configs import GeneralistDenoisingMode, load_experiment_config
 from open_wam.configs.enums import serialize_enum_values
-from open_wam.configs import load_experiment_config
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_serialize_enum_values_converts_mapping_keys_for_yaml() -> None:
     payload = {
-        JointDenoiseTrainingMode.JOINT: {
-            JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION: 0.25,
+        GeneralistDenoisingMode.JOINT: {
+            GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION: 0.25,
         },
     }
 
@@ -28,7 +26,7 @@ def test_serialize_enum_values_converts_mapping_keys_for_yaml() -> None:
 
 def test_generalist_joint_denoising_config_serializes_for_checkpoint_yaml() -> None:
     config = load_experiment_config(
-        REPO_ROOT / "configs/experiments/parallel_stream_libero_lingbot_m1_generalist_joint_denoising.yaml"
+        REPO_ROOT / "configs/experiments/parallel_stream_libero_generalist_joint_denoising.yaml"
     )
 
     serialized = serialize_enum_values(asdict(config))

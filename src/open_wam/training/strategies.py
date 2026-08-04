@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from contextlib import nullcontext
 from dataclasses import dataclass
+from datetime import timedelta
 
 import torch
 import torch.distributed as dist
@@ -44,7 +45,7 @@ def _apply_block_activation_checkpointing(module: nn.Module) -> None:
             if getattr(block, "_open_wam_activation_checkpoint_wrapped", False):
                 continue
             wrapped = checkpoint_wrapper(block, preserve_rng_state=False)
-            setattr(wrapped, "_open_wam_activation_checkpoint_wrapped", True)
+            wrapped._open_wam_activation_checkpoint_wrapped = True
             blocks[block_index] = wrapped
 
 
@@ -57,7 +58,7 @@ def _apply_composable_fsdp_sharding(
     from torch.distributed.fsdp import fully_shard
 
     # Optional CPU offload of params + grads + optimizer state. Enabled via
-    # `OPEN_WAM_FSDP_CPU_OFFLOAD=1`. Useful when the M5 packed-coupling path
+    # `OPEN_WAM_FSDP_CPU_OFFLOAD=1`. Useful when the dual-expert packed-coupling path
     # makes both video DiT and action expert trainable on a 4×L40S box.
     cpu_offload = os.environ.get("OPEN_WAM_FSDP_CPU_OFFLOAD", "0") == "1"
     offload_policy = None
@@ -100,9 +101,9 @@ def _apply_composable_fsdp_sharding(
         else None
     )
 
-    # MoT packed-coupling path: blocks have been transferred from
-    # core.blocks / action_expert.blocks into a MoTPackedBlockStack at
-    # pipeline-build time. FSDP wraps each MoTPackedBlock as one unit so the
+    # DualExpert packed-coupling path: blocks have been transferred from
+    # core.blocks / action_expert.blocks into a DualExpertPackedBlockStack at
+    # pipeline-build time. FSDP wraps each DualExpertPackedBlock as one unit so the
     # joint video+action attention runs through standard FSDP pre/post-forward
     # hooks (no manual `summon_full_parameters` / `linear_with_materialized_params`
     # bypass during forward, which was causing
@@ -136,10 +137,10 @@ def _set_module_gradient_sync(module: nn.Module, enabled: bool) -> bool:
         setter(enabled)
         return True
     if hasattr(module, "require_backward_grad_sync"):
-        setattr(module, "require_backward_grad_sync", enabled)
+        module.require_backward_grad_sync = enabled
         toggled = True
     if hasattr(module, "require_forward_param_sync"):
-        setattr(module, "require_forward_param_sync", enabled)
+        module.require_forward_param_sync = enabled
         toggled = True
     return toggled
 
@@ -278,7 +279,6 @@ class SingleDeviceStrategy:
 
     def set_gradient_sync(self, model: nn.Module, enabled: bool) -> None:
         del model, enabled
-        return None
 
     def state_dict(self) -> dict[str, object]:
         return {
@@ -314,6 +314,7 @@ class DistributedStrategy(SingleDeviceStrategy):
     """
 
     kind: StrategyName = StrategyName.DDP
+    distributed_timeout_seconds: int = 1800
 
     def __post_init__(self) -> None:
         self.rank = int(os.getenv("RANK", "0"))
@@ -331,7 +332,10 @@ class DistributedStrategy(SingleDeviceStrategy):
         self._owns_process_group = False
         if self.distributed and not dist.is_initialized():
             backend = "nccl" if self.device.type == "cuda" else "gloo"
-            dist.init_process_group(backend=backend)
+            dist.init_process_group(
+                backend=backend,
+                timeout=timedelta(seconds=int(self.distributed_timeout_seconds)),
+            )
             self._owns_process_group = True
         self._device_mesh = (
             init_device_mesh(self.device.type, (self.world_size,))
@@ -409,5 +413,6 @@ def build_training_strategy(config: TrainerConfig) -> SingleDeviceStrategy:
             accelerator=config.accelerator,
             precision=config.precision,
             kind=strategy_name,
+            distributed_timeout_seconds=config.distributed_timeout_seconds,
         )
     raise NotImplementedError(f"Unsupported training strategy {strategy_name!r}.")

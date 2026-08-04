@@ -1,0 +1,172 @@
+name: parallel_stream_robotwin_video_then_action_base
+
+data:
+  # RoboTwin latent LeRobot collection. Override local_root for another
+  # compatible clean/aug collection.
+  dataset_name: robotwin
+  dataset_type: lerobot_v2_latent_local
+  local_root: "${paths.datasets.robotwin_lerobot_video_root}"
+  empty_text_embedding_path: "${paths.datasets.empty_text_embedding}"
+  split: train
+  camera_names:
+    - observation.images.cam_high
+    - observation.images.cam_left_wrist
+    - observation.images.cam_right_wrist
+  latent_camera_names:
+    - observation.images.cam_high
+    - observation.images.cam_left_wrist
+    - observation.images.cam_right_wrist
+  canonical_height: 128
+  canonical_width: 480
+  num_frames: 2
+  frame_stride: 1
+  sample_stride: 1
+  episode_cache_size: 2
+  train_fraction: 1.0
+  split_seed: 0
+  sample_construction:
+    mode: hierarchical_fixed_segment
+    segment_frames: 128
+    chunk_size: 2
+    window_size: 72
+    randomize_geometry: true
+    start_padding_frames: 3
+    context_prefix_policy: none
+    tail_padding_policy: zero_order_hold
+    padded_target_policy: mask_loss
+    task_start_power: 0.5
+    demo_count_power: 0.0
+    trajectory_start_power: 1.0
+  train_batch_size: 1
+  val_batch_size: 1
+  num_workers: 8
+  view_layout:
+    - source_name: observation.images.cam_high
+      canonical_name: image
+      top: 0
+      left: 0
+      height: 128
+      width: 160
+    - source_name: observation.images.cam_left_wrist
+      canonical_name: left_wrist_image
+      top: 0
+      left: 160
+      height: 128
+      width: 160
+    - source_name: observation.images.cam_right_wrist
+      canonical_name: right_wrist_image
+      top: 0
+      left: 320
+      height: 128
+      width: 160
+  action_schema:
+    action_dim: 16
+    action_horizon: 32
+    state_dim: 16
+    state_horizon: 1
+  action_target:
+    representation: raw
+    source_key: action
+    pose_source_key: observation.state
+    state_encoding: identity
+    reference_source: anchor_state
+    rotation_representation: axis_angle
+    include_gripper: true
+    gripper_representation: action_command
+    gripper_action_index: -1
+
+backbone:
+  implementation: shared_transformer
+  train_attn_mode: flex
+  infer_attn_mode: torch
+  hidden_size: 3072
+  num_layers: 30
+  num_heads: 24
+  attention_head_dim: 128
+  ffn_dim: 14336
+  pretrained_model_name_or_path: "${paths.models.lingbot_va_base}"
+  transformer_subdir: "${paths.models.lingbot_va_base}/transformer"
+  max_text_tokens: 512
+  load_wan_vae_frontend: true
+  load_text_conditioning: true
+  reference_assets_device_policy: cpu_offload
+
+policy_variant:
+  name: parallel_stream
+  runtime_mode: lingbot_exact
+  program: video_then_action
+  joint_timestep_coupling: independent
+  reference_profile: robotwin
+  hidden_size: 3072
+  frame_chunk_size: 2
+  action_per_frame: 16
+  attn_window: 72
+  sequence_order: [video_noisy, video_condition, action_noisy, action_condition]
+  mask_mode: lingbot_chunked
+  cache_mode: metadata_only
+  preserve_video_pretrain_history: true
+
+action_decoder:
+  name: parallel_stream_decoder
+  hidden_size: 3072
+  action_dim: 30
+  action_horizon: 32
+
+training:
+  video_num_train_timesteps: 1000
+  action_num_train_timesteps: 1000
+  video_sigma_shift: 5.0
+  action_sigma_shift: 1.0
+  use_teacher_forcing: false
+  chunk_size: 2
+  window_size: 72
+  optimizer_name: adamw
+  scheduler_name: constant_with_warmup
+  learning_rate: 2.0e-5
+  beta1: 0.9
+  beta2: 0.95
+  weight_decay: 0.1
+  warmup_steps: 10
+  gradient_accumulation_steps: 20
+  max_grad_norm: 2.0
+  num_steps: 4000
+  text_condition_dropout_prob: 0.1
+  enabled_objectives: [latent, action]
+  latent_loss_weight: 1.0
+  action_loss_weight: 1.0
+  trainable_components: [visual_tower.runtime_backbone]
+  sample_loss_weight_mode: valid_action_steps
+  sample_loss_weight_reference_steps: null
+  sample_loss_weight_min: 0.25
+  sample_loss_weight_max: 4.0
+
+inference:
+  video_num_inference_steps: 25
+  action_num_inference_steps: 50
+  frame_chunk_size: 2
+  use_cache: true
+  guidance_scale: 5.0
+  action_guidance_scale: 1.0
+  video_exec_step: -1
+
+trainer:
+  max_epochs: 1
+  limit_train_batches: null
+  limit_val_batches: 0
+  log_every_n_steps: 1
+  accelerator: gpu
+  devices: 1
+  precision: bf16-mixed
+  enable_checkpointing: true
+  enable_model_summary: false
+  runtime: composable
+  batch_adapter: latents
+  loop_policy: steps
+  strategy: fsdp
+  save_interval: 100
+  checkpoint_mode: full_training_state
+  export_runtime_backbone: true
+  enable_jsonl_logging: true
+  enable_wandb: true
+  wandb_project: openwam-parallel-stream-cross-domain-retrain
+  wandb_mode: online

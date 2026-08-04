@@ -8,7 +8,7 @@ from open_wam.configs import (
     ActionSchemaConfig,
     ExperimentConfig,
     InferenceConfig,
-    LingbotParallelActionDecoderConfig,
+    ParallelStreamActionDecoderConfig,
     ParallelStreamPolicyConfig,
     RobotWinDataConfig,
     TrainingConfig,
@@ -74,7 +74,7 @@ def test_lingbot_exact_runner_supports_warmup_and_chunk_generation(tmp_path: Pat
             norm_q01=(0.0, 0.0, 0.0, 0.0),
             norm_q99=(1.0, 1.0, 1.0, 1.0),
         ),
-        action_decoder=LingbotParallelActionDecoderConfig(
+        action_decoder=ParallelStreamActionDecoderConfig(
             hidden_size=32,
             action_dim=4,
             action_horizon=4,

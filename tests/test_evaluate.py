@@ -10,12 +10,14 @@ import yaml
 from torch.utils.data import Dataset
 
 import open_wam.evals.evaluate as evaluate_module
+from open_wam.configs import load_experiment_config
 from open_wam.data import WAMSample
 from open_wam.evals.evaluate import resolve_evaluation_request, run_evaluation
-from open_wam.models.policy_variants.contracts import DecoderSequenceContext, VideoConditionWindowContext
+from open_wam.models.policy_variants.contracts import (
+    DecoderSequenceContext,
+    VideoConditionWindowContext,
+)
 from open_wam.pipelines import build_variant_pipeline_from_config
-from open_wam.configs import load_experiment_config
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -104,13 +106,13 @@ def test_method4_video_conditioned_eval_wrappers_resolve_experiment_configs() ->
             "parallel_stream_exact_libero_step_1100_0402/full_training_state.pt",
         ),
         (
-            "parallel_stream_libero_lingbot_joint_denoise_eval.yaml",
-            "parallel_stream_libero_lingbot_joint_denoise.yaml",
+            "parallel_stream_libero_joint_denoise_eval.yaml",
+            "parallel_stream_libero_joint_denoise.yaml",
             "parallel_stream_joint_libero_step_600_0402/full_training_state.pt",
         ),
         (
-            "parallel_stream_libero_lingbot_joint_denoise_eval_legacy.yaml",
-            "parallel_stream_libero_lingbot_joint_denoise.yaml",
+            "parallel_stream_libero_joint_denoise_eval_legacy.yaml",
+            "parallel_stream_libero_joint_denoise.yaml",
             "parallel_stream_joint_libero_step_300/full_training_state.pt",
         ),
     ],
@@ -134,8 +136,8 @@ def test_libero_reference_eval_wrappers_resolve_experiment_configs_and_checkpoin
 @pytest.mark.parametrize(
     ("wrapper_name", "experiment_name"),
     [
-        ("parallel_stream_robotwin_smoke.yaml", "parallel_stream_robotwin_smoke.yaml"),
-        ("mot_robotwin_smoke.yaml", "mot_robotwin_smoke.yaml"),
+        ("parallel_stream_robotwin_smoke_eval.yaml", "parallel_stream_robotwin_smoke.yaml"),
+        ("dual_expert_robotwin_smoke_eval.yaml", "dual_expert_robotwin_smoke.yaml"),
         ("causal_video_prediction_robotwin_smoke.yaml", "causal_video_prediction_robotwin_smoke.yaml"),
     ],
 )
@@ -260,8 +262,8 @@ def test_run_evaluation_on_parallel_stream_robotwin(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("config_path", "expected_name"),
     [
-        (REPO_ROOT / "configs/evals/parallel_stream_robotwin_smoke.yaml", "parallel_stream_robotwin_smoke"),
-        (REPO_ROOT / "configs/evals/mot_robotwin_smoke.yaml", "mot_robotwin_smoke"),
+        (REPO_ROOT / "configs/evals/parallel_stream_robotwin_smoke_eval.yaml", "parallel_stream_robotwin_smoke"),
+        (REPO_ROOT / "configs/evals/dual_expert_robotwin_smoke_eval.yaml", "dual_expert_robotwin_smoke"),
         (REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml", "post_latent_robotwin_video_conditioned"),
         (REPO_ROOT / "configs/experiments/post_decoded_robotwin_video_conditioned.yaml", "post_decoded_robotwin_video_conditioned"),
     ],
@@ -363,11 +365,11 @@ def test_run_trajectory_evaluation_carries_across_episode_windows(monkeypatch) -
 @pytest.mark.parametrize(
     ("config_path", "action_horizon", "expected_reset_calls"),
     [
-        (REPO_ROOT / "configs/experiments/mot_robotwin_smoke.yaml", 8, 2),
+        (REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml", 8, 2),
         (REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml", 6, 1),
     ],
 )
-def test_run_trajectory_evaluation_resets_only_mot_observation_conditioned_sessions(
+def test_run_trajectory_evaluation_resets_only_dual_expert_observation_conditioned_sessions(
     monkeypatch,
     config_path: Path,
     action_horizon: int,
@@ -444,14 +446,14 @@ def test_align_rollout_window_tensor_shifts_overlap_and_seeds_new_frames() -> No
     assert torch.equal(aligned, torch.tensor([[[20.0, 30.0, 300.0]]]))
 
 
-def test_mot_trajectory_eval_marks_session_reset_boundary() -> None:
-    mot_config = load_experiment_config(REPO_ROOT / "configs/experiments/mot_robotwin_smoke.yaml")
+def test_dual_expert_trajectory_eval_marks_session_reset_boundary() -> None:
+    dual_expert_config = load_experiment_config(REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml")
     method4_config = load_experiment_config(
         REPO_ROOT / "configs/experiments/post_latent_robotwin_video_conditioned.yaml"
     )
 
-    assert evaluate_module._mot_requires_observation_conditioned_session_reset(mot_config)
-    assert not evaluate_module._mot_requires_observation_conditioned_session_reset(method4_config)
+    assert evaluate_module._dual_expert_requires_observation_conditioned_session_reset(dual_expert_config)
+    assert not evaluate_module._dual_expert_requires_observation_conditioned_session_reset(method4_config)
 
 
 def test_run_evaluation_loads_pipeline_prefixed_checkpoint(tmp_path: Path) -> None:

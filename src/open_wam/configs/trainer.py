@@ -38,6 +38,7 @@ class TrainerConfig:
     batch_adapter: BatchAdapterName = BatchAdapterName.VIEWS
     loop_policy: LoopPolicyName = LoopPolicyName.EPOCHS
     strategy: StrategyName = StrategyName.SINGLE_DEVICE
+    distributed_timeout_seconds: int = 1800
     default_root_dir: str | None = None
 
     # Checkpoint/export knobs
@@ -89,6 +90,18 @@ class TrainerConfig:
             if isinstance(self.max_checkpoints_to_keep, bool) or int(self.max_checkpoints_to_keep) <= 0:
                 raise ValueError("`trainer.max_checkpoints_to_keep` must be a positive integer or null.")
             object.__setattr__(self, "max_checkpoints_to_keep", int(self.max_checkpoints_to_keep))
+        if (
+            isinstance(self.distributed_timeout_seconds, bool)
+            or int(self.distributed_timeout_seconds) <= 0
+        ):
+            raise ValueError(
+                "`trainer.distributed_timeout_seconds` must be a positive integer."
+            )
+        object.__setattr__(
+            self,
+            "distributed_timeout_seconds",
+            int(self.distributed_timeout_seconds),
+        )
 
 
 def parse_trainer_config(raw_value: Mapping[str, Any] | None) -> TrainerConfig:
@@ -128,6 +141,7 @@ def parse_trainer_config(raw_value: Mapping[str, Any] | None) -> TrainerConfig:
             StrategyName,
             raw.get("strategy", "single_device"),
         ),
+        distributed_timeout_seconds=raw.get("distributed_timeout_seconds", 1800),
         default_root_dir=raw.get("default_root_dir"),
         checkpoint_dir=raw.get("checkpoint_dir"),
         save_interval=raw.get("save_interval"),

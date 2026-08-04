@@ -13,7 +13,11 @@ from torch.utils.data import DataLoader, Dataset, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 
 import open_wam.training.runtime as runtime_module
-from open_wam.configs import AuxiliaryValidationTaskConfig, TrainingConfig
+from open_wam.configs import (
+    AuxiliaryValidationTaskConfig,
+    TrainingConfig,
+    load_experiment_config,
+)
 from open_wam.configs.enums import BatchAdapterName, CheckpointMode
 from open_wam.data import (
     LatentWAMSample,
@@ -37,7 +41,6 @@ from open_wam.training.step_executor import (
     ViewBatchAdapter,
     resolve_sample_loss_weight,
 )
-from open_wam.configs import load_experiment_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -228,7 +231,7 @@ def _build_step_runtime_config(
     "config_name",
     [
         "parallel_stream_robotwin_smoke.yaml",
-        "mot_robotwin_smoke.yaml",
+        "dual_expert_robotwin_smoke.yaml",
     ],
 )
 def test_composable_runtime_trains_shared_core_method_smokes(
@@ -753,10 +756,10 @@ def test_composable_runtime_trains_causal_video_prediction_smoke(
     assert final_state.optimizer_step == 1
 
 
-def test_training_runtime_initializes_mot_variant_before_strategy_wrap(
+def test_training_runtime_initializes_dual_expert_variant_before_strategy_wrap(
     tmp_path: Path,
 ) -> None:
-    config_path = REPO_ROOT / "configs/experiments/mot_robotwin_smoke.yaml"
+    config_path = REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml"
     config = _build_step_runtime_config(config_path, tmp_path=tmp_path)
 
     runtime = TrainingRuntime.from_config(config)
@@ -768,7 +771,7 @@ def test_training_runtime_initializes_mot_variant_before_strategy_wrap(
 def test_generalist_checkpoint_writes_yaml_safe_enum_dict_keys(tmp_path: Path) -> None:
     config = load_experiment_config(
         REPO_ROOT
-        / "configs/experiments/mot_libero_generalist_joint_denoising.yaml"
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
     )
     manager = CheckpointManager(
         root_dir=tmp_path / "checkpoints",
@@ -783,7 +786,7 @@ def test_generalist_checkpoint_writes_yaml_safe_enum_dict_keys(tmp_path: Path) -
     resolved_text = (checkpoint_dir / "resolved_config.yaml").read_text(
         encoding="utf-8"
     )
-    assert "mot_generalist_training_mode_probs:" in resolved_text
+    assert "generalist_denoising_mode_probs:" in resolved_text
     assert "joint:" in resolved_text
 
 

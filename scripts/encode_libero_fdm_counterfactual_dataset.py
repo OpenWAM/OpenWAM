@@ -19,20 +19,19 @@ if str(REPO_ROOT) not in sys.path:
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from scripts.research_dynamics.cli import _repair_runtime_config_for_local_eval
+from open_wam.configs import load_experiment_config
 from open_wam.data.latent_temporal import (
     CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET,
     latent_raw_boundaries,
 )
 from open_wam.data.raw_video import ViewPlacement
 from open_wam.models.visual_tower.reference_assets import LingbotReferenceAssets
-from open_wam.configs import load_experiment_config
 from open_wam.utils import (
     merge_runtime_config_from_checkpoint,
     resolve_checkpoint_file,
     resolve_transformer_dir_override,
 )
-
+from scripts.research_dynamics.cli import _repair_runtime_config_for_local_eval
 
 LIBERO_OBS_KEYS = (
     "observation.images.agentview_rgb",
@@ -597,7 +596,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Encode LIBERO FDM counterfactual RGB dataset into Wan latents.")
     parser.add_argument("--dataset-root", required=True)
     parser.add_argument("--output-dir", default=None)
-    parser.add_argument("--config", "--cfg", default="configs/experiments/parallel_stream_libero_lingbot_joint_denoise.yaml")
+    parser.add_argument("--config", "--cfg", default="configs/experiments/parallel_stream_libero_joint_denoise.yaml")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--reference-assets-device-policy", default="runtime")
@@ -620,7 +619,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help=(
             "Only encode context/target video latents. This is not valid for current "
-            "M5 legacy-prefix GJD configs that use condition_source_frame_offset=-1."
+            "Dual-expert legacy-prefix GJD configs that use condition_source_frame_offset=-1."
         ),
     )
     parser.add_argument("--shards", default=None, help="Comma-separated shard directory names. Defaults to all shards.")

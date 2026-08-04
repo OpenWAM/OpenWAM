@@ -58,8 +58,14 @@ def _replace_dataclass_fields(node: object, path: list[str], values: Mapping[str
         current_value = getattr(node, field_name)
         nested_value = _replace_dataclass_fields(current_value, path[1:], values)
         return replace(node, **{field_name: nested_value})
+    normalizer = getattr(node, "normalize_config_override_values", None)
+    normalized_values = normalizer(values) if callable(normalizer) else dict(values)
+    if not isinstance(normalized_values, Mapping):
+        raise TypeError(
+            f"{type(node).__name__}.normalize_config_override_values() must return a mapping."
+        )
     updates: dict[str, Any] = {}
-    for field_name, value in values.items():
+    for field_name, value in normalized_values.items():
         normalized_field_name = field_name.replace("-", "_")
         if not hasattr(node, normalized_field_name):
             raise ValueError(f"{type(node).__name__} has no field {normalized_field_name!r}.")

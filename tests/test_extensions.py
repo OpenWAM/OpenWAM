@@ -11,6 +11,7 @@ from open_wam.configs import (
     ExtensionActionDecoderConfig,
     ExtensionPolicyConfig,
     GenericDataConfig,
+    load_experiment_config,
 )
 from open_wam.data import build_synthetic_batch, build_train_val_datasets
 from open_wam.extensions import (
@@ -19,6 +20,7 @@ from open_wam.extensions import (
     load_extension_modules,
     loaded_extensions,
 )
+from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
 from open_wam.pipelines import (
     build_action_decoder,
     build_policy_variant,
@@ -26,9 +28,6 @@ from open_wam.pipelines import (
     registered_action_decoders,
     registered_policy_variants,
 )
-from open_wam.models.policy_variants import PolicyInferContext, PolicyTrainBatch
-from open_wam.configs import load_experiment_config
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -190,7 +189,7 @@ def test_out_of_tree_extension_loads_typed_policy_and_decoder_from_yaml(
     monkeypatch.syspath_prepend(str(tmp_path))
 
     raw = yaml.safe_load(
-        (REPO_ROOT / "configs/experiments/mot_robotwin_smoke.yaml").read_text(encoding="utf-8")
+        (REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml").read_text(encoding="utf-8")
     )
     raw["policy_variant"] = {
         "name": "extension",
@@ -232,7 +231,7 @@ def test_out_of_tree_extension_loads_typed_policy_and_decoder_from_yaml(
 def test_extension_factory_error_explains_registration_order(tmp_path: Path) -> None:
     missing_type = f"missing_policy_{uuid4().hex}"
     raw = yaml.safe_load(
-        (REPO_ROOT / "configs/experiments/mot_robotwin_smoke.yaml").read_text(encoding="utf-8")
+        (REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml").read_text(encoding="utf-8")
     )
     raw["policy_variant"] = {
         "name": "extension",

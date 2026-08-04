@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from types import SimpleNamespace
 
+import pytest
 import torch
+import torch.distributed as dist
 
-from open_wam.training.strategies import _apply_composable_fsdp_sharding
+from open_wam.configs import StrategyName, TrainerAccelerator, TrainerConfig
+from open_wam.training.strategies import (
+    _apply_composable_fsdp_sharding,
+    build_training_strategy,
+)
 
 
 class _Block(torch.nn.Module):
@@ -60,3 +67,40 @@ def test_composable_fsdp_shards_nested_blocks_then_pipeline_root(
     ]
     assert all(kwargs["reshard_after_forward"] is True for _, kwargs in calls[:-1])
     assert calls[-1][1]["reshard_after_forward"] is False
+
+
+def test_distributed_strategy_uses_configured_process_group_timeout(
+    monkeypatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setenv("LOCAL_RANK", "0")
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    monkeypatch.setattr(dist, "is_initialized", lambda: False)
+    monkeypatch.setattr(
+        dist,
+        "init_process_group",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    strategy = build_training_strategy(
+        TrainerConfig(
+            accelerator=TrainerAccelerator.CPU,
+            strategy=StrategyName.DDP,
+            distributed_timeout_seconds=42,
+        )
+    )
+
+    assert strategy.distributed_timeout_seconds == 42
+    assert calls == [
+        {
+            "backend": "gloo",
+            "timeout": timedelta(seconds=42),
+        }
+    ]
+
+
+@pytest.mark.parametrize("value", [True, 0, -1])
+def test_trainer_rejects_invalid_distributed_timeout(value: object) -> None:
+    with pytest.raises(ValueError, match="distributed_timeout_seconds"):
+        TrainerConfig(distributed_timeout_seconds=value)

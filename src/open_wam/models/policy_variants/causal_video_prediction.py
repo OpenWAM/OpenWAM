@@ -274,7 +274,7 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
             },
             aux={
                 "variant": self.config.name,
-                "method_family": "causal_video_prediction",
+                "architecture": "causal_video_prediction",
                 **rollout,
             },
         )
@@ -339,7 +339,7 @@ class CausalVideoPredictionPolicyVariant(PolicyVariant):
             next_state=PolicyInferState(step_index=infer_state.step_index + 1, cursor=next_cursor),
             aux={
                 "variant": self.config.name,
-                "method_family": "causal_video_prediction",
+                "architecture": "causal_video_prediction",
                 "predicted_latents": predicted_latents,
             },
         )

@@ -9,12 +9,19 @@ from . import enums as config_enums
 from .backbone import SharedVideoTransformerConfig
 from .coercion import (
     coerce_bool as _coerce_bool,
+)
+from .coercion import (
     coerce_enum as _coerce_enum,
+)
+from .coercion import (
     coerce_enum_tuple as _coerce_enum_tuple,
+)
+from .coercion import (
     coerce_optional_enum as _coerce_optional_enum,
 )
 from .data_contracts import DataConfig
 from .inference import InferenceConfig
+from .policy_compatibility import normalize_video_action_policy_fields
 from .policy_contracts import (
     CausalVideoPredictionPolicyConfig,
     ExtensionPolicyConfig,
@@ -22,8 +29,9 @@ from .policy_contracts import (
     PostDecodedPolicyConfig,
     PostLatentPolicyConfig,
 )
-from .policy_mot import MoTPolicyConfig
+from .policy_dual_expert import DualExpertPolicyConfig
 from .policy_parallel_stream import ParallelStreamPolicyConfig
+from .policy_video_action import resolve_video_action_program_semantics
 from .training import TrainingConfig
 from .visual_readout import parse_visual_readout_config
 
@@ -36,7 +44,7 @@ def parse_policy_variant_config(
     training_config: TrainingConfig,
     inference_config: InferenceConfig,
 ) -> PolicyVariantConfig:
-    resolved_raw = dict(policy_variant_raw)
+    resolved_raw = normalize_video_action_policy_fields(policy_variant_raw)
     compatibility_mode = False
     if not resolved_raw:
         compatibility_mode = True
@@ -151,57 +159,63 @@ def parse_policy_variant_config(
                 resolved_raw.get("attach_site", config_enums.AttachSite.POST_VISUAL_CORE),
             ),
         )
-    if name == config_enums.PolicyVariantName.MOT:
+    if name == config_enums.PolicyVariantName.DUAL_EXPERT:
+        program, current_block_coupling = resolve_video_action_program_semantics(
+            program=resolved_raw.get("program"),
+            current_block_coupling=resolved_raw.get("current_block_coupling"),
+        )
         preset = _coerce_optional_enum(
-            config_enums.MoTPreset,
+            config_enums.DualExpertPreset,
             resolved_raw.get("preset"),
         )
-        mot_generalist_training_mode_probs = resolved_raw.get("mot_generalist_training_mode_probs")
-        mot_joint_timestep_coupling_default = (
+        generalist_denoising_mode_probs = resolved_raw.get(
+            "generalist_denoising_mode_probs"
+        )
+        dual_expert_joint_timestep_coupling_default = (
             config_enums.JointTimestepCoupling.INDEPENDENT
-            if mot_generalist_training_mode_probs is not None
+            if generalist_denoising_mode_probs is not None
             else config_enums.JointTimestepCoupling.MATCH_SIGMA
         )
-        mot_defaults: dict[str, Any] = {}
-        if preset == config_enums.MoTPreset.FASTWAM:
-            mot_defaults = {
-                "runtime_mode": config_enums.MoTRuntimeMode.VIDEO_PREFILL_ACTION_DENOISE,
-                "condition_mode": config_enums.MoTConditionMode.FIRST_FRAME,
+        dual_expert_defaults: dict[str, Any] = {}
+        if preset == config_enums.DualExpertPreset.FASTWAM:
+            dual_expert_defaults = {
+                "runtime_mode": config_enums.DualExpertRuntimeMode.VIDEO_PREFILL_ACTION_DENOISE,
+                "condition_mode": config_enums.DualExpertConditionMode.FIRST_FRAME,
                 "teacher_forcing_video_noise_prob": 0.0,
                 "video_prefix_frames": 1,
             }
-        elif preset == config_enums.MoTPreset.FASTWAM_JOINT:
-            mot_defaults = {
-                "runtime_mode": config_enums.MoTRuntimeMode.JOINT_DENOISE,
-                "condition_mode": config_enums.MoTConditionMode.FULL_VIDEO,
+        elif preset == config_enums.DualExpertPreset.FASTWAM_JOINT:
+            dual_expert_defaults = {
+                "runtime_mode": config_enums.DualExpertRuntimeMode.JOINT_DENOISE,
+                "condition_mode": config_enums.DualExpertConditionMode.FULL_VIDEO,
                 "teacher_forcing_video_noise_prob": 0.0,
                 "video_prefix_frames": 1,
             }
-        elif preset == config_enums.MoTPreset.FASTWAM_IDM:
-            mot_defaults = {
-                "runtime_mode": config_enums.MoTRuntimeMode.VIDEO_PREFILL_ACTION_DENOISE,
-                "condition_mode": config_enums.MoTConditionMode.TEACHER_FORCING_COND_VIDEO,
+        elif preset == config_enums.DualExpertPreset.FASTWAM_IDM:
+            dual_expert_defaults = {
+                "runtime_mode": config_enums.DualExpertRuntimeMode.VIDEO_PREFILL_ACTION_DENOISE,
+                "condition_mode": config_enums.DualExpertConditionMode.TEACHER_FORCING_COND_VIDEO,
                 "teacher_forcing_video_noise_prob": 0.5,
                 "video_prefix_frames": 1,
             }
-        elif preset == config_enums.MoTPreset.FASTWAM_NON_JOINT:
-            # Method-1-non-joint-aligned two-stream MoT: both video and action
+        elif preset == config_enums.DualExpertPreset.FASTWAM_NON_JOINT:
+            # Split-stream dual-expert execution: both video and action
             # run through a history-clean / current-noisy split, and the mask
             # disallows same-chunk noisy-to-noisy cross-stream attention.
-            mot_defaults = {
-                "runtime_mode": config_enums.MoTRuntimeMode.NON_JOINT_TWO_STREAM,
-                "condition_mode": config_enums.MoTConditionMode.TEACHER_FORCING_COND_VIDEO,
+            dual_expert_defaults = {
+                "runtime_mode": config_enums.DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+                "condition_mode": config_enums.DualExpertConditionMode.TEACHER_FORCING_COND_VIDEO,
                 "teacher_forcing_video_noise_prob": 0.0,
                 "video_prefix_frames": 1,
             }
         context_condition_latent_source = _coerce_enum(
-            config_enums.ParallelContextConditionLatentSource,
+            config_enums.ContextConditionLatentSource,
             resolved_raw.get(
                 "context_condition_latent_source",
-                config_enums.ParallelContextConditionLatentSource.VIDEO_LATENTS,
+                config_enums.ContextConditionLatentSource.VIDEO_LATENTS,
             ),
         )
-        return MoTPolicyConfig(
+        return DualExpertPolicyConfig(
             hidden_size=hidden_size,
             attach_site=_coerce_enum(
                 config_enums.AttachSite,
@@ -209,41 +223,47 @@ def parse_policy_variant_config(
             ),
             preset=preset,
             runtime_mode=_coerce_enum(
-                config_enums.MoTRuntimeMode,
+                config_enums.DualExpertRuntimeMode,
                 resolved_raw.get(
                     "runtime_mode",
-                    mot_defaults.get("runtime_mode", config_enums.MoTRuntimeMode.VIDEO_PREFILL_ACTION_DENOISE),
+                    dual_expert_defaults.get(
+                        "runtime_mode",
+                        config_enums.DualExpertRuntimeMode.VIDEO_PREFILL_ACTION_DENOISE,
+                    ),
                 ),
             ),
             condition_mode=_coerce_enum(
-                config_enums.MoTConditionMode,
+                config_enums.DualExpertConditionMode,
                 resolved_raw.get(
                     "condition_mode",
-                    mot_defaults.get("condition_mode", config_enums.MoTConditionMode.FIRST_FRAME),
+                    dual_expert_defaults.get(
+                        "condition_mode",
+                        config_enums.DualExpertConditionMode.FIRST_FRAME,
+                    ),
                 ),
             ),
             action_expert_init_mode=_coerce_enum(
-                config_enums.MoTActionExpertInitMode,
+                config_enums.DualExpertActionExpertInitMode,
                 resolved_raw.get(
                     "action_expert_init_mode",
-                    config_enums.MoTActionExpertInitMode.VIDEO_WEIGHT_COPY,
+                    config_enums.DualExpertActionExpertInitMode.VIDEO_WEIGHT_COPY,
                 ),
             ),
-            video_prefix_frames=resolved_raw.get("video_prefix_frames", mot_defaults.get("video_prefix_frames", 1)),
+            video_prefix_frames=resolved_raw.get(
+                "video_prefix_frames",
+                dual_expert_defaults.get("video_prefix_frames", 1),
+            ),
             teacher_forcing_video_noise_prob=resolved_raw.get(
                 "teacher_forcing_video_noise_prob",
-                mot_defaults.get("teacher_forcing_video_noise_prob", 0.5),
+                dual_expert_defaults.get("teacher_forcing_video_noise_prob", 0.5),
             ),
             noisy_video_condition_prob=resolved_raw.get("noisy_video_condition_prob", 0.5),
             num_action_layers=resolved_raw.get("num_action_layers", backbone_config.num_layers),
             action_hidden_size=resolved_raw.get("action_hidden_size"),
             action_ffn_dim=resolved_raw.get("action_ffn_dim"),
             video_can_attend_action=resolved_raw.get("video_can_attend_action", True),
-            current_block_coupling=(
-                _coerce_enum(config_enums.CurrentBlockCoupling, resolved_raw["current_block_coupling"])
-                if "current_block_coupling" in resolved_raw
-                else None
-            ),
+            program=program,
+            current_block_coupling=current_block_coupling,
             use_text_conditioning=resolved_raw.get("use_text_conditioning", True),
             use_state_conditioning=resolved_raw.get("use_state_conditioning", False),
             proprio_context_mode=_coerce_enum(
@@ -251,10 +271,10 @@ def parse_policy_variant_config(
                 resolved_raw.get("proprio_context_mode", config_enums.ProprioContextMode.NONE),
             ),
             history_stream_visibility=_coerce_enum(
-                config_enums.ParallelHistoryStreamVisibility,
+                config_enums.HistoryStreamVisibility,
                 resolved_raw.get(
                     "history_stream_visibility",
-                    config_enums.ParallelHistoryStreamVisibility.FULL,
+                    config_enums.HistoryStreamVisibility.FULL,
                 ),
             ),
             context_condition_latent_source=context_condition_latent_source,
@@ -262,23 +282,23 @@ def parse_policy_variant_config(
             use_condition_latents=(
                 True
                 if context_condition_latent_source
-                == config_enums.ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+                == config_enums.ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
                 else bool(resolved_raw.get("use_condition_latents", True))
             ),
             require_condition_latents=(
                 True
                 if context_condition_latent_source
-                == config_enums.ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+                == config_enums.ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
                 else bool(resolved_raw.get("require_condition_latents", False))
             ),
-            parallel_sequence_contract=_coerce_enum(
-                config_enums.ParallelSequenceContract,
+            sequence_contract=_coerce_enum(
+                config_enums.VideoActionSequenceContract,
                 resolved_raw.get(
-                    "parallel_sequence_contract",
-                    config_enums.ParallelSequenceContract.DEFAULT,
+                    "sequence_contract",
+                    config_enums.VideoActionSequenceContract.DEFAULT,
                 ),
             ),
-            mot_generalist_training_mode_probs=mot_generalist_training_mode_probs,
+            generalist_denoising_mode_probs=generalist_denoising_mode_probs,
             generalist_mode_text_token=_coerce_bool(
                 resolved_raw.get("generalist_mode_text_token", False),
                 field_name="policy_variant.generalist_mode_text_token",
@@ -287,10 +307,9 @@ def parse_policy_variant_config(
                 config_enums.JointTimestepCoupling,
                 resolved_raw.get(
                     "joint_timestep_coupling",
-                    mot_joint_timestep_coupling_default,
+                    dual_expert_joint_timestep_coupling_default,
                 ),
             ),
-            couple_action_to_video_timesteps=resolved_raw.get("couple_action_to_video_timesteps"),
             generalist_training_paradigm=_coerce_enum(
                 config_enums.GeneralistTrainingParadigm,
                 resolved_raw.get(
@@ -308,33 +327,29 @@ def parse_policy_variant_config(
             config_enums.ParallelRuntimeMode,
             resolved_raw.get("runtime_mode", config_enums.ParallelRuntimeMode.LINGBOT_EXACT),
         )
-        current_block_coupling = (
-            _coerce_enum(
-                config_enums.CurrentBlockCoupling,
-                resolved_raw["current_block_coupling"],
-            )
-            if "current_block_coupling" in resolved_raw
-            else None
+        program, current_block_coupling = resolve_video_action_program_semantics(
+            program=resolved_raw.get("program"),
+            current_block_coupling=resolved_raw.get("current_block_coupling"),
         )
         preserve_video_pretrain_history = bool(
             resolved_raw.get("preserve_video_pretrain_history", False)
         )
         history_stream_visibility = _coerce_enum(
-            config_enums.ParallelHistoryStreamVisibility,
+            config_enums.HistoryStreamVisibility,
             resolved_raw.get(
                 "history_stream_visibility",
                 (
-                    config_enums.ParallelHistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
+                    config_enums.HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
                     if preserve_video_pretrain_history
-                    else config_enums.ParallelHistoryStreamVisibility.FULL
+                    else config_enums.HistoryStreamVisibility.FULL
                 ),
             ),
         )
         context_condition_latent_source = _coerce_enum(
-            config_enums.ParallelContextConditionLatentSource,
+            config_enums.ContextConditionLatentSource,
             resolved_raw.get(
                 "context_condition_latent_source",
-                config_enums.ParallelContextConditionLatentSource.VIDEO_LATENTS,
+                config_enums.ContextConditionLatentSource.VIDEO_LATENTS,
             ),
         )
         proprio_context_mode = _coerce_enum(
@@ -353,23 +368,23 @@ def parse_policy_variant_config(
             if exact_runtime_mode and current_block_coupling is None:
                 raise ValueError(
                     "proprio_context_mode=per_chunk_additive requires "
-                    "`policy_variant.current_block_coupling` for Method-1 chunk semantics."
+                    "a video/action program with explicit chunk semantics."
                 )
             if not exact_runtime_mode and not compact_runtime_mode:
                 raise ValueError(
                     "proprio_context_mode=per_chunk_additive is only supported for "
-                    "LingBot exact and compact current-frame Method-1 runtime modes."
+                    "exact and compact current-frame parallel-stream runtime modes."
                 )
         use_condition_latents = (
             True
             if context_condition_latent_source
-            == config_enums.ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+            == config_enums.ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
             else bool(resolved_raw.get("use_condition_latents", True))
         )
         require_condition_latents = (
             True
             if context_condition_latent_source
-            == config_enums.ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+            == config_enums.ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
             else bool(resolved_raw.get("require_condition_latents", False))
         )
         sequence_order = tuple(
@@ -432,8 +447,9 @@ def parse_policy_variant_config(
                     parallel_joint_timestep_coupling_default,
                 ),
             ),
-            couple_action_to_video_timesteps=resolved_raw.get("couple_action_to_video_timesteps"),
-            joint_denoise_training_mode_probs=resolved_raw.get("joint_denoise_training_mode_probs"),
+            generalist_denoising_mode_probs=resolved_raw.get(
+                "generalist_denoising_mode_probs"
+            ),
             generalist_training_paradigm=_coerce_enum(
                 config_enums.GeneralistTrainingParadigm,
                 resolved_raw.get(
@@ -445,6 +461,7 @@ def parse_policy_variant_config(
                 resolved_raw.get("generalist_mode_text_token", False),
                 field_name="policy_variant.generalist_mode_text_token",
             ),
+            program=program,
             current_block_coupling=current_block_coupling,
             preserve_video_pretrain_history=preserve_video_pretrain_history,
             history_stream_visibility=history_stream_visibility,
@@ -452,11 +469,11 @@ def parse_policy_variant_config(
             use_condition_latents=use_condition_latents,
             proprio_context_mode=proprio_context_mode,
             require_condition_latents=require_condition_latents,
-            parallel_sequence_contract=_coerce_enum(
-                config_enums.ParallelSequenceContract,
+            sequence_contract=_coerce_enum(
+                config_enums.VideoActionSequenceContract,
                 resolved_raw.get(
-                    "parallel_sequence_contract",
-                    config_enums.ParallelSequenceContract.DEFAULT,
+                    "sequence_contract",
+                    config_enums.VideoActionSequenceContract.DEFAULT,
                 ),
             ),
             temporal_position_mode=_coerce_enum(

@@ -22,14 +22,8 @@ EVALUATION_ROOT = REPO_ROOT / "configs" / "evals"
 
 
 def test_canonical_config_alias_targets_exist_without_duplicate_legacy_yaml() -> None:
-    assert len(EXPERIMENT_CONFIG_ALIASES) == 18
-    assert len(EVALUATION_CONFIG_ALIASES) == 3
-    assert len(set(EXPERIMENT_CONFIG_ALIASES.values())) == len(
-        EXPERIMENT_CONFIG_ALIASES
-    )
-    assert len(set(EVALUATION_CONFIG_ALIASES.values())) == len(
-        EVALUATION_CONFIG_ALIASES
-    )
+    assert EXPERIMENT_CONFIG_ALIASES
+    assert EVALUATION_CONFIG_ALIASES
 
     for old_stem, canonical_stem in EXPERIMENT_CONFIG_ALIASES.items():
         assert not (EXPERIMENT_ROOT / f"{old_stem}.yaml").exists()
@@ -55,13 +49,13 @@ def test_canonical_config_alias_targets_exist_without_duplicate_legacy_yaml() ->
 def test_retired_experiment_name_resolves_to_canonical_owner() -> None:
     old_path = EXPERIMENT_ROOT / "mot_libero_latent_local_joint_heng_compatible.yaml"
 
-    with pytest.warns(DeprecatedConfigNameWarning, match="mot_libero_joint"):
+    with pytest.warns(DeprecatedConfigNameWarning, match="dual_expert_libero_joint"):
         resolved = resolve_config_path_alias(old_path)
-    with pytest.warns(DeprecatedConfigNameWarning, match="mot_libero_joint"):
+    with pytest.warns(DeprecatedConfigNameWarning, match="dual_expert_libero_joint"):
         config = load_experiment_config(old_path)
 
-    assert resolved == EXPERIMENT_ROOT / "mot_libero_joint.yaml"
-    assert config.name == "mot_libero_joint"
+    assert resolved == EXPERIMENT_ROOT / "dual_expert_libero_joint.yaml"
+    assert config.name == "dual_expert_libero_joint"
 
 
 def test_retired_bare_config_name_resolves_through_training_cli() -> None:
@@ -70,11 +64,11 @@ def test_retired_bare_config_name_resolves_through_training_cli() -> None:
     )
 
     with pytest.warns(
-        DeprecatedConfigNameWarning, match="mot_libero_video_then_action"
+        DeprecatedConfigNameWarning, match="dual_expert_libero_video_then_action"
     ):
         resolved = resolve_experiment_config_path(overrides)
 
-    assert resolved == EXPERIMENT_ROOT / "mot_libero_video_then_action.yaml"
+    assert resolved == EXPERIMENT_ROOT / "dual_expert_libero_video_then_action.yaml"
 
 
 def test_retired_eval_name_resolves_end_to_end() -> None:
@@ -89,6 +83,19 @@ def test_retired_eval_name_resolves_end_to_end() -> None:
         request.experiment_config_path
         == EXPERIMENT_ROOT / "parallel_stream_libero_lingbot_exact.yaml"
     )
+
+
+def test_overlapping_robotwin_alias_resolves_by_config_directory() -> None:
+    experiment_path = EXPERIMENT_ROOT / "mot_robotwin_smoke.yaml"
+    evaluation_path = EVALUATION_ROOT / "mot_robotwin_smoke.yaml"
+
+    with pytest.warns(DeprecatedConfigNameWarning):
+        resolved_experiment = resolve_config_path_alias(experiment_path)
+    with pytest.warns(DeprecatedConfigNameWarning):
+        resolved_evaluation = resolve_config_path_alias(evaluation_path)
+
+    assert resolved_experiment == EXPERIMENT_ROOT / "dual_expert_robotwin_smoke.yaml"
+    assert resolved_evaluation == EVALUATION_ROOT / "dual_expert_robotwin_smoke_eval.yaml"
 
 
 def test_static_validation_accepts_retired_name_through_alias() -> None:

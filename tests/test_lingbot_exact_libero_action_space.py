@@ -7,8 +7,8 @@ from open_wam.configs import (
     ActionTargetConfig,
     ExperimentConfig,
     InferenceConfig,
-    LingbotParallelActionDecoderConfig,
     LiberoDataConfig,
+    ParallelStreamActionDecoderConfig,
     ParallelStreamPolicyConfig,
     TrainingConfig,
 )
@@ -41,7 +41,7 @@ def test_exact_libero_train_inputs_expand_raw_actions_to_model_space() -> None:
             action_per_frame=4,
             attn_window=30,
         ),
-        action_decoder=LingbotParallelActionDecoderConfig(hidden_size=32, action_dim=30, action_horizon=16),
+        action_decoder=ParallelStreamActionDecoderConfig(hidden_size=32, action_dim=30, action_horizon=16),
         training=TrainingConfig(chunk_size=4, window_size=30, video_sigma_shift=5.0, action_sigma_shift=1.0),
         inference=InferenceConfig(
             frame_chunk_size=4,
@@ -63,7 +63,7 @@ def test_exact_libero_train_inputs_expand_raw_actions_to_model_space() -> None:
 
     visual_outputs = pipeline.prepare_visual_outputs(batch.views, task_text=batch.task_text)
     prepared_inputs = pipeline.policy_variant.prepare_train_inputs(visual_outputs, train_batch)
-    train_artifacts = prepared_inputs.variant_inputs["lingbot_train_artifacts"]
+    train_artifacts = prepared_inputs.variant_inputs["parallel_train_artifacts"]
     action_targets = train_artifacts.input_dict["action_dict"]["targets"]
     action_mask = train_artifacts.input_dict["action_dict"]["actions_mask"]
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 
 from open_wam.configs import (
-    JointDenoiseTrainingMode,
+    GeneralistDenoisingMode,
     ParallelStreamPolicyConfig,
 )
 from open_wam.models.policy_variants.parallel_stream import reference_runtime
@@ -36,7 +36,7 @@ def test_disabled_mode_context_preserves_text_object_identity() -> None:
         ),
         text_emb=text,
         negative_text_emb=negative,
-        mode=JointDenoiseTrainingMode.JOINT,
+        mode=GeneralistDenoisingMode.JOINT,
     )
 
     assert actual_text is text

@@ -13,11 +13,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+import imageio.v2 as imageio
 import numpy as np
 import pyarrow.parquet as pq
-import imageio.v2 as imageio
 import torch
 
+from open_wam.data.action_pose import quaternion_to_axis_angle
 from open_wam.data.counterfactual_actions import (
     BRANCH_PRESETS,
     apply_action_branch,
@@ -25,9 +26,7 @@ from open_wam.data.counterfactual_actions import (
     branch_seed_offset,
     expand_branch_names,
 )
-from open_wam.data.action_pose import quaternion_to_axis_angle
 from open_wam.data.latent_temporal import raw_window_frames_for_latents
-
 
 DEFAULT_BRANCHES = BRANCH_PRESETS["training_10"]
 DEFAULT_CONTEXT_WINDOW_FRAMES = 16

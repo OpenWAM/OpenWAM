@@ -6,19 +6,19 @@ import torch
 
 from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.configs.enums import (
-    JointDenoiseTrainingMode,
+    GeneralistDenoisingMode,
+    HistoryStreamVisibility,
     JointTimestepCoupling,
-    ParallelHistoryStreamVisibility,
 )
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.contracts import GENERALIST_TRAINING_SOURCE_METADATA_KEY
 from open_wam.models.common.attention_contracts import (
     CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY,
 )
+from open_wam.models.common.flow_noise_plan import sample_joint_denoise_timestep_values
 from open_wam.models.common.flow_schedule import (
     FlowMatchScheduler,
 )
-from open_wam.models.common.flow_noise_plan import sample_joint_denoise_timestep_values
 from open_wam.models.common.joint_conditioning import (
     JointConditioningModeSemantics,
     resolve_generalist_joint_conditioning_semantics,
@@ -51,30 +51,30 @@ def sample_generalist_joint_denoise_training_mode(
     policy_config: ParallelStreamPolicyConfig,
     *,
     device: torch.device,
-) -> JointDenoiseTrainingMode:
+) -> GeneralistDenoisingMode:
     """Sample one FSDP-coordinated parallel-stream GJD training mode."""
 
-    probs = policy_config.joint_denoise_training_mode_probs
+    probs = policy_config.generalist_denoising_mode_probs
     if probs is None:
-        return JointDenoiseTrainingMode.JOINT
+        return GeneralistDenoisingMode.JOINT
     return sample_conditioning_mode(
         probs,
-        enum_cls=JointDenoiseTrainingMode,
+        enum_cls=GeneralistDenoisingMode,
         device=device,
         error_label="Generalist joint-denoise training mode",
     )
 
 
 def _resolve_training_mode_semantics(
-    mode: JointDenoiseTrainingMode | str,
+    mode: GeneralistDenoisingMode | str,
     *,
     drop_text_conditioning: bool | None = None,
 ) -> JointConditioningModeSemantics:
     return resolve_generalist_joint_conditioning_semantics(
         mode,
-        joint_mode=JointDenoiseTrainingMode.JOINT,
-        action_conditioned_video_mode=JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
-        video_conditioned_action_mode=JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
+        joint_mode=GeneralistDenoisingMode.JOINT,
+        action_conditioned_video_mode=GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
+        video_conditioned_action_mode=GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
         drop_text_conditioning=drop_text_conditioning,
     )
 
@@ -83,9 +83,9 @@ def _annotate_generalist_training_artifacts(
     *,
     artifacts: ParallelTrainArtifacts,
     policy_config: ParallelStreamPolicyConfig,
-    mode: JointDenoiseTrainingMode,
+    mode: GeneralistDenoisingMode,
     joint_timestep_coupling: JointTimestepCoupling,
-    training_mode_override: JointDenoiseTrainingMode | str | None,
+    training_mode_override: GeneralistDenoisingMode | str | None,
     text_dropped: bool,
     training_source: str | None,
     video_condition_source: str,
@@ -99,9 +99,9 @@ def _annotate_generalist_training_artifacts(
         None if training_mode_override is None else mode.value
     )
     artifacts.input_dict["joint_denoise_text_dropped"] = bool(text_dropped)
-    artifacts.input_dict["joint_denoise_training_mode_probs"] = {
+    artifacts.input_dict["generalist_denoising_mode_probs"] = {
         mode_key.value: float(prob)
-        for mode_key, prob in (policy_config.joint_denoise_training_mode_probs or {}).items()
+        for mode_key, prob in (policy_config.generalist_denoising_mode_probs or {}).items()
     }
     artifacts.input_dict["video_condition_source"] = video_condition_source
 
@@ -116,7 +116,7 @@ def apply_generalist_joint_denoise_training_mode(
     action_latents: torch.Tensor,
     action_mask_latents: torch.Tensor | None,
     frame_shift: int,
-    training_mode_override: JointDenoiseTrainingMode | str | None = None,
+    training_mode_override: GeneralistDenoisingMode | str | None = None,
     drop_text_conditioning: bool | None = None,
     training_source: str | None = None,
 ) -> None:
@@ -128,7 +128,7 @@ def apply_generalist_joint_denoise_training_mode(
             "Use train_batch_size=1 to preserve the intended one-mode-per-segment contract."
         )
     mode = (
-        JointDenoiseTrainingMode(training_mode_override)
+        GeneralistDenoisingMode(training_mode_override)
         if training_mode_override is not None
         else sample_generalist_joint_denoise_training_mode(
             policy_config,
@@ -273,7 +273,7 @@ def apply_generalist_joint_denoise_training_mode(
         fallback_window_size=int(artifacts.input_dict["window_size"]),
     )
     if semantics.is_conditional:
-        artifacts.input_dict["history_stream_visibility"] = ParallelHistoryStreamVisibility.VIDEO_ONLY.value
+        artifacts.input_dict["history_stream_visibility"] = HistoryStreamVisibility.VIDEO_ONLY.value
         artifacts.input_dict["conditional_history_policy"] = (
             artifacts.input_dict.get("conditional_history_policy")
             or CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY
@@ -299,7 +299,7 @@ def apply_generalist_legacy_prefix_joint_training_mode(
     *,
     artifacts: ParallelTrainArtifacts,
     policy_config: ParallelStreamPolicyConfig,
-    training_mode_override: JointDenoiseTrainingMode | str | None = None,
+    training_mode_override: GeneralistDenoisingMode | str | None = None,
     drop_text_conditioning: bool | None = None,
     training_source: str | None = None,
 ) -> None:
@@ -321,22 +321,22 @@ def apply_generalist_legacy_prefix_joint_training_mode(
             "Use train_batch_size=1 to preserve the intended one-mode-per-segment contract."
         )
     if training_mode_override is None:
-        probs = policy_config.joint_denoise_training_mode_probs or {}
+        probs = policy_config.generalist_denoising_mode_probs or {}
         for mode, prob in probs.items():
             semantics = _resolve_training_mode_semantics(mode)
             if semantics.is_conditional and float(prob) > 0.0:
                 raise ValueError(
-                    "`parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio` currently supports "
+                    "`sequence_contract=legacy_prefix_single_frame_perchunk_proprio` currently supports "
                     "only pure `joint` generalist joint-denoise training. Conditional GJD modes need full clean "
                     "modality target slots, not just a one-frame prefix condition."
                 )
-        mode = JointDenoiseTrainingMode.JOINT
+        mode = GeneralistDenoisingMode.JOINT
     else:
-        mode = JointDenoiseTrainingMode(training_mode_override)
+        mode = GeneralistDenoisingMode(training_mode_override)
         semantics = _resolve_training_mode_semantics(mode)
         if semantics.is_conditional:
             raise ValueError(
-                "`parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio` cannot force "
+                "`sequence_contract=legacy_prefix_single_frame_perchunk_proprio` cannot force "
                 f"`joint_denoise_training_mode={mode.value}`; only `joint` is parity-compatible."
             )
 

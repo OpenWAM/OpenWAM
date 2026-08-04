@@ -9,25 +9,32 @@ from .base import (
     DirectActionDecoderTrainInputs,
 )
 from .decoded_feature_decoder import DecodedFeatureActionDecoder
-from .lingbot_parallel_decoder import LingbotParallelActionDecoder
+from .dual_expert_decoder import DualExpertActionDecoder
 from .mlp_decoder import MLPActionDecoder
-from .mot_decoder import MoTActionDecoder
+from .parallel_stream_decoder import (
+    LingbotParallelActionDecoder,
+    ParallelStreamActionDecoder,
+)
 from .sequence_base import SequenceActionDecoder
-from .video_only_decoder import VideoOnlyActionDecoder
 from .video_conditioned_action_decoder import VideoConditionedActionDecoder
 from .video_conditioned_expert import VideoConditionedActionExpert
+from .video_only_decoder import VideoOnlyActionDecoder
+
+MoTActionDecoder = DualExpertActionDecoder
 
 __all__ = [
     "ActionDecoder",
     "ActionDecoderInferOutput",
     "ActionDecoderRolloutPlan",
     "ActionDecoderTrainOutput",
+    "DecodedFeatureActionDecoder",
     "DecoderRolloutState",
     "DirectActionDecoderTrainInputs",
-    "DecodedFeatureActionDecoder",
+    "DualExpertActionDecoder",
     "LingbotParallelActionDecoder",
     "MLPActionDecoder",
     "MoTActionDecoder",
+    "ParallelStreamActionDecoder",
     "SequenceActionDecoder",
     "VideoConditionedActionDecoder",
     "VideoConditionedActionExpert",

@@ -12,7 +12,7 @@ def _remap_packed_video_blocks_into_backbone(
 ) -> dict[str, torch.Tensor]:
     """Move ``packed_blocks.{i}.video_block.*`` entries under ``blocks.{i}.*``.
 
-    After ownership transfer in ``MoTPolicyVariant.attach_visual_tower``, the
+    After ownership transfer in ``DualExpertPolicyVariant.attach_visual_tower``, the
     visual_tower core no longer owns its blocks; running ``state_dict()`` on
     the core therefore drops every ``blocks.{i}.*`` weight. The packed stack
     holds the canonical video block weights under

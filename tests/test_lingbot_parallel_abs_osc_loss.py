@@ -1,8 +1,13 @@
 import torch
 
-from open_wam.models.action_decoders.lingbot_parallel_decoder import LingbotParallelActionDecoder
+from open_wam.models.action_decoders.parallel_stream_decoder import (
+    ParallelStreamActionDecoder,
+)
 from open_wam.models.common.flow_matching import FlowMatchScheduler
-from open_wam.models.policy_variants.contracts import PolicyInferOutput, PolicyInferState
+from open_wam.models.policy_variants.contracts import (
+    PolicyInferOutput,
+    PolicyInferState,
+)
 
 
 def _scheduler() -> FlowMatchScheduler:
@@ -45,7 +50,7 @@ def test_recovered_osc_metrics_use_flow_clean_action_estimate() -> None:
     noise = torch.zeros_like(clean_5d)
     target_flow = noise - clean_5d
     noisy = (1.0 - sigma) * clean_5d + sigma * noise
-    decoder = LingbotParallelActionDecoder(
+    decoder = ParallelStreamActionDecoder(
         hidden_size=8,
         action_dim=30,
         action_horizon=4,
@@ -85,7 +90,7 @@ def test_recovered_osc_masks_unsupervised_prefix_transition() -> None:
     noisy = (1.0 - sigma) * clean_5d
     loss_mask = torch.ones_like(clean_5d)
     loss_mask[:, :, :, 0:1] = 0.0
-    decoder = LingbotParallelActionDecoder(
+    decoder = ParallelStreamActionDecoder(
         hidden_size=8,
         action_dim=30,
         action_horizon=3,
@@ -118,7 +123,7 @@ def test_recovered_osc_loss_has_finite_gradients_for_invalid_early_predictions()
     target_flow = -clean
     noisy = (1.0 - sigma) * clean
     pred_flow = (target_flow + torch.randn_like(target_flow) * 0.1).requires_grad_(True)
-    decoder = LingbotParallelActionDecoder(
+    decoder = ParallelStreamActionDecoder(
         hidden_size=8,
         action_dim=30,
         action_horizon=4,
@@ -144,7 +149,7 @@ def test_recovered_osc_loss_has_finite_gradients_for_invalid_early_predictions()
 
 
 def test_recovered_osc_loss_has_finite_gradients_for_near_identity_rotation() -> None:
-    decoder = LingbotParallelActionDecoder(
+    decoder = ParallelStreamActionDecoder(
         hidden_size=8,
         action_dim=30,
         action_horizon=4,
@@ -180,7 +185,7 @@ def test_recovered_osc_loss_has_finite_gradients_for_near_identity_rotation() ->
 
 
 def test_recovered_osc_loss_includes_rotation_error() -> None:
-    decoder = LingbotParallelActionDecoder(
+    decoder = ParallelStreamActionDecoder(
         hidden_size=8,
         action_dim=30,
         action_horizon=2,
@@ -223,7 +228,7 @@ def test_recovered_osc_loss_includes_rotation_error() -> None:
 
 
 def test_lingbot_parallel_infer_keeps_model_actions_and_exposes_raw_aux() -> None:
-    decoder = LingbotParallelActionDecoder(hidden_size=8, action_dim=30, action_horizon=4)
+    decoder = ParallelStreamActionDecoder(hidden_size=8, action_dim=30, action_horizon=4)
     model_actions = torch.randn(1, 4, 30)
     raw_actions = torch.randn(1, 4, 10)
     output = decoder.forward_infer(

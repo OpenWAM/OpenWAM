@@ -7,7 +7,7 @@ import torch
 from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.configs.enums import (
     CurrentBlockCoupling,
-    ParallelHistoryStreamVisibility,
+    HistoryStreamVisibility,
 )
 from open_wam.models.common import (
     PreparedAttentionProfile,
@@ -25,7 +25,7 @@ def build_joint_clean_cache_attention_mask(
     window_size: int,
     current_block_coupling: CurrentBlockCoupling | str,
     preserve_video_pretrain_history: bool,
-    history_stream_visibility: ParallelHistoryStreamVisibility | str | None = None,
+    history_stream_visibility: HistoryStreamVisibility | str | None = None,
 ) -> torch.Tensor:
     """Materialize the self-attention mask for one clean joint cache write."""
 
@@ -56,7 +56,7 @@ def build_joint_clean_cache_attention_profile(
     window_size: int,
     current_block_coupling: CurrentBlockCoupling | str,
     preserve_video_pretrain_history: bool,
-    history_stream_visibility: ParallelHistoryStreamVisibility | str | None = None,
+    history_stream_visibility: HistoryStreamVisibility | str | None = None,
 ) -> PreparedAttentionProfile:
     """Project the dual-slot training profile onto clean cache-write tokens."""
 
@@ -95,7 +95,7 @@ def build_joint_clean_cache_attention_profile(
         history_stream_visibility=(
             None
             if history_stream_visibility is None
-            else ParallelHistoryStreamVisibility(
+            else HistoryStreamVisibility(
                 history_stream_visibility
             ).value
         ),

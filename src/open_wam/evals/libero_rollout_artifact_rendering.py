@@ -85,7 +85,7 @@ def iter_rollout_video_frames(
         real_row = np.ascontiguousarray(np.hstack([agentview, wrist]))
         titled = with_title(
             Image.fromarray(real_row),
-            "MoT Rollout (AgentView / Wrist)",
+            "DualExpert Rollout (AgentView / Wrist)",
         )
         yield np.ascontiguousarray(np.array(titled, copy=True))
 

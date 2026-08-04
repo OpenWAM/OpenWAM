@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
-from pathlib import Path
 import sys
-from types import SimpleNamespace
 import uuid
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -67,7 +67,7 @@ def _build_exact_history_frame_payload() -> tuple[dict[str, np.ndarray], list[di
     return current_obs, frame_obs_sequence, frame_actions
 
 
-def _strict_split_cache_mot_config(
+def _strict_split_cache_dual_expert_config(
     sandbox,
     *,
     action_horizon: int = 16,
@@ -76,7 +76,7 @@ def _strict_split_cache_mot_config(
 ):
     return SimpleNamespace(
         policy_variant=SimpleNamespace(
-            name="mot",
+            name="dual_expert",
             runtime_mode="non_joint_two_stream",
             current_block_coupling=str(current_block_coupling),
         ),
@@ -420,7 +420,7 @@ def test_fallback_model_timeline_advancement_is_policy_driven() -> None:
 
 def test_sequence_buffer_tail_promotes_after_prebuffer_actions_are_consumed() -> None:
     sandbox = _load_sandbox_module()
-    config = SimpleNamespace(policy_variant=SimpleNamespace(name="mot"), data=SimpleNamespace(
+    config = SimpleNamespace(policy_variant=SimpleNamespace(name="dual_expert"), data=SimpleNamespace(
         action_schema=SimpleNamespace(action_horizon=16),
     ), inference=SimpleNamespace(frame_chunk_size=4))
 
@@ -444,18 +444,18 @@ def test_sequence_buffer_tail_promotes_after_prebuffer_actions_are_consumed() ->
     )
 
 
-def test_mot_async_history_submit_rewinds_speculative_action_tail_only() -> None:
+def test_dual_expert_async_history_submit_rewinds_speculative_action_tail_only() -> None:
     sandbox = _load_sandbox_module()
-    mot_config = SimpleNamespace(
-        policy_variant=SimpleNamespace(name="mot", runtime_mode="non_joint_two_stream"),
+    dual_expert_config = SimpleNamespace(
+        policy_variant=SimpleNamespace(name="dual_expert", runtime_mode="non_joint_two_stream"),
     )
-    non_mot_config = SimpleNamespace(
+    non_dual_expert_config = SimpleNamespace(
         policy_variant=SimpleNamespace(name="parallel_stream", runtime_mode="lingbot_exact"),
     )
 
     assert (
         sandbox.realtime_runtime.resolve_sequence_action_cache_rewind_frame(
-            config=mot_config,
+            config=dual_expert_config,
             planner_mode="async_history_first",
             use_observation_update=True,
             condition_frame_start=8,
@@ -464,7 +464,7 @@ def test_mot_async_history_submit_rewinds_speculative_action_tail_only() -> None
     )
     assert (
         sandbox.realtime_runtime.resolve_sequence_action_cache_rewind_frame(
-            config=mot_config,
+            config=dual_expert_config,
             planner_mode="history_only",
             use_observation_update=True,
             condition_frame_start=8,
@@ -473,7 +473,7 @@ def test_mot_async_history_submit_rewinds_speculative_action_tail_only() -> None
     )
     assert (
         sandbox.realtime_runtime.resolve_sequence_action_cache_rewind_frame(
-            config=mot_config,
+            config=dual_expert_config,
             planner_mode="async_history_first",
             use_observation_update=False,
             condition_frame_start=8,
@@ -482,7 +482,7 @@ def test_mot_async_history_submit_rewinds_speculative_action_tail_only() -> None
     )
     assert (
         sandbox.realtime_runtime.resolve_sequence_action_cache_rewind_frame(
-            config=non_mot_config,
+            config=non_dual_expert_config,
             planner_mode="async_history_first",
             use_observation_update=True,
             condition_frame_start=8,
@@ -1459,10 +1459,10 @@ def test_generated_future_rollout_defaults_initial_generation_start_to_zero() ->
     )
 
 
-def test_mot_rollout_defaults_initial_generation_start_to_zero() -> None:
+def test_dual_expert_rollout_defaults_initial_generation_start_to_zero() -> None:
     sandbox = _load_sandbox_module()
 
-    config = SimpleNamespace(policy_variant=SimpleNamespace(name="mot"))
+    config = SimpleNamespace(policy_variant=SimpleNamespace(name="dual_expert"))
     initial_obs_window = [{"image": np.zeros((2, 2, 3), dtype=np.uint8)} for _ in range(15)]
 
     assert sandbox.rollout_runtime.uses_zero_based_generation_start(config) is True
@@ -1478,7 +1478,7 @@ def test_mot_rollout_defaults_initial_generation_start_to_zero() -> None:
     )
 
 
-def test_mot_non_joint_realtime_replan_preserves_observation_conditioned_session() -> None:
+def test_dual_expert_non_joint_realtime_replan_preserves_observation_conditioned_session() -> None:
     sandbox = _load_sandbox_module()
     calls = []
 
@@ -1502,37 +1502,37 @@ def test_mot_non_joint_realtime_replan_preserves_observation_conditioned_session
         text_context="text",
         negative_text_context="negative",
     )
-    mot_config = SimpleNamespace(policy_variant=SimpleNamespace(name="mot", runtime_mode="non_joint_two_stream"))
-    mot_native_packed_config = SimpleNamespace(
+    dual_expert_config = SimpleNamespace(policy_variant=SimpleNamespace(name="dual_expert", runtime_mode="non_joint_two_stream"))
+    dual_expert_native_packed_config = SimpleNamespace(
         policy_variant=SimpleNamespace(
-            name="mot",
+            name="dual_expert",
             runtime_mode="non_joint_two_stream",
             current_block_coupling="joint",
         )
     )
-    mot_prefill_config = SimpleNamespace(
-        policy_variant=SimpleNamespace(name="mot", runtime_mode="video_prefill_action_denoise")
+    dual_expert_prefill_config = SimpleNamespace(
+        policy_variant=SimpleNamespace(name="dual_expert", runtime_mode="video_prefill_action_denoise")
     )
     method4_config = SimpleNamespace(policy_variant=SimpleNamespace(name="post_latent"))
 
     resolved = sandbox.realtime_runtime.resolve_observation_conditioned_replan_session(
         runner=Runner(),
         session=session,
-        config=mot_config,
+        config=dual_expert_config,
     )
 
     assert resolved is session
     assert calls == []
-    assert sandbox.realtime_runtime.uses_mot_split_cache_sequence(mot_config)
-    assert not sandbox.realtime_runtime.uses_mot_split_cache_sequence(mot_native_packed_config)
+    assert sandbox.realtime_runtime.uses_dual_expert_split_cache_sequence(dual_expert_config)
+    assert not sandbox.realtime_runtime.uses_dual_expert_split_cache_sequence(dual_expert_native_packed_config)
     assert not sandbox.realtime_runtime.should_use_sequence_open_loop_extension(
-        config=mot_native_packed_config,
+        config=dual_expert_native_packed_config,
         planner_mode="async_history_first",
         remaining_buffer_actions=4,
     )
     assert (
         sandbox.realtime_runtime.resolve_sequence_action_cache_rewind_frame(
-            config=mot_native_packed_config,
+            config=dual_expert_native_packed_config,
             planner_mode="async_history_first",
             use_observation_update=True,
             condition_frame_start=8,
@@ -1543,7 +1543,7 @@ def test_mot_non_joint_realtime_replan_preserves_observation_conditioned_session
     resolved_native = sandbox.realtime_runtime.resolve_observation_conditioned_replan_session(
         runner=Runner(),
         session=session,
-        config=mot_native_packed_config,
+        config=dual_expert_native_packed_config,
     )
 
     assert resolved_native is session
@@ -1552,7 +1552,7 @@ def test_mot_non_joint_realtime_replan_preserves_observation_conditioned_session
     resolved_prefill = sandbox.realtime_runtime.resolve_observation_conditioned_replan_session(
         runner=Runner(),
         session=session,
-        config=mot_prefill_config,
+        config=dual_expert_prefill_config,
     )
 
     assert resolved_prefill is not session
@@ -1573,35 +1573,35 @@ def test_mot_non_joint_realtime_replan_preserves_observation_conditioned_session
     )
 
 
-def test_mot_startup_open_loop_requires_history_control_route() -> None:
+def test_dual_expert_startup_open_loop_requires_history_control_route() -> None:
     sandbox = _load_sandbox_module()
-    mot_split_cache_config = SimpleNamespace(
-        policy_variant=SimpleNamespace(name="mot", runtime_mode="non_joint_two_stream")
+    dual_expert_split_cache_config = SimpleNamespace(
+        policy_variant=SimpleNamespace(name="dual_expert", runtime_mode="non_joint_two_stream")
     )
-    mot_native_packed_config = SimpleNamespace(
+    dual_expert_native_packed_config = SimpleNamespace(
         policy_variant=SimpleNamespace(
-            name="mot",
+            name="dual_expert",
             runtime_mode="non_joint_two_stream",
             current_block_coupling="joint",
         )
     )
-    mot_prefill_config = SimpleNamespace(
-        policy_variant=SimpleNamespace(name="mot", runtime_mode="video_prefill_action_denoise")
+    dual_expert_prefill_config = SimpleNamespace(
+        policy_variant=SimpleNamespace(name="dual_expert", runtime_mode="video_prefill_action_denoise")
     )
 
     assert (
         sandbox.realtime_runtime.validate_sequence_startup_open_loop_support(
-            config=mot_split_cache_config,
+            config=dual_expert_split_cache_config,
             startup_open_loop_chunks=1,
         ).supports_realtime_history_controls
         is True
     )
     sandbox.realtime_runtime.validate_sequence_startup_open_loop_support(
-        config=mot_native_packed_config,
+        config=dual_expert_native_packed_config,
         startup_open_loop_chunks=0,
     )
 
-    for config in (mot_native_packed_config, mot_prefill_config):
+    for config in (dual_expert_native_packed_config, dual_expert_prefill_config):
         with pytest.raises(ValueError, match="does not support startup open-loop extension"):
             sandbox.realtime_runtime.validate_sequence_startup_open_loop_support(
                 config=config,
@@ -1609,11 +1609,11 @@ def test_mot_startup_open_loop_requires_history_control_route() -> None:
             )
 
 
-def test_mot_startup_open_loop_validation_runs_before_pipeline_setup(monkeypatch) -> None:
+def test_dual_expert_startup_open_loop_validation_runs_before_pipeline_setup(monkeypatch) -> None:
     sandbox = _load_sandbox_module()
     config = SimpleNamespace(
         policy_variant=SimpleNamespace(
-            name="mot",
+            name="dual_expert",
             runtime_mode="video_prefill_action_denoise",
         )
     )
@@ -1774,7 +1774,7 @@ def test_method4_realtime_replan_uses_absolute_action_start_for_video_condition(
 def test_sequence_rollout_infer_extra_matches_sandbox_and_viz_contract() -> None:
     sandbox = _load_sandbox_module()
     method4_config = SimpleNamespace(policy_variant=SimpleNamespace(name="post_latent"))
-    mot_config = SimpleNamespace(policy_variant=SimpleNamespace(name="mot"))
+    dual_expert_config = SimpleNamespace(policy_variant=SimpleNamespace(name="dual_expert"))
 
     method4_extra = sandbox.rollout_runtime.build_sequence_rollout_infer_extra(
         config=method4_config,
@@ -1784,8 +1784,8 @@ def test_sequence_rollout_infer_extra_matches_sandbox_and_viz_contract() -> None
         task_id=1,
         episode_idx=7,
     )
-    mot_extra = sandbox.rollout_runtime.build_sequence_rollout_infer_extra(
-        config=mot_config,
+    dual_expert_extra = sandbox.rollout_runtime.build_sequence_rollout_infer_extra(
+        config=dual_expert_config,
         prompt="task",
         generation_action_start=7,
         runtime_device=sandbox.torch.device("cpu"),
@@ -1804,7 +1804,7 @@ def test_sequence_rollout_infer_extra_matches_sandbox_and_viz_contract() -> None
         ),
         "video_condition_observed_prefix_anchor": "end",
     }
-    assert mot_extra == {
+    assert dual_expert_extra == {
         "task_text": ("task",),
         "action_device": "cpu",
     }
@@ -1845,11 +1845,11 @@ def test_sequence_raw_action_targets_materialize_without_pose_conversion() -> No
     np.testing.assert_allclose(materialized, np.clip(action_pred[0], -1.0, 1.0))
 
 
-def test_native_packed_mot_realtime_does_not_drop_startup_actions() -> None:
+def test_native_packed_dual_expert_realtime_does_not_drop_startup_actions() -> None:
     sandbox = _load_sandbox_module()
     config = SimpleNamespace(
         policy_variant=SimpleNamespace(
-            name="mot",
+            name="dual_expert",
             runtime_mode="non_joint_two_stream",
             current_block_coupling="action_then_video",
         ),
@@ -1882,9 +1882,9 @@ def test_native_packed_mot_realtime_does_not_drop_startup_actions() -> None:
     assert sandbox.realtime_runtime.resolve_sequence_condition_frame_start(config=config, generation_action_start=2) == 1
 
 
-def test_strict_split_cache_mot_realtime_does_not_drop_startup_actions() -> None:
+def test_strict_split_cache_dual_expert_realtime_does_not_drop_startup_actions() -> None:
     sandbox = _load_sandbox_module()
-    config = _strict_split_cache_mot_config(sandbox, action_horizon=16, frame_chunk_size=4)
+    config = _strict_split_cache_dual_expert_config(sandbox, action_horizon=16, frame_chunk_size=4)
     action_pred = np.arange(16, dtype=np.float32).reshape(16, 1)
 
     planned_steps = sandbox.realtime_runtime.sequence_chunk_to_planned_steps(
@@ -1910,11 +1910,11 @@ def test_strict_split_cache_mot_realtime_does_not_drop_startup_actions() -> None
     assert sorted(merged) == list(range(16))
 
 
-def test_legacy_split_cache_mot_realtime_keeps_one_frame_execution_offset() -> None:
+def test_legacy_split_cache_dual_expert_realtime_keeps_one_frame_execution_offset() -> None:
     sandbox = _load_sandbox_module()
     config = SimpleNamespace(
         policy_variant=SimpleNamespace(
-            name="mot",
+            name="dual_expert",
             runtime_mode="non_joint_two_stream",
             current_block_coupling="video_then_action",
         ),
@@ -1927,9 +1927,9 @@ def test_legacy_split_cache_mot_realtime_keeps_one_frame_execution_offset() -> N
     assert sandbox.realtime_runtime.resolve_sequence_condition_frame_start(config=config, generation_action_start=2) == 1
 
 
-def test_strict_split_cache_mot_startup_uses_one_model_observation() -> None:
+def test_strict_split_cache_dual_expert_startup_uses_one_model_observation() -> None:
     sandbox = _load_sandbox_module()
-    config = _strict_split_cache_mot_config(sandbox)
+    config = _strict_split_cache_dual_expert_config(sandbox)
     initial_obs_window = [_minimal_obs_record(float(index)) for index in range(13)]
 
     startup_window = sandbox.realtime_runtime.build_sequence_startup_observation_window(config, initial_obs_window)
@@ -1939,23 +1939,23 @@ def test_strict_split_cache_mot_startup_uses_one_model_observation() -> None:
     assert startup_window[0]["robot0_eef_pos"] is not initial_obs_window[-1]["robot0_eef_pos"]
 
 
-def test_strict_split_cache_mot_startup_env_init_uses_single_frame() -> None:
+def test_strict_split_cache_dual_expert_startup_env_init_uses_single_frame() -> None:
     sandbox = _load_sandbox_module()
-    config = _strict_split_cache_mot_config(sandbox)
+    config = _strict_split_cache_dual_expert_config(sandbox)
 
-    assert sandbox.realtime_runtime.uses_strict_mot_split_cache_startup(config)
-    assert sandbox.realtime_runtime.uses_strict_mot_one_frame_history(config)
+    assert sandbox.realtime_runtime.uses_strict_dual_expert_split_cache_startup(config)
+    assert sandbox.realtime_runtime.uses_strict_dual_expert_one_frame_history(config)
     assert sandbox.realtime_runtime.resolve_sequence_startup_environment_frames(config, raw_window_frames=13) == 1
     assert sandbox.realtime_runtime.resolve_sequence_model_observation_window_frames(config, raw_window_frames=13) == 1
 
 
-def test_strict_native_packed_mot_startup_env_init_uses_single_frame() -> None:
+def test_strict_native_packed_dual_expert_startup_env_init_uses_single_frame() -> None:
     sandbox = _load_sandbox_module()
-    config = _strict_split_cache_mot_config(sandbox, current_block_coupling="joint")
+    config = _strict_split_cache_dual_expert_config(sandbox, current_block_coupling="joint")
     initial_obs_window = [_minimal_obs_record(float(index)) for index in range(13)]
 
-    assert not sandbox.realtime_runtime.uses_strict_mot_split_cache_startup(config)
-    assert sandbox.realtime_runtime.uses_strict_mot_one_frame_history(config)
+    assert not sandbox.realtime_runtime.uses_strict_dual_expert_split_cache_startup(config)
+    assert sandbox.realtime_runtime.uses_strict_dual_expert_one_frame_history(config)
     assert sandbox.realtime_runtime.resolve_sequence_startup_environment_frames(config, raw_window_frames=13) == 1
     assert sandbox.realtime_runtime.resolve_sequence_model_observation_window_frames(config, raw_window_frames=13) == 1
 
@@ -1964,9 +1964,9 @@ def test_strict_native_packed_mot_startup_env_init_uses_single_frame() -> None:
     np.testing.assert_allclose(startup_window[0]["robot0_eef_pos"], initial_obs_window[-1]["robot0_eef_pos"])
 
 
-def test_strict_split_cache_mot_model_history_keeps_latest_observation() -> None:
+def test_strict_split_cache_dual_expert_model_history_keeps_latest_observation() -> None:
     sandbox = _load_sandbox_module()
-    config = _strict_split_cache_mot_config(sandbox, action_horizon=16, frame_chunk_size=4)
+    config = _strict_split_cache_dual_expert_config(sandbox, action_horizon=16, frame_chunk_size=4)
     model_obs_window = sandbox.realtime_runtime.build_sequence_startup_observation_window(
         config,
         [_minimal_obs_record(float(index)) for index in range(4)],
@@ -2000,9 +2000,9 @@ def test_strict_split_cache_mot_model_history_keeps_latest_observation() -> None
     assert sandbox.frame_index_to_action_start(generation_frame_start, 4) == 16
 
 
-def test_strict_split_cache_mot_realtime_init_calls_env_with_single_frame(monkeypatch) -> None:
+def test_strict_split_cache_dual_expert_realtime_init_calls_env_with_single_frame(monkeypatch) -> None:
     sandbox = _load_sandbox_module()
-    config = _strict_split_cache_mot_config(sandbox)
+    config = _strict_split_cache_dual_expert_config(sandbox)
     config.data.num_frames = 4
     config.data.action_schema.action_dim = 7
     config.data.action_target.gripper_representation = "action_command"
@@ -2064,7 +2064,7 @@ def test_strict_split_cache_mot_realtime_init_calls_env_with_single_frame(monkey
     monkeypatch.setattr(sandbox, "_print_stage", lambda *args, **kwargs: None)
     monkeypatch.setattr(sandbox, "build_variant_pipeline_from_config", lambda cfg: FakePipeline())
     monkeypatch.setattr(sandbox, "VariantRolloutRunner", FakeRunner)
-    monkeypatch.setattr(sandbox, "ensure_mot_inference_backend", lambda pipeline, cfg: {"backend": "test"})
+    monkeypatch.setattr(sandbox, "ensure_dual_expert_inference_backend", lambda pipeline, cfg: {"backend": "test"})
     monkeypatch.setattr(
         sandbox.runtime_checkpoints,
         "load_pipeline_checkpoint",
@@ -2156,11 +2156,11 @@ def test_strict_split_cache_mot_realtime_init_calls_env_with_single_frame(monkey
     assert summary["startup_env_init_frames"] == 1
 
 
-def test_legacy_split_cache_mot_startup_keeps_full_model_observation_window() -> None:
+def test_legacy_split_cache_dual_expert_startup_keeps_full_model_observation_window() -> None:
     sandbox = _load_sandbox_module()
     config = SimpleNamespace(
         policy_variant=SimpleNamespace(
-            name="mot",
+            name="dual_expert",
             runtime_mode="non_joint_two_stream",
             current_block_coupling="video_then_action",
         )
@@ -2175,9 +2175,9 @@ def test_legacy_split_cache_mot_startup_keeps_full_model_observation_window() ->
     assert sandbox.realtime_runtime.resolve_sequence_startup_environment_frames(config, raw_window_frames=13) == 13
 
 
-def test_strict_split_cache_mot_startup_rejects_multi_latent_context() -> None:
+def test_strict_split_cache_dual_expert_startup_rejects_multi_latent_context() -> None:
     sandbox = _load_sandbox_module()
-    config = _strict_split_cache_mot_config(sandbox)
+    config = _strict_split_cache_dual_expert_config(sandbox)
 
     with pytest.raises(ValueError, match="exactly one latent context frame"):
         sandbox.realtime_runtime.validate_sequence_startup_inputs(
@@ -2188,9 +2188,9 @@ def test_strict_split_cache_mot_startup_rejects_multi_latent_context() -> None:
         )
 
 
-def test_strict_split_cache_mot_startup_replan_trace_reports_origin(monkeypatch) -> None:
+def test_strict_split_cache_dual_expert_startup_replan_trace_reports_origin(monkeypatch) -> None:
     sandbox = _load_sandbox_module()
-    config = _strict_split_cache_mot_config(sandbox)
+    config = _strict_split_cache_dual_expert_config(sandbox)
     captured_video_latents = {}
 
     monkeypatch.setattr(
@@ -2224,7 +2224,7 @@ def test_strict_split_cache_mot_startup_replan_trace_reports_origin(monkeypatch)
             policy_output = SimpleNamespace(
                 aux={
                     "generation_frame_start": 1,
-                    "mot_cache_debug": {
+                    "dual_expert_cache_debug": {
                         "chunk_origin_frame": 1,
                         "current_action_frame_start": 1,
                     },
@@ -2262,8 +2262,8 @@ def test_strict_split_cache_mot_startup_replan_trace_reports_origin(monkeypatch)
     assert captured_video_latents["shape"][2] == 1
     assert result.trace["execution_action_offset"] == 0
     assert result.trace["model_generation_frame_start"] == 1
-    assert result.trace["mot_chunk_origin_frame"] == 1
-    assert result.trace["mot_current_action_frame_start"] == 1
+    assert result.trace["dual_expert_chunk_origin_frame"] == 1
+    assert result.trace["dual_expert_current_action_frame_start"] == 1
     assert result.trace["planned_action_ids"] == list(range(16))
     assert [step.absolute_action_index for step in result.planned_steps] == list(range(16))
 

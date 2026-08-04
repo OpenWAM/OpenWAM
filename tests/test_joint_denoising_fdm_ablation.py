@@ -11,7 +11,11 @@ import numpy as np
 import pytest
 import torch
 
-from open_wam.configs import CurrentBlockCoupling, ParallelRuntimeMode, ParallelStreamPolicyConfig
+from open_wam.configs import (
+    CurrentBlockCoupling,
+    ParallelRuntimeMode,
+    ParallelStreamPolicyConfig,
+)
 from open_wam.data.counterfactual_actions import (
     BRANCH_PRESETS,
     apply_action_branch,
@@ -21,8 +25,8 @@ from open_wam.data.counterfactual_actions import (
 from scripts.research_dynamics.counterfactual import (
     CounterfactualCase,
     _decoded_raw_frames_for_latents,
-    _render_counterfactual_branch,
     _raw_window_frames_for_latents,
+    _render_counterfactual_branch,
     _should_drop_text_conditioning,
 )
 from scripts.research_dynamics.metrics import (
@@ -33,15 +37,19 @@ from scripts.research_dynamics.metrics import (
     summarize_metric_rows,
 )
 from scripts.research_dynamics.rollout import (
+    DualExpertGeneralistDenoisingFdmRollout,
     JointDenoisingFdmRollout,
-    MotGeneralistDenoisingFdmRollout,
     should_drop_task_text_for_fdm_mode,
 )
 from scripts.research_dynamics.sampling import (
     select_counterfactual_target_only_windows,
     select_early_middle_windows,
 )
-from scripts.research_dynamics.types import FdmAblationMode, FdmStartPolicy, FdmWindowSelection
+from scripts.research_dynamics.types import (
+    FdmAblationMode,
+    FdmStartPolicy,
+    FdmWindowSelection,
+)
 
 
 def _load_repo_script(relative_path: str):
@@ -131,7 +139,7 @@ class DummyDataset:
         raise AssertionError("The explicit indexed task contract should win.")
 
 
-class _FakeMotVisualTower:
+class _FakeDualExpertVisualTower:
     config = SimpleNamespace(max_text_tokens=4, text_dim=8)
 
     def __init__(self) -> None:
@@ -141,26 +149,26 @@ class _FakeMotVisualTower:
         self.reset_calls += 1
 
 
-class _FakeMotPolicyVariant:
+class _FakeDualExpertPolicyVariant:
     action_horizon = 4
     action_dim = 7
     inference_config = SimpleNamespace(frame_chunk_size=2)
     config = SimpleNamespace(
-        name="mot",
+        name="dual_expert",
         current_block_coupling=CurrentBlockCoupling.JOINT,
-        mot_generalist_training_mode_probs={"joint": 1.0},
+        generalist_denoising_mode_probs={"joint": 1.0},
     )
 
 
-class _FakeMotPipeline:
+class _FakeDualExpertPipeline:
     def __init__(self) -> None:
-        self.visual_tower = _FakeMotVisualTower()
-        self.policy_variant = _FakeMotPolicyVariant()
+        self.visual_tower = _FakeDualExpertVisualTower()
+        self.policy_variant = _FakeDualExpertPolicyVariant()
 
 
-class _FakeMotRunner:
+class _FakeDualExpertRunner:
     def __init__(self) -> None:
-        self.pipeline = _FakeMotPipeline()
+        self.pipeline = _FakeDualExpertPipeline()
         self.seen_contexts = []
         self.seen_video_latents = []
 
@@ -226,9 +234,9 @@ def test_select_early_middle_windows_rejects_non_chunk_aligned_horizon() -> None
         )
 
 
-def test_mot_generalist_fdm_rollout_adapter_threads_conditional_mode_controls() -> None:
-    runner = _FakeMotRunner()
-    rollout = MotGeneralistDenoisingFdmRollout(runner)
+def test_dual_expert_generalist_fdm_rollout_adapter_threads_conditional_mode_controls() -> None:
+    runner = _FakeDualExpertRunner()
+    rollout = DualExpertGeneralistDenoisingFdmRollout(runner)
     video_context = torch.randn(1, 3, 3, 2, 2)
     action_context = torch.randn(1, 6, 7)
     session = rollout.reset_and_warmup(
@@ -255,10 +263,10 @@ def test_mot_generalist_fdm_rollout_adapter_threads_conditional_mode_controls() 
     )
     fdm_extra = runner.seen_contexts[-1].extra
     assert fdm_extra["action_conditioning_mode"] == "forced_action_joint_fdm"
-    assert fdm_extra["mot_generalist_rollout_mode"] == "forced_action_joint_fdm"
-    assert fdm_extra["mot_forced_action_latents"] is raw_action_chunk
-    assert fdm_extra["mot_commit_action_latents"] is raw_action_chunk
-    assert "mot_video_condition_latents" not in fdm_extra
+    assert fdm_extra["dual_expert_generalist_rollout_mode"] == "forced_action_joint_fdm"
+    assert fdm_extra["dual_expert_forced_action_latents"] is raw_action_chunk
+    assert fdm_extra["dual_expert_commit_action_latents"] is raw_action_chunk
+    assert "dual_expert_video_condition_latents" not in fdm_extra
 
     video_condition = torch.randn(1, 3, 2, 2, 2)
     rollout.infer_chunk(
@@ -269,10 +277,10 @@ def test_mot_generalist_fdm_rollout_adapter_threads_conditional_mode_controls() 
     )
     idm_extra = runner.seen_contexts[-1].extra
     assert idm_extra["action_conditioning_mode"] == "video_conditioned_action"
-    assert idm_extra["mot_generalist_rollout_mode"] == "video_conditioned_action"
-    assert idm_extra["mot_video_condition_latents"] is video_condition
-    assert idm_extra["mot_commit_action_latents"] is raw_action_chunk
-    assert "mot_forced_action_latents" not in idm_extra
+    assert idm_extra["dual_expert_generalist_rollout_mode"] == "video_conditioned_action"
+    assert idm_extra["dual_expert_video_condition_latents"] is video_condition
+    assert idm_extra["dual_expert_commit_action_latents"] is raw_action_chunk
+    assert "dual_expert_forced_action_latents" not in idm_extra
     assert runner.seen_video_latents[-1] is video_condition
 
 
@@ -1156,7 +1164,7 @@ def test_fdm_eval_target_only_offset_predicts_future_from_current_action(tmp_pat
     captured_videos: list[torch.Tensor] = []
     captured_proprio: list[torch.Tensor | None] = []
 
-    class FakeRollout(MotGeneralistDenoisingFdmRollout):
+    class FakeRollout(DualExpertGeneralistDenoisingFdmRollout):
         action_per_frame = 2
         frame_chunk_size = 2
         runner = SimpleNamespace(pipeline=None)
@@ -1245,7 +1253,7 @@ def test_fdm_eval_m5_vanilla_ignores_selection_fit_target_offset(
 
     captured_warmup: dict[str, object] = {}
 
-    class FakeRollout(MotGeneralistDenoisingFdmRollout):
+    class FakeRollout(DualExpertGeneralistDenoisingFdmRollout):
         action_per_frame = 2
         frame_chunk_size = 2
         runner = SimpleNamespace(pipeline=None)
@@ -1322,16 +1330,16 @@ def test_fdm_eval_m5_vanilla_ignores_selection_fit_target_offset(
     ],
 )
 def test_m5_gjd_offline_rollout_seeds_per_chunk_proprio_history(mode: FdmAblationMode) -> None:
-    from open_wam.configs import MoTGeneralistTrainingMode, ProprioContextMode
+    from open_wam.configs import GeneralistDenoisingMode, ProprioContextMode
     from open_wam.pipelines import VariantRolloutRunner
-    mot_training_tests = _load_repo_script("tests/test_mot_generalist_training.py")
+    dual_expert_training_tests = _load_repo_script("tests/test_dual_expert_generalist_training.py")
 
-    pipeline, _, _, text_context = mot_training_tests._build_tiny_generalist_pipeline(
-        MoTGeneralistTrainingMode.JOINT,
+    pipeline, _, _, text_context = dual_expert_training_tests._build_tiny_generalist_pipeline(
+        GeneralistDenoisingMode.JOINT,
         proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
     )
     object.__setattr__(pipeline.policy_variant.inference_config, "action_num_inference_steps", 25)
-    rollout = MotGeneralistDenoisingFdmRollout(VariantRolloutRunner(pipeline))
+    rollout = DualExpertGeneralistDenoisingFdmRollout(VariantRolloutRunner(pipeline))
     video_context = torch.randn(1, 48, 2, 8, 8)
     action_context = torch.randn(1, 4, 4)
     hidden_proprio_history = torch.randn(1, 2, 4)

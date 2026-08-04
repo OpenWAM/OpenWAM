@@ -8,9 +8,9 @@ import torch
 from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.configs.enums import (
     CurrentBlockCoupling,
-    JointDenoiseTrainingMode,
+    GeneralistDenoisingMode,
+    HistoryStreamVisibility,
     JointTimestepCoupling,
-    ParallelHistoryStreamVisibility,
     ParallelRuntimeMode,
     ParallelStreamVariantProfile,
 )
@@ -38,7 +38,7 @@ def _scheduler(*, shift: float, steps: int = 16) -> FlowMatchScheduler:
 
 def _policy(
     *,
-    mode: JointDenoiseTrainingMode | None,
+    mode: GeneralistDenoisingMode | None,
     coupling: JointTimestepCoupling = JointTimestepCoupling.MATCH_SIGMA,
 ) -> ParallelStreamPolicyConfig:
     probabilities = None if mode is None else {mode: 1.0}
@@ -53,7 +53,7 @@ def _policy(
         video_condition_on_action=True,
         video_action_condition_source="noisy_action",
         joint_timestep_coupling=coupling,
-        joint_denoise_training_mode_probs=probabilities,
+        generalist_denoising_mode_probs=probabilities,
     )
 
 
@@ -123,13 +123,13 @@ def test_reference_runtime_generalist_training_names_alias_canonical_contract() 
 
 def test_generalist_mode_sampling_default_preserves_categorical_rng_draw() -> None:
     policy_config = ParallelStreamPolicyConfig(hidden_size=16)
-    probabilities = policy_config.joint_denoise_training_mode_probs
+    probabilities = policy_config.generalist_denoising_mode_probs
     assert probabilities is not None
 
     torch.manual_seed(31)
     expected = sample_conditioning_mode(
         probabilities,
-        enum_cls=JointDenoiseTrainingMode,
+        enum_cls=GeneralistDenoisingMode,
         device=torch.device("cpu"),
         error_label="Generalist joint-denoise training mode",
     )
@@ -141,19 +141,19 @@ def test_generalist_mode_sampling_default_preserves_categorical_rng_draw() -> No
         device=torch.device("cpu"),
     )
 
-    assert mode == expected == JointDenoiseTrainingMode.JOINT
+    assert mode == expected == GeneralistDenoisingMode.JOINT
     assert torch.equal(torch.random.get_rng_state(), expected_rng)
 
 
 def test_generalist_mode_sampling_preserves_categorical_rng_sequence() -> None:
-    policy_config = _policy(mode=JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO)
-    probabilities = policy_config.joint_denoise_training_mode_probs
+    policy_config = _policy(mode=GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO)
+    probabilities = policy_config.generalist_denoising_mode_probs
     assert probabilities is not None
 
     torch.manual_seed(37)
     expected = sample_conditioning_mode(
         probabilities,
-        enum_cls=JointDenoiseTrainingMode,
+        enum_cls=GeneralistDenoisingMode,
         device=torch.device("cpu"),
         error_label="Generalist joint-denoise training mode",
     )
@@ -186,14 +186,14 @@ def test_joint_mode_preserves_artifacts_and_metadata_order() -> None:
 
     apply_generalist_joint_denoise_training_mode(
         artifacts=artifacts,
-        policy_config=_policy(mode=JointDenoiseTrainingMode.JOINT),
+        policy_config=_policy(mode=GeneralistDenoisingMode.JOINT),
         backbone_config=_backbone(),
         video_latents=video_latents,
         condition_latents=condition_latents,
         action_latents=action_latents,
         action_mask_latents=None,
         frame_shift=0,
-        training_mode_override=JointDenoiseTrainingMode.JOINT,
+        training_mode_override=GeneralistDenoisingMode.JOINT,
         drop_text_conditioning=True,
         training_source="real_demo",
     )
@@ -226,7 +226,7 @@ def test_joint_mode_preserves_artifacts_and_metadata_order() -> None:
         "joint_timestep_coupling",
         "joint_denoise_training_mode_override",
         "joint_denoise_text_dropped",
-        "joint_denoise_training_mode_probs",
+        "generalist_denoising_mode_probs",
         "video_condition_source",
         "joint_denoise_shared_sigmas",
     ]
@@ -257,7 +257,7 @@ def test_fdm_mode_uses_clean_masked_action_slot_and_exact_gradient() -> None:
     apply_generalist_joint_denoise_training_mode(
         artifacts=artifacts,
         policy_config=_policy(
-            mode=JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO
+            mode=GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO
         ),
         backbone_config=_backbone(),
         video_latents=video_latents,
@@ -265,7 +265,7 @@ def test_fdm_mode_uses_clean_masked_action_slot_and_exact_gradient() -> None:
         action_latents=action_latents,
         action_mask_latents=action_mask,
         frame_shift=2,
-        training_mode_override=JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+        training_mode_override=GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
         training_source="counterfactual_dynamics",
     )
 
@@ -285,7 +285,7 @@ def test_fdm_mode_uses_clean_masked_action_slot_and_exact_gradient() -> None:
     assert input_dict["window_size"] == 3
     assert (
         input_dict["history_stream_visibility"]
-        == ParallelHistoryStreamVisibility.VIDEO_ONLY.value
+        == HistoryStreamVisibility.VIDEO_ONLY.value
     )
     assert input_dict["conditional_history_policy"] == "previous_boundary_video_only"
     assert input_dict["generalist_conditional_history_chunks"] == 1
@@ -351,7 +351,7 @@ def test_idm_mode_uses_explicit_clean_video_slot_and_routes_gradient() -> None:
     apply_generalist_joint_denoise_training_mode(
         artifacts=artifacts,
         policy_config=_policy(
-            mode=JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION
+            mode=GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION
         ),
         backbone_config=_backbone(),
         video_latents=video_latents,
@@ -359,7 +359,7 @@ def test_idm_mode_uses_explicit_clean_video_slot_and_routes_gradient() -> None:
         action_latents=action_latents,
         action_mask_latents=None,
         frame_shift=0,
-        training_mode_override=JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
+        training_mode_override=GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
     )
 
     latent_dict = artifacts.input_dict["latent_dict"]
@@ -399,7 +399,7 @@ def test_generalist_training_rejects_multi_sample_runtime_batch() -> None:
     with pytest.raises(ValueError, match="train_batch_size=1"):
         apply_generalist_joint_denoise_training_mode(
             artifacts=artifacts,
-            policy_config=_policy(mode=JointDenoiseTrainingMode.JOINT),
+            policy_config=_policy(mode=GeneralistDenoisingMode.JOINT),
             backbone_config=_backbone(),
             video_latents=video_latents,
             condition_latents=None,
@@ -423,7 +423,7 @@ def test_legacy_prefix_joint_mode_excludes_prefix_from_shared_sigmas() -> None:
 
     apply_generalist_legacy_prefix_joint_training_mode(
         artifacts=artifacts,
-        policy_config=_policy(mode=JointDenoiseTrainingMode.JOINT),
+        policy_config=_policy(mode=GeneralistDenoisingMode.JOINT),
         drop_text_conditioning=True,
         training_source="real_demo",
     )
@@ -448,12 +448,12 @@ def test_legacy_prefix_joint_mode_excludes_prefix_from_shared_sigmas() -> None:
 @pytest.mark.parametrize(
     "mode",
     [
-        JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
-        JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
+        GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
+        GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
     ],
 )
 def test_legacy_prefix_rejects_forced_conditional_modes(
-    mode: JointDenoiseTrainingMode,
+    mode: GeneralistDenoisingMode,
 ) -> None:
     video_latents = torch.zeros(1, 3, 4, 2, 2)
     action_latents = torch.zeros(1, 5, 3, 2, 1)
@@ -466,6 +466,6 @@ def test_legacy_prefix_rejects_forced_conditional_modes(
     with pytest.raises(ValueError, match="only `joint` is parity-compatible"):
         apply_generalist_legacy_prefix_joint_training_mode(
             artifacts=artifacts,
-            policy_config=_policy(mode=JointDenoiseTrainingMode.JOINT),
+            policy_config=_policy(mode=GeneralistDenoisingMode.JOINT),
             training_mode_override=mode,
         )

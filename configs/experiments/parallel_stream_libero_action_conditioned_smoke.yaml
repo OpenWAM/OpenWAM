@@ -1,7 +1,7 @@
 name: parallel_stream_libero_action_conditioned_smoke
 
 data:
-  # Minimal raw-LIBERO smoke dataset knobs aligned to exact method-1 geometry
+  # Minimal raw-LIBERO smoke dataset knobs aligned to exact parallel-stream geometry
   dataset_name: libero
   dataset_type: lerobot_v2
   repo_id: physical-intelligence/libero
@@ -63,7 +63,7 @@ backbone:
   load_text_conditioning: false
 
 policy_variant:
-  # Method-1 style exact runtime where video denoising can also attend to action tokens
+  # parallel-stream exact runtime where video denoising can also attend to action tokens
   name: parallel_stream
   hidden_size: 256
   runtime_mode: lingbot_exact_action_conditioned
@@ -80,7 +80,7 @@ policy_variant:
   joint_timestep_coupling: match_sigma
 
 action_decoder:
-  name: lingbot_parallel_decoder
+  name: parallel_stream_decoder
   hidden_size: 256
   action_dim: 30
   action_horizon: 16

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-import re
 from typing import Protocol, TypeVar
 
 from open_wam.configs.enums import (
@@ -17,7 +17,6 @@ from open_wam.configs.enums import (
 from open_wam.evals.sampled_eval_sampling import DatasetEpisode
 from open_wam.runtime.checkpoint_artifacts import resolve_checkpoint_artifacts
 
-
 SAMPLED_EVAL_DEFAULT_CONFIG = (
     "configs/experiments/parallel_stream_libero_lingbot_exact.yaml"
 )
@@ -25,7 +24,12 @@ SAMPLED_EVAL_DEFAULT_CONFIG = (
 
 @dataclass(frozen=True)
 class SampledEvalMethodSpec:
-    """One policy method supported by the generic realtime rollout command."""
+    """One policy profile supported by the generic realtime rollout command.
+
+    The `method_*` field names are retained in sampled-eval artifacts for
+    schema compatibility. Values identify architecture/runtime profiles, not
+    implementation families.
+    """
 
     key: str
     label: str
@@ -73,7 +77,7 @@ class SampledEvalCheckpointSpec:
     label: str
     checkpoint: str
     method_key: str = "m1"
-    method_label: str = "M1 exact"
+    method_label: str = "parallel-stream exact"
     config: str = SAMPLED_EVAL_DEFAULT_CONFIG
     checkpoint_raw: str | None = None
     checkpoint_file: str | None = None
@@ -181,7 +185,7 @@ class SampledEvalPreflightOptions:
 SAMPLED_EVAL_METHODS: tuple[SampledEvalMethodSpec, ...] = (
     SampledEvalMethodSpec(
         key="m1",
-        label="M1 exact",
+        label="parallel-stream exact",
         config=SAMPLED_EVAL_DEFAULT_CONFIG,
         reference_assets_device_policy=ReferenceAssetsDevicePolicy.RUNTIME,
         async_low_watermark=8,
@@ -189,10 +193,10 @@ SAMPLED_EVAL_METHODS: tuple[SampledEvalMethodSpec, ...] = (
     ),
     SampledEvalMethodSpec(
         key="m2",
-        label="M2 joint denoise",
+        label="parallel-stream joint denoise",
         config=(
             "configs/experiments/"
-            "parallel_stream_libero_lingbot_joint_denoise.yaml"
+            "parallel_stream_libero_joint_denoise.yaml"
         ),
         reference_assets_device_policy=ReferenceAssetsDevicePolicy.RUNTIME,
         async_low_watermark=12,
@@ -200,8 +204,8 @@ SAMPLED_EVAL_METHODS: tuple[SampledEvalMethodSpec, ...] = (
     ),
     SampledEvalMethodSpec(
         key="m5",
-        label="M5 action-only MoT",
-        config="configs/evals/mot_libero_full_segment_non_joint_action_only_eval.yaml",
+        label="dual-expert action-only",
+        config="configs/evals/dual_expert_libero_full_segment_non_joint_action_only_eval.yaml",
         reference_assets_device_policy=ReferenceAssetsDevicePolicy.CPU_OFFLOAD,
         async_low_watermark=16,
     ),
@@ -273,20 +277,20 @@ def sanitize_sampled_eval_label(value: str) -> str:
 
 
 def parse_sampled_eval_target_requests(values: Sequence[str]) -> list[SampledEvalTargetRequest]:
-    """Parse and validate METHOD:KEY[:LABEL]=CHECKPOINT target declarations."""
+    """Parse and validate PROFILE:KEY[:LABEL]=CHECKPOINT declarations."""
 
     requests: list[SampledEvalTargetRequest] = []
     seen: set[tuple[str, str]] = set()
     for raw_value in values:
         if "=" not in raw_value:
             raise ValueError(
-                f"Invalid --target {raw_value!r}; expected METHOD:KEY[:LABEL]=CHECKPOINT."
+                f"Invalid --target {raw_value!r}; expected PROFILE:KEY[:LABEL]=CHECKPOINT."
             )
         raw_selector, checkpoint = raw_value.split("=", 1)
         pieces = [piece.strip() for piece in raw_selector.split(":", 2)]
         if len(pieces) < 2 or not pieces[0] or not pieces[1] or not checkpoint.strip():
             raise ValueError(
-                f"Invalid --target {raw_value!r}; expected METHOD:KEY[:LABEL]=CHECKPOINT."
+                f"Invalid --target {raw_value!r}; expected PROFILE:KEY[:LABEL]=CHECKPOINT."
             )
         method_key = pieces[0].lower()
         checkpoint_key = sanitize_sampled_eval_label(pieces[1])
@@ -341,7 +345,7 @@ def resolve_sampled_eval_checkpoint_specs(
     reference_assets_device_policy_override: ReferenceAssetsDevicePolicy | str | None = None,
     methods: Sequence[SampledEvalMethodSpec] = SAMPLED_EVAL_METHODS,
 ) -> list[SampledEvalCheckpointSpec]:
-    """Resolve target artifacts and effective method runtime settings."""
+    """Resolve target artifacts and effective policy-profile settings."""
 
     method_by_key = {method.key: method for method in methods}
     selected_method_keys = {method.key for method in selected_methods}
@@ -658,7 +662,7 @@ def sampled_eval_scheduler_flags(
     method: SampledEvalMethodSpec,
     scheduler: SampledEvalSchedulerSpec,
 ) -> list[str]:
-    """Return method-specific overrides on top of a named scheduler profile."""
+    """Return policy-profile overrides on top of a named scheduler profile."""
 
     flags: list[str] = []
     if scheduler.key is RealtimeSchedulerProfile.FREEZE_UNTIL_CLEAN_CHUNK:

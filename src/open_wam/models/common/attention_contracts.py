@@ -126,7 +126,7 @@ def normalize_attention_profile_name(name: str | None) -> str | None:
 
 
 def normalize_chunked_temporal_exact_coupling(coupling: str | None) -> str:
-    """Normalize exact method-1 current-block coupling names."""
+    """Normalize exact parallel-stream current-block coupling names."""
 
     if coupling is None:
         return VIDEO_THEN_ACTION_COUPLING
@@ -153,7 +153,7 @@ def normalize_parallel_history_stream_visibility(
     *,
     preserve_video_pretrain_history: bool = False,
 ) -> str:
-    """Normalize exact Method-1 clean-history stream visibility."""
+    """Normalize exact parallel-stream clean-history stream visibility."""
 
     if visibility is None:
         return (
@@ -185,7 +185,7 @@ def normalize_conditional_history_policy(policy: str | None) -> str:
 
 
 def chunked_temporal_exact_profile_name_for_coupling(coupling: str | None) -> str:
-    """Return the attention-profile name for an exact method-1 coupling mode."""
+    """Return the attention-profile name for an exact parallel-stream coupling mode."""
 
     return _CHUNKED_EXACT_PROFILE_BY_COUPLING[
         normalize_chunked_temporal_exact_coupling(coupling)
@@ -193,7 +193,7 @@ def chunked_temporal_exact_profile_name_for_coupling(coupling: str | None) -> st
 
 
 def chunked_temporal_exact_coupling_from_profile_name(name: str) -> str:
-    """Return the exact method-1 coupling represented by an attention-profile name."""
+    """Return the exact parallel-stream coupling represented by an attention-profile name."""
 
     normalized_profile = normalize_attention_profile_name(name)
     if normalized_profile not in _CHUNKED_EXACT_COUPLING_BY_PROFILE:
@@ -204,7 +204,6 @@ def chunked_temporal_exact_coupling_from_profile_name(name: str) -> str:
 __all__ = [
     "ACTION_NOISY_TO_VIDEO_COUPLING",
     "ACTION_THEN_VIDEO_COUPLING",
-    "AttentionProfileSpec",
     "CONDITIONAL_HISTORY_POLICY_NONE",
     "CONDITIONAL_HISTORY_POLICY_PREVIOUS_BOUNDARY_VIDEO_ONLY",
     "DECOUPLED_SAME_STEP_COUPLING",
@@ -212,9 +211,10 @@ __all__ = [
     "HISTORY_STREAM_VISIBILITY_VIDEO_ONLY",
     "HISTORY_STREAM_VISIBILITY_VIDEO_QUERIES_VIDEO_ONLY",
     "JOINT_COUPLING",
-    "PreparedAttentionProfile",
     "VIDEO_NOISY_TO_ACTION_COUPLING",
     "VIDEO_THEN_ACTION_COUPLING",
+    "AttentionProfileSpec",
+    "PreparedAttentionProfile",
     "chunked_temporal_exact_coupling_from_profile_name",
     "chunked_temporal_exact_profile_name_for_coupling",
     "normalize_attention_profile_name",

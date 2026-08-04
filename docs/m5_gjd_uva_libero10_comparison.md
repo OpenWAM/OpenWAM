@@ -5,6 +5,9 @@ generalist joint denoising (GJD) and the released UVA LIBERO model. It preserves
 the result and its limitations without treating the private comparison harness
 as a supported Open-WAM interface.
 
+`M5` is retained here as the historical run label; its canonical architecture
+name is `dual_expert`.
+
 ## Artifacts
 
 - Open-WAM: M5 GJD mode-token checkpoint at step 40,000, trained with real and
@@ -95,7 +98,7 @@ run.
   that every offline scalar is an apples-to-apples measure of model quality.
 
 Use `scripts/run_gjd_libero.sh` and
-`scripts/run_libero_mot_visualization.py` for maintained Open-WAM GJD rollout.
+`scripts/run_libero_dual_expert_visualization.py` for maintained Open-WAM GJD rollout.
 Use `scripts/run_joint_denoising_fdm_ablation.py` and
 `scripts/run_joint_denoising_fdm_counterfactual.py` for checkout-only
 Open-WAM-native FDM/IDM research diagnostics.

@@ -26,7 +26,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--allow-deprecated-libero-config",
         action="store_true",
         help=(
-            "Allow historical LIBERO M1/M5 configs that do not match the current strict fixed-128, "
+            "Allow historical LIBERO policy configs that do not match the current strict fixed-128, "
             "one-frame, proprio-conditioned training/eval paradigm."
         ),
     )

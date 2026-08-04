@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import torch
 
@@ -96,7 +97,7 @@ def load_lingbot_exact_artifact_bundle(path: str | Path) -> LingbotExactArtifact
 
 
 class LingbotExactRunner:
-    """Reset / cache-warmup / generate lifecycle for the exact method-1 runtime.
+    """Reset / cache-warmup / generate lifecycle for the exact parallel-stream runtime.
 
     The runner preserves LingBot's serving contract, but the transformer it
     drives is the shared local backbone owned by `VisualTower`.
@@ -159,7 +160,7 @@ class LingbotExactRunner:
     ) -> LingbotExactWarmupOutput:
         # Warmup uses the same shared frontend/runtime owner as the normal
         # pipeline path, while preserving the exact slot-pool cache lifecycle
-        # needed by staged method-1 rollout.
+        # needed by staged parallel-stream rollout.
         visual_outputs = self._prepare_visual_outputs(
             session=session,
             views=views,

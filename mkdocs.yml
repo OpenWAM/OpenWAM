@@ -16,7 +16,7 @@ nav:
       - Training And Inference: running_experiments.md
   - Concepts:
       - Architecture: architecture.md
-      - Method Families: method_families.md
+      - Policy Architectures: policy_architectures.md
       - Benchmarks And Data: benchmarks.md
   - Reproducibility:
       - Artifacts: artifacts.md
@@ -26,17 +26,17 @@ nav:
       - Cards:
           - Card Index: cards/index.md
           - Public Tiny Synthetic: cards/public_tiny_synthetic_contract.md
-          - Method 1 LIBERO Exact Step 400: cards/method1_libero_exact_step400.md
+          - Parallel Stream LIBERO Exact Step 400: cards/parallel_stream_libero_exact_step400.md
   - Extending:
       - Extension SDK: extension_sdk.md
-      - Add A Method: cookbooks/new_method.md
+      - Add A Policy Architecture: cookbooks/new_policy_architecture.md
       - Add An Action Decoder: cookbooks/new_action_decoder.md
       - Add A Dataset: cookbooks/new_dataset.md
       - Add A Simulator Adapter: cookbooks/new_simulator_adapter.md
       - Reproduce A Result: cookbooks/reproduce_result.md
   - Operations:
       - Testing: testing.md
-      - MoT Refactor Characterization: mot_refactor_characterization.md
+      - Dual-Expert Refactor Characterization: dual_expert_refactor_characterization.md
       - Deployment Namespace: deployment_namespace.md
       - GitHub Pages: github_pages.md
       - Release Process: release.md

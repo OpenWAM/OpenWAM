@@ -6,16 +6,23 @@ import torch
 from torch import nn
 
 from open_wam.configs import BackboneImplementation
+from open_wam.configs.backbone import (
+    SharedVideoTransformerConfig,
+    normalize_backbone_implementation,
+)
 from open_wam.contracts import ViewPlacement
 from open_wam.models.common import (
     FlowMatchScheduler,
     RolloutCursor,
     unpatchify_video_sequence,
 )
-from open_wam.configs.backbone import SharedVideoTransformerConfig, normalize_backbone_implementation
-from open_wam.models.video_backbone.contracts import AttentionCacheEntry, CacheState, CacheUpdateMetadata
+from open_wam.models.video_backbone.contracts import (
+    AttentionCacheEntry,
+    CacheState,
+    CacheUpdateMetadata,
+)
 
-from .cache_lifecycle import RuntimeCacheLifecycle, _MAX_CACHED_FRAMES_UNSET
+from .cache_lifecycle import _MAX_CACHED_FRAMES_UNSET, RuntimeCacheLifecycle
 from .contracts import (
     VisualCoreInput,
     VisualReadoutRequest,
@@ -346,7 +353,7 @@ class VisualTower(nn.Module):
         observed_prefix: torch.Tensor,
         text_context: torch.Tensor | None,
         frame_start: int = 0,
-        cache_name: str = "mot_video_prefill",
+        cache_name: str = "dual_expert_video_prefill",
         attention_mask: torch.Tensor | None = None,
         cross_attention_mask: torch.Tensor | None = None,
         detach_cache: bool = True,
@@ -395,7 +402,7 @@ class VisualTower(nn.Module):
             backend_payload=None,
             payload={
                 "cache_name": cache_name,
-                "stage": "mot_video_prefill",
+                "stage": "dual_expert_video_prefill",
                 "tokens_per_frame": int(token_grid.tokens_per_frame),
                 "detach_self_attention_cache": bool(detach_cache),
             },
@@ -912,7 +919,7 @@ class VisualTower(nn.Module):
 
         Variants with custom rollout semantics may need direct access to the
         shared backbone object rather than the generic `run_core(...)` entry
-        point. This keeps that access generic and avoids method-1-specific
+        point. This keeps that access generic and avoids parallel-stream-specific
         naming at the tower boundary.
         """
         validate_runtime_backbone_request(

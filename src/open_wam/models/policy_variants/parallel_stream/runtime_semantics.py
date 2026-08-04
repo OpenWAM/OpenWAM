@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from open_wam.configs.enums import (
+    ContextConditionLatentSource,
     CurrentBlockCoupling,
+    HistoryStreamVisibility,
     JointTimestepCoupling,
-    ParallelContextConditionLatentSource,
-    ParallelHistoryStreamVisibility,
     ParallelRuntimeMode,
-    ParallelSequenceContract,
+    VideoActionSequenceContract,
 )
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.models.common import (
@@ -26,19 +26,19 @@ __all__ = [
 
 def resolve_parallel_history_stream_visibility(
     policy_config: ParallelStreamPolicyConfig,
-) -> ParallelHistoryStreamVisibility:
+) -> HistoryStreamVisibility:
     """Resolve the typed history visibility, including its legacy alias."""
 
     value = getattr(
         policy_config,
         "history_stream_visibility",
-        ParallelHistoryStreamVisibility.FULL,
+        HistoryStreamVisibility.FULL,
     )
-    resolved = ParallelHistoryStreamVisibility(value)
-    if resolved == ParallelHistoryStreamVisibility.FULL and bool(
+    resolved = HistoryStreamVisibility(value)
+    if resolved == HistoryStreamVisibility.FULL and bool(
         getattr(policy_config, "preserve_video_pretrain_history", False)
     ):
-        return ParallelHistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
+        return HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
     return resolved
 
 
@@ -48,11 +48,11 @@ def prefix_visibility_mode_for_policy(
     """Map policy history semantics to the exact-cache visibility contract."""
 
     history_visibility = resolve_parallel_history_stream_visibility(policy_config)
-    if history_visibility == ParallelHistoryStreamVisibility.VIDEO_ONLY:
+    if history_visibility == HistoryStreamVisibility.VIDEO_ONLY:
         return "video_history_only"
     if (
         history_visibility
-        == ParallelHistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
+        == HistoryStreamVisibility.VIDEO_QUERIES_VIDEO_ONLY
     ):
         return "preserve_video_pretrain_history"
     return (
@@ -68,27 +68,23 @@ def uses_legacy_prefix_per_chunk_proprio_contract(
     """Return whether the compatibility prefix/proprio layout is selected."""
 
     return (
-        ParallelSequenceContract(
-            getattr(
-                policy_config,
-                "parallel_sequence_contract",
-                ParallelSequenceContract.DEFAULT,
-            )
+        VideoActionSequenceContract(
+            policy_config.sequence_contract
         )
-        == ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
+        == VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
     )
 
 
 def resolve_parallel_context_condition_latent_source(
     policy_config: ParallelStreamPolicyConfig,
-) -> ParallelContextConditionLatentSource:
+) -> ContextConditionLatentSource:
     """Resolve the clean condition-latent source for exact execution."""
 
-    return ParallelContextConditionLatentSource(
+    return ContextConditionLatentSource(
         getattr(
             policy_config,
             "context_condition_latent_source",
-            ParallelContextConditionLatentSource.VIDEO_LATENTS,
+            ContextConditionLatentSource.VIDEO_LATENTS,
         )
     )
 
@@ -96,7 +92,7 @@ def resolve_parallel_context_condition_latent_source(
 def resolve_parallel_current_block_coupling(
     policy_config: ParallelStreamPolicyConfig,
 ) -> CurrentBlockCoupling:
-    """Resolve legacy M1 runtime knobs into an explicit current-block mode."""
+    """Resolve legacy parallel-stream runtime knobs into an explicit current-block mode."""
 
     if policy_config.current_block_coupling is not None:
         return CurrentBlockCoupling(policy_config.current_block_coupling)

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from concurrent.futures import Future, ThreadPoolExecutor
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
@@ -36,13 +36,15 @@ from open_wam.evals.libero_realtime_plans import (
     sequence_chunk_to_planned_steps,
 )
 from open_wam.integrations import libero_rollout
-from open_wam.integrations.realtime_contracts import PlannedFrameAction as PlannedFrameAction
+from open_wam.integrations.realtime_contracts import (
+    PlannedFrameAction as PlannedFrameAction,
+)
 from open_wam.integrations.realtime_scheduling import select_realtime_planner_job
 from open_wam.models.policy_variants import (
     PolicyInferContext,
 )
-from open_wam.models.policy_variants.mot.runtime_routes import (
-    resolve_mot_runtime_route,
+from open_wam.models.policy_variants.dual_expert.runtime_routes import (
+    resolve_dual_expert_runtime_route,
 )
 from open_wam.models.visual_tower import VisualRuntimeStateSnapshot
 from open_wam.pipelines import VariantRolloutRunner, VariantRolloutSession
@@ -71,13 +73,12 @@ from .libero_realtime_sequence import (
     sequence_buffer_tail_ready_for_history_promotion,
     sequence_history_replan_ready,
     should_use_sequence_open_loop_extension,
-    uses_mot_split_cache_sequence,
-    uses_strict_mot_one_frame_history,
-    uses_strict_mot_split_cache_startup,
+    uses_dual_expert_split_cache_sequence,
+    uses_strict_dual_expert_one_frame_history,
+    uses_strict_dual_expert_split_cache_startup,
     validate_sequence_startup_inputs,
     validate_sequence_startup_open_loop_support,
 )
-
 
 _RUNTIME_COMPATIBILITY_EXPORTS = (
     ActionTargetRepresentation,
@@ -92,18 +93,20 @@ __all__ = [
     "SequenceReplanJobOptions",
     "SequenceReplanJobResult",
     "annotate_sequence_planner_acceptance",
-    "apply_inference_overrides",
     "apply_frame_planner_result",
+    "apply_inference_overrides",
     "apply_sequence_replan_result",
     "build_exact_startup_conditioning_history_record",
-    "build_sequence_startup_observation_window",
     "build_fallback_frame_actions",
+    "build_sequence_startup_observation_window",
     "collect_decoder_runtime_metadata",
     "copy_history_record_for_worker",
     "exact_chunk_to_planned_steps",
     "isolated_torch_rng",
     "job_seed_for_session",
     "materialize_sequence_control_action",
+    "resolve_exact_startup_sessions",
+    "resolve_next_exact_history_base_session",
     "resolve_observation_conditioned_replan_session",
     "resolve_sequence_action_cache_rewind_frame",
     "resolve_sequence_actions_per_frame",
@@ -111,8 +114,6 @@ __all__ = [
     "resolve_sequence_execution_action_offset",
     "resolve_sequence_model_observation_window_frames",
     "resolve_sequence_startup_environment_frames",
-    "resolve_exact_startup_sessions",
-    "resolve_next_exact_history_base_session",
     "run_extension_job",
     "run_replan_job",
     "run_sequence_replan_job",
@@ -122,9 +123,9 @@ __all__ = [
     "should_use_sequence_open_loop_extension",
     "submit_planner_job_with_snapshot",
     "synchronize_devices",
-    "uses_mot_split_cache_sequence",
-    "uses_strict_mot_split_cache_startup",
-    "uses_strict_mot_one_frame_history",
+    "uses_dual_expert_split_cache_sequence",
+    "uses_strict_dual_expert_one_frame_history",
+    "uses_strict_dual_expert_split_cache_startup",
     "validate_sequence_startup_inputs",
     "validate_sequence_startup_open_loop_support",
 ]
@@ -248,26 +249,26 @@ def run_sequence_replan_job(
             task_id=int(options.task_id),
             episode_idx=int(options.episode_idx),
         )
-        mot_runtime_route = resolve_mot_runtime_route(config)
+        dual_expert_runtime_route = resolve_dual_expert_runtime_route(config)
         if (
-            mot_runtime_route.is_mot
-            and mot_runtime_route.supports_realtime_history_controls
+            dual_expert_runtime_route.is_dual_expert
+            and dual_expert_runtime_route.supports_realtime_history_controls
         ):
-            infer_extra["mot_skip_observation_update"] = not bool(
+            infer_extra["dual_expert_skip_observation_update"] = not bool(
                 options.use_observation_update
             )
-            if options.mot_condition_frame_start is not None:
-                infer_extra["mot_condition_frame_start"] = int(
-                    options.mot_condition_frame_start
+            if options.dual_expert_condition_frame_start is not None:
+                infer_extra["dual_expert_condition_frame_start"] = int(
+                    options.dual_expert_condition_frame_start
                 )
-            if options.mot_action_cache_rewind_frame_start is not None:
-                infer_extra["mot_action_cache_rewind_frame_start"] = int(
-                    options.mot_action_cache_rewind_frame_start
+            if options.dual_expert_action_cache_rewind_frame_start is not None:
+                infer_extra["dual_expert_action_cache_rewind_frame_start"] = int(
+                    options.dual_expert_action_cache_rewind_frame_start
                 )
-        elif mot_runtime_route.is_mot and not bool(options.use_observation_update):
+        elif dual_expert_runtime_route.is_dual_expert and not bool(options.use_observation_update):
             raise ValueError(
-                "M5 runtime route does not support split-cache open-loop controls: "
-                f"{mot_runtime_route.to_report()}"
+                "Dual-expert runtime route does not support split-cache open-loop controls: "
+                f"{dual_expert_runtime_route.to_report()}"
             )
         step_output = runner.infer_step(
             session=inference_session,
@@ -295,9 +296,9 @@ def run_sequence_replan_job(
         )
 
     policy_aux = step_output.infer_output.policy_output.aux
-    mot_cache_debug = policy_aux.get("mot_cache_debug")
-    if not isinstance(mot_cache_debug, dict):
-        mot_cache_debug = {}
+    dual_expert_cache_debug = policy_aux.get("dual_expert_cache_debug")
+    if not isinstance(dual_expert_cache_debug, dict):
+        dual_expert_cache_debug = {}
     sequence_context = (
         step_output.infer_output.policy_output.decoder_sequence_context
     )
@@ -357,26 +358,26 @@ def run_sequence_replan_job(
             "observed_action_index": int(
                 max(-1, int(options.generation_action_start) - 1)
             ),
-            "history_frame_count": int(len(obs_window)),
+            "history_frame_count": len(obs_window),
             "generation_action_start": int(options.generation_action_start),
             "execution_action_offset": int(
                 resolve_sequence_execution_action_offset(config)
             ),
-            "mot_condition_frame_start": options.mot_condition_frame_start,
-            "mot_action_cache_rewind_frame_start": (
-                options.mot_action_cache_rewind_frame_start
+            "dual_expert_condition_frame_start": options.dual_expert_condition_frame_start,
+            "dual_expert_action_cache_rewind_frame_start": (
+                options.dual_expert_action_cache_rewind_frame_start
             ),
-            "mot_runtime_route": (
-                mot_runtime_route.to_report() if mot_runtime_route.is_mot else None
+            "dual_expert_runtime_route": (
+                dual_expert_runtime_route.to_report() if dual_expert_runtime_route.is_dual_expert else None
             ),
             "model_generation_frame_start": _json_scalar_from_tensor(
                 policy_aux.get("generation_frame_start")
             ),
-            "mot_chunk_origin_frame": _json_scalar_from_tensor(
-                mot_cache_debug.get("chunk_origin_frame")
+            "dual_expert_chunk_origin_frame": _json_scalar_from_tensor(
+                dual_expert_cache_debug.get("chunk_origin_frame")
             ),
-            "mot_current_action_frame_start": _json_scalar_from_tensor(
-                mot_cache_debug.get("current_action_frame_start")
+            "dual_expert_current_action_frame_start": _json_scalar_from_tensor(
+                dual_expert_cache_debug.get("current_action_frame_start")
             ),
             "preserve_rng_state": bool(options.preserve_rng_state),
             "planned_action_ids": [
@@ -632,7 +633,7 @@ def run_replan_job(
         trace={
             "job_kind": "history_replan",
             "observed_frame_index": int(observed_frame_index),
-            "history_frame_count": int(len(history_records)),
+            "history_frame_count": len(history_records),
             "history_frame_start": int(history_frame_start),
             "raw_observation_count": int(raw_observation_count),
             "precomputed_video_latent_frames": (

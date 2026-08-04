@@ -18,7 +18,10 @@ from open_wam.utils import (
     resolve_transformer_dir_override,
     seed_everywhere,
 )
-from open_wam.utils.config_overrides import apply_config_overrides, parse_override_assignments
+from open_wam.utils.config_overrides import (
+    apply_config_overrides,
+    parse_override_assignments,
+)
 
 from .metrics import (
     action_mse_per_frame,
@@ -29,8 +32,8 @@ from .metrics import (
     summarize_metric_rows,
 )
 from .rollout import (
+    DualExpertGeneralistDenoisingFdmRollout,
     JointDenoisingFdmRollout,
-    MotGeneralistDenoisingFdmRollout,
     should_drop_task_text_for_fdm_mode,
 )
 from .sampling import (
@@ -228,7 +231,7 @@ def main(argv: list[str] | None = None) -> None:
 @torch.inference_mode()
 def _run_one_selection_mode(
     *,
-    fdm_rollout: JointDenoisingFdmRollout | MotGeneralistDenoisingFdmRollout,
+    fdm_rollout: JointDenoisingFdmRollout | DualExpertGeneralistDenoisingFdmRollout,
     selection,
     sample,
     mode: FdmAblationMode,
@@ -413,9 +416,12 @@ def _build_fdm_rollout_for_config(
     checkpoint_file: Path,
     runtime_device: torch.device,
     runtime_dtype: torch.dtype | None,
-) -> JointDenoisingFdmRollout | MotGeneralistDenoisingFdmRollout:
-    if _is_mot_policy_config(config):
-        from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config
+) -> JointDenoisingFdmRollout | DualExpertGeneralistDenoisingFdmRollout:
+    if _is_dual_expert_policy_config(config):
+        from open_wam.pipelines import (
+            VariantRolloutRunner,
+            build_variant_pipeline_from_config,
+        )
 
         pipeline = build_variant_pipeline_from_config(config)
         _load_pipeline_checkpoint_for_fdm_rollout(
@@ -428,18 +434,21 @@ def _build_fdm_rollout_for_config(
         else:
             pipeline.to(device=runtime_device, dtype=runtime_dtype)
         pipeline.eval()
-        return MotGeneralistDenoisingFdmRollout(VariantRolloutRunner(pipeline))
+        return DualExpertGeneralistDenoisingFdmRollout(VariantRolloutRunner(pipeline))
 
     if runtime_dtype is not None:
-        raise ValueError("`--runtime-dtype` is currently supported only for M5/MoT FDM/IDM evaluation.")
+        raise ValueError(
+            "`--runtime-dtype` is currently supported only for dual-expert "
+            "FDM/IDM evaluation."
+        )
     from open_wam.pipelines import build_exact_runtime_runner_from_config
 
     return JointDenoisingFdmRollout(build_exact_runtime_runner_from_config(config))
 
 
-def _is_mot_policy_config(config) -> bool:
+def _is_dual_expert_policy_config(config) -> bool:
     raw_name = getattr(config.policy_variant, "name", None)
-    return str(getattr(raw_name, "value", raw_name)) == "mot"
+    return str(getattr(raw_name, "value", raw_name)) == "dual_expert"
 
 
 def _resolve_action_per_frame(config) -> int:
@@ -450,8 +459,8 @@ def _resolve_action_per_frame(config) -> int:
             raise ValueError(f"policy_variant.action_per_frame must be positive, got {raw_action_per_frame!r}.")
         return action_per_frame
 
-    action_horizon = int(getattr(config.action_decoder, "action_horizon"))
-    frame_chunk_size = int(getattr(config.inference, "frame_chunk_size"))
+    action_horizon = int(config.action_decoder.action_horizon)
+    frame_chunk_size = int(config.inference.frame_chunk_size)
     if frame_chunk_size <= 0:
         raise ValueError(f"inference.frame_chunk_size must be positive, got {frame_chunk_size}.")
     if action_horizon <= 0:
@@ -476,16 +485,16 @@ def _resolve_runtime_dtype(value: str | None) -> torch.dtype | None:
 
 
 def _target_start_offset_for_config_mode(config, mode: FdmAblationMode) -> int:
-    if not _is_mot_policy_config(config):
+    if not _is_dual_expert_policy_config(config):
         return 0
     return 1 if _is_target_only_m5_gjd_mode(mode) else 0
 
 
 def _target_start_offset_for_rollout_mode(
-    fdm_rollout: JointDenoisingFdmRollout | MotGeneralistDenoisingFdmRollout,
+    fdm_rollout: JointDenoisingFdmRollout | DualExpertGeneralistDenoisingFdmRollout,
     mode: FdmAblationMode,
 ) -> int:
-    if not isinstance(fdm_rollout, MotGeneralistDenoisingFdmRollout):
+    if not isinstance(fdm_rollout, DualExpertGeneralistDenoisingFdmRollout):
         return 0
     return 1 if _is_target_only_m5_gjd_mode(mode) else 0
 
@@ -523,7 +532,7 @@ def _load_pipeline_checkpoint_for_fdm_rollout(
     if not isinstance(state_dict, dict):
         raise ValueError("Checkpoint must be a raw state_dict or a checkpoint with `state_dict`/`model_state_dict`.")
     normalized = {
-        (key[len("pipeline.") :] if key.startswith("pipeline.") else key): value
+        (key.removeprefix("pipeline.")): value
         for key, value in state_dict.items()
         if isinstance(value, torch.Tensor)
     }
@@ -746,7 +755,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run offline FDM/IDM diagnostics for a joint-denoising policy."
     )
-    parser.add_argument("--config", "--cfg", default="configs/experiments/parallel_stream_libero_lingbot_joint_denoise.yaml")
+    parser.add_argument("--config", "--cfg", default="configs/experiments/parallel_stream_libero_joint_denoise.yaml")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--output-dir", default="outputs/joint_denoising_fdm")
     parser.add_argument("--run-id", default=None)
@@ -798,7 +807,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--runtime-dtype",
         choices=("float32", "bfloat16", "float16"),
         default="float32",
-        help="Optional inference dtype for M5/MoT offline FDM/IDM evaluation.",
+        help="Optional inference dtype for dual-expert offline FDM/IDM evaluation.",
     )
     parser.add_argument(
         "--set",

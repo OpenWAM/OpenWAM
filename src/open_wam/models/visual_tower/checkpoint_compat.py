@@ -6,7 +6,7 @@ from torch import nn
 class RuntimeStreamCompatibilityParameters(nn.Module):
     """Retain historical runtime-stream parameter keys for current checkpoints.
 
-    Selected M1/M5 exports contain the
+    Selected historical parallel-stream/dual-expert exports contain the
     ``runtime_stream_adapters.{action,state}_register_adapter`` and
     ``runtime_stream_adapters.role_embedding`` keys. The retired traditional
     Method 2 runtime no longer executes these modules, but their names,

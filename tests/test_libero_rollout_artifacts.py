@@ -349,7 +349,7 @@ def test_persist_rollout_artifacts_preserves_legacy_schema_and_paths(
         "video_path": None,
         "comparison_video_path": None,
         "rollout_video_path": None,
-        "pipeline": "open_wam_mot",
+        "pipeline": "open_wam_dual_expert",
         "runtime_mode": "non_joint_two_stream",
         "condition_mode": "teacher_forcing_cond_video",
         "startup_model_obs_frames": 1,
@@ -359,7 +359,7 @@ def test_persist_rollout_artifacts_preserves_legacy_schema_and_paths(
         "execute_frame_chunk_size": None,
         "action_count": 2,
         "checkpoint_file": "/checkpoint/model_state.pt",
-        "mot_gjd_action_route": "joint",
+        "dual_expert_gjd_action_route": "joint",
     }
     output = artifacts.persist_libero_rollout_artifacts(
         pipeline=SimpleNamespace(),  # type: ignore[arg-type]

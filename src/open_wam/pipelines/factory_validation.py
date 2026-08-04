@@ -6,8 +6,8 @@ from open_wam.configs import (
     ActionDecoderName,
     BackboneImplementation,
     BatchAdapterName,
+    DualExpertRuntimeMode,
     ExperimentConfig,
-    MoTRuntimeMode,
     ParallelRuntimeMode,
     ProprioContextMode,
     VideoConditionInputSpace,
@@ -19,7 +19,7 @@ from open_wam.configs.policy_contracts import (
     PostDecodedPolicyConfig,
     PostLatentPolicyConfig,
 )
-from open_wam.configs.policy_mot import MoTPolicyConfig
+from open_wam.configs.policy_dual_expert import DualExpertPolicyConfig
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.data.action_mapping import validate_action_mapping_preflight
 from open_wam.models.policy_variants.parallel_stream.action_adapter import (
@@ -45,7 +45,7 @@ def _resolve_parallel_stream_model_action_dim(config: ExperimentConfig) -> int:
 
 
 def _resolve_proprio_context_state_dim(config: ExperimentConfig) -> int | None:
-    if not isinstance(config.policy_variant, (MoTPolicyConfig, ParallelStreamPolicyConfig)):
+    if not isinstance(config.policy_variant, (DualExpertPolicyConfig, ParallelStreamPolicyConfig)):
         return None
     mode = ProprioContextMode(config.policy_variant.proprio_context_mode)
     if mode != ProprioContextMode.TEXT_CONTEXT_TOKEN:
@@ -84,7 +84,7 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
                 PostLatentPolicyConfig,
                 PostDecodedPolicyConfig,
                 CausalVideoPredictionPolicyConfig,
-                MoTPolicyConfig,
+                DualExpertPolicyConfig,
             ),
         )
         and normalize_backbone_implementation(config.backbone.implementation)
@@ -98,7 +98,7 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
     if isinstance(config.policy_variant, ParallelStreamPolicyConfig):
         if config.policy_variant.runtime_mode not in _PARALLEL_STREAM_EXACT_MODEL_ACTION_MODES:
             raise ValueError(
-                "Parallel-stream method 1 now only supports LingBot-exact semantics, "
+                "Parallel-stream policies currently require a supported exact runtime, "
                 f"got policy_variant.runtime_mode={config.policy_variant.runtime_mode!r}."
             )
         expected_horizon = config.data.num_frames * config.policy_variant.action_per_frame
@@ -108,13 +108,13 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
                 f"got action_horizon={action_schema.action_horizon}, num_frames={config.data.num_frames}, "
                 f"action_per_frame={config.policy_variant.action_per_frame}."
             )
-        if config.action_decoder.name != ActionDecoderName.LINGBOT_PARALLEL:
+        if config.action_decoder.name != ActionDecoderName.PARALLEL_STREAM:
             raise ValueError(
-                "Parallel-stream method 1 requires `action_decoder.name = lingbot_parallel_decoder`."
+                "Parallel-stream policies require `action_decoder.name = parallel_stream_decoder`."
             )
         if config.action_decoder.action_horizon != action_schema.action_horizon:
             raise ValueError(
-                "Parallel-stream method 1 requires `action_decoder.action_horizon` to match "
+                "Parallel-stream policies require `action_decoder.action_horizon` to match "
                 "`data.action_schema.action_horizon`, "
                 f"got decoder={config.action_decoder.action_horizon}, data={action_schema.action_horizon}."
             )
@@ -136,23 +136,23 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
                 f"got adapter raw_action_dim={adapter_spec.raw_action_dim}, "
                 f"data action_dim={action_schema.action_dim}, model action_dim={model_action_dim}."
             )
-    if isinstance(config.policy_variant, MoTPolicyConfig):
+    if isinstance(config.policy_variant, DualExpertPolicyConfig):
         if action_schema.action_horizon <= 0:
-            raise ValueError("MoT method 5 requires `data.action_schema.action_horizon > 0`.")
+            raise ValueError("Dual-expert policies require `data.action_schema.action_horizon > 0`.")
         if (
             config.policy_variant.runtime_mode
-            in {MoTRuntimeMode.JOINT_DENOISE, MoTRuntimeMode.NON_JOINT_TWO_STREAM}
+            in {DualExpertRuntimeMode.JOINT_DENOISE, DualExpertRuntimeMode.NON_JOINT_TWO_STREAM}
             and config.policy_variant.video_prefix_frames >= config.data.num_frames
         ):
             raise ValueError(
-                "MoT two-stream method 5 requires `video_prefix_frames < data.num_frames`, "
+                "Dual-expert two-stream policies require `video_prefix_frames < data.num_frames`, "
                 f"got video_prefix_frames={config.policy_variant.video_prefix_frames}, "
                 f"data.num_frames={config.data.num_frames}, "
                 f"runtime_mode={config.policy_variant.runtime_mode!r}."
             )
         if config.policy_variant.num_action_layers != config.backbone.num_layers:
             raise ValueError(
-                "MoT method 5 currently requires `policy_variant.num_action_layers == backbone.num_layers` "
+                "Dual-expert policies currently require `policy_variant.num_action_layers == backbone.num_layers` "
                 "so the action expert stays layer-aligned with the video expert, "
                 f"got num_action_layers={config.policy_variant.num_action_layers}, "
                 f"backbone.num_layers={config.backbone.num_layers}."

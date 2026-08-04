@@ -9,9 +9,9 @@ import torch
 from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.configs.enums import (
     CurrentBlockCoupling,
-    JointDenoiseTrainingMode,
+    GeneralistDenoisingMode,
+    HistoryStreamVisibility,
     ParallelExactCacheWriteMode,
-    ParallelHistoryStreamVisibility,
 )
 from open_wam.configs.inference import InferenceConfig
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
@@ -25,29 +25,55 @@ from .cache_execution import (
 )
 from .conditional_rollout import (
     generalist_conditioning_chunk_size as _chunk_size_for_generalist_conditioning,
+)
+from .conditional_rollout import (
     generalist_conditioning_history_stream_visibility as _history_stream_visibility_for_generalist_conditioning,
+)
+from .conditional_rollout import (
     generalist_conditioning_prefix_visibility_mode as _prefix_visibility_mode_for_generalist_conditioning,
+)
+from .conditional_rollout import (
     generalist_conditioning_window_size as _window_size_for_generalist_conditioning,
+)
+from .conditional_rollout import (
     is_conditional_joint_denoise_mode as _is_conditional_joint_denoise_mode,
+)
+from .conditional_rollout import (
     resolve_action_conditioning_mode as _generalist_mode_for_action_conditioning,
+)
+from .conditional_rollout import (
     select_conditional_warmup_history_suffix as _select_conditional_warmup_history_suffix,
+)
+from .conditional_rollout import (
     uses_generalist_mode_text_token as _uses_generalist_mode_text_token,
 )
 from .exact_cache import (
     ExactCacheInterfaceSpec,
+)
+from .exact_cache import (
     build_exact_cache_spec as _build_exact_cache_spec,
+)
+from .exact_cache import (
     ensure_exact_cache_initialized as _ensure_exact_cache_initialized,
+)
+from .exact_cache import (
     resolve_exact_cache_context as _resolve_exact_cache_context,
+)
+from .exact_cache import (
     validate_existing_exact_cache_attention_window as _validate_existing_exact_cache_attn_window,
 )
 from .inference_conditioning import append_generalist_mode_text_context
 from .proprio_conditioning import (
     build_single_stream_hidden_proprio_context as _single_stream_hidden_proprio_context,
+)
+from .proprio_conditioning import (
     inject_deprecated_proprio_text_context as _inject_proprio_text_context,
 )
 from .runtime_semantics import (
     resolve_parallel_current_block_coupling,
     resolve_parallel_history_stream_visibility,
+)
+from .runtime_semantics import (
     uses_legacy_prefix_per_chunk_proprio_contract as _uses_legacy_prefix_per_chunk_proprio_contract,
 )
 
@@ -66,7 +92,7 @@ def run_parallel_exact_cache_warmup(
     infer_cache: dict[str, Any],
     cache_write_mode: ParallelExactCacheWriteMode | str = ParallelExactCacheWriteMode.SINGLE_STREAM_STAGED,
     frame_start_override: int | None = None,
-    action_conditioning_mode: JointDenoiseTrainingMode | str = "vanilla_joint_rollout",
+    action_conditioning_mode: GeneralistDenoisingMode | str = "vanilla_joint_rollout",
     proprio_state: torch.Tensor | None = None,
     hidden_proprio_state: torch.Tensor | None = None,
 ) -> dict[str, Any]:
@@ -265,7 +291,7 @@ def commit_initial_observed_video_context(
     current_block_coupling: CurrentBlockCoupling,
     window_size: int,
     frame_chunk_size: int | None = None,
-    history_stream_visibility: ParallelHistoryStreamVisibility | None = None,
+    history_stream_visibility: HistoryStreamVisibility | None = None,
     hidden_proprio_state: torch.Tensor | None = None,
 ) -> tuple[int, bool]:
     """Commit frame 0 as pure prefix context before generating frame 1.

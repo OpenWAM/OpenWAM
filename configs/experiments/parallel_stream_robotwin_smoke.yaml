@@ -26,7 +26,7 @@ backbone:
   ffn_dim: 1024
 
 policy_variant:
-  # Exact method-1 chunk layout knobs
+  # Exact parallel-stream chunk layout knobs
   name: parallel_stream
   hidden_size: 256
   runtime_mode: lingbot_exact
@@ -39,7 +39,7 @@ policy_variant:
 
 action_decoder:
   # LingBot-compatible action decoder for smoke validation
-  name: lingbot_parallel_decoder
+  name: parallel_stream_decoder
   hidden_size: 256
   action_dim: 30
   action_horizon: 8

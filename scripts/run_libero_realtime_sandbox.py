@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import Future, ThreadPoolExecutor
 import json
 import math
 import sys
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -24,8 +24,11 @@ def _prepend_import_path(path: Path) -> None:
 
 _prepend_import_path(SRC_ROOT)
 
-from open_wam.configs import ParallelRuntimeMode  # noqa: E402
-from open_wam.configs.enums import (  # noqa: E402
+from open_wam.configs import (
+    ParallelRuntimeMode,
+    load_experiment_config,
+)
+from open_wam.configs.enums import (
     DeadlineMissPolicy,
     FallbackHistoryPolicy,
     RealtimeEmptyPlanPolicy,
@@ -33,44 +36,51 @@ from open_wam.configs.enums import (  # noqa: E402
     RealtimeSchedulerProfile,
     RolloutArtifactProfile,
 )
-from open_wam.data.latent_temporal import raw_window_frames_for_latents  # noqa: E402
-from open_wam.integrations import (  # noqa: E402
+from open_wam.data.latent_temporal import raw_window_frames_for_latents
+from open_wam.evals import libero_realtime_runtime as realtime_runtime
+from open_wam.evals import libero_rollout_artifacts as rollout_artifacts
+from open_wam.evals import libero_visualization as exact_viz
+from open_wam.evals import (
+    realtime_history,
+    realtime_speculation,
+)
+from open_wam.integrations import (
     LiberoControlConfig,
     ensure_local_libero_config,
+    libero_rollout,
     load_libero_task_init_states,
     resolve_libero_task_by_id,
 )
-from open_wam.integrations import libero_rollout  # noqa: E402
-from open_wam.integrations.realtime_contracts import PlannedControlStep  # noqa: E402
-from open_wam.integrations.realtime_control import build_live_rollout_summary  # noqa: E402
-from open_wam.integrations.realtime_plan_queue import (  # noqa: E402
+from open_wam.integrations.realtime_contracts import PlannedControlStep
+from open_wam.integrations.realtime_control import (
+    build_live_rollout_summary,
+)
+from open_wam.integrations.realtime_plan_queue import (
     drop_control_steps_from,
     future_control_depth,
     merge_future_control_steps,
     missing_control_action_indices,
     required_control_action_indices,
 )
-from open_wam.integrations.realtime_scheduling import (  # noqa: E402
+from open_wam.integrations.realtime_scheduling import (
     frame_index_to_action_start,
     resolve_realtime_planner_mode,
     resolve_realtime_scheduler_defaults,
     should_submit_frame_grouped_planner,
     should_submit_sequence_planner,
 )
-from open_wam.evals import libero_rollout_artifacts as rollout_artifacts  # noqa: E402
-from open_wam.evals import libero_realtime_runtime as realtime_runtime  # noqa: E402
-from open_wam.evals import libero_visualization as exact_viz  # noqa: E402
-from open_wam.evals import realtime_history  # noqa: E402
-from open_wam.evals import realtime_speculation  # noqa: E402
-from open_wam.models.visual_tower import VisualRuntimeStateSnapshot  # noqa: E402
-from open_wam.models.policy_variants.mot.runtime_routing import (  # noqa: E402
-    ensure_mot_inference_backend,
+from open_wam.models.policy_variants.dual_expert.runtime_routing import (
+    ensure_dual_expert_inference_backend,
 )
-from open_wam.pipelines import LingbotExactRunner, VariantRolloutRunner, build_variant_pipeline_from_config  # noqa: E402
-from open_wam.runtime import checkpoints as runtime_checkpoints  # noqa: E402
-from open_wam.runtime import rollout as rollout_runtime  # noqa: E402
-from open_wam.configs import load_experiment_config  # noqa: E402
-from open_wam.utils import (  # noqa: E402
+from open_wam.models.visual_tower import VisualRuntimeStateSnapshot
+from open_wam.pipelines import (
+    LingbotExactRunner,
+    VariantRolloutRunner,
+    build_variant_pipeline_from_config,
+)
+from open_wam.runtime import checkpoints as runtime_checkpoints
+from open_wam.runtime import rollout as rollout_runtime
+from open_wam.utils import (
     apply_config_overrides,
     merge_runtime_config_from_checkpoint,
     parse_override_assignments,
@@ -78,7 +88,9 @@ from open_wam.utils import (  # noqa: E402
     seed_everywhere,
     validate_positive_step_override,
 )
-from open_wam.utils.libero_paradigm import require_current_libero_policy_paradigm  # noqa: E402
+from open_wam.utils.libero_paradigm import (
+    require_current_libero_policy_paradigm,
+)
 
 VERBOSE = False
 
@@ -162,7 +174,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Run one trained LIBERO policy in a fixed-rate realtime sandbox across exact/joint, "
-            "method-4 video-conditioned, and method-5 MoT variants."
+            "feature-attached and dual-expert policy architectures."
         )
     )
     parser.add_argument(
@@ -402,7 +414,7 @@ def main() -> None:
         "--allow-deprecated-libero-config",
         action="store_true",
         help=(
-            "Allow historical LIBERO M1/M5 configs that do not match the current strict fixed-128, "
+            "Allow historical LIBERO policy configs that do not match the current strict fixed-128, "
             "one-frame, proprio-conditioned training/eval paradigm."
         ),
     )
@@ -537,7 +549,7 @@ def main() -> None:
         summary = _run_sequence_policy_realtime_rollout(
             config=config,
             checkpoint_path=checkpoint_path,
-            rollout_label="method4",
+            rollout_label=policy_name,
             benchmark=args.benchmark,
             task_id=args.task_id,
             episode_idx=args.episode_idx,
@@ -570,11 +582,11 @@ def main() -> None:
             write_fallback_timeline_video=args.write_fallback_timeline_video,
             artifact_profile=args.artifact_profile,
         )
-    elif policy_name == "mot":
+    elif policy_name == "dual_expert":
         summary = _run_sequence_policy_realtime_rollout(
             config=config,
             checkpoint_path=checkpoint_path,
-            rollout_label="method5",
+            rollout_label="dual_expert",
             benchmark=args.benchmark,
             task_id=args.task_id,
             episode_idx=args.episode_idx,
@@ -610,7 +622,7 @@ def main() -> None:
     else:
         raise ValueError(
             "The realtime sandbox currently supports exact/joint `parallel_stream`, "
-            "`post_latent`, `post_decoded`, and `mot`, "
+            "`post_latent`, `post_decoded`, and `dual_expert`, "
             f"got policy_variant={policy_name!r}."
         )
     print(json.dumps(summary, indent=2))
@@ -828,7 +840,7 @@ def _run_exact_like_realtime_rollout(
         startup_history_frame_index = 0
         with torch.inference_mode():
             session = runner.reset(task_text=(prompt,))
-            # Preserve the exact M1 contract: reseed immediately before each chunk.
+            # Preserve the exact parallel-stream contract: reseed before each chunk.
             with realtime_runtime.isolated_torch_rng(seed, frontend_device, runtime_device):
                 startup_prepare_t0 = time.perf_counter()
                 if VERBOSE:
@@ -1568,8 +1580,8 @@ def _run_exact_like_realtime_rollout(
                 "wait_for_plan_total_s": float(wait_for_plan_total_s),
                 "schedule_pause_s": float(schedule_pause_s),
                 "blocking_replan_count": int(blocking_replan_count),
-                "history_replan_count": int(len(replan_records)),
-                "open_loop_extension_count": int(len(extension_records)),
+                "history_replan_count": len(replan_records),
+                "open_loop_extension_count": len(extension_records),
                 "stale_replan_planned_actions": int(stale_replan_actions),
                 "stale_extension_planned_actions": int(stale_extension_actions),
                 "chunk_boundary_dropped_replan_actions": int(chunk_boundary_dropped_replan_actions),
@@ -1688,12 +1700,12 @@ def _run_sequence_policy_realtime_rollout(
     _print_stage(f"{rollout_label}_move_pipeline_start", runtime_device=str(runtime_device))
     pipeline = pipeline.to(runtime_device)
     _print_stage(f"{rollout_label}_move_pipeline_done")
-    mot_inference_backend = None
-    if str(config.policy_variant.name) == "mot":
-        mot_inference_backend = ensure_mot_inference_backend(pipeline, config)
+    dual_expert_inference_backend = None
+    if str(config.policy_variant.name) == "dual_expert":
+        dual_expert_inference_backend = ensure_dual_expert_inference_backend(pipeline, config)
         _print_stage(
-            f"{rollout_label}_mot_inference_backend",
-            **mot_inference_backend,
+            f"{rollout_label}_dual_expert_inference_backend",
+            **dual_expert_inference_backend,
         )
     _print_stage(f"{rollout_label}_configure_runtime_devices_start")
     pipeline.eval()
@@ -1715,7 +1727,7 @@ def _run_sequence_policy_realtime_rollout(
         "runtime_output_device": str(runtime_output_device),
         "frontend_device": str(frontend_device),
         "decode_device": str(decode_device),
-        "action_device": str(runtime_device) if str(config.policy_variant.name) == "mot" else None,
+        "action_device": str(runtime_device) if str(config.policy_variant.name) == "dual_expert" else None,
         "runtime_devices": [str(device) for device in runtime_devices],
         "reference_assets_device_policy": str(config.backbone.reference_assets_device_policy),
         "video_steps": int(config.inference.video_num_inference_steps),
@@ -1732,12 +1744,12 @@ def _run_sequence_policy_realtime_rollout(
         "sequence_buffer_threshold": int(sequence_buffer_threshold),
         "startup_open_loop_chunks": int(startup_open_loop_chunks),
         "replan_low_watermark_actions": int(replan_low_watermark_actions),
-        "strict_mot_split_cache_startup": bool(realtime_runtime.uses_strict_mot_split_cache_startup(config)),
-        "strict_mot_one_frame_history": bool(realtime_runtime.uses_strict_mot_one_frame_history(config)),
+        "strict_dual_expert_split_cache_startup": bool(realtime_runtime.uses_strict_dual_expert_split_cache_startup(config)),
+        "strict_dual_expert_one_frame_history": bool(realtime_runtime.uses_strict_dual_expert_one_frame_history(config)),
         "decoder_runtime": realtime_runtime.collect_decoder_runtime_metadata(pipeline, config),
     }
-    if mot_inference_backend is not None:
-        load_report["mot_inference_backend"] = mot_inference_backend
+    if dual_expert_inference_backend is not None:
+        load_report["dual_expert_inference_backend"] = dual_expert_inference_backend
 
     _print_stage(f"{rollout_label}_resolve_task_start", benchmark=benchmark, task_id=task_id)
     task_spec = resolve_libero_task_by_id(benchmark, task_id, REPO_ROOT)
@@ -1826,11 +1838,11 @@ def _run_sequence_policy_realtime_rollout(
 
         session = startup.session
         next_generation_action_start = int(startup.next_generation_action_start)
-        mot_non_joint_sequence = realtime_runtime.uses_mot_split_cache_sequence(config)
-        history_base_session = session if mot_non_joint_sequence else realtime_speculation.clone_session(session)
+        dual_expert_non_joint_sequence = realtime_runtime.uses_dual_expert_split_cache_sequence(config)
+        history_base_session = session if dual_expert_non_joint_sequence else realtime_speculation.clone_session(session)
         history_base_cache_snapshot = startup.runtime_cache_snapshot
         history_generation_action_start = int(next_generation_action_start)
-        buffer_tail_session = session if mot_non_joint_sequence else realtime_speculation.clone_session(session)
+        buffer_tail_session = session if dual_expert_non_joint_sequence else realtime_speculation.clone_session(session)
         buffer_tail_cache_snapshot = startup.runtime_cache_snapshot
         buffer_tail_generation_action_start = int(next_generation_action_start)
         plan_by_action = merge_future_control_steps(
@@ -1852,7 +1864,7 @@ def _run_sequence_policy_realtime_rollout(
                     runner=runner,
                     session=(
                         buffer_tail_session
-                        if mot_non_joint_sequence
+                        if dual_expert_non_joint_sequence
                         else realtime_speculation.clone_session(buffer_tail_session)
                     ),
                     obs_window=realtime_history.copy_observation_window(model_obs_window),
@@ -1874,7 +1886,7 @@ def _run_sequence_policy_realtime_rollout(
                 extension_records.append(extension.trace)
                 buffer_tail_session = (
                     extension.session
-                    if mot_non_joint_sequence
+                    if dual_expert_non_joint_sequence
                     else realtime_speculation.clone_session(extension.session)
                 )
                 buffer_tail_cache_snapshot = extension.runtime_cache_snapshot
@@ -1883,7 +1895,7 @@ def _run_sequence_policy_realtime_rollout(
                 )
                 session = (
                     buffer_tail_session
-                    if mot_non_joint_sequence
+                    if dual_expert_non_joint_sequence
                     else realtime_speculation.clone_session(buffer_tail_session)
                 )
                 next_generation_action_start = int(buffer_tail_generation_action_start)
@@ -1920,7 +1932,7 @@ def _run_sequence_policy_realtime_rollout(
             while executed_action_index < max_actions and not done:
                 if replan_future is not None and replan_future.done():
                     result = replan_future.result()
-                    if realtime_runtime.uses_mot_split_cache_sequence(config):
+                    if realtime_runtime.uses_dual_expert_split_cache_sequence(config):
                         future_steps = realtime_runtime.annotate_sequence_planner_acceptance(
                             result,
                             next_action_to_execute=next_action_index,
@@ -1935,20 +1947,20 @@ def _run_sequence_policy_realtime_rollout(
                                 )
                                 history_base_session = realtime_speculation.session_reference(
                                     result.session,
-                                    share_session=mot_non_joint_sequence,
+                                    share_session=dual_expert_non_joint_sequence,
                                 )
                                 history_base_cache_snapshot = result.runtime_cache_snapshot
                                 history_generation_action_start = int(result.next_generation_action_start)
                                 buffer_tail_session = realtime_speculation.session_reference(
                                     result.session,
-                                    share_session=mot_non_joint_sequence,
+                                    share_session=dual_expert_non_joint_sequence,
                                 )
                                 buffer_tail_cache_snapshot = result.runtime_cache_snapshot
                                 buffer_tail_generation_action_start = int(result.next_generation_action_start)
                             else:
                                 buffer_tail_session = realtime_speculation.session_reference(
                                     result.session,
-                                    share_session=mot_non_joint_sequence,
+                                    share_session=dual_expert_non_joint_sequence,
                                 )
                                 buffer_tail_cache_snapshot = result.runtime_cache_snapshot
                                 buffer_tail_generation_action_start = int(result.next_generation_action_start)
@@ -1959,7 +1971,7 @@ def _run_sequence_policy_realtime_rollout(
                             )
                             session = realtime_speculation.session_reference(
                                 buffer_tail_session,
-                                share_session=mot_non_joint_sequence,
+                                share_session=dual_expert_non_joint_sequence,
                             )
                             next_generation_action_start = int(buffer_tail_generation_action_start)
                     else:
@@ -1980,7 +1992,7 @@ def _run_sequence_policy_realtime_rollout(
                         wait_t0 = time.perf_counter()
                         if replan_future is None:
                             blocking_replan_count += 1
-                            if realtime_runtime.uses_mot_split_cache_sequence(config):
+                            if realtime_runtime.uses_dual_expert_split_cache_sequence(config):
                                 if (
                                     buffer_tail_session is not None
                                     and realtime_runtime.sequence_buffer_tail_ready_for_history_promotion(
@@ -1992,13 +2004,13 @@ def _run_sequence_policy_realtime_rollout(
                                 ):
                                     history_base_session = realtime_speculation.session_reference(
                                         buffer_tail_session,
-                                        share_session=mot_non_joint_sequence,
+                                        share_session=dual_expert_non_joint_sequence,
                                     )
                                     history_base_cache_snapshot = buffer_tail_cache_snapshot
                                     history_generation_action_start = int(buffer_tail_generation_action_start)
                                 blocking_session = realtime_speculation.session_reference(
                                     history_base_session,
-                                    share_session=mot_non_joint_sequence,
+                                    share_session=dual_expert_non_joint_sequence,
                                 )
                                 blocking_generation_action_start = int(history_generation_action_start)
                                 blocking_cache_snapshot = history_base_cache_snapshot
@@ -2012,7 +2024,7 @@ def _run_sequence_policy_realtime_rollout(
                                 blocking_cache_snapshot = None
                                 blocking_condition_frame_start = None
                             # The restored history snapshot already contains
-                            # the correct MoT action-cache prefix. Rewinding
+                            # the correct DualExpert action-cache prefix. Rewinding
                             # here mutates chunk-by-chunk parity.
                             result = realtime_runtime.run_sequence_replan_job(
                                 runner=runner,
@@ -2028,7 +2040,7 @@ def _run_sequence_policy_realtime_rollout(
                                     generation_action_start=blocking_generation_action_start,
                                     source="blocking_replan",
                                     runtime_cache_snapshot=blocking_cache_snapshot,
-                                    mot_condition_frame_start=(
+                                    dual_expert_condition_frame_start=(
                                         blocking_condition_frame_start
                                     ),
                                 ),
@@ -2041,7 +2053,7 @@ def _run_sequence_policy_realtime_rollout(
                         wait_for_plan_total_s += wait_for_plan_s
                         result.trace["blocking_wait_action_index"] = int(next_action_index)
                         result.trace["blocking_wait_s"] = float(wait_for_plan_s)
-                        if realtime_runtime.uses_mot_split_cache_sequence(config):
+                        if realtime_runtime.uses_dual_expert_split_cache_sequence(config):
                             future_steps = realtime_runtime.annotate_sequence_planner_acceptance(
                                 result,
                                 next_action_to_execute=next_action_index,
@@ -2055,13 +2067,13 @@ def _run_sequence_policy_realtime_rollout(
                                 )
                                 history_base_session = realtime_speculation.session_reference(
                                     result.session,
-                                    share_session=mot_non_joint_sequence,
+                                    share_session=dual_expert_non_joint_sequence,
                                 )
                                 history_base_cache_snapshot = result.runtime_cache_snapshot
                                 history_generation_action_start = int(result.next_generation_action_start)
                                 buffer_tail_session = realtime_speculation.session_reference(
                                     result.session,
-                                    share_session=mot_non_joint_sequence,
+                                    share_session=dual_expert_non_joint_sequence,
                                 )
                                 buffer_tail_cache_snapshot = result.runtime_cache_snapshot
                                 buffer_tail_generation_action_start = int(result.next_generation_action_start)
@@ -2072,7 +2084,7 @@ def _run_sequence_policy_realtime_rollout(
                                 )
                                 session = realtime_speculation.session_reference(
                                     buffer_tail_session,
-                                    share_session=mot_non_joint_sequence,
+                                    share_session=dual_expert_non_joint_sequence,
                                 )
                                 next_generation_action_start = int(buffer_tail_generation_action_start)
                         else:
@@ -2214,7 +2226,7 @@ def _run_sequence_policy_realtime_rollout(
 
                 if replan_future is not None and replan_future.done():
                     result = replan_future.result()
-                    if realtime_runtime.uses_mot_split_cache_sequence(config):
+                    if realtime_runtime.uses_dual_expert_split_cache_sequence(config):
                         future_steps = realtime_runtime.annotate_sequence_planner_acceptance(
                             result,
                             next_action_to_execute=next_action_index,
@@ -2229,20 +2241,20 @@ def _run_sequence_policy_realtime_rollout(
                                 )
                                 history_base_session = realtime_speculation.session_reference(
                                     result.session,
-                                    share_session=mot_non_joint_sequence,
+                                    share_session=dual_expert_non_joint_sequence,
                                 )
                                 history_base_cache_snapshot = result.runtime_cache_snapshot
                                 history_generation_action_start = int(result.next_generation_action_start)
                                 buffer_tail_session = realtime_speculation.session_reference(
                                     result.session,
-                                    share_session=mot_non_joint_sequence,
+                                    share_session=dual_expert_non_joint_sequence,
                                 )
                                 buffer_tail_cache_snapshot = result.runtime_cache_snapshot
                                 buffer_tail_generation_action_start = int(result.next_generation_action_start)
                             else:
                                 buffer_tail_session = realtime_speculation.session_reference(
                                     result.session,
-                                    share_session=mot_non_joint_sequence,
+                                    share_session=dual_expert_non_joint_sequence,
                                 )
                                 buffer_tail_cache_snapshot = result.runtime_cache_snapshot
                                 buffer_tail_generation_action_start = int(result.next_generation_action_start)
@@ -2253,7 +2265,7 @@ def _run_sequence_policy_realtime_rollout(
                             )
                             session = realtime_speculation.session_reference(
                                 buffer_tail_session,
-                                share_session=mot_non_joint_sequence,
+                                share_session=dual_expert_non_joint_sequence,
                             )
                             next_generation_action_start = int(buffer_tail_generation_action_start)
                     else:
@@ -2277,7 +2289,7 @@ def _run_sequence_policy_realtime_rollout(
                 )
                 if replan_future is None and should_submit:
                     obs_snapshot = realtime_history.copy_observation_window(model_obs_window)
-                    if realtime_runtime.uses_mot_split_cache_sequence(config):
+                    if realtime_runtime.uses_dual_expert_split_cache_sequence(config):
                         if (
                             buffer_tail_session is not None
                             and realtime_runtime.sequence_buffer_tail_ready_for_history_promotion(
@@ -2289,7 +2301,7 @@ def _run_sequence_policy_realtime_rollout(
                         ):
                             history_base_session = realtime_speculation.session_reference(
                                 buffer_tail_session,
-                                share_session=mot_non_joint_sequence,
+                                share_session=dual_expert_non_joint_sequence,
                             )
                             history_base_cache_snapshot = buffer_tail_cache_snapshot
                             history_generation_action_start = int(buffer_tail_generation_action_start)
@@ -2312,7 +2324,7 @@ def _run_sequence_policy_realtime_rollout(
                         if use_observation_update:
                             submit_session = realtime_speculation.session_reference(
                                 history_base_session,
-                                share_session=mot_non_joint_sequence,
+                                share_session=dual_expert_non_joint_sequence,
                             )
                             submit_generation_action_start = int(history_generation_action_start)
                             submit_cache_snapshot = history_base_cache_snapshot
@@ -2323,7 +2335,7 @@ def _run_sequence_policy_realtime_rollout(
                         else:
                             submit_session = realtime_speculation.session_reference(
                                 buffer_tail_session,
-                                share_session=mot_non_joint_sequence,
+                                share_session=dual_expert_non_joint_sequence,
                             )
                             submit_generation_action_start = int(buffer_tail_generation_action_start)
                             submit_cache_snapshot = buffer_tail_cache_snapshot
@@ -2361,13 +2373,13 @@ def _run_sequence_policy_realtime_rollout(
                             ),
                             use_observation_update=use_observation_update,
                             runtime_cache_snapshot=submit_cache_snapshot,
-                            mot_condition_frame_start=submit_condition_frame_start,
-                            # Async observation-conditioned MoT replans can be
+                            dual_expert_condition_frame_start=submit_condition_frame_start,
+                            # Async observation-conditioned DualExpert replans can be
                             # launched from a speculative buffer-tail session.
                             # Trim that future action K/V suffix to the chunk
                             # being replaced; blocking/history-only replans keep
                             # their accepted cache prefix untouched for parity.
-                            mot_action_cache_rewind_frame_start=(
+                            dual_expert_action_cache_rewind_frame_start=(
                                 realtime_runtime.resolve_sequence_action_cache_rewind_frame(
                                     config=config,
                                     planner_mode=planner_mode,
@@ -2385,7 +2397,7 @@ def _run_sequence_policy_realtime_rollout(
 
             if replan_future is not None and replan_future.done():
                 result = replan_future.result()
-                if realtime_runtime.uses_mot_split_cache_sequence(config):
+                if realtime_runtime.uses_dual_expert_split_cache_sequence(config):
                     future_steps = realtime_runtime.annotate_sequence_planner_acceptance(
                         result,
                         next_action_to_execute=next_action_index,
@@ -2446,7 +2458,7 @@ def _run_sequence_policy_realtime_rollout(
                 "raw_window_frames": int(raw_window_frames),
                 "startup_env_init_frames": int(startup_env_init_frames),
                 "model_obs_window_frames": int(model_obs_window_frames),
-                "strict_mot_one_frame_history": bool(realtime_runtime.uses_strict_mot_one_frame_history(config)),
+                "strict_dual_expert_one_frame_history": bool(realtime_runtime.uses_strict_dual_expert_one_frame_history(config)),
                 "planner_mode": planner_mode.value,
                 "sequence_buffer_threshold": int(sequence_buffer_threshold),
                 "sequence_empty_plan_policy": sequence_empty_plan_policy.value,
@@ -2461,8 +2473,8 @@ def _run_sequence_policy_realtime_rollout(
                 "wait_for_plan_total_s": float(wait_for_plan_total_s),
                 "schedule_pause_s": float(schedule_pause_s),
                 "blocking_replan_count": int(blocking_replan_count),
-                "history_replan_count": int(len(replan_records)),
-                "open_loop_extension_count": int(len(extension_records)),
+                "history_replan_count": len(replan_records),
+                "open_loop_extension_count": len(extension_records),
                 "hidden_fallback_period_count": int(sequence_fallback_state.fallback_quarantine_count),
                 "hidden_fallback_history_actions": int(sequence_fallback_state.hidden_fallback_actions),
                 "hidden_washout_history_actions": int(sequence_fallback_state.hidden_washout_actions),

@@ -50,7 +50,7 @@ paths:
     parallel_stream_exact_libero_step_1100_0402: /path/to/checkpoints/parallel_stream_exact_libero_step_1100_0402
     parallel_stream_joint_libero_step_300: /path/to/checkpoints/parallel_stream_joint_libero_step_300
     parallel_stream_joint_libero_step_600_0402: /path/to/checkpoints/parallel_stream_joint_libero_step_600_0402
-    # Method-1 exact and joint transformer exports.
+    # Exact parallel-stream and joint transformer exports.
     parallel_stream_exact_libero_latest: ${paths.checkpoints.parallel_stream_exact_libero_step_400}/transformer
     parallel_stream_joint_libero_step_400: /path/to/checkpoints/parallel_stream_joint_libero_step_400/transformer
     parallel_stream_joint_libero_step_600: /path/to/checkpoints/parallel_stream_joint_libero_step_600/transformer

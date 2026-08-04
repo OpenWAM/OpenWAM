@@ -58,9 +58,11 @@ from open_wam.evals.evaluation_windows import (
 from open_wam.extensions import load_extension_modules
 from open_wam.models.policy_variants import PolicyInferContext
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config
-from open_wam.runtime.checkpoints import load_pipeline_checkpoint, resolve_checkpoint_file
+from open_wam.runtime.checkpoints import (
+    load_pipeline_checkpoint,
+    resolve_checkpoint_file,
+)
 from open_wam.utils import seed_everywhere
-
 
 __all__ = ["EvaluationRequest", "EvaluationSummary", "resolve_evaluation_request", "run_evaluation"]
 
@@ -161,8 +163,8 @@ def _uses_latent_dataset(data_config: DataConfig) -> bool:
     return str(data_config.dataset_type) == "lerobot_v2_latent_local"
 
 
-def _mot_requires_observation_conditioned_session_reset(experiment_config: ExperimentConfig) -> bool:
-    return str(experiment_config.policy_variant.name) == "mot"
+def _dual_expert_requires_observation_conditioned_session_reset(experiment_config: ExperimentConfig) -> bool:
+    return str(experiment_config.policy_variant.name) == "dual_expert"
 
 
 def run_evaluation(
@@ -340,10 +342,10 @@ def run_evaluation(
                                 batch.negative_text_context if isinstance(batch, LatentWAMBatch) else None
                             ),
                         )
-                    elif _mot_requires_observation_conditioned_session_reset(experiment_config):
-                        # MoT's video-prefill cache is built from the current
+                    elif _dual_expert_requires_observation_conditioned_session_reset(experiment_config):
+                        # DualExpert's video-prefill cache is built from the current
                         # observation window. Trajectory eval advances windows,
-                        # so reuse text conditioning but rebuild MoT cache.
+                        # so reuse text conditioning but rebuild DualExpert cache.
                         session = rollout_runner.reset(
                             task_text=batch.task_text,
                             text_context=(

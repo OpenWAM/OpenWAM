@@ -1,7 +1,7 @@
 name: parallel_stream_libero_raw_smoke
 
 data:
-  # Minimal raw-LIBERO smoke dataset knobs aligned to exact method-1 geometry
+  # Minimal raw-LIBERO smoke dataset knobs aligned to exact parallel-stream geometry
   dataset_name: libero
   dataset_type: lerobot_v2
   repo_id: physical-intelligence/libero
@@ -50,7 +50,7 @@ data:
     gripper_action_index: -1
 
 backbone:
-  # Small exact-method-1 smoke backbone
+  # Small exact parallel-stream smoke backbone
   implementation: shared_transformer
   train_attn_mode: flex
   infer_attn_mode: torch
@@ -76,7 +76,7 @@ policy_variant:
   cache_mode: metadata_only
 
 action_decoder:
-  name: lingbot_parallel_decoder
+  name: parallel_stream_decoder
   hidden_size: 256
   action_dim: 30
   action_horizon: 16

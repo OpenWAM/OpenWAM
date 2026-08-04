@@ -10,12 +10,16 @@ from . import enums
 from .coercion import coerce_enum, coerce_strict_chunk_size, raw_enum_value
 from .data_contracts import DataConfig
 from .experiment import ExperimentConfig
+from .policy_compatibility import normalize_video_action_config_fields
 from .policy_contracts import PolicyVariantConfig
-from .policy_mot import MoTPolicyConfig
+from .policy_dual_expert import DualExpertPolicyConfig
 from .policy_parallel_stream import ParallelStreamPolicyConfig
 
-
 __all__ = [
+    "apply_video_action_sequence_contract",
+    "expand_video_action_sequence_contract",
+    "validate_video_action_sequence_contract_override_keys",
+    # Deprecated import aliases.
     "apply_parallel_sequence_contract",
     "expand_parallel_sequence_contract",
     "validate_experiment_config_runtime_contract",
@@ -38,21 +42,21 @@ def _set_contract_default(
     key: str,
     value: Any,
     path: str,
-    contract: enums.ParallelSequenceContract,
+    contract: enums.VideoActionSequenceContract,
 ) -> None:
     existing = mapping.get(key)
     if key in mapping and raw_enum_value(existing) != raw_enum_value(value):
         raise ValueError(
-            f"`policy_variant.parallel_sequence_contract={contract.value}` requires "
+            f"`policy_variant.sequence_contract={contract.value}` requires "
             f"`{path}={raw_enum_value(value)}`, got {existing!r}."
         )
     mapping[key] = value
 
 
-def expand_parallel_sequence_contract(raw: dict[str, Any]) -> dict[str, Any]:
+def expand_video_action_sequence_contract(raw: dict[str, Any]) -> dict[str, Any]:
     """Expand sequence contracts into raw defaults before typed parsing."""
 
-    normalized = dict(raw)
+    normalized = normalize_video_action_config_fields(raw)
     policy_variant_raw = normalized.get("policy_variant")
     if not isinstance(policy_variant_raw, dict):
         return normalized
@@ -60,13 +64,13 @@ def expand_parallel_sequence_contract(raw: dict[str, Any]) -> dict[str, Any]:
     normalized["policy_variant"] = policy_variant_raw
 
     contract = coerce_enum(
-        enums.ParallelSequenceContract,
+        enums.VideoActionSequenceContract,
         policy_variant_raw.get(
-            "parallel_sequence_contract",
-            enums.ParallelSequenceContract.DEFAULT,
+            "sequence_contract",
+            enums.VideoActionSequenceContract.DEFAULT,
         ),
     )
-    if contract == enums.ParallelSequenceContract.DEFAULT:
+    if contract == enums.VideoActionSequenceContract.DEFAULT:
         return normalized
 
     policy_name = coerce_enum(
@@ -75,14 +79,14 @@ def expand_parallel_sequence_contract(raw: dict[str, Any]) -> dict[str, Any]:
     )
     if policy_name not in {
         enums.PolicyVariantName.PARALLEL_STREAM,
-        enums.PolicyVariantName.MOT,
+        enums.PolicyVariantName.DUAL_EXPERT,
     }:
         raise ValueError(
-            f"`policy_variant.parallel_sequence_contract={contract.value}` is only supported for "
-            "`policy_variant.name` in {'parallel_stream', 'mot'}."
+            f"`policy_variant.sequence_contract={contract.value}` is only supported for "
+            "`policy_variant.name` in {'parallel_stream', 'dual_expert'}."
         )
 
-    if contract == enums.ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO:
+    if contract == enums.VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO:
         if policy_name == enums.PolicyVariantName.PARALLEL_STREAM:
             runtime_mode = coerce_enum(
                 enums.ParallelRuntimeMode,
@@ -97,35 +101,35 @@ def expand_parallel_sequence_contract(raw: dict[str, Any]) -> dict[str, Any]:
                     for mode in sorted(_LEGACY_PREFIX_PARALLEL_RUNTIME_MODES)
                 )
                 raise ValueError(
-                    "`policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio` only "
+                    "`policy_variant.sequence_contract=legacy_prefix_single_frame_perchunk_proprio` only "
                     f"supports `policy_variant.runtime_mode` in {{{allowed}}}, got {runtime_mode.value!r}."
                 )
         else:
             runtime_mode = coerce_enum(
-                enums.MoTRuntimeMode,
+                enums.DualExpertRuntimeMode,
                 policy_variant_raw.get(
                     "runtime_mode",
-                    enums.MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+                    enums.DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
                 ),
             )
-            if runtime_mode != enums.MoTRuntimeMode.NON_JOINT_TWO_STREAM:
+            if runtime_mode != enums.DualExpertRuntimeMode.NON_JOINT_TWO_STREAM:
                 raise ValueError(
-                    "`policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio` "
-                    "requires `policy_variant.runtime_mode=non_joint_two_stream` for MoT/M5."
+                    "`policy_variant.sequence_contract=legacy_prefix_single_frame_perchunk_proprio` "
+                    "requires `policy_variant.runtime_mode=non_joint_two_stream` for dual-expert."
                 )
 
     if contract not in {
-        enums.ParallelSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO,
-        enums.ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
+        enums.VideoActionSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO,
+        enums.VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
     }:
         raise ValueError(
-            f"Unsupported `policy_variant.parallel_sequence_contract={contract.value}`."
+            f"Unsupported `policy_variant.sequence_contract={contract.value}`."
         )
 
     if (
         contract
-        == enums.ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
-        and policy_name == enums.PolicyVariantName.MOT
+        == enums.VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
+        and policy_name == enums.PolicyVariantName.DUAL_EXPERT
         and "joint_timestep_coupling" not in policy_variant_raw
     ):
         policy_variant_raw["joint_timestep_coupling"] = (
@@ -136,11 +140,11 @@ def expand_parallel_sequence_contract(raw: dict[str, Any]) -> dict[str, Any]:
         ("proprio_context_mode", enums.ProprioContextMode.PER_CHUNK_ADDITIVE),
         (
             "context_condition_latent_source",
-            enums.ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
+            enums.ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
         ),
         (
             "history_stream_visibility",
-            enums.ParallelHistoryStreamVisibility.VIDEO_ONLY,
+            enums.HistoryStreamVisibility.VIDEO_ONLY,
         ),
         ("use_condition_latents", True),
         ("require_condition_latents", True),
@@ -172,7 +176,7 @@ def expand_parallel_sequence_contract(raw: dict[str, Any]) -> dict[str, Any]:
     }
     if (
         contract
-        == enums.ParallelSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO
+        == enums.VideoActionSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO
     ):
         sample_defaults = {
             **common_sample_defaults,
@@ -203,12 +207,12 @@ def validate_policy_data_sequence_contract(
 ) -> None:
     if not isinstance(
         policy_variant_config,
-        (ParallelStreamPolicyConfig, MoTPolicyConfig),
+        (ParallelStreamPolicyConfig, DualExpertPolicyConfig),
     ):
         return
     if (
         policy_variant_config.context_condition_latent_source
-        != enums.ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+        != enums.ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
     ):
         return
     condition_source_frame_offset = int(
@@ -229,16 +233,16 @@ def validate_experiment_config_runtime_contract(
     """Validate cross-section runtime contracts after YAML and CLI overrides."""
 
     if (
-        isinstance(config.policy_variant, MoTPolicyConfig)
-        and config.policy_variant.mot_generalist_training_mode_probs is not None
+        isinstance(config.policy_variant, DualExpertPolicyConfig)
+        and config.policy_variant.generalist_denoising_mode_probs is not None
         and (
             int(config.data.train_batch_size) != 1
             or int(config.data.val_batch_size) != 1
         )
     ):
         raise ValueError(
-            "`policy_variant.mot_generalist_training_mode_probs` currently requires "
-            "`data.train_batch_size = data.val_batch_size = 1` because M5 GJD samples one mode per "
+            "`policy_variant.generalist_denoising_mode_probs` currently requires "
+            "`data.train_batch_size = data.val_batch_size = 1` because dual-expert GJD samples one mode per "
             "segment/forward pass and forced per-sample metadata is only unambiguous for rank-local batch size 1."
         )
 
@@ -301,7 +305,7 @@ def validate_experiment_config_runtime_contract(
     return config
 
 
-def apply_parallel_sequence_contract(
+def apply_video_action_sequence_contract(
     config: ExperimentConfig,
     *,
     explicit_override_keys: Collection[str] | None = None,
@@ -310,27 +314,27 @@ def apply_parallel_sequence_contract(
 
     policy_variant = config.policy_variant
     contract = coerce_enum(
-        enums.ParallelSequenceContract,
+        enums.VideoActionSequenceContract,
         getattr(
             policy_variant,
-            "parallel_sequence_contract",
-            enums.ParallelSequenceContract.DEFAULT,
+            "sequence_contract",
+            enums.VideoActionSequenceContract.DEFAULT,
         ),
     )
-    if contract == enums.ParallelSequenceContract.DEFAULT:
+    if contract == enums.VideoActionSequenceContract.DEFAULT:
         return validate_experiment_config_runtime_contract(config)
 
     policy_name = coerce_enum(enums.PolicyVariantName, policy_variant.name)
     if policy_name not in {
         enums.PolicyVariantName.PARALLEL_STREAM,
-        enums.PolicyVariantName.MOT,
+        enums.PolicyVariantName.DUAL_EXPERT,
     }:
         raise ValueError(
-            f"`policy_variant.parallel_sequence_contract={contract.value}` is only supported for "
-            "`policy_variant.name` in {'parallel_stream', 'mot'}."
+            f"`policy_variant.sequence_contract={contract.value}` is only supported for "
+            "`policy_variant.name` in {'parallel_stream', 'dual_expert'}."
         )
 
-    if contract == enums.ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO:
+    if contract == enums.VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO:
         if policy_name == enums.PolicyVariantName.PARALLEL_STREAM:
             runtime_mode = coerce_enum(
                 enums.ParallelRuntimeMode,
@@ -346,39 +350,39 @@ def apply_parallel_sequence_contract(
                     for mode in sorted(_LEGACY_PREFIX_PARALLEL_RUNTIME_MODES)
                 )
                 raise ValueError(
-                    "`policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio` only "
+                    "`policy_variant.sequence_contract=legacy_prefix_single_frame_perchunk_proprio` only "
                     f"supports `policy_variant.runtime_mode` in {{{allowed}}}, got {runtime_mode.value!r}."
                 )
         else:
             runtime_mode = coerce_enum(
-                enums.MoTRuntimeMode,
+                enums.DualExpertRuntimeMode,
                 getattr(
                     policy_variant,
                     "runtime_mode",
-                    enums.MoTRuntimeMode.NON_JOINT_TWO_STREAM,
+                    enums.DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
                 ),
             )
-            if runtime_mode != enums.MoTRuntimeMode.NON_JOINT_TWO_STREAM:
+            if runtime_mode != enums.DualExpertRuntimeMode.NON_JOINT_TWO_STREAM:
                 raise ValueError(
-                    "`policy_variant.parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio` "
-                    "requires `policy_variant.runtime_mode=non_joint_two_stream` for MoT/M5."
+                    "`policy_variant.sequence_contract=legacy_prefix_single_frame_perchunk_proprio` "
+                    "requires `policy_variant.runtime_mode=non_joint_two_stream` for dual-expert."
                 )
 
     if contract not in {
-        enums.ParallelSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO,
-        enums.ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
+        enums.VideoActionSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO,
+        enums.VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
     }:
         raise ValueError(
-            f"Unsupported `policy_variant.parallel_sequence_contract={contract.value}`."
+            f"Unsupported `policy_variant.sequence_contract={contract.value}`."
         )
 
     policy_updates: dict[str, Any] = {
         "proprio_context_mode": enums.ProprioContextMode.PER_CHUNK_ADDITIVE,
         "context_condition_latent_source": (
-            enums.ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+            enums.ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
         ),
         "history_stream_visibility": (
-            enums.ParallelHistoryStreamVisibility.VIDEO_ONLY
+            enums.HistoryStreamVisibility.VIDEO_ONLY
         ),
     }
     if hasattr(policy_variant, "use_condition_latents"):
@@ -387,12 +391,12 @@ def apply_parallel_sequence_contract(
         policy_updates["require_condition_latents"] = True
     if (
         contract
-        == enums.ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
+        == enums.VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
         and hasattr(policy_variant, "joint_timestep_coupling")
     ):
         explicit_keys = set(explicit_override_keys or ())
         contract_set_by_cli = (
-            "policy_variant.parallel_sequence_contract" in explicit_keys
+            "policy_variant.sequence_contract" in explicit_keys
         )
         if (
             contract_set_by_cli
@@ -411,7 +415,7 @@ def apply_parallel_sequence_contract(
     }
     if (
         contract
-        == enums.ParallelSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO
+        == enums.VideoActionSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO
     ):
         sample_updates.update(
             {
@@ -442,7 +446,7 @@ def apply_parallel_sequence_contract(
     )
 
 
-_PARALLEL_SEQUENCE_CONTRACT_MANAGED_OVERRIDE_KEYS = frozenset(
+_VIDEO_ACTION_SEQUENCE_CONTRACT_MANAGED_OVERRIDE_KEYS = frozenset(
     {
         "policy_variant.proprio_context_mode",
         "policy_variant.context_condition_latent_source",
@@ -458,7 +462,7 @@ _PARALLEL_SEQUENCE_CONTRACT_MANAGED_OVERRIDE_KEYS = frozenset(
 )
 
 
-def validate_parallel_sequence_contract_override_keys(
+def validate_video_action_sequence_contract_override_keys(
     overrides: Mapping[str, Any],
     *,
     contract_value: Any | None = None,
@@ -466,21 +470,21 @@ def validate_parallel_sequence_contract_override_keys(
     """Reject ambiguous CLI overrides of fields owned by a sequence contract."""
 
     resolved_contract_value = overrides.get(
-        "policy_variant.parallel_sequence_contract",
+        "policy_variant.sequence_contract",
         contract_value,
     )
     if resolved_contract_value is None:
         return
     contract = coerce_enum(
-        enums.ParallelSequenceContract,
+        enums.VideoActionSequenceContract,
         resolved_contract_value,
     )
-    if contract == enums.ParallelSequenceContract.DEFAULT:
+    if contract == enums.VideoActionSequenceContract.DEFAULT:
         return
-    managed_keys = set(_PARALLEL_SEQUENCE_CONTRACT_MANAGED_OVERRIDE_KEYS)
+    managed_keys = set(_VIDEO_ACTION_SEQUENCE_CONTRACT_MANAGED_OVERRIDE_KEYS)
     if (
         contract
-        == enums.ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
+        == enums.VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
     ):
         managed_keys.discard("policy_variant.joint_timestep_coupling")
     conflicting_keys = sorted(
@@ -489,6 +493,14 @@ def validate_parallel_sequence_contract_override_keys(
     if conflicting_keys:
         joined = ", ".join(f"`{key}`" for key in conflicting_keys)
         raise ValueError(
-            f"`policy_variant.parallel_sequence_contract={contract.value}` owns {joined}; "
+            f"`policy_variant.sequence_contract={contract.value}` owns {joined}; "
             "drop the contract or drop the individual override(s)."
         )
+
+
+# Checkpoint-era import aliases. New code uses architecture-independent names.
+apply_parallel_sequence_contract = apply_video_action_sequence_contract
+expand_parallel_sequence_contract = expand_video_action_sequence_contract
+validate_parallel_sequence_contract_override_keys = (
+    validate_video_action_sequence_contract_override_keys
+)

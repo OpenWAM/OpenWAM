@@ -76,13 +76,13 @@ def build_dense_runtime_program() -> RuntimeProgramSpec:
     )
 
 
-def build_chunked_dual_stream_exact_train_program(
+def build_parallel_stream_exact_train_program(
     *,
     attention_profile_name: str | None = None,
     cache_backend_name: str | None = None,
 ) -> RuntimeProgramSpec:
     return RuntimeProgramSpec(
-        name="chunked_dual_stream_exact_train",
+        name="parallel_stream_exact_train",
         sequence_family="chunked_dual_stream_exact",
         attention_profile_name=attention_profile_name,
         cache_backend_name=cache_backend_name,
@@ -93,13 +93,13 @@ def build_chunked_dual_stream_exact_train_program(
     )
 
 
-def build_chunked_dual_stream_exact_inference_program(
+def build_parallel_stream_exact_inference_program(
     *,
     attention_profile_name: str | None = None,
     cache_backend_name: str | None = None,
 ) -> RuntimeProgramSpec:
     return RuntimeProgramSpec(
-        name="chunked_dual_stream_exact_inference",
+        name="parallel_stream_exact_inference",
         sequence_family="chunked_dual_stream_exact_inference",
         attention_profile_name=attention_profile_name,
         cache_backend_name=cache_backend_name,
@@ -122,3 +122,10 @@ def build_single_stream_exact_runtime_program(
         projection_mode="single_stream_exact",
         runtime_family="exact",
     )
+
+
+# Compatibility aliases for the old layout-named public builders.
+build_chunked_dual_stream_exact_train_program = build_parallel_stream_exact_train_program
+build_chunked_dual_stream_exact_inference_program = (
+    build_parallel_stream_exact_inference_program
+)

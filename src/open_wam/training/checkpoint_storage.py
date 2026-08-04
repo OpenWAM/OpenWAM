@@ -10,16 +10,14 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
-from open_wam.configs import ExperimentConfig
+from open_wam.configs import ExperimentConfig, serialize_experiment_config
 from open_wam.configs.enums import serialize_enum_values
 
 __all__ = []
 
 
 def _serialize_config(config: ExperimentConfig) -> dict[str, Any]:
-    if is_dataclass(config):
-        return serialize_enum_values(asdict(config))
-    raise TypeError(f"Expected dataclass config, got {type(config).__name__}.")
+    return serialize_experiment_config(config)
 
 
 def _serialize_runtime_backbone_config(backbone_config: object) -> dict[str, Any]:

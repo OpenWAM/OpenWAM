@@ -55,7 +55,7 @@ uv run --extra train open-wam-train --cfg configs/experiments/parallel_stream_ro
 
 ```bash
 uv run --extra eval open-wam-eval \
-  --cfg configs/evals/parallel_stream_robotwin_smoke.yaml \
+  --cfg configs/evals/parallel_stream_robotwin_smoke_eval.yaml \
   --device cpu \
   --max-batches 1
 ```

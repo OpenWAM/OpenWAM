@@ -4,10 +4,14 @@ from dataclasses import replace
 from pathlib import Path
 
 import torch
-from torch import nn
 import yaml
+from torch import nn
 
-from open_wam.configs.enums import RolloutContextPolicy, SampleTargetAlignment, WindowSamplingMode
+from open_wam.configs.enums import (
+    RolloutContextPolicy,
+    SampleTargetAlignment,
+    WindowSamplingMode,
+)
 from open_wam.runtime.checkpoints import (
     load_pipeline_checkpoint,
     normalize_checkpoint_state_dict,
@@ -18,7 +22,6 @@ from open_wam.utils import (
     load_experiment_config,
     merge_runtime_config_from_checkpoint,
 )
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -125,7 +128,7 @@ def test_merge_runtime_config_from_checkpoint_keeps_data_sources_but_restores_ru
 
 
 def test_merge_runtime_config_from_checkpoint_accepts_legacy_resolved_sample_fields(tmp_path: Path) -> None:
-    base_config_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_full_segment_non_joint_action_only.yaml"
+    base_config_path = REPO_ROOT / "configs/experiments/dual_expert_libero_latent_local_full_segment_non_joint_action_only.yaml"
     base_config = load_experiment_config(base_config_path)
     checkpoint_dir = tmp_path / "checkpoint_step_1000"
     checkpoint_dir.mkdir(parents=True)
@@ -165,7 +168,7 @@ def test_merge_runtime_config_from_checkpoint_accepts_legacy_resolved_sample_fie
 
 
 def test_merge_runtime_config_from_checkpoint_rehomes_nonportable_backbone_paths(tmp_path: Path) -> None:
-    base_config_path = REPO_ROOT / "configs/experiments/mot_libero_latent_local_full_segment_non_joint_action_only.yaml"
+    base_config_path = REPO_ROOT / "configs/experiments/dual_expert_libero_latent_local_full_segment_non_joint_action_only.yaml"
     base_config = load_experiment_config(base_config_path)
     base_pretrained = tmp_path / "local_lingbot_va_base"
     base_pretrained.mkdir()

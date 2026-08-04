@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from .enums import (
     ActionDecoderName,
@@ -15,22 +16,21 @@ from .enums import (
     AttachSite,
     AttentionMode,
     AuxiliaryValidationSource,
-    BatchAdapterName,
     BackboneImplementation,
+    BatchAdapterName,
+    ContextConditionLatentSource,
     CurrentBlockCoupling,
     DataSplit,
+    DualExpertActionExpertInitMode,
+    DualExpertConditionMode,
+    DualExpertRuntimeMode,
     EvalMode,
+    GeneralistDenoisingMode,
     GeneralistTrainingParadigm,
-    JointDenoiseTrainingMode,
+    HistoryStreamVisibility,
     JointTimestepCoupling,
     LatentTemporalLayout,
-    MoTActionExpertInitMode,
-    MoTConditionMode,
-    MoTRuntimeMode,
-    ParallelContextConditionLatentSource,
-    ParallelHistoryStreamVisibility,
     ParallelRuntimeMode,
-    ParallelSequenceContract,
     ParallelStreamVariantProfile,
     PolicyVariantName,
     ProprioContextMode,
@@ -38,6 +38,8 @@ from .enums import (
     SampleWeightMode,
     TrainerAccelerator,
     TrainerPrecision,
+    VideoActionProgram,
+    VideoActionSequenceContract,
 )
 from .static_validation_contracts import _IssueBuilder
 from .static_validation_data import (
@@ -48,10 +50,10 @@ from .static_validation_data import (
 )
 from .static_validation_policy import (
     _validate_action_horizons,
-    _validate_joint_denoise_training_mode_probs,
-    _validate_mot_generalist_training_mode_probs,
-    _validate_parallel_sequence_contract_static,
+    _validate_generalist_denoising_mode_probs,
     _validate_single_frame_condition_offset,
+    _validate_video_action_program_coupling,
+    _validate_video_action_sequence_contract_static,
     _warn_deprecated_text_proprio_context,
 )
 from .static_validation_primitives import (
@@ -63,7 +65,7 @@ from .static_validation_primitives import (
 )
 
 
-def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder", *, relaxed: bool) -> None:
+def _validate_experiment_config(raw: Mapping[str, Any], issues: _IssueBuilder, *, relaxed: bool) -> None:
     required = ("data",) if relaxed else ("data", "backbone", "trainer")
     for key in required:
         if key not in raw:
@@ -141,11 +143,13 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
         if policy_variant.get("name") == PolicyVariantName.EXTENSION.value:
             _validate_extension_envelope(policy_variant, issues, "policy_variant")
         if policy_variant.get("name") == PolicyVariantName.PARALLEL_STREAM.value:
+            _validate_enum(policy_variant, "program", VideoActionProgram, issues, "policy_variant")
+            _validate_video_action_program_coupling(policy_variant, issues)
             _validate_enum(policy_variant, "runtime_mode", ParallelRuntimeMode, issues, "policy_variant")
             _validate_enum(policy_variant, "variant_profile", ParallelStreamVariantProfile, issues, "policy_variant")
             _validate_enum(policy_variant, "current_block_coupling", CurrentBlockCoupling, issues, "policy_variant")
             _validate_enum(policy_variant, "joint_timestep_coupling", JointTimestepCoupling, issues, "policy_variant")
-            _validate_enum(policy_variant, "parallel_sequence_contract", ParallelSequenceContract, issues, "policy_variant")
+            _validate_enum(policy_variant, "sequence_contract", VideoActionSequenceContract, issues, "policy_variant")
             _validate_enum(
                 policy_variant,
                 "generalist_training_paradigm",
@@ -158,40 +162,52 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
             _validate_enum(
                 policy_variant,
                 "context_condition_latent_source",
-                ParallelContextConditionLatentSource,
+                ContextConditionLatentSource,
                 issues,
                 "policy_variant",
             )
             _validate_enum(
                 policy_variant,
                 "history_stream_visibility",
-                ParallelHistoryStreamVisibility,
+                HistoryStreamVisibility,
                 issues,
                 "policy_variant",
             )
             _validate_single_frame_condition_offset(policy_variant, sample_construction, issues)
-            _validate_parallel_sequence_contract_static(policy_variant, sample_construction, issues)
-            _validate_joint_denoise_training_mode_probs(policy_variant, issues)
-        if policy_variant.get("name") == PolicyVariantName.MOT.value:
-            _validate_enum(policy_variant, "runtime_mode", MoTRuntimeMode, issues, "policy_variant")
-            _validate_enum(policy_variant, "condition_mode", MoTConditionMode, issues, "policy_variant")
-            _validate_enum(policy_variant, "action_expert_init_mode", MoTActionExpertInitMode, issues, "policy_variant")
+            _validate_video_action_sequence_contract_static(
+                policy_variant,
+                sample_construction,
+                issues,
+            )
+            _validate_generalist_denoising_mode_probs(
+                policy_variant,
+                data,
+                issues,
+                require_joint_coupling=False,
+                require_batch_size_one=False,
+            )
+        if policy_variant.get("name") == PolicyVariantName.DUAL_EXPERT.value:
+            _validate_enum(policy_variant, "program", VideoActionProgram, issues, "policy_variant")
+            _validate_video_action_program_coupling(policy_variant, issues)
+            _validate_enum(policy_variant, "runtime_mode", DualExpertRuntimeMode, issues, "policy_variant")
+            _validate_enum(policy_variant, "condition_mode", DualExpertConditionMode, issues, "policy_variant")
+            _validate_enum(policy_variant, "action_expert_init_mode", DualExpertActionExpertInitMode, issues, "policy_variant")
             _validate_enum(policy_variant, "current_block_coupling", CurrentBlockCoupling, issues, "policy_variant")
             _validate_enum(policy_variant, "joint_timestep_coupling", JointTimestepCoupling, issues, "policy_variant")
-            _validate_enum(policy_variant, "parallel_sequence_contract", ParallelSequenceContract, issues, "policy_variant")
+            _validate_enum(policy_variant, "sequence_contract", VideoActionSequenceContract, issues, "policy_variant")
             _validate_enum(policy_variant, "proprio_context_mode", ProprioContextMode, issues, "policy_variant")
             _warn_deprecated_text_proprio_context(policy_variant, issues)
             _validate_enum(
                 policy_variant,
                 "context_condition_latent_source",
-                ParallelContextConditionLatentSource,
+                ContextConditionLatentSource,
                 issues,
                 "policy_variant",
             )
             _validate_enum(
                 policy_variant,
                 "history_stream_visibility",
-                ParallelHistoryStreamVisibility,
+                HistoryStreamVisibility,
                 issues,
                 "policy_variant",
             )
@@ -203,8 +219,18 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
                 "policy_variant",
             )
             _validate_single_frame_condition_offset(policy_variant, sample_construction, issues)
-            _validate_parallel_sequence_contract_static(policy_variant, sample_construction, issues)
-            _validate_mot_generalist_training_mode_probs(policy_variant, data, issues)
+            _validate_video_action_sequence_contract_static(
+                policy_variant,
+                sample_construction,
+                issues,
+            )
+            _validate_generalist_denoising_mode_probs(
+                policy_variant,
+                data,
+                issues,
+                require_joint_coupling=True,
+                require_batch_size_one=True,
+            )
         if policy_variant.get("generalist_training_paradigm") == GeneralistTrainingParadigm.MIXED_DYNAMICS.value:
             if trainer is None or trainer.get("batch_adapter") != BatchAdapterName.LATENTS.value:
                 issues.error(
@@ -247,7 +273,7 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: "_IssueBuilder",
 
 def _validate_extension_envelope(
     section: Mapping[str, Any],
-    issues: "_IssueBuilder",
+    issues: _IssueBuilder,
     path: str,
 ) -> None:
     extension_type = section.get("extension_type")
@@ -268,7 +294,7 @@ def _validate_extension_envelope(
             issues.error(f"{path}.options", "Expected extension option keys to be strings.")
 
 
-def _validate_eval_config(raw: Mapping[str, Any], issues: "_IssueBuilder") -> None:
+def _validate_eval_config(raw: Mapping[str, Any], issues: _IssueBuilder) -> None:
     experiment_config = raw.get("experiment_config")
     if experiment_config is None:
         issues.error("experiment_config", "Eval configs must point at an experiment config.")
@@ -288,7 +314,7 @@ def _validate_eval_config(raw: Mapping[str, Any], issues: "_IssueBuilder") -> No
     )
 
 
-def _validate_validation_config(validation: Mapping[str, Any], issues: "_IssueBuilder") -> None:
+def _validate_validation_config(validation: Mapping[str, Any], issues: _IssueBuilder) -> None:
     tasks = validation.get("auxiliary_tasks", ())
     if tasks is None:
         return
@@ -321,7 +347,7 @@ def _validate_validation_config(validation: Mapping[str, Any], issues: "_IssueBu
                 )
             elif task_runs:
                 seen_phases.add(report_prefix)
-        _validate_enum(task, "mode_override", JointDenoiseTrainingMode, issues, task_path)
+        _validate_enum(task, "mode_override", GeneralistDenoisingMode, issues, task_path)
         _validate_enum(task, "dataset_split", DataSplit, issues, task_path)
         _validate_enum(task, "source", AuxiliaryValidationSource, issues, task_path)
         max_batches = task.get("max_batches", 16)

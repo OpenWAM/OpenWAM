@@ -15,7 +15,7 @@ CONDITIONAL_SINGLE_HISTORY_VIDEO_FRAME_BLOCK_WINDOW = 3
 
 @dataclass(frozen=True)
 class JointConditioningModeSemantics:
-    """Shared GJD mode contract used by M1 and M5.
+    """Shared GJD mode contract used by video/action policy architectures.
 
     This object captures method-agnostic semantics only. Each policy variant
     still owns its artifact layout and applies these decisions to its local
@@ -95,7 +95,7 @@ def resolve_generalist_joint_conditioning_semantics(
 ) -> JointConditioningModeSemantics:
     """Resolve the shared GJD semantics for one sampled mode.
 
-    M5 is the canonical behavior:
+    Dual-expert is the canonical behavior:
     - joint: denoise video and action; keep configured noisy video condition.
     - action-conditioned-video/FDM: clean action is exposed in the noisy action
       slot, action loss is masked, video loss remains active, and task text is
@@ -105,8 +105,8 @@ def resolve_generalist_joint_conditioning_semantics(
       dropped by default.
 
     Conditional modes use one local clean video-history anchor. Training callers
-    keep their sampled GJD chunk size. M1-style helper rollouts can use
-    `chunk_size_frames` to materialize one-frame conditional chunks; M5 packed
+    keep their sampled GJD chunk size. Parallel-stream helper rollouts can use
+    `chunk_size_frames` to materialize one-frame conditional chunks; dual-expert packed
     rollouts instead keep the generated chunk geometry and enforce the singleton
     previous-boundary context through `conditional_history_policy`. In the
     packed video/action block layout, a block window of three reaches exactly

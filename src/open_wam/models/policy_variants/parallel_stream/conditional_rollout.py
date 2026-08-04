@@ -3,8 +3,8 @@ from __future__ import annotations
 import torch
 
 from open_wam.configs.enums import (
-    JointDenoiseTrainingMode,
-    ParallelHistoryStreamVisibility,
+    GeneralistDenoisingMode,
+    HistoryStreamVisibility,
 )
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.models.common.joint_conditioning import (
@@ -32,25 +32,25 @@ __all__ = [
 
 
 def resolve_action_conditioning_mode(
-    action_conditioning_mode: JointDenoiseTrainingMode | str,
-) -> JointDenoiseTrainingMode:
+    action_conditioning_mode: GeneralistDenoisingMode | str,
+) -> GeneralistDenoisingMode:
     """Map rollout-facing labels to the shared GJD training-mode enum."""
 
     raw_value = str(
         getattr(action_conditioning_mode, "value", action_conditioning_mode)
     )
-    direct_values = {mode.value: mode for mode in JointDenoiseTrainingMode}
+    direct_values = {mode.value: mode for mode in GeneralistDenoisingMode}
     if raw_value in direct_values:
         return direct_values[raw_value]
     aliases = {
-        "joint": JointDenoiseTrainingMode.JOINT,
-        "vanilla_joint_rollout": JointDenoiseTrainingMode.JOINT,
-        "clean_action_feedback": JointDenoiseTrainingMode.JOINT,
-        "fdm": JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO,
+        "joint": GeneralistDenoisingMode.JOINT,
+        "vanilla_joint_rollout": GeneralistDenoisingMode.JOINT,
+        "clean_action_feedback": GeneralistDenoisingMode.JOINT,
+        "fdm": GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
         "forced_action_joint_fdm": (
-            JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO
+            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO
         ),
-        "idm": JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION,
+        "idm": GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
     }
     try:
         return aliases[raw_value]
@@ -63,24 +63,24 @@ def resolve_action_conditioning_mode(
 
 
 def is_conditional_joint_denoise_mode(
-    mode: JointDenoiseTrainingMode | str,
+    mode: GeneralistDenoisingMode | str,
 ) -> bool:
     """Return whether a rollout is conditional FDM or IDM rather than joint."""
 
     return is_conditional_joint_conditioning_mode(
         mode,
-        joint_mode=JointDenoiseTrainingMode.JOINT,
+        joint_mode=GeneralistDenoisingMode.JOINT,
         action_conditioned_video_mode=(
-            JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO
+            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO
         ),
         video_conditioned_action_mode=(
-            JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION
+            GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION
         ),
     )
 
 
 def generalist_conditioning_window_size(
-    mode: JointDenoiseTrainingMode | str,
+    mode: GeneralistDenoisingMode | str,
     *,
     fallback_window_size: int,
 ) -> int:
@@ -88,19 +88,19 @@ def generalist_conditioning_window_size(
 
     return generalist_joint_conditioning_window_size(
         mode,
-        joint_mode=JointDenoiseTrainingMode.JOINT,
+        joint_mode=GeneralistDenoisingMode.JOINT,
         action_conditioned_video_mode=(
-            JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO
+            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO
         ),
         video_conditioned_action_mode=(
-            JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION
+            GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION
         ),
         fallback_window_size=fallback_window_size,
     )
 
 
 def generalist_conditioning_chunk_size(
-    mode: JointDenoiseTrainingMode | str,
+    mode: GeneralistDenoisingMode | str,
     *,
     fallback_chunk_size: int,
 ) -> int:
@@ -108,30 +108,30 @@ def generalist_conditioning_chunk_size(
 
     return generalist_joint_conditioning_chunk_size(
         mode,
-        joint_mode=JointDenoiseTrainingMode.JOINT,
+        joint_mode=GeneralistDenoisingMode.JOINT,
         action_conditioned_video_mode=(
-            JointDenoiseTrainingMode.ACTION_CONDITIONED_VIDEO
+            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO
         ),
         video_conditioned_action_mode=(
-            JointDenoiseTrainingMode.VIDEO_CONDITIONED_ACTION
+            GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION
         ),
         fallback_chunk_size=fallback_chunk_size,
     )
 
 
 def generalist_conditioning_history_stream_visibility(
-    mode: JointDenoiseTrainingMode | str,
+    mode: GeneralistDenoisingMode | str,
     policy_config: ParallelStreamPolicyConfig,
-) -> ParallelHistoryStreamVisibility:
+) -> HistoryStreamVisibility:
     """Restrict conditional rollouts to the latest clean video history."""
 
     if is_conditional_joint_denoise_mode(mode):
-        return ParallelHistoryStreamVisibility.VIDEO_ONLY
+        return HistoryStreamVisibility.VIDEO_ONLY
     return resolve_parallel_history_stream_visibility(policy_config)
 
 
 def generalist_conditioning_prefix_visibility_mode(
-    mode: JointDenoiseTrainingMode | str,
+    mode: GeneralistDenoisingMode | str,
     policy_config: ParallelStreamPolicyConfig,
 ) -> str:
     """Map conditional history semantics to the cache-prefix contract."""
@@ -147,7 +147,7 @@ def select_conditional_warmup_history_suffix(
     action_latents: torch.Tensor,
     frame_start: int,
     frame_chunk_size: int,
-    mode: JointDenoiseTrainingMode | str,
+    mode: GeneralistDenoisingMode | str,
 ) -> tuple[torch.Tensor, torch.Tensor, int, int]:
     """Keep only the rollout-local history chunk for conditional warmup."""
 

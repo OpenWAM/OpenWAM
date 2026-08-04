@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from open_wam.configs.enums import (
+    GeneralistTrainingParadigm,
     ParallelStreamVariantProfile,
     PolicyVariantName,
     ProprioContextMode,
@@ -16,26 +17,25 @@ from open_wam.configs.enums import (
     WindowSamplingMode,
 )
 
-
 ALLOW_DEPRECATED_LIBERO_CONFIG_ENV = "OPEN_WAM_ALLOW_DEPRECATED_LIBERO_CONFIG"
 
 _REMOVED_LIBERO_POLICY_CONFIG_REASONS = {
-    "mot_libero_latent_local": "legacy M5 local config without strict one-frame fixed-128 rollout parity",
-    "mot_libero_latent_local_idm": "legacy M5 IDM config without strict one-frame fixed-128 rollout parity",
-    "mot_libero_latent_local_joint": "legacy M5 joint config without strict one-frame fixed-128 rollout parity",
-    "mot_libero_latent_local_joint_full_segment": "legacy M5 full-segment config",
-    "mot_libero_latent_local_full_segment": "legacy M5 full-segment config",
-    "mot_libero_latent_local_full_segment_non_joint_aligned": "legacy M5 aligned full-segment config",
-    "mot_libero_latent_local_full_segment_with_latent": "legacy M5 full-segment latent config",
-    "parallel_stream_libero_lingbot_exact_local": "legacy local M1 exact config",
-    "parallel_stream_libero_lingbot_joint_denoise_heng_compatible_contextual_fixed_geometry": (
-        "legacy contextual-subwindow M1 joint config"
+    "mot_libero_latent_local": "legacy dual-expert local config without strict one-frame fixed-128 rollout parity",
+    "mot_libero_latent_local_idm": "legacy dual-expert IDM config without strict one-frame fixed-128 rollout parity",
+    "mot_libero_latent_local_joint": "legacy dual-expert joint config without strict one-frame fixed-128 rollout parity",
+    "mot_libero_latent_local_joint_full_segment": "legacy dual-expert full-segment config",
+    "mot_libero_latent_local_full_segment": "legacy dual-expert full-segment config",
+    "mot_libero_latent_local_full_segment_non_joint_aligned": "legacy dual-expert aligned full-segment config",
+    "mot_libero_latent_local_full_segment_with_latent": "legacy dual-expert full-segment latent config",
+    "parallel_stream_libero_lingbot_exact_local": "legacy local parallel-stream exact config",
+    "parallel_stream_libero_joint_denoise_heng_compatible_contextual_fixed_geometry": (
+        "legacy contextual-subwindow parallel-stream joint config"
     ),
-    "parallel_stream_libero_lingbot_joint_denoise_heng_compatible_contextual_subwindow": (
-        "legacy contextual-subwindow M1 joint config"
+    "parallel_stream_libero_joint_denoise_heng_compatible_contextual_subwindow": (
+        "legacy contextual-subwindow parallel-stream joint config"
     ),
-    "parallel_stream_libero_lingbot_joint_denoise_heng_compatible_random_subwindow": (
-        "legacy random-subwindow M1 joint config"
+    "parallel_stream_libero_joint_denoise_heng_compatible_random_subwindow": (
+        "legacy random-subwindow parallel-stream joint config"
     ),
 }
 
@@ -44,12 +44,12 @@ _REMOVED_LIBERO_SCRIPT_REPLACEMENTS = {
     "run_libero_exact_visualization.py": "scripts/run_libero_realtime_sandbox.py",
     "run_libero_realtime_ablation.py": "scripts/run_libero_sampled_eval.py",
     "run_mot_non_joint_aligned_libero_A.sh": (
-        "scripts/run_mot_nonjoint_posttrain_libero.sh with a current canonical CONFIG_NAME"
+        "scripts/run_dual_expert_posttrain_libero.sh with a current canonical CONFIG_NAME"
     ),
     "run_mot_non_joint_action_only_libero_B.sh": (
-        "scripts/run_mot_nonjoint_posttrain_libero.sh with a current canonical CONFIG_NAME"
+        "scripts/run_dual_expert_posttrain_libero.sh with a current canonical CONFIG_NAME"
     ),
-    "run_mot_full_segment_nonjoint_libero.sh": "scripts/run_mot_nonjoint_posttrain_libero.sh",
+    "run_mot_full_segment_nonjoint_libero.sh": "scripts/run_dual_expert_posttrain_libero.sh",
 }
 
 
@@ -97,11 +97,11 @@ def collect_current_libero_policy_paradigm_issues(
     config_path: str | Path | None = None,
     require_proprio: bool = True,
 ) -> list[str]:
-    """Return issues that make a LIBERO M1/M5 config legacy for new launches."""
+    """Return issues that make a LIBERO policy config legacy for new launches."""
 
     policy_variant = getattr(config, "policy_variant", None)
     policy_name = _enum_value(getattr(policy_variant, "name", None))
-    if policy_name not in {PolicyVariantName.PARALLEL_STREAM.value, PolicyVariantName.MOT.value}:
+    if policy_name not in {PolicyVariantName.PARALLEL_STREAM.value, PolicyVariantName.DUAL_EXPERT.value}:
         return []
 
     config_name = _enum_value(getattr(config, "name", ""))
@@ -225,7 +225,7 @@ def require_current_libero_policy_paradigm(
     issue_lines = "\n".join(f"  - {issue}" for issue in issues)
     config_label = str(config_path) if config_path is not None else str(getattr(config, "name", "<unknown>"))
     raise ValueError(
-        f"{source} refuses deprecated LIBERO M1/M5 config {config_label!r}.\n"
+        f"{source} refuses deprecated LIBERO policy config {config_label!r}.\n"
         "The current training/eval paradigm requires strict fixed-128 samples for non-GJD configs, "
         "full-segment W64 sampling for GJD configs, and a supported proprio context mode.\n"
         f"Issues:\n{issue_lines}\n"
@@ -241,12 +241,24 @@ def _env_allows_deprecated_libero_config() -> bool:
 
 def _is_generalist_joint_denoising_config(config: Any, *, config_path: str | Path | None) -> bool:
     policy_variant = getattr(config, "policy_variant", None)
+    policy_name = _enum_value(getattr(policy_variant, "name", None))
     if (
         _enum_value(getattr(policy_variant, "variant_profile", None))
         == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING.value
     ):
         return True
-    if getattr(policy_variant, "mot_generalist_training_mode_probs", None) is not None:
+    if (
+        _enum_value(getattr(policy_variant, "generalist_training_paradigm", None))
+        == GeneralistTrainingParadigm.MIXED_DYNAMICS.value
+    ):
+        return True
+    # Standard parallel-stream configs normalize their fixed coupling mode into
+    # a pure-joint probability map. For dual-expert policies, by contrast, the
+    # map is present only when GJD mode sampling is enabled.
+    if (
+        policy_name == PolicyVariantName.DUAL_EXPERT.value
+        and getattr(policy_variant, "generalist_denoising_mode_probs", None) is not None
+    ):
         return True
     config_name = _enum_value(getattr(config, "name", ""))
     return "generalist_joint_denoising" in f"{config_name} {config_path or ''}".lower()

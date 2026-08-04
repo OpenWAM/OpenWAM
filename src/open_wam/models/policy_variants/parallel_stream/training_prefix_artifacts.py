@@ -10,17 +10,17 @@ from open_wam.configs.backbone import (
     resolve_stage_attention_mode,
 )
 from open_wam.configs.enums import (
-    JointDenoiseTrainingMode,
+    GeneralistDenoisingMode,
     JointTimestepCoupling,
     ParallelStreamVariantProfile,
 )
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.configs.training import TrainingConfig
-from open_wam.models.common.flow_schedule import FlowMatchScheduler
 from open_wam.models.common.flow_noise_plan import (
     clean_timestep_values,
     sample_joint_denoise_timestep_values,
 )
+from open_wam.models.common.flow_schedule import FlowMatchScheduler
 from open_wam.models.visual_tower.reference_transformer import preferred_reference_dtype
 
 from .generalist_training import (
@@ -28,13 +28,17 @@ from .generalist_training import (
 )
 from .runtime_semantics import (
     attention_profile_name_for_current_block_coupling as _attention_profile_name_for_current_block_coupling,
+)
+from .runtime_semantics import (
     resolve_parallel_current_block_coupling,
     resolve_parallel_history_stream_visibility,
     resolve_parallel_joint_timestep_coupling,
 )
-from .training_artifact_contracts import LingbotParallelTrainArtifacts
+from .training_artifact_contracts import ParallelTrainArtifacts
 from .training_noise import (
     build_parallel_flow_noise_artifacts as _add_noise,
+)
+from .training_noise import (
     share_video_scheduler_grid_with_action_scheduler as _share_video_scheduler_grid_with_action_scheduler,
 )
 
@@ -55,10 +59,10 @@ def prepare_parallel_prefix_condition_exact_train_artifacts(
     chunk_origin_frame: int = 0,
     singleton_chunk_frame: int | None = None,
     conditional_history_policy: str | None = None,
-    generalist_training_mode_override: JointDenoiseTrainingMode | str | None = None,
+    generalist_training_mode_override: GeneralistDenoisingMode | str | None = None,
     generalist_drop_text_conditioning: bool | None = None,
     generalist_training_source: str | None = None,
-) -> LingbotParallelTrainArtifacts:
+) -> ParallelTrainArtifacts:
     """Build exact train artifacts with one clean single-frame video prefix."""
 
     if condition_latents.ndim != 5 or int(condition_latents.shape[2]) < 1:
@@ -244,7 +248,7 @@ def prepare_parallel_prefix_condition_exact_train_artifacts(
             resolve_parallel_current_block_coupling(policy_config)
         )
 
-    artifacts = LingbotParallelTrainArtifacts(
+    artifacts = ParallelTrainArtifacts(
         input_dict={
             "latent_dict": latent_dict,
             "action_dict": action_dict,

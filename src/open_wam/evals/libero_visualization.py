@@ -17,6 +17,8 @@ from open_wam.configs import ProprioContextMode
 from open_wam.data.action_pose import quaternion_to_axis_angle
 from open_wam.evals.libero_rollout_artifacts import (
     to_uint8 as _artifact_to_uint8,
+)
+from open_wam.evals.libero_rollout_artifacts import (
     with_title as _artifact_with_title,
 )
 from open_wam.integrations import (
@@ -24,7 +26,6 @@ from open_wam.integrations import (
     LiberoTaskSpec,
     resolve_libero_task_by_id,
 )
-
 
 LIBERO_OBS_KEYS = LIBERO_ROLLOUT_VIEW_KEYS
 to_uint8 = _artifact_to_uint8
@@ -81,7 +82,7 @@ def extract_proprio_context_tensor(
     config: Any,
     device: torch.device,
 ) -> torch.Tensor | None:
-    """Build the exact M1 proprio tensor when the policy enables it."""
+    """Build the exact parallel-stream proprio tensor when enabled."""
 
     if not proprio_context_enabled(config):
         return None

@@ -76,10 +76,10 @@ Run GPU tests only when a GPU is intentionally allocated:
 OPEN_WAM_RUN_GPU_SANITY=1 uv run pytest -m gpu
 ```
 
-Core MoT/GJD refactors have a stricter, separately gated real-checkpoint
+Core DualExpert/GJD refactors have a stricter, separately gated real-checkpoint
 workflow. See
-[MoT Refactor Characterization](mot_refactor_characterization.md) for its
-nine-method static contract matrix, six available exact-checkpoint slots,
+[Dual-Expert Refactor Characterization](dual_expert_refactor_characterization.md) for its
+nine-program static contract matrix, six available exact-checkpoint slots,
 frozen real-data replay, FSDP update checks, stateful inference, and
 record-versus-verify commands.
 

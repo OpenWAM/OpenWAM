@@ -10,35 +10,35 @@ import torch
 from open_wam.configs import ExperimentConfig
 from open_wam.configs.enums import RealtimePlannerMode
 from open_wam.evals import realtime_history
-from open_wam.models.policy_variants.mot.rollout_geometry import (
-    mot_config_uses_strict_rollout_parity,
-    resolve_mot_sequence_actions_per_frame,
-    resolve_mot_sequence_execution_action_offset,
+from open_wam.models.policy_variants.dual_expert.rollout_geometry import (
+    dual_expert_config_uses_strict_rollout_parity,
+    resolve_dual_expert_sequence_actions_per_frame,
+    resolve_dual_expert_sequence_execution_action_offset,
 )
-from open_wam.models.policy_variants.mot.runtime_routes import (
-    MoTRuntimeRoute,
-    resolve_mot_runtime_route,
+from open_wam.models.policy_variants.dual_expert.runtime_routes import (
+    DualExpertRuntimeRoute,
+    resolve_dual_expert_runtime_route,
 )
 from open_wam.pipelines import VariantRolloutRunner, VariantRolloutSession
 
 
-def uses_mot_split_cache_sequence(config: ExperimentConfig) -> bool:
-    """Return whether the sequence route shares the Method-1-style cache."""
+def uses_dual_expert_split_cache_sequence(config: ExperimentConfig) -> bool:
+    """Return whether the sequence route shares the parallel-stream cache."""
 
-    return resolve_mot_runtime_route(config).uses_split_cache_rollout
+    return resolve_dual_expert_runtime_route(config).uses_split_cache_rollout
 
 
-def uses_strict_mot_split_cache_startup(config: ExperimentConfig) -> bool:
-    route = resolve_mot_runtime_route(config)
+def uses_strict_dual_expert_split_cache_startup(config: ExperimentConfig) -> bool:
+    route = resolve_dual_expert_runtime_route(config)
     return bool(
         route.uses_split_cache_rollout
-        and mot_config_uses_strict_rollout_parity(config)
+        and dual_expert_config_uses_strict_rollout_parity(config)
     )
 
 
-def uses_strict_mot_one_frame_history(config: ExperimentConfig) -> bool:
-    route = resolve_mot_runtime_route(config)
-    return bool(route.is_mot and mot_config_uses_strict_rollout_parity(config))
+def uses_strict_dual_expert_one_frame_history(config: ExperimentConfig) -> bool:
+    route = resolve_dual_expert_runtime_route(config)
+    return bool(route.is_dual_expert and dual_expert_config_uses_strict_rollout_parity(config))
 
 
 def build_sequence_startup_observation_window(
@@ -52,7 +52,7 @@ def build_sequence_startup_observation_window(
             "Cannot build sequence startup observation window from an empty "
             "initial window."
         )
-    if uses_strict_mot_one_frame_history(config):
+    if uses_strict_dual_expert_one_frame_history(config):
         return [
             realtime_history.copy_observation(initial_observation_window[-1])
         ]
@@ -64,7 +64,7 @@ def resolve_sequence_model_observation_window_frames(
     *,
     raw_window_frames: int,
 ) -> int:
-    if uses_strict_mot_one_frame_history(config):
+    if uses_strict_dual_expert_one_frame_history(config):
         return 1
     return int(raw_window_frames)
 
@@ -74,7 +74,7 @@ def resolve_sequence_startup_environment_frames(
     *,
     raw_window_frames: int,
 ) -> int:
-    if uses_strict_mot_one_frame_history(config):
+    if uses_strict_dual_expert_one_frame_history(config):
         return 1
     return int(raw_window_frames)
 
@@ -89,26 +89,26 @@ def validate_sequence_startup_inputs(
     """Fail when strict split-cache startup cannot match rollout parity."""
 
     if (
-        not uses_strict_mot_split_cache_startup(config)
+        not uses_strict_dual_expert_split_cache_startup(config)
         or str(source) != "startup_plan"
     ):
         return
     if int(generation_action_start) != 0:
         raise ValueError(
-            "M5 strict split-cache startup expects generation_action_start=0 so "
+            "Dual-expert strict split-cache startup expects generation_action_start=0 so "
             "executable actions start at action index 0; "
             f"got {generation_action_start}."
         )
     if not isinstance(video_latents, torch.Tensor) or video_latents.ndim != 5:
         raise ValueError(
-            "M5 strict split-cache startup expects tensor video_latents with shape "
+            "Dual-expert strict split-cache startup expects tensor video_latents with shape "
             "[B, C, T, H, W], "
             f"got {type(video_latents).__name__}."
         )
     latent_context_frames = int(video_latents.shape[2])
     if latent_context_frames != 1:
         raise ValueError(
-            "M5 strict split-cache startup expects exactly one latent context frame "
+            "Dual-expert strict split-cache startup expects exactly one latent context frame "
             f"before the first generated chunk; got {latent_context_frames}. This "
             "would break target_alignment=next_after_context parity."
         )
@@ -122,12 +122,12 @@ def resolve_observation_conditioned_replan_session(
 ) -> VariantRolloutSession:
     """Resolve cache continuity for a newly observed sequence window."""
 
-    mot_runtime_route = resolve_mot_runtime_route(config)
-    if not mot_runtime_route.is_mot:
+    dual_expert_runtime_route = resolve_dual_expert_runtime_route(config)
+    if not dual_expert_runtime_route.is_dual_expert:
         return session
-    if mot_runtime_route.uses_split_cache_rollout:
+    if dual_expert_runtime_route.uses_split_cache_rollout:
         return session
-    if mot_runtime_route.uses_native_packed_rollout:
+    if dual_expert_runtime_route.uses_native_packed_rollout:
         return session
     return runner.reset(
         task_text=session.task_text,
@@ -144,7 +144,7 @@ def should_use_sequence_open_loop_extension(
 ) -> bool:
     """Gate sequence extension on route capability, mode, and buffered work."""
 
-    if not resolve_mot_runtime_route(config).supports_realtime_history_controls:
+    if not resolve_dual_expert_runtime_route(config).supports_realtime_history_controls:
         return False
     mode = RealtimePlannerMode(planner_mode)
     if mode not in {
@@ -160,23 +160,23 @@ def validate_sequence_startup_open_loop_support(
     *,
     config: ExperimentConfig,
     startup_open_loop_chunks: int,
-) -> MoTRuntimeRoute:
+) -> DualExpertRuntimeRoute:
     """Reject open-loop startup when the selected policy route cannot support it."""
 
-    mot_runtime_route = resolve_mot_runtime_route(config)
+    dual_expert_runtime_route = resolve_dual_expert_runtime_route(config)
     if (
-        mot_runtime_route.is_mot
+        dual_expert_runtime_route.is_dual_expert
         and int(startup_open_loop_chunks) > 0
-        and not mot_runtime_route.supports_realtime_history_controls
+        and not dual_expert_runtime_route.supports_realtime_history_controls
     ):
         raise ValueError(
-            "M5 runtime route does not support startup open-loop extension because "
+            "Dual-expert runtime route does not support startup open-loop extension because "
             "it has no split-cache observation-skip/rewind controls. Use "
-            "`startup_open_loop_chunks=0`, or a split-cache M5 route such as "
+            "`startup_open_loop_chunks=0`, or a split-cache dual-expert route such as "
             "`video_then_action` / `decoupled_same_step`. Runtime route: "
-            f"{mot_runtime_route.to_report()}"
+            f"{dual_expert_runtime_route.to_report()}"
         )
-    return mot_runtime_route
+    return dual_expert_runtime_route
 
 
 def resolve_sequence_action_cache_rewind_frame(
@@ -192,7 +192,7 @@ def resolve_sequence_action_cache_rewind_frame(
         return None
     if not bool(use_observation_update):
         return None
-    if not resolve_mot_runtime_route(config).supports_realtime_history_controls:
+    if not resolve_dual_expert_runtime_route(config).supports_realtime_history_controls:
         return None
     if RealtimePlannerMode(planner_mode) not in {
         RealtimePlannerMode.ASYNC_MIX,
@@ -266,15 +266,15 @@ def collect_decoder_runtime_metadata(
         "decoder_rollout_chunk_steps": (
             None
             if decoder is None or not hasattr(decoder, "rollout_chunk_steps")
-            else int(getattr(decoder, "rollout_chunk_steps"))
+            else int(decoder.rollout_chunk_steps)
         ),
     }
 
 
 def resolve_sequence_execution_action_offset(config: ExperimentConfig) -> int:
-    if str(config.policy_variant.name) != "mot":
+    if str(config.policy_variant.name) != "dual_expert":
         return 0
-    return resolve_mot_sequence_execution_action_offset(
+    return resolve_dual_expert_sequence_execution_action_offset(
         config,
         action_horizon=int(config.data.action_schema.action_horizon),
         frame_chunk_size=int(config.inference.frame_chunk_size),
@@ -282,7 +282,7 @@ def resolve_sequence_execution_action_offset(config: ExperimentConfig) -> int:
 
 
 def resolve_sequence_actions_per_frame(config: ExperimentConfig) -> int:
-    return resolve_mot_sequence_actions_per_frame(
+    return resolve_dual_expert_sequence_actions_per_frame(
         action_horizon=int(config.data.action_schema.action_horizon),
         frame_chunk_size=int(config.inference.frame_chunk_size),
     )
@@ -301,9 +301,9 @@ __all__ = [
     "sequence_buffer_tail_ready_for_history_promotion",
     "sequence_history_replan_ready",
     "should_use_sequence_open_loop_extension",
-    "uses_mot_split_cache_sequence",
-    "uses_strict_mot_one_frame_history",
-    "uses_strict_mot_split_cache_startup",
+    "uses_dual_expert_split_cache_sequence",
+    "uses_strict_dual_expert_one_frame_history",
+    "uses_strict_dual_expert_split_cache_startup",
     "validate_sequence_startup_inputs",
     "validate_sequence_startup_open_loop_support",
 ]

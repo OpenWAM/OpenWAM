@@ -69,15 +69,23 @@ def _resolve_relative_path(base_path: Path, value: str | None) -> Path | None:
     candidate = Path(value)
     if candidate.is_absolute():
         return candidate
-    local_candidate = resolve_config_path_alias(base_path.parent / candidate).resolve()
-    if local_candidate.exists():
-        return local_candidate
-    cwd_candidate = resolve_config_path_alias(Path.cwd() / candidate).resolve()
-    if cwd_candidate.exists():
-        return cwd_candidate
+    direct_candidates = (
+        base_path.parent / candidate,
+        Path.cwd() / candidate,
+    )
+    for direct_candidate in direct_candidates:
+        direct_candidate = direct_candidate.resolve()
+        if direct_candidate.exists():
+            return direct_candidate
+    aliased_candidates = tuple(
+        resolve_config_path_alias(path).resolve() for path in direct_candidates
+    )
+    for aliased_candidate in aliased_candidates:
+        if aliased_candidate.exists():
+            return aliased_candidate
     raise FileNotFoundError(
         f"Could not resolve relative path '{value}' from base '{base_path}'. "
-        f"Checked: {local_candidate} and {cwd_candidate}."
+        f"Checked: {', '.join(str(path) for path in (*direct_candidates, *aliased_candidates))}."
     )
 
 

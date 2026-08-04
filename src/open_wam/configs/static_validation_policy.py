@@ -2,23 +2,24 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from .enums import (
     ActionDecoderName,
+    ContextConditionLatentSource,
     CurrentBlockCoupling,
-    JointDenoiseTrainingMode,
-    MoTGeneralistTrainingMode,
-    MoTRuntimeMode,
-    ParallelContextConditionLatentSource,
-    ParallelHistoryStreamVisibility,
+    DualExpertRuntimeMode,
+    GeneralistDenoisingMode,
+    HistoryStreamVisibility,
     ParallelRuntimeMode,
-    ParallelSequenceContract,
     PolicyVariantName,
     ProprioContextMode,
     RolloutContextPolicy,
     SampleTargetAlignment,
     StrEnum,
+    VideoActionProgram,
+    VideoActionSequenceContract,
 )
 from .static_validation_contracts import _IssueBuilder
 from .static_validation_primitives import _optional_int
@@ -28,11 +29,11 @@ from .variant_semantics import probability_map_static_issues
 def _validate_single_frame_condition_offset(
     policy_variant: Mapping[str, Any],
     sample_construction: Mapping[str, Any] | None,
-    issues: "_IssueBuilder",
+    issues: _IssueBuilder,
 ) -> None:
     if (
         policy_variant.get("context_condition_latent_source")
-        != ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT.value
+        != ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT.value
     ):
         return
     offset = None if sample_construction is None else _optional_int(sample_construction.get("condition_source_frame_offset"))
@@ -45,7 +46,7 @@ def _validate_single_frame_condition_offset(
         )
 
 
-def _warn_deprecated_text_proprio_context(policy_variant: Mapping[str, Any], issues: "_IssueBuilder") -> None:
+def _warn_deprecated_text_proprio_context(policy_variant: Mapping[str, Any], issues: _IssueBuilder) -> None:
     if policy_variant.get("proprio_context_mode") != ProprioContextMode.TEXT_CONTEXT_TOKEN.value:
         return
     issues.warning(
@@ -55,33 +56,74 @@ def _warn_deprecated_text_proprio_context(policy_variant: Mapping[str, Any], iss
     )
 
 
-def _validate_parallel_sequence_contract_static(
+def _resolved_static_video_action_coupling(
     policy_variant: Mapping[str, Any],
-    sample_construction: Mapping[str, Any] | None,
-    issues: "_IssueBuilder",
+) -> str | None:
+    raw_coupling = policy_variant.get("current_block_coupling")
+    if raw_coupling is not None:
+        return str(raw_coupling)
+    raw_program = policy_variant.get("program")
+    try:
+        program = VideoActionProgram(str(raw_program))
+    except ValueError:
+        return None
+    if program == VideoActionProgram.GENERALIST_JOINT_DENOISING:
+        return CurrentBlockCoupling.JOINT.value
+    return program.value
+
+
+def _validate_video_action_program_coupling(
+    policy_variant: Mapping[str, Any],
+    issues: _IssueBuilder,
 ) -> None:
-    raw_contract = policy_variant.get("parallel_sequence_contract")
-    if raw_contract in (None, ParallelSequenceContract.DEFAULT.value):
+    raw_program = policy_variant.get("program")
+    if raw_program is None:
         return
     try:
-        contract = ParallelSequenceContract(str(raw_contract))
+        program = VideoActionProgram(str(raw_program))
+    except ValueError:
+        return
+    expected_coupling = (
+        CurrentBlockCoupling.JOINT.value
+        if program == VideoActionProgram.GENERALIST_JOINT_DENOISING
+        else program.value
+    )
+    raw_coupling = policy_variant.get("current_block_coupling")
+    if raw_coupling is not None and raw_coupling != expected_coupling:
+        issues.error(
+            "policy_variant.current_block_coupling",
+            f"`program: {program.value}` requires "
+            f"`current_block_coupling: {expected_coupling}` when both are provided.",
+        )
+
+
+def _validate_video_action_sequence_contract_static(
+    policy_variant: Mapping[str, Any],
+    sample_construction: Mapping[str, Any] | None,
+    issues: _IssueBuilder,
+) -> None:
+    raw_contract = policy_variant.get("sequence_contract")
+    if raw_contract in (None, VideoActionSequenceContract.DEFAULT.value):
+        return
+    try:
+        contract = VideoActionSequenceContract(str(raw_contract))
     except ValueError:
         return
     if contract not in {
-        ParallelSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO,
-        ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
+        VideoActionSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO,
+        VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
     }:
         return
 
     policy_name = policy_variant.get("name")
-    if policy_name not in {PolicyVariantName.PARALLEL_STREAM.value, PolicyVariantName.MOT.value}:
+    if policy_name not in {PolicyVariantName.PARALLEL_STREAM.value, PolicyVariantName.DUAL_EXPERT.value}:
         issues.error(
-            "policy_variant.parallel_sequence_contract",
-            f"`{contract.value}` is only supported for policy_variant.name parallel_stream or mot.",
+            "policy_variant.sequence_contract",
+            f"`{contract.value}` is only supported for policy_variant.name parallel_stream or dual_expert.",
         )
         return
 
-    if contract == ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO:
+    if contract == VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO:
         runtime_mode = policy_variant.get("runtime_mode")
         if policy_name == PolicyVariantName.PARALLEL_STREAM.value and runtime_mode not in (
             None,
@@ -93,19 +135,20 @@ def _validate_parallel_sequence_contract_static(
                 "legacy_prefix_single_frame_perchunk_proprio requires runtime_mode "
                 "lingbot_exact or lingbot_exact_action_conditioned for parallel_stream.",
             )
-        if policy_name == PolicyVariantName.MOT.value and runtime_mode not in (
+        if policy_name == PolicyVariantName.DUAL_EXPERT.value and runtime_mode not in (
             None,
-            MoTRuntimeMode.NON_JOINT_TWO_STREAM.value,
+            DualExpertRuntimeMode.NON_JOINT_TWO_STREAM.value,
         ):
             issues.error(
                 "policy_variant.runtime_mode",
-                "legacy_prefix_single_frame_perchunk_proprio requires runtime_mode=non_joint_two_stream for mot.",
+                "legacy_prefix_single_frame_perchunk_proprio requires "
+                "runtime_mode=non_joint_two_stream for dual_expert.",
             )
 
     expected_policy = {
         "proprio_context_mode": ProprioContextMode.PER_CHUNK_ADDITIVE.value,
-        "context_condition_latent_source": ParallelContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT.value,
-        "history_stream_visibility": ParallelHistoryStreamVisibility.VIDEO_ONLY.value,
+        "context_condition_latent_source": ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT.value,
+        "history_stream_visibility": HistoryStreamVisibility.VIDEO_ONLY.value,
         "use_condition_latents": True,
         "require_condition_latents": True,
     }
@@ -113,7 +156,7 @@ def _validate_parallel_sequence_contract_static(
         if key in policy_variant and policy_variant[key] != expected_value:
             issues.error(
                 f"policy_variant.{key}",
-                f"`parallel_sequence_contract={contract.value}` owns `{key}`; expected {expected_value!r}.",
+                f"`sequence_contract={contract.value}` owns `{key}`; expected {expected_value!r}.",
             )
 
     if sample_construction is None:
@@ -122,7 +165,7 @@ def _validate_parallel_sequence_contract_static(
         "condition_source_frame_offset": -1,
         "start_padding_frames": 0,
     }
-    if contract == ParallelSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO:
+    if contract == VideoActionSequenceContract.ROLLOUT_PARITY_SINGLE_FRAME_PERCHUNK_PROPRIO:
         expected_sample.update(
             {
                 "target_alignment": SampleTargetAlignment.NEXT_AFTER_CONTEXT.value,
@@ -140,7 +183,7 @@ def _validate_parallel_sequence_contract_static(
         if actual_value != expected_value:
             issues.error(
                 f"data.sample_construction.{key}",
-                f"`parallel_sequence_contract={contract.value}` owns `{key}`; expected {expected_value!r}.",
+                f"`sequence_contract={contract.value}` owns `{key}`; expected {expected_value!r}.",
             )
 
 
@@ -148,7 +191,7 @@ def _validate_action_horizons(
     action_schema: Mapping[str, Any] | None,
     policy_variant: Mapping[str, Any] | None,
     action_decoder: Mapping[str, Any] | None,
-    issues: "_IssueBuilder",
+    issues: _IssueBuilder,
 ) -> None:
     video_only = False
     if action_decoder is not None and action_decoder.get("name") == ActionDecoderName.VIDEO_ONLY.value:
@@ -174,60 +217,58 @@ def _validate_action_horizons(
             )
 
 
-def _validate_joint_denoise_training_mode_probs(
-    policy_variant: Mapping[str, Any],
-    issues: "_IssueBuilder",
-) -> None:
-    _validate_probability_map(
-        policy_variant,
-        issues,
-        field_name="joint_denoise_training_mode_probs",
-        enum_cls=JointDenoiseTrainingMode,
-    )
-
-
-def _validate_mot_generalist_training_mode_probs(
+def _validate_generalist_denoising_mode_probs(
     policy_variant: Mapping[str, Any],
     data: Mapping[str, Any],
-    issues: "_IssueBuilder",
+    issues: _IssueBuilder,
+    *,
+    require_joint_coupling: bool,
+    require_batch_size_one: bool,
 ) -> None:
-    raw_probs = policy_variant.get("mot_generalist_training_mode_probs")
+    field_name = "generalist_denoising_mode_probs"
+    raw_probs = policy_variant.get(field_name)
     if bool(policy_variant.get("generalist_mode_text_token", False)) and raw_probs is None:
         issues.error(
             "policy_variant.generalist_mode_text_token",
-            "`generalist_mode_text_token: true` for MoT requires "
-            "`policy_variant.mot_generalist_training_mode_probs`.",
+            "`generalist_mode_text_token: true` requires "
+            f"`policy_variant.{field_name}`.",
         )
     if raw_probs is None:
         return
-    if policy_variant.get("current_block_coupling") != CurrentBlockCoupling.JOINT.value:
+    if (
+        require_joint_coupling
+        and _resolved_static_video_action_coupling(policy_variant)
+        != CurrentBlockCoupling.JOINT.value
+    ):
         issues.error(
-            "policy_variant.mot_generalist_training_mode_probs",
-            "Expected `current_block_coupling: joint` when MoT generalist sampling is enabled.",
+            f"policy_variant.{field_name}",
+            "Expected `program: generalist_joint_denoising` or "
+            "`current_block_coupling: joint` when generalist denoising is enabled.",
         )
-    for key in ("train_batch_size", "val_batch_size"):
-        raw_batch_size = data.get(key, 2)
-        try:
-            batch_size = int(raw_batch_size)
-        except (TypeError, ValueError):
-            continue
-        if batch_size != 1:
-            issues.error(
-                f"data.{key}",
-                "`mot_generalist_training_mode_probs` requires `data.train_batch_size: 1` and "
-                "`data.val_batch_size: 1` because M5 GJD samples one mode per segment/forward pass.",
-            )
+    if require_batch_size_one:
+        for key in ("train_batch_size", "val_batch_size"):
+            raw_batch_size = data.get(key, 2)
+            try:
+                batch_size = int(raw_batch_size)
+            except (TypeError, ValueError):
+                continue
+            if batch_size != 1:
+                issues.error(
+                    f"data.{key}",
+                    f"`{field_name}` requires `data.train_batch_size: 1` and "
+                    "`data.val_batch_size: 1` for this policy architecture.",
+                )
     _validate_probability_map(
         policy_variant,
         issues,
-        field_name="mot_generalist_training_mode_probs",
-        enum_cls=MoTGeneralistTrainingMode,
+        field_name=field_name,
+        enum_cls=GeneralistDenoisingMode,
     )
 
 
 def _validate_probability_map(
     policy_variant: Mapping[str, Any],
-    issues: "_IssueBuilder",
+    issues: _IssueBuilder,
     *,
     field_name: str,
     enum_cls: type[StrEnum],

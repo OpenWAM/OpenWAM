@@ -5,35 +5,37 @@ from pathlib import Path
 import torch
 
 from open_wam.configs import (
+    ActionExpertInitMode,
     ActionSchemaConfig,
     ActionTargetConfig,
-    ActionExpertInitMode,
     CausalVideoPredictionPolicyConfig,
+    DualExpertPolicyConfig,
     ExperimentConfig,
     InferenceConfig,
     JointTimestepCoupling,
-    LingbotParallelActionDecoderConfig,
     LiberoDataConfig,
     MLPActionDecoderConfig,
-    MoTPolicyConfig,
+    ParallelStreamActionDecoderConfig,
     ParallelStreamPolicyConfig,
-    PostLatentPolicyConfig,
     PostDecodedPolicyConfig,
+    PostLatentPolicyConfig,
     RobotWinDataConfig,
     TrainerConfig,
     TrainingConfig,
     VideoConditionedActionDecoderConfig,
     VideoOnlyActionDecoderConfig,
+    load_experiment_config,
 )
-from open_wam.models.action_decoders import MoTActionDecoder
-from open_wam.models.policy_variants import MoTPolicyVariant
-from open_wam.models.video_backbone.config import LingbotCompatibleVideoBackboneConfig, SharedVideoTransformerConfig
+from open_wam.models.action_decoders import DualExpertActionDecoder
+from open_wam.models.policy_variants import DualExpertPolicyVariant
+from open_wam.models.video_backbone.config import (
+    LingbotCompatibleVideoBackboneConfig,
+    SharedVideoTransformerConfig,
+)
 from open_wam.models.visual_tower.reference_loader import load_wan_transformer_class
 from open_wam.pipelines import build_variant_pipeline_from_config
-from open_wam.configs import load_experiment_config
 
 from .reference_model_test_utils import reference_model_path_or_skip
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -52,7 +54,7 @@ def test_exact_parallel_stream_uses_vendored_reference_model_by_default() -> Non
             action_per_frame=2,
             attn_window=8,
         ),
-        action_decoder=LingbotParallelActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=ParallelStreamActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8),
         inference=InferenceConfig(frame_chunk_size=2),
     )
@@ -89,7 +91,7 @@ def test_action_conditioned_parallel_stream_builds_with_shared_backbone() -> Non
             video_action_attention_scope="block_local",
             joint_timestep_coupling=JointTimestepCoupling.MATCH_SIGMA,
         ),
-        action_decoder=LingbotParallelActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=ParallelStreamActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8),
         inference=InferenceConfig(frame_chunk_size=2, use_cache=False),
     )
@@ -146,7 +148,7 @@ def test_reference_core_weight_loading_uses_vendored_reference_model_by_default(
             action_per_frame=2,
             attn_window=8,
         ),
-        action_decoder=LingbotParallelActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=ParallelStreamActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8),
         inference=InferenceConfig(frame_chunk_size=2),
     )
@@ -177,7 +179,7 @@ def test_exact_parallel_stream_uses_decoder_action_dim_when_dataset_stays_raw() 
             action_per_frame=4,
             attn_window=30,
         ),
-        action_decoder=LingbotParallelActionDecoderConfig(hidden_size=32, action_dim=30, action_horizon=16),
+        action_decoder=ParallelStreamActionDecoderConfig(hidden_size=32, action_dim=30, action_horizon=16),
         training=TrainingConfig(chunk_size=4, window_size=30, video_sigma_shift=5.0, action_sigma_shift=1.0),
         inference=InferenceConfig(
             frame_chunk_size=4,
@@ -218,7 +220,7 @@ def test_exact_parallel_stream_reference_profile_rejects_mismatched_text_length(
             action_per_frame=4,
             attn_window=30,
         ),
-        action_decoder=LingbotParallelActionDecoderConfig(hidden_size=32, action_dim=30, action_horizon=16),
+        action_decoder=ParallelStreamActionDecoderConfig(hidden_size=32, action_dim=30, action_horizon=16),
         training=TrainingConfig(chunk_size=4, window_size=30, video_sigma_shift=5.0, action_sigma_shift=1.0),
         inference=InferenceConfig(
             frame_chunk_size=4,
@@ -680,7 +682,7 @@ def test_parallel_stream_requires_shared_transformer_backbone() -> None:
             action_per_frame=2,
             attn_window=8,
         ),
-        action_decoder=LingbotParallelActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
+        action_decoder=ParallelStreamActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8),
         inference=InferenceConfig(frame_chunk_size=2),
     )
@@ -693,7 +695,7 @@ def test_parallel_stream_requires_shared_transformer_backbone() -> None:
         raise AssertionError("Expected parallel-stream validation to reject a non-shared backbone.")
 
 
-def test_mot_policy_builds_with_shared_transformer_backbone() -> None:
+def test_dual_expert_policy_builds_with_shared_transformer_backbone() -> None:
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
@@ -710,28 +712,28 @@ def test_mot_policy_builds_with_shared_transformer_backbone() -> None:
             freq_dim=8,
             load_reference_core_weights=False,
         ),
-        policy_variant=MoTPolicyConfig(hidden_size=32, video_prefix_frames=1, num_action_layers=2),
+        policy_variant=DualExpertPolicyConfig(hidden_size=32, video_prefix_frames=1, num_action_layers=2),
         action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8),
         inference=InferenceConfig(frame_chunk_size=2),
     )
 
     pipeline = build_variant_pipeline_from_config(config)
-    assert isinstance(pipeline.policy_variant, MoTPolicyVariant)
-    assert isinstance(pipeline.action_decoder, MoTActionDecoder)
+    assert isinstance(pipeline.policy_variant, DualExpertPolicyVariant)
+    assert isinstance(pipeline.action_decoder, DualExpertActionDecoder)
     assert pipeline.policy_variant.config.runtime_mode == "video_prefill_action_denoise"
     assert pipeline.policy_variant.action_expert.num_layers == 2
     assert pipeline.policy_variant.action_expert.action_dim == 4
 
 
-def test_mot_policy_requires_shared_transformer_backbone() -> None:
+def test_dual_expert_policy_requires_shared_transformer_backbone() -> None:
     config = ExperimentConfig(
         data=RobotWinDataConfig(
             num_frames=4,
             action_schema=ActionSchemaConfig(action_dim=4, action_horizon=4, state_dim=4, state_horizon=1),
         ),
         backbone=LingbotCompatibleVideoBackboneConfig(implementation="dummy"),
-        policy_variant=MoTPolicyConfig(hidden_size=32, video_prefix_frames=1, num_action_layers=2),
+        policy_variant=DualExpertPolicyConfig(hidden_size=32, video_prefix_frames=1, num_action_layers=2),
         action_decoder=MLPActionDecoderConfig(hidden_size=32, action_dim=4, action_horizon=4),
         training=TrainingConfig(chunk_size=2, window_size=8),
         inference=InferenceConfig(frame_chunk_size=2),
@@ -742,7 +744,7 @@ def test_mot_policy_requires_shared_transformer_backbone() -> None:
     except ValueError as exc:
         assert "shared transformer backbone" in str(exc)
     else:  # pragma: no cover - defensive guard
-        raise AssertionError("Expected MoT validation to reject a non-shared backbone.")
+        raise AssertionError("Expected DualExpert validation to reject a non-shared backbone.")
 
 
 def test_causal_video_prediction_requires_shared_transformer_backbone() -> None:

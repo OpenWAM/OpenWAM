@@ -4,17 +4,17 @@ from pathlib import Path
 
 import torch
 
+from open_wam.configs import load_experiment_config
 from open_wam.data import build_synthetic_batch
 from open_wam.models.common import AttentionProfileSpec, PreparedAttentionProfile
 from open_wam.models.policy_variants import PolicyTrainBatch
 from open_wam.models.visual_tower import (
     RuntimeStepInput,
     VisualCoreInput,
-    build_chunked_dual_stream_exact_train_program,
     build_dense_runtime_program,
+    build_parallel_stream_exact_train_program,
 )
 from open_wam.pipelines import build_variant_pipeline_from_config
-from open_wam.configs import load_experiment_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -36,14 +36,15 @@ def test_exact_runtime_program_executes_on_shared_backbone() -> None:
         extra={"task_text": batch.task_text, "metadata": batch.metadata},
     )
     prepared_inputs = pipeline.policy_variant.prepare_train_inputs(visual_outputs, train_batch)
-    train_artifacts = prepared_inputs.variant_inputs["lingbot_train_artifacts"]
+    train_artifacts = prepared_inputs.variant_inputs["parallel_train_artifacts"]
+    assert "lingbot_train_artifacts" not in prepared_inputs.variant_inputs
 
     runtime_backbone = pipeline.visual_tower.get_runtime_backbone(
         action_dim=config.data.action_schema.action_dim
     )
     step_output = runtime_backbone.execute_runtime_step(
         RuntimeStepInput(
-            program=build_chunked_dual_stream_exact_train_program(
+            program=build_parallel_stream_exact_train_program(
                 attention_profile_name=train_artifacts.input_dict["attention_profile_name"],
                 cache_backend_name="slot_pool_exact",
             ),
@@ -53,7 +54,7 @@ def test_exact_runtime_program_executes_on_shared_backbone() -> None:
 
     assert step_output.projected_outputs["video_prediction"].ndim == 3
     assert step_output.projected_outputs["action_prediction"].ndim == 3
-    assert step_output.aux["runtime_program"] == "chunked_dual_stream_exact_train"
+    assert step_output.aux["runtime_program"] == "parallel_stream_exact_train"
     assert step_output.aux["sequence_family"] == "chunked_dual_stream_exact"
 
 

@@ -11,35 +11,33 @@ import yaml
 
 import open_wam
 import open_wam.configs as open_wam_configs
-import open_wam.models.action_decoders as action_decoders
-import open_wam.models.policy_variants as policy_variants
 from open_wam.cli.inspect_config import build_arg_parser
 from open_wam.configs import (
     ActionDecoderName,
     LiberoAbsoluteJointExecutionMode,
     PolicyVariantName,
+    load_experiment_config,
 )
 from open_wam.contracts import (
     SampleConstructionMetadata,
-    ViewPlacement,
     VideoFrameMapping,
+    ViewPlacement,
     normalized_video_frame_count,
     resolve_video_source_fps,
 )
+from open_wam.models import action_decoders, policy_variants
 from open_wam.pipelines import ACTION_DECODER_BUILDERS, POLICY_VARIANT_BUILDERS
 from open_wam.pipelines.factory import build_action_decoder, build_policy_variant
 from open_wam.runtime import (
-    CheckpointArtifactResolution,
     OPEN_WAM_RESULT_SCHEMA_V1,
+    CheckpointArtifactResolution,
     build_result_envelope,
     find_repo_root,
     load_optional_module,
     resolve_checkpoint_artifacts,
     resolve_repo_path,
 )
-from open_wam.configs import load_experiment_config
 from open_wam.utils import load_artifact_manifest, validate_artifact_layout
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -559,7 +557,7 @@ def test_artifact_manifest_sample_has_required_fields() -> None:
     raw = yaml.safe_load((REPO_ROOT / "configs/artifacts.sample.yaml").read_text(encoding="utf-8"))
     required = {
         "artifact_id",
-        "method_family",
+        "architecture",
         "variant",
         "benchmark",
         "config",
@@ -583,12 +581,34 @@ def test_artifact_manifest_loader_and_layout_validator(tmp_path: Path) -> None:
     entries = load_artifact_manifest(REPO_ROOT / "configs/artifacts.sample.yaml")
     assert entries
     entry = entries[0]
+    assert entry.architecture == "parallel_stream"
+    assert entry.method_family == entry.architecture
     root = tmp_path / "checkpoint_step_1"
     (root / "transformer").mkdir(parents=True)
     (root / "full_training_state.pt").write_text("", encoding="utf-8")
     (root / "transformer" / "config.json").write_text("{}", encoding="utf-8")
 
     assert validate_artifact_layout(root, entry.expected_layout) == ()
+
+
+@pytest.mark.unit
+def test_artifact_manifest_loader_accepts_legacy_method_family_key(tmp_path: Path) -> None:
+    manifest = tmp_path / "legacy-artifacts.yaml"
+    manifest.write_text(
+        """artifacts:
+  - artifact_id: legacy
+    method_family: method1
+    variant: exact
+    config: config.yaml
+    expected_layout: {}
+""",
+        encoding="utf-8",
+    )
+
+    (entry,) = load_artifact_manifest(manifest)
+
+    assert entry.architecture == "parallel_stream"
+    assert entry.method_family == "parallel_stream"
 
 
 @pytest.mark.unit
@@ -605,7 +625,7 @@ def test_public_tiny_fixture_artifact_layout_is_valid() -> None:
     "config_name",
     [
         "parallel_stream_robotwin_smoke.yaml",
-        "mot_robotwin_smoke.yaml",
+        "dual_expert_robotwin_smoke.yaml",
     ],
 )
 def test_builtin_pipeline_registries_construct_smoke_variants(config_name: str) -> None:

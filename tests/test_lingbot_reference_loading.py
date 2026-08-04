@@ -8,7 +8,7 @@ from open_wam.configs import (
     ActionSchemaConfig,
     ExperimentConfig,
     InferenceConfig,
-    LingbotParallelActionDecoderConfig,
+    ParallelStreamActionDecoderConfig,
     ParallelStreamPolicyConfig,
     RobotWinDataConfig,
     TrainingConfig,
@@ -71,7 +71,7 @@ def test_lingbot_reference_transformer_weights_load_as_is(tmp_path: Path) -> Non
             action_per_frame=2,
             attn_window=8,
         ),
-        action_decoder=LingbotParallelActionDecoderConfig(
+        action_decoder=ParallelStreamActionDecoderConfig(
             hidden_size=32,
             action_dim=30,
             action_horizon=8,

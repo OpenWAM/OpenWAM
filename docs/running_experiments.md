@@ -26,22 +26,22 @@ uv run open-wam-inspect-config --cfg configs/experiments/<experiment>.yaml
 
 The generic runtime covers these representative maintained families:
 
-| Family | Experiment config |
+| Architecture / program | Experiment config |
 | --- | --- |
-| Method 1 exact | `parallel_stream_libero_lingbot_exact.yaml` |
-| Method 2 action-conditioned | `parallel_stream_libero_lingbot_joint_denoise.yaml` |
-| Method 4 latent | `post_latent_libero_latent_local_video_conditioned.yaml` |
-| Method 4 decoded | `post_decoded_libero_latent_local_video_conditioned.yaml` |
-| M5 video then action | `mot_libero_video_then_action.yaml` |
-| M5 action then video | `mot_libero_action_then_video.yaml` |
-| M5 joint | `mot_libero_joint.yaml` |
-| M5 decoupled | `mot_libero_decoupled_same_step.yaml` |
-| M5 video-noisy to action | `mot_libero_video_noisy_to_action.yaml` |
-| M5 action-noisy to video | `mot_libero_action_noisy_to_video.yaml` |
-| M5 GJD | `mot_libero_generalist_joint_denoising.yaml` |
+| Parallel stream exact backend | `parallel_stream_libero_lingbot_exact.yaml` |
+| Parallel stream action-conditioned profile | `parallel_stream_libero_joint_denoise.yaml` |
+| Post-latent video-conditioned | `post_latent_libero_latent_local_video_conditioned.yaml` |
+| Post-decoded video-conditioned | `post_decoded_libero_latent_local_video_conditioned.yaml` |
+| Dual expert video then action | `dual_expert_libero_video_then_action.yaml` |
+| Dual expert action then video | `dual_expert_libero_action_then_video.yaml` |
+| Dual expert joint | `dual_expert_libero_joint.yaml` |
+| Dual expert decoupled | `dual_expert_libero_decoupled_same_step.yaml` |
+| Dual expert video-noisy to action | `dual_expert_libero_video_noisy_to_action.yaml` |
+| Dual expert action-noisy to video | `dual_expert_libero_action_noisy_to_video.yaml` |
+| Dual expert GJD | `dual_expert_libero_generalist_joint_denoising.yaml` |
 | Video-only | `causal_video_prediction_libero_latent_local.yaml` |
 
-Maintained config names describe the method contract and do not carry a
+Maintained config names describe the architecture and program and do not carry a
 contributor-specific compatibility suffix. Retired `*_heng_compatible` and
 `*_heng_eval` names still resolve to these canonical files with a deprecation
 warning, so old commands remain usable during migration. Existing copied YAMLs
@@ -51,7 +51,7 @@ reports, and automation.
 
 ## Training
 
-All method families enter the same package-owned training runtime:
+All architectures and programs enter the same package-owned training runtime:
 
 ```bash
 uv run --extra train open-wam-train \
@@ -65,12 +65,22 @@ overrides. Keep the resolved config with the checkpoint. External schedulers
 may set process placement and retry policy, but should invoke this command
 without embedding cluster paths in tracked configs.
 
-Load an external dataset or method extension before config construction:
+Load an external dataset or policy extension before config construction:
 
 ```bash
 uv run --extra train open-wam-train \
   --extension acme_open_wam \
   --cfg /path/to/acme_experiment.yaml
+```
+
+For the six standard video/action programs, `policy_variant.program` is the
+only public program switch. A named config is preferred for recorded runs, but
+a one-off ablation can use:
+
+```bash
+uv run --extra train open-wam-train \
+  --cfg configs/experiments/dual_expert_libero_joint.yaml \
+  --set policy_variant.program=video_then_action
 ```
 
 ### Initialization And Exact Resume
@@ -92,17 +102,23 @@ For an exact continuation, confirm the source checkpoint contains
 and step state. `--resume-from` can select that file explicitly. A
 `model_state.pt` checkpoint is a warm start, not an exact resume.
 
+Distributed runs use `trainer.distributed_timeout_seconds: 1800` by default.
+The timeout includes rank-0 reads and writes of full-state checkpoints before
+other ranks enter the next collective. Increase it for slower shared storage;
+lower it only when faster failure detection is more important than large-state
+resume support.
+
 ## Generalist Joint Denoising
 
 Use the maintained GJD wrapper so training and rollout resolve the same
-ablation semantics. M5 is the standard GJD implementation; M1 remains a
-documented compatibility and diagnostic path.
+ablation semantics. Dual expert is the standard GJD architecture; parallel
+stream remains a documented compatibility and diagnostic path.
 
 ```bash
 bash scripts/run_gjd_libero.sh train \
-  --method m5 \
+  --architecture dual_expert \
   --ablation mode_token \
-  --save-root runs/m5-gjd-mode-token \
+  --save-root runs/dual-expert-gjd-mode-token \
   --dataset-root /path/to/libero_10 \
   --transformer-subdir /path/to/base/transformer \
   --enable-wandb \
@@ -118,10 +134,10 @@ Resume through the same wrapper:
 
 ```bash
 bash scripts/run_gjd_libero.sh train \
-  --method m5 \
+  --architecture dual_expert \
   --ablation mode_token \
-  --save-root runs/m5-gjd-mode-token \
-  --checkpoint-root runs/m5-gjd-mode-token/checkpoints/checkpoint_step_N
+  --save-root runs/dual-expert-gjd-mode-token \
+  --checkpoint-root runs/dual-expert-gjd-mode-token/checkpoints/checkpoint_step_N
 ```
 
 ## Offline Evaluation
@@ -171,15 +187,15 @@ only the experiment orchestration and visualization live under `scripts/`.
 
 ## LIBERO Inference
 
-The maintained M5 evaluator loads one checkpoint and executes a closed-loop
+The maintained dual-expert evaluator loads one checkpoint and executes a closed-loop
 episode with the LingBot streaming VAE:
 
 ```bash
-uv run --extra sim python scripts/run_libero_mot_visualization.py \
+uv run --extra sim python scripts/run_libero_dual_expert_visualization.py \
   --cfg /path/to/checkpoint_step_N/resolved_config.yaml \
   --checkpoint /path/to/checkpoint_step_N \
   --frontend-encode-mode lingbot_streaming_vae \
-  --mot-inference-window-size 30 \
+  --dual-expert-inference-window-size 30 \
   --benchmark libero_10 \
   --task-id 0 \
   --episode-idx 0 \
@@ -187,19 +203,19 @@ uv run --extra sim python scripts/run_libero_mot_visualization.py \
   --max-chunks 50 \
   --startup-model-obs-frames 1 \
   --startup-env-init-steps 5 \
-  --output-dir outputs/libero_m5 \
+  --output-dir outputs/libero_dual_expert \
   --runtime-device cuda:0 \
   --action-device cuda:0 \
   --frontend-device cuda:0 \
   --decode-device cuda:0
 ```
 
-The strict non-GJD M5 contract uses an `800` timestep and `50` chunk limit.
+The strict non-GJD dual-expert contract uses an `800` timestep and `50` chunk limit.
 GJD uses the wrapper and defaults to `1500/100`:
 
 ```bash
 bash scripts/run_gjd_libero.sh rollout \
-  --method m5 \
+  --architecture dual_expert \
   --ablation mode_token \
   --checkpoint /path/to/checkpoint_step_N \
   --task-id 0 \
@@ -211,7 +227,7 @@ For a task/episode sweep, use the loaded-once batch evaluator rather than a
 shell loop that reloads the checkpoint for every episode:
 
 ```bash
-uv run --extra sim python scripts/run_libero_mot_batch_visualization.py \
+uv run --extra sim python scripts/run_libero_dual_expert_batch_visualization.py \
   --cfg /path/to/checkpoint_step_N/resolved_config.yaml \
   --checkpoint /path/to/checkpoint_step_N \
   --benchmark libero_10 \
@@ -219,12 +235,12 @@ uv run --extra sim python scripts/run_libero_mot_batch_visualization.py \
   --episode-idxs 0-49 \
   --seed-by-episode \
   --frontend-encode-mode lingbot_streaming_vae \
-  --mot-inference-window-size 30 \
+  --dual-expert-inference-window-size 30 \
   --max-timestep 800 \
   --max-chunks 50 \
   --startup-model-obs-frames 1 \
   --startup-env-init-steps 5 \
-  --output-dir outputs/libero_m5_batch \
+  --output-dir outputs/libero_dual_expert_batch \
   --save-rollout-video \
   --runtime-device cuda:0 \
   --action-device cuda:0 \
@@ -235,7 +251,7 @@ uv run --extra sim python scripts/run_libero_mot_batch_visualization.py \
 The batch runner preserves the single-episode runtime semantics and starts
 fresh rollout state for each episode while retaining loaded model resources.
 
-Method 1 uses the shared realtime sandbox:
+Parallel stream uses the shared realtime sandbox:
 
 ```bash
 uv run --extra sim python scripts/run_libero_realtime_sandbox.py \
@@ -243,7 +259,7 @@ uv run --extra sim python scripts/run_libero_realtime_sandbox.py \
   --checkpoint /path/to/checkpoint_step_N \
   --task-id 0 \
   --episode-idx 0 \
-  --output-dir outputs/libero_m1
+  --output-dir outputs/libero_parallel_stream
 ```
 
 ## Generic Simulator Rollout
@@ -266,5 +282,5 @@ mode, diffusion steps, fallback policy, and horizon.
 
 Changes that can affect model numerics must verify immutable fixtures and
 checkpoint-backed goldens rather than regenerate expected values. The exact
-six-mode M5 training, recurrent inference, four-GPU, full-state resume, and GJD
-gates are documented in [MoT Refactor Characterization](mot_refactor_characterization.md).
+six-program dual-expert training, recurrent inference, four-GPU, full-state resume, and GJD
+gates are documented in [DualExpert Refactor Characterization](dual_expert_refactor_characterization.md).

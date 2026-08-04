@@ -18,9 +18,9 @@ You may also pass the variant as the first positional argument:
   bash scripts/run_m5_gjd_posttrain_libero.sh mode_token --save-root ...
 
 Supported variants:
-  vanilla     Standard M5 GJD 0.6/0.2/0.2 joint/FDM/IDM mixture.
+  vanilla     Standard dual-expert GJD 0.6/0.2/0.2 joint/FDM/IDM mixture.
   pure_joint  GJD path with joint=1.0 and conditional modes disabled.
-  mode_token  Standard M5 GJD mixture plus one learned text-space mode token.
+  mode_token  Standard dual-expert GJD mixture plus one learned text-space mode token.
 
 The GJD config defaults to the current full-segment W64 sampler. Fixed-128 GJD
 training is deprecated. All remaining args are forwarded through
@@ -56,4 +56,4 @@ case "${variant}" in
     ;;
 esac
 
-exec bash "${SCRIPT_DIR}/run_gjd_libero.sh" train --method m5 --ablation "${variant}" "$@"
+exec bash "${SCRIPT_DIR}/run_gjd_libero.sh" train --architecture dual_expert --ablation "${variant}" "$@"

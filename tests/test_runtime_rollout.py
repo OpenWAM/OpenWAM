@@ -81,8 +81,8 @@ def test_sequence_rollout_metadata_uses_typed_policy_choices() -> None:
             train_video_condition_source=VideoConditionSource.GENERATED_FUTURE,
         )
     )
-    mot = SimpleNamespace(
-        policy_variant=SimpleNamespace(name=PolicyVariantName.MOT)
+    dual_expert = SimpleNamespace(
+        policy_variant=SimpleNamespace(name=PolicyVariantName.DUAL_EXPERT)
     )
 
     method4_extra = build_sequence_rollout_infer_extra(
@@ -92,8 +92,8 @@ def test_sequence_rollout_metadata_uses_typed_policy_choices() -> None:
         task_id=1,
         episode_idx=2,
     )
-    mot_extra = build_sequence_rollout_infer_extra(
-        config=mot,
+    dual_expert_extra = build_sequence_rollout_infer_extra(
+        config=dual_expert,
         prompt="task",
         generation_action_start=0,
         runtime_device=torch.device("cpu"),
@@ -102,12 +102,12 @@ def test_sequence_rollout_metadata_uses_typed_policy_choices() -> None:
     assert method4_extra["video_condition_frame_start"] == 9
     assert method4_extra["video_condition_observed_prefix_anchor"] == "end"
     assert "video_condition_sample_seed" in method4_extra
-    assert mot_extra == {
+    assert dual_expert_extra == {
         "task_text": ("task",),
         "action_device": "cpu",
     }
     assert uses_zero_based_generation_start(method4) is True
-    assert uses_zero_based_generation_start(mot) is True
+    assert uses_zero_based_generation_start(dual_expert) is True
 
 
 def test_initial_generation_start_defaults_to_observation_count() -> None:

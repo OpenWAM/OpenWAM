@@ -7,7 +7,6 @@ import yaml
 
 from open_wam.configs.static_schema import validate_config_file, validate_config_files
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -163,7 +162,7 @@ policy_variant:
   runtime_mode: lingbot_exact
   proprio_context_mode: text_context_typo
 action_decoder:
-  name: lingbot_parallel_decoder
+  name: parallel_stream_decoder
   action_dim: 7
   action_horizon: 8
 trainer:
@@ -199,7 +198,7 @@ policy_variant:
   runtime_mode: lingbot_exact
   proprio_context_mode: text_context_token  # deprecated
 action_decoder:
-  name: lingbot_parallel_decoder
+  name: parallel_stream_decoder
   action_dim: 7
   action_horizon: 8
 trainer:
@@ -239,7 +238,7 @@ policy_variant:
   context_condition_latent_source: single_frame_condition_latent
   history_stream_visibility: video_only
 action_decoder:
-  name: lingbot_parallel_decoder
+  name: parallel_stream_decoder
   action_dim: 7
   action_horizon: 8
 trainer:
@@ -277,7 +276,7 @@ policy_variant:
   current_block_coupling: decoupled_same_step
   context_condition_latent_source: single_frame_condition_latent
 action_decoder:
-  name: lingbot_parallel_decoder
+  name: parallel_stream_decoder
   action_dim: 7
   action_horizon: 8
 trainer:
@@ -317,7 +316,7 @@ policy_variant:
   runtime_mode: lingbot_exact
   history_stream_visibility: typo
 action_decoder:
-  name: lingbot_parallel_decoder
+  name: parallel_stream_decoder
   action_dim: 7
   action_horizon: 8
 trainer:
@@ -329,15 +328,15 @@ trainer:
     report = validate_config_file(config_path, repo_root=tmp_path)
 
     assert not report.ok
-    assert any("Invalid ParallelHistoryStreamVisibility" in issue.message for issue in report.errors)
+    assert any("Invalid HistoryStreamVisibility" in issue.message for issue in report.errors)
 
 
 @pytest.mark.unit
-def test_static_validator_accepts_mot_context_and_history_flags(tmp_path: Path) -> None:
-    config_path = tmp_path / "mot_context_flags.yaml"
+def test_static_validator_accepts_dual_expert_context_and_history_flags(tmp_path: Path) -> None:
+    config_path = tmp_path / "dual_expert_context_flags.yaml"
     config_path.write_text(
         """
-name: mot_context_flags
+name: dual_expert_context_flags
 data:
   dataset_name: libero
   dataset_type: synthetic_multiview
@@ -351,14 +350,14 @@ data:
 backbone:
   implementation: shared_transformer
 policy_variant:
-  name: mot
+  name: dual_expert
   runtime_mode: non_joint_two_stream
   current_block_coupling: decoupled_same_step
   proprio_context_mode: per_chunk_additive
   context_condition_latent_source: single_frame_condition_latent
   history_stream_visibility: video_only
 action_decoder:
-  name: mot_decoder
+  name: dual_expert_decoder
   action_dim: 7
   action_horizon: 8
 trainer:
@@ -373,11 +372,11 @@ trainer:
 
 
 @pytest.mark.unit
-def test_static_validator_rejects_mot_single_frame_context_without_previous_frame_offset(tmp_path: Path) -> None:
-    config_path = tmp_path / "mot_context_flags_leaky_offset.yaml"
+def test_static_validator_rejects_dual_expert_single_frame_context_without_previous_frame_offset(tmp_path: Path) -> None:
+    config_path = tmp_path / "dual_expert_context_flags_leaky_offset.yaml"
     config_path.write_text(
         """
-name: mot_context_flags_leaky_offset
+name: dual_expert_context_flags_leaky_offset
 data:
   dataset_name: libero
   dataset_type: synthetic_multiview
@@ -391,14 +390,14 @@ data:
 backbone:
   implementation: shared_transformer
 policy_variant:
-  name: mot
+  name: dual_expert
   runtime_mode: non_joint_two_stream
   current_block_coupling: decoupled_same_step
   proprio_context_mode: per_chunk_additive
   context_condition_latent_source: single_frame_condition_latent
   history_stream_visibility: video_only
 action_decoder:
-  name: mot_decoder
+  name: dual_expert_decoder
   action_dim: 7
   action_horizon: 8
 trainer:
@@ -418,11 +417,11 @@ trainer:
 
 
 @pytest.mark.unit
-def test_static_validator_catches_mot_proprio_context_typo(tmp_path: Path) -> None:
-    config_path = tmp_path / "bad_mot_proprio.yaml"
+def test_static_validator_catches_dual_expert_proprio_context_typo(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_dual_expert_proprio.yaml"
     config_path.write_text(
         """
-name: bad_mot_proprio
+name: bad_dual_expert_proprio
 data:
   dataset_name: libero
   dataset_type: synthetic_multiview
@@ -434,11 +433,11 @@ data:
 backbone:
   implementation: shared_transformer
 policy_variant:
-  name: mot
+  name: dual_expert
   runtime_mode: video_prefill_action_denoise
   proprio_context_mode: text_context_typo
 action_decoder:
-  name: mot_decoder
+  name: dual_expert_decoder
   action_dim: 7
   action_horizon: 8
 trainer:
@@ -563,7 +562,7 @@ policy_variant:
   current_block_coupling: joint
   generalist_training_paradigm: mixed_dynamics
 action_decoder:
-  name: lingbot_parallel_decoder
+  name: parallel_stream_decoder
   action_dim: 7
   action_horizon: 16
 trainer:
@@ -602,7 +601,7 @@ policy_variant:
   current_block_coupling: joint
   generalist_training_paradigm: mixed_dynamics
 action_decoder:
-  name: lingbot_parallel_decoder
+  name: parallel_stream_decoder
   action_dim: 7
   action_horizon: 16
 trainer:
@@ -645,7 +644,7 @@ policy_variant:
   current_block_coupling: joint
   generalist_training_paradigm: mixed_dynamics
 action_decoder:
-  name: lingbot_parallel_decoder
+  name: parallel_stream_decoder
   action_dim: 7
   action_horizon: 16
 trainer:
@@ -904,7 +903,7 @@ trainer:
     report = validate_config_file(config_path, repo_root=tmp_path)
 
     assert not report.ok
-    assert any("Invalid JointDenoiseTrainingMode" in issue.message for issue in report.errors)
+    assert any("Invalid GeneralistDenoisingMode" in issue.message for issue in report.errors)
     assert any("Invalid DataSplit" in issue.message for issue in report.errors)
     assert any("Invalid AuxiliaryValidationSource" in issue.message for issue in report.errors)
     assert any(issue.path.endswith("max_batches") for issue in report.errors)
@@ -969,9 +968,9 @@ backbone:
 policy_variant:
   name: parallel_stream
   runtime_mode: fastwam_first_frame
-  parallel_sequence_contract: legacy_prefix_single_frame_perchunk_proprio
+  sequence_contract: legacy_prefix_single_frame_perchunk_proprio
 action_decoder:
-  name: lingbot_parallel_decoder
+  name: parallel_stream_decoder
   action_dim: 7
   action_horizon: 8
 trainer:
@@ -1006,10 +1005,10 @@ policy_variant:
   name: parallel_stream
   runtime_mode: lingbot_exact
   current_block_coupling: decoupled_same_step
-  parallel_sequence_contract: rollout_parity_single_frame_perchunk_proprio
+  sequence_contract: rollout_parity_single_frame_perchunk_proprio
   history_stream_visibility: full
 action_decoder:
-  name: lingbot_parallel_decoder
+  name: parallel_stream_decoder
   action_dim: 7
   action_horizon: 8
 trainer:
@@ -1080,13 +1079,13 @@ policy_variant:
   attach_site: within_visual_core
   runtime_mode: lingbot_exact_action_conditioned
   variant_profile: generalist_joint_denoising
-  joint_denoise_training_mode_probs:
+  generalist_denoising_mode_probs:
     joint: 0.0
     typo_mode: 1.0
     action_conditioned_video: -0.2
     video_conditioned_action: .nan
 action_decoder:
-  name: lingbot_parallel_decoder
+  name: parallel_stream_decoder
   action_dim: 30
   action_horizon: 16
 trainer:
@@ -1098,7 +1097,7 @@ trainer:
     report = validate_config_file(config_path, repo_root=tmp_path)
 
     assert not report.ok
-    assert any("Invalid JointDenoiseTrainingMode" in issue.message for issue in report.errors)
+    assert any("Invalid GeneralistDenoisingMode" in issue.message for issue in report.errors)
     assert any(issue.path.endswith("action_conditioned_video") for issue in report.errors)
     assert any(issue.path.endswith("video_conditioned_action") and "finite" in issue.message for issue in report.errors)
 
@@ -1125,7 +1124,7 @@ policy_variant:
   runtime_mode: lingbot_exact_action_conditioned
   current_block_coupling: typo_joint
 action_decoder:
-  name: lingbot_parallel_decoder
+  name: parallel_stream_decoder
   action_dim: 30
   action_horizon: 16
 trainer:
@@ -1141,11 +1140,11 @@ trainer:
 
 
 @pytest.mark.unit
-def test_static_validator_allows_mot_shared_video_schedule(tmp_path: Path) -> None:
-    config_path = tmp_path / "mot_shared_video_schedule.yaml"
+def test_static_validator_allows_dual_expert_shared_video_schedule(tmp_path: Path) -> None:
+    config_path = tmp_path / "dual_expert_shared_video_schedule.yaml"
     config_path.write_text(
         """
-name: mot_shared_video_schedule
+name: dual_expert_shared_video_schedule
 data:
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
@@ -1157,13 +1156,13 @@ data:
 backbone:
   implementation: shared_transformer
 policy_variant:
-  name: mot
+  name: dual_expert
   attach_site: post_visual_core
   runtime_mode: non_joint_two_stream
   current_block_coupling: joint
   joint_timestep_coupling: shared_video_schedule
 action_decoder:
-  name: mot_decoder
+  name: dual_expert_decoder
   action_dim: 7
   action_horizon: 16
 trainer:
@@ -1178,11 +1177,11 @@ trainer:
 
 
 @pytest.mark.unit
-def test_static_validator_checks_mot_generalist_mode_probabilities(tmp_path: Path) -> None:
-    config_path = tmp_path / "bad_mot_probs.yaml"
+def test_static_validator_checks_dual_expert_generalist_mode_probabilities(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_dual_expert_probs.yaml"
     config_path.write_text(
         """
-name: bad_mot_probs
+name: bad_dual_expert_probs
 data:
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
@@ -1194,17 +1193,17 @@ data:
 backbone:
   implementation: shared_transformer
 policy_variant:
-  name: mot
+  name: dual_expert
   attach_site: post_visual_core
   runtime_mode: non_joint_two_stream
   current_block_coupling: video_then_action
-  mot_generalist_training_mode_probs:
+  generalist_denoising_mode_probs:
     joint: 0.0
     typo_mode: 1.0
     action_conditioned_video: -0.2
     video_conditioned_action: .nan
 action_decoder:
-  name: mot_decoder
+  name: dual_expert_decoder
   action_dim: 7
   action_horizon: 16
 trainer:
@@ -1217,7 +1216,7 @@ trainer:
 
     assert not report.ok
     assert any("current_block_coupling: joint" in issue.message for issue in report.errors)
-    assert any("Invalid MoTGeneralistTrainingMode" in issue.message for issue in report.errors)
+    assert any("Invalid GeneralistDenoisingMode" in issue.message for issue in report.errors)
     assert any(issue.path.endswith("action_conditioned_video") for issue in report.errors)
     assert any(issue.path.endswith("video_conditioned_action") and "finite" in issue.message for issue in report.errors)
     assert any(issue.path == "data.train_batch_size" for issue in report.errors)
@@ -1225,11 +1224,11 @@ trainer:
 
 
 @pytest.mark.unit
-def test_static_validator_checks_mot_generalist_batch_size(tmp_path: Path) -> None:
-    config_path = tmp_path / "bad_mot_gjd_batch_size.yaml"
+def test_static_validator_checks_dual_expert_generalist_batch_size(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_dual_expert_gjd_batch_size.yaml"
     config_path.write_text(
         """
-name: bad_mot_gjd_batch_size
+name: bad_dual_expert_gjd_batch_size
 data:
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
@@ -1243,14 +1242,14 @@ data:
 backbone:
   implementation: shared_transformer
 policy_variant:
-  name: mot
+  name: dual_expert
   attach_site: post_visual_core
   runtime_mode: non_joint_two_stream
   current_block_coupling: joint
-  mot_generalist_training_mode_probs:
+  generalist_denoising_mode_probs:
     joint: 1.0
 action_decoder:
-  name: mot_decoder
+  name: dual_expert_decoder
   action_dim: 7
   action_horizon: 16
 trainer:
@@ -1266,11 +1265,11 @@ trainer:
 
 
 @pytest.mark.unit
-def test_static_validator_checks_mot_mode_token_requires_gjd(tmp_path: Path) -> None:
-    config_path = tmp_path / "bad_mot_mode_token.yaml"
+def test_static_validator_checks_dual_expert_mode_token_requires_gjd(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad_dual_expert_mode_token.yaml"
     config_path.write_text(
         """
-name: bad_mot_mode_token
+name: bad_dual_expert_mode_token
 data:
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
@@ -1284,13 +1283,13 @@ data:
 backbone:
   implementation: shared_transformer
 policy_variant:
-  name: mot
+  name: dual_expert
   attach_site: post_visual_core
   runtime_mode: non_joint_two_stream
   current_block_coupling: joint
   generalist_mode_text_token: true
 action_decoder:
-  name: mot_decoder
+  name: dual_expert_decoder
   action_dim: 7
   action_horizon: 16
 trainer:
@@ -1326,12 +1325,12 @@ policy_variant:
   attach_site: within_visual_core
   runtime_mode: lingbot_exact_action_conditioned
   variant_profile: generalist_joint_denoising
-  joint_denoise_training_mode_probs:
+  generalist_denoising_mode_probs:
     joint: true
     action_conditioned_video: 0.0
     video_conditioned_action: 0.0
 action_decoder:
-  name: lingbot_parallel_decoder
+  name: parallel_stream_decoder
   action_dim: 30
   action_horizon: 16
 trainer:
@@ -1370,12 +1369,12 @@ policy_variant:
   attach_site: within_visual_core
   runtime_mode: lingbot_exact_action_conditioned
   variant_profile: generalist_joint_denoising
-  joint_denoise_training_mode_probs:
+  generalist_denoising_mode_probs:
     joint: 0.6
     action_conditioned_video: {raw_probability}
     video_conditioned_action: 0.2
 action_decoder:
-  name: lingbot_parallel_decoder
+  name: parallel_stream_decoder
   action_dim: 30
   action_horizon: 16
 trainer:

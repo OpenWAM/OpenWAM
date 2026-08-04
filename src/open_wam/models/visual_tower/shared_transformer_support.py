@@ -15,13 +15,6 @@ from open_wam.models.common import (
     apply_attention_backend,
     select_attention_profile_mask,
 )
-from open_wam.models.common.cache_layout_policy import (
-    packed_slot_pool_query_sequence_ids as _packed_slot_pool_query_sequence_ids,
-    prepend_cached_prefix_mask as _prepend_cached_prefix_mask,
-    prepare_sdpa_mask as _prepare_sdpa_mask,
-    resolve_slot_pool_prefix_visibility as _resolve_slot_pool_prefix_visibility,
-    retained_slot_pool_indices_for_current_write as _retained_slot_pool_indices_for_current_write,
-)
 from open_wam.models.common.cache_backend_contracts import (
     SLOT_POOL_ALLOW_VIDEO_TO_ACTION_PREFIX_TAIL_TOKENS,
     cache_backend_uses_slot_pool,
@@ -29,8 +22,22 @@ from open_wam.models.common.cache_backend_contracts import (
 from open_wam.models.common.cache_backend_lifecycle import (
     update_slot_pool_layer_state,
 )
+from open_wam.models.common.cache_layout_policy import (
+    packed_slot_pool_query_sequence_ids as _packed_slot_pool_query_sequence_ids,
+)
+from open_wam.models.common.cache_layout_policy import (
+    prepare_sdpa_mask as _prepare_sdpa_mask,
+)
+from open_wam.models.common.cache_layout_policy import (
+    prepend_cached_prefix_mask as _prepend_cached_prefix_mask,
+)
+from open_wam.models.common.cache_layout_policy import (
+    resolve_slot_pool_prefix_visibility as _resolve_slot_pool_prefix_visibility,
+)
+from open_wam.models.common.cache_layout_policy import (
+    retained_slot_pool_indices_for_current_write as _retained_slot_pool_indices_for_current_write,
+)
 from open_wam.models.video_backbone.contracts import AttentionCacheEntry
-
 
 from .runtime_parameter_ops import (
     feed_forward_with_materialized_params,
@@ -46,7 +53,7 @@ from .shared_transformer_embeddings import (
 )
 from .shared_transformer_layout import select_chunk_slices, select_split_segments
 
-(F, TimestepEmbedding, Timesteps, rearrange)
+_COMPATIBILITY_EXPORTS = (F, TimestepEmbedding, Timesteps, rearrange)
 
 
 # Private aliases preserve historical internal imports while this module owns no
@@ -405,7 +412,7 @@ class SharedTransformerBlock(nn.Module):
     ) -> dict[str, torch.Tensor]:
         """Build self-attention Q/K/V plus post-attention modulation state.
 
-        This helper is used by method-5 MoT runtime paths that need to mix
+        This helper is used by dual-expert runtime paths that need to mix
         cached video K/V with action K/V without changing the existing block
         `forward()` contract used by other policy families.
         """

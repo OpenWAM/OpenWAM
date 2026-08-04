@@ -7,7 +7,7 @@ from typing import Any
 
 
 class FdmAblationMode(StrEnum):
-    """Forward-dynamics ablation mode for maintained M1.2 joint denoising."""
+    """Forward-dynamics ablation mode for parallel-stream joint denoising."""
 
     FORCED_ACTION_JOINT_FDM = "forced_action_joint_fdm"
     VIDEO_CONDITIONED_ACTION = "video_conditioned_action"

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import math
-from typing import Any, Mapping
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import Any
 
 from .enums import (
-    AnchorPolicy,
     ActionMappingLossMaskMode,
     ActionMappingMode,
     ActionMappingSamplerMaskMode,
@@ -15,14 +15,15 @@ from .enums import (
     ActionTargetReferenceSource,
     ActionTargetRepresentation,
     ActionTargetStateEncoding,
+    AnchorPolicy,
     DataSplit,
     GripperRepresentation,
     LatentTemporalLayout,
     LatentWindowProfile,
     PaddedTargetPolicy,
     ReplayStatusPolicy,
-    RotationRepresentation,
     RolloutContextPolicy,
+    RotationRepresentation,
     SampleOrderMode,
     SampleStateAnchorMode,
     SampleTargetAlignment,
@@ -365,7 +366,7 @@ class SampleConstructionConfig:
     padded_target_policy: PaddedTargetPolicy = PaddedTargetPolicy.MASK_LOSS
     # Hierarchical fixed-segment sampler factors. `task_start_power=0.5`
     # preserves the historical midpoint between task-uniform and
-    # transition-uniform M1 fixed-128 sampling.
+    # transition-uniform parallel-stream fixed-128 sampling.
     task_start_power: float = 0.5
     demo_count_power: float = 0.0
     trajectory_start_power: float = 1.0
@@ -525,7 +526,8 @@ class GeneralistDynamicsMixtureConfig:
 
     The five weights define the new GJD training paradigm at the data-sample
     level. Dataset wrappers stamp the selected bucket into sample metadata so
-    M1/M5 runtimes can force the corresponding joint/FDM/IDM mode.
+    Parallel-stream and dual-expert runtimes can force the corresponding
+    joint/FDM/IDM mode.
     """
 
     train_latent_root: str | None = None

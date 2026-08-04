@@ -2,38 +2,39 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from contextlib import contextmanager
-from dataclasses import asdict
-from datetime import datetime, timezone
 import json
 import os
-from pathlib import Path
 import queue
 import re
 import subprocess
 import sys
 import time
-from typing import Any, Iterator
-
+from collections.abc import Iterator
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import contextmanager
+from dataclasses import asdict
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from open_wam.data.replay_status import (  # noqa: E402
+from open_wam.configs import load_experiment_config
+from open_wam.configs.enums import ParallelStreamVariantProfile
+from open_wam.data.replay_status import (
     REPLAY_STATUS_POLICIES,
     ReplayStatusFilterReport,
     load_replay_status_records,
 )
-from open_wam.configs.enums import ParallelStreamVariantProfile  # noqa: E402
-from open_wam.configs import load_experiment_config  # noqa: E402
-import open_wam.evals.sampled_eval_reporting as sampled_eval_reporting  # noqa: E402
-import open_wam.evals.sampled_eval_planning as sampled_eval_planning  # noqa: E402
-import open_wam.evals.sampled_eval_sampling as sampled_eval_sampling  # noqa: E402
-import open_wam.runtime.checkpoint_artifacts as checkpoint_artifacts  # noqa: E402
-
+from open_wam.evals import (
+    sampled_eval_planning,
+    sampled_eval_reporting,
+    sampled_eval_sampling,
+)
+from open_wam.runtime import checkpoint_artifacts
 
 # Preserve the script helpers exercised by callers and tests while package code
 # owns the reusable report contract and implementation.
@@ -123,7 +124,7 @@ def _config_has_gjd_semantics(config: Any) -> bool:
         == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING.value
     ):
         return True
-    if getattr(policy_variant, "mot_generalist_training_mode_probs", None) is not None:
+    if getattr(policy_variant, "generalist_denoising_mode_probs", None) is not None:
         return True
     return False
 
@@ -140,7 +141,7 @@ def is_gjd_config_path(config_path: str | Path | None) -> bool:
 
 
 def reject_gjd_checkpoint_specs(
-    checkpoint_specs: list["CheckpointSpec"],
+    checkpoint_specs: list[CheckpointSpec],
     *,
     source: str = "run_libero_sampled_eval.py",
 ) -> None:
@@ -150,7 +151,8 @@ def reject_gjd_checkpoint_specs(
     offender_text = ", ".join(offenders)
     raise ValueError(
         f"{source} does not implement the current GJD rollout contract for: {offender_text}. "
-        "Use scripts/run_gjd_libero.sh rollout --method <m1|m5> --ablation "
+        "Use scripts/run_gjd_libero.sh rollout --architecture "
+        "<parallel_stream|dual_expert> --ablation "
         "<vanilla|pure_joint|mode_token>, or a GJD-aware batch wrapper that delegates to it. "
         "Generic sampled eval may silently change frontend, startup, inference-window, ablation, "
         "or config-override semantics for GJD."
@@ -277,8 +279,9 @@ def main() -> None:
         type=str,
         default=None,
         help=(
-            "Comma-separated subset of m1,m2,m5. Defaults to m1 unless --target is used, "
-            "in which case methods are inferred from the targets."
+            "Comma-separated compatibility profile keys: m1=parallel-stream exact, "
+            "m2=parallel-stream joint denoise, m5=dual-expert action-only. Defaults "
+            "to m1 unless --target is used, in which case profiles are inferred."
         ),
     )
     parser.add_argument(
@@ -291,24 +294,24 @@ def main() -> None:
         "--target",
         action="append",
         default=[],
-        metavar="METHOD:KEY[:LABEL]=CHECKPOINT",
+        metavar="PROFILE:KEY[:LABEL]=CHECKPOINT",
         help=(
-            "Explicit method/checkpoint target. May be repeated, e.g. "
+            "Explicit policy-profile/checkpoint target. May be repeated, e.g. "
             "`--target m2:base=/runs/m2_base --target m2:posttrained:latest=/runs/m2_ft`. "
-            "When omitted, base/posttrained targets are built for --methods from method-specific args/env."
+            "When omitted, base/posttrained targets are built for --methods from profile-specific args/env."
         ),
     )
     parser.add_argument(
         "--base-checkpoint",
         type=str,
         default=None,
-        help="Legacy M1 base checkpoint fallback used when --target is omitted.",
+        help="Legacy parallel-stream exact base checkpoint alias.",
     )
     parser.add_argument(
         "--posttrained-checkpoint",
         type=str,
         default=None,
-        help="Legacy M1 posttrained checkpoint fallback used when --target is omitted.",
+        help="Legacy parallel-stream exact posttrained checkpoint alias.",
     )
     parser.add_argument("--m1-base-checkpoint", type=str, default=None)
     parser.add_argument("--m1-posttrained-checkpoint", type=str, default=None)
@@ -320,7 +323,7 @@ def main() -> None:
         "--cfg",
         type=str,
         default=None,
-        help="Optional config override for all targets. Omit to use each method's default eval config.",
+        help="Optional config override for all targets. Omit to use each profile's eval config.",
     )
     parser.add_argument("--output-root", type=Path, default=None)
     parser.add_argument("--local-paths", type=Path, default=Path(DEFAULT_LOCAL_PATHS))
@@ -397,7 +400,7 @@ def main() -> None:
         action="store_true",
         help=(
             "Forward the historical-config opt-in to child realtime rollouts. Without this, deprecated "
-            "LIBERO M1/M5 configs fail before rollout."
+            "retired LIBERO configs fail before rollout."
         ),
     )
     parser.add_argument("--collect", type=Path, default=None, help="Collect an existing run directory and exit.")
@@ -606,7 +609,7 @@ def main() -> None:
     manifest = {
         "run_id": run_id,
         "run_label": args.run_label,
-        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "generated_at_utc": datetime.now(UTC).isoformat(),
         "repo_root": str(REPO_ROOT),
         "dataset_root": str(args.dataset_root),
         "benchmark": args.benchmark,
@@ -701,10 +704,10 @@ def default_target_requests(*, args: argparse.Namespace, selected_methods: list[
         missing_text = ", ".join(missing)
         raise ValueError(
             f"Missing checkpoint paths for implicit targets: {missing_text}. "
-            "Pass one or more --target METHOD:KEY=CHECKPOINT arguments, or configure every selected "
-            "method stage with --METHOD-base-checkpoint/--METHOD-posttrained-checkpoint (or the matching "
+            "Pass one or more --target PROFILE:KEY=CHECKPOINT arguments, or configure every selected "
+            "profile stage with its base/posttrained checkpoint option (or the matching "
             "OPEN_WAM_*_CHECKPOINT environment variables). The legacy --base-checkpoint and "
-            "--posttrained-checkpoint aliases apply only to M1."
+            "--posttrained-checkpoint aliases apply only to parallel-stream exact."
         )
     return requests
 
@@ -1062,7 +1065,7 @@ def acquire_case_claim(case: EvalCase, *, status_dir: Path, stale_seconds: float
     payload = {
         "pid": os.getpid(),
         "hostname": os.uname().nodename,
-        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "created_at_utc": datetime.now(UTC).isoformat(),
         "case_index": case.index,
         "checkpoint_key": case.checkpoint_key,
         "sample_index": case.sample_index,
@@ -1194,7 +1197,7 @@ def write_case_status(
     payload = {
         "state": state,
         "returncode": returncode,
-        "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "updated_at_utc": datetime.now(UTC).isoformat(),
         "device": device,
         "log_path": str(log_path),
         "case": asdict(case),

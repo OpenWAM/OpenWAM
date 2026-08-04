@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
 import subprocess
-from typing import Any, Mapping
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
 
 from open_wam.configs import (
     ExperimentConfig,
@@ -12,30 +13,21 @@ from open_wam.configs import (
     SampleWeightMode,
 )
 
-
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _resolve_method_family(config: ExperimentConfig) -> str:
-    policy_name = config.policy_variant.name
-    if policy_name == PolicyVariantName.PARALLEL_STREAM:
-        return "method_1"
-    if policy_name in {PolicyVariantName.POST_LATENT, PolicyVariantName.POST_DECODED}:
-        return "method_4"
-    if policy_name == PolicyVariantName.MOT:
-        return "method_5"
-    if policy_name == PolicyVariantName.CAUSAL_VIDEO_PREDICTION:
-        return "causal_video_prediction"
-    return str(policy_name)
+def _resolve_policy_architecture(config: ExperimentConfig) -> str:
+    return str(config.policy_variant.name)
 
 
-def _resolve_method_label(method_family: str) -> str:
-    return {
-        "method_1": "m1",
-        "method_4": "m4",
-        "method_5": "m5",
-        "causal_video_prediction": "causal",
-    }.get(method_family, method_family)
+def _resolve_policy_program(config: ExperimentConfig) -> str | None:
+    program = getattr(config.policy_variant, "program", None)
+    if program is not None:
+        return str(program)
+    variant_profile = getattr(config.policy_variant, "variant_profile", None)
+    if _is_generalist_joint_denoising_profile(variant_profile):
+        return "generalist_joint_denoising"
+    return None
 
 
 def _resolve_workload_family(config: ExperimentConfig) -> str:
@@ -73,62 +65,54 @@ def build_run_tracking_metadata(
     run_name: str,
     output_dir: Path,
 ) -> dict[str, Any]:
-    method_family = _resolve_method_family(config)
-    method_label = _resolve_method_label(method_family)
+    architecture = _resolve_policy_architecture(config)
+    program = _resolve_policy_program(config)
     workload_family = _resolve_workload_family(config)
     attach_site = getattr(config.policy_variant, "attach_site", None)
     runtime_mode = getattr(config.policy_variant, "runtime_mode", None)
     variant_profile = getattr(config.policy_variant, "variant_profile", None)
     current_block_coupling = getattr(config.policy_variant, "current_block_coupling", None)
     reference_profile = getattr(config.policy_variant, "reference_profile", None)
-    joint_denoise_training_mode_probs = getattr(config.policy_variant, "joint_denoise_training_mode_probs", None)
-    mot_generalist_training_mode_probs = getattr(config.policy_variant, "mot_generalist_training_mode_probs", None)
+    generalist_denoising_mode_probs = getattr(
+        config.policy_variant,
+        "generalist_denoising_mode_probs",
+        None,
+    )
     generalist_training_paradigm = getattr(config.policy_variant, "generalist_training_paradigm", None)
     generalist_mode_text_token = bool(getattr(config.policy_variant, "generalist_mode_text_token", False))
-    if _is_m1_generalist_joint_denoising_profile(variant_profile):
-        m1_generalist_ablation = _resolve_generalist_ablation(
-            joint_denoise_training_mode_probs,
+    gjd_ablation = (
+        _resolve_generalist_ablation(
+            generalist_denoising_mode_probs,
             generalist_mode_text_token=generalist_mode_text_token,
         )
-    else:
-        m1_generalist_ablation = None
-    mot_generalist_ablation = _resolve_generalist_ablation(
-        mot_generalist_training_mode_probs,
-        generalist_mode_text_token=generalist_mode_text_token,
+        if program == "generalist_joint_denoising"
+        else None
     )
-    gjd_ablation = m1_generalist_ablation or mot_generalist_ablation
     preserve_video_pretrain_history = getattr(config.policy_variant, "preserve_video_pretrain_history", None)
     train_video_condition_source = getattr(config.policy_variant, "train_video_condition_source", None)
     sample_construction = getattr(config.data, "sample_construction", None)
     dynamics_mixture = getattr(config.data, "generalist_dynamics_mixture", None)
     checkpoint_dir = Path(config.trainer.checkpoint_dir) if config.trainer.checkpoint_dir else output_dir / "checkpoints"
     metadata: dict[str, Any] = {
-        "tracking_schema_version": 1,
+        "tracking_schema_version": 2,
         "framework": "open_wam",
         "experiment_name": config.name,
         "run_name": run_name,
         "run_slug": run_name,
-        "method_family": method_family,
-        "method_label": method_label,
+        "architecture": architecture,
+        "program": program,
         "workload_family": workload_family,
         "policy_variant": str(config.policy_variant.name),
         "runtime_mode": (str(runtime_mode) if runtime_mode is not None else None),
         "variant_profile": (str(variant_profile) if variant_profile is not None else None),
         "current_block_coupling": (str(current_block_coupling) if current_block_coupling is not None else None),
         "reference_profile": reference_profile,
-        "joint_denoise_training_mode_probs": (
-            {str(mode): float(prob) for mode, prob in joint_denoise_training_mode_probs.items()}
-            if joint_denoise_training_mode_probs is not None
-            else None
-        ),
-        "mot_generalist_training_mode_probs": (
-            {str(mode): float(prob) for mode, prob in mot_generalist_training_mode_probs.items()}
-            if mot_generalist_training_mode_probs is not None
+        "generalist_denoising_mode_probs": (
+            {str(mode): float(prob) for mode, prob in generalist_denoising_mode_probs.items()}
+            if generalist_denoising_mode_probs is not None
             else None
         ),
         "gjd_ablation": gjd_ablation,
-        "m1_generalist_ablation": m1_generalist_ablation,
-        "mot_generalist_ablation": mot_generalist_ablation,
         "generalist_training_paradigm": (
             str(generalist_training_paradigm) if generalist_training_paradigm is not None else None
         ),
@@ -246,11 +230,13 @@ def resolve_wandb_project(config: ExperimentConfig, tracking_metadata: dict[str,
 
 
 def build_wandb_group(tracking_metadata: dict[str, Any]) -> str:
-    group = (
-        f"{tracking_metadata['dataset_name']}/"
-        f"{tracking_metadata['method_label']}/"
-        f"{tracking_metadata['policy_variant']}"
-    )
+    parts = [
+        str(tracking_metadata["dataset_name"]),
+        str(tracking_metadata["architecture"]),
+    ]
+    if tracking_metadata.get("program"):
+        parts.append(str(tracking_metadata["program"]))
+    group = "/".join(parts)
     if tracking_metadata.get("gjd_ablation"):
         group = f"{group}/{tracking_metadata['gjd_ablation']}"
     return group
@@ -263,9 +249,10 @@ def build_wandb_job_type(tracking_metadata: dict[str, Any]) -> str:
 def build_run_title(tracking_metadata: dict[str, Any]) -> str:
     parts = [
         str(tracking_metadata["dataset_name"]),
-        str(tracking_metadata["method_label"]),
-        str(tracking_metadata["policy_variant"]),
+        str(tracking_metadata["architecture"]),
     ]
+    if tracking_metadata.get("program"):
+        parts.append(str(tracking_metadata["program"]))
     if tracking_metadata.get("gjd_ablation"):
         parts.append(f"gjd:{tracking_metadata['gjd_ablation']}")
     parts.append(str(tracking_metadata["run_slug"]))
@@ -278,11 +265,12 @@ def build_wandb_tags(tracking_metadata: dict[str, Any]) -> tuple[str, ...]:
         f"dataset:{tracking_metadata['dataset_name']}",
         f"dataset_type:{tracking_metadata['dataset_type']}",
         f"workload:{tracking_metadata['workload_family']}",
-        f"method:{tracking_metadata['method_label']}",
-        f"method_family:{tracking_metadata['method_family']}",
+        f"architecture:{tracking_metadata['architecture']}",
         f"variant:{tracking_metadata['policy_variant']}",
         f"decoder:{tracking_metadata['action_decoder']}",
     ]
+    if tracking_metadata.get("program"):
+        ordered_tags.append(f"program:{tracking_metadata['program']}")
     if tracking_metadata.get("git_dirty") is True:
         ordered_tags.append("dirty_worktree")
     if tracking_metadata.get("train_video_condition_source"):
@@ -326,11 +314,9 @@ def build_wandb_tags(tracking_metadata: dict[str, Any]) -> tuple[str, ...]:
     if tracking_metadata.get("generalist_training_paradigm"):
         ordered_tags.append(f"generalist_paradigm:{tracking_metadata['generalist_training_paradigm']}")
     if tracking_metadata.get("gjd_ablation"):
-        ordered_tags.append(f"gjd:{tracking_metadata['method_label']}:{tracking_metadata['gjd_ablation']}")
-    if tracking_metadata.get("m1_generalist_ablation"):
-        ordered_tags.append(f"m1_gjd:{tracking_metadata['m1_generalist_ablation']}")
-    if tracking_metadata.get("mot_generalist_ablation"):
-        ordered_tags.append(f"mot_gjd:{tracking_metadata['mot_generalist_ablation']}")
+        ordered_tags.append(
+            f"gjd:{tracking_metadata['architecture']}:{tracking_metadata['gjd_ablation']}"
+        )
     if tracking_metadata.get("generalist_mode_text_token") is True:
         ordered_tags.append("generalist_mode_text_token")
     deduped: list[str] = []
@@ -340,7 +326,7 @@ def build_wandb_tags(tracking_metadata: dict[str, Any]) -> tuple[str, ...]:
     return tuple(deduped)
 
 
-def _is_m1_generalist_joint_denoising_profile(variant_profile: Any) -> bool:
+def _is_generalist_joint_denoising_profile(variant_profile: Any) -> bool:
     return (
         variant_profile == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING
         or str(getattr(variant_profile, "value", variant_profile)) == "generalist_joint_denoising"

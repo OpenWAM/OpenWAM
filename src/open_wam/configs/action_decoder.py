@@ -9,13 +9,14 @@ from .backbone import SharedVideoTransformerConfig
 from .coercion import coerce_enum as _coerce_enum
 from .data_contracts import DataConfig
 from .enums import (
-    ActionDecoderName,
     ActionChunkAnchorMode,
+    ActionDecoderName,
     ActionExpertInitMode,
     VideoConditionInputSpace,
     VideoConditionTrainMode,
     coerce_fields,
 )
+from .policy_compatibility import normalize_video_action_decoder_fields
 from .policy_contracts import (
     PolicyVariantConfig,
     PostDecodedPolicyConfig,
@@ -36,6 +37,8 @@ class ActionDecoderConfig:
 
     def __post_init__(self) -> None:
         coerce_fields(self, enum_fields={"name": ActionDecoderName})
+        if self.name == ActionDecoderName.LINGBOT_PARALLEL:
+            object.__setattr__(self, "name", ActionDecoderName.PARALLEL_STREAM)
 
 
 @dataclass(frozen=True)
@@ -145,8 +148,10 @@ class VideoConditionedActionDecoderConfig(ActionDecoderConfig):
 
 
 @dataclass(frozen=True)
-class LingbotParallelActionDecoderConfig(ActionDecoderConfig):
-    name: ActionDecoderName = ActionDecoderName.LINGBOT_PARALLEL
+class ParallelStreamActionDecoderConfig(ActionDecoderConfig):
+    """Decoder config for outputs produced by a parallel-stream policy."""
+
+    name: ActionDecoderName = ActionDecoderName.PARALLEL_STREAM
     hidden_size: int = 256
     action_dim: int = 0
     action_horizon: int = 0
@@ -156,13 +161,17 @@ class LingbotParallelActionDecoderConfig(ActionDecoderConfig):
 
 
 @dataclass(frozen=True)
-class MoTActionDecoderConfig(ActionDecoderConfig):
-    """MoT decoder config for action/video flow supervision and infer packaging."""
+class DualExpertActionDecoderConfig(ActionDecoderConfig):
+    """DualExpert decoder config for action/video flow supervision and infer packaging."""
 
-    name: ActionDecoderName = ActionDecoderName.MOT
+    name: ActionDecoderName = ActionDecoderName.DUAL_EXPERT
     hidden_size: int = 256
     action_dim: int = 0
     action_horizon: int = 0
+
+
+# Deprecated Python config type alias.
+MoTActionDecoderConfig = DualExpertActionDecoderConfig
 
 
 @dataclass(frozen=True)
@@ -181,15 +190,13 @@ def parse_action_decoder_config(
     data_config: DataConfig,
     backbone_config: SharedVideoTransformerConfig,
 ) -> ActionDecoderConfig:
-    resolved_raw = dict(action_decoder_raw)
+    resolved_raw = normalize_video_action_decoder_fields(action_decoder_raw)
     if not resolved_raw:
-        if policy_variant_config.name == config_enums.PolicyVariantName.MOT:
-            resolved_raw["name"] = config_enums.ActionDecoderName.MOT
+        if policy_variant_config.name == config_enums.PolicyVariantName.DUAL_EXPERT:
+            resolved_raw["name"] = config_enums.ActionDecoderName.DUAL_EXPERT
         elif policy_variant_config.name == config_enums.PolicyVariantName.CAUSAL_VIDEO_PREDICTION:
             resolved_raw["name"] = config_enums.ActionDecoderName.VIDEO_ONLY
-        elif policy_variant_config.name == config_enums.PolicyVariantName.POST_DECODED:
-            resolved_raw["name"] = config_enums.ActionDecoderName.VIDEO_CONDITIONED
-        elif (
+        elif policy_variant_config.name == config_enums.PolicyVariantName.POST_DECODED or (
             policy_variant_config.name == config_enums.PolicyVariantName.POST_LATENT
             and isinstance(policy_variant_config, PostLatentPolicyConfig)
             and not policy_variant_config.compatibility_mode
@@ -206,14 +213,14 @@ def parse_action_decoder_config(
                 config_enums.ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
             }
         ):
-            resolved_raw["name"] = config_enums.ActionDecoderName.LINGBOT_PARALLEL
+            resolved_raw["name"] = config_enums.ActionDecoderName.PARALLEL_STREAM
         else:
             resolved_raw["name"] = config_enums.ActionDecoderName.MLP
 
     name = _coerce_enum(config_enums.ActionDecoderName, resolved_raw["name"])
-    if name == config_enums.ActionDecoderName.MLP and policy_variant_config.name == config_enums.PolicyVariantName.MOT:
-        # Compatibility path for early MoT YAMLs that used `mlp_decoder` as a placeholder.
-        name = config_enums.ActionDecoderName.MOT
+    if name == config_enums.ActionDecoderName.MLP and policy_variant_config.name == config_enums.PolicyVariantName.DUAL_EXPERT:
+        # Compatibility path for early DualExpert YAMLs that used `mlp_decoder` as a placeholder.
+        name = config_enums.ActionDecoderName.DUAL_EXPERT
     hidden_size = resolved_raw.get(
         "hidden_size",
         (
@@ -296,8 +303,8 @@ def parse_action_decoder_config(
             use_text_conditioning=resolved_raw.get("use_text_conditioning", True),
             use_state_conditioning=resolved_raw.get("use_state_conditioning", True),
         )
-    if name == config_enums.ActionDecoderName.LINGBOT_PARALLEL:
-        return LingbotParallelActionDecoderConfig(
+    if name == config_enums.ActionDecoderName.PARALLEL_STREAM:
+        return ParallelStreamActionDecoderConfig(
             hidden_size=hidden_size,
             action_dim=action_dim,
             action_horizon=action_horizon,
@@ -305,15 +312,15 @@ def parse_action_decoder_config(
             recovered_osc_loss_weight=resolved_raw.get("recovered_osc_loss_weight", 0.0),
             recovered_osc_position_scale=resolved_raw.get(
                 "recovered_osc_position_scale",
-                LingbotParallelActionDecoderConfig.recovered_osc_position_scale,
+                ParallelStreamActionDecoderConfig.recovered_osc_position_scale,
             ),
             recovered_osc_rotation_scale=resolved_raw.get(
                 "recovered_osc_rotation_scale",
-                LingbotParallelActionDecoderConfig.recovered_osc_rotation_scale,
+                ParallelStreamActionDecoderConfig.recovered_osc_rotation_scale,
             ),
         )
-    if name == config_enums.ActionDecoderName.MOT:
-        return MoTActionDecoderConfig(
+    if name == config_enums.ActionDecoderName.DUAL_EXPERT:
+        return DualExpertActionDecoderConfig(
             hidden_size=hidden_size,
             action_dim=action_dim,
             action_horizon=action_horizon,
@@ -336,3 +343,7 @@ def parse_action_decoder_config(
             options=resolved_raw.get("options", {}),
         )
     raise ValueError(f"Unsupported action decoder '{name}'.")
+
+
+# Deprecated Python config type alias.
+LingbotParallelActionDecoderConfig = ParallelStreamActionDecoderConfig

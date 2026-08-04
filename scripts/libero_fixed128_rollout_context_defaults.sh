@@ -28,10 +28,34 @@ open_wam_normalize_config_name() {
   case "${config_name}" in
     mot_libero_latent_local_*_heng_compatible)
       config_name="${config_name#mot_libero_latent_local_}"
-      config_name="mot_libero_${config_name%_heng_compatible}"
+      config_name="dual_expert_libero_${config_name%_heng_compatible}"
       ;;
-    parallel_stream_libero_lingbot_*_heng_compatible)
-      config_name="${config_name%_heng_compatible}"
+    dual_expert_libero_latent_local_*_heng_compatible)
+      config_name="${config_name#dual_expert_libero_latent_local_}"
+      config_name="dual_expert_libero_${config_name%_heng_compatible}"
+      ;;
+    mot_libero_latent_local*)
+      config_name="dual_expert_libero_${config_name#mot_libero_}"
+      ;;
+    mot_libero_*)
+      config_name="dual_expert_libero_${config_name#mot_libero_}"
+      ;;
+    mot_robotwin_smoke)
+      config_name="dual_expert_robotwin_smoke"
+      ;;
+    parallel_stream_libero_lingbot_m1_*)
+      config_name="${config_name#parallel_stream_libero_lingbot_m1_}"
+      config_name="parallel_stream_libero_${config_name%_heng_compatible}"
+      ;;
+    parallel_stream_robotwin_lingbot_m1_*)
+      config_name="${config_name#parallel_stream_robotwin_lingbot_m1_}"
+      config_name="parallel_stream_robotwin_${config_name%_heng_compatible}"
+      ;;
+    parallel_stream_libero_lingbot_joint_denoise|parallel_stream_libero_lingbot_joint_denoise_heng_compatible)
+      config_name="parallel_stream_libero_joint_denoise"
+      ;;
+    parallel_stream_libero_lingbot_exact_heng_compatible)
+      config_name="parallel_stream_libero_lingbot_exact"
       ;;
   esac
   printf '%s\n' "${config_name}"
@@ -58,15 +82,22 @@ open_wam_should_apply_fixed128_rollout_context() {
   case "${config_name}" in
     *generalist_joint_denoising*) return 1 ;;
     parallel_stream_libero_lingbot_exact) return 0 ;;
-    parallel_stream_libero_lingbot_joint_denoise) return 0 ;;
-    parallel_stream_libero_lingbot_m1_*) return 0 ;;
-    mot_libero_latent_local_full_segment_non_joint_action_only) return 0 ;;
-    mot_libero_action_noisy_to_video) return 0 ;;
-    mot_libero_action_then_video) return 0 ;;
-    mot_libero_decoupled_same_step) return 0 ;;
-    mot_libero_joint) return 0 ;;
-    mot_libero_video_noisy_to_action) return 0 ;;
-    mot_libero_video_then_action) return 0 ;;
+    parallel_stream_libero_joint_denoise) return 0 ;;
+    parallel_stream_libero_action_noisy_to_video) return 0 ;;
+    parallel_stream_libero_action_then_video) return 0 ;;
+    parallel_stream_libero_current_frame_action_chunk) return 0 ;;
+    parallel_stream_libero_decoupled_same_step) return 0 ;;
+    parallel_stream_libero_fastwam_first_frame) return 0 ;;
+    parallel_stream_libero_joint) return 0 ;;
+    parallel_stream_libero_video_noisy_to_action) return 0 ;;
+    parallel_stream_libero_video_then_action) return 0 ;;
+    dual_expert_libero_latent_local_full_segment_non_joint_action_only) return 0 ;;
+    dual_expert_libero_action_noisy_to_video) return 0 ;;
+    dual_expert_libero_action_then_video) return 0 ;;
+    dual_expert_libero_decoupled_same_step) return 0 ;;
+    dual_expert_libero_joint) return 0 ;;
+    dual_expert_libero_video_noisy_to_action) return 0 ;;
+    dual_expert_libero_video_then_action) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -75,17 +106,17 @@ open_wam_removed_libero_policy_config_reason() {
   local config_name
   config_name="$(open_wam_normalize_config_name "${1:-}")"
   case "${config_name}" in
-    mot_libero_latent_local) echo "legacy M5 local config without strict one-frame fixed-128 rollout parity" ;;
-    mot_libero_latent_local_idm) echo "legacy M5 IDM config without strict one-frame fixed-128 rollout parity" ;;
-    mot_libero_latent_local_joint) echo "legacy M5 joint config without strict one-frame fixed-128 rollout parity" ;;
-    mot_libero_latent_local_joint_full_segment) echo "legacy M5 full-segment config" ;;
-    mot_libero_latent_local_full_segment) echo "legacy M5 full-segment config" ;;
-    mot_libero_latent_local_full_segment_non_joint_aligned) echo "legacy M5 aligned full-segment config" ;;
-    mot_libero_latent_local_full_segment_with_latent) echo "legacy M5 full-segment latent config" ;;
+    dual_expert_libero_latent_local) echo "legacy M5 local config without strict one-frame fixed-128 rollout parity" ;;
+    dual_expert_libero_latent_local_idm) echo "legacy M5 IDM config without strict one-frame fixed-128 rollout parity" ;;
+    dual_expert_libero_latent_local_joint) echo "legacy M5 joint config without strict one-frame fixed-128 rollout parity" ;;
+    dual_expert_libero_latent_local_joint_full_segment) echo "legacy M5 full-segment config" ;;
+    dual_expert_libero_latent_local_full_segment) echo "legacy M5 full-segment config" ;;
+    dual_expert_libero_latent_local_full_segment_non_joint_aligned) echo "legacy M5 aligned full-segment config" ;;
+    dual_expert_libero_latent_local_full_segment_with_latent) echo "legacy M5 full-segment latent config" ;;
     parallel_stream_libero_lingbot_exact_local) echo "legacy local M1 exact config" ;;
-    parallel_stream_libero_lingbot_joint_denoise_heng_compatible_contextual_fixed_geometry) echo "legacy contextual-subwindow M1 joint config" ;;
-    parallel_stream_libero_lingbot_joint_denoise_heng_compatible_contextual_subwindow) echo "legacy contextual-subwindow M1 joint config" ;;
-    parallel_stream_libero_lingbot_joint_denoise_heng_compatible_random_subwindow) echo "legacy random-subwindow M1 joint config" ;;
+    parallel_stream_libero_joint_denoise_heng_compatible_contextual_fixed_geometry) echo "legacy contextual-subwindow parallel-stream joint config" ;;
+    parallel_stream_libero_joint_denoise_heng_compatible_contextual_subwindow) echo "legacy contextual-subwindow parallel-stream joint config" ;;
+    parallel_stream_libero_joint_denoise_heng_compatible_random_subwindow) echo "legacy random-subwindow parallel-stream joint config" ;;
     *) return 1 ;;
   esac
 }
@@ -95,13 +126,13 @@ open_wam_removed_libero_launcher_replacement() {
   launcher_name="${launcher_name##*/}"
   case "${launcher_name}" in
     run_mot_non_joint_aligned_libero_A.sh)
-      echo "scripts/run_mot_nonjoint_posttrain_libero.sh with a current canonical CONFIG_NAME"
+      echo "scripts/run_dual_expert_posttrain_libero.sh with a current canonical CONFIG_NAME"
       ;;
     run_mot_non_joint_action_only_libero_B.sh)
-      echo "scripts/run_mot_nonjoint_posttrain_libero.sh with a current canonical CONFIG_NAME"
+      echo "scripts/run_dual_expert_posttrain_libero.sh with a current canonical CONFIG_NAME"
       ;;
     run_mot_full_segment_nonjoint_libero.sh)
-      echo "scripts/run_mot_nonjoint_posttrain_libero.sh"
+      echo "scripts/run_dual_expert_posttrain_libero.sh"
       ;;
     *) return 1 ;;
   esac

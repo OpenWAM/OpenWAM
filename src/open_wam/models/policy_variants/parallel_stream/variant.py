@@ -8,20 +8,21 @@ from open_wam.configs import (
     InferenceConfig,
     ParallelExactCacheWriteMode,
     ParallelRuntimeMode,
-    ParallelSequenceContract,
     ParallelStreamVariantProfile,
     TemporalPositionMode,
     TrainingConfig,
+    VideoActionSequenceContract,
 )
-from open_wam.contracts import SampleConstructionMetadata
-from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
-from open_wam.models.video_backbone.contracts import CacheState
 from open_wam.configs.backbone import SharedVideoTransformerConfig
+from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
+from open_wam.contracts import SampleConstructionMetadata
 from open_wam.models.policy_variants.common.layouts import expand_previous_action
+from open_wam.models.video_backbone.contracts import CacheState
 from open_wam.models.visual_tower import VisualStageOutputs, VisualTower
 
 from ..base import PolicyVariant
 from ..contracts import (
+    DecoderArtifactEnvelope,
     PolicyInferContext,
     PolicyInferOutput,
     PolicyInferState,
@@ -30,17 +31,29 @@ from ..contracts import (
     PolicyTrainOutput,
     RolloutCursor,
 )
+from .action_adapter import LingbotActionAdapter, build_action_adapter_spec
 from .anchored_action_rollout import (
     run_parallel_current_frame_action_chunk_inference_rollout,
     run_parallel_fastwam_first_frame_inference_rollout,
 )
 from .cache_lifecycle import run_parallel_exact_cache_warmup
+from .conditioning import ParallelStreamConditioning
+from .decoder_artifacts import (
+    PARALLEL_STREAM_DECODER_ARTIFACT_CONTRACT,
+    ParallelDecoderInferArtifacts,
+    ParallelDecoderTrainArtifacts,
+)
 from .forward_execution import (
     run_parallel_action_conditioned_train,
     run_parallel_exact_train,
     run_parallel_first_frame_conditioned_train,
 )
 from .packed_rollout import run_parallel_packed_inference_rollout
+from .reference_profile import (
+    LingbotReferenceRuntimeContract,
+    validate_reference_profile,
+)
+from .runtime_semantics import resolve_parallel_current_block_coupling
 from .staged_rollout import run_parallel_staged_inference_rollout
 from .training_exact_artifacts import (
     prepare_parallel_action_conditioned_train_artifacts,
@@ -53,10 +66,7 @@ from .training_single_frame_artifacts import (
     prepare_parallel_current_frame_action_chunk_train_artifacts,
     prepare_parallel_fastwam_first_frame_train_artifacts,
 )
-from .runtime_semantics import resolve_parallel_current_block_coupling
-from .action_adapter import LingbotActionAdapter, build_action_adapter_spec
-from .conditioning import ParallelStreamConditioning
-from .reference_profile import LingbotReferenceRuntimeContract, validate_reference_profile
+
 
 def _resolve_generalist_singleton_chunk_frame(
     metadata: dict,
@@ -80,7 +90,7 @@ def _resolve_generalist_singleton_chunk_frame(
 class ParallelStreamPolicyVariant(PolicyVariant):
     """LingBot-style parallel-stream policy variant.
 
-    The canonical method-1 path is exact-runtime-only. Training and inference
+    The canonical parallel-stream path is exact-runtime-only. Training and inference
     semantics live in role-owned parallel-stream modules and execute on the
     shared runtime backbone; this variant intentionally avoids maintaining a
     second local packed-sequence implementation.
@@ -104,7 +114,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             ParallelRuntimeMode.FASTWAM_FIRST_FRAME,
         }:
             raise ValueError(
-                "Parallel-stream method 1 now only supports LingBot-exact semantics. "
+                "Parallel-stream now only supports the exact-runtime semantics. "
                 f"Got runtime_mode={config.runtime_mode!r}."
             )
         self.config = config
@@ -198,16 +208,16 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             video_latents=visual_outputs.frontend.video_latents,
         )
         legacy_prefix_contract = (
-            self.config.parallel_sequence_contract
-            == ParallelSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
+            self.config.sequence_contract
+            == VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
         )
         if legacy_prefix_contract and self.config.runtime_mode not in {
             ParallelRuntimeMode.LINGBOT_EXACT,
             ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
         }:
             raise ValueError(
-                "`parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio` only supports "
-                "LingBot exact dual-stream M1 runtime modes."
+                "`sequence_contract=legacy_prefix_single_frame_perchunk_proprio` only supports "
+                "LingBot exact dual-stream parallel-stream runtime modes."
             )
         if self.config.runtime_mode == ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK:
             train_artifacts = prepare_parallel_current_frame_action_chunk_train_artifacts(
@@ -236,7 +246,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         elif legacy_prefix_contract:
             if not isinstance(condition_latents, torch.Tensor):
                 raise ValueError(
-                    "`parallel_sequence_contract=legacy_prefix_single_frame_perchunk_proprio` requires "
+                    "`sequence_contract=legacy_prefix_single_frame_perchunk_proprio` requires "
                     "precomputed single-frame condition_latents. "
                     "Run scripts/augment_lerobot_latents_with_single_frame_condition.py with --source-frame-offset -1."
                 )
@@ -316,7 +326,12 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             video_latents=visual_outputs.frontend.video_latents,
             payload=per_chunk_proprio_payload,
         )
-        return PolicyPreparedInputs(batch=batch, variant_inputs={"lingbot_train_artifacts": train_artifacts})
+        return PolicyPreparedInputs(
+            batch=batch,
+            variant_inputs={
+                "parallel_train_artifacts": train_artifacts,
+            },
+        )
 
     def _resolve_train_sampling_metadata(
         self,
@@ -440,7 +455,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         prepared_inputs: PolicyPreparedInputs,
     ) -> PolicyTrainOutput:
         del visual_outputs
-        # Method 1 is intentionally exact-runtime-only. The shared backbone
+        # parallel-stream is intentionally exact-runtime-only. The shared backbone
         # still owns the transformer weights, but train-time packing, attention
         # profile selection, and projection semantics live in the exact runtime
         # helper to preserve LingBot behavior.
@@ -448,7 +463,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             action_dim=self.action_dim,
             device=prepared_inputs.batch.actions.device,
         )
-        train_artifacts = prepared_inputs.variant_inputs["lingbot_train_artifacts"]
+        train_artifacts = prepared_inputs.variant_inputs["parallel_train_artifacts"]
         self.conditioning.append_generalist_mode_text_token(reference_transformer, train_artifacts)
         self.conditioning.append_train_proprio_text_context(reference_transformer, train_artifacts)
         runtime_input_dict = dict(train_artifacts.input_dict)
@@ -468,23 +483,31 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 reference_transformer,
                 runtime_input_dict,
             )
+        loss_weights = {
+            "latent": self.training_config.objective_weight("latent"),
+            "action": self.training_config.objective_weight("action"),
+        }
+        patch_size = (
+            self.backbone_config.patch_size_t,
+            self.backbone_config.patch_size_h,
+            self.backbone_config.patch_size_w,
+        )
+        decoder_payload = ParallelDecoderTrainArtifacts(
+            latent_pred=latent_pred,
+            runtime=train_artifacts,
+            loss_weights=loss_weights,
+            patch_size=patch_size,
+        )
         return PolicyTrainOutput(
             policy_features=action_pred,
             metrics={"packed_sequence_length": torch.tensor(float(action_pred.shape[1]), device=action_pred.device)},
+            decoder_artifacts=DecoderArtifactEnvelope(
+                contract=PARALLEL_STREAM_DECODER_ARTIFACT_CONTRACT,
+                payload=decoder_payload,
+            ),
             aux={
                 "variant": self.config.name,
                 "runtime_mode": self.config.runtime_mode,
-                "latent_pred": latent_pred,
-                "lingbot_train_artifacts": train_artifacts,
-                "loss_weights": {
-                    "latent": self.training_config.objective_weight("latent"),
-                    "action": self.training_config.objective_weight("action"),
-                },
-                "patch_size": (
-                    self.backbone_config.patch_size_t,
-                    self.backbone_config.patch_size_h,
-                    self.backbone_config.patch_size_w,
-                ),
                 "debug": {
                     "sampled_chunk_size": train_artifacts.input_dict["chunk_size"],
                     "sampled_window_size": train_artifacts.input_dict["window_size"],
@@ -646,7 +669,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
         action_conditioning_mode: object = "vanilla_joint_rollout",
     ) -> PolicyInferOutput:
         # Chunk generation stays exact-runtime-native as well. This keeps the
-        # canonical method-1 policy variant small: the variant owns rollout
+        # canonical parallel-stream policy variant small: the variant owns rollout
         # control and adapter conversion, while the exact runtime helper owns
         # the LingBot denoising schedule itself.
         if visual_outputs is not None:
@@ -725,7 +748,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             CurrentBlockCoupling.ACTION_NOISY_TO_VIDEO,
         }:
             if skip_video_prediction:
-                raise ValueError("`skip_video_prediction` is only supported by staged exact M1 rollout modes.")
+                raise ValueError("`skip_video_prediction` is only supported by staged exact parallel-stream rollout modes.")
             infer_artifacts = run_parallel_packed_inference_rollout(
                 transformer=reference_transformer,
                 backbone_config=self.backbone_config,
@@ -789,12 +812,20 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             payload_updates={"cache_name": str(infer_artifacts.next_cache.get("cache_name", infer_state.cache.get("cache_name", "open_wam_exact")))},
         )
         raw_chunk_action = self.exact_action_adapter.to_raw_action_sequence(infer_artifacts.action_pred)
+        decoder_payload = ParallelDecoderInferArtifacts(
+            predicted_latents=infer_artifacts.predicted_latents,
+            raw_chunk_action_pred=raw_chunk_action,
+        )
         return PolicyInferOutput(
             policy_features=infer_artifacts.action_pred.to(dtype=output_dtype),
             next_state=PolicyInferState(
                 step_index=int(infer_artifacts.next_cache["step_index"]),
                 cursor=next_cursor,
                 cache=infer_artifacts.next_cache,
+            ),
+            decoder_artifacts=DecoderArtifactEnvelope(
+                contract=PARALLEL_STREAM_DECODER_ARTIFACT_CONTRACT,
+                payload=decoder_payload,
             ),
             aux={
                 "variant": self.config.name,

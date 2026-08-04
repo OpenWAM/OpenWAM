@@ -7,7 +7,7 @@ does not claim.
 
 Required fields:
 
-- method family or fixture family
+- policy architecture or fixture family
 - variant
 - benchmark or dataset
 - config path

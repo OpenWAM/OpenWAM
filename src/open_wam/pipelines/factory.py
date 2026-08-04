@@ -7,9 +7,9 @@ from open_wam.configs import (
     ActionNormalizationMode,
     BackboneImplementation,
     BatchAdapterName,
+    DualExpertRuntimeMode,
     ExperimentConfig,
     ExtensionActionDecoderConfig,
-    MoTRuntimeMode,
     ParallelRuntimeMode,
     ProprioContextMode,
     VideoConditionInputSpace,
@@ -22,7 +22,7 @@ from open_wam.configs.policy_contracts import (
     PostDecodedPolicyConfig,
     PostLatentPolicyConfig,
 )
-from open_wam.configs.policy_mot import MoTPolicyConfig
+from open_wam.configs.policy_dual_expert import DualExpertPolicyConfig
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.data import build_canonical_video_preprocessor
 from open_wam.data.action_mapping import (
@@ -32,15 +32,15 @@ from open_wam.data.action_mapping import (
 from open_wam.models.action_decoders import (
     ActionDecoder,
     DecodedFeatureActionDecoder,
-    LingbotParallelActionDecoder,
+    DualExpertActionDecoder,
     MLPActionDecoder,
-    MoTActionDecoder,
+    ParallelStreamActionDecoder,
     VideoConditionedActionDecoder,
     VideoOnlyActionDecoder,
 )
 from open_wam.models.policy_variants import (
     CausalVideoPredictionPolicyVariant,
-    MoTPolicyVariant,
+    DualExpertPolicyVariant,
     ParallelStreamPolicyVariant,
     PolicyVariant,
     PostDecodedPolicyVariant,
@@ -52,21 +52,12 @@ from open_wam.models.policy_variants.parallel_stream.action_adapter import (
 from open_wam.models.video_backbone import normalize_backbone_implementation
 from open_wam.models.visual_tower import VisualTower
 
-from .lingbot_exact import LingbotExactRunner
-from .registries import (
-    ACTION_DECODER_BUILDERS,
-    POLICY_VARIANT_BUILDERS,
-    _EXTENSION_ACTION_DECODER_BUILDERS,
-    _EXTENSION_POLICY_VARIANT_BUILDERS,
-)
-from .variant_pipeline import VariantPipeline
-
 from .action_decoder_factory import (
     _build_decoded_feature_action_decoder,
+    _build_dual_expert_action_decoder,
     _build_extension_action_decoder,
-    _build_lingbot_parallel_action_decoder,
     _build_mlp_action_decoder,
-    _build_mot_action_decoder,
+    _build_parallel_stream_action_decoder,
     _build_video_conditioned_action_decoder,
     _build_video_only_action_decoder,
     build_action_decoder,
@@ -78,16 +69,23 @@ from .factory_validation import (
     _resolve_proprio_hidden_context_state_dim,
     validate_experiment_config,
 )
+from .lingbot_exact import LingbotExactRunner
 from .policy_factory import (
     _build_causal_video_prediction_policy_variant,
+    _build_dual_expert_policy_variant,
     _build_extension_policy_variant,
-    _build_mot_policy_variant,
     _build_parallel_stream_policy_variant,
     _build_post_decoded_policy_variant,
     _build_post_latent_policy_variant,
     build_policy_variant,
 )
-
+from .registries import (
+    _EXTENSION_ACTION_DECODER_BUILDERS,
+    _EXTENSION_POLICY_VARIANT_BUILDERS,
+    ACTION_DECODER_BUILDERS,
+    POLICY_VARIANT_BUILDERS,
+)
+from .variant_pipeline import VariantPipeline
 
 # Preserve the historical direct/wildcard import surface without making these
 # implementation dependencies of the composition owner.
@@ -96,7 +94,7 @@ _COMPATIBILITY_EXPORTS = (
     BackboneImplementation,
     BatchAdapterName,
     ExtensionActionDecoderConfig,
-    MoTRuntimeMode,
+    DualExpertRuntimeMode,
     ParallelRuntimeMode,
     ProprioContextMode,
     VideoConditionInputSpace,
@@ -105,13 +103,13 @@ _COMPATIBILITY_EXPORTS = (
     validate_action_mapping_preflight,
     ActionDecoder,
     DecodedFeatureActionDecoder,
-    LingbotParallelActionDecoder,
+    ParallelStreamActionDecoder,
     MLPActionDecoder,
-    MoTActionDecoder,
+    DualExpertActionDecoder,
     VideoConditionedActionDecoder,
     VideoOnlyActionDecoder,
     CausalVideoPredictionPolicyVariant,
-    MoTPolicyVariant,
+    DualExpertPolicyVariant,
     ParallelStreamPolicyVariant,
     PolicyVariant,
     PostDecodedPolicyVariant,
@@ -144,15 +142,15 @@ def _register_builtin_pipeline_builders() -> None:
         replace=True,
     )
     POLICY_VARIANT_BUILDERS.register(
-        MoTPolicyConfig,
-        _build_mot_policy_variant,
-        description="Mixture-of-transformers policy variant.",
+        DualExpertPolicyConfig,
+        _build_dual_expert_policy_variant,
+        description="Dual-expert video/action policy variant.",
         replace=True,
     )
     POLICY_VARIANT_BUILDERS.register(
         ParallelStreamPolicyConfig,
         _build_parallel_stream_policy_variant,
-        description="Parallel-stream LingBot-compatible policy variant.",
+        description="Parallel-stream video/action policy variant.",
         replace=True,
     )
     POLICY_VARIANT_BUILDERS.register(
@@ -174,11 +172,11 @@ def _register_builtin_pipeline_builders() -> None:
         replace=True,
     )
     ACTION_DECODER_BUILDERS.register(
-        ActionDecoderName.LINGBOT_PARALLEL,
-        _build_lingbot_parallel_action_decoder,
+        ActionDecoderName.PARALLEL_STREAM,
+        _build_parallel_stream_action_decoder,
         replace=True,
     )
-    ACTION_DECODER_BUILDERS.register(ActionDecoderName.MOT, _build_mot_action_decoder, replace=True)
+    ACTION_DECODER_BUILDERS.register(ActionDecoderName.DUAL_EXPERT, _build_dual_expert_action_decoder, replace=True)
     ACTION_DECODER_BUILDERS.register(ActionDecoderName.VIDEO_ONLY, _build_video_only_action_decoder, replace=True)
     ACTION_DECODER_BUILDERS.register(
         ActionDecoderName.EXTENSION,
@@ -206,9 +204,9 @@ def build_variant_pipeline_from_config(config: ExperimentConfig) -> VariantPipel
         ),
     )
     policy_variant = build_policy_variant(config)
-    # Pipeline-time hook for variants that need cross-module surgery (e.g. MoT
+    # Pipeline-time hook for variants that need cross-module surgery (e.g. DualExpert
     # packed coupling transfers video core/action expert blocks into one
-    # MoTPackedBlockStack). Must run before FSDP sharding.
+    # DualExpertPackedBlockStack). Must run before FSDP sharding.
     if hasattr(policy_variant, "attach_visual_tower"):
         policy_variant.attach_visual_tower(visual_tower)
     action_decoder = build_action_decoder(config)
