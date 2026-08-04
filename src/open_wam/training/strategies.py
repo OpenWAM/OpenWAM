@@ -18,6 +18,8 @@ from open_wam.configs import (
     TrainerPrecision,
 )
 
+from .launch import DistributedLaunchContext, validate_training_launch
+
 
 def _resolve_device(
     accelerator: TrainerAccelerator | str, local_rank: int = 0
@@ -228,13 +230,21 @@ class SingleDeviceStrategy:
 
     accelerator: TrainerAccelerator
     precision: TrainerPrecision
+    launch_context: DistributedLaunchContext | None = None
 
     def __post_init__(self) -> None:
-        self.rank = 0
-        self.local_rank = 0
-        self.world_size = 1
-        self.distributed = False
-        self.is_main_process = True
+        context = self.launch_context or DistributedLaunchContext.from_env()
+        initialized_world_size = dist.get_world_size() if dist.is_initialized() else 1
+        if context.distributed or initialized_world_size > 1:
+            raise ValueError(
+                "SingleDeviceStrategy cannot run inside a multi-process launch."
+            )
+        self.launch_context = context
+        self.rank = context.rank
+        self.local_rank = context.local_rank
+        self.world_size = context.world_size
+        self.distributed = context.distributed
+        self.is_main_process = self.rank == 0
         self.device = _resolve_device(self.accelerator)
         self._use_fp16_scaler = (
             self.precision == TrainerPrecision.FP16 and self.device.type == "cuda"
@@ -317,11 +327,21 @@ class DistributedStrategy(SingleDeviceStrategy):
     distributed_timeout_seconds: int = 1800
 
     def __post_init__(self) -> None:
-        self.rank = int(os.getenv("RANK", "0"))
-        self.local_rank = int(os.getenv("LOCAL_RANK", "0"))
-        self.world_size = int(os.getenv("WORLD_SIZE", "1"))
-        self.distributed = self.world_size > 1
+        context = self.launch_context or DistributedLaunchContext.from_env()
+        self.launch_context = context
+        self.rank = context.rank
+        self.local_rank = context.local_rank
+        self.world_size = context.world_size
+        self.distributed = context.distributed
         self.is_main_process = self.rank == 0
+        if dist.is_initialized() and (
+            dist.get_rank() != self.rank or dist.get_world_size() != self.world_size
+        ):
+            raise ValueError(
+                "The initialized Torch process group disagrees with RANK/WORLD_SIZE: "
+                f"group=({dist.get_rank()}, {dist.get_world_size()}) "
+                f"environment=({self.rank}, {self.world_size})."
+            )
         if self.accelerator == TrainerAccelerator.GPU and torch.cuda.is_available():
             torch.cuda.set_device(self.local_rank)
         self.device = _resolve_device(self.accelerator, local_rank=self.local_rank)
@@ -334,6 +354,8 @@ class DistributedStrategy(SingleDeviceStrategy):
             backend = "nccl" if self.device.type == "cuda" else "gloo"
             dist.init_process_group(
                 backend=backend,
+                rank=self.rank,
+                world_size=self.world_size,
                 timeout=timedelta(seconds=int(self.distributed_timeout_seconds)),
             )
             self._owns_process_group = True
@@ -402,11 +424,19 @@ class DistributedStrategy(SingleDeviceStrategy):
             dist.destroy_process_group()
 
 
-def build_training_strategy(config: TrainerConfig) -> SingleDeviceStrategy:
+def build_training_strategy(
+    config: TrainerConfig,
+    *,
+    launch_context: DistributedLaunchContext | None = None,
+) -> SingleDeviceStrategy:
+    context = launch_context or DistributedLaunchContext.from_env()
+    validate_training_launch(config, context)
     strategy_name = config.strategy
     if strategy_name == StrategyName.SINGLE_DEVICE:
         return SingleDeviceStrategy(
-            accelerator=config.accelerator, precision=config.precision
+            accelerator=config.accelerator,
+            precision=config.precision,
+            launch_context=context,
         )
     if strategy_name in {StrategyName.DDP, StrategyName.FSDP}:
         return DistributedStrategy(
@@ -414,5 +444,6 @@ def build_training_strategy(config: TrainerConfig) -> SingleDeviceStrategy:
             precision=config.precision,
             kind=strategy_name,
             distributed_timeout_seconds=config.distributed_timeout_seconds,
+            launch_context=context,
         )
     raise NotImplementedError(f"Unsupported training strategy {strategy_name!r}.")

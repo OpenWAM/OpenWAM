@@ -216,10 +216,10 @@ open_wam_launch_training() {
       --local-ranks-filter="${log_rank}" \
       --master_port "${master_port}" \
       --tee 3 \
-      -m open_wam.training.train \
+      -m open_wam.cli.train \
       "${train_args[@]}"
   else
-    uv run python -m open_wam.training.train \
+    uv run python -m open_wam.cli.train \
       "${train_args[@]}"
   fi
 }

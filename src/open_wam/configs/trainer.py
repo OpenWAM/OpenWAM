@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 from .coercion import coerce_enum
 from .enums import (
@@ -28,7 +29,8 @@ class TrainerConfig:
     validation_interval: int | None = None
     log_every_n_steps: int = 1
 
-    # Device/runtime-selection knobs
+    # Device/runtime-selection knobs. Worker creation belongs to the external
+    # launcher; `devices` is retained as a compatibility process-count expectation.
     accelerator: TrainerAccelerator = TrainerAccelerator.CPU
     devices: int = 1
     precision: TrainerPrecision = TrainerPrecision.FP32
@@ -82,6 +84,9 @@ class TrainerConfig:
                 "wandb_mode": WandBMode,
             },
         )
+        if isinstance(self.devices, bool) or int(self.devices) <= 0:
+            raise ValueError("`trainer.devices` must be a positive integer.")
+        object.__setattr__(self, "devices", int(self.devices))
         if self.validation_interval is not None:
             if isinstance(self.validation_interval, bool) or int(self.validation_interval) <= 0:
                 raise ValueError("`trainer.validation_interval` must be a positive integer or null.")

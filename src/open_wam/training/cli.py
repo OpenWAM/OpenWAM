@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-import argparse
 import os
+from argparse import ArgumentParser
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import open_wam.configs.enums as config_enums
+from open_wam.cli.train_arguments import build_train_arg_parser as build_cli_arg_parser
 from open_wam.configs import (
     ExperimentConfig,
     apply_video_action_sequence_contract,
@@ -52,6 +53,7 @@ class TrainCliOverrides:
     latent_root: str | None = None
     transformer_subdir: str | None = None
     devices: int | None = None
+    expected_world_size: int | None = None
     num_steps: int | None = None
     enable_wandb: bool = False
     disable_wandb: bool = False
@@ -62,56 +64,23 @@ class TrainCliOverrides:
     overrides: tuple[str, ...] = ()
 
 
-def build_train_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser()
-    config_group = parser.add_mutually_exclusive_group(required=True)
-    config_group.add_argument("--cfg", "--config", dest="config", type=str)
-    config_group.add_argument("--config-name", dest="config_name", type=str)
-    parser.add_argument(
-        "--save-root",
-        type=str,
-        help="Full run output directory. This mirrors LingBot's `save_root` semantics.",
-    )
-    parser.add_argument("--checkpoint-dir", type=str)
-    parser.add_argument(
-        "--checkpoint-root",
-        type=str,
-        help=(
-            "Warm-start checkpoint_step_* directory; infers full_training_state.pt "
-            "when available, falling back to model_state.pt only when no full state exists."
-        ),
-    )
-    parser.add_argument("--resume-from", type=str)
-    parser.add_argument("--run-name", type=str)
-    parser.add_argument("--dataset-root", type=str)
-    parser.add_argument("--latent-root", type=str)
-    parser.add_argument("--transformer-subdir", type=str)
-    parser.add_argument("--devices", type=int)
-    parser.add_argument("--num-steps", type=int)
-    parser.add_argument("--enable-wandb", action="store_true")
-    parser.add_argument("--disable-wandb", action="store_true")
-    parser.add_argument("--wandb-project", type=str)
-    parser.add_argument("--wandb-entity", type=str)
-    parser.add_argument("--wandb-mode", type=str)
-    parser.add_argument(
-        "--extension",
-        action="append",
-        default=[],
-        help="Load `package.module[:hook]` before parsing and constructing the experiment.",
-    )
-    parser.add_argument(
-        "--set",
-        dest="set_overrides",
-        action="append",
-        default=[],
-        help="Repeatable `section.field=value` override.",
-    )
-    return parser
+def build_train_arg_parser() -> ArgumentParser:
+    """Return the package-owned public parser used by every train entrypoint."""
+
+    return build_cli_arg_parser()
 
 
 def parse_train_cli(argv: list[str] | None = None) -> TrainCliOverrides:
     parser = build_train_arg_parser()
     args, extras = parser.parse_known_args(argv)
+    if (
+        args.devices is not None
+        and args.expected_world_size is not None
+        and args.devices != args.expected_world_size
+    ):
+        parser.error(
+            "--devices and --expected-world-size must match when both are provided."
+        )
     return TrainCliOverrides(
         config=args.config,
         config_name=args.config_name,
@@ -124,6 +93,7 @@ def parse_train_cli(argv: list[str] | None = None) -> TrainCliOverrides:
         latent_root=args.latent_root,
         transformer_subdir=args.transformer_subdir,
         devices=args.devices,
+        expected_world_size=args.expected_world_size,
         num_steps=args.num_steps,
         enable_wandb=args.enable_wandb,
         disable_wandb=args.disable_wandb,

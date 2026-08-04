@@ -413,6 +413,45 @@ def _required_argparse_options(path: Path) -> set[str]:
     return required_options
 
 
+def _required_mutually_exclusive_argparse_option_groups(
+    path: Path,
+) -> set[frozenset[str]]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    required_groups: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+            continue
+        call = node.value
+        if (
+            isinstance(call.func, ast.Attribute)
+            and call.func.attr == "add_mutually_exclusive_group"
+            and any(
+                keyword.arg == "required"
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value is True
+                for keyword in call.keywords
+            )
+        ):
+            required_groups.update(
+                target.id for target in node.targets if isinstance(target, ast.Name)
+            )
+
+    options_by_group = {name: set() for name in required_groups}
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in options_by_group
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            options_by_group[node.func.value.id].add(node.args[0].value)
+    return {frozenset(options) for options in options_by_group.values()}
+
+
 def _module_all_names(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in tree.body:
@@ -7292,10 +7331,7 @@ def test_retained_pose_and_wan_diagnostics_use_owned_portable_contracts() -> Non
 
 def test_retained_checkout_commands_require_machine_local_roots() -> None:
     required_options = {
-        "build_libero_replay_metadata.py": {
-            "--dataset-root",
-            "--diagnostic-root",
-        },
+        "build_libero_replay_metadata.py": {"--diagnostic-root"},
         "validate_libero_dataset_replay_labels.py": {
             "--dataset-root",
             "--diagnostic-root",
@@ -7311,6 +7347,11 @@ def test_retained_checkout_commands_require_machine_local_roots() -> None:
         assert expected <= _required_argparse_options(
             REPO_ROOT / "scripts" / script_name
         )
+
+    replay_metadata_builder = REPO_ROOT / "scripts/build_libero_replay_metadata.py"
+    assert frozenset({"--dataset-root", "--subset-root"}) in (
+        _required_mutually_exclusive_argparse_option_groups(replay_metadata_builder)
+    )
 
     reference_runner = REPO_ROOT / "scripts/run_lingbot_reference_visualization.py"
     assert "_configure_reference_runtime" in _top_level_definitions(reference_runner)
@@ -8372,7 +8413,7 @@ def test_data_public_facade_is_fully_lazy() -> None:
 
     assert relative_imports == []
     assert set(lazy_exports) == _module_all_names(path)
-    assert len(lazy_exports) == 175
+    assert len(lazy_exports) == 183
     assert lazy_exports["WAMSample"] == "contracts"
     assert lazy_exports["ReplayStatusFilterReport"] == "replay_status"
     assert lazy_exports["pack_temporal_sequence"] == "sequence_packing"

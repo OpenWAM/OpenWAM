@@ -2,30 +2,48 @@
 from __future__ import annotations
 
 import argparse
-from collections import Counter, defaultdict
-from datetime import datetime, timezone
 import json
 import os
+from collections import Counter, defaultdict
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-
 
 DEFAULT_SUBSETS = ("libero_10", "libero_90", "libero_goal", "libero_object", "libero_spatial")
 DEFAULT_INIT_STATE_COUNT = 50
 INIT_COVERAGE_SCHEMA_VERSION = 2
 
 
-def main() -> None:
+def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Merge LIBERO replay-label JSONL shards and write dataset metadata, including "
             "per-task/init-state successful-GT coverage."
         )
     )
-    parser.add_argument("--dataset-root", type=Path, required=True)
+    dataset_location = parser.add_mutually_exclusive_group(required=True)
+    dataset_location.add_argument(
+        "--dataset-root",
+        type=Path,
+        help=(
+            "Compatibility parent root containing one directory per selected subset. "
+            "Prefer explicit --subset-root mappings in new automation."
+        ),
+    )
+    dataset_location.add_argument(
+        "--subset-root",
+        action="append",
+        default=[],
+        metavar="SUBSET=PATH",
+        help=(
+            "Exact dataset directory for one selected subset. Repeat for multi-subset runs; "
+            "for example libero_10=/datasets/libero_10."
+        ),
+    )
     parser.add_argument("--diagnostic-root", type=Path, required=True)
     parser.add_argument("--subsets", type=str, default=",".join(DEFAULT_SUBSETS))
-    parser.add_argument(
+    replay_source = parser.add_mutually_exclusive_group(required=True)
+    replay_source.add_argument(
         "--source-run",
         action="append",
         default=[],
@@ -44,33 +62,43 @@ def main() -> None:
             "episode-count completeness alone cannot prove the refinement run finished."
         ),
     )
-    parser.add_argument(
+    replay_source.add_argument(
         "--from-installed-meta",
         action="store_true",
-        help="Read <dataset_root>/<subset>/meta/replay_status.jsonl instead of --source-run inputs.",
+        help="Read each resolved subset root's meta/replay_status.jsonl instead of --source-run inputs.",
     )
     parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--install-dataset-meta", action="store_true")
     parser.add_argument("--allow-incomplete", action="store_true")
     parser.add_argument("--default-init-state-count", type=int, default=DEFAULT_INIT_STATE_COUNT)
-    args = parser.parse_args()
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = build_arg_parser().parse_args(argv)
 
     subsets = parse_subset_selector(args.subsets)
-    run_id = args.run_id or f"libero_replay_metadata_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    subset_dataset_roots = resolve_subset_dataset_roots(
+        subsets,
+        dataset_root=args.dataset_root,
+        subset_root_specs=args.subset_root,
+    )
+    run_id = args.run_id or (
+        f"libero_replay_metadata_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
+    )
     run_root = args.diagnostic_root / run_id
     run_root.mkdir(parents=True, exist_ok=True)
 
-    if args.from_installed_meta and args.source_run:
-        raise ValueError("--from-installed-meta and --source-run are mutually exclusive.")
     source_runs = parse_source_runs(args.source_run)
     expected_source_rows = parse_expected_source_rows(args.source_run_expected_rows)
-    if not args.from_installed_meta and not source_runs:
-        raise ValueError("Provide at least one --source-run or use --from-installed-meta.")
 
     overall: dict[str, Any] = {
         "run_id": run_id,
-        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "dataset_root": str(args.dataset_root),
+        "generated_at_utc": datetime.now(UTC).isoformat(),
+        "dataset_root": None if args.dataset_root is None else str(args.dataset_root),
+        "dataset_roots": {
+            subset: str(path) for subset, path in subset_dataset_roots.items()
+        },
         "diagnostic_root": str(args.diagnostic_root),
         "subsets": {},
         "source_runs": source_runs,
@@ -78,7 +106,7 @@ def main() -> None:
         "from_installed_meta": bool(args.from_installed_meta),
     }
     for subset in subsets:
-        dataset_root = args.dataset_root / subset
+        dataset_root = subset_dataset_roots[subset]
         expected_episodes = expected_episode_count(dataset_root)
         if args.from_installed_meta:
             rows = read_jsonl(dataset_root / "meta" / "replay_status.jsonl")
@@ -142,6 +170,52 @@ def parse_source_runs(raw_specs: list[str]) -> dict[str, list[str]]:
             raise ValueError(f"Invalid --source-run {spec!r}; expected <subset>=<run_id>.")
         source_runs[subset].append(run_id)
     return dict(source_runs)
+
+
+def resolve_subset_dataset_roots(
+    subsets: list[str],
+    *,
+    dataset_root: Path | None,
+    subset_root_specs: list[str],
+) -> dict[str, Path]:
+    """Resolve exact dataset directories without guessing root layout."""
+
+    if dataset_root is not None and subset_root_specs:
+        raise ValueError("dataset_root and subset_root_specs are mutually exclusive.")
+    if dataset_root is not None:
+        return {
+            subset: dataset_root.expanduser() / subset
+            for subset in subsets
+        }
+
+    resolved: dict[str, Path] = {}
+    for spec in subset_root_specs:
+        if "=" not in spec:
+            raise ValueError(
+                f"Invalid --subset-root {spec!r}; expected <subset>=<path>."
+            )
+        subset, raw_path = spec.split("=", 1)
+        subset = subset.strip()
+        raw_path = raw_path.strip()
+        if not subset or not raw_path:
+            raise ValueError(
+                f"Invalid --subset-root {spec!r}; expected <subset>=<path>."
+            )
+        if subset in resolved:
+            raise ValueError(f"Duplicate --subset-root mapping for {subset!r}.")
+        resolved[subset] = Path(raw_path).expanduser()
+
+    selected = set(subsets)
+    missing = sorted(selected.difference(resolved))
+    extra = sorted(set(resolved).difference(selected))
+    if missing or extra:
+        details = []
+        if missing:
+            details.append(f"missing mappings for {', '.join(missing)}")
+        if extra:
+            details.append(f"unselected mappings for {', '.join(extra)}")
+        raise ValueError("Invalid --subset-root selection: " + "; ".join(details) + ".")
+    return {subset: resolved[subset] for subset in subsets}
 
 
 def parse_expected_source_rows(raw_specs: list[str]) -> dict[tuple[str, str], int]:

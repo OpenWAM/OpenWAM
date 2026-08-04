@@ -56,14 +56,66 @@ All architectures and programs enter the same package-owned training runtime:
 ```bash
 uv run --extra train open-wam-train \
   --cfg configs/experiments/<experiment>.yaml \
-  --save-root runs/<run-name> \
-  --devices 1
+  --save-root runs/<run-name>
 ```
 
 Use repeatable `--set section.field=value` arguments only for intentional run
 overrides. Keep the resolved config with the checkpoint. External schedulers
 may set process placement and retry policy, but should invoke this command
 without embedding cluster paths in tracked configs.
+
+### Multi-GPU
+
+Worker processes are created by the external launcher, which supplies the
+runtime topology through `WORLD_SIZE`, `RANK`, and `LOCAL_RANK`. Neither config
+nor the training CLI creates workers. Launch under a process launcher:
+
+```bash
+torchrun --standalone --nproc-per-node=4 \
+  -m open_wam.cli.train \
+  --cfg configs/experiments/<experiment>.yaml \
+  --save-root runs/<run-name> \
+  --expected-world-size 4
+```
+
+`open_wam.cli.train` is the canonical module and console-script entrypoint. Both
+forms share one parser and delegate to the same training implementation.
+
+Under Slurm, run one task per node and let `torchrun` fan out the ranks:
+
+```bash
+#SBATCH --nodes=2
+#SBATCH --gres=gpu:4
+
+MASTER=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n1)
+srun --ntasks-per-node=1 torchrun \
+  --nnodes="$SLURM_NNODES" --nproc-per-node=4 \
+  --rdzv-backend=c10d --rdzv-endpoint="$MASTER:29500" \
+  --rdzv-id="$SLURM_JOB_ID" \
+  -m open_wam.cli.train \
+  --cfg configs/experiments/<experiment>.yaml \
+  --save-root runs/<run-name> \
+  --expected-world-size "$((SLURM_NNODES * 4))"
+```
+
+Do not use bare `srun --ntasks-per-node=<gpus>` without a task-local wrapper.
+Slurm exports `SLURM_PROCID`, `SLURM_LOCALID`, and `SLURM_NTASKS`, none of which
+this runtime reads; it reads only `RANK`, `LOCAL_RANK`, and `WORLD_SIZE`. Every
+task would see `WORLD_SIZE=1` and run as an independent single-process job. A
+direct `srun` integration must map those variables inside each task, not in the
+parent allocation shell. Prefer the `torchrun` recipe above.
+
+Open-WAM never creates worker processes from config. `--expected-world-size N`
+validates the topology supplied by the launcher and fails before model
+construction when `WORLD_SIZE != N`. The legacy `--devices N` option remains a
+compatibility alias: it is still recorded as `trainer.devices`, and explicit
+CLI values now establish the same launch expectation instead of being silently
+ignored. Use `--expected-world-size` in new automation.
+
+`strategy: fsdp` shards parameters, gradients, and optimizer state across the
+launched processes. A single process gets no sharding benefit regardless of how
+many GPUs are visible, so single-device memory must fit the whole model plus its
+optimizer state.
 
 Load an external dataset or policy extension before config construction:
 

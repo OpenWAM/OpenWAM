@@ -1584,10 +1584,12 @@ def test_training_cli_smoke_command_uses_real_entrypoint_and_one_update(
         "-m",
     ]
     assert command[4:6] == [
-        "open_wam.training.train",
+        "open_wam.cli.train",
         "--config-name",
     ]
     assert _option_value(command, "--config-name") == method.config_name
+    assert _option_value(command, "--devices") == "4"
+    assert _option_value(command, "--expected-world-size") == "4"
     assert overrides["training.num_steps"] == "1"
     assert overrides["training.gradient_accumulation_steps"] == "1"
     assert overrides["trainer.strategy"] == "fsdp"

@@ -109,7 +109,7 @@ training:
   action_sigma_shift: 1.0
   use_teacher_forcing: false
   # `chunk_size` / `window_size` are consumed at inference by
-  # `mot/variant.py` for the action-expert attention mask geometry; they
+  # `dual_expert/variant.py` for the action-expert attention mask geometry; they
   # must match the training YAML so the inference block ids and within-window
   # check reproduce the regime the model was trained on. Without these, the
   # frozen `TrainingConfig` defaults (chunk_size=2, window_size=8) silently

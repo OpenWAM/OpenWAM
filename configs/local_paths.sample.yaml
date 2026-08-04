@@ -4,9 +4,35 @@ paths:
     # configs/local_paths.yaml and replace every /path/to/... placeholder with
     # machine-local paths before running real data jobs.
     libero_root: /path/to/datasets/libero_10
-    # Replay-status labels used by maintained LIBERO training configs to split
-    # successful training episodes from unused failure/error validation episodes.
-    # Active LIBERO configs require this path for real training.
+    # Replay-status labels that split successful training episodes from failure/
+    # error validation episodes. Required by the LIBERO configs that select
+    # replay-filtered splits (`require_replay_status: true`); those runs fail
+    # without it. The generalist joint-denoising configs set
+    # `require_replay_status: false` and do not need it.
+    #
+    # This file is NOT shipped inside a latent-local LIBERO dataset root. It is
+    # produced by a separate simulator replay-labeling pass, whose per-subset
+    # output shards land under a diagnostic root. `build_libero_replay_metadata.py`
+    # merges those shards and can install the result into the dataset:
+    #
+    #   uv run python scripts/build_libero_replay_metadata.py \
+    #     --subset-root libero_10=/path/to/datasets/libero_10 \
+    #     --diagnostic-root /path/to/libero_failure_labels \
+    #     --subsets libero_10 \
+    #     --source-run libero_10=<replay_run_id> \
+    #     --install-dataset-meta
+    #
+    # `--subset-root` is an explicit <subset>=<path> mapping and may be repeated.
+    # The compatibility `--dataset-root /path/to/datasets` form still appends
+    # `/<subset>` itself. At least one `--source-run <subset>=<run_id>` is required,
+    # naming a labeling run under `--diagnostic-root`; that labeling pass is not
+    # produced by this script. To re-validate a file that is already installed,
+    # use `--from-installed-meta` instead of `--source-run`.
+    #
+    # `--install-dataset-meta` writes to <subset-root>/meta/ (or to
+    # <dataset-root>/<subset>/meta/ through the compatibility form), which is the
+    # default assumed below. Point this at the file's real location if you were
+    # handed one out of band instead.
     libero_replay_status_path: ${paths.datasets.libero_root}/meta/replay_status.jsonl
     # Public/local LIBERO checkout used by local HDF5 configs.
     libero_public_root: /path/to/datasets/libero/libero_10

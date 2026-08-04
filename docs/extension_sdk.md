@@ -65,7 +65,30 @@ An adapter may expose:
 
 - `raw_builder`: returns raw-RGB `WAMSample` datasets
 - `latent_builder`: returns pre-encoded `LatentWAMSample` datasets
+- `artifact_resolver`: declares required files and directories for startup preflight
 - both builders under one key when a source supports both paths
+
+Use `DatasetArtifactRequirement` instead of putting benchmark-specific path
+checks in the trainer. The runtime evaluates these requirements before model
+construction and reports the config owner and remediation for every missing
+required artifact. Optional requirements are retained in run-start provenance.
+
+```python
+from open_wam.data import DatasetArtifactKind, DatasetArtifactRequirement
+
+
+def resolve_artifacts(config):
+    return (
+        DatasetArtifactRequirement(
+            name="episode manifest",
+            path=config.local_root,
+            kind=DatasetArtifactKind.DIRECTORY,
+            required=True,
+            config_path="data.local_root",
+            purpose="the ACME adapter discovers episodes below this root",
+        ),
+    )
+```
 
 Registration rejects accidental replacement. Use a globally unique
 `dataset_type`; `replace=True` is reserved for intentional process-local

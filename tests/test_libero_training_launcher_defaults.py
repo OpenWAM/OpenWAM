@@ -128,7 +128,7 @@ def test_posttrain_launchers_delegate_to_shared_process_owner() -> None:
     assert set(expected_projects) == set(POSTTRAIN_LAUNCHERS)
     assert helper_source.count("open_wam_launch_training()") == 1
     assert helper_source.count("python -m torch.distributed.run") == 1
-    assert helper_source.count("python -m open_wam.training.train") == 1
+    assert helper_source.count("python -m open_wam.cli.train") == 1
     assert "open_wam_append_fixed128_rollout_context_args" in helper_source
     for relative_path, project in expected_projects.items():
         source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
@@ -200,7 +200,7 @@ printf 'WANDB_PROJECT=%s\\n' "${WANDB_PROJECT:-}"
         "--tee",
         "3",
         "-m",
-        "open_wam.training.train",
+        "open_wam.cli.train",
         "--config-name",
         "dual_expert_libero_joint",
         "--devices",

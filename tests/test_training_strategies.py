@@ -95,9 +95,40 @@ def test_distributed_strategy_uses_configured_process_group_timeout(
     assert calls == [
         {
             "backend": "gloo",
+            "rank": 0,
+            "world_size": 2,
             "timeout": timedelta(seconds=42),
         }
     ]
+
+
+def test_distributed_strategy_rejects_initialized_group_coordinate_mismatch(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setenv("LOCAL_RANK", "0")
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_rank", lambda: 1)
+    monkeypatch.setattr(dist, "get_world_size", lambda: 2)
+
+    with pytest.raises(ValueError, match="process group disagrees"):
+        build_training_strategy(
+            TrainerConfig(
+                accelerator=TrainerAccelerator.CPU,
+                strategy=StrategyName.DDP,
+            )
+        )
+
+
+def test_single_device_strategy_rejects_preinitialized_multi_rank_group(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_world_size", lambda: 2)
+
+    with pytest.raises(ValueError, match="SingleDeviceStrategy"):
+        build_training_strategy(TrainerConfig())
 
 
 @pytest.mark.parametrize("value", [True, 0, -1])

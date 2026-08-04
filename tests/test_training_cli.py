@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -22,6 +23,7 @@ from open_wam.configs import (
 )
 from open_wam.training import (
     TrainCliOverrides,
+    build_train_arg_parser,
     load_training_cli_config,
     resolve_experiment_config_path,
 )
@@ -54,17 +56,78 @@ def test_resolve_experiment_config_path_from_config_name() -> None:
     assert resolved == REPO_ROOT / "configs" / "experiments" / "parallel_stream_robotwin_smoke.yaml"
 
 
-def test_train_entrypoint_help_is_available() -> None:
+@pytest.mark.parametrize(
+    "module_name",
+    ["open_wam.cli.train", "open_wam.training.train"],
+)
+def test_train_entrypoint_help_is_available(module_name: str) -> None:
     result = subprocess.run(
-        [sys.executable, "-m", "open_wam.training.train", "--help"],
+        [sys.executable, "-m", module_name, "--help"],
         cwd=REPO_ROOT,
         check=True,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
     )
 
     assert "--config-name" in result.stdout
+    assert "--expected-world-size" in result.stdout
+
+
+def test_train_cli_parsers_share_the_public_contract() -> None:
+    from open_wam.cli.train import build_arg_parser as build_public_parser
+
+    public_options = {
+        option
+        for action in build_public_parser()._actions
+        for option in action.option_strings
+    }
+    runtime_options = {
+        option
+        for action in build_train_arg_parser()._actions
+        for option in action.option_strings
+    }
+
+    assert runtime_options == public_options
+
+
+def test_public_train_module_rejects_world_size_mismatch_before_model_build() -> None:
+    env = os.environ.copy()
+    for name in ("RANK", "LOCAL_RANK", "WORLD_SIZE", "LOCAL_WORLD_SIZE"):
+        env.pop(name, None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "open_wam.cli.train",
+            "--cfg",
+            str(REPO_ROOT / "configs/examples/public_tiny_synthetic_contract.yaml"),
+            "--expected-world-size",
+            "2",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode != 0
+    assert "Training expected 2 process(es)" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_train_cli_rejects_conflicting_launch_expectations() -> None:
+    with pytest.raises(SystemExit):
+        parse_train_cli(
+            [
+                "--config-name",
+                "parallel_stream_robotwin_smoke",
+                "--devices",
+                "2",
+                "--expected-world-size",
+                "4",
+            ]
+        )
 
 
 @pytest.mark.parametrize(
@@ -91,6 +154,7 @@ def test_cli_overrides_map_save_root_and_env_defaults(tmp_path: Path) -> None:
         dataset_root="/datasets/local_libero",
         latent_root="/datasets/local_libero/latents",
         devices=6,
+        expected_world_size=6,
         num_steps=4,
         enable_wandb=True,
         overrides=(

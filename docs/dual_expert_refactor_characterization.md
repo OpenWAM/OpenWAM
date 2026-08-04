@@ -438,7 +438,7 @@ uv run python -m tests.characterization.run_dual_expert_refactor_characterizatio
 ```
 
 The command stages a model-only symlink without sibling training counters,
-launches `open_wam.training.train` through four-rank `torchrun`, performs one
+launches `open_wam.cli.train` through four-rank `torchrun`, performs one
 real optimizer update with gradient accumulation set to one, disables
 checkpoint writes and W&B, and verifies the JSONL train metric at step one.
 This gate covers the production update lifecycle. The component worker

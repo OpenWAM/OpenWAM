@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from torch.utils.data import Dataset
@@ -8,6 +8,12 @@ from torch.utils.data import Dataset
 from open_wam.configs import DataConfig
 from open_wam.registry import Registry
 
+from .artifacts import (
+    DatasetArtifactPreflightError,
+    DatasetArtifactRequirement,
+    DatasetArtifactStatus,
+    require_dataset_artifacts,
+)
 from .contracts import WAMSample
 from .latent_contracts import LatentWAMSample
 
@@ -15,6 +21,9 @@ RawDatasetPair = tuple[Dataset[WAMSample], Dataset[WAMSample]]
 LatentDatasetPair = tuple[Dataset[LatentWAMSample], Dataset[LatentWAMSample]]
 DatasetPairBuilder = Callable[[DataConfig], RawDatasetPair]
 LatentDatasetPairBuilder = Callable[[DataConfig], LatentDatasetPair]
+DatasetArtifactResolver = Callable[
+    [DataConfig], Sequence[DatasetArtifactRequirement]
+]
 
 
 @dataclass(frozen=True)
@@ -22,13 +31,15 @@ class DatasetAdapterSpec:
     """Builders exposed by one dataset type.
 
     An adapter may support raw RGB samples, pre-encoded latent samples, or
-    both. Keeping both builders under one key makes the capability visible to
-    callers and prevents raw and latent registries from drifting.
+    both, and may declare adapter-owned artifact preflight. Keeping these
+    capabilities under one key makes them visible to callers and prevents raw,
+    latent, and startup contracts from drifting.
     """
 
     dataset_type: str
     raw_builder: DatasetPairBuilder | None = None
     latent_builder: LatentDatasetPairBuilder | None = None
+    artifact_resolver: DatasetArtifactResolver | None = None
     description: str | None = None
 
 
@@ -41,20 +52,24 @@ class DatasetAdapterRegistry(Registry[str, DatasetAdapterSpec]):
         *,
         raw_builder: DatasetPairBuilder | None = None,
         latent_builder: LatentDatasetPairBuilder | None = None,
+        artifact_resolver: DatasetArtifactResolver | None = None,
         description: str | None = None,
         replace: bool = False,
     ) -> None:
         normalized_type = dataset_type.strip()
         if not normalized_type:
             raise ValueError("Dataset adapter type must be a non-empty string.")
-        if raw_builder is None and latent_builder is None:
+        if raw_builder is None and latent_builder is None and artifact_resolver is None:
             raise ValueError(
-                f"Dataset adapter {normalized_type!r} must provide a raw or latent builder."
+                f"Dataset adapter {normalized_type!r} must provide a raw builder, latent builder, "
+                "or artifact resolver."
             )
         if raw_builder is not None and not callable(raw_builder):
             raise TypeError("Dataset adapter raw_builder must be callable.")
         if latent_builder is not None and not callable(latent_builder):
             raise TypeError("Dataset adapter latent_builder must be callable.")
+        if artifact_resolver is not None and not callable(artifact_resolver):
+            raise TypeError("Dataset adapter artifact_resolver must be callable.")
 
         current = self.get(normalized_type)
         if current is not None and not replace:
@@ -63,6 +78,8 @@ class DatasetAdapterRegistry(Registry[str, DatasetAdapterSpec]):
                 collisions.append("raw")
             if latent_builder is not None and current.latent_builder is not None:
                 collisions.append("latent")
+            if artifact_resolver is not None and current.artifact_resolver is not None:
+                collisions.append("artifact resolver")
             if collisions:
                 joined = " and ".join(collisions)
                 raise ValueError(
@@ -72,12 +89,18 @@ class DatasetAdapterRegistry(Registry[str, DatasetAdapterSpec]):
 
         existing_raw_builder = None if current is None else current.raw_builder
         existing_latent_builder = None if current is None else current.latent_builder
+        existing_artifact_resolver = None if current is None else current.artifact_resolver
         existing_description = None if current is None else current.description
         spec = DatasetAdapterSpec(
             dataset_type=normalized_type,
             raw_builder=raw_builder if raw_builder is not None else existing_raw_builder,
             latent_builder=(
                 latent_builder if latent_builder is not None else existing_latent_builder
+            ),
+            artifact_resolver=(
+                artifact_resolver
+                if artifact_resolver is not None
+                else existing_artifact_resolver
             ),
             description=description if description is not None else existing_description,
         )
@@ -112,6 +135,37 @@ class DatasetAdapterRegistry(Registry[str, DatasetAdapterSpec]):
             f"Registered latent dataset types: {supported}"
         )
 
+    def preflight_artifacts(
+        self,
+        data_config: DataConfig,
+    ) -> tuple[DatasetArtifactStatus, ...]:
+        spec = self.get(data_config.dataset_type)
+        if spec is None or spec.artifact_resolver is None:
+            return ()
+        try:
+            requirements = tuple(spec.artifact_resolver(data_config))
+        except DatasetArtifactPreflightError:
+            raise
+        except (OSError, ValueError) as exc:
+            raise DatasetArtifactPreflightError(
+                "Dataset artifact discovery failed for "
+                f"dataset_type={data_config.dataset_type!r}: {exc}"
+            ) from exc
+        invalid = [
+            requirement
+            for requirement in requirements
+            if not isinstance(requirement, DatasetArtifactRequirement)
+        ]
+        if invalid:
+            raise TypeError(
+                f"Artifact resolver for dataset_type={data_config.dataset_type!r} "
+                "must return DatasetArtifactRequirement values."
+            )
+        return require_dataset_artifacts(
+            requirements,
+            dataset_type=data_config.dataset_type,
+        )
+
 
 DATASET_ADAPTERS = DatasetAdapterRegistry("dataset adapter")
 
@@ -121,6 +175,7 @@ def register_dataset_adapter(
     *,
     raw_builder: DatasetPairBuilder | None = None,
     latent_builder: LatentDatasetPairBuilder | None = None,
+    artifact_resolver: DatasetArtifactResolver | None = None,
     description: str | None = None,
     replace: bool = False,
 ) -> None:
@@ -130,6 +185,7 @@ def register_dataset_adapter(
         dataset_type,
         raw_builder=raw_builder,
         latent_builder=latent_builder,
+        artifact_resolver=artifact_resolver,
         description=description,
         replace=replace,
     )
@@ -139,6 +195,7 @@ def register_dataset_builder(
     dataset_type: str,
     builder: DatasetPairBuilder,
     *,
+    artifact_resolver: DatasetArtifactResolver | None = None,
     description: str | None = None,
     replace: bool = False,
 ) -> None:
@@ -147,6 +204,7 @@ def register_dataset_builder(
     register_dataset_adapter(
         dataset_type,
         raw_builder=builder,
+        artifact_resolver=artifact_resolver,
         description=description,
         replace=replace,
     )
@@ -156,6 +214,7 @@ def register_latent_dataset_builder(
     dataset_type: str,
     builder: LatentDatasetPairBuilder,
     *,
+    artifact_resolver: DatasetArtifactResolver | None = None,
     description: str | None = None,
     replace: bool = False,
 ) -> None:
@@ -164,19 +223,30 @@ def register_latent_dataset_builder(
     register_dataset_adapter(
         dataset_type,
         latent_builder=builder,
+        artifact_resolver=artifact_resolver,
         description=description,
         replace=replace,
     )
+
+
+def preflight_dataset_artifacts(
+    data_config: DataConfig,
+) -> tuple[DatasetArtifactStatus, ...]:
+    """Run the selected adapter's declared filesystem checks."""
+
+    return DATASET_ADAPTERS.preflight_artifacts(data_config)
 
 
 __all__ = [
     "DATASET_ADAPTERS",
     "DatasetAdapterRegistry",
     "DatasetAdapterSpec",
+    "DatasetArtifactResolver",
     "DatasetPairBuilder",
     "LatentDatasetPair",
     "LatentDatasetPairBuilder",
     "RawDatasetPair",
+    "preflight_dataset_artifacts",
     "register_dataset_adapter",
     "register_dataset_builder",
     "register_latent_dataset_builder",

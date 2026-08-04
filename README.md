@@ -107,7 +107,7 @@ All policy architectures enter the same package-owned trainer:
 uv run --extra train open-wam-train \
   --cfg configs/experiments/dual_expert_libero_joint.yaml \
   --save-root runs/dual-expert-joint \
-  --devices 1
+  --expected-world-size 1
 ```
 
 Change only the program for a one-off ablation:

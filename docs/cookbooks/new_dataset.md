@@ -32,7 +32,12 @@ backbone.
 from torch.utils.data import Dataset
 
 from open_wam.configs import DataConfig
-from open_wam.data import WAMSample, register_dataset_adapter
+from open_wam.data import (
+    DatasetArtifactKind,
+    DatasetArtifactRequirement,
+    WAMSample,
+    register_dataset_adapter,
+)
 
 
 class AcmeDataset(Dataset[WAMSample]):
@@ -54,13 +59,32 @@ def build_train_val(config: DataConfig):
     return AcmeDataset(config, split="train"), AcmeDataset(config, split="val")
 
 
+def resolve_artifacts(config: DataConfig):
+    return (
+        DatasetArtifactRequirement(
+            name="dataset root",
+            path=config.local_root,
+            kind=DatasetArtifactKind.DIRECTORY,
+            required=True,
+            config_path="data.local_root",
+            purpose="the ACME adapter reads episodes from this directory",
+        ),
+    )
+
+
 def register_open_wam() -> None:
     register_dataset_adapter(
         "acme_robot",
         raw_builder=build_train_val,
+        artifact_resolver=resolve_artifacts,
         description="ACME robot demonstrations.",
     )
 ```
+
+The resolver is adapter-owned and must remain tensor-free. It runs before model
+allocation, may return any sequence of requirements, and should declare only
+filesystem dependencies actually consumed by the adapter. Keep optional files
+`required=False`; their availability is recorded without blocking startup.
 
 When pre-encoded samples are available, add a `latent_builder` returning
 datasets of `LatentWAMSample` under the same `dataset_type`.

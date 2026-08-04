@@ -12,6 +12,8 @@ from open_wam.configs import (
     ExperimentConfig,
     LoopPolicyName,
 )
+from open_wam.data.artifacts import DatasetArtifactStatus
+from open_wam.data.registries import preflight_dataset_artifacts
 from open_wam.pipelines import build_variant_pipeline_from_config
 
 from .auxiliary_validation import (
@@ -28,6 +30,7 @@ from .data_loading import (
     _validate_mixed_dynamics_source_sampling,
     build_runtime_dataloaders,
 )
+from .launch import DistributedLaunchContext, validate_training_launch
 from .logging import (
     CompositeLogSink,
     ConsoleLogSink,
@@ -47,7 +50,6 @@ from .optim import (
 from .state import TrainState
 from .step_executor import PipelineTrainStepExecutor, build_batch_adapter
 from .strategies import build_training_strategy
-
 
 # Keep historical runtime-module lookups stable while canonical owners remain
 # role-specific. These names are compatibility aliases, not extension points.
@@ -93,6 +95,7 @@ class TrainingRuntime:
         log_sink: CompositeLogSink,
         train_state: TrainState,
         trainability_report: TrainabilityReport,
+        dataset_artifacts: tuple[DatasetArtifactStatus, ...] = (),
         auxiliary_validation_runs: tuple[AuxiliaryValidationRun, ...] = (),
     ) -> None:
         self.config = config
@@ -107,13 +110,25 @@ class TrainingRuntime:
         self.log_sink = log_sink
         self.train_state = train_state
         self.trainability_report = trainability_report
+        self.dataset_artifacts = dataset_artifacts
         self.auxiliary_validation_runs = auxiliary_validation_runs
         self._last_validation_optimizer_step: int | None = None
         self._accumulated_train_metrics: dict[str, list[torch.Tensor]] = {}
 
     @classmethod
-    def from_config(cls, config: ExperimentConfig) -> "TrainingRuntime":
-        strategy = build_training_strategy(config.trainer)
+    def from_config(
+        cls,
+        config: ExperimentConfig,
+        *,
+        launch_context: DistributedLaunchContext | None = None,
+    ) -> TrainingRuntime:
+        resolved_launch_context = launch_context or DistributedLaunchContext.from_env()
+        validate_training_launch(config.trainer, resolved_launch_context)
+        dataset_artifacts = preflight_dataset_artifacts(config.data)
+        strategy = build_training_strategy(
+            config.trainer,
+            launch_context=resolved_launch_context,
+        )
         model = build_variant_pipeline_from_config(config)
         visual_tower = getattr(model, "visual_tower", None)
         policy_variant = getattr(model, "policy_variant", None)
@@ -168,6 +183,7 @@ class TrainingRuntime:
             log_sink=log_sink,
             train_state=train_state,
             trainability_report=trainability_report,
+            dataset_artifacts=dataset_artifacts,
             auxiliary_validation_runs=auxiliary_validation_runs,
         )
         if config.trainer.resume_from is not None:
@@ -207,6 +223,10 @@ class TrainingRuntime:
                 "batch_adapter": self.config.trainer.batch_adapter,
                 "loop_policy": self.config.trainer.loop_policy,
                 "strategy": self.config.trainer.strategy,
+                "launch": self.strategy.launch_context.to_dict(),
+                "dataset_artifacts": [
+                    status.to_dict() for status in self.dataset_artifacts
+                ],
                 "output_dir": str(resolve_runtime_output_dir(self.config)),
                 "enabled_objectives": self.trainability_report.enabled_objectives,
                 "trainable_components": self.trainability_report.trainable_components,

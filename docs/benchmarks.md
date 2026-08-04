@@ -15,6 +15,35 @@ uniform model-facing batch contract.
 Private datasets, local simulator checkouts, and large checkpoints should be
 provided through the local path registry, not hard-coded in public configs.
 
+### LIBERO Training Prerequisites
+
+Maintained latent-local LIBERO training configs need inputs that a latent dataset
+root does not contain on its own.
+
+| Input | Registry key | Required by | Where it comes from |
+| --- | --- | --- | --- |
+| Pre-encoded latent root | `paths.datasets.libero_root` | all | Wan-VAE encoding of the LIBERO episodes. |
+| Empty text embedding | `paths.datasets.empty_text_embedding` | all | Negative-prompt embedding shared by latent-local datasets. |
+| Replay-status labels | `paths.datasets.libero_replay_status_path` | configs with `require_replay_status: true` | Simulator replay labeling, merged by `scripts/build_libero_replay_metadata.py`. **Not shipped inside the dataset root.** |
+
+Most maintained LIBERO experiment configs set `require_replay_status: true`, so a
+missing or misplaced replay-status file is a hard failure rather than a silently
+unfiltered split. The exception is the generalist joint-denoising pair —
+`dual_expert_libero_generalist_joint_denoising.yaml` and
+`parallel_stream_libero_generalist_joint_denoising.yaml` — which set both
+`require_replay_status: false` and `val_require_replay_status: false` and train
+without it. Check the config you are running rather than assuming either way.
+
+See `configs/local_paths.sample.yaml` for the generating command and its
+argument-shape caveats.
+
+Dataset adapters may declare required files and directories through the shared
+artifact-preflight contract. Training checks those requirements before model
+construction and reports the owning config field, expected filesystem shape,
+and remediation. Extensions can register the same resolver contract alongside
+their raw or latent dataset builder; benchmark checks do not belong in the
+trainer.
+
 ## Action Dimensions
 
 Benchmarks expose different native action spaces. The model-facing action
