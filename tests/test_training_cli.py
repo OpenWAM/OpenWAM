@@ -147,10 +147,13 @@ def test_legacy_lightning_training_choices_fail_with_migration(
 
 
 def test_cli_overrides_map_save_root_and_env_defaults(tmp_path: Path) -> None:
+    checkpoint_root = tmp_path / "checkpoint_step_400"
+    checkpoint_root.mkdir()
+    (checkpoint_root / "full_training_state.pt").touch()
     overrides = TrainCliOverrides(
         config_name="parallel_stream_robotwin_smoke",
         save_root=str(tmp_path / "reference_style_run"),
-        checkpoint_root="/checkpoints/checkpoint_step_400",
+        checkpoint_root=str(checkpoint_root),
         dataset_root="/datasets/local_libero",
         latent_root="/datasets/local_libero/latents",
         devices=6,
@@ -182,8 +185,8 @@ def test_cli_overrides_map_save_root_and_env_defaults(tmp_path: Path) -> None:
     assert config.trainer.checkpoint_dir == str(tmp_path / "reference_style_run" / "checkpoints")
     assert config.data.local_root == "/datasets/local_libero"
     assert config.data.latent_root == "/datasets/local_libero/latents"
-    assert config.trainer.resume_from == "/checkpoints/checkpoint_step_400/full_training_state.pt"
-    assert config.backbone.transformer_subdir == "/checkpoints/checkpoint_step_400/transformer"
+    assert config.trainer.resume_from == str(checkpoint_root / "full_training_state.pt")
+    assert config.backbone.transformer_subdir == str(checkpoint_root / "transformer")
     assert config.trainer.devices == 6
     assert config.trainer.runtime == TrainerRuntimeName.COMPOSABLE
     assert config.trainer.batch_adapter == BatchAdapterName.LATENTS
@@ -420,3 +423,13 @@ def test_cli_overrides_coerce_quoted_bool_strings() -> None:
 
     assert config.policy_variant.generalist_mode_text_token is False
     assert config.trainer.enable_wandb is False
+
+
+def test_default_resume_path_raises_when_checkpoint_root_is_empty(tmp_path: Path) -> None:
+    """--checkpoint-root pointing at a directory without a resumable file
+    should fail loudly at CLI resolution rather than deep inside
+    CheckpointManager after CUDA initialization."""
+    from open_wam.training.cli import _default_resume_path
+
+    with pytest.raises(FileNotFoundError, match="No resumable checkpoint"):
+        _default_resume_path(tmp_path)

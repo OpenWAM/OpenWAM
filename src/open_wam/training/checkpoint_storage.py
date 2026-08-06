@@ -33,14 +33,26 @@ def _is_rank_zero() -> bool:
 
 
 def _wait_for_file(
-    path: Path, *, timeout_seconds: float = 7200.0, poll_seconds: float = 2.0
+    path: Path,
+    *,
+    timeout_seconds: float,
+    poll_seconds: float = 2.0,
+    error_marker: Path | None = None,
 ) -> None:
+    """Block until ``path`` appears, a peer reports failure, or time expires."""
+
     deadline = time.monotonic() + float(timeout_seconds)
-    while not path.exists():
-        if time.monotonic() >= deadline:
-            raise TimeoutError(
-                f"Timed out waiting for checkpoint completion marker: {path}"
+    while True:
+        # Failure wins if rank zero published success and then failed during a
+        # later checkpoint stage before this rank observed either marker.
+        if error_marker is not None and error_marker.exists():
+            raise RuntimeError(
+                f"Peer signalled checkpoint failure via {error_marker}; abort wait for {path}"
             )
+        if path.exists():
+            return
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"Timed out waiting for file: {path}")
         time.sleep(float(poll_seconds))
 
 

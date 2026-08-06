@@ -25,6 +25,12 @@ result schemas, artifact manifests, and checkpoint layout expectations.
 
 ### Changed
 
+- lerobot_v2_latent_local dataset preflight now discovers every LeRobot
+  bundle under the configured local_root before model construction; it
+  raises DatasetArtifactPreflightError when no bundle can be found rather
+  than deferring the failure to first-batch dataloader construction. Configs
+  with non-standard roots that previously failed lazily now fail loudly at
+  preflight.
 - The maintained runtime is organized around
   `ExperimentConfig -> VariantPipeline -> VisualTower -> PolicyVariant -> ActionDecoder`.
 - Training, checkpointing, evaluation, rollout, data adaptation, attention,
@@ -58,6 +64,9 @@ result schemas, artifact manifests, and checkpoint layout expectations.
 
 ### Fixed
 
+- Empty `--checkpoint-root` inputs fail before model and CUDA initialization;
+  distributed checkpoint publication reports rank-zero filesystem failures to
+  peers and uses the configured distributed timeout.
 - Result envelopes protect reserved schema keys from legacy metadata
   collisions.
 - Deployment recording imports no longer require OpenCV at collection/import

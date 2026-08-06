@@ -25,7 +25,12 @@ from open_wam.utils.config_overrides import (
 )
 
 def _default_resume_path(checkpoint_root: Path) -> Path:
-    """Prefer exact training-state resumes, with model-only as a fallback for legacy checkpoints."""
+    """Prefer exact training-state resumes, with model-only as a fallback for legacy checkpoints.
+
+    Raises FileNotFoundError when neither candidate exists so operators see
+    the misconfiguration before the training pipeline builds a model and
+    initializes CUDA, rather than deep inside CheckpointManager.load.
+    """
 
     full_state = checkpoint_root / "full_training_state.pt"
     if full_state.is_file():
@@ -33,7 +38,11 @@ def _default_resume_path(checkpoint_root: Path) -> Path:
     model_state = checkpoint_root / "model_state.pt"
     if model_state.is_file():
         return model_state
-    return full_state
+    raise FileNotFoundError(
+        "No resumable checkpoint found under "
+        f"--checkpoint-root={checkpoint_root!s}. Looked for "
+        f"{full_state.name!r} and {model_state.name!r}."
+    )
 
 
 @dataclass(frozen=True)

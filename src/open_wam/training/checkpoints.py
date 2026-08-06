@@ -272,11 +272,14 @@ class CheckpointManager:
         checkpoint_dir = self.checkpoint_dir_for_step(step)
         payload_marker = checkpoint_dir / ".checkpoint_payload_complete"
         completion_marker = checkpoint_dir / ".checkpoint_complete"
+        error_marker = checkpoint_dir / ".checkpoint_error"
+        wait_timeout_seconds = float(
+            self.config.trainer.distributed_timeout_seconds
+        )
         if _is_rank_zero():
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            for marker in (payload_marker, completion_marker):
-                if marker.exists():
-                    marker.unlink()
+            for marker in (payload_marker, completion_marker, error_marker):
+                marker.unlink(missing_ok=True)
         if dist.is_initialized():
             dist.barrier()
 
@@ -307,50 +310,76 @@ class CheckpointManager:
             )
 
         if _is_rank_zero():
-            self._write_resolved_config(checkpoint_dir)
-            if resolved_mode == CheckpointMode.MODEL_ONLY:
-                self._write_model_state_checkpoint(
-                    checkpoint_dir, payload["model_state_dict"]
-                )
-            elif resolved_mode == CheckpointMode.FULL_TRAINING_STATE:
-                _atomic_torch_save(payload, checkpoint_dir / "full_training_state.pt")
-                # Always write a lightweight model-only checkpoint alongside the
-                # resumable training checkpoint so eval / visualization paths
-                # can skip optimizer-state deserialization.
-                self._write_model_state_checkpoint(
-                    checkpoint_dir, payload["model_state_dict"]
-                )
-            else:
-                raise ValueError(
-                    f"Unsupported checkpoint_mode {self.checkpoint_mode!r}."
-                )
+            try:
+                self._write_resolved_config(checkpoint_dir)
+                if resolved_mode == CheckpointMode.MODEL_ONLY:
+                    self._write_model_state_checkpoint(
+                        checkpoint_dir, payload["model_state_dict"]
+                    )
+                elif resolved_mode == CheckpointMode.FULL_TRAINING_STATE:
+                    _atomic_torch_save(
+                        payload, checkpoint_dir / "full_training_state.pt"
+                    )
+                    # Always write a lightweight model-only checkpoint alongside
+                    # the resumable training checkpoint so eval / visualization
+                    # paths can skip optimizer-state deserialization.
+                    self._write_model_state_checkpoint(
+                        checkpoint_dir, payload["model_state_dict"]
+                    )
+                else:
+                    raise ValueError(
+                        f"Unsupported checkpoint_mode {self.checkpoint_mode!r}."
+                    )
 
-            with (checkpoint_dir / "train_state.json").open(
-                "w", encoding="utf-8"
-            ) as handle:
-                json.dump(train_state.state_dict(), handle, indent=2, sort_keys=True)
-            payload_marker.write_text("ok\n", encoding="utf-8")
+                with (checkpoint_dir / "train_state.json").open(
+                    "w", encoding="utf-8"
+                ) as handle:
+                    json.dump(
+                        train_state.state_dict(), handle, indent=2, sort_keys=True
+                    )
+                payload_marker.write_text("ok\n", encoding="utf-8")
+            except BaseException as error:
+                self._record_checkpoint_failure(
+                    error_marker=error_marker,
+                    invalid_markers=(payload_marker, completion_marker),
+                    error=error,
+                )
+                raise
         elif dist.is_initialized():
-            _wait_for_file(payload_marker)
-
-        if self.export_runtime_backbone:
-            self._export_runtime_backbone(checkpoint_dir, model)
-
-        del payload
-        del model_state_dict
-        _release_unused_device_memory()
-        if dist.is_initialized():
-            dist.barrier()
-
-        if _is_rank_zero():
-            completion_marker.write_text("ok\n", encoding="utf-8")
-            self._prune_old_checkpoints(
-                keep=self.max_checkpoints_to_keep, preserve=checkpoint_dir
+            _wait_for_file(
+                payload_marker,
+                timeout_seconds=wait_timeout_seconds,
+                error_marker=error_marker,
             )
-        elif dist.is_initialized():
-            _wait_for_file(completion_marker)
-        if dist.is_initialized():
-            dist.barrier()
+
+        try:
+            if self.export_runtime_backbone:
+                self._export_runtime_backbone(checkpoint_dir, model)
+
+            del payload
+            del model_state_dict
+            _release_unused_device_memory()
+
+            if _is_rank_zero():
+                self._prune_old_checkpoints(
+                    keep=self.max_checkpoints_to_keep, preserve=checkpoint_dir
+                )
+                completion_marker.write_text("ok\n", encoding="utf-8")
+        except BaseException as error:
+            if _is_rank_zero():
+                self._record_checkpoint_failure(
+                    error_marker=error_marker,
+                    invalid_markers=(completion_marker,),
+                    error=error,
+                )
+            raise
+
+        if not _is_rank_zero() and dist.is_initialized():
+            _wait_for_file(
+                completion_marker,
+                timeout_seconds=wait_timeout_seconds,
+                error_marker=error_marker,
+            )
         return checkpoint_dir
 
     def load(
@@ -419,7 +448,12 @@ class CheckpointManager:
                     optim_state_dict=optimizer_state_for_load,
                     options=load_options,
                 )
-            except Exception:
+            except (KeyError, ValueError, RuntimeError, TypeError) as error:
+                if isinstance(error, torch.OutOfMemoryError):
+                    raise
+                # Retry with a densified optimizer state to tolerate legacy
+                # sparse-tensor / partial-shard checkpoints. OOM and exception
+                # classes unrelated to optimizer structure surface directly.
                 dense_optimizer_state = _densify_optimizer_state_dict(
                     model=model,
                     optimizer=optimizer,
@@ -517,18 +551,51 @@ class CheckpointManager:
         if keep is None:
             return []
         checkpoint_dirs = self._complete_checkpoint_dirs()
+        preserve = preserve.resolve()
+        if preserve.is_dir() and all(
+            checkpoint_dir.resolve() != preserve
+            for checkpoint_dir in checkpoint_dirs
+        ):
+            # The current checkpoint is intentionally unmarked until pruning
+            # succeeds. Count it toward retention without exposing it as a
+            # complete checkpoint to readers.
+            checkpoint_dirs.append(preserve)
+            checkpoint_dirs.sort(key=lambda path: int(path.name.split("_")[-1]))
         if len(checkpoint_dirs) <= int(keep):
             return []
-        preserve = preserve.resolve()
         removed: list[Path] = []
-        for checkpoint_dir in checkpoint_dirs[
-            : max(0, len(checkpoint_dirs) - int(keep))
-        ]:
-            if checkpoint_dir.resolve() == preserve:
-                continue
+        remove_count = len(checkpoint_dirs) - int(keep)
+        removable = [
+            checkpoint_dir
+            for checkpoint_dir in checkpoint_dirs
+            if checkpoint_dir.resolve() != preserve
+        ]
+        for checkpoint_dir in removable[:remove_count]:
             shutil.rmtree(checkpoint_dir)
             removed.append(checkpoint_dir)
         return removed
+
+    @staticmethod
+    def _record_checkpoint_failure(
+        *,
+        error_marker: Path,
+        invalid_markers: tuple[Path, ...],
+        error: BaseException,
+    ) -> None:
+        """Invalidate success markers and best-effort signal rank-zero failure."""
+
+        for marker in invalid_markers:
+            try:
+                marker.unlink(missing_ok=True)
+            except OSError:
+                pass
+        try:
+            error_marker.write_text(
+                f"{type(error).__name__}: {error}\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
 
     def _write_resolved_config(self, checkpoint_dir: Path) -> None:
         with (checkpoint_dir / "resolved_config.yaml").open(
