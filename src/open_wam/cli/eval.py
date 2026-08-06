@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import sys
 
+from open_wam.runtime.provenance import ProvenanceMode
+
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Evaluate an Open-WAM experiment.")
@@ -14,8 +16,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-steps-per-trajectory", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--checkpoint", type=str, default=None)
+    parser.add_argument(
+        "--allow-partial-checkpoint",
+        action="store_true",
+        help="Permit missing or unexpected model keys for migration diagnostics.",
+    )
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--output-json", type=str, default=None)
+    parser.add_argument(
+        "--provenance-mode",
+        choices=tuple(mode.value for mode in ProvenanceMode),
+        default=ProvenanceMode.STANDARD.value,
+    )
     parser.add_argument("--extension", action="append", default=[])
     return parser
 

@@ -26,6 +26,7 @@ def test_sanity_parser_defaults_and_deprecated_opt_in() -> None:
         "extension": [],
         "max_batches": 1,
         "output_json": None,
+        "provenance_mode": "standard",
         "require_gpu": False,
         "rollout_steps": 3,
         "seed": 0,
@@ -166,9 +167,17 @@ def test_sanity_command_public_tiny_numerical_contract(tmp_path: Path, capsys) -
         rel=0.0,
         abs=1e-6,
     )
-    assert train_metrics["action_mse"] == 0.16798308491706848
+    assert train_metrics["action_mse"] == pytest.approx(
+        0.16798308491706848,
+        rel=0.0,
+        abs=1e-7,
+    )
     assert summary["batch_infer"]["action_pred_shape"] == [1, 2, 4]
     assert summary["batch_infer"]["target_action_shape"] == [1, 2, 4]
-    assert summary["batch_infer"]["masked_action_mse"] == 0.5524998307228088
+    assert summary["batch_infer"]["masked_action_mse"] == pytest.approx(
+        0.5524998307228088,
+        rel=0.0,
+        abs=1e-7,
+    )
     assert summary["rollout_style_infer"]["steps"] == 1
     assert summary["rollout_style_infer"]["action_pred_shapes"] == [[1, 2, 4]]

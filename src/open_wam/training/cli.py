@@ -16,15 +16,13 @@ from open_wam.configs import (
     resolve_config_path_alias,
     validate_video_action_sequence_contract_override_keys,
 )
+from open_wam.configs.config_paths import EXPERIMENT_CONFIG_ROOT
 from open_wam.configs.policy_compatibility import normalize_video_action_override_keys
 from open_wam.extensions import load_extension_modules
 from open_wam.utils.config_overrides import (
     apply_config_overrides,
     parse_override_assignments,
 )
-
-EXPERIMENT_CONFIG_ROOT = Path(__file__).resolve().parents[3] / "configs" / "experiments"
-
 
 def _default_resume_path(checkpoint_root: Path) -> Path:
     """Prefer exact training-state resumes, with model-only as a fallback for legacy checkpoints."""

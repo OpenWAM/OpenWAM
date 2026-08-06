@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 
 from open_wam.configs import (
@@ -50,6 +51,7 @@ def test_calvin_npz_loader_emits_raw_7d_actions_and_canonical_views(tmp_path: Pa
             state_horizon=1,
         ),
         train_fraction=0.5,
+        language_annotation_pickle_policy="trusted_legacy",
     )
 
     train_dataset, val_dataset = build_train_val_datasets(config)
@@ -93,6 +95,7 @@ def test_calvin_npz_loader_maps_rel_actions_to_sparse_30d(tmp_path: Path) -> Non
             sampler_mask_mode="pin_inactive_channels",
         ),
         train_fraction=0.5,
+        language_annotation_pickle_policy="trusted_legacy",
     )
 
     train_dataset, _ = build_train_val_datasets(config)
@@ -106,3 +109,13 @@ def test_calvin_npz_loader_maps_rel_actions_to_sparse_30d(tmp_path: Path) -> Non
     assert sample.action_mask[:, 6:28].sum().item() == 0.0
     assert sample.action_mask[:, 29].sum().item() == 0.0
     assert sample.metadata["action_mapping_mode"] == "sparse_canvas"
+
+
+def test_calvin_npz_loader_rejects_pickled_annotations_by_default(
+    tmp_path: Path,
+) -> None:
+    _write_calvin_fixture(tmp_path)
+    config = CalvinDataConfig(local_root=str(tmp_path))
+
+    with pytest.raises(ValueError, match="language_annotation_pickle_policy=trusted_legacy"):
+        build_train_val_datasets(config)

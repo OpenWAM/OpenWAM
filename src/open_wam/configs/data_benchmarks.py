@@ -18,6 +18,7 @@ from .enums import (
     ActionTargetStateEncoding,
     DataSplit,
     GripperRepresentation,
+    LegacyPicklePolicy,
     LatentWindowProfile,
     ReplayStatusPolicy,
     RotationRepresentation,
@@ -363,3 +364,15 @@ class CalvinDataConfig(DataConfig):
     )
     action_mapping: ActionMappingConfig = field(default_factory=ActionMappingConfig)
     sample_construction: SampleConstructionConfig = field(default_factory=SampleConstructionConfig)
+    language_annotation_pickle_policy: LegacyPicklePolicy = LegacyPicklePolicy.SAFE_ONLY
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        from .enums import coerce_fields
+
+        coerce_fields(
+            self,
+            enum_fields={
+                "language_annotation_pickle_policy": LegacyPicklePolicy,
+            },
+        )

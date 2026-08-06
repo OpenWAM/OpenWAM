@@ -410,12 +410,10 @@ def test_infer_task_local_episode_rank_normalizes_task_identity() -> None:
     ) == 1
 
 
-def test_load_libero_task_init_states_disables_weights_only(
+def test_load_libero_task_init_states_uses_restricted_numpy_compatibility(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    import torch
-
     task_spec = libero_tasks.LiberoTaskSpec(
         benchmark_name="libero_10",
         task_id=2,
@@ -425,23 +423,19 @@ def test_load_libero_task_init_states_disables_weights_only(
         bddl_file_path="/tasks/put_cup_away.bddl",
         init_states_path=str(tmp_path / "put_cup_away.pruned_init"),
     )
-    calls: list[tuple[str, bool]] = []
     monkeypatch.setattr(
         libero_tasks,
         "ensure_local_libero_config",
         lambda project_root=None: tmp_path / "config.yaml",
     )
 
-    def _load(path: str, *, weights_only: bool) -> str:
-        calls.append((path, weights_only))
-        return "states"
-
-    monkeypatch.setattr(torch, "load", _load)
+    expected = [np.arange(6, dtype=np.float32).reshape(2, 3)]
+    torch.save(expected, task_spec.init_states_path)
 
     result = libero_tasks.load_libero_task_init_states(task_spec)
 
-    assert result == "states"
-    assert calls == [(task_spec.init_states_path, False)]
+    assert isinstance(result, list)
+    assert np.array_equal(result[0], expected[0])
 
 
 def test_resolve_libero_paths_uses_fallback_checkout_without_import(monkeypatch, tmp_path: Path) -> None:

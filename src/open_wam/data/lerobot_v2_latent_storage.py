@@ -13,6 +13,7 @@ from einops import rearrange
 import pyarrow.parquet as pq
 import torch
 
+from open_wam.artifacts import load_tensor_artifact
 from open_wam.configs import DataConfig
 from open_wam.utils.latent_filenames import match_latent_window_filename
 
@@ -153,11 +154,7 @@ class LocalLatentRepository:
                 start_frame=window.start_frame,
                 end_frame=window.end_frame,
             )
-            payload = torch.load(
-                latent_path,
-                map_location="cpu",
-                weights_only=False,
-            )
+            payload = load_tensor_artifact(latent_path)
             if not isinstance(payload, dict):
                 raise ValueError(
                     f"Expected latent payload mapping at {latent_path}, "
@@ -254,7 +251,7 @@ def load_empty_text_embedding(data_config: DataConfig) -> torch.Tensor | None:
         candidate_path = Path(data_config.local_root) / "empty_emb.pt"
         if not candidate_path.exists():
             return None
-    payload = torch.load(candidate_path, map_location="cpu", weights_only=False)
+    payload = load_tensor_artifact(candidate_path)
     if not isinstance(payload, torch.Tensor):
         raise TypeError(
             "Expected `empty_text_embedding_path` to point at a tensor checkpoint, "
@@ -422,7 +419,7 @@ def scan_local_latent_windows(repo_root: Path, data_config: DataConfig) -> list[
                 for camera_name in data_config.latent_camera_names[1:]
             ):
                 continue
-            payload = torch.load(latent_file, map_location="cpu", weights_only=False)
+            payload = load_tensor_artifact(latent_file)
             observed_frame_ids: tuple[int, ...] = ()
             latent_frame_count: int | None = None
             if isinstance(payload, dict):

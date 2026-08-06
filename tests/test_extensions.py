@@ -131,7 +131,7 @@ def test_out_of_tree_extension_registers_dataset_adapter(
     module_name = _write_extension(
         tmp_path,
         "from torch.utils.data import Dataset\n"
-        "from open_wam.data import register_dataset_adapter\n"
+        "from open_wam.sdk.data import register_dataset_adapter\n"
         "\n"
         "class MarkerDataset(Dataset):\n"
         "    def __init__(self, marker):\n"
@@ -172,7 +172,7 @@ def test_out_of_tree_extension_loads_typed_policy_and_decoder_from_yaml(
     decoder_type = f"external_decoder_{uuid4().hex}"
     module_name = _write_extension(
         tmp_path,
-        "from open_wam.pipelines import register_action_decoder, register_policy_variant\n"
+        "from open_wam.sdk.policy import register_action_decoder, register_policy_variant\n"
         "\n"
         "def build_policy(config):\n"
         "    policy = config.policy_variant\n"

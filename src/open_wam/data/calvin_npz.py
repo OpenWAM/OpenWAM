@@ -9,7 +9,13 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from open_wam.configs import ActionTargetRepresentation, CalvinDataConfig, DataConfig
+from open_wam.artifacts import load_trusted_numpy_pickle_artifact
+from open_wam.configs import (
+    ActionTargetRepresentation,
+    CalvinDataConfig,
+    DataConfig,
+    LegacyPicklePolicy,
+)
 
 from .action_mapping import apply_action_mapping, resolve_action_source_dim
 from .contracts import WAMSample
@@ -51,7 +57,7 @@ class CalvinNPZWindowDataset(Dataset[WAMSample]):
         self.split_name = split_name
         self.episodes_by_index = {episode.episode_index: episode for episode in self.episodes}
         self.sample_index = self._build_sample_index()
-        self._language_spans = _load_calvin_language_spans(data_config.local_root)
+        self._language_spans = _load_calvin_language_spans(data_config)
         if not self.sample_index:
             raise ValueError(
                 "No valid CALVIN windows were constructed. "
@@ -196,7 +202,7 @@ class CalvinNPZWindowDataset(Dataset[WAMSample]):
         return windows
 
     def _load_timestep(self, path: Path) -> dict[str, Any]:
-        with np.load(path, allow_pickle=True) as payload:
+        with np.load(path, allow_pickle=False) as payload:
             return {key: payload[key] for key in payload.files}
 
     def _resolve_language(self, absolute_anchor_frame_index: int) -> str | None:
@@ -259,7 +265,7 @@ def discover_calvin_npz_episodes(local_root: str | None) -> tuple[CalvinEpisodeR
     if span_path is None:
         return (CalvinEpisodeRecord(episode_index=0, timestep_paths=timestep_paths),)
 
-    spans = np.load(span_path)
+    spans = np.load(span_path, allow_pickle=False)
     episodes: list[CalvinEpisodeRecord] = []
     by_index = {_episode_file_index(path): path for path in timestep_paths}
     for episode_index, raw_span in enumerate(spans):
@@ -279,10 +285,12 @@ def _resolve_sequence_root(root: Path) -> Path:
     return root
 
 
-def _load_calvin_language_spans(local_root: str | None) -> tuple[tuple[int, int, str], ...]:
-    if local_root is None:
+def _load_calvin_language_spans(
+    data_config: CalvinDataConfig,
+) -> tuple[tuple[int, int, str], ...]:
+    if data_config.local_root is None:
         return ()
-    root = Path(local_root).expanduser()
+    root = Path(data_config.local_root).expanduser()
     annotation_path = _find_first_existing_path(
         root / "lang_annotations" / "auto_lang_ann.npy",
         root / "training" / "lang_annotations" / "auto_lang_ann.npy",
@@ -290,7 +298,20 @@ def _load_calvin_language_spans(local_root: str | None) -> tuple[tuple[int, int,
     )
     if annotation_path is None:
         return ()
-    raw = np.load(annotation_path, allow_pickle=True)
+    if (
+        data_config.language_annotation_pickle_policy
+        is not LegacyPicklePolicy.TRUSTED_LEGACY
+    ):
+        raise ValueError(
+            f"CALVIN language annotations at {annotation_path} use NumPy's "
+            "pickled object format. Set "
+            "`data.language_annotation_pickle_policy=trusted_legacy` only "
+            "after verifying that this local upstream dataset is trusted."
+        )
+    raw = load_trusted_numpy_pickle_artifact(
+        annotation_path,
+        trust_reason="operator-approved upstream CALVIN language annotations",
+    )
     payload = raw.item() if hasattr(raw, "item") else raw
     if not isinstance(payload, dict):
         return ()

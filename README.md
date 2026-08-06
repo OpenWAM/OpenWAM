@@ -166,7 +166,10 @@ smallest extension surface:
 - new parameter topology or recurrent-state owner: `PolicyVariant`
 - new environment: simulator adapter
 
-See the [Extension SDK](docs/extension_sdk.md) and public cookbooks.
+Use the role-specific `open_wam.sdk` modules described in the
+[Extension SDK](docs/extension_sdk.md). See the
+[compatibility matrix](docs/compatibility.md) for the maintained Python,
+dependency, and numerical-validation surfaces.
 
 ## Repository Layout
 

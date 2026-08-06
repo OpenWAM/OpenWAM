@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 import torch
 
+from open_wam.artifacts import load_tensor_artifact
 from open_wam.configs import DataConfig, WindowSamplingMode
 
 from .latent_temporal import latent_anchor_positions
@@ -21,7 +22,7 @@ COUNTERFACTUAL_CONTRACT_TARGET_ONLY_T0_PLUS_FUTURE = "target_only_t0_observation
 
 
 def _load_latent_payload(path: Path) -> dict[str, Any]:
-    payload = torch.load(path, map_location="cpu", weights_only=False)
+    payload = load_tensor_artifact(path)
     if not isinstance(payload, dict):
         raise ValueError(f"Expected latent payload dict at {path}, got {type(payload).__name__}.")
     return payload
@@ -455,7 +456,7 @@ def _counterfactual_observed_frame_ids(
 def _load_empty_text_embedding(path: str | None) -> torch.Tensor | None:
     if path is None:
         return None
-    payload = torch.load(Path(path).expanduser(), map_location="cpu", weights_only=False)
+    payload = load_tensor_artifact(Path(path).expanduser())
     if not isinstance(payload, torch.Tensor):
         raise TypeError(f"Expected empty text embedding tensor at {path!r}, got {type(payload)!r}.")
     if payload.ndim == 3 and payload.shape[0] == 1:

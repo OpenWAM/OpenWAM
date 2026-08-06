@@ -7,6 +7,7 @@ from pathlib import Path
 
 import torch
 
+from open_wam.artifacts import load_tensor_artifact
 from open_wam.configs import MixedVideoDataConfig
 
 from .mixed_video_catalog_contracts import MixedVideoStreamRecord
@@ -64,7 +65,7 @@ def load_mixed_video_latent_tensor(
 ) -> torch.Tensor:
     """Load one `[C,T,H,W]` sidecar as contiguous float32."""
 
-    payload = torch.load(path, map_location="cpu", weights_only=False)
+    payload = load_tensor_artifact(path)
     if isinstance(payload, torch.Tensor):
         tensor = payload
     elif isinstance(payload, dict) and key in payload:

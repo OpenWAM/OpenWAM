@@ -21,8 +21,8 @@ Implement `PolicyVariant` in `policy.py`. Parse the open `options` mapping into
 an application-owned frozen dataclass in `config.py`, then register a builder:
 
 ```python
-from open_wam.configs import ExtensionPolicyConfig
-from open_wam.pipelines import register_policy_variant
+from open_wam.sdk.config import ExtensionPolicyConfig
+from open_wam.sdk.policy import register_policy_variant
 
 from .config import AcmePolicyOptions
 from .policy import AcmePolicy

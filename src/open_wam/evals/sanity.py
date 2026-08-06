@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from pathlib import Path
 from typing import Any
 
 import torch
@@ -14,6 +13,8 @@ from open_wam.configs import (
     DataConfig,
     ExperimentConfig,
     load_experiment_config,
+    resolve_experiment_config_reference,
+    serialize_experiment_config,
 )
 from open_wam.data import (
     LatentWAMBatch,
@@ -36,7 +37,9 @@ from open_wam.pipelines import (
     VariantRolloutRunner,
     build_variant_pipeline_from_config,
 )
-from open_wam.runtime import build_result_envelope, resolve_repo_path
+from open_wam.runtime import build_result_envelope
+from open_wam.runtime.provenance import collect_runtime_provenance
+from open_wam.runtime.results import write_result_json
 from open_wam.utils import seed_everywhere
 from open_wam.utils.libero_paradigm import require_current_libero_policy_paradigm
 
@@ -62,7 +65,7 @@ def run_sanity_command(args: argparse.Namespace) -> dict[str, Any]:
         raise SystemExit(f"Requested CUDA device {device}, but CUDA is not available.")
 
     load_extension_modules(args.extension)
-    config_path = resolve_repo_path(args.config)
+    config_path = resolve_experiment_config_reference(args.config).resolve()
     config = load_experiment_config(config_path)
     require_current_libero_policy_paradigm(
         config,
@@ -133,14 +136,18 @@ def run_sanity_command(args: argparse.Namespace) -> dict[str, Any]:
         benchmark=str(config.data.dataset_name),
         device=str(device),
         seed=int(args.seed),
+        provenance=collect_runtime_provenance(
+            config_path=config_path,
+            resolved_config=serialize_experiment_config(config),
+            dataset_root=config.data.local_root,
+            mode=args.provenance_mode,
+        ),
         extra=legacy_summary,
     )
     rendered = json.dumps(summary, indent=2, sort_keys=True)
     print(rendered)
     if args.output_json is not None:
-        output_path = Path(args.output_json)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(rendered + "\n", encoding="utf-8")
+        write_result_json(args.output_json, summary)
     return summary
 
 

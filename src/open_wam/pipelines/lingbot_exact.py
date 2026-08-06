@@ -7,6 +7,8 @@ from typing import Any
 
 import torch
 
+from open_wam.artifacts import load_tensor_artifact
+
 from open_wam.configs import ActionSpace, ParallelRuntimeMode
 from open_wam.models.action_decoders import ActionDecoderInferOutput
 from open_wam.models.policy_variants import PolicyInferOutput, PolicyInferState
@@ -79,12 +81,7 @@ def save_lingbot_exact_artifact_bundle(path: str | Path, bundle: LingbotExactArt
 
 def load_lingbot_exact_artifact_bundle(path: str | Path) -> LingbotExactArtifactBundle:
     path = Path(path)
-    try:
-        payload = torch.load(path, map_location="cpu", weights_only=True)
-    except TypeError:
-        # Older torch versions do not expose `weights_only`; those loads should
-        # still be treated as trusted local artifacts.
-        payload = torch.load(path, map_location="cpu")
+    payload = load_tensor_artifact(path)
     return LingbotExactArtifactBundle(
         video_latents=payload.get("video_latents"),
         views=payload.get("views"),

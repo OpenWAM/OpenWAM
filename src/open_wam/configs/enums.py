@@ -81,6 +81,13 @@ class DataSplit(StrEnum):
     VAL = "val"
 
 
+class LegacyPicklePolicy(StrEnum):
+    """Whether a dataset may deserialize a documented legacy pickle format."""
+
+    SAFE_ONLY = "safe_only"
+    TRUSTED_LEGACY = "trusted_legacy"
+
+
 class AuxiliaryValidationSource(StrEnum):
     """Dataset source used by an auxiliary validation probe."""
 

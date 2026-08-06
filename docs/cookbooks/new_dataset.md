@@ -31,8 +31,8 @@ backbone.
 ```python
 from torch.utils.data import Dataset
 
-from open_wam.configs import DataConfig
-from open_wam.data import (
+from open_wam.sdk.config import DataConfig
+from open_wam.sdk.data import (
     DatasetArtifactKind,
     DatasetArtifactRequirement,
     WAMSample,

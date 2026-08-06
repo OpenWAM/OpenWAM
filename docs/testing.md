@@ -12,16 +12,15 @@ Open-WAM uses pytest markers to make resource requirements explicit.
 - `slow`: long-running train/eval/rollout checks.
 - `integration`: cross-component tests that are larger than unit tests.
 
-## Public CI Tier 0
+## Public CI Static Tier
 
 ```bash
 OPEN_WAM_CI_NO_TORCH=1 python scripts/ci_basic_sanity.py
 ```
 
-The default GitHub PR tier is static and intentionally cheap. It must not run
-`uv sync`, install the project, run pytest, import `open_wam`, install Torch, or
-touch private checkpoints, local datasets, GPUs, or external simulator
-checkouts.
+The dependency-light jobs remain intentionally cheap. They do not import
+Torch or touch private checkpoints, local datasets, GPUs, or external
+simulator checkouts.
 
 Tier 0 checks package metadata, entrypoint declarations, public config
 references, artifact manifest shape, local path sample hygiene, duplicate
@@ -49,24 +48,25 @@ The default PR workflow also includes three dependency-light companion jobs:
   compiles `deployment/`; and verifies the supported launcher/library contract
   without Torch, ROS2, cameras, or an FR3.
 
-## Local CPU Pytest Tier
+## Required CPU Semantic Gate
 
-After installing the development environment, run the CPU-safe pytest marker
-set locally or in a future gated CI tier:
+Every pull request runs the complete CPU-safe suite on Python 3.11 and 3.12:
 
 ```bash
-uv run --extra train pytest -m "unit or smoke or integration"
+uv sync --frozen --group dev --extra full
+uv run pytest --strict-markers -q -m "not (gpu or sim or data or slow)"
 ```
 
-This tier must still not require CUDA, private checkpoints, local datasets, or
-external simulator checkouts.
+This expression deliberately includes unmarked tests. A missing marker cannot
+silently remove a test from the standard gate. Tests marked `gpu`, `sim`,
+`data`, or `slow` must have a separate documented gate and skip with an
+actionable resource message when run without that resource.
 
 ## Manual CPU Smoke Workflow
 
-`.github/workflows/cpu-smoke.yml` is manual-only. It installs the Torch-backed
-train/eval stack and runs the public tiny synthetic eval path. Keep it out of
-default pull-request CI unless runtime and dependency cost are intentionally
-accepted.
+`.github/workflows/cpu-smoke.yml` remains a manually runnable end-to-end CLI
+check for the public tiny fixture. Its underlying contracts are also covered
+by the required CPU semantic suite.
 
 ## Local Full Checks
 

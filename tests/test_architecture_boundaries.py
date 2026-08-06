@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 from pathlib import Path
 
 from open_wam.configs import (
@@ -106,6 +107,17 @@ from open_wam.utils.wan_geometry import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "src" / "open_wam"
+
+
+def _stable_ast_dump(node: ast.AST) -> str:
+    """Serialize definitions without Python-version-specific AST fields."""
+
+    normalized = copy.deepcopy(node)
+    for child in ast.walk(normalized):
+        child._fields = tuple(
+            field for field in child._fields if field != "type_params"
+        )
+    return ast.dump(normalized)
 LOCAL_LATENT_DATASET_FACADE_PATH = (
     PACKAGE_ROOT / "data" / "lerobot_v2_latent.py"
 )
@@ -2884,6 +2896,7 @@ def test_data_configuration_contracts_have_role_specific_owners() -> None:
         "GripperRepresentation",
         "LatentTemporalLayout",
         "LatentWindowProfile",
+        "LegacyPicklePolicy",
         "MixedVideoDecodeSizeMode",
         "MixedVideoFrameFitMode",
         "MixedVideoLatentEncodingMode",
@@ -7002,10 +7015,11 @@ def test_realtime_contract_split_preserves_definitions_and_legacy_aliases() -> N
             if isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name == name
         )
     serialized_definitions = "\n".join(
-        f"{name}:{ast.dump(owner_nodes[name])}" for name in sorted(owner_nodes)
+        f"{name}:{_stable_ast_dump(owner_nodes[name])}"
+        for name in sorted(owner_nodes)
     ).encode()
     assert hashlib.sha256(serialized_definitions).hexdigest() == (
-        "09547fddaae6cafe3e679d5162708d0510f1c7babf67cb5a84094d5034ff4981"
+        "45c76c585f143a8783830ffd8cc75651d65c5a67324c67f1a9f3a06667bdfe27"
     )
 
     queue_names = (
@@ -7029,10 +7043,11 @@ def test_realtime_contract_split_preserves_definitions_and_legacy_aliases() -> N
         if isinstance(node, ast.FunctionDef)
     }
     serialized_queue = "\n".join(
-        f"{name}:{ast.dump(queue_nodes[name])}" for name in sorted(queue_names)
+        f"{name}:{_stable_ast_dump(queue_nodes[name])}"
+        for name in sorted(queue_names)
     ).encode()
     assert hashlib.sha256(serialized_queue).hexdigest() == (
-        "e09e12370defe0e51bcb64d50dddf60d5bdc01a24703c9c5205312bfbb056d69"
+        "24b04eaf73e2daba1d483c03693f3723a2d8475a490d353947218d8a1fcfb3f6"
     )
 
     legacy_control = importlib.import_module("open_wam.integrations.realtime_control")
@@ -7683,7 +7698,7 @@ def test_simulator_rollout_command_has_one_package_owner() -> None:
     ):
         assert implementation in runtime_source
         assert implementation not in script_source
-    assert "resolve_repo_path(args.config)" in runtime_source
+    assert "resolve_experiment_config_reference(args.config)" in runtime_source
     assert "def _resolve_repo_path" not in runtime_source
 
     assert not (PACKAGE_ROOT / "integrations" / "contracts.py").exists()
@@ -7720,7 +7735,7 @@ def test_sanity_command_has_one_package_owner() -> None:
     ):
         assert implementation in runtime_source
         assert implementation not in script_source
-    assert "resolve_repo_path(args.config)" in runtime_source
+    assert "resolve_experiment_config_reference(args.config)" in runtime_source
     assert "def _resolve_repo_path" not in runtime_source
     assert "config.trainer.batch_adapter == BatchAdapterName.LATENTS" in runtime_source
     assert 'dataset_type == "lerobot_v2_latent_local"' not in runtime_source
@@ -7917,11 +7932,11 @@ def test_simulator_configs_preserve_frozen_definitions_and_legacy_aliases() -> N
         if isinstance(node, ast.ClassDef)
     }
     serialized_definitions = "\n".join(
-        f"{name}:{ast.dump(class_nodes[name])}" for name in legacy_owners
+        f"{name}:{_stable_ast_dump(class_nodes[name])}" for name in legacy_owners
     ).encode()
 
     assert hashlib.sha256(serialized_definitions).hexdigest() == (
-        "504e7c4d0b80675722ee0d308f07db283811700d5e0d3aa8618ba8bdc4dc7998"
+        "6d453a1147c0013ce329590fa93eebe28299a57e38fc30ad3f636124db15afa4"
     )
     for class_name, legacy_module_name in legacy_owners.items():
         owner_value = getattr(simulator_configs, class_name)
@@ -7939,8 +7954,8 @@ def test_simulator_configs_preserve_frozen_definitions_and_legacy_aliases() -> N
         assert pickle.loads(legacy_payload) is owner_value
 
     libero_control_config = class_nodes["LiberoControlConfig"]
-    assert hashlib.sha256(ast.dump(libero_control_config).encode()).hexdigest() == (
-        "0bd9ac5e7fd39619af15332bd0f6b9cf8adf7e87a33f40f6785f8c20467bc218"
+    assert hashlib.sha256(_stable_ast_dump(libero_control_config).encode()).hexdigest() == (
+        "8750af08cf3e2f7cc5f7fa8412f1e9069159dcaf9a3b84a20c95a66b6b5dbccd"
     )
     legacy_control = importlib.import_module("open_wam.integrations.libero_control")
     owner_value = simulator_configs.LiberoControlConfig
@@ -8001,16 +8016,16 @@ def test_libero_control_roles_preserve_definitions_and_legacy_aliases() -> None:
     }
     expected_role_hashes = {
         "observations": (
-            "6af03029264ddf59566a7461dad928e0c3310b12f04c6e0264ec93599aebcedc"
+            "8acda4905d8b38be8ac173913f5eb885ce548cf96f5e84779f22c1829d66d950"
         ),
         "joint": (
-            "0420b8b4fa4d0e1385b8358382fd53ec8ac7736a17cfe31fde37fded21ac926c"
+            "3cba7b48947fb7a424f2c3f105db483c586af3f4e081437568cc1f6da894a1d1"
         ),
         "gripper": (
-            "613d7d5f2baba09c527c7478ce72891775a6400c38fbf587e63ed10b9c57b782"
+            "36e25825e03093fdd9a89add366cc0ff9ec78e0255b7b6c7c76a16fe62b36b71"
         ),
         "osc": (
-            "02f1486f727569713ae3aa2766adcf0717a574672e237f3d7da373eed4f0ebd0"
+            "5aee3de2c26a102fc1828958ba45231d1bfbc70ba823430915f4b3fb927856bb"
         ),
     }
     aggregate_definitions: list[str] = []
@@ -8023,7 +8038,7 @@ def test_libero_control_roles_preserve_definitions_and_legacy_aliases() -> None:
             for node in tree.body
             if isinstance(node, (ast.ClassDef, ast.FunctionDef))
         }
-        serialized = [f"{name}:{ast.dump(nodes[name])}" for name in names]
+        serialized = [f"{name}:{_stable_ast_dump(nodes[name])}" for name in names]
         aggregate_definitions.extend(serialized)
         assert hashlib.sha256("\n".join(serialized).encode()).hexdigest() == (
             expected_role_hashes[role]
@@ -8039,7 +8054,7 @@ def test_libero_control_roles_preserve_definitions_and_legacy_aliases() -> None:
     assert hashlib.sha256(
         "\n".join(aggregate_definitions).encode()
     ).hexdigest() == (
-        "29c14a2a71a77eae85e930d71ed9b393d9727f1a93e86f3d7ed756c20ff315d7"
+        "caf1f6c3f246dc539150dd414f8f59d1428acadc15ab762d2084f6db446f9eb1"
     )
 
     facade = importlib.import_module("open_wam.integrations.libero_control")

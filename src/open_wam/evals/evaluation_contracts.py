@@ -11,7 +11,9 @@ from open_wam.configs import (
     EvalMode,
     EvalPredictionSource,
     read_yaml_with_local_paths,
+    resolve_config_reference,
     resolve_config_path_alias,
+    resolve_evaluation_config_reference,
 )
 
 
@@ -29,6 +31,8 @@ class EvaluationRequest:
     checkpoint_path: Path | None
     device: str
     seed: int
+    allow_partial_checkpoint: bool = False
+    source_config_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -57,6 +61,9 @@ class EvaluationSummary:
     mean_video_latent_mse: float | None
     mean_trajectory_video_latent_mse: float | None
     checkpoint_path: str | None
+    checkpoint_compatibility: str = "strict"
+    checkpoint_missing_keys: tuple[str, ...] = ()
+    checkpoint_unexpected_keys: tuple[str, ...] = ()
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -83,6 +90,9 @@ def _resolve_relative_path(base_path: Path, value: str | None) -> Path | None:
     for aliased_candidate in aliased_candidates:
         if aliased_candidate.exists():
             return aliased_candidate
+    packaged_candidate = resolve_config_reference(value).resolve()
+    if packaged_candidate.exists():
+        return packaged_candidate
     raise FileNotFoundError(
         f"Could not resolve relative path '{value}' from base '{base_path}'. "
         f"Checked: {', '.join(str(path) for path in (*direct_candidates, *aliased_candidates))}."
@@ -122,6 +132,7 @@ def resolve_evaluation_request(
     checkpoint_override: str | None = None,
     device_override: str | None = None,
     seed_override: int | None = None,
+    allow_partial_checkpoint_override: bool = False,
 ) -> EvaluationRequest:
     """Resolve either an experiment YAML or an eval-wrapper YAML.
 
@@ -130,7 +141,7 @@ def resolve_evaluation_request(
     checkpoint path, and batch count.
     """
 
-    config_path = resolve_config_path_alias(config_path).resolve()
+    config_path = resolve_evaluation_config_reference(config_path).resolve()
     raw = _read_yaml(config_path)
     experiment_config_path = (
         _resolve_relative_path(config_path, raw.get("experiment_config"))
@@ -174,6 +185,8 @@ def resolve_evaluation_request(
         checkpoint_path=_resolve_relative_path(config_path, checkpoint_override or raw.get("checkpoint_path")),
         device=device_override or raw.get("device", "auto"),
         seed=seed_override if seed_override is not None else int(raw.get("seed", 0)),
+        allow_partial_checkpoint=bool(allow_partial_checkpoint_override),
+        source_config_path=config_path,
     )
 
 

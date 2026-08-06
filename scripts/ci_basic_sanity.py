@@ -346,25 +346,37 @@ def _check_static_source_contracts() -> None:
 
 def _check_workflow_is_no_torch() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    if "OPEN_WAM_CI_NO_TORCH" not in workflow:
+    basic_job = _workflow_job(workflow, "basic-pathways")
+    if "OPEN_WAM_CI_NO_TORCH" not in basic_job:
         raise SystemExit("CI workflow must assert the no-Torch basic pathway environment.")
     forbidden = ("uv sync", "--extra train", "pytest -m", "--with pyyaml")
-    present = [token for token in forbidden if token in workflow]
+    present = [token for token in forbidden if token in basic_job]
     if present:
-        raise SystemExit(f"CI workflow still contains heavy install/test tokens: {present!r}")
+        raise SystemExit(
+            "CI basic pathway still contains heavy install/test tokens: "
+            f"{present!r}"
+        )
+
+    semantic_job = _workflow_job(workflow, "semantic-contracts")
+    required = (
+        'python-version: ["3.11", "3.12"]',
+        "uv sync --frozen --group dev --extra full",
+        "pytest --strict-markers -q",
+        '-m "not (gpu or sim or data or slow)"',
+        'CUDA_VISIBLE_DEVICES: ""',
+    )
+    missing = [token for token in required if token not in semantic_job]
+    if missing:
+        raise SystemExit(
+            f"CI semantic pathway is missing required gates: {missing!r}"
+        )
 
 
 def _check_hardware_workflow() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
         encoding="utf-8"
     )
-    marker = "  hardware-workspace-sanity:"
-    if marker not in workflow:
-        raise SystemExit("CI workflow is missing the hardware workspace sanity job.")
-    job = workflow.split(marker, maxsplit=1)[1]
-    next_job = re.search(r"(?m)^  [A-Za-z0-9_-]+:\s*$", job)
-    if next_job is not None:
-        job = job[: next_job.start()]
+    job = _workflow_job(workflow, "hardware-workspace-sanity")
     required = (
         "python -m compileall -q deployment",
         "python -m pyflakes deployment",
@@ -389,6 +401,15 @@ def _check_hardware_workflow() -> None:
         raise SystemExit(
             f"Hardware workspace CI contains heavy package installs: {present!r}"
         )
+
+
+def _workflow_job(workflow: str, name: str) -> str:
+    marker = f"  {name}:"
+    if marker not in workflow:
+        raise SystemExit(f"CI workflow is missing the {name!r} job.")
+    job = workflow.split(marker, maxsplit=1)[1]
+    next_job = re.search(r"(?m)^  [A-Za-z0-9_-]+:\s*$", job)
+    return job if next_job is None else job[: next_job.start()]
 
 
 def _check_pages_workflow() -> None:

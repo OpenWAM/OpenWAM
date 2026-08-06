@@ -13,6 +13,7 @@ Treat these as compatibility-managed:
 - artifact manifest fields
 - checkpoint layout expectations
 - documented benchmark adapter contracts
+- role-specific `open_wam.sdk` exports
 
 ## Versioning Policy
 
@@ -26,7 +27,7 @@ Treat these as compatibility-managed:
 
 ```bash
 OPEN_WAM_CI_NO_TORCH=1 python scripts/ci_basic_sanity.py
-python scripts/check_release_metadata.py
+python scripts/check_release_metadata.py --release
 python scripts/validate_configs_static.py configs/experiments configs/evals configs/examples --quiet
 python scripts/build_docs_site.py --output .docs_site
 mkdocs build --strict
@@ -34,16 +35,20 @@ python -m build
 python -m twine check dist/*
 ```
 
-## Source Archive
+## Distribution Resources
 
-The wheel contains only `src/open_wam`. The source distribution is also a
-bounded public artifact, not a repository snapshot. Its allowlist contains:
+The wheel includes the package plus read-only canonical configs, examples,
+local-path samples, extension templates, and third-party license material.
+Config resolution prefers explicit files and source-checkout configs, then
+falls back to packaged resources. The source distribution is also a bounded
+public artifact, not a repository snapshot. Its allowlist contains:
 
 - package source;
 - public configs;
 - public docs;
 - extension templates;
-- required project metadata.
+- required project metadata;
+- project and third-party license/notice files.
 
 Checkout-only deployment, research scripts, tests, baselines, notes, caches,
 and machine-local config are intentionally excluded. Both basic CI and
@@ -58,6 +63,8 @@ Before tagging:
 - Static CI and minimal-package CI pass.
 - Any CPU/GPU/simulator validation claims are linked in cards.
 - Deprecations are documented before removals.
+- At least one non-fixture model artifact has a public HTTPS URL, SHA-256, and
+  license; the synthetic fixture does not satisfy this gate.
 
 Artifact build and Twine checks are release or manually triggered CI. The
 source-archive allowlist and private-path checks are part of the default static

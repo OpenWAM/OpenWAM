@@ -39,6 +39,16 @@ Entries with `download_url: null` are layout documentation only. They should not
 be advertised as reproducible public checkpoints until hosting, checksum, and
 license fields are filled.
 
+Final release validation fails unless at least one non-fixture model entry has
+an HTTPS download URL, SHA-256 checksum, and license. The tiny synthetic entry
+proves structure and execution only; it is not evidence of model quality.
+
+Checkpoint and latent tensor files are loaded through the restricted
+`weights_only=True` PyTorch path. Open-WAM does not automatically retry unsafe
+pickle deserialization. Legacy CALVIN object-array language annotations require
+the explicit `trusted_legacy` policy and must only come from a trusted local
+dataset.
+
 Manifest schema v2 uses `architecture`. The loader still accepts the retired
 `method_family` key in private manifests, but new manifests should not emit it.
 

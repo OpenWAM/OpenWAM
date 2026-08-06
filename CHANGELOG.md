@@ -13,8 +13,15 @@ result schemas, artifact manifests, and checkpoint layout expectations.
   attention/runtime programs, and simulator backends.
 - Public tiny synthetic fixtures, artifact manifests, experiment cards, and
   exact training/inference characterization tools.
+- Role-scoped `open_wam.sdk` modules for extending config, data, policy,
+  decoder, simulator, and result contracts without importing implementation
+  internals.
+- Versioned runtime provenance in structured evaluation, sanity, and simulator
+  result envelopes.
 - Dependency-light CI, package-boundary tests, static config validation, and a
   bounded source-distribution policy.
+- A required Python 3.11/3.12 semantic-contract CI gate that includes unmarked
+  tests while excluding only explicitly marked hardware/data suites.
 
 ### Changed
 
@@ -24,6 +31,13 @@ result schemas, artifact manifests, and checkpoint layout expectations.
   and cache execution now have explicit package owners and typed contracts.
 - Heavy model, training, simulator, visualization, and deployment dependencies
   are isolated behind optional extras; the base install requires only PyYAML.
+- Canonical configs, examples, evaluation wrappers, and extension templates
+  are installed package resources and resolve independently of the caller's
+  working directory.
+- Runtime checkpoint loading is key-strict by default; partial loading requires
+  an explicit migration-diagnostic policy.
+- Simulator construction is registry-driven and receives only typed,
+  immutable factory context rather than CLI implementation state.
 - Finite public configuration choices are enum-backed at the typed config
   boundary while experiment YAMLs remain string-friendly.
 
@@ -50,5 +64,8 @@ result schemas, artifact manifests, and checkpoint layout expectations.
   time.
 - Four-rank FSDP synchronization includes trainable root parameters outside
   leaf block stacks.
+- Tensor-bearing artifacts use restricted deserialization by default, with the
+  sole legacy NumPy-pickle boundary requiring an explicit trust policy.
+- Result JSON writes are atomic and protect the versioned envelope contract.
 - Installed commands resolve package-owned runtimes without depending on a
   source checkout.

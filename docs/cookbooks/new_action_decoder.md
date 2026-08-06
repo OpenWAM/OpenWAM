@@ -9,8 +9,8 @@ Implement `ActionDecoder` in an installed application package, then register a
 builder:
 
 ```python
-from open_wam.configs import ExtensionActionDecoderConfig
-from open_wam.pipelines import register_action_decoder
+from open_wam.sdk.config import ExtensionActionDecoderConfig
+from open_wam.sdk.policy import register_action_decoder
 
 from .config import AcmeDecoderOptions
 from .decoder import AcmeActionDecoder

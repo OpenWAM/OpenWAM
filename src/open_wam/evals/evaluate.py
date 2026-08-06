@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
+import json
 import sys
 from pathlib import Path
 
@@ -20,6 +22,7 @@ from open_wam.configs import (
     ReferenceCoreInitMode,
     TrainerAccelerator,
     load_experiment_config,
+    serialize_experiment_config,
 )
 from open_wam.data import (
     LatentWAMBatch,
@@ -50,6 +53,7 @@ from open_wam.evals.evaluation_metrics import (
     _select_rollout_previous_action,
     _video_latent_mse,
 )
+from open_wam.evals.evaluation_reporting import build_evaluation_result
 from open_wam.evals.evaluation_windows import (
     _align_rollout_window_tensor,
     _group_dataset_indices_by_episode,
@@ -59,9 +63,12 @@ from open_wam.extensions import load_extension_modules
 from open_wam.models.policy_variants import PolicyInferContext
 from open_wam.pipelines import VariantRolloutRunner, build_variant_pipeline_from_config
 from open_wam.runtime.checkpoints import (
+    CheckpointCompatibilityPolicy,
     load_pipeline_checkpoint,
     resolve_checkpoint_file,
 )
+from open_wam.runtime.provenance import ProvenanceMode, collect_runtime_provenance
+from open_wam.runtime.results import write_result_json
 from open_wam.utils import seed_everywhere
 
 __all__ = ["EvaluationRequest", "EvaluationSummary", "resolve_evaluation_request", "run_evaluation"]
@@ -88,14 +95,36 @@ _EVALUATION_COMPATIBILITY_EXPORTS = (
 def _apply_checkpoint_runtime_override(
     experiment_config: ExperimentConfig,
     checkpoint_path: Path,
-) -> Path | None:
+) -> tuple[ExperimentConfig, Path]:
+    """Return checkpoint-local runtime paths without mutating typed config."""
+
     checkpoint_file = resolve_checkpoint_file(checkpoint_path)
     transformer_dir = checkpoint_file.parent / "transformer"
     if not _is_usable_transformer_dir(transformer_dir):
-        return checkpoint_file
-    object.__setattr__(experiment_config.backbone, "transformer_subdir", str(transformer_dir.resolve()))
-    object.__setattr__(experiment_config.backbone, "reference_core_init_mode", ReferenceCoreInitMode.FULL)
-    return checkpoint_file
+        return experiment_config, checkpoint_file
+    resolved_config = replace(
+        experiment_config,
+        backbone=replace(
+            experiment_config.backbone,
+            transformer_subdir=str(transformer_dir.resolve()),
+            reference_core_init_mode=ReferenceCoreInitMode.FULL,
+        ),
+    )
+    return resolved_config, checkpoint_file
+
+
+def _resolve_evaluation_runtime(
+    request: EvaluationRequest,
+) -> tuple[ExperimentConfig, Path | None]:
+    """Resolve the exact config and checkpoint consumed by evaluation."""
+
+    experiment_config = load_experiment_config(request.experiment_config_path)
+    if request.checkpoint_path is None:
+        return experiment_config, None
+    return _apply_checkpoint_runtime_override(
+        experiment_config,
+        request.checkpoint_path,
+    )
 
 
 def _is_usable_transformer_dir(path: Path) -> bool:
@@ -172,10 +201,8 @@ def run_evaluation(
 ) -> EvaluationSummary:
     """Run the generic evaluation pipeline on the requested split."""
 
-    experiment_config = load_experiment_config(request.experiment_config_path)
-    resolved_checkpoint_path: Path | None = None
-    if request.checkpoint_path is not None:
-        resolved_checkpoint_path = _apply_checkpoint_runtime_override(experiment_config, request.checkpoint_path)
+    experiment_config, resolved_checkpoint_path = _resolve_evaluation_runtime(request)
+    checkpoint_report = None
     seed_everywhere(request.seed)
     device = _resolve_device(request.device, experiment_config)
     pipeline = build_variant_pipeline_from_config(experiment_config)
@@ -186,6 +213,11 @@ def run_evaluation(
             pipeline,
             resolved_checkpoint_path,
             map_location=torch.device("cpu"),
+            compatibility=(
+                CheckpointCompatibilityPolicy.ALLOW_PARTIAL
+                if request.allow_partial_checkpoint
+                else CheckpointCompatibilityPolicy.STRICT
+            ),
         )
         if checkpoint_report.missing_keys:
             print(f"eval.checkpoint_missing_keys {len(checkpoint_report.missing_keys)}")
@@ -562,6 +594,17 @@ def run_evaluation(
             else None
         ),
         checkpoint_path=str(resolved_checkpoint_path) if resolved_checkpoint_path is not None else None,
+        checkpoint_compatibility=(
+            CheckpointCompatibilityPolicy.ALLOW_PARTIAL.value
+            if request.allow_partial_checkpoint
+            else CheckpointCompatibilityPolicy.STRICT.value
+        ),
+        checkpoint_missing_keys=(
+            () if checkpoint_report is None else checkpoint_report.missing_keys
+        ),
+        checkpoint_unexpected_keys=(
+            () if checkpoint_report is None else checkpoint_report.unexpected_keys
+        ),
     )
 
 
@@ -575,8 +618,15 @@ def main() -> None:
     parser.add_argument("--max-steps-per-trajectory", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--checkpoint", type=str, default=None)
+    parser.add_argument("--allow-partial-checkpoint", action="store_true")
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--output-json", type=str, default=None)
+    parser.add_argument(
+        "--provenance-mode",
+        choices=tuple(mode.value for mode in ProvenanceMode),
+        default=ProvenanceMode.STANDARD.value,
+    )
     parser.add_argument("--extension", action="append", default=[])
     args = parser.parse_args()
 
@@ -592,6 +642,7 @@ def main() -> None:
         checkpoint_override=args.checkpoint,
         device_override=args.device,
         seed_override=args.seed,
+        allow_partial_checkpoint_override=args.allow_partial_checkpoint,
     )
     summary = run_evaluation(request)
     print("eval.experiment_name", summary.experiment_name)
@@ -616,6 +667,27 @@ def main() -> None:
     print("eval.mean_video_latent_mse", summary.mean_video_latent_mse)
     print("eval.mean_trajectory_video_latent_mse", summary.mean_trajectory_video_latent_mse)
     print("eval.checkpoint_path", summary.checkpoint_path)
+    if args.output_json is not None:
+        output_path = Path(args.output_json).expanduser().resolve()
+        experiment_config, _ = _resolve_evaluation_runtime(request)
+        result = build_evaluation_result(
+            request=request,
+            summary=summary,
+            provenance=collect_runtime_provenance(
+                config_path=(
+                    request.source_config_path or request.experiment_config_path
+                ),
+                resolved_config=serialize_experiment_config(experiment_config),
+                checkpoint_path=summary.checkpoint_path,
+                dataset_root=experiment_config.data.local_root,
+                mode=args.provenance_mode,
+            ),
+            result_path=str(output_path),
+            benchmark=str(experiment_config.data.dataset_name),
+        )
+        write_result_json(output_path, result)
+        print("eval.result_path", output_path)
+        print("eval.result", json.dumps(result, sort_keys=True))
 
 
 if __name__ == "__main__":

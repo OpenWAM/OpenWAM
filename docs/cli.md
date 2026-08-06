@@ -12,7 +12,7 @@ compatibility wrappers.
 | `open-wam-inspect-config` | Load and print typed config | `scripts/inspect_config.py` |
 | `open-wam-validate-config` | Static YAML validation without model imports | `scripts/validate_configs_static.py` |
 | `open-wam-sanity` | Run quantified load/train/eval/rollout-style sanity checks | `scripts/run_benchmark_pipeline_sanity.py` |
-| `open-wam-sim-rollout` | Run closed-loop RoboTwin/CALVIN rollout when simulators are installed | `scripts/run_sim_realtime_sandbox.py` |
+| `open-wam-sim-rollout` | Run a registered simulator adapter in closed loop | `scripts/run_sim_realtime_sandbox.py` |
 
 All six commands execute entirely from the installed package. The listed
 legacy script paths are compatibility adapters to the same package parsers and
@@ -57,7 +57,9 @@ uv run --extra train open-wam-train --cfg configs/experiments/parallel_stream_ro
 uv run --extra eval open-wam-eval \
   --cfg configs/evals/parallel_stream_robotwin_smoke_eval.yaml \
   --device cpu \
-  --max-batches 1
+  --max-batches 1 \
+  --output-json outputs/eval.json \
+  --provenance-mode full
 ```
 
 ```bash
@@ -67,3 +69,11 @@ uv run --extra sim open-wam-sim-rollout \
   --max-steps 10 \
   --zero-policy
 ```
+
+Checkpoint loading is strict by default. `--allow-partial-checkpoint` permits
+missing or unexpected model keys only for an intentional migration diagnostic;
+results produced under that opt-in should not be reported as normal evals.
+
+Third-party simulator adapters use `--extension`, an application-owned
+`--benchmark` identifier, and repeatable `--sim-option KEY=VALUE` values. See
+the [simulator adapter cookbook](cookbooks/new_simulator_adapter.md).

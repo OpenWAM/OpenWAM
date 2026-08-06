@@ -26,15 +26,7 @@ def select_init_state(init_states: Any, episode_idx: int) -> Any:
 def load_task_init_states(task_spec: Any) -> Any:
     from open_wam.integrations import load_libero_task_init_states
 
-    try:
-        return load_libero_task_init_states(task_spec)
-    except TypeError as exc:
-        if "weights_only" not in str(exc):
-            raise
-        # Older torch releases do not accept weights_only=False. This baseline
-        # may run inside the external LingBot environment, so keep a local
-        # compatibility fallback instead of changing the shared loader contract.
-        return torch.load(task_spec.init_states_path)
+    return load_libero_task_init_states(task_spec)
 
 
 @dataclass(frozen=True)

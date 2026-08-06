@@ -158,18 +158,24 @@ class EncodedCounterfactualDynamicsLatentDataset(Dataset[LatentWAMSample]):
             fallback_video_latents=source_video_latents,
             source_frame_offset=int(self.data_config.sample_construction.condition_source_frame_offset),
         )
-        sample_npz = np.load(self._resolve_raw_path(row, "sample_path"))
-        source_actions = _pack_actions(
-            np.asarray(sample_npz["future_actions"], dtype=np.float32),
-            target_dim=int(self.data_config.action_schema.action_dim),
-        )
         state_dim = int(self.data_config.action_schema.state_dim)
-        source_proprio_frames, source_proprio_frames_mask = _counterfactual_latent_state_frames(
-            sample_npz,
-            latent_frames=target_frames,
-            state_dim=state_dim,
-            data_config=self.data_config,
-        )
+        with np.load(
+            self._resolve_raw_path(row, "sample_path"),
+            allow_pickle=False,
+        ) as sample_npz:
+            source_actions = _pack_actions(
+                np.asarray(sample_npz["future_actions"], dtype=np.float32),
+                target_dim=int(self.data_config.action_schema.action_dim),
+            )
+            (
+                source_proprio_frames,
+                source_proprio_frames_mask,
+            ) = _counterfactual_latent_state_frames(
+                sample_npz,
+                latent_frames=target_frames,
+                state_dim=state_dim,
+                data_config=self.data_config,
+            )
         action_per_frame = _counterfactual_action_steps_per_frame(
             source_actions,
             total_frames=source_frames,

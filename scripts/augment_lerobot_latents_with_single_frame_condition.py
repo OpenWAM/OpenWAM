@@ -9,6 +9,8 @@ from typing import Any
 import imageio.v2 as imageio
 import torch
 
+from open_wam.artifacts import load_tensor_artifact
+
 from open_wam.data.latent_temporal import (
     CONDITION_SOURCE_FRAME_POLICY_NEXT_LATENT_SOURCE_OFFSET,
     latent_raw_boundaries,
@@ -560,7 +562,7 @@ def _is_wrist_camera(camera_name: str) -> bool:
 
 
 def _load_payload(latent_path: Path) -> dict[str, Any]:
-    payload = torch.load(latent_path, map_location="cpu", weights_only=False)
+    payload = load_tensor_artifact(latent_path)
     if not isinstance(payload, dict):
         raise ValueError(f"Expected latent payload dict at {latent_path}, got {type(payload).__name__}.")
     return payload

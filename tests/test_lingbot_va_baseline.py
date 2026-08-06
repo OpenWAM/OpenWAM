@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 
-from baselines.lingbot_va import libero_rollout
 from baselines.lingbot_va.config import (
     CheckpointSpec,
     RolloutSuiteConfig,
@@ -16,7 +14,7 @@ from baselines.lingbot_va.config import (
 )
 from baselines.lingbot_va.apple_to_apple import build_comparison_summary
 from baselines.lingbot_va.generate_libero10_manifest import _deterministic_pairs, _random_pairs
-from baselines.lingbot_va.libero_rollout import load_task_init_states, select_init_state
+from baselines.lingbot_va.libero_rollout import select_init_state
 from baselines.lingbot_va.run_robotwin_client import build_upstream_argv, patch_robotwin_client_source
 from baselines.lingbot_va.summarize_results import validate_rows
 
@@ -368,22 +366,6 @@ def test_select_init_state_rejects_empty_sequence() -> None:
         assert "no init states" in str(exc)
     else:
         raise AssertionError("empty init states should be rejected")
-
-
-def test_load_task_init_states_falls_back_for_old_torch(monkeypatch) -> None:
-    import open_wam.integrations
-
-    def old_torch_loader(task_spec):
-        del task_spec
-        raise TypeError("load() got an unexpected keyword argument 'weights_only'")
-
-    monkeypatch.setattr(open_wam.integrations, "load_libero_task_init_states", old_torch_loader)
-    monkeypatch.setattr(libero_rollout.torch, "load", lambda path: ["fallback", str(path)])
-
-    assert load_task_init_states(SimpleNamespace(init_states_path="/tmp/init.pruned_init")) == [
-        "fallback",
-        "/tmp/init.pruned_init",
-    ]
 
 
 def test_lingbot_third_party_star_exports_only_public_model() -> None:

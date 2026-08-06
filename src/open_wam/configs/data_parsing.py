@@ -780,6 +780,16 @@ def parse_data_config(raw_value: Mapping[str, Any] | None) -> DataConfig:
             ),
             sampling_seed=data_raw.get("sampling_seed", data_defaults.sampling_seed),
         )
+    if data_config_cls is CalvinDataConfig:
+        common_data_kwargs.update(
+            language_annotation_pickle_policy=_coerce_enum(
+                config_enums.LegacyPicklePolicy,
+                data_raw.get(
+                    "language_annotation_pickle_policy",
+                    data_defaults.language_annotation_pickle_policy,
+                ),
+            ),
+        )
 
     # `data_config_cls` may be a benchmark-specific preset or the generic
     # fallback. In both cases, the instantiated object carries the exact view

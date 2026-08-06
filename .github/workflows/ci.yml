@@ -63,10 +63,55 @@ jobs:
           .ci-minimal/bin/open-wam-validate-config --help
       - name: Static config validation from installed package
         run: |
-          .ci-minimal/bin/open-wam-validate-config \
+          VENV="$GITHUB_WORKSPACE/.ci-minimal"
+          WORKDIR="$(mktemp -d)"
+          cd "$WORKDIR"
+          mkdir -p configs/experiments src/open_wam
+          printf '[project]\nname = "open-wam"\n' > pyproject.toml
+          printf 'not: open-wam\n' > configs/experiments/unrelated-shadow.yaml
+          "$VENV/bin/python" - <<'PY'
+          from open_wam.configs import (
+              resolve_config_reference,
+              resolve_evaluation_config_reference,
+              resolve_experiment_config_reference,
+          )
+
+          experiment = resolve_experiment_config_reference("contract_only_robotwin")
+          assert experiment.is_file()
+          assert "site-packages/open_wam/resources" in str(experiment)
+          assert resolve_evaluation_config_reference("contract_only_robotwin").is_file()
+          assert resolve_config_reference(
+              "templates/extension_method/config.yaml"
+          ).is_file()
+          PY
+          "$VENV/bin/open-wam-validate-config" \
             configs/experiments/contract_only_robotwin.yaml \
             configs/evals/contract_only_robotwin.yaml \
             configs/examples/calvin_npz_raw7_sanity.yaml
+
+  semantic-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install the CPU semantic test stack
+        run: uv sync --frozen --group dev --extra full
+      - name: Run the required CPU semantic gate
+        env:
+          CUDA_VISIBLE_DEVICES: ""
+        run: >-
+          uv run pytest --strict-markers -q
+          -m "not (gpu or sim or data or slow)"
 
   docs-site:
     runs-on: ubuntu-latest

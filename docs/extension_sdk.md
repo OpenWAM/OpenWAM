@@ -3,6 +3,29 @@
 Open-WAM extensions are ordinary installed Python modules. They register
 role-based components without modifying the Open-WAM source tree.
 
+## Compatibility Boundary
+
+New integrations should import from these role-specific modules:
+
+- `open_wam.sdk.config`: typed config envelopes, loading, and resource resolution
+- `open_wam.sdk.data`: sample contracts and dataset registration
+- `open_wam.sdk.policy`: policy, decoder, attention, and visual runtime contracts
+- `open_wam.sdk.simulator`: simulator protocol and factory registration
+- `open_wam.sdk.results`: versioned results and provenance
+
+These modules are the compatibility-managed Python SDK. Historical broad
+facades such as `open_wam.configs`, `open_wam.data`, and
+`open_wam.pipelines` remain import-compatible during the pre-1.0 migration,
+but their complete symbol sets are not a promise that every implementation
+helper is stable. Modules below `open_wam.models.*` are internal unless a
+contract is re-exported by `open_wam.sdk.policy`.
+
+The base install supports config and result tooling. Install `open-wam[torch]`
+for dataset, policy, decoder, and attention extensions; use
+`open-wam[train]`, `open-wam[eval]`, or `open-wam[sim]` for the corresponding
+runnable command. An extension package should declare the narrowest extra its
+runtime actually needs.
+
 ## Loading Extensions
 
 Every maintained runtime command accepts repeatable extension specs:
@@ -20,7 +43,7 @@ Import or registration failures stop startup before configuration is
 constructed.
 
 ```python
-from open_wam.data import register_dataset_adapter
+from open_wam.sdk.data import register_dataset_adapter
 
 from .dataset import build_train_val
 
@@ -39,9 +62,10 @@ the active environment or otherwise importable on `PYTHONPATH`.
 
 ## Registration APIs
 
-- dataset adapters: `open_wam.data.register_dataset_adapter`
-- policy variants: `open_wam.pipelines.register_policy_variant`
-- action decoders: `open_wam.pipelines.register_action_decoder`
+- dataset adapters: `open_wam.sdk.data.register_dataset_adapter`
+- policy variants: `open_wam.sdk.policy.register_policy_variant`
+- action decoders: `open_wam.sdk.policy.register_action_decoder`
+- simulator adapters: `open_wam.sdk.simulator.register_simulator_adapter`
 
 The active architectural boundary remains:
 
@@ -98,7 +122,9 @@ overrides.
 
 A training dataset may implement
 `build_train_sampler(*, world_size, rank)`. Prefer the shared contracts in
-`open_wam.data`:
+`open_wam.data` when an adapter needs advanced distributed sampling. Those
+sampler implementations are provisional infrastructure rather than part of
+the narrow extension SDK:
 
 - `WeightedReplacementDistributedSampler` for seeded weighted draws
 - `EpochOrderDistributedSampler` for a dataset-provided global order padded to
@@ -156,8 +182,8 @@ normal typed config sections.
 4. Add config, construction, gradient, and recurrent-inference tests.
 
 ```python
-from open_wam.configs import ExtensionPolicyConfig
-from open_wam.pipelines import register_policy_variant
+from open_wam.sdk.config import ExtensionPolicyConfig
+from open_wam.sdk.policy import register_policy_variant
 
 from .policy import AcmePolicy, AcmePolicyOptions
 
@@ -187,8 +213,8 @@ def register_open_wam() -> None:
 5. Keep result schemas backward compatible when adding outputs.
 
 ```python
-from open_wam.configs import ExtensionActionDecoderConfig
-from open_wam.pipelines import register_action_decoder
+from open_wam.sdk.config import ExtensionActionDecoderConfig
+from open_wam.sdk.policy import register_action_decoder
 
 from .decoder import AcmeActionDecoder, AcmeDecoderOptions
 
@@ -207,15 +233,56 @@ def register_open_wam() -> None:
 The policy and decoder snippets are standalone examples. When one module owns
 both, call both registration functions from the same `register_open_wam` hook.
 
+## Adding A Simulator
+
+Simulator extensions register a factory under an application-owned benchmark
+identifier. The factory receives only immutable generic options and local-path
+aliases; it does not depend on Open-WAM's CLI parser.
+
+```python
+from open_wam.sdk.simulator import (
+    SimulatorFactoryContext,
+    register_simulator_adapter,
+)
+
+from .simulator import AcmeSimulator
+
+
+def build_simulator(context: SimulatorFactoryContext) -> AcmeSimulator:
+    return AcmeSimulator(
+        endpoint=context.options["endpoint"],
+        asset_root=context.local_paths.get("simulators.acme_root"),
+    )
+
+
+def register_open_wam() -> None:
+    register_simulator_adapter("acme", build_simulator)
+```
+
+Invoke it without changing the Open-WAM repository:
+
+```bash
+open-wam-sim-rollout \
+  --extension acme_open_wam \
+  --benchmark acme \
+  --sim-option endpoint=localhost:5000 \
+  --cfg experiment.yaml
+```
+
+The returned object implements `SimulatorBackend`. Task, episode, and seed are
+passed through `EpisodeSpec` at reset time; application-specific construction
+values belong in repeatable `--sim-option KEY=VALUE` settings.
+
 ## Custom Attention
 
 Attention visibility is data passed through the policy/runtime boundary, not a
 backbone subclass. A custom policy can build a
-`open_wam.models.common.PreparedAttentionProfile` and pass it in
+`PreparedAttentionProfile` and pass it in
 `VisualCoreInput.attention_profile` through the dense runtime program:
 
 ```python
-from open_wam.models.visual_tower import (
+from open_wam.sdk.policy import (
+    PreparedAttentionProfile,
     RuntimeStepInput,
     VisualCoreInput,
     build_dense_runtime_program,
@@ -239,7 +306,9 @@ execution. The exact parallel-stream and dual-expert backends are checkpoint
 compatibility contracts with fixed layout semantics, not general attention
 extension points.
 
-The built-in attention implementation has three parameter-free roles:
+The following built-in role modules are useful when contributing to Open-WAM
+itself, but are not stable extension APIs. The built-in attention
+implementation has three parameter-free roles:
 
 - `open_wam.models.common.attention_contracts` owns profile records, coupling
   names, and semantic normalization;
@@ -361,7 +430,7 @@ policy variant or transformer block.
   global training state.
 - Use globally unique extension identifiers. Duplicate registration fails
   unless the caller explicitly requests a process-local replacement.
-- Use `open_wam.configs` coercion helpers for enum-backed extension settings;
+- Use `open_wam.sdk.config.coerce_fields` for enum-backed extension settings;
   keep cross-section defaults and validation in a named config contract.
 - Dataset parsing remains in data adapters.
 - Policy semantics remain in `PolicyVariant`.
@@ -369,6 +438,16 @@ policy variant or transformer block.
 - Final supervised outputs and losses remain in `ActionDecoder`.
 - Public finite choices are enum-backed; dataset names, row keys, paths, and
   extension labels remain open strings.
+
+## Choosing The Extension Level
+
+Use config only when changing layouts, schedules, runtime-program choices,
+sampling, or other already typed semantics. Use one SDK registration hook when
+adding a dataset parser, policy, decoder, or simulator. Change the shared core
+only when the existing typed contracts cannot express a reusable capability;
+that requires architecture-boundary tests and the strict characterization
+gate. Benchmark-specific parsing does not belong in `VisualTower`, and method
+branches do not belong in the generic trainer.
 
 ## Cookbooks
 

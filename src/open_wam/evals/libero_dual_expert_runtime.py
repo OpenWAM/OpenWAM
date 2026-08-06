@@ -30,6 +30,7 @@ from open_wam.pipelines import (
     build_variant_pipeline_from_config,
 )
 from open_wam.runtime.checkpoints import (
+    CheckpointCompatibilityPolicy,
     load_pipeline_checkpoint,
     resolve_checkpoint_file,
     resolve_checkpoint_step_dir_from_transformer_dir,
@@ -132,6 +133,9 @@ class DualExpertLiberoLoadOptions:
     decode_device: str | None
     allow_deprecated_libero_config: bool
     allow_deprecated_frontend_encode_mode: bool
+    checkpoint_load_policy: CheckpointCompatibilityPolicy = (
+        CheckpointCompatibilityPolicy.STRICT
+    )
     component_report_extra: Mapping[str, object] = field(default_factory=dict)
 
 
@@ -275,7 +279,11 @@ def load_dual_expert_libero_runtime(options: DualExpertLiberoLoadOptions) -> Dua
         )
 
     pipeline = build_variant_pipeline_from_config(config)
-    checkpoint_report = load_pipeline_checkpoint(pipeline, checkpoint_path)
+    checkpoint_report = load_pipeline_checkpoint(
+        pipeline,
+        checkpoint_path,
+        compatibility=options.checkpoint_load_policy,
+    )
     if checkpoint_report.missing_keys:
         print(f"viz.checkpoint_missing_keys {len(checkpoint_report.missing_keys)}")
     if checkpoint_report.unexpected_keys:

@@ -11,6 +11,10 @@ from typing import Any
 import torch
 
 from open_wam.configs import ReplayStatusPolicy
+from open_wam.runtime.checkpoints import (
+    CheckpointCompatibilityPolicy,
+    load_pipeline_checkpoint,
+)
 from open_wam.utils import (
     load_experiment_config,
     merge_runtime_config_from_checkpoint,
@@ -174,6 +178,11 @@ def main(argv: list[str] | None = None) -> None:
         checkpoint_file=checkpoint_file,
         runtime_device=runtime_device,
         runtime_dtype=runtime_dtype,
+        checkpoint_compatibility=(
+            CheckpointCompatibilityPolicy.ALLOW_PARTIAL
+            if args.allow_partial_checkpoint
+            else CheckpointCompatibilityPolicy.STRICT
+        ),
     )
 
     metric_rows: list[dict[str, Any]] = []
@@ -416,6 +425,9 @@ def _build_fdm_rollout_for_config(
     checkpoint_file: Path,
     runtime_device: torch.device,
     runtime_dtype: torch.dtype | None,
+    checkpoint_compatibility: CheckpointCompatibilityPolicy = (
+        CheckpointCompatibilityPolicy.STRICT
+    ),
 ) -> JointDenoisingFdmRollout | DualExpertGeneralistDenoisingFdmRollout:
     if _is_dual_expert_policy_config(config):
         from open_wam.pipelines import (
@@ -428,6 +440,7 @@ def _build_fdm_rollout_for_config(
             pipeline,
             checkpoint_file,
             map_location=torch.device("cpu"),
+            compatibility=checkpoint_compatibility,
         )
         if runtime_dtype is None:
             pipeline.to(runtime_device)
@@ -521,26 +534,20 @@ def _load_pipeline_checkpoint_for_fdm_rollout(
     checkpoint_path: Path,
     *,
     map_location: torch.device,
+    compatibility: CheckpointCompatibilityPolicy = (
+        CheckpointCompatibilityPolicy.STRICT
+    ),
 ) -> None:
-    try:
-        checkpoint = torch.load(checkpoint_path, map_location=map_location, weights_only=True)
-    except TypeError:
-        checkpoint = torch.load(checkpoint_path, map_location=map_location)
-    state_dict = checkpoint.get("state_dict")
-    if state_dict is None:
-        state_dict = checkpoint.get("model_state_dict", checkpoint)
-    if not isinstance(state_dict, dict):
-        raise ValueError("Checkpoint must be a raw state_dict or a checkpoint with `state_dict`/`model_state_dict`.")
-    normalized = {
-        (key.removeprefix("pipeline.")): value
-        for key, value in state_dict.items()
-        if isinstance(value, torch.Tensor)
-    }
-    missing, unexpected = pipeline.load_state_dict(normalized, strict=False)
-    if missing:
-        print(f"fdm_eval.checkpoint_missing_keys {len(missing)}")
-    if unexpected:
-        print(f"fdm_eval.checkpoint_unexpected_keys {len(unexpected)}")
+    report = load_pipeline_checkpoint(
+        pipeline,
+        checkpoint_path,
+        map_location=map_location,
+        compatibility=compatibility,
+    )
+    if report.missing_keys:
+        print(f"fdm_eval.checkpoint_missing_keys {len(report.missing_keys)}")
+    if report.unexpected_keys:
+        print(f"fdm_eval.checkpoint_unexpected_keys {len(report.unexpected_keys)}")
 
 
 def _repair_runtime_config_for_local_eval(
@@ -757,6 +764,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--config", "--cfg", default="configs/experiments/parallel_stream_libero_joint_denoise.yaml")
     parser.add_argument("--checkpoint", required=True)
+    parser.add_argument(
+        "--allow-partial-checkpoint",
+        action="store_true",
+        help=(
+            "Permit missing or unexpected checkpoint keys for migration "
+            "diagnostics. Standard evaluation remains strict."
+        ),
+    )
     parser.add_argument("--output-dir", default="outputs/joint_denoising_fdm")
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--horizon-frames", type=int, default=16)

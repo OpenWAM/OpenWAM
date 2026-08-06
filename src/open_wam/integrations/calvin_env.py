@@ -181,7 +181,7 @@ class CalvinBenchmarkAdapter:
         path = self.dataset_root / f"episode_{int(episode_idx):07d}.npz"
         if not path.exists():
             return None
-        with np.load(path, allow_pickle=True) as payload:
+        with np.load(path, allow_pickle=False) as payload:
             state: dict[str, np.ndarray] = {}
             if "robot_obs" in payload:
                 state["robot_obs"] = np.asarray(payload["robot_obs"], dtype=np.float32)

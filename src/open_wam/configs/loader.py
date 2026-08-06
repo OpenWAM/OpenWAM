@@ -12,6 +12,7 @@ from .backbone import (
     parse_shared_video_transformer_config,
 )
 from .coercion import raw_enum_value as _raw_enum_value
+from .config_paths import resolve_experiment_config_reference
 from .data_contracts import DataConfig
 from .data_mixed_video import MixedVideoDataConfig
 from .data_parsing import parse_data_config
@@ -44,7 +45,7 @@ _SEQUENCE_CONTRACT_COMPATIBILITY_EXPORTS = (
 
 
 def _read_yaml(path: str | Path) -> dict[str, Any]:
-    return read_yaml_with_local_paths(path)
+    return read_yaml_with_local_paths(resolve_experiment_config_reference(path))
 
 
 def _apply_checkpoint_runtime_compat(raw: dict[str, Any]) -> dict[str, Any]:

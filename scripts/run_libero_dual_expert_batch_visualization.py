@@ -13,6 +13,7 @@ if str(SRC_ROOT) not in sys.path:
 
 import open_wam.evals.libero_dual_expert_rollout as dual_expert_viz
 import open_wam.evals.libero_dual_expert_runtime as dual_expert_runtime
+from open_wam.runtime.checkpoints import CheckpointCompatibilityPolicy
 from open_wam.utils import seed_everywhere
 
 
@@ -31,6 +32,14 @@ def main() -> None:
         required=True,
     )
     parser.add_argument("--checkpoint", type=str, required=True)
+    parser.add_argument(
+        "--allow-partial-checkpoint",
+        action="store_true",
+        help=(
+            "Permit missing or unexpected checkpoint keys for migration "
+            "diagnostics. Standard rollouts remain strict."
+        ),
+    )
     parser.add_argument(
         "--set",
         dest="set_overrides",
@@ -269,6 +278,11 @@ def _load_batch_resources(args: argparse.Namespace) -> SimpleNamespace:
             ),
             allow_deprecated_frontend_encode_mode=bool(
                 args.allow_deprecated_frontend_encode_mode
+            ),
+            checkpoint_load_policy=(
+                CheckpointCompatibilityPolicy.ALLOW_PARTIAL
+                if args.allow_partial_checkpoint
+                else CheckpointCompatibilityPolicy.STRICT
             ),
             component_report_extra={
                 "batch_driver": "run_libero_dual_expert_batch_visualization.py"

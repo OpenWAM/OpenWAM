@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 import yaml
 
+from .config_paths import resolve_config_reference
 from .enums import BackboneImplementation, StrEnum
 from .static_validation_contracts import _IssueBuilder
 
@@ -109,6 +110,9 @@ def _resolve_relative(source_path: Path, value: str) -> Path:
     local_candidate = (source_path.parent / candidate).resolve()
     if local_candidate.exists():
         return local_candidate
+    packaged_candidate = resolve_config_reference(candidate).resolve()
+    if packaged_candidate.exists():
+        return packaged_candidate
     return (_find_repo_root(source_path) / candidate).resolve()
 
 

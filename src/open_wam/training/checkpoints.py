@@ -24,6 +24,7 @@ from torch.distributed.checkpoint.state_dict import (
     set_optimizer_state_dict,
 )
 
+from open_wam.artifacts import load_tensor_artifact as _load_tensor_artifact
 from open_wam.configs import CheckpointMode, ExperimentConfig
 from open_wam.configs.enums import serialize_enum_values
 
@@ -368,11 +369,7 @@ class CheckpointManager:
             broadcast_from_rank0=distributed,
         )
         payload = (
-            torch.load(
-                checkpoint_path,
-                map_location=map_location,
-                weights_only=False,
-            )
+            _load_tensor_artifact(checkpoint_path, map_location=map_location)
             if is_rank_zero or not distributed
             else {}
         )

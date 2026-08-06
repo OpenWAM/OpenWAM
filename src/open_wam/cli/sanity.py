@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 
+from open_wam.runtime.provenance import ProvenanceMode
+
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -32,6 +34,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output-json", type=str, default=None)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--provenance-mode",
+        choices=tuple(mode.value for mode in ProvenanceMode),
+        default=ProvenanceMode.STANDARD.value,
+    )
     parser.add_argument("--extension", action="append", default=[])
     return parser
 

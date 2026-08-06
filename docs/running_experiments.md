@@ -200,7 +200,8 @@ Use eval configs for dataset-level metrics:
 uv run --extra eval open-wam-eval \
   --cfg configs/evals/<evaluation>.yaml \
   --device cuda:0 \
-  --max-batches 16
+  --max-batches 16 \
+  --output-json outputs/evaluation.json
 ```
 
 Use `open-wam-sanity` when the goal is to verify loading, one train/eval path,
@@ -316,14 +317,19 @@ uv run --extra sim python scripts/run_libero_realtime_sandbox.py \
 
 ## Generic Simulator Rollout
 
-Use the package simulator boundary for configured RoboTwin or CALVIN adapters:
+Use the package simulator boundary for a built-in or extension-registered
+adapter:
 
 ```bash
 uv run --extra sim open-wam-sim-rollout \
   --cfg configs/examples/<benchmark>.yaml \
-  --benchmark <robotwin-or-calvin> \
+  --benchmark <registered-name> \
   --target-action-hz 10
 ```
+
+Application-owned adapters add `--extension package.module` and repeatable
+`--sim-option KEY=VALUE` arguments. Standard result provenance is written by
+default; use `--provenance-mode full` for a checkpoint SHA-256.
 
 Closed-loop reports should record target and achieved action rate, fallback
 actions, task and episode identity, exact resolved config, checkpoint, success,

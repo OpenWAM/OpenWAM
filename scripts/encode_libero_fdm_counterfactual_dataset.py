@@ -238,8 +238,10 @@ def _encode_shard_contexts(
         out_paths = []
         for row in batch:
             context_path = shard_root / str(row["context_path"])
-            payload = np.load(context_path)
-            rgb_batch.append(_load_counterfactual_rgb(payload, legacy_key="context_rgb"))
+            with np.load(context_path, allow_pickle=False) as payload:
+                rgb_batch.append(
+                    _load_counterfactual_rgb(payload, legacy_key="context_rgb")
+                )
             out_paths.append(output_dir / f"context_{int(row['context_id']):06d}_latents.pt")
         latents = _encode_rgb_batch(
             assets,
@@ -315,8 +317,10 @@ def _encode_shard_samples(
         out_paths = []
         for row in batch:
             sample_path = shard_root / str(row["sample_path"])
-            payload = np.load(sample_path)
-            rgb_batch.append(_load_counterfactual_rgb(payload, legacy_key="target_rgb"))
+            with np.load(sample_path, allow_pickle=False) as payload:
+                rgb_batch.append(
+                    _load_counterfactual_rgb(payload, legacy_key="target_rgb")
+                )
             out_paths.append(output_dir / f"sample_{int(row['sample_id']):06d}_latents.pt")
         latents = _encode_rgb_batch(
             assets,

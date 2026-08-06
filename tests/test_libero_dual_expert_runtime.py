@@ -57,8 +57,8 @@ def test_load_dual_expert_libero_runtime_preserves_composition_order_and_contrac
         calls.append(("build_pipeline", value))
         return pipeline
 
-    def _load_checkpoint(value, path):
-        calls.append(("load_checkpoint", value, path))
+    def _load_checkpoint(value, path, **kwargs):
+        calls.append(("load_checkpoint", value, path, kwargs))
         return SimpleNamespace(missing_keys=(), unexpected_keys=())
 
     def _ensure_backend(value, cfg):

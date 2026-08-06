@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 import sys
 
+from open_wam.configs import resolve_config_reference
 from open_wam.configs.static_schema import format_report, reports_to_exit_code, validate_config_files
 
 
@@ -31,7 +32,7 @@ def main(argv: list[str] | None = None) -> None:
 def _iter_yaml_paths(values: list[str]) -> list[Path]:
     paths: list[Path] = []
     for value in values:
-        path = Path(value).expanduser()
+        path = resolve_config_reference(value)
         if path.is_dir():
             paths.extend(sorted(path.glob("*.yaml")))
             paths.extend(sorted(path.glob("*.yml")))

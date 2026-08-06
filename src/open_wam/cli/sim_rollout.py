@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 
+from open_wam.runtime.provenance import ProvenanceMode
+
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -13,7 +15,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--cfg", "--config", dest="config", required=True)
     parser.add_argument("--checkpoint", type=str, default=None)
-    parser.add_argument("--benchmark", choices=("robotwin", "calvin"), required=True)
+    parser.add_argument(
+        "--allow-partial-checkpoint",
+        action="store_true",
+        help="Permit missing or unexpected model keys for migration diagnostics.",
+    )
+    parser.add_argument("--benchmark", required=True)
+    parser.add_argument(
+        "--sim-option",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Repeatable application-owned simulator factory option.",
+    )
     parser.add_argument("--task-id", type=int, default=None)
     parser.add_argument("--episode-idx", type=int, default=0)
     parser.add_argument("--max-steps", type=int, default=80)
@@ -29,6 +43,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--suffix", type=str, default="rollout")
     parser.add_argument("--video-fps", type=float, default=15.0)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--provenance-mode",
+        choices=tuple(mode.value for mode in ProvenanceMode),
+        default=ProvenanceMode.STANDARD.value,
+    )
     parser.add_argument(
         "--zero-policy",
         action="store_true",

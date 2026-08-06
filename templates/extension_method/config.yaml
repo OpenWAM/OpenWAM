@@ -1,12 +1,23 @@
-name: template_method_smoke
+name: extension_method_template
 
 data:
   dataset_name: public_tiny
   dataset_type: synthetic_multiview
   camera_names: [camera_0]
+  latent_camera_names: [camera_0]
   canonical_height: 64
   canonical_width: 64
+  view_layout:
+    - source_name: camera_0
+      canonical_name: camera_0
+      top: 0
+      left: 0
+      height: 64
+      width: 64
   num_frames: 2
+  train_batch_size: 1
+  val_batch_size: 1
+  num_workers: 0
   action_schema:
     action_dim: 4
     action_horizon: 2
@@ -14,18 +25,46 @@ data:
     state_horizon: 1
 
 backbone:
-  implementation: dummy
+  implementation: shared_transformer
   hidden_size: 32
   num_layers: 1
   num_heads: 4
 
 policy_variant:
-  name: replace_with_new_policy_variant
+  name: extension
+  extension_type: example.policy
   hidden_size: 32
   attach_site: post_visual_core
+  options: {}
 
 action_decoder:
-  name: replace_with_new_action_decoder
+  name: extension
+  extension_type: example.decoder
   hidden_size: 32
   action_dim: 4
   action_horizon: 2
+  options: {}
+
+training:
+  video_num_train_timesteps: 8
+  action_num_train_timesteps: 8
+  video_sigma_shift: 1.0
+  action_sigma_shift: 1.0
+  use_teacher_forcing: false
+
+inference:
+  video_num_inference_steps: 2
+  action_num_inference_steps: 2
+  use_cache: false
+  guidance_scale: 1.0
+
+trainer:
+  max_epochs: 1
+  limit_train_batches: 1
+  limit_val_batches: 1
+  log_every_n_steps: 1
+  accelerator: cpu
+  devices: 1
+  precision: 32-true
+  enable_checkpointing: false
+  enable_model_summary: false

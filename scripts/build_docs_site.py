@@ -21,6 +21,7 @@ PUBLIC_MARKDOWN_PATHS = (
     Path("cards/parallel_stream_libero_exact_step400.md"),
     Path("cards/public_tiny_synthetic_contract.md"),
     Path("cli.md"),
+    Path("compatibility.md"),
     Path("cookbooks/new_action_decoder.md"),
     Path("cookbooks/new_dataset.md"),
     Path("cookbooks/new_policy_architecture.md"),

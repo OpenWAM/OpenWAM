@@ -22,6 +22,7 @@ from open_wam.evals.libero_dual_expert_runtime import (
     DualExpertLiberoLoadOptions,
     load_dual_expert_libero_runtime,
 )
+from open_wam.runtime.checkpoints import CheckpointCompatibilityPolicy
 
 
 def main() -> None:
@@ -43,6 +44,14 @@ def main() -> None:
         help=(
             "Checkpoint file, checkpoint_step_* directory, or run directory. "
             "If omitted, use top-level checkpoint_path in the config, then infer from backbone.transformer_subdir."
+        ),
+    )
+    parser.add_argument(
+        "--allow-partial-checkpoint",
+        action="store_true",
+        help=(
+            "Permit missing or unexpected checkpoint keys for migration "
+            "diagnostics. Standard rollouts remain strict."
         ),
     )
     parser.add_argument(
@@ -261,6 +270,11 @@ def main() -> None:
             ),
             allow_deprecated_frontend_encode_mode=bool(
                 args.allow_deprecated_frontend_encode_mode
+            ),
+            checkpoint_load_policy=(
+                CheckpointCompatibilityPolicy.ALLOW_PARTIAL
+                if args.allow_partial_checkpoint
+                else CheckpointCompatibilityPolicy.STRICT
             ),
         )
     )

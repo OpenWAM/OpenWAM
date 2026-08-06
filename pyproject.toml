@@ -9,7 +9,7 @@ description = "Extensible world-action-model training and evaluation with a Ling
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "LICENSES/*", "THIRD_PARTY_NOTICES.md"]
 authors = [
     { name = "Open-WAM contributors" },
 ]
@@ -191,11 +191,23 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/open_wam"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"configs/artifacts.sample.yaml" = "open_wam/resources/configs/artifacts.sample.yaml"
+"configs/evals" = "open_wam/resources/configs/evals"
+"configs/examples" = "open_wam/resources/configs/examples"
+"configs/experiments" = "open_wam/resources/configs/experiments"
+"configs/local_paths.sample.yaml" = "open_wam/resources/configs/local_paths.sample.yaml"
+"templates" = "open_wam/resources/templates"
+
 [tool.hatch.build.targets.sdist]
 only-include = [
     "CHANGELOG.md",
+    "CITATION.cff",
     "LICENSE",
+    "LICENSES",
     "README.md",
+    "SECURITY.md",
+    "THIRD_PARTY_NOTICES.md",
     "configs",
     "docs",
     "mkdocs.yml",

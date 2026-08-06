@@ -1,45 +1,66 @@
 # Cookbook: Add A Simulator Adapter
 
-Use this when a benchmark has a live environment that can be stepped in closed
-loop.
+Use an installed extension package when a benchmark has a live environment
+that can be stepped in closed loop. No Open-WAM source edit is required.
 
-## Files To Touch
+## Implement The Contract
 
-- `src/open_wam/integrations/`: add a benchmark-specific adapter behind lazy
-  imports.
-- `src/open_wam/simulators/contracts.py`: extend the generic backend contract
-  only when the existing protocol is insufficient.
-- `src/open_wam/evals/sim_rollout.py`: add built-in adapter construction only
-  when the benchmark needs user-facing command flags. The repository script
-  is a compatibility wrapper and must stay thin.
-- `configs/examples/`: add a tiny config or documented template.
-- `docs/cards/`: add a simulator card.
-- `tests/`: add fake-adapter contract tests; keep real simulator tests gated.
+Implement `SimulatorBackend` from `open_wam.sdk.simulator`. The adapter owns
+environment construction and lifecycle, observation extraction, model-action
+conversion, stepping, success detection, rendering, and close.
 
-## Contract
+Keep dependency-heavy simulator imports inside the factory so importing the
+extension hook remains lightweight.
 
-Adapters should provide:
+```python
+from open_wam.sdk.simulator import (
+    SimulatorFactoryContext,
+    register_simulator_adapter,
+)
 
-- reset with task/episode/seed inputs
-- observation-to-RGB extraction
-- observation-to-state extraction
-- model-action to environment-action conversion
-- step result with reward/done/info
-- success predicate
-- optional render frame
-- close
 
-Keep environment lifecycle in the adapter and place nontrivial observation
-parsing, controller mutation, and action translation in role-based integration
-modules. Configuration records should remain dependency-light. This lets data
-conversion, offline diagnostics, and live rollout share explicit semantics
-without importing the simulator lifecycle.
+def build_adapter(context: SimulatorFactoryContext):
+    from acme_sim import Environment
+
+    from .adapter import AcmeAdapter
+
+    environment = Environment(
+        asset_root=context.local_paths.get("simulators.acme_root"),
+        endpoint=context.options.get("endpoint", "local"),
+    )
+    return AcmeAdapter(environment)
+
+
+def register_open_wam() -> None:
+    register_simulator_adapter("acme", build_adapter)
+```
+
+The backend should expose reset with `EpisodeSpec`, return
+`SimulatorObservation`, translate model actions, and return
+`SimulatorStepResult` from each step.
+
+## Run It
+
+```bash
+open-wam-sim-rollout \
+  --extension acme_open_wam \
+  --benchmark acme \
+  --sim-option endpoint=localhost:5000 \
+  --cfg experiment.yaml \
+  --checkpoint checkpoint_step_1000
+```
+
+Use `--sim-option KEY=VALUE` for application-owned construction values. Put
+machine paths in `configs/local_paths.yaml`; the factory receives the resolved
+mapping through `context.local_paths`.
 
 ## Validation
 
-Default CI should use fake adapters only. Real simulator checks belong in
-self-hosted, scheduled, or label-gated jobs that upload videos and metrics.
+Test the factory and backend against fake environments in ordinary CI. Add one
+closed-loop smoke that checks reset, action conversion, step, success, render,
+and close. Real simulator checks belong in self-hosted, scheduled, or
+label-gated jobs that retain result JSON and videos.
 
-```bash
-uv run --extra train pytest tests/test_sim_benchmark.py -q
-```
+Only built-in integrations maintained by this repository belong under
+`src/open_wam/integrations/`. A third-party benchmark should remain an
+out-of-tree extension.

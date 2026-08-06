@@ -9,6 +9,7 @@ Internal engineering notes are not published as part of this site.
 
 - [Quickstart](quickstart.md): install, validate configs, and run CPU-safe smoke checks.
 - [Architecture](architecture.md): the stable runtime boundary and core abstractions.
+- [Compatibility](compatibility.md): supported platforms, SDK surface, and numerical gates.
 - [Policy Architectures And Programs](policy_architectures.md): how topology,
   conditioning programs, and decoders compose.
 - [Benchmarks and Data](benchmarks.md): LIBERO, RoboTwin, CALVIN, and synthetic fixtures.

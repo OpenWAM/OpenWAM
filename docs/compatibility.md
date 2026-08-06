@@ -1,0 +1,51 @@
+# Compatibility Matrix
+
+Open-WAM is pre-1.0 Linux research software. Compatibility claims are split
+between API compatibility and exact numerical characterization.
+
+## Maintained Matrix
+
+| Surface | Maintained contract |
+| --- | --- |
+| Operating system | Linux |
+| Python | 3.11 and 3.12 |
+| CPU semantic tests | both Python versions, dependencies from `uv.lock` |
+| GPU characterization | documented CUDA host stack and immutable golden artifacts |
+| Simulator integrations | fake-adapter CI; real environments on documented external stacks |
+| Python SDK | `open_wam.sdk.config`, `.data`, `.policy`, `.simulator`, `.results` |
+
+`pyproject.toml` dependency ranges describe install compatibility. Exact
+training gradients and rollout outputs are characterized only with the locked
+dependency graph and the hardware/software stack recorded by the
+characterization report. Use `uv sync --frozen` when reproducing those claims.
+Changing PyTorch, Diffusers, Transformers, CUDA, attention backends, or GPU
+models requires re-characterization even when installation remains supported.
+
+## Required Gates
+
+The required CPU gate includes unmarked tests; marker selection cannot silently
+exclude the core suite:
+
+```bash
+uv sync --frozen --group dev --extra full
+CUDA_VISIBLE_DEVICES="" uv run pytest --strict-markers -q \
+  -m "not (gpu or sim or data or slow)"
+```
+
+Model-facing changes additionally run the immutable GPU fixture-replay,
+training-step, and inference-step gates described in
+[Dual-Expert Refactor Characterization](dual_expert_refactor_characterization.md).
+Real simulator and private-data tests are resource gates and are never implied
+by the CPU suite.
+
+## Compatibility Policy
+
+Typed config fields, checkpoint compatibility, result schemas, and SDK exports
+are fail-closed. A checkpoint key mismatch is an error by default;
+`--allow-partial-checkpoint` is only an explicit migration diagnostic. New
+finite config choices use enums, while extension identifiers and source names
+remain open strings.
+
+Historical broad package facades remain available during the pre-1.0
+migration. They are not a guarantee that every implementation helper is a
+stable API. Deprecations are documented before removal.

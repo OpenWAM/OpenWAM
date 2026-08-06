@@ -4,6 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import torch
+import pytest
 import yaml
 from torch import nn
 
@@ -13,6 +14,8 @@ from open_wam.configs.enums import (
     WindowSamplingMode,
 )
 from open_wam.runtime.checkpoints import (
+    CheckpointCompatibilityError,
+    CheckpointCompatibilityPolicy,
     load_pipeline_checkpoint,
     normalize_checkpoint_state_dict,
     resolve_checkpoint_file,
@@ -43,6 +46,18 @@ def test_normalize_checkpoint_state_dict_accepts_pipeline_prefix() -> None:
     )
 
     assert normalized == {"layer.weight": tensor}
+
+
+def test_normalize_checkpoint_state_dict_rejects_prefix_collision() -> None:
+    with pytest.raises(ValueError, match="ambiguous keys"):
+        normalize_checkpoint_state_dict(
+            {
+                "state_dict": {
+                    "layer.weight": torch.ones(1),
+                    "pipeline.layer.weight": torch.zeros(1),
+                }
+            }
+        )
 
 
 def test_load_pipeline_checkpoint_marks_loaded_lazy_action_expert(tmp_path: Path) -> None:
@@ -77,6 +92,71 @@ def test_load_pipeline_checkpoint_marks_loaded_lazy_action_expert(tmp_path: Path
         pipeline.policy_variant.action_expert.weight,
         torch.full((1, 1), 3.0),
     )
+
+
+def test_load_pipeline_checkpoint_rejects_partial_state_by_default(
+    tmp_path: Path,
+) -> None:
+    pipeline = nn.Sequential(nn.Linear(2, 2), nn.Linear(2, 1))
+    original_state = {
+        key: value.detach().clone() for key, value in pipeline.state_dict().items()
+    }
+    checkpoint_path = tmp_path / "model_state.pt"
+    state = pipeline.state_dict()
+    state["0.weight"] = torch.full_like(state["0.weight"], 7.0)
+    del state["1.bias"]
+    state["retired.weight"] = torch.ones(1)
+    torch.save(state, checkpoint_path)
+
+    with pytest.raises(CheckpointCompatibilityError) as exc_info:
+        load_pipeline_checkpoint(pipeline, checkpoint_path)
+
+    assert exc_info.value.report.missing_keys == ("1.bias",)
+    assert exc_info.value.report.unexpected_keys == ("retired.weight",)
+    for key, expected in original_state.items():
+        torch.testing.assert_close(pipeline.state_dict()[key], expected, rtol=0, atol=0)
+
+
+def test_load_pipeline_checkpoint_rejects_shape_mismatch_before_mutation(
+    tmp_path: Path,
+) -> None:
+    pipeline = nn.Sequential(nn.Linear(2, 2), nn.Linear(2, 1))
+    original_state = {
+        key: value.detach().clone() for key, value in pipeline.state_dict().items()
+    }
+    checkpoint_path = tmp_path / "model_state.pt"
+    state = pipeline.state_dict()
+    state["0.bias"] = torch.full_like(state["0.bias"], 7.0)
+    state["1.weight"] = torch.ones(1, 3)
+    torch.save(state, checkpoint_path)
+
+    with pytest.raises(CheckpointCompatibilityError) as exc_info:
+        load_pipeline_checkpoint(pipeline, checkpoint_path)
+
+    assert exc_info.value.report.shape_mismatches == (
+        "1.weight (checkpoint=(1, 3), runtime=(1, 2))",
+    )
+    for key, expected in original_state.items():
+        torch.testing.assert_close(pipeline.state_dict()[key], expected, rtol=0, atol=0)
+
+
+def test_load_pipeline_checkpoint_allows_explicit_migration_diagnostic(
+    tmp_path: Path,
+) -> None:
+    pipeline = nn.Sequential(nn.Linear(2, 2), nn.Linear(2, 1))
+    checkpoint_path = tmp_path / "model_state.pt"
+    state = pipeline.state_dict()
+    del state["1.bias"]
+    torch.save(state, checkpoint_path)
+
+    report = load_pipeline_checkpoint(
+        pipeline,
+        checkpoint_path,
+        compatibility=CheckpointCompatibilityPolicy.ALLOW_PARTIAL,
+    )
+
+    assert report.missing_keys == ("1.bias",)
+    assert report.unexpected_keys == ()
 
 
 def test_find_checkpoint_resolved_config_uses_checkpoint_dir(tmp_path: Path) -> None:

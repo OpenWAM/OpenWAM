@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,16 +11,34 @@ import imageio.v2 as imageio
 import torch
 
 from open_wam.simulators import (
+    SimulatorBackend,
     run_closed_loop_sim_rollout,
     summarize_sim_rollout,
 )
-from open_wam.runtime import build_result_envelope, resolve_repo_path
+from open_wam.simulators.builtins import (
+    normalize_builtin_simulator_options,
+    register_builtin_simulator_adapters,
+)
+from open_wam.runtime import build_result_envelope
+from open_wam.runtime.provenance import collect_runtime_provenance
+from open_wam.runtime.results import write_result_json
+from open_wam.simulators.registry import (
+    SimulatorFactoryContext,
+    build_simulator_adapter,
+)
 from open_wam.runtime.checkpoints import (
+    CheckpointCompatibilityPolicy,
     load_pipeline_checkpoint,
     resolve_checkpoint_file,
     resolve_checkpoint_step_dir_from_transformer_dir,
 )
-from open_wam.configs import load_experiment_config, load_local_path_registry
+from open_wam.configs import (
+    ExperimentConfig,
+    load_experiment_config,
+    load_local_path_registry,
+    resolve_experiment_config_reference,
+    serialize_experiment_config,
+)
 from open_wam.utils import seed_everywhere
 
 
@@ -35,17 +54,22 @@ def run_simulator_rollout_command(args: argparse.Namespace) -> dict[str, Any]:
 
     from open_wam.extensions import load_extension_modules
 
+    register_builtin_simulator_adapters()
     load_extension_modules(args.extension)
     seed_everywhere(args.seed)
-    config_path = resolve_repo_path(args.config)
+    config_path = resolve_experiment_config_reference(args.config).resolve()
     config = load_experiment_config(config_path)
     device = _resolve_device(args.device)
 
     checkpoint_path = _resolve_checkpoint_for_config(config=config, checkpoint_arg=args.checkpoint)
     if checkpoint_path is not None:
-        _apply_checkpoint_backbone_override(config, checkpoint_path=checkpoint_path)
+        config = _with_checkpoint_backbone_override(
+            config,
+            checkpoint_path=checkpoint_path,
+        )
 
     adapter = _build_adapter(args)
+    checkpoint_report = None
     if args.zero_policy:
         rollout_runner = _ZeroActionRolloutRunner(
             action_dim=config.data.action_schema.action_dim,
@@ -58,7 +82,15 @@ def run_simulator_rollout_command(args: argparse.Namespace) -> dict[str, Any]:
         pipeline = build_variant_pipeline_from_config(config).to(device)
         pipeline.eval()
         if checkpoint_path is not None:
-            checkpoint_report = load_pipeline_checkpoint(pipeline, checkpoint_path)
+            checkpoint_report = load_pipeline_checkpoint(
+                pipeline,
+                checkpoint_path,
+                compatibility=(
+                    CheckpointCompatibilityPolicy.ALLOW_PARTIAL
+                    if args.allow_partial_checkpoint
+                    else CheckpointCompatibilityPolicy.STRICT
+                ),
+            )
             if checkpoint_report.missing_keys:
                 print(f"sim.checkpoint_missing_keys {len(checkpoint_report.missing_keys)}")
             if checkpoint_report.unexpected_keys:
@@ -98,6 +130,21 @@ def run_simulator_rollout_command(args: argparse.Namespace) -> dict[str, Any]:
             "zero_policy": bool(args.zero_policy),
             "device": str(device),
             "action_commit_mode": args.action_commit_mode,
+            "checkpoint_compatibility": (
+                CheckpointCompatibilityPolicy.ALLOW_PARTIAL.value
+                if args.allow_partial_checkpoint
+                else CheckpointCompatibilityPolicy.STRICT.value
+            ),
+            "checkpoint_missing_keys": (
+                []
+                if checkpoint_report is None
+                else list(checkpoint_report.missing_keys)
+            ),
+            "checkpoint_unexpected_keys": (
+                []
+                if checkpoint_report is None
+                else list(checkpoint_report.unexpected_keys)
+            ),
         }
     )
     summary = build_result_envelope(
@@ -113,10 +160,17 @@ def run_simulator_rollout_command(args: argparse.Namespace) -> dict[str, Any]:
         benchmark=args.benchmark,
         device=str(device),
         seed=int(args.seed),
+        provenance=collect_runtime_provenance(
+            config_path=config_path,
+            resolved_config=serialize_experiment_config(config),
+            checkpoint_path=checkpoint_path,
+            dataset_root=config.data.local_root,
+            mode=args.provenance_mode,
+        ),
         extra=legacy_summary,
     )
     rendered = json.dumps(summary, indent=2, sort_keys=True)
-    summary_path.write_text(rendered + "\n", encoding="utf-8")
+    write_result_json(summary_path, summary)
     print(rendered)
     return summary
 
@@ -147,42 +201,36 @@ class _ZeroActionRolloutRunner:
         )
 
 
-def _build_adapter(args: argparse.Namespace) -> Any:
-    registry = load_local_path_registry()
-    if args.benchmark == "robotwin":
-        from open_wam.integrations.robotwin_env import RobotwinBenchmarkAdapter, RobotwinEnvConfig
-
-        root = args.robotwin_root or registry.get("simulators.robotwin_root")
-        if root is None:
-            raise SystemExit(
-                "RoboTwin rollout requires --robotwin-root or paths.simulators.robotwin_root in configs/local_paths.yaml."
-            )
-        if args.robotwin_task_name is None:
-            raise SystemExit("RoboTwin rollout requires --robotwin-task-name.")
-        task_config = args.robotwin_task_config or args.robotwin_task_name
-        return RobotwinBenchmarkAdapter(
-            RobotwinEnvConfig(
-                robotwin_root=root,
-                task_name=args.robotwin_task_name,
-                task_config=task_config,
-                instruction=args.instruction,
-                action_type=args.robotwin_action_type,
-                expert_precheck=bool(args.robotwin_expert_precheck),
-                instruction_type=args.robotwin_instruction_type,
-            )
-        )
-    from open_wam.integrations.calvin_env import CalvinBenchmarkAdapter, CalvinEnvConfig
-
-    calvin_root = args.calvin_root or registry.get("simulators.calvin_root")
-    calvin_dataset_root = args.calvin_dataset_root or registry.get("datasets.calvin_root")
-    return CalvinBenchmarkAdapter(
-        CalvinEnvConfig(
-            calvin_root=calvin_root,
-            dataset_root=calvin_dataset_root,
-            task_text=args.calvin_task_text or args.instruction,
-            show_gui=bool(args.show_gui),
-        )
+def _build_adapter(args: argparse.Namespace) -> SimulatorBackend:
+    options = normalize_builtin_simulator_options(
+        benchmark=args.benchmark,
+        arguments=vars(args),
+        explicit_options=_parse_simulator_options(args.sim_option),
     )
+    context = SimulatorFactoryContext(
+        benchmark=args.benchmark,
+        options=options,
+        local_paths=load_local_path_registry(),
+    )
+    try:
+        return build_simulator_adapter(context)
+    except (KeyError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def _parse_simulator_options(values: list[str]) -> dict[str, str]:
+    options: dict[str, str] = {}
+    for raw_value in values:
+        key, separator, value = raw_value.partition("=")
+        key = key.strip()
+        if not separator or not key:
+            raise SystemExit(
+                f"Invalid --sim-option {raw_value!r}; expected KEY=VALUE."
+            )
+        if key in options:
+            raise SystemExit(f"Duplicate --sim-option key {key!r}.")
+        options[key] = value
+    return options
 
 
 def _resolve_device(value: str) -> torch.device:
@@ -214,7 +262,18 @@ def _resolve_checkpoint_for_config(*, config: Any, checkpoint_arg: str | None) -
         return None
 
 
-def _apply_checkpoint_backbone_override(config: Any, *, checkpoint_path: Path) -> None:
+def _with_checkpoint_backbone_override(
+    config: ExperimentConfig,
+    *,
+    checkpoint_path: Path,
+) -> ExperimentConfig:
     transformer_dir = checkpoint_path.parent / "transformer"
-    if transformer_dir.is_dir():
-        object.__setattr__(config.backbone, "transformer_subdir", str(transformer_dir.resolve()))
+    if not transformer_dir.is_dir():
+        return config
+    return replace(
+        config,
+        backbone=replace(
+            config.backbone,
+            transformer_subdir=str(transformer_dir.resolve()),
+        ),
+    )

@@ -237,6 +237,12 @@ def preflight_dataset_artifacts(
     return DATASET_ADAPTERS.preflight_artifacts(data_config)
 
 
+def registered_dataset_adapters() -> tuple[str, ...]:
+    """Return dataset adapter identifiers registered in this process."""
+
+    return DATASET_ADAPTERS.keys()
+
+
 __all__ = [
     "DATASET_ADAPTERS",
     "DatasetAdapterRegistry",
@@ -250,4 +256,5 @@ __all__ = [
     "register_dataset_adapter",
     "register_dataset_builder",
     "register_latent_dataset_builder",
+    "registered_dataset_adapters",
 ]

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, fields, replace
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Mapping
 
 import torch
 from torch import nn
 
+from open_wam.artifacts import load_tensor_artifact
 from open_wam.configs import ExperimentConfig, load_experiment_config
 from open_wam.runtime.checkpoint_artifacts import (
     CHECKPOINT_FILENAMES,
@@ -45,6 +47,42 @@ class CheckpointLoadReport:
     checkpoint_path: Path
     missing_keys: tuple[str, ...]
     unexpected_keys: tuple[str, ...]
+    shape_mismatches: tuple[str, ...] = ()
+
+
+class CheckpointCompatibilityPolicy(StrEnum):
+    """How runtime loading handles model/checkpoint key mismatches."""
+
+    STRICT = "strict"
+    ALLOW_PARTIAL = "allow_partial"
+
+
+class CheckpointCompatibilityError(RuntimeError):
+    """Raised when strict runtime loading finds incompatible state keys."""
+
+    def __init__(self, report: CheckpointLoadReport) -> None:
+        self.report = report
+        details: list[str] = []
+        if report.missing_keys:
+            details.append(
+                f"missing {len(report.missing_keys)} keys: "
+                f"{_preview_keys(report.missing_keys)}"
+            )
+        if report.unexpected_keys:
+            details.append(
+                f"unexpected {len(report.unexpected_keys)} keys: "
+                f"{_preview_keys(report.unexpected_keys)}"
+            )
+        if report.shape_mismatches:
+            details.append(
+                f"incompatible shapes for {len(report.shape_mismatches)} keys: "
+                f"{_preview_keys(report.shape_mismatches)}"
+            )
+        super().__init__(
+            f"Checkpoint {report.checkpoint_path} is incompatible with the runtime "
+            f"pipeline ({'; '.join(details)}). Use the matching resolved config, or "
+            "select `allow_partial` only for an intentional migration diagnostic."
+        )
 
 
 def resolve_checkpoint_file(path: str | Path) -> Path:
@@ -101,6 +139,11 @@ def normalize_checkpoint_state_dict(
         if not isinstance(key, str) or not isinstance(value, torch.Tensor):
             continue
         normalized_key = key.removeprefix("pipeline.")
+        if normalized_key in normalized:
+            raise ValueError(
+                "Checkpoint contains ambiguous keys after removing the "
+                f"optional `pipeline.` prefix: {normalized_key!r}."
+            )
         normalized[normalized_key] = value
     return normalized
 
@@ -110,37 +153,79 @@ def load_pipeline_checkpoint(
     checkpoint_path: str | Path,
     *,
     map_location: str | torch.device = "cpu",
+    compatibility: CheckpointCompatibilityPolicy | str = (
+        CheckpointCompatibilityPolicy.STRICT
+    ),
 ) -> CheckpointLoadReport:
     """Load one model checkpoint and initialize checkpoint-backed lazy modules."""
 
     resolved_path = resolve_checkpoint_file(checkpoint_path)
-    try:
-        checkpoint = torch.load(
-            resolved_path,
-            map_location=map_location,
-            weights_only=True,
-        )
-    except TypeError:
-        checkpoint = torch.load(resolved_path, map_location=map_location)
+    checkpoint = load_tensor_artifact(resolved_path, map_location=map_location)
     if not isinstance(checkpoint, Mapping):
         raise ValueError(
             f"Expected checkpoint mapping at {resolved_path}, "
             f"got {type(checkpoint).__name__}."
         )
     state_dict = normalize_checkpoint_state_dict(checkpoint)
-    incompatible = pipeline.load_state_dict(state_dict, strict=False)
-    missing_keys = tuple(incompatible.missing_keys)
-    unexpected_keys = tuple(incompatible.unexpected_keys)
+    runtime_state = pipeline.state_dict()
+    missing_keys = tuple(key for key in runtime_state if key not in state_dict)
+    unexpected_keys = tuple(key for key in state_dict if key not in runtime_state)
+    shape_mismatches = _checkpoint_shape_mismatches(
+        runtime_state=runtime_state,
+        checkpoint_state=state_dict,
+    )
+    report = CheckpointLoadReport(
+        checkpoint_path=resolved_path,
+        missing_keys=missing_keys,
+        unexpected_keys=unexpected_keys,
+        shape_mismatches=shape_mismatches,
+    )
+    resolved_compatibility = CheckpointCompatibilityPolicy(compatibility)
+    if shape_mismatches or (
+        resolved_compatibility is CheckpointCompatibilityPolicy.STRICT
+        and (missing_keys or unexpected_keys)
+    ):
+        raise CheckpointCompatibilityError(report)
+    pipeline.load_state_dict(
+        state_dict,
+        strict=resolved_compatibility is CheckpointCompatibilityPolicy.STRICT,
+    )
     _mark_loaded_lazy_components_initialized(
         pipeline,
         state_dict,
         missing_keys=missing_keys,
     )
-    return CheckpointLoadReport(
-        checkpoint_path=resolved_path,
-        missing_keys=missing_keys,
-        unexpected_keys=unexpected_keys,
-    )
+    return report
+
+
+def _preview_keys(keys: tuple[str, ...], *, limit: int = 8) -> str:
+    preview = ", ".join(keys[:limit])
+    if len(keys) > limit:
+        preview = f"{preview}, ..."
+    return preview
+
+
+def _checkpoint_shape_mismatches(
+    *,
+    runtime_state: Mapping[str, torch.Tensor],
+    checkpoint_state: Mapping[str, torch.Tensor],
+) -> tuple[str, ...]:
+    mismatches: list[str] = []
+    for key, runtime_value in runtime_state.items():
+        checkpoint_value = checkpoint_state.get(key)
+        if checkpoint_value is None:
+            continue
+        try:
+            runtime_shape = tuple(runtime_value.shape)
+            checkpoint_shape = tuple(checkpoint_value.shape)
+        except RuntimeError:
+            # Lazy modules validate their shape when PyTorch materializes them.
+            continue
+        if runtime_shape != checkpoint_shape:
+            mismatches.append(
+                f"{key} (checkpoint={checkpoint_shape}, runtime={runtime_shape})"
+            )
+    return tuple(mismatches)
 
 
 def _mark_loaded_lazy_components_initialized(

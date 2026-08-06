@@ -10,6 +10,7 @@ from typing import Any
 
 import torch
 
+from open_wam.artifacts import load_tensor_artifact
 from open_wam.configs import MixedVideoDataConfig, MixedVideoLatentEncodingMode
 from open_wam.configs.enums import serialize_enum_values
 from open_wam.data.mixed_video_catalog_contracts import MixedVideoEpisodeRecord
@@ -99,7 +100,7 @@ def _encoded_episode_from_existing_sidecar(
     data_config: MixedVideoDataConfig,
     target: MixedVideoEncodingTarget | None = None,
 ) -> MixedVideoEncodedEpisode:
-    payload = torch.load(latent_path, map_location="cpu")
+    payload = load_tensor_artifact(latent_path)
     if isinstance(payload, torch.Tensor):
         latents = payload
         metadata: dict[str, Any] = {}

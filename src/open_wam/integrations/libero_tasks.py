@@ -286,12 +286,10 @@ def load_libero_task_init_states(
 ) -> Any:
     """Load benchmark init states with torch 2.6-compatible semantics."""
 
-    import torch
+    from open_wam.artifacts import load_numpy_compatible_torch_artifact
 
     ensure_local_libero_config(project_root)
-    # Upstream uses `torch.load(path)` which defaults to `weights_only=True`
-    # on torch 2.6+. The init-state files are not weight checkpoints.
-    return torch.load(task_spec.init_states_path, weights_only=False)
+    return load_numpy_compatible_torch_artifact(task_spec.init_states_path)
 
 
 def infer_task_local_episode_rank(

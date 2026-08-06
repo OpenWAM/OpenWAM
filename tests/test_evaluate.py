@@ -486,11 +486,15 @@ def test_apply_checkpoint_runtime_override_uses_checkpoint_local_transformer(tmp
     model_state = checkpoint_dir / "model_state.pt"
     model_state.write_bytes(b"test")
 
-    resolved = evaluate_module._apply_checkpoint_runtime_override(config, checkpoint_dir)
+    resolved_config, resolved = evaluate_module._apply_checkpoint_runtime_override(
+        config,
+        checkpoint_dir,
+    )
 
     assert resolved == model_state
-    assert config.backbone.transformer_subdir == str(transformer_dir.resolve())
-    assert str(config.backbone.reference_core_init_mode) == "full"
+    assert resolved_config.backbone.transformer_subdir == str(transformer_dir.resolve())
+    assert str(resolved_config.backbone.reference_core_init_mode) == "full"
+    assert config.backbone.transformer_subdir != str(transformer_dir.resolve())
 
 
 def test_apply_checkpoint_runtime_override_ignores_empty_transformer_export(tmp_path: Path) -> None:
@@ -501,10 +505,14 @@ def test_apply_checkpoint_runtime_override_ignores_empty_transformer_export(tmp_
     model_state = checkpoint_dir / "model_state.pt"
     model_state.write_bytes(b"test")
 
-    resolved = evaluate_module._apply_checkpoint_runtime_override(config, checkpoint_dir)
+    resolved_config, resolved = evaluate_module._apply_checkpoint_runtime_override(
+        config,
+        checkpoint_dir,
+    )
 
     assert resolved == model_state
-    assert config.backbone.transformer_subdir == original_transformer_subdir
+    assert resolved_config is config
+    assert resolved_config.backbone.transformer_subdir == original_transformer_subdir
 
 
 def test_run_evaluation_accepts_checkpoint_step_directory(tmp_path: Path) -> None:

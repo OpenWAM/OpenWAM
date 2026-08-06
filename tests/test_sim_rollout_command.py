@@ -27,6 +27,7 @@ def test_sim_rollout_parser_defaults_match_runtime_contract() -> None:
     args = parser.parse_args(["--cfg", "experiment.yaml", "--benchmark", "calvin"])
     assert vars(args) == {
         "action_commit_mode": SimActionCommitMode.FIRST_ACTION.value,
+        "allow_partial_checkpoint": False,
         "benchmark": "calvin",
         "calvin_dataset_root": None,
         "calvin_root": None,
@@ -39,6 +40,7 @@ def test_sim_rollout_parser_defaults_match_runtime_contract() -> None:
         "instruction": None,
         "max_steps": 80,
         "output_dir": "outputs/sim_realtime",
+        "provenance_mode": "standard",
         "robotwin_action_type": "ee",
         "robotwin_expert_precheck": False,
         "robotwin_instruction_type": "seen",
@@ -47,6 +49,7 @@ def test_sim_rollout_parser_defaults_match_runtime_contract() -> None:
         "robotwin_task_name": None,
         "seed": 0,
         "show_gui": False,
+        "sim_option": [],
         "suffix": "rollout",
         "target_action_hz": None,
         "task_id": None,
@@ -160,8 +163,29 @@ def test_sim_rollout_command_preserves_controls_cleanup_and_result_envelope(
         "video_path": None,
     }
     assert summary["action_commit_mode"] == "full_chunk"
+    assert summary["checkpoint_compatibility"] == "strict"
+    assert summary["checkpoint_missing_keys"] == []
+    assert summary["checkpoint_unexpected_keys"] == []
     assert summary["zero_policy"] is True
     assert json.loads(capsys.readouterr().out) == summary
+
+
+def test_checkpoint_backbone_override_is_pure(tmp_path: Path) -> None:
+    config = runtime.load_experiment_config(
+        REPO_ROOT / "configs" / "examples" / "public_tiny_synthetic_contract.yaml"
+    )
+    original_transformer = config.backbone.transformer_subdir
+    checkpoint_path = tmp_path / "checkpoint_step_4" / "model_state.pt"
+    transformer_dir = checkpoint_path.parent / "transformer"
+    transformer_dir.mkdir(parents=True)
+
+    resolved = runtime._with_checkpoint_backbone_override(
+        config,
+        checkpoint_path=checkpoint_path,
+    )
+
+    assert resolved.backbone.transformer_subdir == str(transformer_dir.resolve())
+    assert config.backbone.transformer_subdir == original_transformer
 
 
 def test_sim_rollout_command_closes_adapter_when_rollout_fails(monkeypatch, tmp_path: Path) -> None:
