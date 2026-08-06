@@ -63,15 +63,25 @@ ExperimentConfig -> VariantPipeline -> VisualTower -> PolicyVariant -> ActionDec
 
 Implement the policy hooks it uses:
 
+- `attach_site`
 - `required_visual_stages`
 - `prepare_train_inputs`
 - `forward_train`
 - `prepare_infer_state`
 - `forward_infer_step`
 
+The frontend output is always available. Return `"core"` and/or `"decode"`
+from `required_visual_stages()` only when the policy needs those shared stages.
+Use the optional `requested_visual_readout()`, `initialize_for_training()`, and
+`reconcile_observed_history()` hooks instead of adding pipeline branches.
+
 Use `DecoderArtifactEnvelope` for architecture-specific policy-to-decoder
 tensors. Keep sequence layout, recurrent state, and cache transitions in the
 policy; keep final supervised outputs and losses in the decoder.
+
+For custom visibility, submit a `PreparedAttentionProfile` through the dense
+runtime program. A new exact packed sequence family or visual backbone is not
+an out-of-tree policy extension; it requires a shared in-tree runtime contract.
 
 ## Avoid New Infrastructure
 

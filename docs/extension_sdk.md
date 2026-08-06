@@ -73,6 +73,91 @@ The active architectural boundary remains:
 ExperimentConfig -> VariantPipeline -> VisualTower -> PolicyVariant -> ActionDecoder
 ```
 
+## Choosing The Extension Level
+
+Use the first level that can express the change:
+
+1. **Config only:** select existing programs, layouts, schedules, cache
+   policies, samplers, or decoder behavior in YAML.
+2. **SDK extension:** register an application-owned dataset adapter, policy
+   variant, action decoder, or simulator adapter from an installed package.
+3. **Core contribution:** add a shared visual backend, exact sequence family,
+   cache representation, training backend, or other reusable runtime contract.
+
+Do not create a new architecture for a mask, loss, or data-layout change. Do
+not monkeypatch the shared runtime when the behavior needs a typed in-tree
+contract.
+
+| Desired change | Owning boundary | Supported path |
+| --- | --- | --- |
+| Change an existing program, geometry, loss weight, or optimizer setting | `ExperimentConfig` | YAML or `--set`; no Python required |
+| Read a new storage format, camera schema, or action/state representation | dataset adapter | Register `raw_builder` and/or `latent_builder` through `open_wam.sdk.data` |
+| Check dataset-owned files before startup | dataset adapter | Register an `artifact_resolver` |
+| Change dataset mixing, weighting, or distributed sample order | dataset and sampler | Implement the dataset sampling contract; shared advanced samplers remain provisional infrastructure |
+| Add policy parameters, dense sequence semantics, or recurrent state | `PolicyVariant` | Register an extension policy through `open_wam.sdk.policy` |
+| Add dense attention visibility over the shared core | `PolicyVariant` and attention profile | Submit a `PreparedAttentionProfile` through the dense runtime program |
+| Change final action outputs, losses, sampling, or committed action count | `ActionDecoder` | Register an extension decoder through `open_wam.sdk.policy` |
+| Add a simulator backend | `SimulatorBackend` | Register a factory through `open_wam.sdk.simulator`; the standard simulator CLI resolves the registered benchmark |
+| Add an exact packed sequence family or cache tensor representation | `VisualTower` runtime | Contribute a generic in-tree contract and parity tests; there is no runtime-backend registry |
+| Replace the visual frontend, backbone, or decode stack | `VisualTower` | Contribute in-tree and preserve checkpoint contracts |
+| Add an optimizer, strategy, loop policy, checkpoint format, or log sink | training infrastructure | Select built-ins by config; new reusable implementations are currently in-tree contributions |
+| Add an offline metric or application report | application evaluator | Build an application command around typed pipeline outputs |
+
+## Core Boundary Ownership
+
+### ExperimentConfig
+
+Start from the nearest maintained YAML and change one ownership axis at a
+time. Shared finite choices stay in typed config fields. Dataset-specific
+settings belong in `data.adapter_options`; policy- and decoder-specific
+settings belong in their extension `options` mappings and should be parsed
+into frozen application dataclasses by the extension builder.
+
+Do not subclass `ExperimentConfig` in an extension package: the built-in YAML
+loader will not discover that subclass. A new shared finite choice requires an
+in-tree enum and named cross-section validation. Application-specific choices
+remain in the open extension envelope.
+
+### VariantPipeline
+
+`VariantPipeline` is composition infrastructure, not a plugin slot. It owns the
+common train/inference order and connects one preprocessor, `VisualTower`,
+`PolicyVariant`, and `ActionDecoder`. There is no
+`register_variant_pipeline` API.
+
+Customize through the adjacent contracts: request visual work from the policy,
+prepare policy inputs and decoder artifacts there, and implement final outputs
+and losses in the decoder. If those contracts cannot express a reusable
+behavior, extend the pipeline contract in-tree and add train and recurrent
+inference coverage for every maintained architecture.
+
+### VisualTower
+
+The tower owns the shared frontend, visual core, decode stage, runtime
+execution, and cache lifecycle. Policies receive frontend output and may
+request `"core"` and/or `"decode"` from `required_visual_stages()`.
+
+Use the dense runtime plus `PreparedAttentionProfile` for custom visibility.
+Adding a `RuntimeProgramSpec` name does not register an executor: a new exact
+packing format, cache representation, or visual backbone requires an in-tree
+runtime implementation and checkpoint/parity coverage. There is no
+`register_visual_tower` API.
+
+### PolicyVariant
+
+Use a policy extension for application-owned learned parameters,
+packing/conditioning semantics, runtime-program selection, or recurrent
+inference state. Pass policy-specific outputs through a typed
+`DecoderArtifactEnvelope`; do not expose decoder-private tensors through
+unstructured pipeline keys. See [Adding A Policy Variant](#adding-a-policy-variant).
+
+### ActionDecoder
+
+Use a decoder extension when policy topology remains valid but final
+prediction, supervision, sampling, or rollout commitment changes. Keep
+simulator-space conversion in the simulator adapter. See
+[Adding An Action Decoder](#adding-an-action-decoder).
+
 ## Adding A Dataset
 
 1. Implement a dataset adapter that returns `WAMSample`.
@@ -424,6 +509,37 @@ Neither contract owns learned parameters. A new cache representation still
 requires a backend integration; do not encode its retention rules inside a
 policy variant or transformer block.
 
+## Training And Checkpoints
+
+Built-in optimizer, scheduler, precision, strategy, loop, checkpoint, and
+logging choices are config driven. They are not SDK registries. An application
+may call a `VariantPipeline` from its own research loop, but then it owns
+distributed coordination, exact resume, validation, and logging. Reusable
+behavior belongs in a generic typed in-tree training contract, not a policy- or
+benchmark-named trainer branch.
+
+Registered policy and decoder modules participate in normal model and
+full-training-state checkpoints. Treat parameter names, module registration
+order, tensor shapes, optimizer mapping, and recurrent cache semantics as
+compatibility contracts. A topology change creates a new checkpoint contract;
+an orchestration-only change must preserve output, loss, gradient, optimizer,
+and recurrent-inference parity.
+
+## Extension Workflow
+
+1. Copy the nearest maintained config and identify the owning boundary.
+2. Keep application code in an installable package outside Open-WAM's built-in
+   implementation directories.
+3. Parse every open `options` mapping into a frozen application dataclass.
+4. Implement the smallest supported contract and register it from one
+   side-effect-free hook.
+5. Pass the same `--extension module[:hook]` to every train, eval, sanity, and
+   rollout command that constructs the component.
+6. Test config parsing, shapes and masks, one forward/backward update,
+   checkpoint load, and recurrent inference. Add distributed and simulator
+   tiers when the component uses them.
+7. Retain the resolved config and artifact manifest for every reported run.
+
 ## Contract Rules
 
 - Registration hooks configure contracts; they must not start jobs or mutate
@@ -438,16 +554,6 @@ policy variant or transformer block.
 - Final supervised outputs and losses remain in `ActionDecoder`.
 - Public finite choices are enum-backed; dataset names, row keys, paths, and
   extension labels remain open strings.
-
-## Choosing The Extension Level
-
-Use config only when changing layouts, schedules, runtime-program choices,
-sampling, or other already typed semantics. Use one SDK registration hook when
-adding a dataset parser, policy, decoder, or simulator. Change the shared core
-only when the existing typed contracts cannot express a reusable capability;
-that requires architecture-boundary tests and the strict characterization
-gate. Benchmark-specific parsing does not belong in `VisualTower`, and method
-branches do not belong in the generic trainer.
 
 ## Cookbooks
 
