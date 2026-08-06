@@ -379,7 +379,7 @@ class DualExpertPolicyVariant(PolicyVariant):
         if hidden_proprio_state is not None:
             runtime_state.hidden_proprio_state = hidden_proprio_state.detach().clone()
         generalist_rollout_mode = (
-            _resolve_dual_expert_generalist_rollout_mode(context)
+            _resolve_dual_expert_generalist_rollout_mode(context, self.config)
             if _dual_expert_generalist_rollout_enabled(self.config)
             else GeneralistDenoisingMode.JOINT
         )

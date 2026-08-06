@@ -41,6 +41,7 @@ from .enums import (
     VideoActionProgram,
     VideoActionSequenceContract,
 )
+from .policy_video_action import is_dynamics_routed_paradigm
 from .static_validation_contracts import _IssueBuilder
 from .static_validation_data import (
     _validate_action_mapping,
@@ -52,6 +53,7 @@ from .static_validation_policy import (
     _validate_action_horizons,
     _validate_generalist_denoising_mode_probs,
     _validate_single_frame_condition_offset,
+    _validate_fixed_conditional_program,
     _validate_video_action_program_coupling,
     _validate_video_action_sequence_contract_static,
     _warn_deprecated_text_proprio_context,
@@ -231,11 +233,14 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: _IssueBuilder, *
                 require_joint_coupling=True,
                 require_batch_size_one=True,
             )
-        if policy_variant.get("generalist_training_paradigm") == GeneralistTrainingParadigm.MIXED_DYNAMICS.value:
+        _validate_fixed_conditional_program(policy_variant, data, issues)
+        if is_dynamics_routed_paradigm(
+            policy_variant.get("generalist_training_paradigm")
+        ):
             if trainer is None or trainer.get("batch_adapter") != BatchAdapterName.LATENTS.value:
                 issues.error(
                     "trainer.batch_adapter",
-                    "`generalist_training_paradigm=mixed_dynamics` requires `trainer.batch_adapter=latents`.",
+                    "`generalist_training_paradigm=dynamics_routed` requires `trainer.batch_adapter=latents`.",
                 )
             if (
                 sample_construction is not None
@@ -243,8 +248,8 @@ def _validate_experiment_config(raw: Mapping[str, Any], issues: _IssueBuilder, *
             ):
                 issues.error(
                     "data.sample_construction.sample_weight_mode",
-                    "`sample_weight_mode` must be `uniform` with `generalist_training_paradigm=mixed_dynamics` "
-                    "because the mixed-dynamics wrapper only preserves parity for uniform replacement draws.",
+                    "`sample_weight_mode` must be `uniform` with `generalist_training_paradigm=dynamics_routed` "
+                    "because the dynamics router only preserves parity for uniform replacement draws.",
                 )
         _validate_positive_ints(policy_variant, issues, "policy_variant", ("hidden_size",))
     if action_decoder is not None:

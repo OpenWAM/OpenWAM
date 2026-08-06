@@ -248,19 +248,19 @@ def validate_experiment_config_runtime_contract(
 
     if (
         getattr(config.policy_variant, "generalist_training_paradigm", None)
-        == enums.GeneralistTrainingParadigm.MIXED_DYNAMICS
+        == enums.GeneralistTrainingParadigm.DYNAMICS_ROUTED
     ):
         if config.trainer.batch_adapter != enums.BatchAdapterName.LATENTS:
             raise ValueError(
-                "`policy_variant.generalist_training_paradigm=mixed_dynamics` requires "
-                "`trainer.batch_adapter=latents` because the mixed-dynamics source mixture wraps latent datasets."
+                "`policy_variant.generalist_training_paradigm=dynamics_routed` requires "
+                "`trainer.batch_adapter=latents` because the dynamics source router wraps latent datasets."
             )
         sample_construction = config.data.sample_construction
         if sample_construction.sample_weight_mode != enums.SampleWeightMode.UNIFORM:
             raise ValueError(
                 "`data.sample_construction.sample_weight_mode` must be `uniform` with "
-                "`policy_variant.generalist_training_paradigm=mixed_dynamics` because the mixed-dynamics "
-                "wrapper owns source sampling and only preserves parity for uniform replacement draws."
+                "`policy_variant.generalist_training_paradigm=dynamics_routed` because the dynamics router "
+                "owns source sampling and only preserves parity for uniform replacement draws."
             )
 
     if (

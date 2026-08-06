@@ -6,6 +6,10 @@ import torch
 
 from open_wam.configs import GeneralistDenoisingMode
 from open_wam.configs.policy_dual_expert import DualExpertPolicyConfig
+from open_wam.configs.policy_video_action import (
+    fixed_conditioning_mode_for_program,
+    resolve_fixed_conditioning_mode,
+)
 from open_wam.contracts import SampleConstructionMetadata
 from open_wam.models.common.flow_training import (
     VideoFlowMatchTrainArtifacts,
@@ -48,6 +52,59 @@ def resolve_generalist_training_metadata(
     raw_mode = sample_metadata.generalist.mode_override
     mode = None if raw_mode is None else GeneralistDenoisingMode(raw_mode)
     return mode, sample_metadata.generalist.drop_text_conditioning, sample_metadata.generalist.source
+
+
+def resolve_generalist_training_mode(
+    policy_config: DualExpertPolicyConfig,
+    batch: PolicyTrainBatch,
+    *,
+    device: torch.device,
+) -> tuple[GeneralistDenoisingMode | None, GeneralistDenoisingMode | None, bool | None, str | None]:
+    """Resolve fixed, dataset-forced, or sampled mode in precedence order.
+
+    Standalone conditional programs own their mode. Dataset metadata may
+    confirm that mode but cannot redirect it; mixed GJD retains its existing
+    per-source forced-mode behavior.
+    """
+
+    forced_mode, drop_text, source = resolve_generalist_training_metadata(batch)
+    fixed_mode = resolve_fixed_conditioning_mode(policy_config)
+    if fixed_mode is not None:
+        mode_owner = (
+            f"`program = {policy_config.program.value}`"
+            if fixed_conditioning_mode_for_program(policy_config.program) is not None
+            else "`generalist_denoising_mode_probs`"
+        )
+        if forced_mode is not None and forced_mode != fixed_mode:
+            raise ValueError(
+                f"{mode_owner} requires training mode "
+                f"{fixed_mode.value!r}, but sample metadata forced {forced_mode.value!r}."
+            )
+        if forced_mode is not None:
+            return fixed_mode, forced_mode, drop_text, source
+        probabilities = policy_config.generalist_denoising_mode_probs
+        if probabilities is None:  # pragma: no cover - typed config derives the one-hot map.
+            raise RuntimeError(
+                f"{mode_owner} is missing its fixed mode distribution."
+            )
+        sampled_mode = sample_generalist_training_mode(probabilities, device=device)
+        if sampled_mode != fixed_mode:  # pragma: no cover - typed config validates one-hot ownership.
+            raise RuntimeError(
+                f"{mode_owner} sampled unexpected mode "
+                f"{sampled_mode.value!r}."
+            )
+        return sampled_mode, forced_mode, drop_text, source
+    if forced_mode is not None:
+        return forced_mode, forced_mode, drop_text, source
+    probabilities = policy_config.generalist_denoising_mode_probs
+    if probabilities is None:
+        return None, None, drop_text, source
+    return (
+        sample_generalist_training_mode(probabilities, device=device),
+        None,
+        drop_text,
+        source,
+    )
 
 
 def apply_generalist_training_mode(
@@ -171,14 +228,29 @@ def generalist_rollout_mode_from_value(
 
 def resolve_generalist_rollout_mode(
     context: PolicyInferContext,
+    policy_config: DualExpertPolicyConfig | None = None,
 ) -> GeneralistDenoisingMode:
     """Resolve the requested generalist rollout mode from inference context."""
 
+    requested_value = context.extra.get(
+        "dual_expert_generalist_rollout_mode",
+        context.extra.get("action_conditioning_mode"),
+    )
+    fixed_mode = None
+    if policy_config is not None:
+        fixed_mode = resolve_fixed_conditioning_mode(policy_config)
+    if fixed_mode is not None:
+        if requested_value is None:
+            return fixed_mode
+        requested_mode = generalist_rollout_mode_from_value(requested_value)
+        if requested_mode != fixed_mode:
+            raise ValueError(
+                "The configured fixed conditional mode requires "
+                f"{fixed_mode.value!r}, but inference requested {requested_mode.value!r}."
+            )
+        return fixed_mode
     return generalist_rollout_mode_from_value(
-        context.extra.get(
-            "dual_expert_generalist_rollout_mode",
-            context.extra.get("action_conditioning_mode", "vanilla_joint_rollout"),
-        )
+        "vanilla_joint_rollout" if requested_value is None else requested_value
     )
 
 
@@ -205,5 +277,6 @@ __all__ = [
     "is_generalist_conditional_rollout",
     "resolve_generalist_rollout_mode",
     "resolve_generalist_training_metadata",
+    "resolve_generalist_training_mode",
     "sample_generalist_training_mode",
 ]

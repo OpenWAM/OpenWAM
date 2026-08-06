@@ -9,6 +9,7 @@ from torch.utils.data.distributed import DistributedSampler
 
 from open_wam.configs import AuxiliaryValidationTaskConfig, ExperimentConfig
 from open_wam.configs.enums import AuxiliaryValidationSource, DataSplit
+from open_wam.configs.policy_video_action import resolve_fixed_conditioning_mode
 from open_wam.contracts import (
     GENERALIST_TRAINING_BUCKET_METADATA_KEY,
     GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY,
@@ -75,8 +76,15 @@ def build_auxiliary_validation_runs(
 ) -> tuple[AuxiliaryValidationRun, ...]:
     runs: list[AuxiliaryValidationRun] = []
     seen_phases: set[str] = set()
+    fixed_mode = resolve_fixed_conditioning_mode(config.policy_variant)
     for task in config.validation.auxiliary_tasks:
         if not task.enabled or task.max_batches == 0:
+            continue
+        if (
+            fixed_mode is not None
+            and task.mode_override is not None
+            and task.mode_override != fixed_mode
+        ):
             continue
         if task.phase in seen_phases:
             raise ValueError(f"Duplicate auxiliary validation report prefix {task.phase!r}.")
@@ -131,6 +139,14 @@ def _resolve_named_auxiliary_validation_source(
     source: AuxiliaryValidationSource,
     fallback: tuple[Dataset, str] | None = None,
 ) -> tuple[Dataset, str]:
+    has_source = getattr(dataset, "has_source", None)
+    if callable(has_source) and not bool(has_source(source.value)):
+        if fallback is not None:
+            return fallback
+        raise ValueError(
+            f"Auxiliary validation task {task.name!r} requested source {source.value!r}, "
+            f"but that source is not available in the selected {task.dataset_split.value!r} dataset."
+        )
     build_source_view = getattr(dataset, "build_source_view", None)
     if callable(build_source_view):
         source_view_kwargs = {

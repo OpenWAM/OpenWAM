@@ -38,8 +38,10 @@ paths:
     libero_public_root: /path/to/datasets/libero/libero_10
     # Shared negative-prompt embedding used by latent-local datasets.
     empty_text_embedding: /path/to/artifacts/text/empty_emb.pt
-    # Encoded counterfactual dynamics latents used by maintained LIBERO GJD
-    # mixed-dynamics configs. Override these locally before real GJD training.
+    # Encoded target-only counterfactual dynamics latents. These are required
+    # by GJD or conditional FDM/IDM whenever a counterfactual source weight is
+    # positive, including the conditional config's default 1:1 source ratio.
+    # A real-demo-only run may set its matching CF weight to zero instead.
     libero_gjd_counterfactual_train_latent_root: /path/to/datasets/fdm_counterfactual_demo/libero10_fdm_counterfactual_coverage_10000_h32_ctx16_random_t0_seed0_sharded/encoded_latents
     libero_gjd_counterfactual_val_latent_root: /path/to/datasets/fdm_counterfactual_demo/libero10_fdm_counterfactual_validation_1000_h32_ctx16_random_t0_seed1/encoded_latents
     # Local RoboTwin LeRobot-v2 member or downloaded nested member root.

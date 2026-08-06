@@ -10,7 +10,8 @@ from typing import Any
 
 import torch
 
-from open_wam.configs import ReplayStatusPolicy
+from open_wam.configs import GeneralistDenoisingMode, ReplayStatusPolicy
+from open_wam.configs.policy_video_action import resolve_fixed_conditioning_mode
 from open_wam.runtime.checkpoints import (
     CheckpointCompatibilityPolicy,
     load_pipeline_checkpoint,
@@ -52,6 +53,16 @@ from .types import FdmAblationMode, FdmStartPolicy
 from .visualization import decode_latent_video, write_prediction_video
 
 
+_DIAGNOSTIC_MODE_BY_FIXED_CONDITIONING_MODE = {
+    GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO: (
+        FdmAblationMode.FORCED_ACTION_JOINT_FDM
+    ),
+    GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION: (
+        FdmAblationMode.VIDEO_CONDITIONED_ACTION
+    ),
+}
+
+
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     seed_everywhere(args.seed)
@@ -78,11 +89,11 @@ def main(argv: list[str] | None = None) -> None:
             parse_override_assignments(tuple(args.set_overrides)),
         )
 
+    modes = _resolve_requested_diagnostic_modes(config, args.mode)
     run_id = args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
     output_root = Path(args.output_dir).expanduser().resolve() / run_id
     output_root.mkdir(parents=True, exist_ok=True)
 
-    modes = tuple(FdmAblationMode(value) for value in args.mode)
     action_per_frame = _resolve_action_per_frame(config)
     selection_fit_target_start_offset_frames = max(
         (_target_start_offset_for_config_mode(config, mode) for mode in modes),
@@ -808,7 +819,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="append",
         choices=[mode.value for mode in FdmAblationMode],
         default=None,
-        help="Ablation mode to run. Repeat to run multiple modes. Defaults to all modes.",
+        help=(
+            "Ablation mode to run. Repeat to run multiple modes. When omitted, "
+            "a fixed FDM/IDM program selects its matching mode; other configs run all modes."
+        ),
     )
     parser.add_argument(
         "--replay-status-policy",
@@ -832,10 +846,45 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Repeatable `section.field=value` config override, applied after checkpoint/runtime repair.",
     )
     args = parser.parse_args(argv)
-    if args.mode is None:
-        args.mode = [mode.value for mode in FdmAblationMode]
     if args.context_window_frames is not None and args.context_window_frames <= 0:
         args.context_window_frames = None
     if args.sample_start < 0:
         parser.error("--sample-start must be non-negative.")
     return args
+
+
+def _resolve_requested_diagnostic_modes(
+    config: Any,
+    requested_values: list[str] | None,
+) -> tuple[FdmAblationMode, ...]:
+    """Resolve config-aware offline modes before any expensive evaluation work."""
+
+    fixed_mode = resolve_fixed_conditioning_mode(config.policy_variant)
+    if fixed_mode is None:
+        values = (
+            [mode.value for mode in FdmAblationMode]
+            if requested_values is None
+            else requested_values
+        )
+        return tuple(FdmAblationMode(value) for value in values)
+
+    expected_mode = _DIAGNOSTIC_MODE_BY_FIXED_CONDITIONING_MODE.get(fixed_mode)
+    if expected_mode is None:  # pragma: no cover - fixed resolver only returns conditional modes.
+        raise ValueError(
+            f"Unsupported fixed conditioning mode for offline diagnostics: {fixed_mode.value!r}."
+        )
+    if requested_values is None:
+        return (expected_mode,)
+
+    requested_modes = tuple(FdmAblationMode(value) for value in requested_values)
+    incompatible = tuple(mode for mode in requested_modes if mode != expected_mode)
+    if incompatible:
+        program = getattr(config.policy_variant, "program", None)
+        program_value = getattr(program, "value", program)
+        rendered = ", ".join(repr(mode.value) for mode in incompatible)
+        raise ValueError(
+            f"The configured program {program_value!r} fixes offline evaluation to "
+            f"--mode {expected_mode.value}; incompatible requested mode(s): {rendered}. "
+            "Omit --mode to select the fixed mode automatically."
+        )
+    return requested_modes

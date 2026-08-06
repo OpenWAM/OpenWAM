@@ -48,16 +48,20 @@ therefore intentionally shared. Phase 1 resolves the config-default W30 because
 the supplied command does not override `training.window_size`, while phase 2
 explicitly resolves W64.
 
-The GJD syntax and semantics matrix covers `vanilla`, `pure_joint`, and
-`mode_token`. No checkpoint currently exists for the corrected mixed-dynamics
-vanilla contract, so vanilla is intentionally excluded from the default exact
-numerical checkpoint run. Its config, five training scenarios, and three
-inference routes remain statically asserted. Mode-token checkpoint training
-exercises real joint, real FDM, real IDM, counterfactual FDM, and
-counterfactual IDM buckets. Pure-joint exercises the real joint bucket.
-Inference exercises joint, FDM, and IDM routing for each available GJD
-checkpoint. The default exact checkpoint matrix is therefore six entries:
-VTA, ATV, joint, decoupled, GJD pure-joint, and GJD mode-token.
+The GJD training syntax and semantics matrix covers `vanilla`, `pure_joint`,
+`pure_fdm`, `pure_idm`, and `mode_token`; the two pure conditional modes are
+training-only because live rollout lacks their future clean conditions. No
+checkpoint currently exists for the corrected mixed-dynamics vanilla contract,
+so vanilla is intentionally excluded from the default exact numerical
+checkpoint run. Its config, five training scenarios, and three inference routes
+remain statically asserted. Mode-token checkpoint training exercises real
+joint, real FDM, real IDM, counterfactual FDM, and counterfactual IDM buckets.
+Pure-joint exercises the real joint bucket. Standalone conditional FDM/IDM has
+exact loss, output, and parameter-gradient parity tests against one-hot GJD, so
+it does not require duplicate immutable checkpoints. Inference exercises joint,
+FDM, and IDM routing for each available GJD checkpoint. The default exact
+checkpoint matrix therefore remains six entries: VTA, ATV, joint, decoupled,
+GJD pure-joint, and GJD mode-token.
 
 The inference fixture uses the maintained streaming contract:
 

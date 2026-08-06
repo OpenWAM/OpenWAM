@@ -3202,6 +3202,7 @@ def test_static_configuration_validation_has_role_specific_owners() -> None:
             "_validate_generalist_denoising_mode_probs",
             "_validate_probability_map",
             "_validate_single_frame_condition_offset",
+            "_validate_fixed_conditional_program",
             "_validate_video_action_program_coupling",
             "_validate_video_action_sequence_contract_static",
             "_warn_deprecated_text_proprio_context",
@@ -3551,6 +3552,7 @@ def test_dual_expert_generalist_mode_semantics_have_one_owner() -> None:
         "is_generalist_conditional_rollout",
         "resolve_generalist_rollout_mode",
         "resolve_generalist_training_metadata",
+        "resolve_generalist_training_mode",
         "sample_generalist_training_mode",
     }
     mode_definitions = _top_level_definitions(
@@ -8310,8 +8312,8 @@ def test_training_runtime_has_explicit_composition_owners() -> None:
 
     data_loading_definitions = {
         "build_runtime_dataloaders",
-        "_uses_mixed_dynamics_paradigm",
-        "_validate_mixed_dynamics_source_sampling",
+        "_uses_dynamics_routing",
+        "_validate_dynamics_source_sampling",
     }
     auxiliary_validation_definitions = {
         "AuxiliaryValidationDataset",

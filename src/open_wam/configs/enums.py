@@ -680,6 +680,10 @@ class VideoActionProgram(StrEnum):
     VIDEO_NOISY_TO_ACTION = "video_noisy_to_action"
     ACTION_NOISY_TO_VIDEO = "action_noisy_to_video"
     GENERALIST_JOINT_DENOISING = "generalist_joint_denoising"
+    # Fixed conditional programs use the same tensor and attention semantics
+    # as their one-hot GJD counterparts and cannot select another GJD mode.
+    FORWARD_DYNAMICS = "forward_dynamics"
+    INVERSE_DYNAMICS = "inverse_dynamics"
 
 
 class JointTimestepCoupling(StrEnum):
@@ -710,10 +714,21 @@ class ProprioContextMode(StrEnum):
 
 
 class GeneralistTrainingParadigm(StrEnum):
-    """High-level data/objective mixture used by generalist video-action methods."""
+    """How generalist samples reach the policy training contract."""
 
     DEMO_ONLY = "demo_only"
-    MIXED_DYNAMICS = "mixed_dynamics"
+    # Route each draw through the dynamics source adapter. The active sources
+    # may still be real-demo-only; counterfactual data is not implied.
+    DYNAMICS_ROUTED = "dynamics_routed"
+    # Deprecated Python symbol alias. Raw `mixed_dynamics` config values are
+    # normalized by `_missing_` and serialize as `dynamics_routed`.
+    MIXED_DYNAMICS = "dynamics_routed"
+
+    @classmethod
+    def _missing_(cls, value: object) -> GeneralistTrainingParadigm | None:
+        if value == "mixed_dynamics":
+            return cls.DYNAMICS_ROUTED
+        return None
 
 
 # Deprecated symbol aliases. They intentionally preserve class identity so old

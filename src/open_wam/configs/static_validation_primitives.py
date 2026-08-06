@@ -9,7 +9,7 @@ from typing import Any, Mapping
 import yaml
 
 from .config_paths import resolve_config_reference
-from .enums import BackboneImplementation, StrEnum
+from .enums import BackboneImplementation, GeneralistTrainingParadigm, StrEnum
 from .static_validation_contracts import _IssueBuilder
 
 
@@ -17,7 +17,10 @@ LOCAL_PATH_PATTERN = re.compile(r"\$\{paths\.([A-Za-z0-9_.-]+)\}")
 ENUM_VALUE_ALIASES: dict[type[StrEnum], dict[str, str]] = {
     BackboneImplementation: {
         "lingbot_replica": BackboneImplementation.SHARED_TRANSFORMER.value,
-    }
+    },
+    GeneralistTrainingParadigm: {
+        "mixed_dynamics": GeneralistTrainingParadigm.DYNAMICS_ROUTED.value,
+    },
 }
 
 

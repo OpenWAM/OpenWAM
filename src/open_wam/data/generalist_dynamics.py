@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
 import math
 import random
+from dataclasses import dataclass, replace
 
 import torch
 from torch.utils.data import Dataset, Sampler
 
 from open_wam.configs import (
     DataConfig,
+    GeneralistDenoisingMode,
     GeneralistDynamicsMixtureConfig,
     WindowSamplingMode,
 )
@@ -22,6 +23,7 @@ from open_wam.contracts import (
 )
 
 from .conditional_dynamics_layout import project_real_conditional_sample_to_target_only
+
 # Compatibility re-exports preserve the historical mixture-module import path.
 from .counterfactual_dynamics_dataset import EncodedCounterfactualDynamicsLatentDataset
 from .counterfactual_dynamics_materialization import (
@@ -66,22 +68,48 @@ class GeneralistDynamicsMixtureDataset(Dataset[LatentWAMSample]):
         self,
         *,
         real_dataset: Dataset[LatentWAMSample],
-        counterfactual_dataset: Dataset[LatentWAMSample],
+        counterfactual_dataset: Dataset[LatentWAMSample] | None,
         mixture_config: GeneralistDynamicsMixtureConfig,
         split: str,
+        fixed_mode: GeneralistDenoisingMode | str | None = None,
     ) -> None:
-        if len(real_dataset) <= 0:
-            raise ValueError("Generalist dynamics mixture requires a non-empty real-demo dataset.")
-        if len(counterfactual_dataset) <= 0:
-            raise ValueError("Generalist dynamics mixture requires a non-empty counterfactual dataset.")
         self.real_dataset = real_dataset
         self.counterfactual_dataset = counterfactual_dataset
         self.mixture_config = mixture_config
         self.split = str(split)
-        self.buckets = _build_mixture_buckets(mixture_config)
+        self.fixed_mode = (
+            None
+            if fixed_mode is None
+            else GeneralistDenoisingMode(fixed_mode).value
+        )
+        self.buckets = _build_mixture_buckets(
+            mixture_config,
+            fixed_mode=self.fixed_mode,
+        )
+        active_sources = {bucket.source for bucket in self.buckets}
+        if REAL_DEMO_SOURCE in active_sources and len(real_dataset) <= 0:
+            raise ValueError(
+                "Generalist dynamics mixture assigns positive real-demo weight but the dataset is empty."
+            )
+        if COUNTERFACTUAL_DYNAMICS_SOURCE in active_sources:
+            if counterfactual_dataset is None:
+                raise ValueError(
+                    "Generalist dynamics mixture assigns positive counterfactual weight but no encoded "
+                    "counterfactual dataset was provided."
+                )
+            if len(counterfactual_dataset) <= 0:
+                raise ValueError(
+                    "Generalist dynamics mixture assigns positive counterfactual weight but the dataset is empty."
+                )
         self._distributed_draw_group_size = 1
         self._distributed_epoch_size = 0
-        base_length = max(len(real_dataset), len(counterfactual_dataset))
+        active_lengths = []
+        if REAL_DEMO_SOURCE in active_sources:
+            active_lengths.append(len(real_dataset))
+        if COUNTERFACTUAL_DYNAMICS_SOURCE in active_sources:
+            assert counterfactual_dataset is not None
+            active_lengths.append(len(counterfactual_dataset))
+        base_length = max(active_lengths)
         self._length = max(1, int(round(base_length * float(mixture_config.length_multiplier))))
 
     def __len__(self) -> int:
@@ -122,6 +150,30 @@ class GeneralistDynamicsMixtureDataset(Dataset[LatentWAMSample]):
             spread_indices=spread_indices,
         )
 
+    def has_source(self, source: str) -> bool:
+        """Return whether a concrete source dataset is available for validation."""
+
+        if source == REAL_DEMO_SOURCE:
+            return len(self.real_dataset) > 0
+        if source == COUNTERFACTUAL_DYNAMICS_SOURCE:
+            return (
+                self.counterfactual_dataset is not None
+                and len(self.counterfactual_dataset) > 0
+            )
+        return False
+
+    def source_dataset(self, source: str) -> Dataset[LatentWAMSample]:
+        """Resolve one concrete source or fail with a source-specific error."""
+
+        if source == REAL_DEMO_SOURCE and self.has_source(source):
+            return self.real_dataset
+        if source == COUNTERFACTUAL_DYNAMICS_SOURCE and self.has_source(source):
+            assert self.counterfactual_dataset is not None
+            return self.counterfactual_dataset
+        raise ValueError(
+            f"Generalist dynamics source {source!r} is not available for split {self.split!r}."
+        )
+
     def __getitem__(self, index: int) -> LatentWAMSample:
         index = int(index)
         group_size = max(1, int(getattr(self, "_distributed_draw_group_size", 1)))
@@ -149,6 +201,8 @@ class GeneralistDynamicsMixtureDataset(Dataset[LatentWAMSample]):
             sample_index = _draw_source_index(self.real_dataset, rng=source_rng, epoch=epoch)
             sample = self.real_dataset[sample_index]
         elif bucket.source == COUNTERFACTUAL_DYNAMICS_SOURCE:
+            if self.counterfactual_dataset is None:  # pragma: no cover - constructor validates active buckets.
+                raise RuntimeError("Counterfactual bucket selected without a counterfactual dataset.")
             sample_index = _draw_source_index(self.counterfactual_dataset, rng=source_rng, epoch=epoch)
             sample = self.counterfactual_dataset[sample_index]
         else:
@@ -176,12 +230,7 @@ class GeneralistDynamicsSourceViewDataset(Dataset[LatentWAMSample]):
         self.mixture_dataset = mixture_dataset
         self.bucket = bucket
         self.spread_indices = bool(spread_indices)
-        if bucket.source == REAL_DEMO_SOURCE:
-            self.source_dataset = mixture_dataset.real_dataset
-        elif bucket.source == COUNTERFACTUAL_DYNAMICS_SOURCE:
-            self.source_dataset = mixture_dataset.counterfactual_dataset
-        else:
-            raise ValueError(f"Unsupported generalist source view {bucket.source!r}.")
+        self.source_dataset = mixture_dataset.source_dataset(bucket.source)
         self._spread_source_indices = _balanced_source_indices_for_dataset(self.source_dataset) if self.spread_indices else None
         self._uses_balanced_source_indices = (
             self._spread_source_indices is not None and len(self._spread_source_indices) > 0
@@ -238,49 +287,66 @@ def build_generalist_dynamics_mixture_datasets(
     data_config: DataConfig,
     train_dataset: Dataset[LatentWAMSample],
     val_dataset: Dataset[LatentWAMSample],
+    fixed_mode: GeneralistDenoisingMode | str | None = None,
 ) -> tuple[Dataset[LatentWAMSample], Dataset[LatentWAMSample]]:
     mixture_config = data_config.generalist_dynamics_mixture
-    if mixture_config.train_latent_root is None:
-        raise ValueError(
-            "`generalist_training_paradigm = mixed_dynamics` requires "
-            "`data.generalist_dynamics_mixture.train_latent_root`."
-        )
-    train_counterfactual = EncodedCounterfactualDynamicsLatentDataset(
-        data_config,
-        mixture_config.train_latent_root,
-        split="train",
+    buckets = _build_mixture_buckets(mixture_config, fixed_mode=fixed_mode)
+    uses_counterfactual = any(
+        bucket.source == COUNTERFACTUAL_DYNAMICS_SOURCE
+        for bucket in buckets
     )
-    val_root = mixture_config.val_latent_root
-    if val_root is None:
-        if not mixture_config.allow_train_latent_root_for_val:
+    train_counterfactual: Dataset[LatentWAMSample] | None = None
+    val_counterfactual: Dataset[LatentWAMSample] | None = None
+    if uses_counterfactual:
+        if mixture_config.train_latent_root is None:
             raise ValueError(
-                "`generalist_training_paradigm = mixed_dynamics` requires "
-                "`data.generalist_dynamics_mixture.val_latent_root` for validation. "
-                "Set `allow_train_latent_root_for_val: true` only for local debug runs."
+                "`generalist_training_paradigm = dynamics_routed` requires "
+                "`data.generalist_dynamics_mixture.train_latent_root` when a counterfactual "
+                "bucket has positive weight."
             )
-        val_root = mixture_config.train_latent_root
-    val_counterfactual = EncodedCounterfactualDynamicsLatentDataset(
-        data_config,
-        val_root,
-        split="val",
-    )
+        train_counterfactual = EncodedCounterfactualDynamicsLatentDataset(
+            data_config,
+            mixture_config.train_latent_root,
+            split="train",
+        )
+        val_root = mixture_config.val_latent_root
+        if val_root is None:
+            if not mixture_config.allow_train_latent_root_for_val:
+                raise ValueError(
+                    "`generalist_training_paradigm = dynamics_routed` requires "
+                    "`data.generalist_dynamics_mixture.val_latent_root` for validation when a "
+                    "counterfactual bucket has positive weight. Set "
+                    "`allow_train_latent_root_for_val: true` only for local debug runs."
+                )
+            val_root = mixture_config.train_latent_root
+        val_counterfactual = EncodedCounterfactualDynamicsLatentDataset(
+            data_config,
+            val_root,
+            split="val",
+        )
     return (
         GeneralistDynamicsMixtureDataset(
             real_dataset=train_dataset,
             counterfactual_dataset=train_counterfactual,
             mixture_config=mixture_config,
             split="train",
+            fixed_mode=fixed_mode,
         ),
         GeneralistDynamicsMixtureDataset(
             real_dataset=val_dataset,
             counterfactual_dataset=val_counterfactual,
             mixture_config=mixture_config,
             split="val",
+            fixed_mode=fixed_mode,
         ),
     )
 
 
-def _build_mixture_buckets(config: GeneralistDynamicsMixtureConfig) -> tuple[GeneralistMixtureBucket, ...]:
+def _build_mixture_buckets(
+    config: GeneralistDynamicsMixtureConfig,
+    *,
+    fixed_mode: GeneralistDenoisingMode | str | None = None,
+) -> tuple[GeneralistMixtureBucket, ...]:
     buckets = (
         GeneralistMixtureBucket(
             name="real_joint",
@@ -318,7 +384,28 @@ def _build_mixture_buckets(config: GeneralistDynamicsMixtureConfig) -> tuple[Gen
             drop_text=True,
         ),
     )
-    return tuple(bucket for bucket in buckets if bucket.weight > 0.0)
+    resolved_fixed_mode = (
+        None
+        if fixed_mode is None
+        else GeneralistDenoisingMode(fixed_mode).value
+    )
+    active = tuple(
+        bucket
+        for bucket in buckets
+        if bucket.weight > 0.0
+        and (resolved_fixed_mode is None or bucket.mode == resolved_fixed_mode)
+    )
+    if not active:
+        suffix = (
+            ""
+            if resolved_fixed_mode is None
+            else f" for fixed mode {resolved_fixed_mode!r}"
+        )
+        raise ValueError(
+            "`data.generalist_dynamics_mixture` must contain at least one positive source weight"
+            f"{suffix}."
+        )
+    return active
 
 
 def _sample_bucket(buckets: tuple[GeneralistMixtureBucket, ...], rng: random.Random) -> GeneralistMixtureBucket:

@@ -3,9 +3,42 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import torch
 
+from open_wam.configs import GeneralistDenoisingMode
 from open_wam.evals import libero_dual_expert_runtime as runtime
+
+
+def test_live_sim_rejects_standalone_conditional_program_default() -> None:
+    with pytest.raises(ValueError, match="fixed conditional mode.*offline diagnostic mode"):
+        runtime._validate_live_sim_dual_expert_generalist_rollout_mode(
+            None,
+            policy_config=SimpleNamespace(program="forward_dynamics"),
+        )
+
+
+def test_live_sim_cannot_override_standalone_conditional_program_to_joint() -> None:
+    with pytest.raises(ValueError, match="fixed conditional mode.*offline diagnostic mode"):
+        runtime._validate_live_sim_dual_expert_generalist_rollout_mode(
+            "joint",
+            policy_config=SimpleNamespace(program="forward_dynamics"),
+        )
+
+
+def test_live_sim_rejects_one_hot_gjd_conditional_default() -> None:
+    with pytest.raises(ValueError, match="fixed conditional mode.*offline diagnostic mode"):
+        runtime._validate_live_sim_dual_expert_generalist_rollout_mode(
+            None,
+            policy_config=SimpleNamespace(
+                program="generalist_joint_denoising",
+                generalist_denoising_mode_probs={
+                    GeneralistDenoisingMode.JOINT: 0.0,
+                    GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO: 1.0,
+                    GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION: 0.0,
+                },
+            ),
+        )
 
 
 class _FakePipeline:

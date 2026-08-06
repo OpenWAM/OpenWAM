@@ -14,6 +14,7 @@ Covers:
 from __future__ import annotations
 
 import math
+import random
 from collections import Counter
 from dataclasses import replace as _dataclass_replace
 
@@ -27,10 +28,12 @@ from open_wam.configs.enums import (
     CurrentBlockCoupling,
     DualExpertRuntimeMode,
     GeneralistDenoisingMode,
+    GeneralistTrainingParadigm,
     HistoryStreamVisibility,
     JointTimestepCoupling,
     PolicyVariantName,
     ProprioContextMode,
+    VideoActionProgram,
     VideoActionSequenceContract,
 )
 from open_wam.configs.policy_dual_expert import (
@@ -60,6 +63,7 @@ from open_wam.models.policy_variants.dual_expert.generalist_modes import (
     apply_generalist_training_mode,
     generalist_rollout_mode_from_value,
     resolve_generalist_rollout_mode,
+    resolve_generalist_training_mode,
     sample_generalist_training_mode,
 )
 from open_wam.models.policy_variants.dual_expert.runtime_routing import (
@@ -103,6 +107,7 @@ def test_default_opt_out_keeps_existing_six_mode_path() -> None:
 def test_opt_in_dict_normalizes_and_keeps_joint_coupling() -> None:
     cfg = _make_dual_expert_policy_config(
         current_block_coupling=CurrentBlockCoupling.JOINT,
+        generalist_training_paradigm=GeneralistTrainingParadigm.DYNAMICS_ROUTED,
         generalist_denoising_mode_probs={
             "joint": 6.0,
             "action_conditioned_video": 2.0,
@@ -116,6 +121,96 @@ def test_opt_in_dict_normalizes_and_keeps_joint_coupling() -> None:
     assert math.isclose(probs[GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO], 0.2)
     assert math.isclose(probs[GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION], 0.2)
     assert cfg.joint_timestep_coupling == JointTimestepCoupling.MATCH_SIGMA
+
+
+@pytest.mark.parametrize(
+    ("program", "expected_mode"),
+    [
+        (
+            VideoActionProgram.FORWARD_DYNAMICS,
+            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
+        ),
+        (
+            VideoActionProgram.INVERSE_DYNAMICS,
+            GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
+        ),
+    ],
+)
+def test_standalone_conditional_program_owns_one_hot_gjd_mode(
+    program: VideoActionProgram,
+    expected_mode: GeneralistDenoisingMode,
+) -> None:
+    cfg = _make_dual_expert_policy_config(
+        program=program,
+        generalist_training_paradigm=GeneralistTrainingParadigm.DYNAMICS_ROUTED,
+    )
+
+    assert cfg.current_block_coupling == CurrentBlockCoupling.JOINT
+    assert cfg.generalist_denoising_mode_probs == {
+        mode: float(mode is expected_mode) for mode in GeneralistDenoisingMode
+    }
+
+
+def test_standalone_conditional_program_rejects_demo_only_data_contract() -> None:
+    with pytest.raises(ValueError, match="require.*dynamics_routed"):
+        _make_dual_expert_policy_config(program=VideoActionProgram.FORWARD_DYNAMICS)
+
+
+def test_one_hot_gjd_conditional_mode_rejects_demo_only_data_contract() -> None:
+    with pytest.raises(ValueError, match="require.*dynamics_routed"):
+        _make_dual_expert_policy_config(
+            program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
+            generalist_denoising_mode_probs={
+                GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO: 1.0,
+            },
+        )
+
+
+def test_standalone_conditional_program_rejects_conflicting_sample_mode() -> None:
+    from open_wam.models.policy_variants.contracts import PolicyTrainBatch
+
+    config = _make_dual_expert_policy_config(
+        program=VideoActionProgram.FORWARD_DYNAMICS,
+        generalist_training_paradigm=GeneralistTrainingParadigm.DYNAMICS_ROUTED,
+    )
+    batch = PolicyTrainBatch(
+        actions=torch.zeros(1, 4, 4),
+        extra={
+            "metadata": {
+                "generalist_training_mode_override": (
+                    GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION.value
+                )
+            }
+        },
+    )
+
+    with pytest.raises(ValueError, match="forward_dynamics.*video_conditioned_action"):
+        resolve_generalist_training_mode(config, batch, device=torch.device("cpu"))
+
+
+def test_one_hot_gjd_rejects_conflicting_sample_mode() -> None:
+    from open_wam.models.policy_variants.contracts import PolicyTrainBatch
+
+    config = _make_dual_expert_policy_config(
+        program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
+        generalist_training_paradigm=GeneralistTrainingParadigm.DYNAMICS_ROUTED,
+        generalist_denoising_mode_probs={
+            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO: 1.0,
+        },
+    )
+    batch = PolicyTrainBatch(
+        actions=torch.zeros(1, 4, 4),
+        extra={
+            "metadata": {
+                "generalist_training_mode_override": (
+                    GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION.value
+                )
+            }
+        },
+    )
+
+    with pytest.raises(ValueError, match="generalist_denoising_mode_probs"):
+        resolve_generalist_training_mode(config, batch, device=torch.device("cpu"))
 
 
 def test_generalist_sigma_coupling_is_explicitly_configurable() -> None:
@@ -495,6 +590,7 @@ def _build_tiny_generalist_pipeline(
     action_hidden_size: int | None = None,
     generalist_mode_text_token: bool = False,
     proprio_context_mode: ProprioContextMode = ProprioContextMode.NONE,
+    program: VideoActionProgram | None = None,
 ):
     """Construct a tiny CPU pipeline pinned to one generalist mode."""
 
@@ -517,6 +613,14 @@ def _build_tiny_generalist_pipeline(
 
     forced_probs = {mode: 0.0 for mode in GeneralistDenoisingMode}
     forced_probs[forced_mode] = 1.0
+    fixed_program = program in {
+        VideoActionProgram.FORWARD_DYNAMICS,
+        VideoActionProgram.INVERSE_DYNAMICS,
+    }
+    conditional_mode = forced_mode in {
+        GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
+        GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
+    }
 
     config = ExperimentConfig(
         data=RobotWinDataConfig(
@@ -539,6 +643,7 @@ def _build_tiny_generalist_pipeline(
         policy_variant=TopLevelDualExpertPolicyConfig(
             hidden_size=32,
             runtime_mode=DualExpertRuntimeMode.NON_JOINT_TWO_STREAM,
+            program=program,
             current_block_coupling=CurrentBlockCoupling.JOINT,
             video_prefix_frames=1,
             num_action_layers=1,
@@ -548,7 +653,12 @@ def _build_tiny_generalist_pipeline(
                 if action_hidden_size is not None
                 else DualExpertActionExpertInitMode.VIDEO_WEIGHT_COPY
             ),
-            generalist_denoising_mode_probs=forced_probs,
+            generalist_training_paradigm=(
+                GeneralistTrainingParadigm.DYNAMICS_ROUTED
+                if program is not None or conditional_mode
+                else GeneralistTrainingParadigm.DEMO_ONLY
+            ),
+            generalist_denoising_mode_probs=None if fixed_program else forced_probs,
             generalist_mode_text_token=generalist_mode_text_token,
             proprio_context_mode=proprio_context_mode,
             joint_timestep_coupling=joint_timestep_coupling,
@@ -568,6 +678,124 @@ def _build_tiny_generalist_pipeline(
     video_latents = torch.randn(1, 48, 4, 8, 8)
     text_context = torch.randn(1, 5, 16)
     return pipeline, batch, video_latents, text_context
+
+
+@pytest.mark.parametrize(
+    ("mode", "standalone_program"),
+    [
+        (
+            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
+            VideoActionProgram.FORWARD_DYNAMICS,
+        ),
+        (
+            GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
+            VideoActionProgram.INVERSE_DYNAMICS,
+        ),
+    ],
+)
+def test_standalone_conditional_training_is_exactly_one_hot_gjd(
+    mode: GeneralistDenoisingMode,
+    standalone_program: VideoActionProgram,
+) -> None:
+    from open_wam.models.policy_variants.contracts import PolicyTrainBatch
+
+    torch.manual_seed(101)
+    gjd_pipeline, gjd_batch, video_latents, text_context = _build_tiny_generalist_pipeline(
+        mode,
+        program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
+        joint_timestep_coupling=JointTimestepCoupling.INDEPENDENT,
+    )
+    torch.manual_seed(202)
+    standalone_pipeline, _, _, _ = _build_tiny_generalist_pipeline(
+        mode,
+        program=standalone_program,
+        joint_timestep_coupling=JointTimestepCoupling.INDEPENDENT,
+    )
+    standalone_pipeline.load_state_dict(gjd_pipeline.state_dict(), strict=True)
+
+    actions = gjd_batch.actions.detach().clone()
+    metadata = {
+        "history_frames": 1,
+        "loss_frame_start": 1,
+        "loss_frame_end": 4,
+        "latent_loss_frame_start": 1,
+        "latent_loss_frame_end": 4,
+        "action_loss_frame_start": 1,
+        "action_loss_frame_end": 4,
+        "chunk_origin_frame": 1,
+        "singleton_chunk_frame": 0,
+        "generalist_gjd_chunk_contract": "t0_singleton",
+        "generalist_conditional_history_policy": "previous_boundary_video_only",
+        "generalist_training_mode_override": mode.value,
+        "generalist_drop_text_conditioning": True,
+        "generalist_training_source": "real_demo",
+    }
+
+    def run_once(pipeline):
+        pipeline.zero_grad(set_to_none=True)
+        batch = PolicyTrainBatch(
+            actions=actions.clone(),
+            extra={"metadata": dict(metadata)},
+        )
+        random.seed(303)
+        torch.manual_seed(303)
+        output = pipeline.forward_train_from_latents(
+            video_latents.clone(),
+            batch,
+            text_context=text_context.clone(),
+        )
+        output.decoder_output.loss.backward()
+        gradients = {
+            name: None if parameter.grad is None else parameter.grad.detach().clone()
+            for name, parameter in pipeline.named_parameters()
+        }
+        return output, gradients
+
+    gjd_output, gjd_gradients = run_once(gjd_pipeline)
+    standalone_output, standalone_gradients = run_once(standalone_pipeline)
+
+    torch.testing.assert_close(
+        standalone_output.decoder_output.loss,
+        gjd_output.decoder_output.loss,
+        rtol=0.0,
+        atol=0.0,
+    )
+    assert standalone_output.policy_output.aux["dual_expert_generalist_training_mode"] == mode.value
+    assert standalone_output.policy_output.aux["dual_expert_generalist_text_dropped"] is True
+    assert standalone_output.policy_output.aux["sampled_window_size"] == 3
+    assert standalone_output.policy_output.aux["conditional_history_policy"] == (
+        "previous_boundary_video_only"
+    )
+    for key in (
+        "weighted_action_diffusion_loss",
+        "weighted_video_diffusion_loss",
+        "joint_loss",
+    ):
+        torch.testing.assert_close(
+            standalone_output.decoder_output.metrics[key],
+            gjd_output.decoder_output.metrics[key],
+            rtol=0.0,
+            atol=0.0,
+        )
+    for key in ("flow_pred", "predicted_latents", "future_video_flow_pred"):
+        torch.testing.assert_close(
+            standalone_output.decoder_output.aux[key],
+            gjd_output.decoder_output.aux[key],
+            rtol=0.0,
+            atol=0.0,
+        )
+    assert standalone_gradients.keys() == gjd_gradients.keys()
+    for name, standalone_gradient in standalone_gradients.items():
+        gjd_gradient = gjd_gradients[name]
+        assert (standalone_gradient is None) is (gjd_gradient is None), name
+        if standalone_gradient is not None:
+            torch.testing.assert_close(
+                standalone_gradient,
+                gjd_gradient,
+                rtol=0.0,
+                atol=0.0,
+                msg=lambda message, parameter=name: f"{parameter}: {message}",
+            )
 
 
 def test_forced_joint_training_respects_timestep_coupling_mode(
@@ -708,6 +936,173 @@ def test_dual_expert_gjd_rollout_mode_aliases_match_training_modes(
 def test_dual_expert_gjd_rollout_mode_rejects_unknown_alias() -> None:
     with pytest.raises(ValueError, match="Unsupported dual-expert GJD rollout mode"):
         _dual_expert_generalist_rollout_mode_from_value("not_a_mode")
+
+
+@pytest.mark.parametrize(
+    ("program", "expected_mode"),
+    [
+        (
+            VideoActionProgram.FORWARD_DYNAMICS,
+            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
+        ),
+        (
+            VideoActionProgram.INVERSE_DYNAMICS,
+            GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
+        ),
+    ],
+)
+def test_standalone_conditional_program_is_default_offline_inference_mode(
+    program: VideoActionProgram,
+    expected_mode: GeneralistDenoisingMode,
+) -> None:
+    config = _make_dual_expert_policy_config(
+        program=program,
+        generalist_training_paradigm=GeneralistTrainingParadigm.DYNAMICS_ROUTED,
+    )
+
+    assert resolve_generalist_rollout_mode(PolicyInferContext(), config) is expected_mode
+
+
+@pytest.mark.parametrize(
+    "expected_mode",
+    [
+        GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
+        GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
+    ],
+)
+def test_one_hot_gjd_is_default_offline_inference_mode(
+    expected_mode: GeneralistDenoisingMode,
+) -> None:
+    config = _make_dual_expert_policy_config(
+        program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
+        generalist_training_paradigm=GeneralistTrainingParadigm.DYNAMICS_ROUTED,
+        generalist_denoising_mode_probs={expected_mode: 1.0},
+    )
+
+    assert resolve_generalist_rollout_mode(PolicyInferContext(), config) is expected_mode
+
+
+@pytest.mark.parametrize(
+    "program",
+    [VideoActionProgram.FORWARD_DYNAMICS, VideoActionProgram.INVERSE_DYNAMICS],
+)
+def test_standalone_conditional_program_rejects_conflicting_inference_mode(
+    program: VideoActionProgram,
+) -> None:
+    config = _make_dual_expert_policy_config(
+        program=program,
+        generalist_training_paradigm=GeneralistTrainingParadigm.DYNAMICS_ROUTED,
+    )
+
+    with pytest.raises(ValueError, match="fixed conditional mode requires"):
+        resolve_generalist_rollout_mode(
+            PolicyInferContext(
+                extra={"dual_expert_generalist_rollout_mode": "joint"}
+            ),
+            config,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mode", "standalone_program"),
+    [
+        (
+            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
+            VideoActionProgram.FORWARD_DYNAMICS,
+        ),
+        (
+            GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
+            VideoActionProgram.INVERSE_DYNAMICS,
+        ),
+    ],
+)
+def test_standalone_conditional_offline_inference_is_exactly_one_hot_gjd(
+    mode: GeneralistDenoisingMode,
+    standalone_program: VideoActionProgram,
+) -> None:
+    from open_wam.models.common import RolloutCursor
+    from open_wam.models.policy_variants.contracts import PolicyInferState
+    from open_wam.models.policy_variants.dual_expert.contracts import (
+        DualExpertRuntimeState,
+    )
+
+    torch.manual_seed(401)
+    gjd_pipeline, _, _, _ = _build_tiny_generalist_pipeline(
+        mode,
+        program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
+        joint_timestep_coupling=JointTimestepCoupling.INDEPENDENT,
+    )
+    torch.manual_seed(402)
+    standalone_pipeline, _, _, _ = _build_tiny_generalist_pipeline(
+        mode,
+        program=standalone_program,
+        joint_timestep_coupling=JointTimestepCoupling.INDEPENDENT,
+    )
+    standalone_pipeline.load_state_dict(gjd_pipeline.state_dict(), strict=True)
+    for pipeline in (gjd_pipeline, standalone_pipeline):
+        pipeline.policy_variant.inference_config = _dataclass_replace(
+            pipeline.policy_variant.inference_config,
+            video_num_inference_steps=2,
+            action_num_inference_steps=2,
+        )
+
+    history_video = torch.randn(1, 48, 2, 8, 8)
+    history_actions = torch.randn(1, 4, 4)
+    current_video = torch.randn(1, 48, 2, 8, 8)
+    forced_actions = torch.randn(1, 4, 4)
+    commit_actions = torch.randn(1, 4, 4)
+    text_context = torch.randn(1, 5, 16)
+
+    def make_state() -> PolicyInferState:
+        return PolicyInferState(
+            step_index=1,
+            cursor=RolloutCursor(current_start_frame=2, block_index=0, chunk_size=2),
+            variant_state=DualExpertRuntimeState(
+                past_clean_latents=history_video.clone(),
+                past_clean_actions=history_actions.clone(),
+                next_condition_frame_start=2,
+                chunk_advance_frames=2,
+            ),
+        )
+
+    common_extra: dict[str, object]
+    if mode == GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO:
+        common_extra = {"dual_expert_forced_action_latents": forced_actions.clone()}
+    else:
+        common_extra = {
+            "dual_expert_video_condition_latents": current_video.clone(),
+            "dual_expert_commit_action_latents": commit_actions.clone(),
+        }
+
+    def run_once(pipeline, *, explicit_mode: bool):
+        extra = dict(common_extra)
+        if explicit_mode:
+            extra["dual_expert_generalist_rollout_mode"] = mode.value
+        random.seed(403)
+        torch.manual_seed(403)
+        return pipeline.forward_infer_step_from_latents(
+            current_video.clone(),
+            PolicyInferContext(extra=extra),
+            infer_state=make_state(),
+            text_context=text_context.clone(),
+        )
+
+    gjd_output = run_once(gjd_pipeline, explicit_mode=True)
+    standalone_output = run_once(standalone_pipeline, explicit_mode=False)
+
+    assert standalone_output.policy_output.aux["dual_expert_generalist_rollout_mode"] == mode.value
+    torch.testing.assert_close(
+        standalone_output.decoder_output.action_pred,
+        gjd_output.decoder_output.action_pred,
+        rtol=0.0,
+        atol=0.0,
+    )
+    torch.testing.assert_close(
+        standalone_output.decoder_output.aux["predicted_latents"],
+        gjd_output.decoder_output.aux["predicted_latents"],
+        rtol=0.0,
+        atol=0.0,
+    )
 
 
 def test_dual_expert_gjd_fdm_inference_matches_conditional_training_contract(
@@ -1323,6 +1718,7 @@ def test_dual_expert_legacy_prefix_fdm_shifts_explicit_video_loss_range(
             video_prefix_frames=1,
             num_action_layers=1,
             action_expert_init_mode=DualExpertActionExpertInitMode.VIDEO_WEIGHT_COPY,
+            generalist_training_paradigm=GeneralistTrainingParadigm.DYNAMICS_ROUTED,
             generalist_denoising_mode_probs=forced_probs,
             sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
             proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,

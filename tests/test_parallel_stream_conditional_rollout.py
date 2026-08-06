@@ -6,6 +6,7 @@ import torch
 from open_wam.configs import (
     CurrentBlockCoupling,
     GeneralistDenoisingMode,
+    GeneralistTrainingParadigm,
     HistoryStreamVisibility,
     ParallelRuntimeMode,
     ParallelStreamPolicyConfig,
@@ -328,6 +329,7 @@ def test_generalist_mode_text_token_selection_is_config_owned() -> None:
             ),
             current_block_coupling=CurrentBlockCoupling.JOINT,
             video_condition_on_action=True,
+            generalist_training_paradigm=GeneralistTrainingParadigm.DYNAMICS_ROUTED,
             generalist_mode_text_token=True,
         )
     )

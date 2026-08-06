@@ -537,11 +537,11 @@ trainer:
 
 
 @pytest.mark.unit
-def test_static_validator_accepts_replacement_order_with_mixed_dynamics(tmp_path: Path) -> None:
-    config_path = tmp_path / "mixed_dynamics_replacement_order.yaml"
+def test_static_validator_accepts_replacement_order_with_dynamics_routing(tmp_path: Path) -> None:
+    config_path = tmp_path / "dynamics_routed_replacement_order.yaml"
     config_path.write_text(
         """
-name: mixed_dynamics_replacement_order
+name: dynamics_routed_replacement_order
 data:
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
@@ -560,7 +560,7 @@ policy_variant:
   runtime_mode: lingbot_exact_action_conditioned
   variant_profile: generalist_joint_denoising
   current_block_coupling: joint
-  generalist_training_paradigm: mixed_dynamics
+  generalist_training_paradigm: dynamics_routed
 action_decoder:
   name: parallel_stream_decoder
   action_dim: 7
@@ -578,11 +578,27 @@ trainer:
 
 
 @pytest.mark.unit
-def test_static_validator_rejects_mixed_dynamics_views_batch_adapter(tmp_path: Path) -> None:
-    config_path = tmp_path / "mixed_dynamics_views_adapter.yaml"
+def test_static_validator_accepts_legacy_mixed_dynamics_value(tmp_path: Path) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"]["generalist_training_paradigm"] = "mixed_dynamics"
+    config_path = tmp_path / "legacy_mixed_dynamics.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    report = validate_config_file(config_path, repo_root=REPO_ROOT)
+
+    assert report.ok
+
+
+@pytest.mark.unit
+def test_static_validator_rejects_dynamics_routing_views_batch_adapter(tmp_path: Path) -> None:
+    config_path = tmp_path / "dynamics_routed_views_adapter.yaml"
     config_path.write_text(
         """
-name: mixed_dynamics_views_adapter
+name: dynamics_routed_views_adapter
 data:
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
@@ -599,7 +615,7 @@ policy_variant:
   runtime_mode: lingbot_exact_action_conditioned
   variant_profile: generalist_joint_denoising
   current_block_coupling: joint
-  generalist_training_paradigm: mixed_dynamics
+  generalist_training_paradigm: dynamics_routed
 action_decoder:
   name: parallel_stream_decoder
   action_dim: 7
@@ -618,11 +634,11 @@ trainer:
 
 
 @pytest.mark.unit
-def test_static_validator_rejects_non_uniform_sample_weight_with_mixed_dynamics(tmp_path: Path) -> None:
-    config_path = tmp_path / "mixed_dynamics_weighted_source.yaml"
+def test_static_validator_rejects_non_uniform_sample_weight_with_dynamics_routing(tmp_path: Path) -> None:
+    config_path = tmp_path / "dynamics_routed_weighted_source.yaml"
     config_path.write_text(
         """
-name: mixed_dynamics_weighted_source
+name: dynamics_routed_weighted_source
 data:
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
@@ -642,7 +658,7 @@ policy_variant:
   runtime_mode: lingbot_exact_action_conditioned
   variant_profile: generalist_joint_denoising
   current_block_coupling: joint
-  generalist_training_paradigm: mixed_dynamics
+  generalist_training_paradigm: dynamics_routed
 action_decoder:
   name: parallel_stream_decoder
   action_dim: 7

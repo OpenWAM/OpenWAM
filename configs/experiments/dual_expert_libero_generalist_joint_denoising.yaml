@@ -124,7 +124,7 @@ policy_variant:
   hidden_size: 3072
   attach_site: post_visual_core
   preset: fastwam_joint
-  generalist_training_paradigm: mixed_dynamics
+  generalist_training_paradigm: dynamics_routed
   runtime_mode: non_joint_two_stream
   # JOINT visibility is required for the A1 conditional sub-modes; validated
   # by `DualExpertPolicyConfig.__post_init__` when generalist probs are set.

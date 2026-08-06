@@ -323,6 +323,63 @@ def test_dual_expert_generalist_joint_denoising_tracking_metadata(tmp_path: Path
     assert "generalist_mode_text_token" in tags
 
 
+def test_pure_conditional_gjd_tracking_preserves_gjd_identity(tmp_path: Path) -> None:
+    base = load_experiment_config(
+        REPO_ROOT / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    cases = (
+        ("pure_fdm", "action_conditioned_video"),
+        ("pure_idm", "video_conditioned_action"),
+    )
+
+    for ablation, selected_mode in cases:
+        probabilities = {
+            "joint": 0.0,
+            "action_conditioned_video": float(selected_mode == "action_conditioned_video"),
+            "video_conditioned_action": float(selected_mode == "video_conditioned_action"),
+        }
+        config = replace(
+            base,
+            policy_variant=replace(
+                base.policy_variant,
+                generalist_denoising_mode_probs=probabilities,
+                generalist_mode_text_token=False,
+            ),
+        )
+        metadata = build_run_tracking_metadata(
+            config,
+            run_name=ablation,
+            output_dir=tmp_path / ablation,
+        )
+
+        assert metadata["program"] == "generalist_joint_denoising"
+        assert metadata["gjd_ablation"] == ablation
+        assert metadata["fixed_conditioning_mode"] == selected_mode
+        assert f"gjd:dual_expert:{ablation}" in build_wandb_tags(metadata)
+
+
+def test_dual_expert_conditional_dynamics_tracking_uses_program_identity(tmp_path: Path) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/dual_expert_libero_conditional_dynamics.yaml"
+    )
+
+    metadata = build_run_tracking_metadata(
+        config,
+        run_name=config.name,
+        output_dir=tmp_path / config.name,
+    )
+
+    assert metadata["architecture"] == "dual_expert"
+    assert metadata["program"] == "forward_dynamics"
+    assert metadata["fixed_conditioning_mode"] == "action_conditioned_video"
+    assert metadata["gjd_ablation"] is None
+    assert build_wandb_group(metadata) == "libero/dual_expert/forward_dynamics"
+    tags = build_wandb_tags(metadata)
+    assert "program:forward_dynamics" in tags
+    assert "conditioning_mode:action_conditioned_video" in tags
+    assert not any(tag.startswith("gjd:") for tag in tags)
+
+
 def test_wandb_project_defaults_to_dataset_and_workload_bin(tmp_path: Path) -> None:
     config = load_experiment_config(REPO_ROOT / "configs/experiments/dual_expert_robotwin_smoke.yaml")
     config = replace(config, trainer=replace(config.trainer, enable_wandb=True, wandb_project=None))

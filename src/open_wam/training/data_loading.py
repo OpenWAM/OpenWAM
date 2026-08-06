@@ -5,6 +5,7 @@ from torch.utils.data.distributed import DistributedSampler
 
 from open_wam.configs import BatchAdapterName, ExperimentConfig
 from open_wam.configs.enums import GeneralistTrainingParadigm, SampleWeightMode
+from open_wam.configs.policy_video_action import resolve_fixed_conditioning_mode
 from open_wam.data import (
     build_generalist_dynamics_mixture_datasets,
     build_train_val_datasets,
@@ -16,21 +17,22 @@ from open_wam.data import (
 
 
 def build_runtime_dataloaders(config: ExperimentConfig, strategy) -> tuple[DataLoader, DataLoader]:
-    if _uses_mixed_dynamics_paradigm(config):
-        _validate_mixed_dynamics_source_sampling(config)
+    if _uses_dynamics_routing(config):
+        _validate_dynamics_source_sampling(config)
     if config.trainer.batch_adapter == BatchAdapterName.LATENTS:
         train_dataset, val_dataset = build_train_val_latent_datasets(config.data)
-        if _uses_mixed_dynamics_paradigm(config):
+        if _uses_dynamics_routing(config):
             if config.data.train_batch_size != 1 or config.data.val_batch_size != 1:
                 raise ValueError(
-                    "`generalist_training_paradigm = mixed_dynamics` currently requires "
-                    "`data.train_batch_size = data.val_batch_size = 1` because mixed samples may have "
+                    "`generalist_training_paradigm = dynamics_routed` currently requires "
+                    "`data.train_batch_size = data.val_batch_size = 1` because routed sources may have "
                     "different temporal lengths and GJD runtimes use one forced mode per segment."
                 )
             train_dataset, val_dataset = build_generalist_dynamics_mixture_datasets(
                 data_config=config.data,
                 train_dataset=train_dataset,
                 val_dataset=val_dataset,
+                fixed_mode=resolve_fixed_conditioning_mode(config.policy_variant),
             )
         train_loader_spec = resolve_dataset_loader_spec(
             train_dataset,
@@ -108,21 +110,21 @@ def build_runtime_dataloaders(config: ExperimentConfig, strategy) -> tuple[DataL
     )
 
 
-def _uses_mixed_dynamics_paradigm(config: ExperimentConfig) -> bool:
+def _uses_dynamics_routing(config: ExperimentConfig) -> bool:
     paradigm = getattr(config.policy_variant, "generalist_training_paradigm", None)
-    return paradigm == GeneralistTrainingParadigm.MIXED_DYNAMICS
+    return paradigm == GeneralistTrainingParadigm.DYNAMICS_ROUTED
 
 
-def _validate_mixed_dynamics_source_sampling(config: ExperimentConfig) -> None:
+def _validate_dynamics_source_sampling(config: ExperimentConfig) -> None:
     if config.trainer.batch_adapter != BatchAdapterName.LATENTS:
         raise ValueError(
-            "`policy_variant.generalist_training_paradigm=mixed_dynamics` requires "
-            "`trainer.batch_adapter=latents` because the mixed-dynamics source mixture wraps latent datasets."
+            "`policy_variant.generalist_training_paradigm=dynamics_routed` requires "
+            "`trainer.batch_adapter=latents` because the dynamics source router wraps latent datasets."
         )
     sample_construction = config.data.sample_construction
     if sample_construction.sample_weight_mode != SampleWeightMode.UNIFORM:
         raise ValueError(
             "`data.sample_construction.sample_weight_mode` must be `uniform` with "
-            "`policy_variant.generalist_training_paradigm=mixed_dynamics` because the mixed-dynamics "
-            "wrapper owns source sampling and only preserves parity for uniform replacement draws."
+            "`policy_variant.generalist_training_paradigm=dynamics_routed` because the dynamics router "
+            "owns source sampling and only preserves parity for uniform replacement draws."
         )

@@ -18,6 +18,7 @@ from open_wam.configs import (
     ContextConditionLatentSource,
     CurrentBlockCoupling,
     GeneralistDenoisingMode,
+    GeneralistTrainingParadigm,
     HistoryStreamVisibility,
     InferenceConfig,
     JointTimestepCoupling,
@@ -339,6 +340,7 @@ def test_generalist_mode_context_injection_preserves_cfg_negative_branch() -> No
         action_per_frame=2,
         attn_window=8,
         video_condition_on_action=True,
+        generalist_training_paradigm=GeneralistTrainingParadigm.DYNAMICS_ROUTED,
         generalist_mode_text_token=True,
     )
     text_emb = torch.randn(1, 4, 16)
@@ -509,6 +511,7 @@ def test_generalist_mode_context_requires_configured_encoder() -> None:
         action_per_frame=2,
         attn_window=8,
         video_condition_on_action=True,
+        generalist_training_paradigm=GeneralistTrainingParadigm.DYNAMICS_ROUTED,
         generalist_mode_text_token=True,
     )
 
@@ -589,6 +592,7 @@ def test_parallel_variant_attach_configures_generalist_mode_encoder() -> None:
         action_per_frame=2,
         attn_window=8,
         video_condition_on_action=True,
+        generalist_training_paradigm=GeneralistTrainingParadigm.DYNAMICS_ROUTED,
         generalist_mode_text_token=True,
         proprio_context_mode=ProprioContextMode.TEXT_CONTEXT_TOKEN,  # deprecated compatibility
     )
@@ -2233,6 +2237,7 @@ def test_generalist_action_conditioned_override_drops_text_and_masks_action_loss
         action_per_frame=2,
         attn_window=8,
         video_condition_on_action=True,
+        generalist_training_paradigm=GeneralistTrainingParadigm.DYNAMICS_ROUTED,
     )
     training_config = TrainingConfig(chunk_size=2, window_size=8)
     video_latents = torch.randn(1, 48, 2, 8, 8)
@@ -2944,6 +2949,7 @@ def test_parallel_prefix_condition_generalist_rejects_conditional_modes() -> Non
             sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
             context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
             video_condition_on_action=True,
+            generalist_training_paradigm=GeneralistTrainingParadigm.DYNAMICS_ROUTED,
             generalist_denoising_mode_probs={
                 GeneralistDenoisingMode.JOINT: 0.5,
                 GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO: 0.5,
@@ -4772,6 +4778,7 @@ def _generalist_policy_config(
         video_condition_on_action=True,
         video_action_condition_source="noisy_action",
         joint_timestep_coupling=joint_timestep_coupling,
+        generalist_training_paradigm=GeneralistTrainingParadigm.DYNAMICS_ROUTED,
         generalist_denoising_mode_probs={mode: 1.0},
         generalist_mode_text_token=generalist_mode_text_token,
     )
@@ -4949,6 +4956,7 @@ def test_generalist_joint_denoising_joint_mode_matches_standard_m1_joint_artifac
     standard_policy = replace(
         _generalist_policy_config(GeneralistDenoisingMode.JOINT),
         variant_profile=ParallelStreamVariantProfile.STANDARD,
+        generalist_training_paradigm=GeneralistTrainingParadigm.DEMO_ONLY,
     )
     training_config = TrainingConfig(
         chunk_size=2,

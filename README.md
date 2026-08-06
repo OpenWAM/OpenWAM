@@ -18,7 +18,7 @@ backbone.
 - `parallel_stream`: shared-transformer video/action execution, including the
   exact LingBot-compatible backend.
 - `dual_expert`: separate video and action experts with VTA, ATV, joint,
-  decoupled, noisy-condition, and GJD programs.
+  decoupled, noisy-condition, GJD, and standalone conditional FDM/IDM programs.
 - `post_latent` and `post_decoded`: feature-attached action baselines.
 - `causal_video_prediction`: video-only prediction.
 - One typed config loader, composable training runtime, checkpoint lifecycle,
@@ -118,6 +118,15 @@ uv run --extra train open-wam-train \
   --set policy_variant.program=video_then_action \
   --save-root runs/dual-expert-vta
 ```
+
+Standalone conditional FDM/IDM is an offline dynamics path with a different
+data contract. Its maintained default mixes normal demonstrations with encoded
+counterfactual train and validation roots; standard policy programs use only
+the normal demonstration root. The `dynamics_routed` paradigm selects this
+data adapter; source weights, not the paradigm name, determine whether
+counterfactual rows are used. See the
+[conditional dynamics data prerequisites](docs/running_experiments.md#data-prerequisites)
+before selecting `forward_dynamics` or `inverse_dynamics`.
 
 Resume from a checkpoint directory:
 

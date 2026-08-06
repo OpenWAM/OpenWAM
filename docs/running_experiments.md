@@ -39,6 +39,7 @@ The generic runtime covers these representative maintained families:
 | Dual expert video-noisy to action | `dual_expert_libero_video_noisy_to_action.yaml` |
 | Dual expert action-noisy to video | `dual_expert_libero_action_noisy_to_video.yaml` |
 | Dual expert GJD | `dual_expert_libero_generalist_joint_denoising.yaml` |
+| Dual expert conditional FDM/IDM | `dual_expert_libero_conditional_dynamics.yaml` |
 | Video-only | `causal_video_prediction_libero_latent_local.yaml` |
 
 Maintained config names describe the architecture and program and do not carry a
@@ -166,6 +167,18 @@ Use the maintained GJD wrapper so training and rollout resolve the same
 ablation semantics. Dual expert is the standard GJD architecture; parallel
 stream remains a documented compatibility and diagnostic path.
 
+Choose the interface by experiment intent:
+
+| Goal | Interface | Live simulator policy? |
+| --- | --- | --- |
+| Compare pure FDM or IDM within a GJD study | `run_gjd_libero.sh` with `pure_fdm` or `pure_idm` | No; use offline diagnostics |
+| Train a run whose primary identity is FDM or IDM | `forward_dynamics` or `inverse_dynamics` | No; use offline diagnostics |
+| Produce online robot actions | VTA, ATV, joint, decoupled, or a noisy-condition program | Yes |
+
+The first two choices execute the same conditional tensor contract. They differ
+only in experiment identity and tracking: the GJD wrapper records an ablation,
+while the standalone config records a fixed program.
+
 ```bash
 bash scripts/run_gjd_libero.sh train \
   --architecture dual_expert \
@@ -177,10 +190,34 @@ bash scripts/run_gjd_libero.sh train \
   --wandb-project openwam-gjd
 ```
 
-Valid ablations are `vanilla`, `pure_joint`, and `mode_token`. Vanilla and
-mode-token use the configured real/counterfactual dynamics mixture. Pure-joint
-is demo-only. Configure counterfactual train and validation latent roots in
+Valid ablations are `vanilla`, `pure_joint`, `pure_fdm`, `pure_idm`, and
+`mode_token`. Vanilla and mode-token use the configured five-bucket
+real/counterfactual dynamics mixture. Pure-joint is demo-only. Pure-FDM and
+pure-IDM use only the matching real-demo and counterfactual buckets; their
+weights are a relative source ratio:
+
+```bash
+bash scripts/run_gjd_libero.sh train \
+  --architecture dual_expert \
+  --ablation pure_fdm \
+  --real-demo-weight 3 \
+  --counterfactual-weight 1 \
+  --save-root runs/dual-expert-gjd-pure-fdm
+```
+
+Under replacement sampling, the example draws real and counterfactual FDM
+samples with a `3:1` ratio in expectation. Weights need not sum to one. Either
+endpoint may be zero, but not both. A zero counterfactual weight does not
+require encoded counterfactual roots. Configure positive-weight counterfactual
+train and validation roots in
 `configs/local_paths.yaml` or with explicit `--set` overrides.
+
+The public `generalist_training_paradigm: dynamics_routed` setting selects this
+source router and target-only data adapter. It does not mean that
+counterfactual data must be active: source weights decide whether a run uses
+real demonstrations, counterfactual rows, or both. The legacy input value
+`mixed_dynamics` is accepted for old resolved configs and is normalized to
+`dynamics_routed`; new configs and commands should use the canonical name.
 
 Resume through the same wrapper:
 
@@ -191,6 +228,117 @@ bash scripts/run_gjd_libero.sh train \
   --save-root runs/dual-expert-gjd-mode-token \
   --checkpoint-root runs/dual-expert-gjd-mode-token/checkpoints/checkpoint_step_N
 ```
+
+### Standalone Conditional FDM And IDM
+
+Use a fixed program when the entire experiment is conditional dynamics rather
+than a GJD ablation. Both programs use the same model, attention, data
+projection, scheduler, loss masks, and gradients as the corresponding 100%
+GJD mode:
+
+#### Data Prerequisites
+
+| Training path | Required data |
+| --- | --- |
+| Standard VTA, ATV, joint, decoupled, or noisy-condition policy | The normal encoded demonstration root only; no counterfactual root is used |
+| Conditional FDM/IDM with the default `1:1` ratio | The normal encoded demonstration root plus encoded counterfactual train and validation roots |
+| Conditional FDM/IDM with counterfactual weight `0` | The normal encoded demonstration root only; counterfactual roots are not opened |
+
+Counterfactual roots are not arbitrary videos. They must follow the encoded
+target-only `t0`-plus-future contract: an observed `t0`, aligned future video
+and action data, valid loss-boundary metadata, and aligned proprio when it is
+available. The loader validates this contract before model execution. Set the
+two roots through `configs/local_paths.yaml` or explicit `--set` overrides.
+
+Counterfactual data is therefore required by the default config and for any
+counterfactual experiment, but not by the conditional objective itself. A
+real-demo-only FDM run sets
+`counterfactual_action_conditioned_video_weight=0`; real-demo-only IDM sets
+`counterfactual_video_conditioned_action_weight=0`.
+
+To produce LIBERO counterfactual roots from a source checkout, first install
+the `sim` dependencies and configure the local LIBERO repository. The generator
+selects only successful rows from the replay-status file described in
+[LIBERO Training Prerequisites](benchmarks.md#libero-training-prerequisites).
+The following creates a 10,000-row train split and a disjoint 1,000-row
+validation split using the maintained branch and random-`t0` defaults:
+
+```bash
+CF_ROOT=/path/to/counterfactual_dynamics
+REPLAY_STATUS=/path/to/replay_status.jsonl
+
+uv run --extra sim python scripts/build_libero_fdm_counterfactual_demo_dataset.py \
+  --replay-status-path "$REPLAY_STATUS" \
+  --output-dir "$CF_ROOT" --run-id train \
+  --target-transitions 10000
+
+uv run --extra sim python scripts/build_libero_fdm_counterfactual_demo_dataset.py \
+  --replay-status-path "$REPLAY_STATUS" \
+  --output-dir "$CF_ROOT" --run-id val \
+  --target-transitions 1000 --episodes-per-task 5 \
+  --t0-samples-per-episode 2 \
+  --exclude-source-dataset-root "$CF_ROOT/train" --seed 1
+```
+
+Encode both raw roots with the same VAE-capable checkpoint and config used by
+training:
+
+```bash
+VAE_CHECKPOINT=/path/to/checkpoint_step_N
+for SPLIT in train val; do
+  uv run --extra eval python scripts/encode_libero_fdm_counterfactual_dataset.py \
+    --dataset-root "$CF_ROOT/$SPLIT" \
+    --config configs/experiments/dual_expert_libero_conditional_dynamics.yaml \
+    --checkpoint "$VAE_CHECKPOINT" --device cuda:0
+done
+```
+
+Set the train and validation registry keys to
+`$CF_ROOT/train/encoded_latents` and `$CF_ROOT/val/encoded_latents`. Both tools
+fail on existing outputs unless replacement is requested explicitly; use their
+`--help` output for sharding and larger production runs.
+
+```bash
+# FDM defaults to a 1:1 real/counterfactual source ratio.
+uv run --extra train open-wam-train \
+  --cfg configs/experiments/dual_expert_libero_conditional_dynamics.yaml \
+  --save-root runs/dual-expert-forward-dynamics
+
+# IDM uses the same config with one program override and the same 1:1 default.
+uv run --extra train open-wam-train \
+  --cfg configs/experiments/dual_expert_libero_conditional_dynamics.yaml \
+  --set policy_variant.program=inverse_dynamics \
+  --save-root runs/dual-expert-inverse-dynamics
+```
+
+For a non-default ratio, add the two matching source overrides. For example,
+FDM `3:1` uses:
+
+```bash
+--set data.generalist_dynamics_mixture.real_action_conditioned_video_weight=3 \
+--set data.generalist_dynamics_mixture.counterfactual_action_conditioned_video_weight=1
+```
+
+For IDM, use the corresponding `real_video_conditioned_action_weight` and
+`counterfactual_video_conditioned_action_weight` fields.
+
+The fixed program filters out every irrelevant mixture bucket, so the unused
+pair of weights in the shared YAML has no effect. In both programs the data
+layer projects real and counterfactual rows to the same target-only layout:
+`V0` is an observed, unsupervised singleton t0 chunk; loss starts at `V1`; each
+following chunk retains the sampled 1-4 frame geometry and can attend one most
+recent clean video/proprio boundary frame. Task text and the learned GJD mode
+token are absent. FDM masks action loss; IDM masks video loss.
+
+Standalone conditional FDM/IDM inference is offline: FDM needs future clean
+actions and IDM needs future clean video. The LIBERO live simulator runner
+rejects these programs instead of silently substituting joint rollout. Use the
+offline FDM/IDM diagnostics below with explicit condition tensors.
+
+For FDM metrics, each evaluation row must provide `t0`, clean future actions,
+and target future video. For IDM metrics, it must provide `t0`, clean future
+video, and target actions. Real-demo diagnostics can project ordinary demo rows;
+counterfactual metrics require the encoded counterfactual rows described above.
 
 ## Offline Evaluation
 
@@ -224,6 +372,7 @@ an explicit checkpoint and local data inputs:
 
 ```bash
 uv run --extra eval python scripts/run_joint_denoising_fdm_ablation.py \
+  --cfg /path/to/checkpoint_step_N/resolved_config.yaml \
   --checkpoint /path/to/checkpoint_step_N \
   --dataset-root /path/to/libero_10
 
@@ -234,9 +383,14 @@ uv run --extra sim python scripts/run_joint_denoising_fdm_counterfactual.py \
   --dataset-root /path/to/libero_10
 ```
 
-Use `--help` to select modes, windows, branches, and output paths. The reusable
-GJD policy and counterfactual-action contracts continue to live in `open_wam`;
-only the experiment orchestration and visualization live under `scripts/`.
+When `--mode` is omitted, a `forward_dynamics` checkpoint runs only
+`forced_action_joint_fdm`, and an `inverse_dynamics` checkpoint runs only
+`video_conditioned_action`. An explicitly incompatible mode fails before data
+or model loading. A non-fixed GJD config retains the research behavior of
+running every diagnostic mode; use repeated `--mode` arguments to narrow it.
+Use `--help` for windows, branches, and output paths. The reusable GJD policy
+and counterfactual-action contracts continue to live in `open_wam`; only the
+experiment orchestration and visualization live under `scripts/`.
 
 ## LIBERO Inference
 
@@ -263,8 +417,9 @@ uv run --extra sim python scripts/run_libero_dual_expert_visualization.py \
   --decode-device cuda:0
 ```
 
-The strict non-GJD dual-expert contract uses an `800` timestep and `50` chunk limit.
-GJD uses the wrapper and defaults to `1500/100`:
+The six standard non-GJD dual-expert rollout programs use an `800` timestep and
+`50` chunk limit. Conditional FDM/IDM is offline-only and does not use this live
+rollout command. GJD uses the wrapper and defaults to `1500/100`:
 
 ```bash
 bash scripts/run_gjd_libero.sh rollout \

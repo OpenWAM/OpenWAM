@@ -11,6 +11,9 @@ source "${SCRIPT_DIR}/libero_fixed128_rollout_context_defaults.sh"
 GJD_STAGE=${GJD_STAGE:-train}
 GJD_ARCHITECTURE=${GJD_ARCHITECTURE:-${GJD_METHOD:-dual_expert}}
 GJD_ABLATION=${GJD_ABLATION:-${M5_GJD_ABLATION:-vanilla}}
+GJD_REAL_DEMO_WEIGHT=${GJD_REAL_DEMO_WEIGHT:-1.0}
+GJD_COUNTERFACTUAL_WEIGHT=${GJD_COUNTERFACTUAL_WEIGHT:-1.0}
+GJD_SOURCE_WEIGHT_FLAGS_SET=0
 PASSTHROUGH_ARGS=()
 
 if [[ $# -gt 0 ]]; then
@@ -49,17 +52,37 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --ablation)
-      GJD_ABLATION="${2:?--ablation requires vanilla, pure_joint, or mode_token}"
+      GJD_ABLATION="${2:?--ablation requires vanilla, pure_joint, pure_fdm, pure_idm, or mode_token}"
       shift 2
       ;;
     --ablation=*)
       GJD_ABLATION="${1#--ablation=}"
       shift
       ;;
+    --real-demo-weight)
+      GJD_REAL_DEMO_WEIGHT="${2:?--real-demo-weight requires a non-negative number}"
+      GJD_SOURCE_WEIGHT_FLAGS_SET=1
+      shift 2
+      ;;
+    --real-demo-weight=*)
+      GJD_REAL_DEMO_WEIGHT="${1#--real-demo-weight=}"
+      GJD_SOURCE_WEIGHT_FLAGS_SET=1
+      shift
+      ;;
+    --counterfactual-weight)
+      GJD_COUNTERFACTUAL_WEIGHT="${2:?--counterfactual-weight requires a non-negative number}"
+      GJD_SOURCE_WEIGHT_FLAGS_SET=1
+      shift 2
+      ;;
+    --counterfactual-weight=*)
+      GJD_COUNTERFACTUAL_WEIGHT="${1#--counterfactual-weight=}"
+      GJD_SOURCE_WEIGHT_FLAGS_SET=1
+      shift
+      ;;
     --help|-h)
       cat <<'EOF'
 Usage:
-  bash scripts/run_gjd_libero.sh [train|rollout] [--architecture parallel_stream|dual_expert] [--ablation vanilla|pure_joint|mode_token] [args...]
+  bash scripts/run_gjd_libero.sh [train|rollout] [--architecture parallel_stream|dual_expert] [--ablation vanilla|pure_joint|pure_fdm|pure_idm|mode_token] [args...]
 
 Defaults:
   stage=train, architecture=dual_expert, ablation=vanilla
@@ -67,6 +90,7 @@ Defaults:
 Examples:
   bash scripts/run_gjd_libero.sh train --architecture parallel_stream --ablation pure_joint
   bash scripts/run_gjd_libero.sh train --architecture dual_expert --ablation mode_token
+  bash scripts/run_gjd_libero.sh train --architecture dual_expert --ablation pure_fdm --real-demo-weight 3 --counterfactual-weight 1
   bash scripts/run_gjd_libero.sh rollout --architecture dual_expert --ablation pure_joint --checkpoint /path/to/checkpoint_step_N
 
 Compatibility:
@@ -81,6 +105,11 @@ Contracts:
     dynamics source mixer; configure the counterfactual latent roots through
     configs/local_paths.yaml or explicit --set overrides.
   - pure_joint disables the mixed source mixer and stays demo-only.
+  - pure_fdm and pure_idm are dual-expert training-only ablations. They use the
+    same target-only t0 conditional contract as mixed GJD, with the real-demo to
+    counterfactual ratio controlled by --real-demo-weight and
+    --counterfactual-weight. The weights are relative and may be zero, but not
+    both zero.
   - Fixed-128 GJD training is deprecated; use this launcher for GJD comparisons.
   - dual_expert GJD uses the legacy-prefix per-chunk proprio contract and requires
     single-frame condition latents:
@@ -160,12 +189,26 @@ case "${GJD_ARCHITECTURE}" in
 esac
 
 case "${GJD_ABLATION}" in
-  vanilla|pure_joint|mode_token) ;;
+  vanilla|pure_joint|pure_fdm|pure_idm|mode_token) ;;
   *)
-    echo "Unknown GJD ablation '${GJD_ABLATION}'. Expected vanilla, pure_joint, or mode_token." >&2
+    echo "Unknown GJD ablation '${GJD_ABLATION}'. Expected vanilla, pure_joint, pure_fdm, pure_idm, or mode_token." >&2
     exit 2
     ;;
 esac
+
+if [[ "${GJD_ABLATION}" == "pure_fdm" || "${GJD_ABLATION}" == "pure_idm" ]]; then
+  if [[ "${GJD_ARCHITECTURE}" != "dual_expert" ]]; then
+    echo "${GJD_ABLATION} requires architecture=dual_expert; parallel_stream has a different conditional context contract." >&2
+    exit 2
+  fi
+  if [[ "${GJD_STAGE}" == "rollout" ]]; then
+    echo "${GJD_ABLATION} is an offline conditional mode and cannot run as a live simulator rollout without future clean conditions. Use scripts/run_joint_denoising_fdm_ablation.py." >&2
+    exit 2
+  fi
+elif [[ "${GJD_SOURCE_WEIGHT_FLAGS_SET}" == "1" ]]; then
+  echo "--real-demo-weight and --counterfactual-weight apply only to pure_fdm or pure_idm." >&2
+  exit 2
+fi
 
 if [[ "${GJD_ARCHITECTURE}" == "parallel_stream" ]]; then
   GJD_CONFIG_NAME="parallel_stream_libero_generalist_joint_denoising"
@@ -178,6 +221,8 @@ else
 fi
 GJD_VANILLA_PROB_MAP='{"joint": 0.6, "action_conditioned_video": 0.2, "video_conditioned_action": 0.2}'
 GJD_PURE_JOINT_PROB_MAP='{"joint": 1.0, "action_conditioned_video": 0.0, "video_conditioned_action": 0.0}'
+GJD_PURE_FDM_PROB_MAP='{"joint": 0.0, "action_conditioned_video": 1.0, "video_conditioned_action": 0.0}'
+GJD_PURE_IDM_PROB_MAP='{"joint": 0.0, "action_conditioned_video": 0.0, "video_conditioned_action": 1.0}'
 GJD_CFG_PATH="configs/experiments/${GJD_CONFIG_NAME}.yaml"
 GJD_DUAL_EXPERT_CURRENT_FRONTEND_ENCODE_MODE="lingbot_streaming_vae"
 
@@ -394,6 +439,30 @@ build_ablation_args() {
         --set data.sample_construction.sample_order_mode=replacement
         --set data.generalist_dynamics_mixture.train_latent_root=null
         --set data.generalist_dynamics_mixture.val_latent_root=null
+      )
+      ;;
+    pure_fdm)
+      target_args+=(
+        --set "${GJD_PROB_PREFIX}=${GJD_PURE_FDM_PROB_MAP}"
+        --set policy_variant.generalist_mode_text_token=false
+        --set policy_variant.generalist_training_paradigm=dynamics_routed
+        --set data.generalist_dynamics_mixture.real_joint_weight=0.0
+        --set "data.generalist_dynamics_mixture.real_action_conditioned_video_weight=${GJD_REAL_DEMO_WEIGHT}"
+        --set data.generalist_dynamics_mixture.real_video_conditioned_action_weight=0.0
+        --set "data.generalist_dynamics_mixture.counterfactual_action_conditioned_video_weight=${GJD_COUNTERFACTUAL_WEIGHT}"
+        --set data.generalist_dynamics_mixture.counterfactual_video_conditioned_action_weight=0.0
+      )
+      ;;
+    pure_idm)
+      target_args+=(
+        --set "${GJD_PROB_PREFIX}=${GJD_PURE_IDM_PROB_MAP}"
+        --set policy_variant.generalist_mode_text_token=false
+        --set policy_variant.generalist_training_paradigm=dynamics_routed
+        --set data.generalist_dynamics_mixture.real_joint_weight=0.0
+        --set data.generalist_dynamics_mixture.real_action_conditioned_video_weight=0.0
+        --set "data.generalist_dynamics_mixture.real_video_conditioned_action_weight=${GJD_REAL_DEMO_WEIGHT}"
+        --set data.generalist_dynamics_mixture.counterfactual_action_conditioned_video_weight=0.0
+        --set "data.generalist_dynamics_mixture.counterfactual_video_conditioned_action_weight=${GJD_COUNTERFACTUAL_WEIGHT}"
       )
       ;;
     mode_token)

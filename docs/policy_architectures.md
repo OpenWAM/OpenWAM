@@ -22,7 +22,7 @@ simulator integrations do not branch on architecture nicknames.
 | Architecture | Parameter topology | Maintained programs |
 | --- | --- | --- |
 | `parallel_stream` | Video and action tokens share one transformer and exact packed-stream cache lifecycle. | Six standard video/action programs and GJD; the exact LingBot backend is its primary compatibility profile. |
-| `dual_expert` | Video and action have separate transformer experts that execute paired blocks. | Six standard video/action programs and GJD. |
+| `dual_expert` | Video and action have separate transformer experts that execute paired blocks. | Six standard video/action programs, GJD, and conditional FDM/IDM. |
 | `post_latent` | A lightweight policy consumes frontend latents. | Feature-attached action baselines. |
 | `post_decoded` | A lightweight policy consumes decoded visual features. | Feature-attached action baselines. |
 | `causal_video_prediction` | The visual model runs without action supervision. | Video-only prediction. |
@@ -39,6 +39,32 @@ The six standard video/action programs are:
 `generalist_joint_denoising` adds sampled joint, FDM, and IDM submodes. Its
 conditional FDM/IDM layout is a separate sequence contract, not another model
 architecture.
+
+The dual-expert architecture also exposes those conditional submodes as fixed
+standalone programs:
+
+- `forward_dynamics`: clean actions condition video prediction; only video loss
+  is active.
+- `inverse_dynamics`: clean video conditions action prediction; only action loss
+  is active.
+
+These programs compile to exactly the same conditional runtime as one-hot GJD.
+The canonical `dual_expert_libero_conditional_dynamics.yaml` config composes that
+program with the existing sequence and data contracts: one clean t0 latent in
+its own singleton chunk, only the most recent clean video/proprio boundary as
+rolling history, the sampled 1-4 frame size for following chunks, no task text,
+and only matching real-demo/counterfactual sources. They are not separate model
+architectures and do not introduce another trainer, attention implementation,
+or decoder.
+
+`forward_dynamics` and `inverse_dynamics` are first-class program selectors,
+but they are conditional training and offline-inference objectives. Unlike VTA,
+ATV, joint, and the other standard programs, they require future clean
+conditioning tensors and are not live simulator policy rollouts. The maintained
+config defaults to a `1:1` real-demo/counterfactual mixture and therefore
+requires encoded counterfactual train and validation roots. See the
+[data prerequisites](running_experiments.md#data-prerequisites), including the
+explicit real-demo-only ablation.
 
 ## Shared Execution Boundary
 

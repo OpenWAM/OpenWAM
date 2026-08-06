@@ -15,6 +15,7 @@ from open_wam.configs import (
     CurrentBlockCoupling,
     ParallelRuntimeMode,
     ParallelStreamPolicyConfig,
+    VideoActionProgram,
 )
 from open_wam.data.counterfactual_actions import (
     BRANCH_PRESETS,
@@ -946,7 +947,70 @@ def test_fdm_cli_accepts_training_style_set_overrides() -> None:
         "policy_variant.proprio_context_mode=per_chunk_additive",
     ]
     assert args.runtime_dtype == "bfloat16"
+    assert args.mode is None
     assert _resolve_runtime_dtype(args.runtime_dtype) is torch.bfloat16
+
+
+@pytest.mark.parametrize(
+    ("program", "expected_mode"),
+    [
+        (
+            VideoActionProgram.FORWARD_DYNAMICS,
+            FdmAblationMode.FORCED_ACTION_JOINT_FDM,
+        ),
+        (
+            VideoActionProgram.INVERSE_DYNAMICS,
+            FdmAblationMode.VIDEO_CONDITIONED_ACTION,
+        ),
+    ],
+)
+def test_fdm_cli_derives_omitted_mode_from_fixed_program(
+    program: VideoActionProgram,
+    expected_mode: FdmAblationMode,
+) -> None:
+    from scripts.research_dynamics.cli import _resolve_requested_diagnostic_modes
+
+    config = SimpleNamespace(
+        policy_variant=SimpleNamespace(
+            program=program,
+            generalist_denoising_mode_probs=None,
+        )
+    )
+
+    assert _resolve_requested_diagnostic_modes(config, None) == (expected_mode,)
+
+
+def test_fdm_cli_rejects_explicit_mode_conflicting_with_fixed_program() -> None:
+    from scripts.research_dynamics.cli import _resolve_requested_diagnostic_modes
+
+    config = SimpleNamespace(
+        policy_variant=SimpleNamespace(
+            program=VideoActionProgram.FORWARD_DYNAMICS,
+            generalist_denoising_mode_probs=None,
+        )
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="forward_dynamics.*forced_action_joint_fdm.*video_conditioned_action",
+    ):
+        _resolve_requested_diagnostic_modes(
+            config,
+            [FdmAblationMode.VIDEO_CONDITIONED_ACTION.value],
+        )
+
+
+def test_fdm_cli_keeps_all_default_modes_for_nonfixed_gjd() -> None:
+    from scripts.research_dynamics.cli import _resolve_requested_diagnostic_modes
+
+    config = SimpleNamespace(
+        policy_variant=SimpleNamespace(
+            program=VideoActionProgram.GENERALIST_JOINT_DENOISING,
+            generalist_denoising_mode_probs=None,
+        )
+    )
+
+    assert _resolve_requested_diagnostic_modes(config, None) == tuple(FdmAblationMode)
 
 
 def test_fdm_local_path_overrides_are_explicit(tmp_path: Path) -> None:

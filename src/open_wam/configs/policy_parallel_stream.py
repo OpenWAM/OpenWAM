@@ -24,7 +24,11 @@ from .enums import (
     coerce_fields,
 )
 from .policy_compatibility import resolve_legacy_policy_field
-from .policy_video_action import VideoActionPolicyConfig
+from .policy_video_action import (
+    VideoActionPolicyConfig,
+    fixed_conditioning_mode_for_program,
+    validate_conditional_denoising_data_paradigm,
+)
 from .variant_semantics import (
     coerce_probability_map,
     default_video_action_conditioning_mode_probs,
@@ -112,6 +116,12 @@ class ParallelStreamPolicyConfig(VideoActionPolicyConfig):
 
     def __post_init__(self) -> None:
         super().__post_init__()
+        if fixed_conditioning_mode_for_program(self.program) is not None:
+            raise ValueError(
+                f"`program = {self.program.value}` is currently supported only by the "
+                "maintained dual_expert conditional runtime. Parallel-stream GJD remains "
+                "a compatibility path with a different context contract."
+            )
         resolved_generalist_probs = resolve_legacy_policy_field(
             canonical_value=self.generalist_denoising_mode_probs,
             legacy_value=self.joint_denoise_training_mode_probs,
@@ -150,6 +160,10 @@ class ParallelStreamPolicyConfig(VideoActionPolicyConfig):
             None,
         )
         assert self.generalist_denoising_mode_probs is not None
+        validate_conditional_denoising_data_paradigm(
+            probabilities=self.generalist_denoising_mode_probs,
+            paradigm=self.generalist_training_paradigm,
+        )
         if self.variant_profile == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING:
             conditional_generalist_modes_enabled = any(
                 self.generalist_denoising_mode_probs[mode] > 0.0
@@ -205,11 +219,11 @@ class ParallelStreamPolicyConfig(VideoActionPolicyConfig):
                 "`variant_profile = generalist_joint_denoising`."
             )
         if (
-            self.generalist_training_paradigm == GeneralistTrainingParadigm.MIXED_DYNAMICS
+            self.generalist_training_paradigm == GeneralistTrainingParadigm.DYNAMICS_ROUTED
             and self.variant_profile != ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING
         ):
             raise ValueError(
-                "`generalist_training_paradigm = mixed_dynamics` requires "
+                "`generalist_training_paradigm = dynamics_routed` requires "
                 "`variant_profile = generalist_joint_denoising`."
             )
 

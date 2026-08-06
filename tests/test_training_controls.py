@@ -17,6 +17,7 @@ from open_wam.configs.enums import (
     CurrentBlockCoupling,
     DualExpertRuntimeMode,
     GeneralistDenoisingMode,
+    GeneralistTrainingParadigm,
     ParallelRuntimeMode,
     TrainingComponentSelector,
 )
@@ -386,6 +387,7 @@ class _TinyGeneralistModePipeline(nn.Module):
             variant_profile="generalist_joint_denoising",
             current_block_coupling=CurrentBlockCoupling.JOINT,
             video_condition_on_action=True,
+            generalist_training_paradigm=GeneralistTrainingParadigm.DYNAMICS_ROUTED,
             generalist_mode_text_token=True,
         )
         self.policy_variant.proj = nn.Linear(1, 1)

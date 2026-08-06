@@ -12,6 +12,7 @@ from torch.utils.data import Dataset
 import open_wam.data.generalist_dynamics as generalist_dynamics_module
 from open_wam.configs import (
     ActionSchemaConfig,
+    GeneralistDenoisingMode,
     GeneralistDynamicsMixtureConfig,
     GenericDataConfig,
     PaddedTargetPolicy,
@@ -619,6 +620,102 @@ def test_generalist_dynamics_mixture_stamps_forced_mode_and_drops_text(tmp_path:
     assert sample.task_text is None
     assert sample.text_context is not None
     assert torch.equal(sample.text_context, torch.zeros(3, 4))
+
+
+@pytest.mark.parametrize(
+    ("fixed_mode", "real_bucket", "counterfactual_bucket"),
+    [
+        (
+            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
+            "real_action_conditioned_video",
+            "counterfactual_action_conditioned_video",
+        ),
+        (
+            GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
+            "real_video_conditioned_action",
+            "counterfactual_video_conditioned_action",
+        ),
+    ],
+)
+def test_fixed_conditional_mixture_keeps_only_matching_real_and_cf_sources(
+    tmp_path: Path,
+    fixed_mode: GeneralistDenoisingMode,
+    real_bucket: str,
+    counterfactual_bucket: str,
+) -> None:
+    encoded_root, empty_text_path = _write_encoded_counterfactual_fixture(tmp_path)
+    counterfactual = EncodedCounterfactualDynamicsLatentDataset(
+        _data_config(empty_text_path),
+        encoded_root,
+        split="train",
+    )
+    real_sample = LatentWAMSample(
+        video_latents=torch.ones(2, 4, 2, 2),
+        actions=torch.ones(8, 7),
+        action_mask=torch.ones(8, 7),
+        metadata={},
+    )
+    mixture = GeneralistDynamicsMixtureDataset(
+        real_dataset=_OneSampleLatentDataset(real_sample),
+        counterfactual_dataset=counterfactual,
+        mixture_config=GeneralistDynamicsMixtureConfig(
+            real_joint_weight=11.0,
+            real_action_conditioned_video_weight=3.0,
+            real_video_conditioned_action_weight=3.0,
+            counterfactual_action_conditioned_video_weight=1.0,
+            counterfactual_video_conditioned_action_weight=1.0,
+        ),
+        split="train",
+        fixed_mode=fixed_mode,
+    )
+
+    assert [(bucket.name, bucket.weight) for bucket in mixture.buckets] == [
+        (real_bucket, 3.0),
+        (counterfactual_bucket, 1.0),
+    ]
+    for index in range(32):
+        sample = mixture[index]
+        assert sample.metadata[GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY] == fixed_mode.value
+        assert sample.metadata[GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY] is True
+
+
+def test_fixed_conditional_real_only_mixture_does_not_require_cf_roots(
+    tmp_path: Path,
+) -> None:
+    empty_text_path = tmp_path / "empty_emb.pt"
+    torch.save(torch.zeros(3, 4), empty_text_path)
+    data_config = replace(
+        _data_config(empty_text_path),
+        generalist_dynamics_mixture=GeneralistDynamicsMixtureConfig(
+            train_latent_root=None,
+            val_latent_root=None,
+            real_joint_weight=0.0,
+            real_action_conditioned_video_weight=1.0,
+            real_video_conditioned_action_weight=0.0,
+            counterfactual_action_conditioned_video_weight=0.0,
+            counterfactual_video_conditioned_action_weight=0.0,
+        ),
+    )
+    real_sample = LatentWAMSample(
+        video_latents=torch.ones(2, 4, 2, 2),
+        actions=torch.ones(8, 7),
+        action_mask=torch.ones(8, 7),
+        metadata={},
+    )
+
+    train_dataset, val_dataset = build_generalist_dynamics_mixture_datasets(
+        data_config=data_config,
+        train_dataset=_OneSampleLatentDataset(real_sample),
+        val_dataset=_OneSampleLatentDataset(real_sample),
+        fixed_mode=GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
+    )
+
+    assert isinstance(train_dataset, GeneralistDynamicsMixtureDataset)
+    assert isinstance(val_dataset, GeneralistDynamicsMixtureDataset)
+    assert train_dataset.counterfactual_dataset is None
+    assert [bucket.name for bucket in train_dataset.buckets] == [
+        "real_action_conditioned_video"
+    ]
 
 
 def test_generalist_dynamics_mixture_projects_real_conditional_to_target_only(tmp_path: Path) -> None:

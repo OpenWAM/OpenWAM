@@ -55,10 +55,7 @@ from .generalist_modes import (
     generalist_forces_clean_video_condition as _dual_expert_generalist_forces_clean_video_condition,
 )
 from .generalist_modes import (
-    resolve_generalist_training_metadata as _resolve_dual_expert_generalist_training_metadata,
-)
-from .generalist_modes import (
-    sample_generalist_training_mode as _sample_dual_expert_generalist_training_mode,
+    resolve_generalist_training_mode,
 )
 from .modules import DualExpertActionExpert
 from .packed_block import DualExpertPackedBlockStack
@@ -176,18 +173,16 @@ class DualExpertPackedTrainingProgram:
         history_stream_visibility = self._resolve_history_stream_visibility()
         conditional_history_policy = None
 
-        sampled_generalist_mode: GeneralistDenoisingMode | None = None
-        forced_generalist_mode, metadata_drop_text, generalist_source = _resolve_dual_expert_generalist_training_metadata(
-            prepared_inputs.batch
+        (
+            sampled_generalist_mode,
+            forced_generalist_mode,
+            metadata_drop_text,
+            generalist_source,
+        ) = resolve_generalist_training_mode(
+            self.config,
+            prepared_inputs.batch,
+            device=video_latents.device,
         )
-        generalist_probs = self.config.generalist_denoising_mode_probs
-        if forced_generalist_mode is not None:
-            sampled_generalist_mode = forced_generalist_mode
-        elif generalist_probs is not None:
-            sampled_generalist_mode = _sample_dual_expert_generalist_training_mode(
-                generalist_probs,
-                device=video_latents.device,
-            )
         if sampled_generalist_mode is not None and int(video_latents.shape[0]) != 1:
             raise ValueError(
                 "dual-expert generalist joint denoising currently requires rank-local train_batch_size=1 because "

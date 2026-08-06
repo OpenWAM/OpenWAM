@@ -249,7 +249,7 @@ def _is_generalist_joint_denoising_config(config: Any, *, config_path: str | Pat
         return True
     if (
         _enum_value(getattr(policy_variant, "generalist_training_paradigm", None))
-        == GeneralistTrainingParadigm.MIXED_DYNAMICS.value
+        == GeneralistTrainingParadigm.DYNAMICS_ROUTED.value
     ):
         return True
     # Standard parallel-stream configs normalize their fixed coupling mode into

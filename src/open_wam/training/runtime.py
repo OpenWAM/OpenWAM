@@ -26,8 +26,8 @@ from .auxiliary_validation import (
 from .checkpoints import CheckpointManager
 from .controls import TrainabilityReport, apply_training_component_controls
 from .data_loading import (
-    _uses_mixed_dynamics_paradigm,
-    _validate_mixed_dynamics_source_sampling,
+    _uses_dynamics_routing,
+    _validate_dynamics_source_sampling,
     build_runtime_dataloaders,
 )
 from .launch import DistributedLaunchContext, validate_training_launch
@@ -62,8 +62,8 @@ _RUNTIME_COMPATIBILITY_EXPORTS = (
     _is_floating_dtype,
     _optimizer_state_target_dtype,
     _resolve_auxiliary_validation_source,
-    _uses_mixed_dynamics_paradigm,
-    _validate_mixed_dynamics_source_sampling,
+    _uses_dynamics_routing,
+    _validate_dynamics_source_sampling,
 )
 
 

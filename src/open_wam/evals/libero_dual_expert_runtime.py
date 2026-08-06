@@ -16,6 +16,7 @@ from open_wam.configs import (
     load_experiment_config,
     read_yaml_with_local_paths,
 )
+from open_wam.configs.policy_video_action import resolve_fixed_conditioning_mode
 from open_wam.data.latent_temporal import raw_window_frames_for_latents
 from open_wam.evals.libero_visualization import resolve_device as _resolve_device
 from open_wam.models.common.rollout_history import (
@@ -170,6 +171,10 @@ def load_dual_expert_libero_runtime(options: DualExpertLiberoLoadOptions) -> Dua
             parse_override_assignments(options.set_overrides),
         )
     _validate_dual_expert_config(config)
+    _validate_live_sim_dual_expert_generalist_rollout_mode(
+        options.dual_expert_generalist_rollout_mode,
+        policy_config=config.policy_variant,
+    )
     require_current_libero_policy_paradigm(
         config,
         config_path=config_path,
@@ -395,18 +400,34 @@ def _require_current_frontend_encode_mode(
     )
 
 
-def _validate_live_sim_dual_expert_generalist_rollout_mode(mode: str | None) -> None:
-    if mode is None or mode in LIVE_SIM_DUAL_EXPERT_GENERALIST_ROLLOUT_MODES:
+def _validate_live_sim_dual_expert_generalist_rollout_mode(
+    mode: str | None,
+    *,
+    policy_config=None,
+) -> None:
+    effective_mode = mode
+    fixed_mode = None
+    if policy_config is not None:
+        fixed_mode = resolve_fixed_conditioning_mode(policy_config)
+        if fixed_mode is not None:
+            effective_mode = fixed_mode.value
+    if effective_mode is None or effective_mode in LIVE_SIM_DUAL_EXPERT_GENERALIST_ROLLOUT_MODES:
         return
-    if mode in OFFLINE_DIAGNOSTIC_DUAL_EXPERT_GENERALIST_ROLLOUT_MODES:
+    if effective_mode in OFFLINE_DIAGNOSTIC_DUAL_EXPERT_GENERALIST_ROLLOUT_MODES:
         supported = ", ".join(sorted(LIVE_SIM_DUAL_EXPERT_GENERALIST_ROLLOUT_MODES))
+        if fixed_mode is not None:
+            mode_source = f"The configured fixed conditional mode resolves to {effective_mode!r}"
+            if mode is not None:
+                mode_source += f" and cannot be replaced by the requested {mode!r} mode"
+        else:
+            mode_source = f"--dual-expert-generalist-rollout-mode={effective_mode!r}"
         raise ValueError(
-            f"--dual-expert-generalist-rollout-mode={mode!r} is an offline diagnostic mode, not a live sim rollout mode. "
+            f"{mode_source} is an offline diagnostic mode, not a live sim rollout mode. "
             "It requires ground-truth clean action and/or video condition tensors that this LIBERO visualization "
             f"script does not provide. Use one of [{supported}] here, or use "
             "scripts/run_joint_denoising_fdm_ablation.py for offline FDM/IDM diagnostics."
         )
-    raise ValueError(f"Unsupported --dual-expert-generalist-rollout-mode={mode!r}.")
+    raise ValueError(f"Unsupported dual-expert conditioning mode {effective_mode!r}.")
 
 
 def _maybe_merge_checkpoint_runtime_config(

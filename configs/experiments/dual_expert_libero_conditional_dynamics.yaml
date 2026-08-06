@@ -1,7 +1,18 @@
-name: parallel_stream_libero_generalist_joint_denoising
+name: dual_expert_libero_conditional_dynamics
+
+# Standalone conditional dynamics on the maintained dual-expert stack.
+# `forward_dynamics` is FDM: clean actions condition video prediction.
+# Override only `policy_variant.program=inverse_dynamics` for IDM: clean video
+# conditions action prediction. Both programs compile to the same one-hot
+# conditional contract used by pure GJD, including text removal, target-only
+# t0 layout, singleton t0 chunk, and one previous video-boundary history.
+# These are training/offline-inference programs, not live simulator policies.
+# Use VTA, ATV, joint, or another standard program for online action rollout.
+# The default 1:1 real/CF weights require encoded counterfactual train and val
+# roots. For real-demo-only training, set the matching counterfactual weight to
+# zero; the counterfactual roots are then not opened.
 
 data:
-  # Dataset source knobs
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
   local_root: "${paths.datasets.libero_root}"
@@ -12,7 +23,6 @@ data:
   val_require_replay_status: false
   empty_text_embedding_path: "${paths.datasets.empty_text_embedding}"
   split: train
-  # View + latent layout knobs
   camera_names: [observation.images.agentview_rgb, observation.images.eye_in_hand_rgb]
   latent_camera_names: [observation.images.agentview_rgb, observation.images.eye_in_hand_rgb]
   canonical_height: 128
@@ -20,11 +30,6 @@ data:
   num_frames: 4
   frame_stride: 1
   sample_stride: 1
-  episode_cache_size: 2
-  train_fraction: 1.0
-  split_seed: 0
-  # Current GJD sampler. Fixed-128 GJD training is deprecated; the maintained
-  # setup follows the #150-style full-segment W64 contract.
   sample_construction:
     mode: uniform_segment
     sample_order_mode: replacement
@@ -42,6 +47,9 @@ data:
     demo_count_power: 0.0
     trajectory_start_power: 0.0
     sample_weight_mode: uniform
+  episode_cache_size: 2
+  train_fraction: 1.0
+  split_seed: 0
   train_batch_size: 1
   val_batch_size: 1
   num_workers: 8
@@ -73,18 +81,20 @@ data:
     include_gripper: true
     gripper_representation: action_command
     gripper_action_index: -1
-  # Default GJD mixed-dynamics sampler. Keep this in parity with the maintained
-  # dual-expert legacy-prefix full-segment W64 joint command: replacement source draws,
-  # uniform weights, no extra conditional-history cap.
+  # The fixed program selects one matching pair from these four weights. For
+  # FDM, the action-conditioned pair is used; for IDM, the video-conditioned
+  # pair is used. Relative real/CF weights define the source ratio. A zero
+  # counterfactual weight makes the encoded CF roots optional. Positive CF
+  # weights require target-only t0-plus-future encoded rows at both roots.
   generalist_dynamics_mixture:
     train_latent_root: "${paths.datasets.libero_gjd_counterfactual_train_latent_root}"
     val_latent_root: "${paths.datasets.libero_gjd_counterfactual_val_latent_root}"
     allow_train_latent_root_for_val: false
-    real_joint_weight: 0.6
-    real_action_conditioned_video_weight: 0.1
-    real_video_conditioned_action_weight: 0.1
-    counterfactual_action_conditioned_video_weight: 0.1
-    counterfactual_video_conditioned_action_weight: 0.1
+    real_joint_weight: 0.0
+    real_action_conditioned_video_weight: 1.0
+    real_video_conditioned_action_weight: 1.0
+    counterfactual_action_conditioned_video_weight: 1.0
+    counterfactual_video_conditioned_action_weight: 1.0
     conditional_history_frames: null
 
 backbone:
@@ -102,53 +112,41 @@ backbone:
   max_text_tokens: 512
   load_wan_vae_frontend: true
   load_text_conditioning: true
+  load_reference_core_weights: true
+  reference_core_init_mode: video_only
   reference_assets_device_policy: cpu_offload
 
 policy_variant:
-  # parallel-stream variant 7: generalist joint denoising.
-  # The packed noisy video/action slots are authoritative. Conditional modes
-  # place the clean supplied modality in its normal noisy slot at timestep 0 and
-  # mask that modality's loss.
-  name: parallel_stream
-  runtime_mode: lingbot_exact_action_conditioned
-  variant_profile: generalist_joint_denoising
-  generalist_training_paradigm: dynamics_routed
-  program: generalist_joint_denoising
-  reference_profile: libero_joint
+  name: dual_expert
   hidden_size: 3072
-  frame_chunk_size: 4
-  action_per_frame: 4
-  attn_window: 30
-  sequence_order: [video_noisy, video_condition, action_noisy, action_condition]
-  mask_mode: lingbot_chunked
-  cache_mode: metadata_only
-  video_condition_on_action: true
-  video_action_condition_source: noisy_action
-  video_action_attention_scope: block_local
-  proprio_context_mode: per_chunk_additive
-  # Known parallel-stream GJD issue: dual-expert is the standard GJD contract and uses
-  # legacy-prefix single-frame condition latents. parallel-stream keeps full clean modality
-  # slots for conditional FDM/IDM; forcing the dual-expert single-frame condition source
-  # onto current parallel-stream legacy full-segment samples would require a pre-target
-  # context/loss boundary, while this legacy uniform segment path has
-  # loss_frame_start=0.
-  # Current GJD uses independent video/action noise clocks for parity with the
-  # standard dual-expert legacy-prefix W64 joint baseline. Use `match_sigma` only for a
-  # sigma-matched ablation.
+  attach_site: post_visual_core
+  preset: fastwam_joint
+  # `dynamics_routed` selects the real/optional-CF source adapter. It does not
+  # require counterfactual samples when the matching CF weight is zero.
+  generalist_training_paradigm: dynamics_routed
+  runtime_mode: non_joint_two_stream
+  program: forward_dynamics
+  condition_mode: teacher_forcing_cond_video
+  video_prefix_frames: 1
+  sequence_contract: legacy_prefix_single_frame_perchunk_proprio
+  action_expert_init_mode: video_weight_interpolate
+  num_action_layers: 30
+  action_hidden_size: 2048
+  action_ffn_dim: 8192
+  video_can_attend_action: false
+  use_text_conditioning: true
+  use_state_conditioning: false
+  use_activation_checkpointing: true
+  noisy_video_condition_prob: 0.5
   joint_timestep_coupling: independent
-  preserve_video_pretrain_history: true
-  generalist_denoising_mode_probs:
-    joint: 0.6
-    action_conditioned_video: 0.2
-    video_conditioned_action: 0.2
-  # Ablation knob. Leave false for vanilla/pure-joint; set true for the
-  # explicit mode-token parallel-stream GJD ablation.
+  # Fixed programs derive a one-hot mode internally and never use a learned
+  # GJD mode token. Do not add `generalist_denoising_mode_probs` here.
   generalist_mode_text_token: false
 
 action_decoder:
-  name: parallel_stream_decoder
+  name: dual_expert_decoder
   hidden_size: 3072
-  action_dim: 30
+  action_dim: 7
   action_horizon: 16
 
 training:
@@ -170,44 +168,33 @@ training:
   max_grad_norm: 2.0
   num_steps: 20000
   text_condition_dropout_prob: 0.1
-  enabled_objectives: [latent, action]
+  enabled_objectives: [action, latent]
   latent_loss_weight: 1.0
   action_loss_weight: 1.0
-  trainable_components: [visual_tower.runtime_backbone]
   sample_loss_weight_mode: none
+  trainable_components: [policy_variant.action_expert, visual_tower.runtime_backbone]
 
 inference:
-  # Online rollout controls for conditional generation are intentionally later.
-  # Current autonomous rollout still uses joint generation with matched steps.
   video_num_inference_steps: 20
   action_num_inference_steps: 20
   frame_chunk_size: 4
   use_cache: true
   guidance_scale: 5.0
-  action_guidance_scale: 1.0
-  video_exec_step: -1
 
 validation:
-  # Auxiliary held-out conditional probes. Primary trainer validation remains
-  # disabled below; these tasks run from the validation loop independently.
+  # The fixed-mode mixture already stamps the authoritative mode and text-drop
+  # metadata, so this probe works unchanged when the program is switched.
   auxiliary_tasks:
-    - name: fdm_val
-      mode_override: action_conditioned_video
+    - name: conditional_dynamics_val
       dataset_split: val
-      source: counterfactual_dynamics_if_available
+      source: dataset
       max_batches: 16
-      report_prefix: val_fdm
-    - name: idm_val
-      mode_override: video_conditioned_action
-      dataset_split: val
-      source: counterfactual_dynamics_if_available
-      max_batches: 16
-      report_prefix: val_idm
+      report_prefix: val_conditional_dynamics
 
 trainer:
   max_epochs: 1
   limit_train_batches: null
-  limit_val_batches: 0  # Primary val is off; GJD probes above still run.
+  limit_val_batches: 0
   validation_interval: 100
   log_every_n_steps: 1
   accelerator: gpu
@@ -220,12 +207,10 @@ trainer:
   loop_policy: steps
   strategy: fsdp
   save_interval: 100
-  # GJD defaults to exact-resumable checkpoints. The checkpoint manager still
-  # exports model_state.pt alongside full_training_state.pt for rollout/eval.
   checkpoint_mode: full_training_state
   max_checkpoints_to_keep: 3
   export_runtime_backbone: true
   enable_jsonl_logging: true
   enable_wandb: true
-  wandb_project: openwam-parallel-stream-libero
+  wandb_project: openwam-libero-policy-train
   wandb_mode: online

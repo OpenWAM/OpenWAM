@@ -17,7 +17,12 @@ from .enums import (
     coerce_fields,
 )
 from .policy_compatibility import resolve_legacy_policy_field
-from .policy_video_action import VideoActionPolicyConfig
+from .policy_video_action import (
+    VideoActionPolicyConfig,
+    fixed_conditioning_mode_for_program,
+    one_hot_conditioning_mode_probabilities,
+    validate_conditional_denoising_data_paradigm,
+)
 from .variant_semantics import coerce_probability_map
 
 
@@ -88,6 +93,11 @@ class DualExpertPolicyConfig(VideoActionPolicyConfig):
             canonical_name="generalist_denoising_mode_probs",
             legacy_name="mot_generalist_training_mode_probs",
         )
+        fixed_conditioning_mode = fixed_conditioning_mode_for_program(self.program)
+        if fixed_conditioning_mode is not None and resolved_generalist_probs is None:
+            resolved_generalist_probs = one_hot_conditioning_mode_probabilities(
+                fixed_conditioning_mode
+            )
         object.__setattr__(
             self,
             "generalist_denoising_mode_probs",
@@ -140,11 +150,30 @@ class DualExpertPolicyConfig(VideoActionPolicyConfig):
             "mot_generalist_training_mode_probs",
             None,
         )
+        validate_conditional_denoising_data_paradigm(
+            probabilities=self.generalist_denoising_mode_probs,
+            paradigm=self.generalist_training_paradigm,
+        )
         if self.generalist_denoising_mode_probs is not None:
             if self.current_block_coupling != CurrentBlockCoupling.JOINT:
                 raise ValueError(
                     "`generalist_denoising_mode_probs` requires `current_block_coupling = joint`, "
                     f"got current_block_coupling={self.current_block_coupling!r}."
+                )
+        if fixed_conditioning_mode is not None:
+            expected_probs = one_hot_conditioning_mode_probabilities(
+                fixed_conditioning_mode
+            )
+            if self.generalist_denoising_mode_probs != expected_probs:
+                raise ValueError(
+                    f"`program = {self.program.value}` owns a fixed one-hot "
+                    f"{fixed_conditioning_mode.value!r} conditioning mode; do not set a "
+                    "conflicting `generalist_denoising_mode_probs` distribution."
+                )
+            if bool(self.generalist_mode_text_token):
+                raise ValueError(
+                    f"`program = {self.program.value}` does not use a GJD mode token; "
+                    "set `generalist_mode_text_token = false`."
                 )
         if bool(self.generalist_mode_text_token) and self.generalist_denoising_mode_probs is None:
             raise ValueError(
@@ -152,11 +181,11 @@ class DualExpertPolicyConfig(VideoActionPolicyConfig):
                 "so the runtime has a sampled or forced GJD mode token."
             )
         if (
-            self.generalist_training_paradigm == GeneralistTrainingParadigm.MIXED_DYNAMICS
+            self.generalist_training_paradigm == GeneralistTrainingParadigm.DYNAMICS_ROUTED
             and self.generalist_denoising_mode_probs is None
         ):
             raise ValueError(
-                "`generalist_training_paradigm = mixed_dynamics` requires "
+                "`generalist_training_paradigm = dynamics_routed` requires "
                 "`generalist_denoising_mode_probs` so the runtime can consume forced GJD modes."
             )
 

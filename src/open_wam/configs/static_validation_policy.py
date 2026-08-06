@@ -21,6 +21,11 @@ from .enums import (
     VideoActionProgram,
     VideoActionSequenceContract,
 )
+from .policy_video_action import (
+    conditional_denoising_modes_enabled,
+    fixed_conditioning_mode_for_program,
+    is_dynamics_routed_paradigm,
+)
 from .static_validation_contracts import _IssueBuilder
 from .static_validation_primitives import _optional_int
 from .variant_semantics import probability_map_static_issues
@@ -67,7 +72,11 @@ def _resolved_static_video_action_coupling(
         program = VideoActionProgram(str(raw_program))
     except ValueError:
         return None
-    if program == VideoActionProgram.GENERALIST_JOINT_DENOISING:
+    if program in {
+        VideoActionProgram.GENERALIST_JOINT_DENOISING,
+        VideoActionProgram.FORWARD_DYNAMICS,
+        VideoActionProgram.INVERSE_DYNAMICS,
+    }:
         return CurrentBlockCoupling.JOINT.value
     return program.value
 
@@ -83,11 +92,10 @@ def _validate_video_action_program_coupling(
         program = VideoActionProgram(str(raw_program))
     except ValueError:
         return
-    expected_coupling = (
-        CurrentBlockCoupling.JOINT.value
-        if program == VideoActionProgram.GENERALIST_JOINT_DENOISING
-        else program.value
+    expected_coupling = _resolved_static_video_action_coupling(
+        {"program": program.value}
     )
+    assert expected_coupling is not None
     raw_coupling = policy_variant.get("current_block_coupling")
     if raw_coupling is not None and raw_coupling != expected_coupling:
         issues.error(
@@ -95,6 +103,90 @@ def _validate_video_action_program_coupling(
             f"`program: {program.value}` requires "
             f"`current_block_coupling: {expected_coupling}` when both are provided.",
         )
+
+
+def _validate_fixed_conditional_program(
+    policy_variant: Mapping[str, Any],
+    data: Mapping[str, Any],
+    issues: _IssueBuilder,
+) -> None:
+    raw_program = policy_variant.get("program")
+    try:
+        program = VideoActionProgram(str(raw_program))
+    except ValueError:
+        return
+    fixed_mode = fixed_conditioning_mode_for_program(program)
+    if fixed_mode is None:
+        return
+    if policy_variant.get("name") != PolicyVariantName.DUAL_EXPERT.value:
+        issues.error(
+            "policy_variant.program",
+            f"`{program.value}` is currently supported only by `policy_variant.name: dual_expert`.",
+        )
+    if (
+        not is_dynamics_routed_paradigm(
+            policy_variant.get("generalist_training_paradigm")
+        )
+    ):
+        issues.error(
+            "policy_variant.generalist_training_paradigm",
+            f"`program: {program.value}` requires `dynamics_routed` so real and optional "
+            "counterfactual sources use the same target-only t0 layout.",
+        )
+    if bool(policy_variant.get("generalist_mode_text_token", False)):
+        issues.error(
+            "policy_variant.generalist_mode_text_token",
+            f"`program: {program.value}` has one fixed mode and does not use a GJD mode token.",
+        )
+    raw_probs = policy_variant.get("generalist_denoising_mode_probs")
+    if isinstance(raw_probs, Mapping):
+        positive_modes = {
+            str(mode)
+            for mode, weight in raw_probs.items()
+            if not isinstance(weight, bool)
+            and isinstance(weight, (int, float))
+            and float(weight) > 0.0
+        }
+        if positive_modes != {fixed_mode.value}:
+            issues.error(
+                "policy_variant.generalist_denoising_mode_probs",
+                f"`program: {program.value}` permits only the fixed {fixed_mode.value!r} mode.",
+            )
+    mixture = data.get("generalist_dynamics_mixture")
+    if isinstance(mixture, Mapping):
+        source_keys = (
+            (
+                "real_action_conditioned_video_weight",
+                "counterfactual_action_conditioned_video_weight",
+            )
+            if fixed_mode == GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO
+            else (
+                "real_video_conditioned_action_weight",
+                "counterfactual_video_conditioned_action_weight",
+            )
+        )
+        numeric_weights = [
+            float(mixture[key])
+            for key in source_keys
+            if isinstance(mixture.get(key), (int, float))
+            and not isinstance(mixture.get(key), bool)
+        ]
+        if len(numeric_weights) == len(source_keys) and sum(numeric_weights) <= 0.0:
+            issues.error(
+                "data.generalist_dynamics_mixture",
+                f"`program: {program.value}` requires a positive real or counterfactual "
+                f"{fixed_mode.value} source weight.",
+            )
+    for key in ("train_batch_size", "val_batch_size"):
+        try:
+            batch_size = int(data.get(key, 2))
+        except (TypeError, ValueError):
+            continue
+        if batch_size != 1:
+            issues.error(
+                f"data.{key}",
+                f"`program: {program.value}` requires rank-local train and validation batch size 1.",
+            )
 
 
 def _validate_video_action_sequence_contract_static(
@@ -235,6 +327,19 @@ def _validate_generalist_denoising_mode_probs(
         )
     if raw_probs is None:
         return
+    if (
+        isinstance(raw_probs, Mapping)
+        and conditional_denoising_modes_enabled(raw_probs)
+        and not is_dynamics_routed_paradigm(
+            policy_variant.get("generalist_training_paradigm")
+        )
+    ):
+        issues.error(
+            "policy_variant.generalist_training_paradigm",
+            "Positive FDM/IDM `generalist_denoising_mode_probs` require `dynamics_routed` "
+            "so real and optional counterfactual samples use the target-only t0 contract. "
+            "Counterfactual source weights may be zero; pure joint may use `demo_only`.",
+        )
     if (
         require_joint_coupling
         and _resolved_static_video_action_coupling(policy_variant)

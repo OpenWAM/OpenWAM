@@ -9,6 +9,7 @@ from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.configs.enums import (
     CurrentBlockCoupling,
     GeneralistDenoisingMode,
+    GeneralistTrainingParadigm,
     HistoryStreamVisibility,
     JointTimestepCoupling,
     ParallelRuntimeMode,
@@ -40,6 +41,7 @@ def _policy(
     *,
     mode: GeneralistDenoisingMode | None,
     coupling: JointTimestepCoupling = JointTimestepCoupling.MATCH_SIGMA,
+    paradigm: GeneralistTrainingParadigm = GeneralistTrainingParadigm.DYNAMICS_ROUTED,
 ) -> ParallelStreamPolicyConfig:
     probabilities = None if mode is None else {mode: 1.0}
     return ParallelStreamPolicyConfig(
@@ -53,8 +55,17 @@ def _policy(
         video_condition_on_action=True,
         video_action_condition_source="noisy_action",
         joint_timestep_coupling=coupling,
+        generalist_training_paradigm=paradigm,
         generalist_denoising_mode_probs=probabilities,
     )
+
+
+def test_parallel_stream_conditional_gjd_rejects_demo_only_data_contract() -> None:
+    with pytest.raises(ValueError, match="require.*dynamics_routed"):
+        _policy(
+            mode=GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
+            paradigm=GeneralistTrainingParadigm.DEMO_ONLY,
+        )
 
 
 def _artifacts(

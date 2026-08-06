@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
@@ -18,6 +18,7 @@ from open_wam.configs import (
     CausalPrefixSuffixBucketConfig,
     CausalVideoPredictionPolicyConfig,
     ContextConditionLatentSource,
+    CurrentBlockCoupling,
     DeprecatedPolicyConfigFieldWarning,
     DualExpertPolicyConfig,
     DualExpertPreset,
@@ -60,6 +61,7 @@ from open_wam.configs import (
     TemporalPositionMode,
     TrainingComponentSelector,
     TrainingObjective,
+    VideoActionProgram,
     VideoActionSequenceContract,
     VideoConditionInputSpace,
     VideoConditionTrainMode,
@@ -328,11 +330,11 @@ def test_new_variant_yaml_configs_load() -> None:
     assert post_decoded_video_conditioned.policy_variant.video_condition_input_space == VideoConditionInputSpace.RGB_VIDEO
 
 
-def test_generalist_mixed_dynamics_knob_loads_from_yaml(tmp_path: Path) -> None:
-    config_path = tmp_path / "mixed_dynamics.yaml"
+def test_generalist_dynamics_routing_knob_loads_from_yaml(tmp_path: Path) -> None:
+    config_path = tmp_path / "dynamics_routed.yaml"
     config_path.write_text(
         """
-name: mixed_dynamics
+name: dynamics_routed
 data:
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
@@ -360,7 +362,7 @@ policy_variant:
   variant_profile: generalist_joint_denoising
   current_block_coupling: joint
   video_condition_on_action: true
-  generalist_training_paradigm: mixed_dynamics
+  generalist_training_paradigm: dynamics_routed
 action_decoder:
   name: parallel_stream_decoder
   action_dim: 7
@@ -374,7 +376,7 @@ trainer:
 
     config = load_experiment_config(config_path)
 
-    assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.MIXED_DYNAMICS
+    assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.DYNAMICS_ROUTED
     assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.INDEPENDENT
     assert config.data.generalist_dynamics_mixture.train_latent_root == "/tmp/counterfactual_train/encoded_latents"
     assert config.data.generalist_dynamics_mixture.allow_train_latent_root_for_val is False
@@ -382,11 +384,30 @@ trainer:
     assert config.data.generalist_dynamics_mixture.conditional_history_frames == 8
 
 
-def test_generalist_mixed_dynamics_accepts_replacement_sample_order(tmp_path: Path) -> None:
-    config_path = tmp_path / "mixed_dynamics_replacement_order.yaml"
+def test_legacy_mixed_dynamics_value_normalizes_to_dynamics_routed(
+    tmp_path: Path,
+) -> None:
+    source_path = (
+        REPO_ROOT
+        / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"]["generalist_training_paradigm"] = "mixed_dynamics"
+    config_path = tmp_path / "legacy_mixed_dynamics.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    config = load_experiment_config(config_path)
+
+    paradigm = config.policy_variant.generalist_training_paradigm
+    assert paradigm is GeneralistTrainingParadigm.DYNAMICS_ROUTED
+    assert paradigm.value == "dynamics_routed"
+
+
+def test_generalist_dynamics_routing_accepts_replacement_sample_order(tmp_path: Path) -> None:
+    config_path = tmp_path / "dynamics_routed_replacement_order.yaml"
     config_path.write_text(
         """
-name: mixed_dynamics_replacement_order
+name: dynamics_routed_replacement_order
 data:
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
@@ -414,7 +435,7 @@ policy_variant:
   variant_profile: generalist_joint_denoising
   current_block_coupling: joint
   video_condition_on_action: true
-  generalist_training_paradigm: mixed_dynamics
+  generalist_training_paradigm: dynamics_routed
 action_decoder:
   name: parallel_stream_decoder
   action_dim: 7
@@ -428,7 +449,7 @@ trainer:
 
     config = load_experiment_config(config_path)
 
-    assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.MIXED_DYNAMICS
+    assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.DYNAMICS_ROUTED
     assert config.data.sample_construction.sample_order_mode == SampleOrderMode.REPLACEMENT
     assert config.data.sample_construction.chunk_size == 4
     assert config.data.sample_construction.window_size == 64
@@ -439,11 +460,11 @@ trainer:
     assert config.data.generalist_dynamics_mixture.conditional_history_frames is None
 
 
-def test_generalist_mixed_dynamics_rejects_views_batch_adapter(tmp_path: Path) -> None:
-    config_path = tmp_path / "mixed_dynamics_views_adapter.yaml"
+def test_generalist_dynamics_routing_rejects_views_batch_adapter(tmp_path: Path) -> None:
+    config_path = tmp_path / "dynamics_routed_views_adapter.yaml"
     config_path.write_text(
         """
-name: mixed_dynamics_views_adapter
+name: dynamics_routed_views_adapter
 data:
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
@@ -464,7 +485,7 @@ policy_variant:
   variant_profile: generalist_joint_denoising
   current_block_coupling: joint
   video_condition_on_action: true
-  generalist_training_paradigm: mixed_dynamics
+  generalist_training_paradigm: dynamics_routed
 action_decoder:
   name: parallel_stream_decoder
   action_dim: 7
@@ -480,11 +501,11 @@ trainer:
         load_experiment_config(config_path)
 
 
-def test_generalist_mixed_dynamics_rejects_non_uniform_sample_weight(tmp_path: Path) -> None:
-    config_path = tmp_path / "mixed_dynamics_weighted_source.yaml"
+def test_generalist_dynamics_routing_rejects_non_uniform_sample_weight(tmp_path: Path) -> None:
+    config_path = tmp_path / "dynamics_routed_weighted_source.yaml"
     config_path.write_text(
         """
-name: mixed_dynamics_weighted_source
+name: dynamics_routed_weighted_source
 data:
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
@@ -508,7 +529,7 @@ policy_variant:
   variant_profile: generalist_joint_denoising
   current_block_coupling: joint
   video_condition_on_action: true
-  generalist_training_paradigm: mixed_dynamics
+  generalist_training_paradigm: dynamics_routed
 action_decoder:
   name: parallel_stream_decoder
   action_dim: 7
@@ -1276,7 +1297,7 @@ def test_m1_generalist_joint_denoising_yaml_config_loads() -> None:
     assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.INDEPENDENT
     assert config.policy_variant.attn_window == 30
     assert config.policy_variant.sequence_contract == VideoActionSequenceContract.DEFAULT
-    assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.MIXED_DYNAMICS
+    assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.DYNAMICS_ROUTED
     assert config.data.sample_construction.mode == WindowSamplingMode.UNIFORM_SEGMENT
     assert config.data.sample_construction.sample_order_mode == SampleOrderMode.REPLACEMENT
     assert config.data.sample_construction.window_size == 64
@@ -1308,6 +1329,107 @@ def test_m5_generalist_joint_denoising_defaults_independent_joint_coupling(tmp_p
 
     assert isinstance(config.policy_variant, DualExpertPolicyConfig)
     assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.INDEPENDENT
+
+
+@pytest.mark.parametrize(
+    ("program", "expected_mode"),
+    [
+        (
+            VideoActionProgram.FORWARD_DYNAMICS,
+            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
+        ),
+        (
+            VideoActionProgram.INVERSE_DYNAMICS,
+            GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
+        ),
+    ],
+)
+def test_dual_expert_conditional_dynamics_config_derives_fixed_gjd_contract(
+    tmp_path: Path,
+    program: VideoActionProgram,
+    expected_mode: GeneralistDenoisingMode,
+) -> None:
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_conditional_dynamics.yaml"
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"]["program"] = program.value
+    config_path = tmp_path / f"conditional_{program.value}.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    config = load_experiment_config(config_path)
+
+    assert isinstance(config.policy_variant, DualExpertPolicyConfig)
+    assert config.policy_variant.program is program
+    assert config.policy_variant.current_block_coupling == CurrentBlockCoupling.JOINT
+    assert (
+        config.policy_variant.generalist_training_paradigm
+        == GeneralistTrainingParadigm.DYNAMICS_ROUTED
+    )
+    assert config.policy_variant.generalist_mode_text_token is False
+    assert config.policy_variant.sequence_contract == (
+        VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
+    )
+    assert (
+        config.policy_variant.context_condition_latent_source
+        == ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+    )
+    assert config.policy_variant.history_stream_visibility == HistoryStreamVisibility.VIDEO_ONLY
+    assert config.policy_variant.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
+    assert config.policy_variant.use_condition_latents is True
+    assert config.policy_variant.require_condition_latents is True
+    assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.INDEPENDENT
+    assert config.policy_variant.generalist_denoising_mode_probs == {
+        mode: float(mode is expected_mode) for mode in GeneralistDenoisingMode
+    }
+    assert config.data.sample_construction.sample_order_mode == SampleOrderMode.REPLACEMENT
+    assert config.data.sample_construction.condition_source_frame_offset == -1
+    assert config.data.sample_construction.start_padding_frames == 0
+    assert config.data.sample_construction.target_alignment == SampleTargetAlignment.LEGACY
+    assert config.data.sample_construction.window_size == 64
+    assert config.training.window_size == 64
+    assert config.data.train_batch_size == 1
+    assert config.data.val_batch_size == 1
+
+
+def test_dual_expert_conditional_dynamics_rejects_conflicting_mode_distribution(
+    tmp_path: Path,
+) -> None:
+    source_path = REPO_ROOT / "configs/experiments/dual_expert_libero_conditional_dynamics.yaml"
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    raw["policy_variant"]["generalist_denoising_mode_probs"] = {
+        "joint": 0.0,
+        "action_conditioned_video": 0.0,
+        "video_conditioned_action": 1.0,
+    }
+    config_path = tmp_path / "conditional_fdm_conflicting_distribution.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="fixed one-hot.*action_conditioned_video"):
+        load_experiment_config(config_path)
+
+
+def test_dual_expert_conditional_dynamics_keeps_gjd_training_contract() -> None:
+    gjd = load_experiment_config(
+        REPO_ROOT / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    conditional = load_experiment_config(
+        REPO_ROOT / "configs/experiments/dual_expert_libero_conditional_dynamics.yaml"
+    )
+
+    assert conditional.backbone == gjd.backbone
+    assert conditional.action_decoder == gjd.action_decoder
+    assert conditional.training == gjd.training
+    assert conditional.inference == gjd.inference
+    assert conditional.trainer == gjd.trainer
+    assert replace(
+        conditional.data,
+        generalist_dynamics_mixture=gjd.data.generalist_dynamics_mixture,
+    ) == gjd.data
+    conditional_policy = asdict(conditional.policy_variant)
+    gjd_policy = asdict(gjd.policy_variant)
+    for field_name in ("program", "generalist_denoising_mode_probs"):
+        conditional_policy.pop(field_name)
+        gjd_policy.pop(field_name)
+    assert conditional_policy == gjd_policy
 
 
 def test_m5_generalist_joint_denoising_rejects_multi_sample_batches(tmp_path: Path) -> None:

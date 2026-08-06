@@ -30,9 +30,10 @@ from open_wam.training import TrainingRuntime
 from open_wam.training.auxiliary_validation import (
     AuxiliaryValidationDataset,
     _resolve_auxiliary_validation_source,
+    build_auxiliary_validation_runs,
 )
 from open_wam.training.checkpoints import CheckpointManager
-from open_wam.training.data_loading import _validate_mixed_dynamics_source_sampling
+from open_wam.training.data_loading import _validate_dynamics_source_sampling
 from open_wam.training.loop_policies import StepLoopPolicy
 from open_wam.training.optim import _normalize_optimizer_state_dtypes
 from open_wam.training.state import TrainState
@@ -41,6 +42,7 @@ from open_wam.training.step_executor import (
     ViewBatchAdapter,
     resolve_sample_loss_weight,
 )
+from open_wam.utils.config_overrides import apply_config_overrides
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -50,8 +52,8 @@ def test_runtime_compatibility_aliases_keep_canonical_owner_identity() -> None:
     assert runtime_module._normalize_optimizer_state_dtypes is _normalize_optimizer_state_dtypes
     assert runtime_module._resolve_auxiliary_validation_source is _resolve_auxiliary_validation_source
     assert (
-        runtime_module._validate_mixed_dynamics_source_sampling
-        is _validate_mixed_dynamics_source_sampling
+        runtime_module._validate_dynamics_source_sampling
+        is _validate_dynamics_source_sampling
     )
 
 
@@ -433,7 +435,7 @@ def test_sample_loss_weight_rejects_reduced_multi_sample_batches() -> None:
         )
 
 
-def test_mixed_dynamics_source_sampling_runtime_guard_rejects_non_uniform_weights() -> (
+def test_dynamics_source_sampling_runtime_guard_rejects_non_uniform_weights() -> (
     None
 ):
     config = load_experiment_config(
@@ -452,16 +454,16 @@ def test_mixed_dynamics_source_sampling_runtime_guard_rejects_non_uniform_weight
     )
 
     with pytest.raises(ValueError, match="sample_weight_mode"):
-        _validate_mixed_dynamics_source_sampling(config)
+        _validate_dynamics_source_sampling(config)
 
 
-def test_mixed_dynamics_source_sampling_runtime_guard_rejects_views_adapter() -> None:
+def test_dynamics_source_sampling_runtime_guard_rejects_views_adapter() -> None:
     config = load_experiment_config(
         REPO_ROOT / "configs/experiments/parallel_stream_robotwin_smoke.yaml"
     )
 
     with pytest.raises(ValueError, match="batch_adapter=latents"):
-        _validate_mixed_dynamics_source_sampling(config)
+        _validate_dynamics_source_sampling(config)
 
 
 def test_latent_batch_adapter_preserves_condition_latents() -> None:
@@ -595,6 +597,41 @@ def test_auxiliary_validation_source_can_fallback_when_counterfactual_is_unavail
 
     assert selected is dataset
     assert resolved_source == "dataset"
+
+
+@pytest.mark.parametrize(
+    ("fixed_mode", "expected_task"),
+    [
+        ("action_conditioned_video", "fdm_val"),
+        ("video_conditioned_action", "idm_val"),
+    ],
+)
+def test_pure_gjd_validation_keeps_only_matching_conditional_probe(
+    fixed_mode: str,
+    expected_task: str,
+) -> None:
+    config = load_experiment_config(
+        REPO_ROOT / "configs/experiments/dual_expert_libero_generalist_joint_denoising.yaml"
+    )
+    probabilities = {
+        "joint": 0.0,
+        "action_conditioned_video": float(fixed_mode == "action_conditioned_video"),
+        "video_conditioned_action": float(fixed_mode == "video_conditioned_action"),
+    }
+    config = apply_config_overrides(
+        config,
+        {"policy_variant.generalist_denoising_mode_probs": probabilities},
+    )
+    loader = DataLoader(TensorDataset(torch.ones(1, 1)), batch_size=1)
+
+    runs = build_auxiliary_validation_runs(
+        config,
+        SimpleNamespace(distributed=False, world_size=1, rank=0),
+        train_loader=loader,
+        val_loader=loader,
+    )
+
+    assert [run.config.name for run in runs] == [expected_task]
 
 
 def test_training_runtime_runs_primary_and_auxiliary_validation_phases() -> None:

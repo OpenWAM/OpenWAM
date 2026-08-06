@@ -12,6 +12,7 @@ from open_wam.configs import (
     SampleOrderMode,
     SampleWeightMode,
 )
+from open_wam.configs.policy_video_action import resolve_fixed_conditioning_mode
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -80,6 +81,7 @@ def build_run_tracking_metadata(
     )
     generalist_training_paradigm = getattr(config.policy_variant, "generalist_training_paradigm", None)
     generalist_mode_text_token = bool(getattr(config.policy_variant, "generalist_mode_text_token", False))
+    fixed_conditioning_mode = resolve_fixed_conditioning_mode(config.policy_variant)
     gjd_ablation = (
         _resolve_generalist_ablation(
             generalist_denoising_mode_probs,
@@ -117,6 +119,11 @@ def build_run_tracking_metadata(
             str(generalist_training_paradigm) if generalist_training_paradigm is not None else None
         ),
         "generalist_mode_text_token": generalist_mode_text_token,
+        "fixed_conditioning_mode": (
+            fixed_conditioning_mode.value
+            if fixed_conditioning_mode is not None
+            else None
+        ),
         "generalist_dynamics_train_latent_root": (
             dynamics_mixture.train_latent_root if dynamics_mixture is not None else None
         ),
@@ -319,6 +326,10 @@ def build_wandb_tags(tracking_metadata: dict[str, Any]) -> tuple[str, ...]:
         )
     if tracking_metadata.get("generalist_mode_text_token") is True:
         ordered_tags.append("generalist_mode_text_token")
+    if tracking_metadata.get("fixed_conditioning_mode"):
+        ordered_tags.append(
+            f"conditioning_mode:{tracking_metadata['fixed_conditioning_mode']}"
+        )
     deduped: list[str] = []
     for tag in ordered_tags:
         if tag not in deduped:
@@ -355,6 +366,18 @@ def _resolve_generalist_ablation(
         and _close("video_conditioned_action", 0.0)
     ):
         base = "pure_joint"
+    elif (
+        _close("joint", 0.0)
+        and _close("action_conditioned_video", 1.0)
+        and _close("video_conditioned_action", 0.0)
+    ):
+        base = "pure_fdm"
+    elif (
+        _close("joint", 0.0)
+        and _close("action_conditioned_video", 0.0)
+        and _close("video_conditioned_action", 1.0)
+    ):
+        base = "pure_idm"
     elif (
         _close("joint", 0.6)
         and _close("action_conditioned_video", 0.2)

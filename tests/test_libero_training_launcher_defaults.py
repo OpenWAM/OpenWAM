@@ -111,6 +111,22 @@ def _launcher_train_argv(
     return json.loads(result.stdout)
 
 
+def _launcher_train_result(
+    relative_path: str,
+    *script_args: str,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env.update({"OPEN_WAM_PRINT_TRAIN_ARGV": "1", "NGPU": "1"})
+    return subprocess.run(
+        ["bash", str(REPO_ROOT / relative_path), *script_args],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
 def test_posttrain_launchers_delegate_to_shared_process_owner() -> None:
     expected_projects = {
         "scripts/run_causal_video_prediction_posttrain_libero.sh": "openwam-causal-video-libero",
@@ -309,7 +325,14 @@ def _resolved_config_from_realtime_argv(argv: list[str]):
     )
 
 
-def _assert_gjd_ablation_config(config, *, architecture: str, ablation: str) -> None:
+def _assert_gjd_ablation_config(
+    config,
+    *,
+    architecture: str,
+    ablation: str,
+    real_demo_weight: float = 1.0,
+    counterfactual_weight: float = 1.0,
+) -> None:
     if architecture not in {"parallel_stream", "dual_expert"}:
         raise AssertionError(f"Unexpected architecture {architecture!r}")
     probs = config.policy_variant.generalist_denoising_mode_probs
@@ -325,11 +348,35 @@ def _assert_gjd_ablation_config(config, *, architecture: str, ablation: str) -> 
         assert config.data.sample_construction.sample_order_mode == SampleOrderMode.REPLACEMENT
         assert config.data.generalist_dynamics_mixture.train_latent_root is None
         assert config.data.generalist_dynamics_mixture.val_latent_root is None
+    elif ablation == "pure_fdm":
+        assert architecture == "dual_expert"
+        assert probs[joint] == 0.0
+        assert probs[fdm] == 1.0
+        assert probs[idm] == 0.0
+        assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.DYNAMICS_ROUTED
+        mixture = config.data.generalist_dynamics_mixture
+        assert mixture.real_joint_weight == 0.0
+        assert mixture.real_action_conditioned_video_weight == real_demo_weight
+        assert mixture.real_video_conditioned_action_weight == 0.0
+        assert mixture.counterfactual_action_conditioned_video_weight == counterfactual_weight
+        assert mixture.counterfactual_video_conditioned_action_weight == 0.0
+    elif ablation == "pure_idm":
+        assert architecture == "dual_expert"
+        assert probs[joint] == 0.0
+        assert probs[fdm] == 0.0
+        assert probs[idm] == 1.0
+        assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.DYNAMICS_ROUTED
+        mixture = config.data.generalist_dynamics_mixture
+        assert mixture.real_joint_weight == 0.0
+        assert mixture.real_action_conditioned_video_weight == 0.0
+        assert mixture.real_video_conditioned_action_weight == real_demo_weight
+        assert mixture.counterfactual_action_conditioned_video_weight == 0.0
+        assert mixture.counterfactual_video_conditioned_action_weight == counterfactual_weight
     else:
         assert probs[joint] == 0.6
         assert probs[fdm] == 0.2
         assert probs[idm] == 0.2
-        assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.MIXED_DYNAMICS
+        assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.DYNAMICS_ROUTED
         assert config.data.sample_construction.sample_order_mode == SampleOrderMode.REPLACEMENT
         assert config.data.generalist_dynamics_mixture.train_latent_root is not None
         assert config.data.generalist_dynamics_mixture.val_latent_root is not None
@@ -383,7 +430,7 @@ def _assert_gjd_fullseg_w64_raw_config(raw: dict) -> None:
     assert raw["training"]["sample_loss_weight_mode"] == "none"
     assert raw["training"]["num_steps"] == 20000
     assert raw["policy_variant"]["joint_timestep_coupling"] == "independent"
-    assert raw["policy_variant"]["generalist_training_paradigm"] == "mixed_dynamics"
+    assert raw["policy_variant"]["generalist_training_paradigm"] == "dynamics_routed"
     assert raw["policy_variant"]["generalist_mode_text_token"] is False
     assert raw["trainer"]["checkpoint_mode"] == "full_training_state"
     assert raw["trainer"]["save_interval"] == 100
@@ -690,6 +737,68 @@ def test_unified_gjd_train_launcher_covers_architecture_and_ablation_surfaces() 
             )
             for value in FIXED_128_VALUES:
                 assert value not in argv
+
+
+@pytest.mark.parametrize("ablation", ["pure_fdm", "pure_idm"])
+def test_unified_gjd_train_launcher_supports_pure_conditional_source_ratios(
+    ablation: str,
+) -> None:
+    argv = _launcher_train_argv(
+        "scripts/run_gjd_libero.sh",
+        "train",
+        "--architecture=dual_expert",
+        f"--ablation={ablation}",
+        "--real-demo-weight=3",
+        "--counterfactual-weight=1",
+    )
+
+    config = _resolved_config_from_train_argv(argv)
+    _assert_gjd_ablation_config(
+        config,
+        architecture="dual_expert",
+        ablation=ablation,
+        real_demo_weight=3.0,
+        counterfactual_weight=1.0,
+    )
+    assert config.data.sample_construction.sample_order_mode == SampleOrderMode.REPLACEMENT
+    assert config.data.sample_construction.window_size == 64
+    assert config.training.window_size == 64
+
+
+@pytest.mark.parametrize(
+    ("stage", "architecture", "expected_message"),
+    [
+        ("train", "parallel_stream", "requires architecture=dual_expert"),
+        ("rollout", "dual_expert", "offline conditional mode"),
+    ],
+)
+def test_unified_gjd_launcher_rejects_unsupported_pure_conditional_surfaces(
+    stage: str,
+    architecture: str,
+    expected_message: str,
+) -> None:
+    result = _launcher_train_result(
+        "scripts/run_gjd_libero.sh",
+        stage,
+        f"--architecture={architecture}",
+        "--ablation=pure_fdm",
+    )
+
+    assert result.returncode == 2
+    assert expected_message in result.stderr
+
+
+def test_unified_gjd_launcher_rejects_source_ratio_for_nonconditional_ablation() -> None:
+    result = _launcher_train_result(
+        "scripts/run_gjd_libero.sh",
+        "train",
+        "--architecture=dual_expert",
+        "--ablation=vanilla",
+        "--real-demo-weight=3",
+    )
+
+    assert result.returncode == 2
+    assert "apply only to pure_fdm or pure_idm" in result.stderr
 
 
 def test_unified_gjd_train_launcher_keeps_historical_method_aliases() -> None:

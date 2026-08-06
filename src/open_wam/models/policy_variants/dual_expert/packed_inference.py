@@ -121,7 +121,7 @@ class DualExpertPackedInferenceProgram:
                 "decoupled_same_step action-only rollout uses the legacy split-cache route."
             )
         generalist_rollout_mode = (
-            _resolve_dual_expert_generalist_rollout_mode(context)
+            _resolve_dual_expert_generalist_rollout_mode(context, self.config)
             if _dual_expert_generalist_rollout_enabled(self.config)
             else GeneralistDenoisingMode.JOINT
         )
