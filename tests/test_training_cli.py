@@ -10,6 +10,8 @@ import pytest
 from open_wam.configs import (
     BatchAdapterName,
     ContextConditionLatentSource,
+    GeneralistDenoisingMode,
+    GeneralistTrainingParadigm,
     HistoryStreamVisibility,
     JointTimestepCoupling,
     LoopPolicyName,
@@ -423,6 +425,55 @@ def test_cli_overrides_coerce_quoted_bool_strings() -> None:
 
     assert config.policy_variant.generalist_mode_text_token is False
     assert config.trainer.enable_wandb is False
+
+
+def test_package_train_cli_expresses_documented_pure_fdm_gjd_preset() -> None:
+    config = load_training_cli_config(
+        parse_train_cli(
+            [
+                "--config-name",
+                "dual_expert_libero_generalist_joint_denoising",
+                "--set",
+                (
+                    "policy_variant.generalist_denoising_mode_probs="
+                    "{joint: 0, action_conditioned_video: 1, "
+                    "video_conditioned_action: 0}"
+                ),
+                "--set",
+                "policy_variant.generalist_mode_text_token=false",
+                "--set",
+                "policy_variant.generalist_training_paradigm=dynamics_routed",
+                "--set",
+                "data.generalist_dynamics_mixture.real_joint_weight=0",
+                "--set",
+                "data.generalist_dynamics_mixture.real_action_conditioned_video_weight=3",
+                "--set",
+                "data.generalist_dynamics_mixture.real_video_conditioned_action_weight=0",
+                "--set",
+                "data.generalist_dynamics_mixture.counterfactual_action_conditioned_video_weight=1",
+                "--set",
+                "data.generalist_dynamics_mixture.counterfactual_video_conditioned_action_weight=0",
+            ]
+        ),
+        env={},
+    )
+
+    assert config.policy_variant.generalist_denoising_mode_probs == {
+        GeneralistDenoisingMode.JOINT: 0.0,
+        GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO: 1.0,
+        GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION: 0.0,
+    }
+    assert (
+        config.policy_variant.generalist_training_paradigm
+        == GeneralistTrainingParadigm.DYNAMICS_ROUTED
+    )
+    assert config.policy_variant.generalist_mode_text_token is False
+    mixture = config.data.generalist_dynamics_mixture
+    assert mixture.real_joint_weight == 0.0
+    assert mixture.real_action_conditioned_video_weight == 3.0
+    assert mixture.real_video_conditioned_action_weight == 0.0
+    assert mixture.counterfactual_action_conditioned_video_weight == 1.0
+    assert mixture.counterfactual_video_conditioned_action_weight == 0.0
 
 
 def test_default_resume_path_raises_when_checkpoint_root_is_empty(tmp_path: Path) -> None:

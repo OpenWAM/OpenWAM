@@ -1,12 +1,9 @@
 # Extension Method Template
 
-This directory is an out-of-tree scaffold for a policy and decoder extension.
-Place the files in an installed application package, replace the `example.*`
-identifiers, implement the tensor operations, and expose
+This directory is a runnable out-of-tree policy and decoder extension. Place
+the files in an installed application package, replace the `example.*`
+identifiers, customize either tensor implementation, and expose
 `extension.register_open_wam`.
-
-`config.yaml` is a loadable contract template. It is not runnable until the
-`NotImplementedError` methods in the policy and decoder are implemented.
 
 Policy and decoder extensions require `open-wam[torch]`; use the `train` or
 `eval` extra when invoking those runtimes. Declare that dependency in the
@@ -18,11 +15,24 @@ The extension boundary is:
 ExperimentConfig -> VariantPipeline -> VisualTower -> PolicyVariant -> ActionDecoder
 ```
 
-Suggested workflow:
+The example requests visual-core tokens, normalizes them in the policy, and
+uses a small linear action decoder with masked MSE supervision. It is intended
+to prove the extension boundary, not to serve as a quality robot policy.
+
+Run one synthetic training step from a source checkout:
+
+```bash
+uv run --extra train open-wam-train \
+  --cfg templates/extension_method/config.yaml \
+  --extension templates.extension_method.extension
+```
+
+Suggested customization workflow:
 
 1. Parse `ExtensionPolicyConfig.options` and
    `ExtensionActionDecoderConfig.options` into application-owned dataclasses.
-2. Implement the typed methods in `policy_variant.py` and `action_decoder.py`.
+2. Replace the example tensor operations in `policy_variant.py` and/or
+   `action_decoder.py`.
 3. Register both builders in `extension.py`.
 4. Load `config.yaml` with `--extension your_package.extension`.
 5. Add config, construction, gradient, inference-state, and checkpoint tests.

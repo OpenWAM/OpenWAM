@@ -1,0 +1,36 @@
+schema_version = 1
+
+[[exceptions]]
+id = "PYSEC-2026-40"
+package = "diffusers"
+version = "0.37.1"
+expires = 2026-11-06
+reason = "The advisory affects remote custom-code loading through DiffusionPipeline.from_pretrained. Open-WAM does not use DiffusionPipeline and loads AutoencoderKLWan only from validated local component directories; 0.38 changes WAN bf16 normalization and fails the immutable model-parity gate."
+
+[[exceptions]]
+id = "PYSEC-2026-41"
+package = "diffusers"
+version = "0.37.1"
+expires = 2026-11-06
+reason = "The advisory affects automatic remote custom-pipeline loading. Open-WAM does not use DiffusionPipeline and loads AutoencoderKLWan only from validated local component directories; 0.38 changes WAN bf16 normalization and fails the immutable model-parity gate."
+
+[[exceptions]]
+id = "PYSEC-2026-2446"
+package = "diffusers"
+version = "0.37.1"
+expires = 2026-11-06
+reason = "The advisory is a Hub revision race in DiffusionPipeline.from_pretrained. Open-WAM does not use DiffusionPipeline and loads AutoencoderKLWan only from validated local component directories; 0.38 changes WAN bf16 normalization and fails the immutable model-parity gate."
+
+[[exceptions]]
+id = "PYSEC-2025-194"
+package = "torch"
+version = "2.11.0"
+expires = 2026-11-06
+reason = "The advisory describes torch.jit.script memory corruption in PyTorch 2.6. Open-WAM does not compile or load TorchScript; upgrading the characterized 2.11 tensor runtime requires a separate numerical-parity migration."
+
+[[exceptions]]
+id = "PYSEC-2026-3447"
+package = "setuptools"
+version = "81.0.0"
+expires = 2026-11-06
+reason = "The advisory affects Setuptools MANIFEST.in processing on normalization-preserving filesystems. Open-WAM builds distributions with Hatchling; Setuptools is present only because Torch declares it as a runtime dependency."

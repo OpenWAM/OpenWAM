@@ -7,7 +7,7 @@ name = "open-wam"
 version = "0.1.0"
 description = "Extensible world-action-model training and evaluation with a LingBot-compatible visual core."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 license = "MIT"
 license-files = ["LICENSE", "LICENSES/*", "THIRD_PARTY_NOTICES.md"]
 authors = [
@@ -43,50 +43,50 @@ open-wam-sim-rollout = "open_wam.cli.sim_rollout:main"
 [project.optional-dependencies]
 core = []
 torch = [
-    "diffusers>=0.35.0",
+    "diffusers>=0.35.0,<0.38",
     "einops>=0.8.0",
     "huggingface_hub>=0.30",
-    "msgpack>=1.1.2",
+    "msgpack>=1.2.1",
     "numpy>=1.26",
-    "pillow>=10.0",
+    "pillow>=12.3.0",
     "safetensors>=0.4.3",
     "sentencepiece>=0.2.0",
     "torch>=2.4",
-    "transformers>=4.52.0",
+    "transformers>=5.5.0",
 ]
 train = [
     "accelerate>=1.1.0",
-    "diffusers>=0.35.0",
+    "diffusers>=0.35.0,<0.38",
     "einops>=0.8.0",
     "h5py>=3.11.0",
     "huggingface_hub>=0.30",
     "imageio>=2.36.0",
     "imageio-ffmpeg>=0.6.0",
-    "msgpack>=1.1.2",
+    "msgpack>=1.2.1",
     "numpy>=1.26",
-    "pillow>=10.0",
+    "pillow>=12.3.0",
     "pyarrow>=18.0",
     "safetensors>=0.4.3",
     "sentencepiece>=0.2.0",
     "torch>=2.4",
-    "transformers>=4.52.0",
+    "transformers>=5.5.0",
 ]
 eval = [
-    "diffusers>=0.35.0",
+    "diffusers>=0.35.0,<0.38",
     "einops>=0.8.0",
     "h5py>=3.11.0",
     "huggingface_hub>=0.30",
     "imageio>=2.36.0",
     "imageio-ffmpeg>=0.6.0",
     "matplotlib>=3.10.8",
-    "msgpack>=1.1.2",
+    "msgpack>=1.2.1",
     "numpy>=1.26",
-    "pillow>=10.0",
+    "pillow>=12.3.0",
     "pyarrow>=18.0",
     "safetensors>=0.4.3",
     "sentencepiece>=0.2.0",
     "torch>=2.4",
-    "transformers>=4.52.0",
+    "transformers>=5.5.0",
 ]
 tracking = [
     "wandb>=0.25.1",
@@ -121,7 +121,7 @@ robotwin = [
 sim = [
     "bddl==1.0.1",
     "cloudpickle>=3.1.2",
-    "diffusers>=0.35.0",
+    "diffusers>=0.35.0,<0.38",
     "easydict>=1.13",
     "einops>=0.8.0",
     "future>=1.0.0",
@@ -131,16 +131,16 @@ sim = [
     "hydra-core>=1.3.2",
     "imageio>=2.36.0",
     "imageio-ffmpeg>=0.6.0",
-    "msgpack>=1.1.2",
+    "msgpack>=1.2.1",
     "numpy>=1.26",
-    "pillow>=10.0",
+    "pillow>=12.3.0",
     "pyarrow>=18.0",
     "robosuite==1.4.0",
     "safetensors>=0.4.3",
     "sentencepiece>=0.2.0",
     "termcolor>=3.3.0",
     "torch>=2.4",
-    "transformers>=4.52.0",
+    "transformers>=5.5.0",
 ]
 deployment = [
     "numpy>=1.26",
@@ -155,7 +155,7 @@ full = [
     "accelerate>=1.1.0",
     "bddl==1.0.1",
     "cloudpickle>=3.1.2",
-    "diffusers>=0.35.0",
+    "diffusers>=0.35.0,<0.38",
     "easydict>=1.13",
     "einops>=0.8.0",
     "future>=1.0.0",
@@ -167,25 +167,28 @@ full = [
     "imageio-ffmpeg>=0.6.0",
     "matplotlib>=3.10.8",
     "mkdocs==1.6.1",
-    "msgpack>=1.1.2",
+    "msgpack>=1.2.1",
     "mujoco>=3.4",
     "numpy>=1.26",
     "opencv-python>=4.10.0",
-    "pillow>=10.0",
+    "pillow>=12.3.0",
     "pyarrow>=18.0",
     "robosuite==1.4.0",
     "safetensors>=0.4.3",
     "sentencepiece>=0.2.0",
     "termcolor>=3.3.0",
     "torch>=2.4",
-    "transformers>=4.52.0",
+    "transformers>=5.5.0",
     "wandb>=0.25.1",
 ]
 
 [dependency-groups]
 dev = [
     "pyflakes==3.4.0",
-    "pytest>=8.3",
+    "pytest>=9.0.3",
+]
+audit = [
+    "pip-audit==2.10.1",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -197,6 +200,10 @@ packages = ["src/open_wam"]
 "configs/examples" = "open_wam/resources/configs/examples"
 "configs/experiments" = "open_wam/resources/configs/experiments"
 "configs/local_paths.sample.yaml" = "open_wam/resources/configs/local_paths.sample.yaml"
+"notes/index/lerobot_consortium_hf_dataset_contracts.json" = "open_wam/resources/consortium/lerobot_consortium_hf_dataset_contracts.json"
+"notes/index/lerobot_consortium_hf_dataset_inventory.csv" = "open_wam/resources/consortium/lerobot_consortium_hf_dataset_inventory.csv"
+"notes/index/lerobot_consortium_hf_dataset_inventory.md" = "open_wam/resources/consortium/lerobot_consortium_hf_dataset_inventory.md"
+"notes/index/lerobot_consortium_hf_repo_ids.txt" = "open_wam/resources/consortium/lerobot_consortium_hf_repo_ids.txt"
 "templates" = "open_wam/resources/templates"
 
 [tool.hatch.build.targets.sdist]
@@ -211,6 +218,10 @@ only-include = [
     "configs",
     "docs",
     "mkdocs.yml",
+    "notes/index/lerobot_consortium_hf_dataset_contracts.json",
+    "notes/index/lerobot_consortium_hf_dataset_inventory.csv",
+    "notes/index/lerobot_consortium_hf_dataset_inventory.md",
+    "notes/index/lerobot_consortium_hf_repo_ids.txt",
     "pyproject.toml",
     "src/open_wam",
     "templates",

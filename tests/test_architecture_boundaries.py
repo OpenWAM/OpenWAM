@@ -7387,7 +7387,7 @@ def test_retained_checkout_commands_require_machine_local_roots() -> None:
 
 def test_active_checkout_docs_and_tools_have_no_private_machine_defaults() -> None:
     excluded = {
-        REPO_ROOT / "notes/production_core_pruning_roadmap.md",
+        REPO_ROOT / "notes/finished_roadmaps/production_core_pruning_roadmap.md",
         REPO_ROOT / "scripts/build_docs_site.py",
         REPO_ROOT / "scripts/check_release_metadata.py",
         REPO_ROOT / "scripts/ci_basic_sanity.py",

@@ -75,6 +75,7 @@ from tests.characterization.dual_expert_refactor_worker import (
     _runtime_state_contract_differences,
 )
 from tests.characterization.run_dual_expert_refactor_characterization import (
+    DISTRIBUTED_GRADIENT_TOLERANCE,
     RESUME_POST_UPDATE_METRIC_TOLERANCE,
     _assert_checkout_import_provenance,
     _comparison_projection,
@@ -584,6 +585,27 @@ def test_checkpoint_provenance_accepts_schema_v1_field_aliases(
     assert_checkpoint_provenance(report, asset_id=method.asset_id)
 
 
+def test_checkpoint_provenance_accepts_legacy_enum_value_aliases(
+    tmp_path: Path,
+) -> None:
+    method = METHOD_BY_ASSET_ID["gjd_mode_token"]
+    config = apply_gjd_ablation(_load_method_config(method.config_name), method)
+    contract = expected_checkpoint_contract(method=method, config=config)
+    contract["policy_variant.generalist_training_paradigm"] = "mixed_dynamics"
+    config_path = tmp_path / "resolved_config.yaml"
+    _write_dotted_contract(config_path, contract)
+
+    report = checkpoint_provenance_report(
+        method=method,
+        expected_config=config,
+        resolved_config_path=config_path,
+    )
+
+    assert report["strict_match"] is True
+    assert report["mismatches"] == []
+    assert_checkpoint_provenance(report, asset_id=method.asset_id)
+
+
 def test_checkpoint_provenance_rejects_architecture_compatible_stale_contract(
     tmp_path: Path,
 ) -> None:
@@ -877,6 +899,26 @@ def test_characterization_tolerance_is_limited_to_distributed_numeric_fields() -
         ".optimizer_step.distributed_numeric.parameter_groups.video_backbone.after.sum"
         in difference
         for difference in differences
+    )
+
+
+def test_distributed_gradient_tolerance_bounds_nccl_transport_drift() -> None:
+    expected = {"gradients": {"mode_token": {"absolute_sum": 1.0}}}
+    accepted = {"gradients": {"mode_token": {"absolute_sum": 1.0059}}}
+    changed = {"gradients": {"mode_token": {"absolute_sum": 1.0061}}}
+    resolver = _numeric_tolerance_resolver(DISTRIBUTED_GRADIENT_TOLERANCE)
+
+    assert compare_characterization_reports(
+        expected,
+        accepted,
+        tolerance=ComparisonTolerance(absolute=0.0, relative=0.0),
+        tolerance_for_path=resolver,
+    ) == []
+    assert compare_characterization_reports(
+        expected,
+        changed,
+        tolerance=ComparisonTolerance(absolute=0.0, relative=0.0),
+        tolerance_for_path=resolver,
     )
 
 
@@ -1835,9 +1877,16 @@ def test_comparison_projection_normalizes_only_schema_v1_metadata() -> None:
         "config_name": "mot_libero_latent_local_joint_heng_compatible",
         "backend": {"policy_variant": "mot"},
         "checkpoint_provenance": {
-            "contract_fields": ["policy_variant.parallel_sequence_contract"],
+            "contract_fields": [
+                "policy_variant.parallel_sequence_contract",
+                "policy_variant.generalist_training_paradigm",
+            ],
+            "actual": {
+                "policy_variant.generalist_training_paradigm": "mixed_dynamics"
+            },
             "expected": {
-                "policy_variant.parallel_sequence_contract": "legacy_prefix"
+                "policy_variant.parallel_sequence_contract": "legacy_prefix",
+                "policy_variant.generalist_training_paradigm": "mixed_dynamics",
             },
         },
         "state": {"type": "MoTRuntimeState"},
@@ -1847,8 +1896,17 @@ def test_comparison_projection_normalizes_only_schema_v1_metadata() -> None:
         "config_name": "dual_expert_libero_joint",
         "backend": {"policy_variant": "dual_expert"},
         "checkpoint_provenance": {
-            "contract_fields": ["policy_variant.sequence_contract"],
-            "expected": {"policy_variant.sequence_contract": "legacy_prefix"},
+            "contract_fields": [
+                "policy_variant.sequence_contract",
+                "policy_variant.generalist_training_paradigm",
+            ],
+            "actual": {
+                "policy_variant.generalist_training_paradigm": "dynamics_routed"
+            },
+            "expected": {
+                "policy_variant.sequence_contract": "legacy_prefix",
+                "policy_variant.generalist_training_paradigm": "dynamics_routed",
+            },
         },
         "state": {"type": "DualExpertRuntimeState"},
         "loss": 1.25,

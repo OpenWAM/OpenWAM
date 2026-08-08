@@ -21,6 +21,6 @@ Open-WAM follows the Contributor Covenant Code of Conduct, version 2.1.
 
 ## Enforcement
 
-Report conduct issues to the repository maintainers through the security or
-maintainer contact channel. Maintainers may remove comments, close issues,
+Report conduct issues through the private channels in
+[`SECURITY.md`](SECURITY.md). Maintainers may remove comments, close issues,
 block accounts, or take other moderation action when necessary.

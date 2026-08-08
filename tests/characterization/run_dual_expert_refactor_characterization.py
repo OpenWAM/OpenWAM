@@ -40,6 +40,7 @@ from .dual_expert_refactor_fixtures import build_all_characterization_fixtures
 from .dual_expert_refactor_provenance import (
     apply_checkpoint_provenance_policy,
     build_checkpoint_source_contract_config,
+    canonical_checkpoint_contract_value,
     checkpoint_provenance_report,
 )
 
@@ -67,6 +68,13 @@ DISTRIBUTED_AGGREGATE_TOLERANCE = ComparisonTolerance(
 DISTRIBUTED_AGGREGATE_DELTA_TOLERANCE = ComparisonTolerance(
     absolute=2 * DISTRIBUTED_AGGREGATE_TOLERANCE.absolute,
     relative=0.0,
+)
+# Forward tensors and losses remain exact, but changing NCCL host transport can
+# shift BF16 FSDP gradient aggregates slightly through reduction order. Keep
+# this bound just above the characterized 0.54% transport delta.
+DISTRIBUTED_GRADIENT_TOLERANCE = ComparisonTolerance(
+    absolute=5e-4,
+    relative=6e-3,
 )
 RESUME_POST_UPDATE_METRIC_TOLERANCE = ComparisonTolerance(
     # One BF16 quantum at the observed ~2^-9 continuation-loss scale.
@@ -124,8 +132,6 @@ _REPORT_STRING_ALIASES = {
     "MoTVideoLayerCache": "DualExpertVideoLayerCache",
     **_REPORT_KEY_ALIASES,
 }
-
-
 def _assert_checkout_import_provenance(
     *,
     package_file: Path | None = None,
@@ -909,6 +915,12 @@ def _comparison_projection(
             for index, item in enumerate(value)
         ]
     if isinstance(value, str):
+        if (
+            len(_path) >= 3
+            and _path[-3] == "checkpoint_provenance"
+            and _path[-2] in {"actual", "expected"}
+        ):
+            return canonical_checkpoint_contract_value(_path[-1], value)
         if _path and _path[-1] == "config_name":
             return canonical_config_stem(value)
         if (
@@ -1133,14 +1145,14 @@ def _parse_args() -> argparse.Namespace:
         "--absolute-tolerance",
         dest="gradient_absolute_tolerance",
         type=float,
-        default=5e-4,
+        default=DISTRIBUTED_GRADIENT_TOLERANCE.absolute,
     )
     verify.add_argument(
         "--gradient-relative-tolerance",
         "--relative-tolerance",
         dest="gradient_relative_tolerance",
         type=float,
-        default=5e-3,
+        default=DISTRIBUTED_GRADIENT_TOLERANCE.relative,
     )
     _add_selection_args(verify)
     verify.set_defaults(handler=verify_characterization)

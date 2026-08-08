@@ -25,8 +25,27 @@ def test_public_project_metadata_is_complete() -> None:
 
 
 @pytest.mark.unit
+def test_model_extras_exclude_incompatible_wan_vae_normalization() -> None:
+    optional_dependencies = _pyproject()["project"]["optional-dependencies"]
+    expected = "diffusers>=0.35.0,<0.38"
+
+    for extra in ("torch", "train", "eval", "sim", "full"):
+        requirements = optional_dependencies[extra]
+        assert [item for item in requirements if item.startswith("diffusers")] == [expected]
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
-    "field", ("license", "license-files", "authors", "urls", "classifiers", "keywords")
+    "field",
+    (
+        "license",
+        "license-files",
+        "authors",
+        "urls",
+        "classifiers",
+        "keywords",
+        "requires-python",
+    ),
 )
 def test_public_project_metadata_rejects_missing_fields(field: str) -> None:
     pyproject = deepcopy(_pyproject())

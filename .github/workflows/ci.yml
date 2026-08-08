@@ -29,6 +29,19 @@ jobs:
         # Static stdlib-only checks. Do not install project deps, run pytest, import open_wam, or install Torch here.
         run: python scripts/ci_basic_sanity.py
 
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Audit frozen full environment
+        run: uv run --frozen --group audit python scripts/check_dependency_audit.py
+
   minimal-package:
     runs-on: ubuntu-latest
     env:
@@ -112,6 +125,17 @@ jobs:
         run: >-
           uv run pytest --strict-markers -q
           -m "not (gpu or sim or data or slow)"
+      - name: Build and exercise installed wheel
+        if: matrix.python-version == '3.11'
+        run: |
+          uv build --wheel --out-dir .ci-dist
+          uv pip install --target .ci-wheel --no-deps .ci-dist/*.whl
+          WORKDIR="$(mktemp -d)"
+          cd "${WORKDIR}"
+          PYTHONPATH="${GITHUB_WORKSPACE}/.ci-wheel" \
+            "${GITHUB_WORKSPACE}/.venv/bin/python" \
+            "${GITHUB_WORKSPACE}/scripts/check_installed_distribution.py" \
+            --expected-package-root "${GITHUB_WORKSPACE}/.ci-wheel"
 
   docs-site:
     runs-on: ubuntu-latest

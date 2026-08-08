@@ -163,46 +163,57 @@ resume support.
 
 ## Generalist Joint Denoising
 
-Use the maintained GJD wrapper so training and rollout resolve the same
-ablation semantics. Dual expert is the standard GJD architecture; parallel
-stream remains a documented compatibility and diagnostic path.
+Installed-package GJD training uses the generic `open-wam-train` entry point.
+Dual expert is the standard GJD architecture; parallel stream remains a
+documented compatibility and diagnostic path. Source checkouts also provide
+`scripts/run_gjd_libero.sh` as a convenience for expanding named ablations and
+launching LIBERO rollouts. The script is not part of the wheel or source
+distribution and does not own model semantics.
 
 Choose the interface by experiment intent:
 
 | Goal | Interface | Live simulator policy? |
 | --- | --- | --- |
-| Compare pure FDM or IDM within a GJD study | `run_gjd_libero.sh` with `pure_fdm` or `pure_idm` | No; use offline diagnostics |
+| Compare pure FDM or IDM within a GJD study | GJD config with pure FDM/IDM overrides | No; use offline diagnostics |
 | Train a run whose primary identity is FDM or IDM | `forward_dynamics` or `inverse_dynamics` | No; use offline diagnostics |
 | Produce online robot actions | VTA, ATV, joint, decoupled, or a noisy-condition program | Yes |
 
 The first two choices execute the same conditional tensor contract. They differ
-only in experiment identity and tracking: the GJD wrapper records an ablation,
-while the standalone config records a fixed program.
+only in experiment identity and tracking: a GJD run records an ablation, while
+the standalone config records a fixed program.
 
 ```bash
-bash scripts/run_gjd_libero.sh train \
-  --architecture dual_expert \
-  --ablation mode_token \
+open-wam-train \
+  --config-name dual_expert_libero_generalist_joint_denoising \
   --save-root runs/dual-expert-gjd-mode-token \
   --dataset-root /path/to/libero_10 \
   --transformer-subdir /path/to/base/transformer \
   --enable-wandb \
-  --wandb-project openwam-gjd
+  --wandb-project openwam-gjd \
+  --set policy_variant.generalist_mode_text_token=true
 ```
 
-Valid ablations are `vanilla`, `pure_joint`, `pure_fdm`, `pure_idm`, and
-`mode_token`. Vanilla and mode-token use the configured five-bucket
-real/counterfactual dynamics mixture. Pure-joint is demo-only. Pure-FDM and
-pure-IDM use only the matching real-demo and counterfactual buckets; their
-weights are a relative source ratio:
+The canonical config is vanilla GJD: joint/FDM/IDM mode probabilities are
+`0.6/0.2/0.2`, the five-bucket real/counterfactual mixer is active, and the
+mode token is disabled. Setting `generalist_mode_text_token=true` produces the
+mode-token variant above. Pure-joint sets probabilities to `1/0/0` and
+`generalist_training_paradigm=demo_only`. Pure-FDM and pure-IDM use only the
+matching real-demo and counterfactual buckets; their weights are a relative
+source ratio. For example, pure FDM with a `3:1` real-to-counterfactual ratio is:
 
 ```bash
-bash scripts/run_gjd_libero.sh train \
-  --architecture dual_expert \
-  --ablation pure_fdm \
-  --real-demo-weight 3 \
-  --counterfactual-weight 1 \
-  --save-root runs/dual-expert-gjd-pure-fdm
+FDM_PROBS='{joint: 0, action_conditioned_video: 1, video_conditioned_action: 0}'
+open-wam-train \
+  --config-name dual_expert_libero_generalist_joint_denoising \
+  --save-root runs/dual-expert-gjd-pure-fdm \
+  --set "policy_variant.generalist_denoising_mode_probs=${FDM_PROBS}" \
+  --set policy_variant.generalist_mode_text_token=false \
+  --set policy_variant.generalist_training_paradigm=dynamics_routed \
+  --set data.generalist_dynamics_mixture.real_joint_weight=0 \
+  --set data.generalist_dynamics_mixture.real_action_conditioned_video_weight=3 \
+  --set data.generalist_dynamics_mixture.real_video_conditioned_action_weight=0 \
+  --set data.generalist_dynamics_mixture.counterfactual_action_conditioned_video_weight=1 \
+  --set data.generalist_dynamics_mixture.counterfactual_video_conditioned_action_weight=0
 ```
 
 Under replacement sampling, the example draws real and counterfactual FDM
@@ -219,14 +230,15 @@ real demonstrations, counterfactual rows, or both. The legacy input value
 `mixed_dynamics` is accepted for old resolved configs and is normalized to
 `dynamics_routed`; new configs and commands should use the canonical name.
 
-Resume through the same wrapper:
+Resume through the same package entry point and repeat the experiment-defining
+overrides (the checkpoint-local resolved config remains the audit record):
 
 ```bash
-bash scripts/run_gjd_libero.sh train \
-  --architecture dual_expert \
-  --ablation mode_token \
+open-wam-train \
+  --config-name dual_expert_libero_generalist_joint_denoising \
   --save-root runs/dual-expert-gjd-mode-token \
-  --checkpoint-root runs/dual-expert-gjd-mode-token/checkpoints/checkpoint_step_N
+  --checkpoint-root runs/dual-expert-gjd-mode-token/checkpoints/checkpoint_step_N \
+  --set policy_variant.generalist_mode_text_token=true
 ```
 
 ### Standalone Conditional FDM And IDM
@@ -419,7 +431,8 @@ uv run --extra sim python scripts/run_libero_dual_expert_visualization.py \
 
 The six standard non-GJD dual-expert rollout programs use an `800` timestep and
 `50` chunk limit. Conditional FDM/IDM is offline-only and does not use this live
-rollout command. GJD uses the wrapper and defaults to `1500/100`:
+rollout command. GJD LIBERO rollout is a source-checkout integration and
+defaults to `1500/100`:
 
 ```bash
 bash scripts/run_gjd_libero.sh rollout \

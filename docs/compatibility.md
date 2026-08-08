@@ -14,12 +14,22 @@ between API compatibility and exact numerical characterization.
 | Simulator integrations | fake-adapter CI; real environments on documented external stacks |
 | Python SDK | `open_wam.sdk.config`, `.data`, `.policy`, `.simulator`, `.results` |
 
+Installed distributions include a PEP 561 `py.typed` marker. Static type
+information is therefore available to downstream packages without a separate
+stub distribution; the stable import boundary remains the role-specific SDK.
+
 `pyproject.toml` dependency ranges describe install compatibility. Exact
 training gradients and rollout outputs are characterized only with the locked
 dependency graph and the hardware/software stack recorded by the
 characterization report. Use `uv sync --frozen` when reproducing those claims.
 Changing PyTorch, Diffusers, Transformers, CUDA, attention backends, or GPU
 models requires re-characterization even when installation remains supported.
+
+The supported Diffusers range is intentionally capped below `0.38`. That
+release changed WAN RMS normalization precision and does not reproduce the
+characterized bf16 checkpoint outputs. Open-WAM's lock currently selects
+`0.37.1`; raising the cap is a numerical migration and requires the real-model
+GPU characterization gate, not only an import or unit test.
 
 ## Required Gates
 

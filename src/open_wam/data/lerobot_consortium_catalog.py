@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any
 import warnings
 
 from open_wam.configs import LeRobotConsortiumDataConfig
+from open_wam.contracts.paths import find_repo_root
 
 from .lerobot_consortium_contracts import (
     build_lerobot_consortium_contract_catalog_from_inventory_rows,
@@ -38,11 +40,31 @@ from .lerobot_consortium_storage import (
 )
 
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-_CONSORTIUM_INDEX_REPO_IDS_PATH = _REPO_ROOT / "notes" / "index" / "lerobot_consortium_hf_repo_ids.txt"
-_CONSORTIUM_INDEX_INVENTORY_CSV_PATH = _REPO_ROOT / "notes" / "index" / "lerobot_consortium_hf_dataset_inventory.csv"
-_CONSORTIUM_INDEX_INVENTORY_MD_PATH = _REPO_ROOT / "notes" / "index" / "lerobot_consortium_hf_dataset_inventory.md"
-_CONSORTIUM_INDEX_CONTRACTS_JSON_PATH = _REPO_ROOT / "notes" / "index" / "lerobot_consortium_hf_dataset_contracts.json"
+_CONSORTIUM_INDEX_ROOT_ENV = "OPEN_WAM_CONSORTIUM_INDEX_ROOT"
+
+
+def _resolve_consortium_index_root() -> tuple[Path, bool]:
+    """Return the active snapshot root and whether refresh may write to it."""
+
+    explicit_root = os.environ.get(_CONSORTIUM_INDEX_ROOT_ENV)
+    if explicit_root:
+        return Path(explicit_root).expanduser().resolve(), True
+
+    source_root = find_repo_root(Path(__file__))
+    package_source = source_root / "src" / "open_wam"
+    module_path = Path(__file__).resolve()
+    if module_path.is_relative_to(package_source.resolve()):
+        return source_root / "notes" / "index", True
+
+    package_resources = module_path.parents[1] / "resources" / "consortium"
+    return package_resources, False
+
+
+_CONSORTIUM_INDEX_ROOT, _CONSORTIUM_INDEX_MUTABLE = _resolve_consortium_index_root()
+_CONSORTIUM_INDEX_REPO_IDS_PATH = _CONSORTIUM_INDEX_ROOT / "lerobot_consortium_hf_repo_ids.txt"
+_CONSORTIUM_INDEX_INVENTORY_CSV_PATH = _CONSORTIUM_INDEX_ROOT / "lerobot_consortium_hf_dataset_inventory.csv"
+_CONSORTIUM_INDEX_INVENTORY_MD_PATH = _CONSORTIUM_INDEX_ROOT / "lerobot_consortium_hf_dataset_inventory.md"
+_CONSORTIUM_INDEX_CONTRACTS_JSON_PATH = _CONSORTIUM_INDEX_ROOT / "lerobot_consortium_hf_dataset_contracts.json"
 _CONSORTIUM_INDEX_SANITY_CACHE: set[tuple[str, ...]] = set()
 
 
@@ -214,6 +236,12 @@ def _consortium_index_prompt_available() -> bool:
 def _refresh_lerobot_consortium_index_snapshots(
     data_config: LeRobotConsortiumDataConfig,
 ) -> None:
+    if not _CONSORTIUM_INDEX_MUTABLE:
+        raise RuntimeError(
+            "The installed consortium snapshot is read-only. Set "
+            f"{_CONSORTIUM_INDEX_ROOT_ENV} to a writable snapshot directory "
+            "before refreshing it."
+        )
     configured_targets = _configured_remote_repo_targets(data_config)
 
     target_by_repo_id: dict[str, LeRobotConsortiumRepoTarget] = {}
@@ -348,17 +376,26 @@ def validate_lerobot_consortium_index_snapshot(data_config: LeRobotConsortiumDat
         _CONSORTIUM_INDEX_SANITY_CACHE.add(configured_repo_ids)
         return
 
+    refresh_help = (
+        "Refresh command: PYTHONPATH=src python "
+        "scripts/build_lerobot_consortium_index.py "
+        "--repo-list notes/index/lerobot_consortium_hf_repo_ids.txt"
+        if _CONSORTIUM_INDEX_MUTABLE
+        else (
+            "The installed snapshot is read-only. Upgrade Open-WAM for a newer "
+            f"snapshot, or set {_CONSORTIUM_INDEX_ROOT_ENV} to a writable "
+            "snapshot directory and refresh it from a source checkout."
+        )
+    )
     message = (
         "Detected discrepancy between the configured LeRobot consortium repo "
         "ids and the local parsed inventory/contracts. "
         "This usually means the repo-id list, inventory CSV, and contract JSON are out of sync.\n"
         + "\n".join(f"- {issue}" for issue in issues)
-        + "\nRefresh command: "
-        + "PYTHONPATH=src python scripts/build_lerobot_consortium_index.py "
-          "--repo-list notes/index/lerobot_consortium_hf_repo_ids.txt"
+        + f"\n{refresh_help}"
     )
 
-    if _consortium_index_prompt_available():
+    if _CONSORTIUM_INDEX_MUTABLE and _consortium_index_prompt_available():
         prompt = (
             f"{message}\n"
             "Refresh the local consortium inventory/contracts now? "

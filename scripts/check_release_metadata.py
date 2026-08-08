@@ -21,6 +21,10 @@ PUBLIC_SDIST_ENTRIES = frozenset(
         "configs",
         "docs",
         "mkdocs.yml",
+        "notes/index/lerobot_consortium_hf_dataset_contracts.json",
+        "notes/index/lerobot_consortium_hf_dataset_inventory.csv",
+        "notes/index/lerobot_consortium_hf_dataset_inventory.md",
+        "notes/index/lerobot_consortium_hf_repo_ids.txt",
         "pyproject.toml",
         "src/open_wam",
         "templates",
@@ -62,6 +66,7 @@ def validate_project_metadata(pyproject: dict[str, Any]) -> None:
         "name": "open-wam",
         "readme": "README.md",
         "license": "MIT",
+        "requires-python": ">=3.11,<3.13",
     }
     for key, expected in expected_scalars.items():
         if project.get(key) != expected:

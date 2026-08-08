@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-import importlib
 import importlib.util
 import sys
 from functools import lru_cache
 from pathlib import Path
 
+from open_wam._shims.loader import ensure_flash_attn_shims
 from open_wam.configs.backbone import LingbotCompatibleVideoBackboneConfig
-
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[4]
+from open_wam.contracts.paths import resolve_repo_path
 
 
 def resolve_reference_model_path(config: LingbotCompatibleVideoBackboneConfig) -> Path:
@@ -23,7 +20,7 @@ def resolve_reference_model_path(config: LingbotCompatibleVideoBackboneConfig) -
     if raw_path.is_absolute():
         resolved = raw_path
     else:
-        resolved = (_repo_root() / raw_path).resolve()
+        resolved = resolve_repo_path(raw_path)
     if not resolved.exists():
         raise FileNotFoundError(
             "Unable to find the LingBot reference model source file at "
@@ -31,37 +28,9 @@ def resolve_reference_model_path(config: LingbotCompatibleVideoBackboneConfig) -
         )
     return resolved
 
-
-def _shim_root() -> Path:
-    return _repo_root() / "src" / "open_wam" / "_shims"
-
-
-def _install_shim_module(module_name: str, relative_path: str) -> None:
-    module_path = (_shim_root() / relative_path).resolve()
-    spec = importlib.util.spec_from_file_location(module_name, module_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Unable to import flash-attn shim from {module_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-
-
-def _ensure_flash_attn_shims() -> None:
-    for module_name, relative_path in (
-        ("flash_attn_interface", "flash_attn_interface.py"),
-        ("flash_attn", "flash_attn.py"),
-    ):
-        if module_name in sys.modules:
-            continue
-        try:
-            importlib.import_module(module_name)
-        except ImportError:
-            _install_shim_module(module_name, relative_path)
-
-
 @lru_cache(maxsize=1)
 def load_internal_wan_transformer_class() -> type:
-    _ensure_flash_attn_shims()
+    ensure_flash_attn_shims()
     from open_wam.third_party.lingbot import WanTransformer3DModel
 
     return WanTransformer3DModel
@@ -70,7 +39,7 @@ def load_internal_wan_transformer_class() -> type:
 @lru_cache(maxsize=1)
 def load_reference_wan_transformer_class(reference_model_path: str) -> type:
     module_path = Path(reference_model_path).resolve()
-    _ensure_flash_attn_shims()
+    ensure_flash_attn_shims()
     spec = importlib.util.spec_from_file_location("open_wam._lingbot_reference_model", module_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Unable to import LingBot reference model from {module_path}")

@@ -8,7 +8,11 @@ from typing import Any
 
 import yaml
 
-from open_wam.configs import ExperimentConfig, load_experiment_config
+from open_wam.configs import (
+    ExperimentConfig,
+    GeneralistTrainingParadigm,
+    load_experiment_config,
+)
 
 from .dual_expert_refactor_contract import (
     DualExpertMethodSpec,
@@ -31,6 +35,12 @@ _CHECKPOINT_FIELD_ALIASES = {
     "policy_variant.generalist_denoising_mode_probs": (
         "policy_variant.mot_generalist_training_mode_probs",
     ),
+}
+
+# Persisted configs are immutable evidence. Reuse the typed config boundary to
+# canonicalize legacy enum spellings without rewriting checkpoint artifacts.
+_CHECKPOINT_ENUM_FIELDS: dict[str, type[Enum]] = {
+    "policy_variant.generalist_training_paradigm": GeneralistTrainingParadigm,
 }
 
 _COMMON_FIELDS = (
@@ -107,7 +117,10 @@ def checkpoint_provenance_report(
     )
     fields = tuple(expected)
     actual = {
-        field: _normalize_contract_value(_read_mapping_path(raw, field))
+        field: canonical_checkpoint_contract_value(
+            field,
+            _read_mapping_path(raw, field),
+        )
         for field in fields
     }
     mismatches = [
@@ -189,7 +202,10 @@ def expected_checkpoint_contract(
             if not field.startswith("data.generalist_dynamics_mixture.")
         )
     return {
-        field: _normalize_contract_value(_read_attribute_path(config, field))
+        field: canonical_checkpoint_contract_value(
+            field,
+            _read_attribute_path(config, field),
+        )
         for field in fields
     }
 
@@ -261,6 +277,19 @@ def _canonical_checkpoint_field(field: str) -> str:
         if field == canonical or field in aliases:
             return canonical
     return field
+
+
+def canonical_checkpoint_contract_value(field: str, value: Any) -> Any:
+    """Normalize a persisted value through its typed config contract."""
+
+    normalized = _normalize_contract_value(value)
+    enum_type = _CHECKPOINT_ENUM_FIELDS.get(field)
+    if enum_type is None or not isinstance(normalized, str):
+        return normalized
+    try:
+        return enum_type(normalized).value
+    except ValueError:
+        return normalized
 
 
 def _normalize_contract_value(value: Any) -> Any:

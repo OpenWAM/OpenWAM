@@ -20,8 +20,9 @@ Send a private report to the maintainers with:
 
 Use the repository's
 [private vulnerability report](https://github.com/DaivdYuan/Open-WAM/security/advisories/new)
-form. If that form is unavailable, contact a listed maintainer privately before
-sharing reproduction artifacts.
+form. If that form is unavailable, email the repository owner at
+[47169162+DaivdYuan@users.noreply.github.com](mailto:47169162+DaivdYuan@users.noreply.github.com) before sharing reproduction
+artifacts. Do not fall back to a public issue.
 
 ## Scope
 
@@ -44,6 +45,12 @@ The only maintained legacy exception is explicitly configured CALVIN language
 annotation object arrays. Set the `trusted_legacy` policy only for a local
 artifact whose origin and integrity have been independently verified. Never
 enable that policy for downloaded or user-supplied files.
+
+The frozen full environment is checked with `pip-audit` in pull requests and
+release checks. Narrow exceptions live in
+`.github/dependency-audit-exceptions.toml`; each is bound to one package,
+version, advisory, rationale, and expiration date. New, stale, or expired
+exceptions fail CI.
 
 Out of scope:
 

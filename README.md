@@ -156,7 +156,8 @@ Use the package simulator boundary for configured benchmark adapters:
 ```bash
 uv run --extra sim open-wam-sim-rollout \
   --cfg configs/experiments/parallel_stream_robotwin_smoke.yaml \
-  --benchmark robotwin
+  --benchmark robotwin \
+  --robotwin-task-name <task-name>
 ```
 
 Maintained LIBERO and GJD checkpoint commands are documented in

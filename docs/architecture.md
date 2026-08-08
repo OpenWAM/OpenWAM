@@ -152,13 +152,18 @@ unchanged by the conditional target-only transform.
 `dual_expert` is the maintained standard GJD architecture. The
 `parallel_stream` GJD config remains a diagnostic compatibility path because
 its full clean-slot condition contract does not yet match every dual-expert
-legacy-prefix behavior. The unified launcher prints this distinction:
+legacy-prefix behavior. The installed-package trainer expresses this
+distinction through the selected config and overrides:
 
 ```bash
-bash scripts/run_gjd_libero.sh train \
-  --architecture dual_expert \
-  --ablation mode_token
+open-wam-train \
+  --config-name dual_expert_libero_generalist_joint_denoising \
+  --set policy_variant.generalist_mode_text_token=true
 ```
+
+A source checkout additionally includes `scripts/run_gjd_libero.sh` for named
+ablation expansion and LIBERO rollout orchestration. It delegates training to
+the same package entry point and is intentionally absent from distributions.
 
 ## Data Boundary
 

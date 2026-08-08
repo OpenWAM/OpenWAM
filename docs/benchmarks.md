@@ -11,6 +11,7 @@ uniform model-facing batch contract.
 | LIBERO | Dataset and simulator paths | Manipulation policy training, evaluation, and realtime rollout experiments. |
 | RoboTwin | Dataset and simulator adapter path | Simulated robotic manipulation with configurable action schema. |
 | CALVIN | Dataset and simulator adapter path | Simulated language-conditioned manipulation with 7D relative actions. |
+| LeRobot consortium | Heterogeneous multi-repository dataset adapter | Mixed-source training with explicit camera, action, and sampling contracts. |
 
 Private datasets, local simulator checkouts, and large checkpoints should be
 provided through the local path registry, not hard-coded in public configs.
@@ -43,6 +44,21 @@ construction and reports the owning config field, expected filesystem shape,
 and remediation. Extensions can register the same resolver contract alongside
 their raw or latent dataset builder; benchmark checks do not belong in the
 trainer.
+
+### LeRobot Consortium Snapshot
+
+The consortium adapter validates configured remote repository IDs against a
+bounded metadata snapshot. Wheels carry that snapshot as read-only package
+resources, so validation works without a source checkout. A discrepancy warns
+about missing or stale metadata; it never writes into `site-packages`.
+
+Maintainers refreshing the index from a source checkout use
+`scripts/build_lerobot_consortium_index.py`. To work against a separate writable
+snapshot, set `OPEN_WAM_CONSORTIUM_INDEX_ROOT=/absolute/index/root` before the
+adapter is imported. The directory must contain the repo-ID list, inventory
+CSV/Markdown, and contracts JSON under their canonical filenames. Dataset and
+video content are still resolved by the adapter's normal local/remote source
+configuration; the packaged index is metadata only.
 
 ## Action Dimensions
 

@@ -68,11 +68,13 @@ Use pytest markers to communicate required resources:
 Default local check:
 
 ```bash
-uv run --extra train pytest -m "unit or smoke or integration"
+CUDA_VISIBLE_DEVICES="" uv run --frozen --extra full pytest --strict-markers -q \
+  -m "not (gpu or sim or data or slow)"
 ```
 
-GPU/sim/data tests should skip clearly unless their documented resource gate is
-set.
+This is the same required CPU semantic gate used by CI. For a faster edit loop,
+pass explicit test paths before the marker expression. GPU/sim/data tests should
+skip clearly unless their documented resource gate is set.
 
 For extension work, start from the cookbooks under `docs/cookbooks/` and add a
 static config validation command:

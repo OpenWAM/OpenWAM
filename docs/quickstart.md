@@ -73,11 +73,11 @@ uv run open-wam-inspect-config \
   --cfg configs/experiments/parallel_stream_robotwin_smoke.yaml
 ```
 
-Run a benchmark pipeline sanity check:
+Run a synthetic pipeline sanity check with no external data:
 
 ```bash
 uv run --extra train open-wam-sanity \
-  --cfg configs/examples/robotwin_lerobot_video_sparse30_sanity.yaml \
+  --cfg configs/examples/public_tiny_synthetic_contract.yaml \
   --device cpu \
   --max-batches 1 \
   --rollout-steps 1

@@ -20,6 +20,11 @@ but their complete symbol sets are not a promise that every implementation
 helper is stable. Modules below `open_wam.models.*` are internal unless a
 contract is re-exported by `open_wam.sdk.policy`.
 
+The wheel ships a `py.typed` marker, so type checkers consume annotations from
+these SDK modules directly. Public stability still follows the role-specific
+SDK boundary above; typing visibility does not make internal implementation
+modules compatibility-managed.
+
 The base install supports config and result tooling. Install `open-wam[torch]`
 for dataset, policy, decoder, and attention extensions; use
 `open-wam[train]`, `open-wam[eval]`, or `open-wam[sim]` for the corresponding
@@ -59,6 +64,19 @@ def register_open_wam() -> None:
 The same `--extension` contract is available on `open-wam-eval`,
 `open-wam-sanity`, and `open-wam-sim-rollout`. The module must be installed in
 the active environment or otherwise importable on `PYTHONPATH`.
+
+The packaged `templates/extension_method/` example is runnable and imports
+Open-WAM only through these SDK modules. From a source checkout:
+
+```bash
+uv run --extra train open-wam-train \
+  --cfg templates/extension_method/config.yaml \
+  --extension templates.extension_method.extension
+```
+
+Its normalized visual-token policy and masked-MSE decoder are deliberately
+small. Use them to verify registration, gradients, inference state, and
+packaging before replacing one component at a time.
 
 ## Registration APIs
 
@@ -183,7 +201,7 @@ construction and reports the config owner and remediation for every missing
 required artifact. Optional requirements are retained in run-start provenance.
 
 ```python
-from open_wam.data import DatasetArtifactKind, DatasetArtifactRequirement
+from open_wam.sdk.data import DatasetArtifactKind, DatasetArtifactRequirement
 
 
 def resolve_artifacts(config):
