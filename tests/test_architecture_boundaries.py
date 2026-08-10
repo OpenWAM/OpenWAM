@@ -3137,8 +3137,11 @@ def test_policy_configuration_contracts_have_role_specific_owners() -> None:
         PACKAGE_ROOT / "configs" / "__init__.py",
         facade_path,
     }
+    packaged_template_root = PACKAGE_ROOT / "templates"
     for consumer_path in PACKAGE_ROOT.rglob("*.py"):
-        if consumer_path in allowed_facade_consumers:
+        if consumer_path in allowed_facade_consumers or consumer_path.is_relative_to(
+            packaged_template_root
+        ):
             continue
         imports = _absolute_imports_for_file(consumer_path)
         assert "policy_variant" not in imports, consumer_path

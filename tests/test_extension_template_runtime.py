@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+import subprocess
+import sys
 
 import torch
 
@@ -13,7 +15,14 @@ from open_wam.pipelines import build_variant_pipeline_from_config
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-TEMPLATE_ROOT = REPO_ROOT / "templates" / "extension_method"
+TEMPLATE_ROOT = (
+    REPO_ROOT
+    / "src"
+    / "open_wam"
+    / "templates"
+    / "extension_method"
+)
+TEMPLATE_MODULE = "open_wam.templates.extension_method"
 
 
 def test_extension_template_depends_only_on_public_sdk() -> None:
@@ -33,7 +42,7 @@ def test_extension_template_depends_only_on_public_sdk() -> None:
 
 def test_extension_template_runs_train_gradient_and_inference() -> None:
     torch.manual_seed(7)
-    load_extension_module("templates.extension_method.extension")
+    load_extension_module(TEMPLATE_MODULE)
     config = load_experiment_config(TEMPLATE_ROOT / "config.yaml")
     pipeline = build_variant_pipeline_from_config(config)
     batch = build_synthetic_batch(config.data, batch_size=1)
@@ -57,6 +66,25 @@ def test_extension_template_runs_train_gradient_and_inference() -> None:
     assert infer_output.policy_output.next_state.step_index == 1
     assert any(parameter.grad is not None for parameter in pipeline.policy_variant.parameters())
     assert any(parameter.grad is not None for parameter in pipeline.action_decoder.parameters())
+
+
+def test_extension_template_is_importable_outside_source_checkout(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from open_wam.extensions import load_extension_module; "
+                f"load_extension_module({TEMPLATE_MODULE!r})"
+            ),
+        ],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_package_declares_pep561_typing_marker() -> None:

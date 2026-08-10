@@ -28,7 +28,7 @@ def main(argv: list[str] | None = None) -> None:
         "resources/consortium/lerobot_consortium_hf_dataset_inventory.csv",
         "resources/consortium/lerobot_consortium_hf_dataset_inventory.md",
         "resources/consortium/lerobot_consortium_hf_dataset_contracts.json",
-        "resources/templates/extension_method/config.yaml",
+        "templates/extension_method/config.yaml",
     )
     missing = tuple(path for path in required_resources if not package_resources.joinpath(path).is_file())
     if missing:
@@ -67,7 +67,7 @@ def _run_packaged_extension_smoke() -> None:
     from open_wam.pipelines import build_variant_pipeline_from_config
 
     torch.manual_seed(7)
-    load_extension_module("open_wam.resources.templates.extension_method.extension")
+    load_extension_module("open_wam.templates.extension_method")
     config = load_experiment_config(resolve_config_reference("templates/extension_method/config.yaml"))
     pipeline = build_variant_pipeline_from_config(config)
     batch = build_synthetic_batch(config.data, batch_size=1)

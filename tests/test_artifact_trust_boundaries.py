@@ -7,7 +7,7 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCANNED_ROOTS = ("src", "scripts", "baselines", "deployment", "templates")
+SCANNED_ROOTS = ("src", "scripts", "baselines", "deployment")
 TRUSTED_NUMPY_PICKLE_OWNER = Path("src/open_wam/artifacts/serialization.py")
 TRUSTED_NUMPY_PICKLE_FUNCTION = "load_trusted_numpy_pickle_artifact"
 

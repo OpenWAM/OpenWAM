@@ -1,1 +1,1 @@
-"""Packaged, read-only configuration and extension resources."""
+"""Packaged, read-only configuration and metadata resources."""

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import fields
 
+from open_wam.configs import CheckpointMode, LoopPolicyName
 from open_wam.sdk.config import (
     ExperimentConfig,
     ExtensionActionDecoderConfig,
@@ -73,3 +74,15 @@ def test_packaged_extension_template_uses_typed_extension_envelopes() -> None:
     assert isinstance(config.action_decoder, ExtensionActionDecoderConfig)
     assert config.policy_variant.extension_type == "example.policy"
     assert config.action_decoder.extension_type == "example.decoder"
+
+
+def test_public_tiny_config_owns_the_documented_checkpoint_lifecycle() -> None:
+    config = load_experiment_config(
+        "configs/examples/public_tiny_synthetic_contract.yaml"
+    )
+
+    assert config.training.num_steps == 1
+    assert config.trainer.loop_policy is LoopPolicyName.STEPS
+    assert config.trainer.enable_checkpointing is True
+    assert config.trainer.save_interval == 1
+    assert config.trainer.checkpoint_mode is CheckpointMode.FULL_TRAINING_STATE

@@ -24,7 +24,7 @@ jobs:
       - name: Whitespace check
         run: git diff --check
       - name: Production-core static lint
-        run: uv run --no-project --with pyflakes==3.4.0 python -m pyflakes src scripts tests baselines templates
+        run: uv run --no-project --with pyflakes==3.4.0 python -m pyflakes src scripts tests baselines
       - name: Basic package, config, registry, and CLI pathway checks
         # Static stdlib-only checks. Do not install project deps, run pytest, import open_wam, or install Torch here.
         run: python scripts/ci_basic_sanity.py

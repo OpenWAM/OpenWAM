@@ -1,8 +1,8 @@
 paths:
   datasets:
     # Maintained latent-local LIBERO root. Copy this file to
-    # configs/local_paths.yaml and replace every /path/to/... placeholder with
-    # machine-local paths before running real data jobs.
+    # configs/local_paths.yaml and populate the keys referenced by the config
+    # you intend to run. Unused placeholders may remain unchanged.
     libero_root: /path/to/datasets/libero_10
     # Replay-status labels that split successful training episodes from failure/
     # error validation episodes. Required by the LIBERO configs that select

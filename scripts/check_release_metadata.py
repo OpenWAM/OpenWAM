@@ -27,7 +27,6 @@ PUBLIC_SDIST_ENTRIES = frozenset(
         "notes/index/lerobot_consortium_hf_repo_ids.txt",
         "pyproject.toml",
         "src/open_wam",
-        "templates",
     }
 )
 REQUIRED_SDIST_EXCLUDES = frozenset(

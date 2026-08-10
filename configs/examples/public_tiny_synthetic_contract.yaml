@@ -53,6 +53,7 @@ training:
   video_sigma_shift: 1.0
   action_sigma_shift: 1.0
   use_teacher_forcing: false
+  num_steps: 1
 
 inference:
   video_num_inference_steps: 2
@@ -61,6 +62,8 @@ inference:
   guidance_scale: 1.0
 
 trainer:
+  # This fixture intentionally exercises the complete public checkpoint and
+  # exact-resume lifecycle while remaining CPU-safe.
   max_epochs: 1
   limit_train_batches: 1
   limit_val_batches: 1
@@ -68,5 +71,8 @@ trainer:
   accelerator: cpu
   devices: 1
   precision: 32-true
-  enable_checkpointing: false
+  loop_policy: steps
+  enable_checkpointing: true
+  save_interval: 1
+  checkpoint_mode: full_training_state
   enable_model_summary: false

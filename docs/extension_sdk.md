@@ -66,17 +66,26 @@ The same `--extension` contract is available on `open-wam-eval`,
 the active environment or otherwise importable on `PYTHONPATH`.
 
 The packaged `templates/extension_method/` example is runnable and imports
-Open-WAM only through these SDK modules. From a source checkout:
+Open-WAM only through these SDK modules. Its module and config references are
+the same from a source checkout and an installed wheel:
 
 ```bash
 uv run --extra train open-wam-train \
   --cfg templates/extension_method/config.yaml \
-  --extension templates.extension_method.extension
+  --extension open_wam.templates.extension_method \
+  --save-root runs/extension-method-smoke
 ```
 
 Its normalized visual-token policy and masked-MSE decoder are deliberately
 small. Use them to verify registration, gradients, inference state, and
-packaging before replacing one component at a time.
+packaging before replacing one component at a time. The source scaffold lives
+at `src/open_wam/templates/extension_method`; copy it into an
+application-owned installable package before customization. Do not edit the
+copy inside an installed Open-WAM wheel.
+
+`open_wam.templates.*` is the namespace for runnable, copyable scaffolds; it is
+not the extension API. Extension implementations depend on `open_wam.sdk.*`
+and expose their own installed module name through `--extension`.
 
 ## Registration APIs
 

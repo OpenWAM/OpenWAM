@@ -50,17 +50,25 @@ uv run open-wam-validate-config configs/examples/public_tiny_synthetic_contract.
 ```
 
 ```bash
-uv run --extra train open-wam-train --cfg configs/experiments/parallel_stream_robotwin_smoke.yaml
+uv run --extra train open-wam-train \
+  --cfg configs/examples/public_tiny_synthetic_contract.yaml \
+  --save-root runs/public-tiny \
+  --disable-wandb
 ```
 
 ```bash
 uv run --extra eval open-wam-eval \
-  --cfg configs/evals/parallel_stream_robotwin_smoke_eval.yaml \
+  --cfg configs/evals/public_tiny_synthetic_contract.yaml \
+  --checkpoint runs/public-tiny/checkpoints/checkpoint_step_1/model_state.pt \
   --device cpu \
   --max-batches 1 \
   --output-json outputs/eval.json \
   --provenance-mode full
 ```
+
+These two commands form the data-free train/eval example. Benchmark configs
+require the local artifacts and resources documented in
+[Training and Inference](running_experiments.md).
 
 ```bash
 uv run --extra sim open-wam-sim-rollout \

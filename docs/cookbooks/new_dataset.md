@@ -89,50 +89,20 @@ filesystem dependencies actually consumed by the adapter. Keep optional files
 When pre-encoded samples are available, add a `latent_builder` returning
 datasets of `LatentWAMSample` under the same `dataset_type`.
 
-Build `LatentWAMSample` directly for a new storage contract. If the source
-already follows the local LeRobot episode-row plus per-camera latent contract,
-use `open_wam.data.LocalLatentSampleSourceLoader` with a
-`open_wam.data.LocalLatentRepository` to load a canonical physical window. Its
-typed source contains video and optional condition latents, source frame IDs,
-rows, and frame-indexed task/text conditioning. The adapter chooses sampling
-geometry;
-`open_wam.data.LocalLatentSegmentAssembler` can then compose the selected
-range with aligned actions, state, and proprio into a typed
-`LocalLatentSegment`. The adapter still owns sample selection and final
-metadata; neither helper chooses those policies. A different storage contract
-should implement its parsing and frame-ID fallback inside its own adapter.
+Build `LatentWAMSample` directly for a new storage contract. Existing in-tree
+adapters also use the helpers below, but these `open_wam.data` implementation
+APIs are provisional and are not part of the compatibility-managed extension
+SDK. External packages should own equivalent storage logic or request that a
+generally useful contract be promoted through `open_wam.sdk.data`.
 
-For an encoded causal-video adapter, use
-`open_wam.data.LatentCausalPrefixSuffixWindowPlanner` to enumerate eligible
-configured buckets and resolve a split-aware `LatentCausalPrefixSuffixWindowPlan`.
-The planner is tensor-free: the adapter supplies source frame IDs and lengths,
-then owns latent slicing, padding, storage-specific metadata, and final sample
-construction. This keeps causal geometry and seeded draw semantics reusable
-without coupling a new repository format to the local LeRobot adapter.
-
-For fixed-segment hierarchical sampling over local latent trajectories, build
-an `open_wam.data.LocalLatentHierarchicalSegmentPlan` from discovered windows,
-their task labels, and task demo counts. It owns chunk candidates, rollout or
-legacy context geometry, eligible starts, deterministic hierarchy draws, and
-typed sample-key diagnostics. The adapter remains responsible for loading the
-selected window, assembling tensors, and adding storage-specific metadata.
-
-For repositories that reuse the local LeRobot storage layout,
-`open_wam.data.LocalLatentTrainValWindowPlanner` resolves train/validation
-windows under the configured replay-status, explicit validation-root, split,
-seed, and episode-limit policy. It returns a typed plan and does not choose a
-dataset class, mutate split config, or load tensors, so an adapter can reuse
-window membership independently from its sample representation.
-
-For row-oriented robot data, reuse
-`open_wam.data.build_row_action_targets` and
-`open_wam.data.pack_temporal_sequence`. The adapter supplies
-`extract_sequence`, which owns source-key resolution, empty-row handling, and
-the decision to truncate. The shared packer builds the float32 padded tensor
-and validity mask; the target transform applies the configured raw,
-relative-EEF, or absolute-joint representation, normalization, mapping, and
-metadata contract. A custom `pack_sequence` callback remains available only
-for storage contracts that cannot use the canonical layout.
+| Provisional helper | In-tree role |
+| --- | --- |
+| `LocalLatentSampleSourceLoader` and `LocalLatentRepository` | Read local LeRobot episode rows and per-camera latents. |
+| `LocalLatentSegmentAssembler` | Align a selected latent range with action, state, and proprio tensors. |
+| `LatentCausalPrefixSuffixWindowPlanner` | Plan split-aware causal prefix/suffix windows. |
+| `LocalLatentHierarchicalSegmentPlan` | Resolve hierarchical fixed-segment sampling geometry. |
+| `LocalLatentTrainValWindowPlanner` | Resolve replay-aware train and validation membership. |
+| `build_row_action_targets` and `pack_temporal_sequence` | Build canonical row-oriented targets and masks. |
 
 ## Configuration
 
@@ -162,7 +132,7 @@ Prefer typed shared fields over `adapter_options` whenever the setting affects
 model-facing shapes, action/state semantics, temporal alignment, view layout,
 or sampling.
 
-For task-balanced hierarchical sampling, reuse
+In-tree adapters can use the provisional
 `open_wam.data.draw_hierarchical_sample_index`. The adapter computes eligible
 windows and their probability mass; each task exposes windows with
 `mass_within_task`, `start_min`, and `start_max`. The shared primitive owns

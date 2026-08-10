@@ -204,7 +204,6 @@ packages = ["src/open_wam"]
 "notes/index/lerobot_consortium_hf_dataset_inventory.csv" = "open_wam/resources/consortium/lerobot_consortium_hf_dataset_inventory.csv"
 "notes/index/lerobot_consortium_hf_dataset_inventory.md" = "open_wam/resources/consortium/lerobot_consortium_hf_dataset_inventory.md"
 "notes/index/lerobot_consortium_hf_repo_ids.txt" = "open_wam/resources/consortium/lerobot_consortium_hf_repo_ids.txt"
-"templates" = "open_wam/resources/templates"
 
 [tool.hatch.build.targets.sdist]
 only-include = [
@@ -224,7 +223,6 @@ only-include = [
     "notes/index/lerobot_consortium_hf_repo_ids.txt",
     "pyproject.toml",
     "src/open_wam",
-    "templates",
 ]
 exclude = [
     "/.grimp_cache",

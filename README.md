@@ -47,6 +47,7 @@ derived and validated at the typed config boundary.
 
 ## Install
 
+Open-WAM supports Linux with Python 3.11 or 3.12. The commands below use `uv`.
 The base package intentionally excludes heavyweight model and simulator
 dependencies:
 
@@ -96,27 +97,38 @@ tracked experiment YAML:
 cp configs/local_paths.sample.yaml configs/local_paths.yaml
 ```
 
-Replace placeholders in `configs/local_paths.yaml`; the file is gitignored.
-Select another registry with `OPEN_WAM_LOCAL_PATHS=/absolute/path/paths.yaml`.
+Populate the keys referenced by the config you intend to run; unrelated
+placeholders may remain unchanged. The file is gitignored. Select another
+registry with `OPEN_WAM_LOCAL_PATHS=/absolute/path/paths.yaml`.
 
 ## Train And Resume
 
-All policy architectures enter the same package-owned trainer:
+All policy architectures enter the same package-owned trainer. The
+[quickstart](docs/quickstart.md#complete-cpu-first-run) provides a complete
+CPU train, full-state resume, and checkpoint-backed evaluation lifecycle.
+
+For a maintained full-size experiment, configure local assets first and launch
+the process topology explicitly. The reference dual-expert LIBERO configs are
+30-layer FSDP workloads characterized with four 48 GB GPUs; they are not
+single-GPU quickstart configs:
 
 ```bash
-uv run --extra train open-wam-train \
+uv run --extra train torchrun --standalone --nproc-per-node=4 \
+  -m open_wam.cli.train \
   --cfg configs/experiments/dual_expert_libero_joint.yaml \
   --save-root runs/dual-expert-joint \
-  --expected-world-size 1
+  --expected-world-size 4
 ```
 
 Change only the program for a one-off ablation:
 
 ```bash
-uv run --extra train open-wam-train \
+uv run --extra train torchrun --standalone --nproc-per-node=4 \
+  -m open_wam.cli.train \
   --cfg configs/experiments/dual_expert_libero_joint.yaml \
   --set policy_variant.program=video_then_action \
-  --save-root runs/dual-expert-vta
+  --save-root runs/dual-expert-vta \
+  --expected-world-size 4
 ```
 
 Standalone conditional FDM/IDM is an offline dynamics path with a different
@@ -131,10 +143,12 @@ before selecting `forward_dynamics` or `inverse_dynamics`.
 Resume from a checkpoint directory:
 
 ```bash
-uv run --extra train open-wam-train \
+uv run --extra train torchrun --standalone --nproc-per-node=4 \
+  -m open_wam.cli.train \
   --cfg configs/experiments/dual_expert_libero_joint.yaml \
   --save-root runs/dual-expert-joint \
-  --checkpoint-root runs/dual-expert-joint/checkpoints/checkpoint_step_N
+  --checkpoint-root runs/dual-expert-joint/checkpoints/checkpoint_step_N \
+  --expected-world-size 4
 ```
 
 Exact resume requires `full_training_state.pt`; model-only state is a warm
@@ -203,6 +217,7 @@ Important packages:
 - `src/open_wam/pipelines`: shared composition boundary
 - `src/open_wam/training`: generic optimization, logging, validation, and checkpoints
 - `src/open_wam/evals`: generic evaluation and benchmark rollout support
+- `src/open_wam/templates`: packaged extension scaffolds
 
 ## Documentation
 

@@ -20,11 +20,7 @@ CONFIG_ROOT = (
     if _SOURCE_CHECKOUT and (_SOURCE_CONFIG_ROOT / "experiments").is_dir()
     else _PACKAGED_CONFIG_ROOT
 )
-TEMPLATE_ROOT = (
-    REPO_ROOT / "templates"
-    if _SOURCE_CHECKOUT
-    else _PACKAGE_ROOT / "resources" / "templates"
-)
+TEMPLATE_ROOT = _PACKAGE_ROOT / "templates"
 EXPERIMENT_CONFIG_ROOT = CONFIG_ROOT / "experiments"
 EVALUATION_CONFIG_ROOT = CONFIG_ROOT / "evals"
 EXAMPLE_CONFIG_ROOT = CONFIG_ROOT / "examples"

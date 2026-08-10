@@ -3,53 +3,23 @@
 This guide is the public first-run path. It does not require private datasets,
 private checkpoints, CUDA, or external simulators.
 
+Open-WAM supports Linux with Python 3.11 or 3.12. Install `uv` before using the
+commands below.
+
 ## Install
 
 ```bash
-uv sync --group dev
+uv sync --group dev --extra train --extra eval
 ```
 
-The base install is intentionally minimal. It supports imports, config/static
-validation, artifact metadata, and dependency-light CLI parser surfaces without
-Torch or simulator packages.
+This installs the CPU-capable development, training, and evaluation stack used
+by the complete first run below. The smaller base install is available with
+`uv sync --group dev`; it supports imports, config validation, artifact
+metadata, and CLI parser surfaces without Torch or simulator packages.
 
-For Torch-backed local train/eval smoke paths, install the relevant extra:
+## Complete CPU First Run
 
-```bash
-uv sync --group dev --extra train
-uv sync --group dev --extra eval
-```
-
-For optional simulator work, install only the extras you need:
-
-```bash
-uv sync --extra libero
-uv sync --extra calvin
-uv sync --extra robotwin
-uv sync --extra sim
-```
-
-The base install can import `LiberoEnvConfig`, `LiberoControlConfig`,
-`RobotwinEnvConfig`, `CalvinEnvConfig`, the generic `SimulatorBackend`
-contract, and the realtime planner records and scheduling policy without
-NumPy, Torch, or simulator packages. Dependency-light plan-queue operations
-share that boundary. NumPy-backed plan materialization and rollout reporting
-remain in `[sim]`. The three benchmark-named extras add only
-their benchmark-side dependency overlays; they do not include the Open-WAM
-model stack or upstream source trees. Use `[sim]` for model-driven closed-loop
-rollouts, then install the selected benchmark source separately.
-
-For local documentation-site preview:
-
-```bash
-uv sync --extra docs
-uv run --extra docs python scripts/build_docs_site.py --output .docs_site
-uv run --extra docs mkdocs serve
-```
-
-## CPU Smoke
-
-Run one no-Torch static validation path:
+Validate the public synthetic train and evaluation configs:
 
 ```bash
 uv run open-wam-validate-config \
@@ -57,30 +27,99 @@ uv run open-wam-validate-config \
   configs/evals/public_tiny_synthetic_contract.yaml
 ```
 
-After installing `--extra eval`, run one CPU-safe eval path:
+Train one step and write a full-state checkpoint:
+
+```bash
+RUN_ROOT="runs/public-tiny-$(date +%Y%m%d-%H%M%S)"
+uv run --extra train open-wam-train \
+  --cfg configs/examples/public_tiny_synthetic_contract.yaml \
+  --save-root "$RUN_ROOT" \
+  --expected-world-size 1 \
+  --disable-wandb
+```
+
+Resume exactly from step 1 and train step 2:
+
+```bash
+uv run --extra train open-wam-train \
+  --cfg configs/examples/public_tiny_synthetic_contract.yaml \
+  --save-root "$RUN_ROOT" \
+  --checkpoint-root "$RUN_ROOT/checkpoints/checkpoint_step_1" \
+  --num-steps 2 \
+  --expected-world-size 1 \
+  --disable-wandb
+```
+
+Evaluate the resulting model checkpoint:
 
 ```bash
 uv run --extra eval open-wam-eval \
-  --cfg configs/experiments/contract_only_robotwin.yaml \
-  --max-batches 1 \
-  --device cpu
+  --cfg configs/evals/public_tiny_synthetic_contract.yaml \
+  --checkpoint "$RUN_ROOT/checkpoints/checkpoint_step_2/model_state.pt" \
+  --device cpu \
+  --max-batches 1
 ```
 
-Inspect a config without launching training:
+The run directory now contains the resolved config, logs, model state, and full
+optimizer/scheduler/RNG state. `full_training_state.pt` provides exact resume;
+`model_state.pt` is the inference artifact and warm-start surface.
 
-```bash
-uv run open-wam-inspect-config \
-  --cfg configs/experiments/parallel_stream_robotwin_smoke.yaml
-```
-
-Run a synthetic pipeline sanity check with no external data:
+For a single-command numerical contract check, run:
 
 ```bash
 uv run --extra train open-wam-sanity \
   --cfg configs/examples/public_tiny_synthetic_contract.yaml \
-  --device cpu \
-  --max-batches 1 \
-  --rollout-steps 1
+  --device cpu --max-batches 1 --rollout-steps 1
+```
+
+## Choose The Next Workflow
+
+| Goal | Start here |
+| --- | --- |
+| Understand architecture and program choices | [Policy Architectures And Programs](policy_architectures.md) |
+| Train, resume, or evaluate a maintained model | [Training And Inference](running_experiments.md) |
+| Prepare benchmark data or simulator dependencies | [Benchmarks And Data](benchmarks.md) |
+| Add a dataset, policy, decoder, or simulator | [Extension SDK](extension_sdk.md) |
+| Reproduce a published result | [Experiment Cards](experiment_cards.md) and [Artifacts](artifacts.md) |
+
+Inspect a resolved typed config without launching training:
+
+```bash
+uv run open-wam-inspect-config \
+  --cfg configs/experiments/dual_expert_libero_joint.yaml
+```
+
+Run the packaged extension scaffold before customizing it:
+
+```bash
+uv run --extra train open-wam-train \
+  --cfg templates/extension_method/config.yaml \
+  --extension open_wam.templates.extension_method \
+  --save-root runs/extension-method-smoke \
+  --disable-wandb
+```
+
+## Optional Runtimes
+
+Install only the simulator or documentation extras needed by the next task:
+
+```bash
+uv sync --extra libero
+uv sync --extra calvin
+uv sync --extra robotwin
+uv sync --extra sim
+uv sync --extra docs
+```
+
+The benchmark-named extras add benchmark-side dependency overlays; they do not
+include the model stack or upstream source trees. Use `[sim]` for model-driven
+closed-loop rollouts, then install the selected benchmark source separately.
+
+For local documentation preview:
+
+```bash
+uv run --extra docs python scripts/build_docs_site.py --output .docs_site
+uv run --extra docs mkdocs serve
 ```
 
 ## Local Paths
@@ -92,8 +131,8 @@ local. Do not edit public experiment YAMLs to hard-code those paths.
 cp configs/local_paths.sample.yaml configs/local_paths.yaml
 ```
 
-Then replace every `/path/to/...` placeholder in `configs/local_paths.yaml`.
-The file is gitignored. You can also use:
+Populate only the keys referenced by the config you intend to run; unrelated
+placeholders may remain unchanged. The file is gitignored. You can also use:
 
 ```bash
 OPEN_WAM_LOCAL_PATHS=/absolute/path/to/local_paths.yaml uv run open-wam-eval ...
@@ -194,7 +233,7 @@ entrypoints while the runtime is migrated into package modules.
 
 ## Resource Matrix
 
-| Command family | CPU | GPU | Local data | Simulator | Private checkpoint |
+| Command family | CPU | GPU | Local data | Simulator | Checkpoint |
 | --- | --- | --- | --- | --- | --- |
 | config inspect | required | no | no | no | no |
 | synthetic eval smoke | required | no | no | no | no |

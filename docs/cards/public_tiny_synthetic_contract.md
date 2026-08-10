@@ -23,7 +23,8 @@
 
 - default static validation: CPU only, no Torch, no dataset, no simulator
 - gated smoke usage: CPU with `open-wam[train]`
-- checkpoint files: structural placeholders only
+- checked-in fixture checkpoint: structural placeholders only
+- quickstart training output: runnable model and full training state
 
 ## Validation
 
@@ -35,6 +36,10 @@ open-wam-validate-config \
 
 Expected outcome: config validation passes. This card does not claim model
 accuracy or benchmark success.
+
+The [quickstart](../quickstart.md#complete-cpu-first-run) trains this fixture,
+resumes it from `full_training_state.pt`, and evaluates the resulting
+`model_state.pt` without external assets.
 
 ## Limitations
 

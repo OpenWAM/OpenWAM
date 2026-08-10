@@ -15,6 +15,8 @@ $EDITOR configs/local_paths.yaml
 ```
 
 Select another registry with `OPEN_WAM_LOCAL_PATHS=/absolute/path/paths.yaml`.
+Only populate keys referenced by the selected config; unrelated placeholders
+may remain unchanged.
 Validate and inspect a config before allocating a GPU:
 
 ```bash
@@ -41,6 +43,13 @@ The generic runtime covers these representative maintained families:
 | Dual expert GJD | `dual_expert_libero_generalist_joint_denoising.yaml` |
 | Dual expert conditional FDM/IDM | `dual_expert_libero_conditional_dynamics.yaml` |
 | Video-only | `causal_video_prediction_libero_latent_local.yaml` |
+
+This table identifies semantic families, not resource tiers. Use the public
+tiny lifecycle in the [quickstart](quickstart.md#complete-cpu-first-run) for a
+CPU first run. Full-size configs declare their actual backbone and trainer
+settings in YAML; for example, the 30-layer dual-expert LIBERO references are
+FSDP workloads characterized with four 48 GB GPUs. The process launcher, not
+`trainer.devices`, creates the distributed workers.
 
 Maintained config names describe the architecture and program and do not carry a
 contributor-specific compatibility suffix. Retired `*_heng_compatible` and
