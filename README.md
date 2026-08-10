@@ -1,116 +1,122 @@
 # Open-WAM
 
-Open-WAM is a typed, extensible library for training and evaluating world
-action models. It keeps visual execution stable while experiments select an
-explicit policy architecture, video/action program, sequence contract,
-attention runtime, cache policy, and action decoder.
+[![CI](https://github.com/DaivdYuan/Open-WAM/actions/workflows/ci.yml/badge.svg)](https://github.com/DaivdYuan/Open-WAM/actions/workflows/ci.yml)
+[![Documentation](https://img.shields.io/badge/docs-online-blue.svg)](https://daivdyuan.github.io/Open-WAM/)
+[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](CHANGELOG.md)
 
-```text
-ExperimentConfig -> VariantPipeline -> VisualTower -> PolicyVariant -> ActionDecoder
-```
+**Open-WAM is a research framework for training, comparing, and evaluating
+video-action world models for robot learning.** It separates model topology,
+video/action conditioning, sequence semantics, visual execution, and action
+decoding so that controlled experiments share the same trainer and visual
+stack.
 
-Applications can add dataset adapters, policy architectures, action decoders,
-and simulator backends without adding another trainer or copying the visual
-backbone.
+[Documentation](https://daivdyuan.github.io/Open-WAM/) |
+[Quickstart](docs/quickstart.md) |
+[Methods](docs/policy_architectures.md) |
+[Training and evaluation](docs/running_experiments.md) |
+[Extension SDK](docs/extension_sdk.md) |
+[Results](docs/m5_gjd_uva_libero10_comparison.md) |
+[Citation](#citation)
 
-## What Is Maintained
+> **Release status:** Open-WAM 0.1.0 is pre-release Linux research software.
+> The public CPU lifecycle and synthetic artifacts are self-contained. Large
+> benchmark runs use separately provisioned datasets and checkpoints described
+> by the [artifact contract](docs/artifacts.md).
 
-- `parallel_stream`: shared-transformer video/action execution, including the
-  exact LingBot-compatible backend.
-- `dual_expert`: separate video and action experts with VTA, ATV, joint,
-  decoupled, noisy-condition, GJD, and standalone conditional FDM/IDM programs.
-- `post_latent` and `post_decoded`: feature-attached action baselines.
-- `causal_video_prediction`: video-only prediction.
-- One typed config loader, composable training runtime, checkpoint lifecycle,
-  evaluator, and simulator boundary.
-- Dataset adapters for public fixtures and local LIBERO, RoboTwin, CALVIN, and
-  heterogeneous LeRobot inputs.
+## Research Scope
 
-M1, M5, MoT, `mot`, and `*_heng_compatible` are compatibility labels. New
-configs and code use architecture/program names.
+Open-WAM provides:
 
-## Core Concepts
+- one typed train, resume, evaluation, and simulator runtime across policy
+  architectures;
+- six standard video/action programs plus generalist joint denoising (GJD);
+- exact full-state checkpoint resume and versioned run provenance;
+- adapters for LIBERO, RoboTwin, CALVIN, heterogeneous LeRobot data, and
+  synthetic fixtures;
+- role-scoped extension APIs for datasets, policies, decoders, attention
+  profiles, and simulators; and
+- CPU semantic tests plus opt-in real-checkpoint GPU parity gates for changes
+  near model numerics.
 
-Open-WAM treats these as orthogonal contracts:
+### Maintained Methods
 
-| Contract | Responsibility |
-| --- | --- |
-| Architecture | Parameter topology and token execution (`parallel_stream`, `dual_expert`) |
-| Program | Video/action conditioning and supervision (VTA, ATV, joint, GJD, and others) |
-| Sequence semantics | Prefix, history visibility, chunk geometry, and alignment |
-| Runtime backend | Packed execution, attention backend, cache writes, and denoising |
-| Action decoder | Final outputs, masks, metrics, and supervised losses |
+| Architecture | Topology | Maintained programs |
+| --- | --- | --- |
+| `parallel_stream` | Video and action tokens share one transformer. | Six standard programs and GJD; includes the exact LingBot-compatible runtime. |
+| `dual_expert` | Video and action use separate transformer experts. | Six standard programs, GJD, and standalone conditional FDM/IDM. |
+| `post_latent` / `post_decoded` | A lightweight policy consumes latent or decoded visual features. | Video-conditioned action baselines. |
+| `causal_video_prediction` | The visual model runs without action supervision. | Video-only prediction. |
 
-For the six standard multimodal programs,
-`policy_variant.program` is the public switch. Low-level coupling values are
-derived and validated at the typed config boundary.
+The six standard program selectors are `video_then_action`,
+`action_then_video`, `joint`, `decoupled_same_step`,
+`video_noisy_to_action`, and `action_noisy_to_video`. GJD samples joint,
+forward-dynamics (FDM), and inverse-dynamics (IDM) submodes within one model.
+Standalone `forward_dynamics` and `inverse_dynamics` preserve the strict GJD
+conditional contract: one clean t0 latent in a singleton chunk, one-frame
+conditional history, no task text, and only the matching prediction loss.
 
-## Install
+Historical M1, M5, MoT, `mot`, and `*_heng_compatible` names remain accepted
+at compatibility boundaries. New experiments use architecture and program
+names.
 
-Open-WAM supports Linux with Python 3.11 or 3.12. The commands below use `uv`.
-The base package intentionally excludes heavyweight model and simulator
-dependencies:
+## Quick Start
 
-```bash
-uv sync --group dev
-uv run python -c "import open_wam; print(open_wam.__version__)"
-```
-
-Install only the runtime needed by the task:
-
-```bash
-uv sync --extra train
-uv sync --extra eval
-uv sync --extra sim
-uv sync --extra docs
-```
-
-`sim` includes the model-facing simulator stack. Upstream benchmark source
-checkouts such as LIBERO are installed separately.
-
-## First Checks
-
-Validate a config without allocating a GPU:
+Open-WAM supports Linux with Python 3.11 or 3.12. Install
+[`uv`](https://docs.astral.sh/uv/), then run the public CPU contract:
 
 ```bash
+git clone https://github.com/DaivdYuan/Open-WAM.git
+cd Open-WAM
+
+uv sync --frozen --group dev --extra train --extra eval
+
 uv run open-wam-validate-config \
-  configs/examples/public_tiny_synthetic_contract.yaml
+  configs/examples/public_tiny_synthetic_contract.yaml \
+  configs/evals/public_tiny_synthetic_contract.yaml
 
-uv run open-wam-inspect-config \
-  --cfg configs/experiments/dual_expert_libero_joint.yaml
-```
-
-Run the public CPU-safe contract:
-
-```bash
 uv run --extra train open-wam-sanity \
   --cfg configs/examples/public_tiny_synthetic_contract.yaml \
   --device cpu --max-batches 1 --rollout-steps 1
 ```
 
-## Local Assets
+This path requires no private data, checkpoint, GPU, or external simulator. It
+checks config loading, dataset construction, a train forward pass, batch
+inference, and recurrent rollout-style inference. The
+[complete CPU first run](docs/quickstart.md#complete-cpu-first-run) adds exact
+resume and checkpoint-backed evaluation.
 
-Datasets, checkpoints, output roots, and simulator checkouts stay outside
-tracked experiment YAML:
+Install only the runtime needed for later work:
+
+| Task | Command |
+| --- | --- |
+| Config and metadata development | `uv sync --group dev` |
+| Training | `uv sync --extra train` |
+| Offline evaluation | `uv sync --extra eval` |
+| Model-driven simulator rollout | `uv sync --extra sim` |
+| Documentation | `uv sync --extra docs` |
+
+Benchmark extras supply dependency overlays, not upstream source trees. Follow
+[Benchmarks and Data](docs/benchmarks.md) before a real simulator run.
+
+## Training
+
+Real datasets, checkpoints, simulator checkouts, and output directories remain
+outside versioned experiment YAML. Start with the local path registry:
 
 ```bash
 cp configs/local_paths.sample.yaml configs/local_paths.yaml
+uv run open-wam-inspect-config \
+  --cfg configs/experiments/dual_expert_libero_joint.yaml
 ```
 
-Populate the keys referenced by the config you intend to run; unrelated
-placeholders may remain unchanged. The file is gitignored. Select another
-registry with `OPEN_WAM_LOCAL_PATHS=/absolute/path/paths.yaml`.
+Populate only the aliases used by the selected config. The local registry is
+gitignored; set `OPEN_WAM_LOCAL_PATHS=/absolute/path/paths.yaml` to keep it
+elsewhere.
 
-## Train And Resume
-
-All policy architectures enter the same package-owned trainer. The
-[quickstart](docs/quickstart.md#complete-cpu-first-run) provides a complete
-CPU train, full-state resume, and checkpoint-backed evaluation lifecycle.
-
-For a maintained full-size experiment, configure local assets first and launch
-the process topology explicitly. The reference dual-expert LIBERO configs are
-30-layer FSDP workloads characterized with four 48 GB GPUs; they are not
-single-GPU quickstart configs:
+All architectures use `open-wam-train`. The reference dual-expert LIBERO
+configs are 30-layer FSDP workloads characterized with four 48 GB GPUs:
 
 ```bash
 uv run --extra train torchrun --standalone --nproc-per-node=4 \
@@ -120,7 +126,8 @@ uv run --extra train torchrun --standalone --nproc-per-node=4 \
   --expected-world-size 4
 ```
 
-Change only the program for a one-off ablation:
+For a one-off method ablation, change the public program selector rather than
+the trainer:
 
 ```bash
 uv run --extra train torchrun --standalone --nproc-per-node=4 \
@@ -131,16 +138,8 @@ uv run --extra train torchrun --standalone --nproc-per-node=4 \
   --expected-world-size 4
 ```
 
-Standalone conditional FDM/IDM is an offline dynamics path with a different
-data contract. Its maintained default mixes normal demonstrations with encoded
-counterfactual train and validation roots; standard policy programs use only
-the normal demonstration root. The `dynamics_routed` paradigm selects this
-data adapter; source weights, not the paradigm name, determine whether
-counterfactual rows are used. See the
-[conditional dynamics data prerequisites](docs/running_experiments.md#data-prerequisites)
-before selecting `forward_dynamics` or `inverse_dynamics`.
-
-Resume from a checkpoint directory:
+Resume from a checkpoint directory with the same command and
+`--checkpoint-root`:
 
 ```bash
 uv run --extra train torchrun --standalone --nproc-per-node=4 \
@@ -151,94 +150,177 @@ uv run --extra train torchrun --standalone --nproc-per-node=4 \
   --expected-world-size 4
 ```
 
-Exact resume requires `full_training_state.pt`; model-only state is a warm
-start. The resolved config stored with every checkpoint is part of the
-reproducibility contract.
+`full_training_state.pt` restores optimizer, scheduler, strategy, RNG, and
+step state. `model_state.pt` is an inference artifact or warm start, not an
+exact resume. Every checkpoint stores its resolved config.
 
-## Evaluate And Roll Out
+Conditional FDM/IDM uses the `dynamics_routed` data paradigm. The maintained
+config mixes real demonstrations with encoded counterfactual train and
+validation roots; a real-demo-only ablation is also supported. Read the
+[data prerequisites](docs/running_experiments.md#data-prerequisites) before
+selecting `forward_dynamics` or `inverse_dynamics`.
 
-Use the generic evaluator for dataset metrics:
+## Evaluation And Rollout
+
+Run offline metrics through the generic evaluator:
 
 ```bash
 uv run --extra eval open-wam-eval \
   --cfg configs/evals/dual_expert_robotwin_smoke_eval.yaml \
+  --checkpoint /path/to/model_state.pt \
   --device cuda:0
 ```
 
-Use the package simulator boundary for configured benchmark adapters:
+Run a configured environment through the simulator boundary:
 
 ```bash
 uv run --extra sim open-wam-sim-rollout \
   --cfg configs/experiments/parallel_stream_robotwin_smoke.yaml \
+  --checkpoint /path/to/model_state.pt \
   --benchmark robotwin \
   --robotwin-task-name <task-name>
 ```
 
-Maintained LIBERO and GJD checkpoint commands are documented in
-[Training And Inference](docs/running_experiments.md). Benchmark adapters
-translate observations and actions; policy sequence semantics remain in the
-selected `PolicyVariant`.
+Benchmark adapters translate observations and actions. Sequence, attention,
+cache, and denoising semantics remain owned by the selected policy. Maintained
+LIBERO and GJD commands are listed in
+[Training and Inference](docs/running_experiments.md).
 
-## Extend
+## Recorded Results
 
-Out-of-tree packages register through `--extension module[:hook]`. Choose the
-smallest extension surface:
+The repository records the following LIBERO-10 rollout result for a historical
+M5-labelled, canonical `dual_expert` GJD mode-token checkpoint at step 40,000:
 
-- dataset-specific parsing: dataset adapter selected by `data.dataset_type`
-- new output/loss: `ActionDecoder`
-- new attention/conditioning semantics on an existing topology: runtime program
-- new parameter topology or recurrent-state owner: `PolicyVariant`
-- new environment: simulator adapter
+| System | Task-aligned episodes 0-4 | Full success@1 run |
+| --- | ---: | ---: |
+| Open-WAM dual-expert GJD | 45/50 (90.0%) | 461/500 (92.2%) |
+| Released UVA LIBERO baseline | 38/50 (76.0%) | not run |
 
-Use the role-specific `open_wam.sdk` modules described in the
-[Extension SDK](docs/extension_sdk.md). See the
-[compatibility matrix](docs/compatibility.md) for the maintained Python,
-dependency, and numerical-validation surfaces.
+The 50-rollout comparison is task-aligned. Offline FDM/IDM measurements use
+each system's native image, target, action, and controller contracts and are
+not direct scalar rankings. Read the
+[result card](docs/m5_gjd_uva_libero10_comparison.md) for protocol details and
+limitations. Until the real Open-WAM checkpoint entry has a public URL,
+checksum, and license, these numbers are a recorded result rather than a
+turnkey public reproduction claim.
+
+## Architecture
+
+Every built-in method follows one composition boundary:
+
+```text
+ExperimentConfig -> VariantPipeline -> VisualTower -> PolicyVariant -> ActionDecoder
+```
+
+| Contract | Responsibility |
+| --- | --- |
+| `ExperimentConfig` | Typed architecture, program, data, sequence, runtime, and optimization choices. |
+| `VariantPipeline` | Shared training and inference orchestration. |
+| `VisualTower` | Frontend encoding, visual backbone execution, decode stages, and runtime hooks. |
+| `PolicyVariant` | Parameter topology, sequence semantics, conditioning, and recurrent state. |
+| `ActionDecoder` | Final supervised outputs, masks, losses, metrics, and committed actions. |
+
+This boundary keeps the visual stack stable while experiments vary one owned
+contract at a time. See [Architecture](docs/architecture.md) and
+[Policy Architectures and Programs](docs/policy_architectures.md).
+
+## Use Open-WAM With Your System
+
+Out-of-tree packages load through repeatable `--extension module[:hook]`
+arguments. Choose the smallest owning boundary:
+
+| Customization | Extension surface |
+| --- | --- |
+| Storage format, camera schema, or action/state representation | Dataset adapter selected by `data.dataset_type` |
+| Learned parameters, conditioning, attention profile, or recurrent state | `PolicyVariant` |
+| Final outputs, loss, sampling, or committed action count | `ActionDecoder` |
+| Environment construction and observation/action translation | Simulator adapter |
+| Existing method, geometry, schedule, cache, or optimizer choice | YAML only |
+
+The packaged extension scaffold verifies registration, gradients, inference
+state, and packaging before custom code is introduced:
+
+```bash
+uv run --extra train open-wam-train \
+  --cfg templates/extension_method/config.yaml \
+  --extension open_wam.templates.extension_method \
+  --save-root runs/extension-method-smoke \
+  --disable-wandb
+```
+
+Extensions import compatibility-managed contracts from the role-specific
+`open_wam.sdk` modules. See the [Extension SDK](docs/extension_sdk.md) and
+[cookbooks](docs/cookbooks/new_policy_architecture.md).
+
+## Reproducibility
+
+Evaluation, sanity, and simulator commands can emit the same versioned result
+envelope with source state, exact argv, config hashes, checkpoint identity,
+dataset metadata, package versions, and device details. Use full provenance to
+hash a publication checkpoint:
+
+```bash
+open-wam-eval --cfg evaluation.yaml --output-json result.json \
+  --provenance-mode full
+```
+
+Exact numerical claims use the locked dependency graph and documented
+hardware/software stack. A refactor near model execution must pass immutable
+training-step, recurrent-inference, cache-rollover, and full-state-resume
+characterization; expected values are not regenerated by the refactor. See
+[Reproducibility](docs/reproducibility.md),
+[Compatibility](docs/compatibility.md), and [Testing](docs/testing.md).
 
 ## Repository Layout
 
 ```text
-configs/       typed experiment, evaluation, and local-path templates
-docs/          public user and contributor documentation
-notes/         current engineering contracts and archived roadmaps
+configs/       typed experiments, evaluations, examples, and path templates
+docs/          public guides, experiment cards, and extension cookbooks
 scripts/       thin benchmark adapters and checkout-only research tools
-src/open_wam/  installable library
+src/open_wam/  installable library and role-scoped SDK
 tests/         unit, integration, simulator, and numerical parity gates
+notes/         current engineering contracts and archived roadmaps
 deployment/    separately tested hardware operations workspace
 ```
 
-Important packages:
-
-- `src/open_wam/configs`: typed loading, overrides, validation, and compatibility
-- `src/open_wam/data`: adapters, sampling, canonical view assembly, and transforms
-- `src/open_wam/models/visual_tower`: shared visual execution and runtime hooks
-- `src/open_wam/models/policy_variants`: architecture-owned train/infer semantics
-- `src/open_wam/models/action_decoders`: final outputs and losses
-- `src/open_wam/pipelines`: shared composition boundary
-- `src/open_wam/training`: generic optimization, logging, validation, and checkpoints
-- `src/open_wam/evals`: generic evaluation and benchmark rollout support
-- `src/open_wam/templates`: packaged extension scaffolds
-
 ## Documentation
 
-- [Quickstart](docs/quickstart.md)
-- [Architecture](docs/architecture.md)
-- [Policy Architectures And Programs](docs/policy_architectures.md)
-- [Training And Inference](docs/running_experiments.md)
-- [Benchmarks And Data](docs/benchmarks.md)
-- [Extension SDK](docs/extension_sdk.md)
-- [Testing](docs/testing.md)
-- [Artifacts](docs/artifacts.md)
-- [Reproducibility](docs/reproducibility.md)
+| Topic | Guide |
+| --- | --- |
+| Install and first run | [Quickstart](docs/quickstart.md) |
+| Runtime ownership | [Architecture](docs/architecture.md) |
+| Architectures and programs | [Policy Architectures](docs/policy_architectures.md) |
+| Train, resume, evaluate, and roll out | [Training and Inference](docs/running_experiments.md) |
+| Dataset and simulator setup | [Benchmarks and Data](docs/benchmarks.md) |
+| Custom datasets, policies, decoders, and simulators | [Extension SDK](docs/extension_sdk.md) |
+| Checkpoints and manifests | [Artifacts](docs/artifacts.md) |
+| Test and parity tiers | [Testing](docs/testing.md) |
 
-## Validation Policy
+## Contributing
 
-Public CI checks dependency-light imports, config schema, docs, and package
-surface. Local CPU tests cover typed config, data, factories, training,
-checkpointing, and synthetic inference. Changes near model numerics must also
-pass immutable real-checkpoint training, recurrent inference, cache-rollover,
-and full-state-resume characterization; expected values are never regenerated
-by a refactor.
+Contributions should preserve the typed runtime boundary and add focused tests
+for every changed contract. Read [CONTRIBUTING.md](CONTRIBUTING.md), the
+[Code of Conduct](CODE_OF_CONDUCT.md), and the
+[Security Policy](SECURITY.md) before opening a pull request.
 
-See [Testing](docs/testing.md) and
-[Dual-Expert Refactor Characterization](docs/dual_expert_refactor_characterization.md).
+## Citation
+
+If Open-WAM supports your research, cite the software record in
+[`CITATION.cff`](CITATION.cff):
+
+```bibtex
+@software{open_wam_2026,
+  title   = {Open-WAM},
+  author  = {{Open-WAM contributors}},
+  year    = {2026},
+  version = {0.1.0},
+  url     = {https://github.com/DaivdYuan/Open-WAM}
+}
+```
+
+## License
+
+Open-WAM is released under the [MIT License](LICENSE). Third-party components
+retain their own terms; the adapted LingBot-VA module is distributed under
+Apache License 2.0. Full attributions and model-derived notices are listed in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and [`LICENSES/`](LICENSES/).
