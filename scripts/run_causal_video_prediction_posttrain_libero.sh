@@ -7,7 +7,7 @@ fi
 umask 007
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/libero_fixed128_rollout_context_defaults.sh"
+source "${SCRIPT_DIR}/training_launcher_common.sh"
 
 CONFIG_NAME=${CONFIG_NAME:-"causal_video_prediction_libero_latent_local"}
 

@@ -670,8 +670,8 @@ def _condition_source_frame_indices(
 ) -> list[int]:
     """Return rollout-parity condition frames for each materialized context slot.
 
-    In strict fixed-128 training, materialized condition slot ``j`` is used as
-    the one-frame context immediately before target latent slot ``j + 1``.
+    In legacy-prefix training, materialized condition slot ``j`` is used as the
+    one-frame context immediately before target latent slot ``j + 1``.
     Therefore the source frame for condition slot ``j`` is computed from the
     *next* latent raw-span boundary. With Wan stride-4 and
     ``source_frame_offset=-1``, this yields the previous raw frame before the

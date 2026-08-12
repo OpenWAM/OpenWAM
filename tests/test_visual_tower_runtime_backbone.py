@@ -106,6 +106,19 @@ def test_runtime_backbone_device_normalizes_floating_state_in_place() -> None:
     assert module.integer_buffer.dtype == torch.int64
 
 
+def test_runtime_backbone_device_preserves_sharded_parameter_dtype() -> None:
+    module = nn.Linear(2, 2, dtype=torch.float64)
+    module.weight.full_tensor = lambda: module.weight
+    module.register_buffer("floating_buffer", torch.ones(2, dtype=torch.float64))
+
+    resolved = ensure_runtime_module_device(module, device="cpu")
+
+    assert resolved is module
+    assert module.weight.dtype == torch.float64
+    assert module.bias.dtype == torch.float64
+    assert module.floating_buffer.dtype == torch.float32
+
+
 class _ModernCacheModule(nn.Module):
     def __init__(self) -> None:
         super().__init__()

@@ -24,16 +24,20 @@ root does not contain on its own.
 | Input | Registry key | Required by | Where it comes from |
 | --- | --- | --- | --- |
 | Pre-encoded latent root | `paths.datasets.libero_root` | all | Wan-VAE encoding of the LIBERO episodes. |
+| Previous-frame condition latents | inside each latent payload | shipped policy programs and GJD | `scripts/augment_lerobot_latents_with_single_frame_condition.py --source-frame-offset -1`. |
 | Empty text embedding | `paths.datasets.empty_text_embedding` | all | Negative-prompt embedding shared by latent-local datasets. |
 | Replay-status labels | `paths.datasets.libero_replay_status_path` | configs with `require_replay_status: true` | Simulator replay labeling, merged by `scripts/build_libero_replay_metadata.py`. **Not shipped inside the dataset root.** |
 
-Most maintained LIBERO experiment configs set `require_replay_status: true`, so a
-missing or misplaced replay-status file is a hard failure rather than a silently
-unfiltered split. The exception is the generalist joint-denoising pair —
-`dual_expert_libero_generalist_joint_denoising.yaml` and
-`parallel_stream_libero_generalist_joint_denoising.yaml` — which set both
-`require_replay_status: false` and `val_require_replay_status: false` and train
-without it. Check the config you are running rather than assuming either way.
+Shipped policy-program and GJD configs use `include_all` replay rows and set
+both replay-status requirements to false. Historical exact-backend compatibility
+profiles may still require replay labels for their successful/failure split;
+check the selected config rather than assuming either behavior.
+
+The shipped sequence contract sets `condition_source_frame_offset=-1` and
+fails closed when the payload lacks matching condition latents. Existing video
+latents are reused; the augmentation command adds only the deterministic
+previous-frame condition field. Run a bounded `--max-files` smoke with
+`--sanity-check` before processing a full root.
 
 See `configs/local_paths.sample.yaml` for the generating command and its
 argument-shape caveats.

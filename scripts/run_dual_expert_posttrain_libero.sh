@@ -7,11 +7,13 @@ fi
 umask 007
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/libero_fixed128_rollout_context_defaults.sh"
+source "${SCRIPT_DIR}/training_launcher_common.sh"
+source "${SCRIPT_DIR}/libero_legacy_compatibility.sh"
 
-# One architecture launcher covers every dual-expert runtime program. Joint is
-# the neutral default; select VTA, ATV, decoupled, or conditional programs with
-# a canonical CONFIG_NAME.
+# One architecture launcher covers every dual-expert runtime program. Experiment
+# YAML owns the training recipe; this launcher only selects the config and
+# process topology. Joint is the neutral default; select VTA, ATV, decoupled,
+# or conditional programs with a maintained CONFIG_NAME.
 CONFIG_NAME=${CONFIG_NAME:-"dual_expert_libero_joint"}
 
 export WANDB_PROJECT=${WANDB_PROJECT:-"openwam-dual-expert-libero"}
@@ -21,4 +23,5 @@ export WANDB_PROJECT=${WANDB_PROJECT:-"openwam-dual-expert-libero"}
 # when running on hardware with enough VRAM to skip the offload.
 export OPEN_WAM_FSDP_CPU_OFFLOAD=${OPEN_WAM_FSDP_CPU_OFFLOAD:-1}
 
+open_wam_reject_removed_libero_policy_config "${CONFIG_NAME}"
 open_wam_launch_training "${CONFIG_NAME}" "$@"

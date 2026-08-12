@@ -134,6 +134,7 @@ def test_encoded_counterfactual_dataset_uses_target_only_t0_and_future(tmp_path:
     )
     assert sample.metadata["history_frames"] == 1
     assert sample.metadata["loss_frame_start"] == 1
+    assert sample.metadata["context_prefix_frames_in_sample"] == 1
     assert sample.metadata["loss_frame_end"] == 2
     assert sample.metadata["action_loss_frame_start"] == 1
     assert sample.metadata["chunk_origin_frame"] == 1

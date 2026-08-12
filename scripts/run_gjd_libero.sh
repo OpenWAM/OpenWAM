@@ -6,7 +6,8 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-source "${SCRIPT_DIR}/libero_fixed128_rollout_context_defaults.sh"
+source "${SCRIPT_DIR}/training_launcher_common.sh"
+source "${SCRIPT_DIR}/libero_legacy_compatibility.sh"
 
 GJD_STAGE=${GJD_STAGE:-train}
 GJD_ARCHITECTURE=${GJD_ARCHITECTURE:-${GJD_METHOD:-dual_expert}}
@@ -96,23 +97,21 @@ Examples:
 Compatibility:
   --method m1|m5 and GJD_METHOD remain accepted aliases.
 
-Contracts:
-  - dual_expert is the maintained standard GJD architecture. Treat
-    parallel_stream GJD as a compatibility/diagnostic path until its known
-    context contract issue is resolved.
-  - Both architectures use the current full-segment W64 training setup.
+Shipped defaults:
+  - Parallel Stream and Dual Expert are architecture choices under one GJD
+    paradigm. Their maintained YAMLs use the full-segment W64 planning recipe.
   - Vanilla and mode-token training default to the mixed real/counterfactual
     dynamics source mixer; configure the counterfactual latent roots through
     configs/local_paths.yaml or explicit --set overrides.
   - pure_joint disables the mixed source mixer and stays demo-only.
-  - pure_fdm and pure_idm are dual-expert training-only ablations. They use the
+  - pure_fdm and pure_idm are offline training ablations on either architecture. They use the
     same target-only t0 conditional contract as mixed GJD, with the real-demo to
     counterfactual ratio controlled by --real-demo-weight and
     --counterfactual-weight. The weights are relative and may be zero, but not
     both zero.
   - Fixed-128 GJD training is deprecated; use this launcher for GJD comparisons.
-  - dual_expert GJD uses the legacy-prefix per-chunk proprio contract and requires
-    single-frame condition latents:
+  - GJD real-joint samples use the same legacy-prefix per-chunk proprio settings
+    as the shipped joint policy program on both architectures:
       policy_variant.sequence_contract=legacy_prefix_single_frame_perchunk_proprio
       policy_variant.context_condition_latent_source=single_frame_condition_latent
       policy_variant.use_condition_latents=true
@@ -120,19 +119,13 @@ Contracts:
       data.sample_construction.condition_source_frame_offset=-1
       data.sample_construction.start_padding_frames=0
       data.sample_construction.target_alignment=legacy
-  - Known parallel_stream GJD issue: parallel_stream does not use the dual_expert
-    legacy-prefix/single-frame
-    condition-latent default. It keeps full clean modality slots so conditional
-    FDM/IDM modes are representable. Forcing the dual_expert single-frame condition
-    source on current parallel_stream legacy full-segment samples would require a pre-target
-    context/loss frame; the current legacy uniform segment path has
-    loss_frame_start=0, and parallel_stream's legacy-prefix path supports only
-    pure joint. Current parallel_stream differences from dual_expert:
-      policy_variant.sequence_contract=default
-      policy_variant.context_condition_latent_source=video_latents
-      policy_variant.require_condition_latents=false
-      data.sample_construction.condition_source_frame_offset=0
-      rollout uses run_libero_realtime_sandbox.py, not the dual-expert visualization path
+  - Dynamics-routed FDM/IDM samples remain target-only: one singleton t0 frame,
+    no task text, and only the immediately previous video boundary as clean
+    history. They bypass the planning prefix assembler while retaining the
+    sampled chunk size. This conditional contract is identical across model
+    architectures and does not change joint planning semantics.
+  - parallel_stream rollout uses run_libero_realtime_sandbox.py; dual_expert
+    rollout uses the standard dual-expert visualization path.
   - dual_expert GJD rollout uses the standard dual-expert visualization path with
     the same compatibility opt-in as maintained dual-expert joint rollout: LingBot
     streaming VAE, inference window 30, one startup model frame, five env init steps, max
@@ -197,10 +190,6 @@ case "${GJD_ABLATION}" in
 esac
 
 if [[ "${GJD_ABLATION}" == "pure_fdm" || "${GJD_ABLATION}" == "pure_idm" ]]; then
-  if [[ "${GJD_ARCHITECTURE}" != "dual_expert" ]]; then
-    echo "${GJD_ABLATION} requires architecture=dual_expert; parallel_stream has a different conditional context contract." >&2
-    exit 2
-  fi
   if [[ "${GJD_STAGE}" == "rollout" ]]; then
     echo "${GJD_ABLATION} is an offline conditional mode and cannot run as a live simulator rollout without future clean conditions. Use scripts/run_joint_denoising_fdm_ablation.py." >&2
     exit 2
@@ -227,24 +216,11 @@ GJD_CFG_PATH="configs/experiments/${GJD_CONFIG_NAME}.yaml"
 GJD_DUAL_EXPERT_CURRENT_FRONTEND_ENCODE_MODE="lingbot_streaming_vae"
 
 print_gjd_architecture_contract_notice() {
-  if [[ "${GJD_ARCHITECTURE}" != "parallel_stream" ]]; then
-    return 0
-  fi
   cat >&2 <<'EOF'
-[run_gjd_libero] known parallel_stream GJD issue (historical M1 path):
-[run_gjd_libero]   dual_expert is the maintained standard GJD architecture. It uses legacy-prefix
-[run_gjd_libero]   single-frame condition latents with condition_source_frame_offset=-1,
-[run_gjd_libero]   start_padding_frames=0, and target_alignment=legacy.
-[run_gjd_libero]   parallel_stream GJD is a compatibility/diagnostic path. It does not
-[run_gjd_libero]   default to the dual-expert single-frame condition-latent contract
-[run_gjd_libero]   because its conditional FDM/IDM needs full clean modality slots, while its
-[run_gjd_libero]   legacy-prefix only supports pure joint and the current legacy
-[run_gjd_libero]   full-segment samples have loss_frame_start=0.
-[run_gjd_libero]   Current parallel_stream differences: sequence_contract=default,
-[run_gjd_libero]   context_condition_latent_source=video_latents,
-[run_gjd_libero]   require_condition_latents=false, condition_source_frame_offset=0,
-[run_gjd_libero]   and rollout uses run_libero_realtime_sandbox.py instead of the
-[run_gjd_libero]   dual-expert visualization path.
+[run_gjd_libero] shared GJD defaults:
+[run_gjd_libero]   real_joint uses the configured full-segment W64 recipe and legacy-prefix layout.
+[run_gjd_libero]   Conditional FDM/IDM uses target-only t0 + future layout, drops task text,
+[run_gjd_libero]   and bypasses the planning prefix assembler on both architectures.
 EOF
 }
 
@@ -436,9 +412,9 @@ build_ablation_args() {
         --set "${GJD_PROB_PREFIX}=${GJD_PURE_JOINT_PROB_MAP}"
         --set policy_variant.generalist_mode_text_token=false
         --set policy_variant.generalist_training_paradigm=demo_only
-        --set data.sample_construction.sample_order_mode=replacement
         --set data.generalist_dynamics_mixture.train_latent_root=null
         --set data.generalist_dynamics_mixture.val_latent_root=null
+        --set validation.auxiliary_tasks=[]
       )
       ;;
     pure_fdm)
@@ -509,8 +485,6 @@ if [[ -n "${CFG:-}" ]]; then
   fi
   GJD_CFG_PATH="${CFG}"
 fi
-GJD_ROLLOUT_CONTEXT_ARGS=()
-open_wam_append_fixed128_rollout_context_args GJD_ROLLOUT_CONTEXT_ARGS "${GJD_CONFIG_NAME}"
 GJD_DEFAULT_ROLLOUT_IDENTITY_ARGS=()
 build_default_rollout_identity_args GJD_DEFAULT_ROLLOUT_IDENTITY_ARGS
 if [[ "${GJD_ARCHITECTURE}" == "dual_expert" ]]; then
@@ -519,7 +493,6 @@ if [[ "${GJD_ARCHITECTURE}" == "dual_expert" ]]; then
   GJD_REALTIME_ARGS=(
     "${REPO_ROOT}/scripts/run_libero_dual_expert_visualization.py"
     --cfg "${GJD_CFG_PATH}"
-    "${GJD_ROLLOUT_CONTEXT_ARGS[@]}"
     "${GJD_DEFAULT_ROLLOUT_IDENTITY_ARGS[@]}"
     "${GJD_DUAL_EXPERT_ROLLOUT_SEMANTIC_ARGS[@]}"
     "${PASSTHROUGH_ARGS[@]}"
@@ -529,7 +502,6 @@ else
   GJD_REALTIME_ARGS=(
     "${REPO_ROOT}/scripts/run_libero_realtime_sandbox.py"
     --cfg "${GJD_CFG_PATH}"
-    "${GJD_ROLLOUT_CONTEXT_ARGS[@]}"
     "${GJD_DEFAULT_ROLLOUT_IDENTITY_ARGS[@]}"
     "${PASSTHROUGH_ARGS[@]}"
     "${GJD_ABLATION_ARGS[@]}"

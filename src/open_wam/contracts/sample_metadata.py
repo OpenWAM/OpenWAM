@@ -28,6 +28,7 @@ class SampleConstructionMetadata:
     sampled_chunk_size: int | None = None
     sampled_window_size: int | None = None
     history_frames: int | None = None
+    context_prefix_frames_in_sample: int | None = None
     frame_shift: int | None = None
     generalist: GeneralistTrainingSampleMetadata = GeneralistTrainingSampleMetadata()
 
@@ -53,6 +54,9 @@ class SampleConstructionMetadata:
                 metadata.get("sampled_window_size")
             ),
             history_frames=_optional_int(metadata.get("history_frames")),
+            context_prefix_frames_in_sample=_optional_nonnegative_int(
+                metadata.get("context_prefix_frames_in_sample")
+            ),
             frame_shift=_optional_int(metadata.get("frame_shift")),
             generalist=GeneralistTrainingSampleMetadata(
                 mode_override=metadata.get(
@@ -171,6 +175,18 @@ def _optional_positive_int(value: Any) -> int | None:
         return None
     resolved = int(value)
     return resolved if resolved > 0 else None
+
+
+def _optional_nonnegative_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    resolved = int(value)
+    if resolved < 0:
+        raise ValueError(
+            "Sample metadata integer must be non-negative, "
+            f"got {resolved}."
+        )
+    return resolved
 
 
 def _validate_frame_range(

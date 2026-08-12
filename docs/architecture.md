@@ -149,15 +149,14 @@ The shared owner of mode semantics is
 decisions to its own packing and cache representation. Joint-mode behavior is
 unchanged by the conditional target-only transform.
 
-`dual_expert` is the maintained standard GJD architecture. The
-`parallel_stream` GJD config remains a diagnostic compatibility path because
-its full clean-slot condition contract does not yet match every dual-expert
-legacy-prefix behavior. The installed-package trainer expresses this
-distinction through the selected config and overrides:
+`parallel_stream` and `dual_expert` are maintained architecture choices under
+this same GJD paradigm. Their real-joint rows use the configured planning
+prefix, while conditional FDM/IDM rows bypass that prefix and use the shared
+target-only contract above. Select architecture through the experiment config:
 
 ```bash
 open-wam-train \
-  --config-name dual_expert_libero_generalist_joint_denoising \
+  --config-name <architecture>_libero_generalist_joint_denoising \
   --set policy_variant.generalist_mode_text_token=true
 ```
 

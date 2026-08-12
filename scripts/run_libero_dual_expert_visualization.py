@@ -220,8 +220,7 @@ def main() -> None:
         "--allow-deprecated-libero-config",
         action="store_true",
         help=(
-            "Allow historical LIBERO dual-expert configs that do not match the current strict fixed-128, "
-            "one-frame, proprio-conditioned training/eval paradigm."
+            "Allow explicitly retired LIBERO config identities for historical debugging."
         ),
     )
     parser.add_argument(

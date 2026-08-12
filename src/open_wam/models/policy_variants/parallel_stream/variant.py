@@ -11,7 +11,6 @@ from open_wam.configs import (
     ParallelStreamVariantProfile,
     TemporalPositionMode,
     TrainingConfig,
-    VideoActionSequenceContract,
 )
 from open_wam.configs.backbone import SharedVideoTransformerConfig
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
@@ -207,17 +206,18 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             batch,
             video_latents=visual_outputs.frontend.video_latents,
         )
-        legacy_prefix_contract = (
-            self.config.sequence_contract
-            == VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
+        external_condition_prefix = self.conditioning.uses_external_condition_prefix(
+            context_prefix_frames_in_sample=sampled_geometry[
+                "context_prefix_frames_in_sample"
+            ]
         )
-        if legacy_prefix_contract and self.config.runtime_mode not in {
+        if external_condition_prefix and self.config.runtime_mode not in {
             ParallelRuntimeMode.LINGBOT_EXACT,
             ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
         }:
             raise ValueError(
-                "`sequence_contract=legacy_prefix_single_frame_perchunk_proprio` only supports "
-                "LingBot exact dual-stream parallel-stream runtime modes."
+                "An external single-frame condition prefix only supports LingBot exact "
+                "dual-stream parallel-stream runtime modes."
             )
         if self.config.runtime_mode == ParallelRuntimeMode.CURRENT_FRAME_ACTION_CHUNK:
             train_artifacts = prepare_parallel_current_frame_action_chunk_train_artifacts(
@@ -243,11 +243,11 @@ class ParallelStreamPolicyVariant(PolicyVariant):
                 condition_latents=condition_latents,
                 frame_shift=0,
             )
-        elif legacy_prefix_contract:
+        elif external_condition_prefix:
             if not isinstance(condition_latents, torch.Tensor):
                 raise ValueError(
-                    "`sequence_contract=legacy_prefix_single_frame_perchunk_proprio` requires "
-                    "precomputed single-frame condition_latents. "
+                    "`context_condition_latent_source=single_frame_condition_latent` with no "
+                    "in-sequence context requires precomputed condition_latents. "
                     "Run scripts/augment_lerobot_latents_with_single_frame_condition.py with --source-frame-offset -1."
                 )
             train_artifacts = prepare_parallel_prefix_condition_exact_train_artifacts(
@@ -390,6 +390,7 @@ class ParallelStreamPolicyVariant(PolicyVariant):
             "action_loss_frame_start": action_loss_frame_start,
             "action_loss_frame_end": action_loss_frame_end,
             "frame_shift": frame_shift,
+            "context_prefix_frames_in_sample": sample_metadata.context_prefix_frames_in_sample,
             "chunk_origin_frame": chunk_origin_frame,
             "singleton_chunk_frame": singleton_chunk_frame,
             "conditional_history_policy": (

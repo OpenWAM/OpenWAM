@@ -6,6 +6,7 @@ from typing import Any, Protocol
 import torch
 
 from open_wam.configs import (
+    ContextConditionLatentSource,
     GeneralistDenoisingMode,
     ParallelRuntimeMode,
     ProprioContextMode,
@@ -45,6 +46,20 @@ class ParallelStreamConditioning:
 
     def uses_generalist_mode_text_token(self) -> bool:
         return bool(self.config.generalist_mode_text_token)
+
+    def uses_external_condition_prefix(
+        self,
+        *,
+        context_prefix_frames_in_sample: int | None,
+    ) -> bool:
+        """Return whether a separate condition frame precedes the sample sequence."""
+
+        if (
+            ContextConditionLatentSource(self.config.context_condition_latent_source)
+            != ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+        ):
+            return False
+        return int(context_prefix_frames_in_sample or 0) == 0
 
     @staticmethod
     def select_anchor_state(state: torch.Tensor | None) -> torch.Tensor | None:

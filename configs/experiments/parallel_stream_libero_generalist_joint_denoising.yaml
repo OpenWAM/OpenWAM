@@ -24,7 +24,7 @@ data:
   train_fraction: 1.0
   split_seed: 0
   # Current GJD sampler. Fixed-128 GJD training is deprecated; the maintained
-  # setup follows the #150-style full-segment W64 contract.
+  # setup follows the validated full-segment W64 recipe.
   sample_construction:
     mode: uniform_segment
     sample_order_mode: replacement
@@ -74,7 +74,7 @@ data:
     gripper_representation: action_command
     gripper_action_index: -1
   # Default GJD mixed-dynamics sampler. Keep this in parity with the maintained
-  # dual-expert legacy-prefix full-segment W64 joint command: replacement source draws,
+  # dual-expert full-segment W64 joint recipe: replacement source draws,
   # uniform weights, no extra conditional-history cap.
   generalist_dynamics_mixture:
     train_latent_root: "${paths.datasets.libero_gjd_counterfactual_train_latent_root}"
@@ -114,6 +114,10 @@ policy_variant:
   variant_profile: generalist_joint_denoising
   generalist_training_paradigm: dynamics_routed
   program: generalist_joint_denoising
+  # Real-joint samples use the same planning prefix contract as the shipped
+  # joint program. Dynamics-routed FDM/IDM samples retain their target-only t0
+  # layout and bypass the planning prefix assembler.
+  sequence_contract: legacy_prefix_single_frame_perchunk_proprio
   reference_profile: libero_joint
   hidden_size: 3072
   frame_chunk_size: 4
@@ -125,15 +129,9 @@ policy_variant:
   video_condition_on_action: true
   video_action_condition_source: noisy_action
   video_action_attention_scope: block_local
-  proprio_context_mode: per_chunk_additive
-  # Known parallel-stream GJD issue: dual-expert is the standard GJD contract and uses
-  # legacy-prefix single-frame condition latents. parallel-stream keeps full clean modality
-  # slots for conditional FDM/IDM; forcing the dual-expert single-frame condition source
-  # onto current parallel-stream legacy full-segment samples would require a pre-target
-  # context/loss boundary, while this legacy uniform segment path has
-  # loss_frame_start=0.
+  noisy_video_condition_prob: 0.5
   # Current GJD uses independent video/action noise clocks for parity with the
-  # standard dual-expert legacy-prefix W64 joint baseline. Use `match_sigma` only for a
+  # standard dual-expert W64 joint baseline. Use `match_sigma` only for a
   # sigma-matched ablation.
   joint_timestep_coupling: independent
   preserve_video_pretrain_history: true

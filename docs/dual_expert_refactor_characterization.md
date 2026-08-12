@@ -44,9 +44,11 @@ policy with interval 500 and retention 3. The characterization worker disables
 checkpoint writes and experiment logging after validating that source contract.
 For each geometry, a whole-config test verifies that the six programs differ
 only in experiment name and `current_block_coupling`; their real-data fixture is
-therefore intentionally shared. Phase 1 resolves the config-default W30 because
-the supplied command does not override `training.window_size`, while phase 2
-explicitly resolves W64.
+therefore intentionally shared. The phase-1 oracle explicitly preserves W30,
+matching the config default in force when the supplied command was recorded;
+phase 2 explicitly resolves W64. Current public configs default to the later
+validated full-segment W64 recipe, but that default change does not rewrite the
+historical phase-1 oracle.
 
 The GJD training syntax and semantics matrix covers `vanilla`, `pure_joint`,
 `pure_fdm`, `pure_idm`, and `mode_token`; the two pure conditional modes are

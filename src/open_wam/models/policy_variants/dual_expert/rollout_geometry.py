@@ -175,7 +175,7 @@ def resolve_dual_expert_rollout_history_frames(
     Video and action chunks occupy alternating block ids, so odd attention
     windows do not expose an extra complete same-stream history chunk. That
     gives floor semantics for per-stream lookback, matching parallel-stream cache
-    retention and dual-expert's fixed-128 rollout-history contract.
+    retention and dual-expert's packed rollout-history contract.
     """
 
     chunk = max(1, int(frame_chunk_size))

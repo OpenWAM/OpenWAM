@@ -30,17 +30,12 @@ The generic runtime covers these representative maintained families:
 
 | Architecture / program | Experiment config |
 | --- | --- |
-| Parallel stream exact backend | `parallel_stream_libero_lingbot_exact.yaml` |
-| Parallel stream action-conditioned profile | `parallel_stream_libero_joint_denoise.yaml` |
+| Parallel stream six video/action programs | `parallel_stream_libero_<program>.yaml` |
+| Parallel stream exact compatibility profiles | `parallel_stream_libero_lingbot_exact.yaml`, `parallel_stream_libero_joint_denoise.yaml` |
 | Post-latent video-conditioned | `post_latent_libero_latent_local_video_conditioned.yaml` |
 | Post-decoded video-conditioned | `post_decoded_libero_latent_local_video_conditioned.yaml` |
-| Dual expert video then action | `dual_expert_libero_video_then_action.yaml` |
-| Dual expert action then video | `dual_expert_libero_action_then_video.yaml` |
-| Dual expert joint | `dual_expert_libero_joint.yaml` |
-| Dual expert decoupled | `dual_expert_libero_decoupled_same_step.yaml` |
-| Dual expert video-noisy to action | `dual_expert_libero_video_noisy_to_action.yaml` |
-| Dual expert action-noisy to video | `dual_expert_libero_action_noisy_to_video.yaml` |
-| Dual expert GJD | `dual_expert_libero_generalist_joint_denoising.yaml` |
+| Dual expert six video/action programs | `dual_expert_libero_<program>.yaml` |
+| GJD, either architecture | `<architecture>_libero_generalist_joint_denoising.yaml` |
 | Dual expert conditional FDM/IDM | `dual_expert_libero_conditional_dynamics.yaml` |
 | Video-only | `causal_video_prediction_libero_latent_local.yaml` |
 
@@ -145,6 +140,52 @@ uv run --extra train open-wam-train \
   --set policy_variant.program=video_then_action
 ```
 
+### LIBERO Policy Planning Default
+
+The six shipped video/action program configs use one shared full-trajectory
+W64 training recipe for both `parallel_stream` and `dual_expert`. Architecture
+selects model execution; it does not select the data recipe.
+
+| Setting | Shipped value |
+| --- | --- |
+| Replay rows | `include_all`; no replay-status validation split |
+| Segment sampler | `uniform_segment`, `1000/1000`, full segments only |
+| Draw order | replacement, with uniform task/demo/trajectory powers |
+| Packed geometry | chunk upper bound 4, window upper bound 64, randomized |
+| Sequence semantics | `legacy_prefix_single_frame_perchunk_proprio` |
+| Optimization budget | 10,000 steps, no sample-loss reweighting |
+
+With randomized geometry, each sample draws a chunk size from `[1, 4]` and a
+window size from `[4, 64]`. The sequence contract supplies the single-frame
+condition latent, video-only history visibility, per-chunk additive proprio,
+and prefix alignment. Do not repeat those owned fields as individual YAML or
+CLI overrides; the config loader rejects ambiguous combinations.
+
+This default follows a matched 10,000-step VTA study. On the common task subset
+`{2,3,6,7,8,9}`, the full-trajectory bundle scored 94.1%, compared with
+68.0-86.0% for three fixed-128 controls; its all-task score was 95.0% over 282
+rollouts. The study used one training seed and changed the sampler/replay
+bundle together, so it establishes the default recipe, not a causal claim for
+any one field. The historical Parallel Stream exact-backend profiles remain
+available for checkpoint reproduction, but they are not the default policy
+program recipe.
+
+These are YAML defaults, not runtime invariants. The generic config, data, and
+policy layers neither recognize this recipe by name nor reject another
+structurally valid combination. Override individual fields with `--set` or
+ship another experiment YAML for an ablation.
+
+GJD `real_joint` uses this same planning recipe and sequence contract. GJD-only
+fields such as mode probabilities, timestep coupling, counterfactual source
+weights, and total optimization budget remain method knobs. Conditional FDM
+and IDM rows do not inherit long-horizon planning context: they keep their
+target-only singleton-`t0`, text-dropped, one-video-boundary history contract.
+
+`replay_status_policy: include_all` must remain paired with
+`val_replay_status_policy: null`, `require_replay_status: false`, and
+`val_require_replay_status: false`. Reusing the former failure-only validation
+split would make that split empty because the failed rows are now in training.
+
 ### Initialization And Exact Resume
 
 Use `--transformer-subdir` to initialize a new run from a video-transformer
@@ -173,8 +214,8 @@ resume support.
 ## Generalist Joint Denoising
 
 Installed-package GJD training uses the generic `open-wam-train` entry point.
-Dual expert is the standard GJD architecture; parallel stream remains a
-documented compatibility and diagnostic path. Source checkouts also provide
+Parallel Stream and Dual Expert are model architectures under the same GJD
+paradigm. Source checkouts also provide
 `scripts/run_gjd_libero.sh` as a convenience for expanding named ablations and
 launching LIBERO rollouts. The script is not part of the wheel or source
 distribution and does not own model semantics.

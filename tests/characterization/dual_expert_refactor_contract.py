@@ -280,8 +280,10 @@ def ground_truth_training_overrides(profile: DualExpertTrainingProfile) -> dict[
                 "data.sample_construction.segment_min_frames": 64,
                 "data.sample_construction.segment_max_frames": 256,
                 "data.sample_construction.segment_length_stride": 4,
+                "data.sample_construction.window_size": 30,
                 "data.sample_construction.randomize_segment_length": True,
                 "data.sample_construction.randomize_segment_start": True,
+                "training.window_size": 30,
                 "training.num_steps": 5000,
             }
         )

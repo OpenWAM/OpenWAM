@@ -115,8 +115,10 @@ Populate only the aliases used by the selected config. The local registry is
 gitignored; set `OPEN_WAM_LOCAL_PATHS=/absolute/path/paths.yaml` to keep it
 elsewhere.
 
-All architectures use `open-wam-train`. The reference dual-expert LIBERO
-configs are 30-layer FSDP workloads characterized with four 48 GB GPUs:
+All architectures use `open-wam-train`. The shipped Parallel Stream and Dual
+Expert LIBERO policy programs use the same validated full-trajectory W64 recipe
+described in [Training and Inference](docs/running_experiments.md#libero-policy-planning-default).
+The reference 30-layer configs are FSDP workloads characterized with four 48 GB GPUs:
 
 ```bash
 uv run --extra train torchrun --standalone --nproc-per-node=4 \

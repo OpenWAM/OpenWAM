@@ -43,6 +43,7 @@ def test_sample_construction_metadata_parses_geometry_and_generalist_fields() ->
         "sampled_chunk_size": 4,
         "sampled_window_size": 8,
         "history_frames": 12,
+        "context_prefix_frames_in_sample": 1,
         "frame_shift": 30,
         "loss_frame_start": 12,
         "loss_frame_end": 20,
@@ -57,6 +58,7 @@ def test_sample_construction_metadata_parses_geometry_and_generalist_fields() ->
     assert parsed.sampled_chunk_size_for(16) == 4
     assert parsed.sampled_window_size == 8
     assert parsed.history_frames == 12
+    assert parsed.context_prefix_frames_in_sample == 1
     assert parsed.frame_shift == 30
     assert parsed.frame_range_or_default(observed_num_frames=24) == (12, 20)
     assert parsed.generalist.mode_override == "action_conditioned_video"
@@ -102,6 +104,13 @@ def test_sample_construction_metadata_rejects_invalid_ranges() -> None:
     assert parsed is not None
     with pytest.raises(ValueError, match="observed_num_frames=8"):
         parsed.frame_range_or_default(observed_num_frames=8)
+
+
+def test_sample_construction_metadata_rejects_negative_context_prefix() -> None:
+    with pytest.raises(ValueError, match="must be non-negative"):
+        SampleConstructionMetadata.from_mapping(
+            {"context_prefix_frames_in_sample": -1}
+        )
 
 
 def test_single_sample_metadata_mapping_rejects_multi_sample_batches() -> None:

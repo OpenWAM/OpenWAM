@@ -4,7 +4,11 @@ from types import SimpleNamespace
 
 import torch
 
-from open_wam.configs import ParallelRuntimeMode, ProprioContextMode
+from open_wam.configs import (
+    ContextConditionLatentSource,
+    ParallelRuntimeMode,
+    ProprioContextMode,
+)
 from open_wam.configs.policy_parallel_stream import ParallelStreamPolicyConfig
 from open_wam.models.policy_variants.contracts import PolicyTrainBatch
 from open_wam.models.policy_variants.parallel_stream.conditioning import (
@@ -137,3 +141,27 @@ def test_train_condition_latents_preserve_values_dtype_and_storage() -> None:
 
     assert resolved is condition_latents
     torch.testing.assert_close(resolved, condition_latents, rtol=0.0, atol=0.0)
+
+
+def test_external_condition_prefix_is_selected_by_resolved_sample_layout() -> None:
+    aligned = ParallelStreamConditioning(ParallelStreamPolicyConfig())
+    external = ParallelStreamConditioning(
+        ParallelStreamPolicyConfig(
+            context_condition_latent_source=(
+                ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+            ),
+        )
+    )
+
+    assert aligned.uses_external_condition_prefix(
+        context_prefix_frames_in_sample=0
+    ) is False
+    assert external.uses_external_condition_prefix(
+        context_prefix_frames_in_sample=None
+    ) is True
+    assert external.uses_external_condition_prefix(
+        context_prefix_frames_in_sample=0
+    ) is True
+    assert external.uses_external_condition_prefix(
+        context_prefix_frames_in_sample=1
+    ) is False

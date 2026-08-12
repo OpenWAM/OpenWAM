@@ -223,20 +223,24 @@ def test_parallel_stream_program_and_segment_sampling_are_tracked(tmp_path: Path
     assert metadata["program"] == "video_then_action"
     assert metadata["current_block_coupling"] == "video_then_action"
     assert metadata["reference_profile"] == "libero"
-    assert metadata["sample_construction_mode"] == "hierarchical_fixed_segment"
-    assert metadata["segment_frames"] == 128
+    assert metadata["sample_construction_mode"] == "uniform_segment"
+    assert metadata["segment_frames"] is None
+    assert metadata["segment_min_frames"] == 1000
+    assert metadata["segment_max_frames"] == 1000
     assert metadata["start_padding_frames"] == 0
-    assert metadata["target_alignment"] == "next_after_context"
+    assert metadata["target_alignment"] == "legacy"
     assert metadata["rollout_context_policy"] == "one_frame"
-    assert metadata["task_start_power"] == 0.5
+    assert metadata["task_start_power"] == 0.0
     assert metadata["demo_count_power"] == 0.0
-    assert metadata["trajectory_start_power"] == 1.0
+    assert metadata["trajectory_start_power"] == 0.0
+    assert metadata["sample_order_mode"] == "replacement"
     tags = build_wandb_tags(metadata)
     assert "coupling:video_then_action" in tags
-    assert "sample:hierarchical_fixed_segment" in tags
-    assert "segment_frames:128" in tags
-    assert "target_alignment:next_after_context" in tags
-    assert "rollout_context:one_frame" in tags
+    assert "sample:uniform_segment" in tags
+    assert "segment_frames:1000" in tags
+    assert "sample_order:replacement" in tags
+    assert not any(tag.startswith("target_alignment:") for tag in tags)
+    assert not any(tag.startswith("rollout_context:") for tag in tags)
     assert metadata["gjd_ablation"] is None
     assert build_wandb_group(metadata) == "libero/parallel_stream/video_then_action"
     assert "gjd:" not in build_run_title(metadata)

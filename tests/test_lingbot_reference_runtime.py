@@ -30,6 +30,11 @@ from open_wam.configs import (
     TrainingConfig,
     VideoActionSequenceContract,
 )
+from open_wam.contracts import (
+    GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY,
+    GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY,
+    GENERALIST_TRAINING_SOURCE_METADATA_KEY,
+)
 from open_wam.models.action_decoders.parallel_stream_decoder import (
     ParallelStreamActionDecoder,
 )
@@ -2936,25 +2941,28 @@ def test_parallel_prefix_condition_generalist_joint_is_pure_joint_metadata() -> 
     assert input_dict["joint_denoise_shared_sigmas"].shape == (4,)
 
 
-def test_parallel_prefix_condition_generalist_rejects_conditional_modes() -> None:
-    with pytest.raises(ValueError, match="pure `joint`"):
-        ParallelStreamPolicyConfig(
-            hidden_size=32,
-            runtime_mode=ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
-            variant_profile=ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING,
-            current_block_coupling=CurrentBlockCoupling.JOINT,
-            frame_chunk_size=2,
-            action_per_frame=2,
-            attn_window=4,
-            sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
-            context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
-            video_condition_on_action=True,
-            generalist_training_paradigm=GeneralistTrainingParadigm.DYNAMICS_ROUTED,
-            generalist_denoising_mode_probs={
-                GeneralistDenoisingMode.JOINT: 0.5,
-                GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO: 0.5,
-            },
-        )
+def test_parallel_generalist_sequence_contract_accepts_routed_conditional_modes() -> None:
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode=ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
+        variant_profile=ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING,
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        frame_chunk_size=2,
+        action_per_frame=2,
+        attn_window=4,
+        sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
+        context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
+        video_condition_on_action=True,
+        generalist_training_paradigm=GeneralistTrainingParadigm.DYNAMICS_ROUTED,
+        generalist_denoising_mode_probs={
+            GeneralistDenoisingMode.JOINT: 0.5,
+            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO: 0.5,
+        },
+    )
+
+    assert policy_config.sequence_contract == (
+        VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
+    )
 
 
 def test_legacy_prefix_variant_preserves_chunk_level_proprio_state() -> None:
@@ -3033,6 +3041,149 @@ def test_legacy_prefix_variant_preserves_chunk_level_proprio_state() -> None:
     assert input_dict["per_chunk_proprio_state"].shape == (1, 3, 8)
     torch.testing.assert_close(input_dict["per_chunk_proprio_state"][:, :1], prefix_state[:, None])
     torch.testing.assert_close(input_dict["per_chunk_proprio_state"][:, 1:], chunk_state)
+
+
+@pytest.mark.parametrize(
+    ("mode", "uses_planning_prefix"),
+    (
+        (GeneralistDenoisingMode.JOINT, True),
+        (GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO, False),
+        (GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION, False),
+    ),
+)
+def test_parallel_gjd_routes_planning_and_conditional_layouts_by_mode(
+    mode: GeneralistDenoisingMode,
+    uses_planning_prefix: bool,
+) -> None:
+    backbone_config = LingbotCompatibleVideoBackboneConfig(
+        hidden_size=32,
+        num_layers=1,
+        num_heads=4,
+        attention_head_dim=8,
+        text_dim=16,
+        freq_dim=8,
+        patch_size_t=1,
+        patch_size_h=1,
+        patch_size_w=1,
+    )
+    policy_config = ParallelStreamPolicyConfig(
+        hidden_size=32,
+        runtime_mode=ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED,
+        variant_profile=ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING,
+        current_block_coupling=CurrentBlockCoupling.JOINT,
+        frame_chunk_size=2,
+        action_per_frame=2,
+        attn_window=4,
+        sequence_contract=VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO,
+        proprio_context_mode=ProprioContextMode.PER_CHUNK_ADDITIVE,
+        context_condition_latent_source=ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT,
+        history_stream_visibility=HistoryStreamVisibility.VIDEO_ONLY,
+        use_condition_latents=True,
+        require_condition_latents=True,
+        video_condition_on_action=True,
+        generalist_training_paradigm=GeneralistTrainingParadigm.DYNAMICS_ROUTED,
+        generalist_denoising_mode_probs={
+            GeneralistDenoisingMode.JOINT: 0.6,
+            GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO: 0.2,
+            GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION: 0.2,
+        },
+    )
+    variant = ParallelStreamPolicyVariant(
+        policy_config,
+        backbone_config,
+        TrainingConfig(chunk_size=2, window_size=4),
+        InferenceConfig(frame_chunk_size=2),
+        action_dim=4,
+        action_horizon=8,
+        num_frames=4,
+    )
+    video_latents = torch.randn(1, 3, 4, 2, 2)
+    text_context = torch.ones(1, 512, 16)
+    visual_outputs = VisualStageOutputs(
+        frontend=VisualFrontendOutput(
+            canonical_video=torch.empty(1, 3, 4, 8, 8),
+            video_latents=video_latents,
+            video_tokens=torch.empty(1, 0, 32),
+            input_source="latents",
+            token_grid=TokenGridMetadata(
+                num_frames=4,
+                latent_height=2,
+                latent_width=2,
+                patch_size=(1, 1, 1),
+                patches_per_frame_h=2,
+                patches_per_frame_w=2,
+                tokens_per_frame=4,
+                sequence_length=16,
+            ),
+            chunk=ChunkMetadata(
+                chunk_start_frame=0,
+                chunk_num_frames=4,
+                frame_stride=1,
+                chunk_type="test",
+            ),
+            conditioning=ConditioningState(
+                supported=True,
+                text_context=text_context,
+            ),
+        )
+    )
+    conditional = mode != GeneralistDenoisingMode.JOINT
+    metadata = {
+        "sampled_chunk_size": 2,
+        "sampled_window_size": 4,
+        "context_prefix_frames_in_sample": 0,
+        GENERALIST_TRAINING_MODE_OVERRIDE_METADATA_KEY: mode.value,
+        GENERALIST_TRAINING_DROP_TEXT_METADATA_KEY: conditional,
+        GENERALIST_TRAINING_SOURCE_METADATA_KEY: "real_demo",
+    }
+    action_mask = torch.ones(1, 8, 4)
+    if conditional:
+        metadata.update(
+            {
+                "generalist_gjd_chunk_contract": "t0_singleton",
+                "context_prefix_frames_in_sample": 1,
+                "singleton_chunk_frame": 0,
+                "chunk_origin_frame": 1,
+                "loss_frame_start": 1,
+                "loss_frame_end": 4,
+                "latent_loss_frame_start": 1,
+                "latent_loss_frame_end": 4,
+                "action_loss_frame_start": 1,
+                "action_loss_frame_end": 4,
+                "conditional_history_policy": "previous_boundary_video_only",
+            }
+        )
+        action_mask[:, :2] = 0
+    batch = PolicyTrainBatch(
+        actions=torch.randn(1, 8, 4),
+        action_mask=action_mask,
+        state=torch.full((1, 1, 8), 9.0),
+        extra={
+            "condition_latents": torch.full_like(video_latents, 3.0),
+            "proprio_context_frames": torch.randn(1, 4, 8),
+            "metadata": (metadata,),
+        },
+    )
+
+    prepared = variant.prepare_train_inputs(visual_outputs, batch)
+    input_dict = prepared.variant_inputs["parallel_train_artifacts"].input_dict
+
+    assert input_dict["joint_denoise_training_mode"] == mode.value
+    assert bool(input_dict.get("prefix_condition_frames")) is uses_planning_prefix
+    assert input_dict["latent_dict"]["noisy_latents"].shape[2] == (
+        5 if uses_planning_prefix else 4
+    )
+    assert input_dict["joint_denoise_text_dropped"] is conditional
+    assert bool(
+        torch.count_nonzero(input_dict["latent_dict"]["text_emb"]) == 0
+    ) is conditional
+    if conditional:
+        assert input_dict["singleton_chunk_frame"] == 0
+        assert input_dict["chunk_origin_frame"] == 1
+        assert input_dict["generalist_conditional_history_chunks"] == 1
+        assert input_dict["history_stream_visibility"] == HistoryStreamVisibility.VIDEO_ONLY.value
+    else:
+        assert input_dict["per_chunk_proprio_state"].shape[1] == 5
 
 
 def test_current_frame_action_chunk_train_artifacts_prefer_explicit_condition_latents() -> None:

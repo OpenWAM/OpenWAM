@@ -10,10 +10,17 @@ import yaml
 
 from open_wam.configs import load_experiment_config
 from open_wam.configs.enums import (
+    ContextConditionLatentSource,
     GeneralistDenoisingMode,
     GeneralistTrainingParadigm,
+    HistoryStreamVisibility,
     JointTimestepCoupling,
+    ProprioContextMode,
     SampleOrderMode,
+    SampleTargetAlignment,
+    SampleWeightMode,
+    VideoActionSequenceContract,
+    WindowSamplingMode,
 )
 from open_wam.utils.config_overrides import (
     apply_config_overrides,
@@ -21,7 +28,8 @@ from open_wam.utils.config_overrides import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-HELPER_PATH = REPO_ROOT / "scripts/libero_fixed128_rollout_context_defaults.sh"
+TRAINING_HELPER_PATH = REPO_ROOT / "scripts/training_launcher_common.sh"
+LIBERO_COMPATIBILITY_PATH = REPO_ROOT / "scripts/libero_legacy_compatibility.sh"
 POSTTRAIN_LAUNCHERS = (
     "scripts/run_causal_video_prediction_posttrain_libero.sh",
     "scripts/run_dual_expert_posttrain_libero.sh",
@@ -50,32 +58,52 @@ FIXED_128_VALUES = (
     "data.sample_construction.trajectory_start_power=1.0",
     "policy_variant.proprio_context_mode=per_chunk_additive",
 )
+STANDARD_POLICY_PROGRAMS = tuple(
+    (f"{architecture}_libero_{program}", program)
+    for architecture in ("dual_expert", "parallel_stream")
+    for program in (
+        "video_then_action",
+        "action_then_video",
+        "joint",
+        "decoupled_same_step",
+        "video_noisy_to_action",
+        "action_noisy_to_video",
+    )
+)
+SEQUENCE_CONTRACT_POLICY_KEYS = {
+    "proprio_context_mode",
+    "context_condition_latent_source",
+    "history_stream_visibility",
+    "use_condition_latents",
+    "require_condition_latents",
+}
+SEQUENCE_CONTRACT_SAMPLE_KEYS = {
+    "condition_source_frame_offset",
+    "start_padding_frames",
+    "target_alignment",
+    "rollout_context_policy",
+}
 
 
-def _default_args_for(config_name: str, *, enabled: bool = True) -> list[str]:
-    env = os.environ.copy()
-    env["OPEN_WAM_ENABLE_FIXED128_ROLLOUT_CONTEXT"] = "1" if enabled else "0"
+def _normalized_legacy_config_name(config_name: str) -> str:
     command = f"""
 set -euo pipefail
-source {str(HELPER_PATH)!r}
-args=()
-open_wam_append_fixed128_rollout_context_args args {config_name!r}
-printf '%s\\n' "${{args[@]}}"
+source {str(LIBERO_COMPATIBILITY_PATH)!r}
+open_wam_normalize_config_name {config_name!r}
 """
     result = subprocess.run(
         ["bash", "-lc", command],
         check=True,
         text=True,
         capture_output=True,
-        env=env,
     )
-    return [line for line in result.stdout.splitlines() if line]
+    return result.stdout.strip()
 
 
 def _reject_config_override_result(*args: str) -> subprocess.CompletedProcess[str]:
     command = f"""
 set -euo pipefail
-source {str(HELPER_PATH)!r}
+source {str(TRAINING_HELPER_PATH)!r}
 open_wam_reject_cli_config_override_args "$@"
 """
     return subprocess.run(
@@ -139,16 +167,18 @@ def test_posttrain_launchers_delegate_to_shared_process_owner() -> None:
             "openwam-method4-post-latent-libero-video-conditioned"
         ),
     }
-    helper_source = HELPER_PATH.read_text(encoding="utf-8")
+    helper_source = TRAINING_HELPER_PATH.read_text(encoding="utf-8")
 
     assert set(expected_projects) == set(POSTTRAIN_LAUNCHERS)
     assert helper_source.count("open_wam_launch_training()") == 1
     assert helper_source.count("python -m torch.distributed.run") == 1
     assert helper_source.count("python -m open_wam.cli.train") == 1
-    assert "open_wam_append_fixed128_rollout_context_args" in helper_source
+    assert "libero" not in helper_source.lower()
+    assert "fixed128" not in helper_source.lower()
+    assert "sample_construction" not in helper_source
     for relative_path, project in expected_projects.items():
         source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
-        assert "libero_fixed128_rollout_context_defaults.sh" in source
+        assert "training_launcher_common.sh" in source
         assert source.count("open_wam_launch_training") == 1
         assert "torch.distributed.run" not in source
         assert "OPEN_WAM_TRAIN_ARGS" not in source
@@ -184,7 +214,6 @@ printf 'WANDB_PROJECT=%s\\n' "${WANDB_PROJECT:-}"
             "NGPU": "4",
             "LOG_RANK": "2",
             "MASTER_PORT": "29677",
-            "OPEN_WAM_ENABLE_FIXED128_ROLLOUT_CONTEXT": "0",
         }
     )
 
@@ -348,8 +377,8 @@ def _assert_gjd_ablation_config(
         assert config.data.sample_construction.sample_order_mode == SampleOrderMode.REPLACEMENT
         assert config.data.generalist_dynamics_mixture.train_latent_root is None
         assert config.data.generalist_dynamics_mixture.val_latent_root is None
+        assert config.validation.auxiliary_tasks == ()
     elif ablation == "pure_fdm":
-        assert architecture == "dual_expert"
         assert probs[joint] == 0.0
         assert probs[fdm] == 1.0
         assert probs[idm] == 0.0
@@ -361,7 +390,6 @@ def _assert_gjd_ablation_config(
         assert mixture.counterfactual_action_conditioned_video_weight == counterfactual_weight
         assert mixture.counterfactual_video_conditioned_action_weight == 0.0
     elif ablation == "pure_idm":
-        assert architecture == "dual_expert"
         assert probs[joint] == 0.0
         assert probs[fdm] == 0.0
         assert probs[idm] == 1.0
@@ -399,6 +427,104 @@ def _gjd_raw_config(*, architecture: str) -> dict:
         return yaml.safe_load(handle)
 
 
+def _assert_high_success_planning_config(
+    config,
+    *,
+    expected_num_steps: int = 10000,
+) -> None:
+    sample = config.data.sample_construction
+    policy = config.policy_variant
+
+    assert config.data.replay_status_policy.value == "include_all"
+    assert config.data.val_replay_status_policy is None
+    assert config.data.require_replay_status is False
+    assert config.data.val_require_replay_status is False
+    assert sample.mode == WindowSamplingMode.UNIFORM_SEGMENT
+    assert sample.sample_order_mode == SampleOrderMode.REPLACEMENT
+    assert sample.chunk_size == 4
+    assert sample.window_size == 64
+    assert sample.randomize_geometry is True
+    assert sample.segment_min_frames == 1000
+    assert sample.segment_max_frames == 1000
+    assert sample.segment_length_stride == 1
+    assert sample.segment_locality_block_size == 1
+    assert sample.randomize_segment_length is False
+    assert sample.randomize_segment_start is False
+    assert sample.require_full_segment is True
+    assert sample.task_start_power == 0.0
+    assert sample.demo_count_power == 0.0
+    assert sample.trajectory_start_power == 0.0
+    assert sample.sample_weight_mode == SampleWeightMode.UNIFORM
+    assert policy.sequence_contract == (
+        VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
+    )
+    assert policy.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
+    assert policy.context_condition_latent_source == (
+        ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+    )
+    assert policy.history_stream_visibility == HistoryStreamVisibility.VIDEO_ONLY
+    assert policy.use_condition_latents is True
+    assert policy.require_condition_latents is True
+    assert policy.noisy_video_condition_prob == pytest.approx(0.5)
+    assert sample.condition_source_frame_offset == -1
+    assert sample.start_padding_frames == 0
+    assert sample.target_alignment == SampleTargetAlignment.LEGACY
+    assert config.training.chunk_size == 4
+    assert config.training.window_size == 64
+    assert config.training.sample_loss_weight_mode.value == "none"
+    assert config.training.num_steps == expected_num_steps
+    assert config.trainer.checkpoint_mode.value == "full_training_state"
+
+
+@pytest.mark.parametrize(
+    ("config_name", "program"),
+    STANDARD_POLICY_PROGRAMS,
+)
+def test_policy_program_configs_own_architecture_neutral_high_success_recipe(
+    config_name: str,
+    program: str,
+) -> None:
+    config_path = REPO_ROOT / "configs/experiments" / f"{config_name}.yaml"
+    with config_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    sample = raw["data"]["sample_construction"]
+    policy = raw["policy_variant"]
+
+    assert raw["data"]["replay_status_policy"] == "include_all"
+    assert raw["data"]["val_replay_status_policy"] is None
+    assert raw["data"]["require_replay_status"] is False
+    assert raw["data"]["val_require_replay_status"] is False
+    assert sample["mode"] == "uniform_segment"
+    assert sample["sample_order_mode"] == "replacement"
+    assert sample["chunk_size"] == 4
+    assert sample["window_size"] == 64
+    assert sample["randomize_geometry"] is True
+    assert sample["segment_min_frames"] == 1000
+    assert sample["segment_max_frames"] == 1000
+    assert sample["segment_length_stride"] == 1
+    assert sample["segment_locality_block_size"] == 1
+    assert sample["randomize_segment_length"] is False
+    assert sample["randomize_segment_start"] is False
+    assert sample["require_full_segment"] is True
+    assert sample["task_start_power"] == 0.0
+    assert sample["demo_count_power"] == 0.0
+    assert sample["trajectory_start_power"] == 0.0
+    assert sample["sample_weight_mode"] == "uniform"
+    assert "segment_frames" not in sample
+    assert SEQUENCE_CONTRACT_SAMPLE_KEYS.isdisjoint(sample)
+    assert policy["program"] == program
+    assert policy["sequence_contract"] == (
+        "legacy_prefix_single_frame_perchunk_proprio"
+    )
+    assert SEQUENCE_CONTRACT_POLICY_KEYS.isdisjoint(policy)
+    assert policy["noisy_video_condition_prob"] == pytest.approx(0.5)
+    assert raw["training"]["window_size"] == 64
+    assert raw["training"]["sample_loss_weight_mode"] == "none"
+    assert raw["training"]["num_steps"] == 10000
+
+    _assert_high_success_planning_config(load_experiment_config(config_path))
+
+
 def _assert_gjd_fullseg_w64_raw_config(raw: dict) -> None:
     sample = raw["data"]["sample_construction"]
 
@@ -432,6 +558,11 @@ def _assert_gjd_fullseg_w64_raw_config(raw: dict) -> None:
     assert raw["policy_variant"]["joint_timestep_coupling"] == "independent"
     assert raw["policy_variant"]["generalist_training_paradigm"] == "dynamics_routed"
     assert raw["policy_variant"]["generalist_mode_text_token"] is False
+    assert raw["policy_variant"]["sequence_contract"] == (
+        "legacy_prefix_single_frame_perchunk_proprio"
+    )
+    assert raw["policy_variant"]["noisy_video_condition_prob"] == pytest.approx(0.5)
+    assert SEQUENCE_CONTRACT_POLICY_KEYS.isdisjoint(raw["policy_variant"])
     assert raw["trainer"]["checkpoint_mode"] == "full_training_state"
     assert raw["trainer"]["save_interval"] == 100
     assert raw["trainer"]["max_checkpoints_to_keep"] == 3
@@ -439,6 +570,62 @@ def _assert_gjd_fullseg_w64_raw_config(raw: dict) -> None:
     assert mixture["train_latent_root"] == "${paths.datasets.libero_gjd_counterfactual_train_latent_root}"
     assert mixture["val_latent_root"] == "${paths.datasets.libero_gjd_counterfactual_val_latent_root}"
     assert mixture["conditional_history_frames"] is None
+
+
+def _planning_recipe_snapshot(config) -> tuple:
+    sample = config.data.sample_construction
+    policy = config.policy_variant
+    return (
+        config.data.replay_status_policy,
+        config.data.val_replay_status_policy,
+        config.data.require_replay_status,
+        config.data.val_require_replay_status,
+        sample.mode,
+        sample.sample_order_mode,
+        sample.chunk_size,
+        sample.window_size,
+        sample.randomize_geometry,
+        sample.segment_min_frames,
+        sample.segment_max_frames,
+        sample.segment_length_stride,
+        sample.segment_locality_block_size,
+        sample.randomize_segment_length,
+        sample.randomize_segment_start,
+        sample.require_full_segment,
+        sample.task_start_power,
+        sample.demo_count_power,
+        sample.trajectory_start_power,
+        sample.sample_weight_mode,
+        sample.condition_source_frame_offset,
+        sample.start_padding_frames,
+        sample.target_alignment,
+        policy.sequence_contract,
+        policy.proprio_context_mode,
+        policy.context_condition_latent_source,
+        policy.history_stream_visibility,
+        policy.use_condition_latents,
+        policy.require_condition_latents,
+        policy.noisy_video_condition_prob,
+        config.training.chunk_size,
+        config.training.window_size,
+        config.training.sample_loss_weight_mode,
+    )
+
+
+@pytest.mark.parametrize("architecture", ("dual_expert", "parallel_stream"))
+def test_gjd_real_joint_uses_canonical_joint_planning_recipe(architecture: str) -> None:
+    joint = load_experiment_config(
+        REPO_ROOT / "configs/experiments" / f"{architecture}_libero_joint.yaml"
+    )
+    gjd = load_experiment_config(
+        REPO_ROOT
+        / "configs/experiments"
+        / f"{architecture}_libero_generalist_joint_denoising.yaml"
+    )
+
+    # Denoising-mode probabilities, timestep coupling, and total step budget
+    # remain GJD method knobs; the shipped planning recipe and sequence semantics do not.
+    assert _planning_recipe_snapshot(gjd) == _planning_recipe_snapshot(joint)
 
 
 def _deprecated_launcher_result(
@@ -461,21 +648,30 @@ def _deprecated_launcher_result(
     )
 
 
-def test_fixed128_rollout_context_defaults_apply_to_supported_policy_training_configs() -> None:
-    for config_name in (
-        "parallel_stream_libero_lingbot_exact",
-        "parallel_stream_libero_joint",
-        "dual_expert_libero_latent_local_full_segment_non_joint_action_only",
-        "dual_expert_libero_video_then_action",
-        "dual_expert_libero_joint",
+def test_sampling_geometry_is_owned_by_configs_not_launcher_name_dispatch() -> None:
+    helper_source = TRAINING_HELPER_PATH.read_text(encoding="utf-8")
+
+    for value in FIXED_128_VALUES:
+        assert value not in helper_source
+    for launcher, config_name in (
+        (
+            "scripts/run_parallel_stream_posttrain_libero.sh",
+            "parallel_stream_libero_lingbot_exact",
+        ),
+        (
+            "scripts/run_dual_expert_posttrain_libero.sh",
+            "dual_expert_libero_latent_local_full_segment_non_joint_action_only",
+        ),
     ):
-        args = _default_args_for(config_name)
-
+        argv = _launcher_train_argv(
+            launcher,
+            env_overrides={"CONFIG_NAME": config_name},
+        )
         for value in FIXED_128_VALUES:
-            assert value in args
+            assert value not in argv
 
 
-def test_parallel_stream_gjd_config_deprecates_fixed128_for_fullseg_w64() -> None:
+def test_parallel_stream_gjd_uses_shared_planning_recipe() -> None:
     argv = _launcher_train_argv(
         "scripts/run_gjd_libero.sh",
         "train",
@@ -494,13 +690,12 @@ def test_parallel_stream_gjd_config_deprecates_fixed128_for_fullseg_w64() -> Non
 
     raw = _gjd_raw_config(architecture="parallel_stream")
     _assert_gjd_fullseg_w64_raw_config(raw)
-    assert raw["policy_variant"]["proprio_context_mode"] == "per_chunk_additive"
-    assert "sequence_contract" not in raw["policy_variant"]
+    assert "proprio_context_mode" not in raw["policy_variant"]
     assert raw["policy_variant"]["attn_window"] == 30
     assert raw["policy_variant"]["preserve_video_pretrain_history"] is True
 
 
-def test_gjd_launcher_help_labels_dual_expert_standard_and_parallel_stream_known_issue() -> None:
+def test_gjd_launcher_help_describes_shared_planning_and_conditional_contracts() -> None:
     result = subprocess.run(
         ["bash", str(REPO_ROOT / "scripts/run_gjd_libero.sh"), "--help"],
         cwd=REPO_ROOT,
@@ -509,16 +704,15 @@ def test_gjd_launcher_help_labels_dual_expert_standard_and_parallel_stream_known
         check=True,
     )
 
-    assert "dual_expert is the maintained standard GJD architecture" in result.stdout
-    assert "Known parallel_stream GJD issue" in result.stdout
+    assert "architecture choices under one GJD" in result.stdout
+    assert "GJD real-joint samples use the same legacy-prefix" in result.stdout
     assert "context_condition_latent_source=single_frame_condition_latent" in result.stdout
-    assert "parallel_stream's legacy-prefix path supports only" in result.stdout
-    assert "policy_variant.context_condition_latent_source=video_latents" in result.stdout
-    assert "data.sample_construction.condition_source_frame_offset=0" in result.stdout
-    assert "rollout uses run_libero_realtime_sandbox.py" in result.stdout
+    assert "Dynamics-routed FDM/IDM samples remain target-only" in result.stdout
+    assert "bypass the planning prefix assembler" in result.stdout
+    assert "parallel_stream rollout uses run_libero_realtime_sandbox.py" in result.stdout
 
 
-def test_parallel_stream_gjd_launcher_prints_known_issue_notice() -> None:
+def test_parallel_stream_gjd_launcher_prints_shared_contract_notice() -> None:
     env = os.environ.copy()
     env.update({"OPEN_WAM_PRINT_TRAIN_ARGV": "1", "NGPU": "1"})
     result = subprocess.run(
@@ -541,12 +735,11 @@ def test_parallel_stream_gjd_launcher_prints_known_issue_notice() -> None:
         "--config-name",
         "parallel_stream_libero_generalist_joint_denoising",
     ]
-    assert "known parallel_stream GJD issue" in result.stderr
-    assert "dual_expert is the maintained standard GJD architecture" in result.stderr
-    assert "conditional FDM/IDM needs full clean modality slots" in result.stderr
-    assert "loss_frame_start=0" in result.stderr
-    assert "context_condition_latent_source=video_latents" in result.stderr
-    assert "condition_source_frame_offset=0" in result.stderr
+    assert "shared GJD defaults" in result.stderr
+    assert "real_joint uses the configured full-segment W64 recipe" in result.stderr
+    assert "Conditional FDM/IDM uses target-only t0 + future layout" in result.stderr
+    assert "bypasses the planning prefix assembler" in result.stderr
+    assert "known parallel_stream GJD issue" not in result.stderr
 
 
 def test_dual_expert_gjd_config_deprecates_fixed128_for_legacy_prefix_fullseg_w64() -> None:
@@ -599,33 +792,29 @@ def test_m5_gjd_mode_token_launcher_keeps_fullseg_w64_sampler() -> None:
     )
 
 
-def test_fixed128_rollout_context_defaults_normalize_config_paths() -> None:
-    for config_name in (
-        "parallel_stream_libero_lingbot_exact.yaml",
-        "configs/experiments/parallel_stream_libero_lingbot_exact.yaml",
-        "/tmp/configs/experiments/dual_expert_libero_video_then_action.yml",
-        "parallel_stream_libero_lingbot_exact_heng_compatible.yaml",
-        "parallel_stream_libero_lingbot_m1_video_then_action_heng_compatible.yaml",
-        "mot_libero_latent_local_video_then_action_heng_compatible.yaml",
-        "/tmp/configs/experiments/dual_expert_libero_latent_local_video_then_action_heng_compatible.yml",
-    ):
-        args = _default_args_for(config_name)
-
-        for value in FIXED_128_VALUES:
-            assert value in args
+def test_legacy_config_name_normalization_is_isolated_from_training_launcher() -> None:
+    assert _normalized_legacy_config_name(
+        "parallel_stream_libero_lingbot_exact_heng_compatible.yaml"
+    ) == "parallel_stream_libero_lingbot_exact"
+    assert _normalized_legacy_config_name(
+        "configs/experiments/parallel_stream_libero_lingbot_exact.yaml"
+    ) == "parallel_stream_libero_lingbot_exact"
 
 
-def test_fixed128_rollout_context_defaults_are_gated_and_disableable() -> None:
-    assert _default_args_for("causal_video_prediction_libero_latent_local") == []
-    assert _default_args_for("parallel_stream_libero_generalist_joint_denoising") == []
-    assert _default_args_for("dual_expert_libero_latent_local_joint") == []
-    assert _default_args_for("dual_expert_libero_generalist_joint_denoising") == []
-    assert _default_args_for("dual_expert_libero_latent_local_full_segment") == []
-    assert _default_args_for("dual_expert_libero_latent_local_full_segment_non_joint_aligned") == []
-    assert _default_args_for("parallel_stream_libero_lingbot_exact_local") == []
-    assert _default_args_for("parallel_stream_libero_joint_denoise_contextual_subwindow") == []
-    assert _default_args_for("parallel_stream_libero_joint_denoise_random_subwindow") == []
-    assert _default_args_for("parallel_stream_libero_lingbot_exact", enabled=False) == []
+def test_policy_program_aliases_only_normalize_identity() -> None:
+    aliases = {
+        "mot_libero_latent_local_video_then_action_heng_compatible.yaml": (
+            "dual_expert_libero_video_then_action"
+        ),
+        "parallel_stream_libero_lingbot_m1_video_then_action_heng_compatible.yaml": (
+            "parallel_stream_libero_video_then_action"
+        ),
+        "/tmp/configs/experiments/parallel_stream_libero_joint.yml": (
+            "parallel_stream_libero_joint"
+        ),
+    }
+    for config_name, expected in aliases.items():
+        assert _normalized_legacy_config_name(config_name) == expected
 
 
 def test_launchers_reject_late_cli_config_overrides() -> None:
@@ -643,7 +832,7 @@ def test_launchers_reject_late_cli_config_overrides() -> None:
     assert _reject_config_override_result("--set", "training.num_steps=1").returncode == 0
 
 
-def test_dual_expert_posttrain_launcher_defaults_to_strict_fixed128_joint_config() -> None:
+def test_dual_expert_posttrain_launcher_uses_canonical_high_success_joint_config() -> None:
     argv = _launcher_train_argv("scripts/run_dual_expert_posttrain_libero.sh")
 
     assert argv[:4] == [
@@ -653,7 +842,22 @@ def test_dual_expert_posttrain_launcher_defaults_to_strict_fixed128_joint_config
         "1",
     ]
     for value in FIXED_128_VALUES:
-        assert value in argv
+        assert value not in argv
+    _assert_high_success_planning_config(_resolved_config_from_train_argv(argv))
+
+
+def test_parallel_stream_posttrain_launcher_uses_canonical_high_success_joint_config() -> None:
+    argv = _launcher_train_argv("scripts/run_parallel_stream_posttrain_libero.sh")
+
+    assert argv[:4] == [
+        "--config-name",
+        "parallel_stream_libero_joint",
+        "--devices",
+        "1",
+    ]
+    for value in FIXED_128_VALUES:
+        assert value not in argv
+    _assert_high_success_planning_config(_resolved_config_from_train_argv(argv))
 
 
 def test_legacy_nonjoint_launcher_preserves_video_then_action_default() -> None:
@@ -666,7 +870,8 @@ def test_legacy_nonjoint_launcher_preserves_video_then_action_default() -> None:
         "1",
     ]
     for value in FIXED_128_VALUES:
-        assert value in argv
+        assert value not in argv
+    _assert_high_success_planning_config(_resolved_config_from_train_argv(argv))
 
 
 def test_legacy_m5_gjd_launcher_delegates_named_ablation_overrides() -> None:
@@ -739,14 +944,16 @@ def test_unified_gjd_train_launcher_covers_architecture_and_ablation_surfaces() 
                 assert value not in argv
 
 
+@pytest.mark.parametrize("architecture", ["parallel_stream", "dual_expert"])
 @pytest.mark.parametrize("ablation", ["pure_fdm", "pure_idm"])
 def test_unified_gjd_train_launcher_supports_pure_conditional_source_ratios(
+    architecture: str,
     ablation: str,
 ) -> None:
     argv = _launcher_train_argv(
         "scripts/run_gjd_libero.sh",
         "train",
-        "--architecture=dual_expert",
+        f"--architecture={architecture}",
         f"--ablation={ablation}",
         "--real-demo-weight=3",
         "--counterfactual-weight=1",
@@ -755,7 +962,7 @@ def test_unified_gjd_train_launcher_supports_pure_conditional_source_ratios(
     config = _resolved_config_from_train_argv(argv)
     _assert_gjd_ablation_config(
         config,
-        architecture="dual_expert",
+        architecture=architecture,
         ablation=ablation,
         real_demo_weight=3.0,
         counterfactual_weight=1.0,
@@ -765,27 +972,19 @@ def test_unified_gjd_train_launcher_supports_pure_conditional_source_ratios(
     assert config.training.window_size == 64
 
 
-@pytest.mark.parametrize(
-    ("stage", "architecture", "expected_message"),
-    [
-        ("train", "parallel_stream", "requires architecture=dual_expert"),
-        ("rollout", "dual_expert", "offline conditional mode"),
-    ],
-)
-def test_unified_gjd_launcher_rejects_unsupported_pure_conditional_surfaces(
-    stage: str,
+@pytest.mark.parametrize("architecture", ("parallel_stream", "dual_expert"))
+def test_unified_gjd_launcher_rejects_pure_conditional_rollout(
     architecture: str,
-    expected_message: str,
 ) -> None:
     result = _launcher_train_result(
         "scripts/run_gjd_libero.sh",
-        stage,
+        "rollout",
         f"--architecture={architecture}",
         "--ablation=pure_fdm",
     )
 
     assert result.returncode == 2
-    assert expected_message in result.stderr
+    assert "offline conditional mode" in result.stderr
 
 
 def test_unified_gjd_launcher_rejects_source_ratio_for_nonconditional_ablation() -> None:
@@ -1157,7 +1356,7 @@ def test_dual_expert_launchers_reject_legacy_configs_by_default() -> None:
         )
 
         assert result.returncode == 2
-        assert "Removed LIBERO M1/M5 config" in result.stderr
+        assert "Removed LIBERO policy config" in result.stderr
 
 
 @pytest.mark.parametrize("allow_deprecated", (False, True))
@@ -1194,7 +1393,7 @@ def test_removed_dual_expert_configs_reject_explicit_opt_in() -> None:
     )
 
     assert result.returncode == 2
-    assert "Removed LIBERO M1/M5 config" in result.stderr
+    assert "Removed LIBERO policy config" in result.stderr
     assert "Git history retains the historical YAML" in result.stderr
 
 
@@ -1229,7 +1428,9 @@ def test_libero_posttrain_launcher_can_print_exact_train_argv_without_running() 
         "--devices",
         "4",
     ]
-    assert "data.sample_construction.segment_frames=128" in argv
+    for value in FIXED_128_VALUES:
+        assert value not in argv
+    _assert_high_success_planning_config(_resolved_config_from_train_argv(argv))
     assert argv[-4:] == ["--num-steps", "4000", "--set", "training.learning_rate=2e-5"]
 
 
@@ -1261,4 +1462,6 @@ def test_libero_posttrain_launcher_dry_run_uses_python3_without_venv_path() -> N
         "--devices",
         "4",
     ]
-    assert "data.sample_construction.segment_frames=128" in argv
+    for value in FIXED_128_VALUES:
+        assert value not in argv
+    _assert_high_success_planning_config(_resolved_config_from_train_argv(argv))

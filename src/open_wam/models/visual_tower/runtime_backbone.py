@@ -162,8 +162,37 @@ def ensure_runtime_module_device(
 
     device = torch.device(device)
     target_dtype = preferred_reference_dtype(device)
+    parameters = tuple(runtime_backbone.parameters())
+    if any(
+        callable(getattr(parameter, "full_tensor", None))
+        for parameter in parameters
+    ):
+        # FSDP owns both placement and mixed-precision materialization for
+        # DTensor parameters. Calling ``module.to(dtype=...)`` after sharding
+        # mutates the shard dtype without updating FSDP's reduction metadata.
+        misplaced = [
+            parameter.device
+            for parameter in parameters
+            if parameter.device != device
+        ]
+        misplaced.extend(
+            buffer.device
+            for buffer in runtime_backbone.buffers()
+            if buffer.device != device
+        )
+        if misplaced:
+            raise RuntimeError(
+                "A sharded runtime backbone cannot be moved after strategy preparation; "
+                f"requested device={device}, observed devices="
+                f"{sorted({str(value) for value in misplaced})}."
+            )
+        for buffer in runtime_backbone.buffers():
+            if buffer.is_floating_point() and buffer.dtype != target_dtype:
+                buffer.data = buffer.data.to(dtype=target_dtype)
+        return runtime_backbone
+
     needs_move = False
-    for parameter in runtime_backbone.parameters():
+    for parameter in parameters:
         if parameter.device != device:
             needs_move = True
             break

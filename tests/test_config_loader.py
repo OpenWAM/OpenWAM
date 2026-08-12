@@ -196,16 +196,28 @@ def test_non_boolean_legacy_timestep_coupling_is_rejected(legacy_value: object) 
 
 
 @pytest.mark.parametrize(
-    "config_name",
+    ("config_name", "expected_proprio_mode"),
     [
-        "parallel_stream_libero_lingbot_exact.yaml",
-        "parallel_stream_libero_video_then_action.yaml",
-        "parallel_stream_libero_action_then_video.yaml",
-        "parallel_stream_libero_joint_denoise.yaml",
-        "dual_expert_libero_video_then_action.yaml",
+        ("parallel_stream_libero_lingbot_exact.yaml", ProprioContextMode.NONE),
+        (
+            "parallel_stream_libero_video_then_action.yaml",
+            ProprioContextMode.PER_CHUNK_ADDITIVE,
+        ),
+        (
+            "parallel_stream_libero_action_then_video.yaml",
+            ProprioContextMode.PER_CHUNK_ADDITIVE,
+        ),
+        ("parallel_stream_libero_joint_denoise.yaml", ProprioContextMode.NONE),
+        (
+            "dual_expert_libero_video_then_action.yaml",
+            ProprioContextMode.PER_CHUNK_ADDITIVE,
+        ),
     ],
 )
-def test_absolute_action_features_are_opt_in_for_legacy_libero_training_configs(config_name: str) -> None:
+def test_raw_action_targets_do_not_imply_a_proprio_conditioning_mode(
+    config_name: str,
+    expected_proprio_mode: ProprioContextMode,
+) -> None:
     config = load_experiment_config(REPO_ROOT / "configs" / "experiments" / config_name)
 
     assert config.data.action_schema.action_dim == 7
@@ -213,7 +225,10 @@ def test_absolute_action_features_are_opt_in_for_legacy_libero_training_configs(
     assert config.data.action_target.source_key == "action"
     assert config.data.action_target.normalization.mode == ActionNormalizationMode.NONE
     assert config.data.action_target.joint_position_normalization.mode == ActionNormalizationMode.NONE
-    assert getattr(config.policy_variant, "proprio_context_mode", ProprioContextMode.NONE) == ProprioContextMode.NONE
+    assert (
+        getattr(config.policy_variant, "proprio_context_mode", ProprioContextMode.NONE)
+        == expected_proprio_mode
+    )
     assert getattr(config.action_decoder, "recovered_osc_loss_weight", 0.0) == 0.0
 
 
@@ -1283,7 +1298,7 @@ def test_m1_generalist_joint_denoising_keeps_guidance_scale_strict() -> None:
         _instantiate_parallel_stream_variant(config)
 
 
-def test_m1_generalist_joint_denoising_yaml_config_loads() -> None:
+def test_parallel_stream_generalist_joint_denoising_yaml_config_loads() -> None:
     config = load_experiment_config(
         REPO_ROOT
         / "configs/experiments/parallel_stream_libero_generalist_joint_denoising.yaml"
@@ -1296,7 +1311,14 @@ def test_m1_generalist_joint_denoising_yaml_config_loads() -> None:
     assert config.policy_variant.proprio_context_mode == ProprioContextMode.PER_CHUNK_ADDITIVE
     assert config.policy_variant.joint_timestep_coupling == JointTimestepCoupling.INDEPENDENT
     assert config.policy_variant.attn_window == 30
-    assert config.policy_variant.sequence_contract == VideoActionSequenceContract.DEFAULT
+    assert config.policy_variant.sequence_contract == (
+        VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
+    )
+    assert config.policy_variant.context_condition_latent_source == (
+        ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+    )
+    assert config.policy_variant.history_stream_visibility == HistoryStreamVisibility.VIDEO_ONLY
+    assert config.policy_variant.require_condition_latents is True
     assert config.policy_variant.generalist_training_paradigm == GeneralistTrainingParadigm.DYNAMICS_ROUTED
     assert config.data.sample_construction.mode == WindowSamplingMode.UNIFORM_SEGMENT
     assert config.data.sample_construction.sample_order_mode == SampleOrderMode.REPLACEMENT
@@ -1304,6 +1326,8 @@ def test_m1_generalist_joint_denoising_yaml_config_loads() -> None:
     assert config.data.sample_construction.segment_min_frames == 1000
     assert config.data.sample_construction.segment_max_frames == 1000
     assert config.data.sample_construction.require_full_segment is True
+    assert config.data.sample_construction.condition_source_frame_offset == -1
+    assert config.data.sample_construction.target_alignment == SampleTargetAlignment.LEGACY
     assert config.data.generalist_dynamics_mixture.train_latent_root is not None
     assert config.data.generalist_dynamics_mixture.val_latent_root is not None
     assert config.training.window_size == 64
@@ -1770,6 +1794,7 @@ def test_parallel_stream_single_frame_context_flag_enables_condition_latents(tmp
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
+    raw["policy_variant"].pop("sequence_contract", None)
     raw["policy_variant"]["context_condition_latent_source"] = "single_frame_condition_latent"
     raw["policy_variant"]["history_stream_visibility"] = "video_only"
     raw.setdefault("data", {}).setdefault("sample_construction", {})["condition_source_frame_offset"] = -1
@@ -1795,6 +1820,7 @@ def test_parallel_stream_single_frame_context_rejects_default_condition_offset(t
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
+    raw["policy_variant"].pop("sequence_contract", None)
     raw["policy_variant"]["context_condition_latent_source"] = "single_frame_condition_latent"
     raw.setdefault("data", {}).setdefault("sample_construction", {}).pop("condition_source_frame_offset", None)
 
@@ -1811,6 +1837,7 @@ def test_parallel_stream_per_chunk_additive_proprio_flag_loads(tmp_path: Path) -
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
+    raw["policy_variant"].pop("sequence_contract", None)
     raw["policy_variant"]["proprio_context_mode"] = "per_chunk_additive"
     raw["policy_variant"]["context_condition_latent_source"] = "single_frame_condition_latent"
     raw["policy_variant"]["history_stream_visibility"] = "video_only"
@@ -1832,6 +1859,7 @@ def test_dual_expert_per_chunk_single_frame_context_flags_load(tmp_path: Path) -
     with source_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
 
+    raw["policy_variant"].pop("sequence_contract", None)
     raw["policy_variant"]["proprio_context_mode"] = "per_chunk_additive"
     raw["policy_variant"]["context_condition_latent_source"] = "single_frame_condition_latent"
     raw["policy_variant"]["history_stream_visibility"] = "video_only"
@@ -2144,22 +2172,20 @@ def test_sequence_contract_rejects_conflicting_explicit_values(tmp_path: Path) -
         load_experiment_config(config_path)
 
 
-def test_parallel_stream_generalist_rejects_single_frame_context_source(tmp_path: Path) -> None:
-    source_path = (
+def test_parallel_stream_generalist_uses_planning_sequence_contract() -> None:
+    config = load_experiment_config(
         REPO_ROOT
         / "configs/experiments/parallel_stream_libero_generalist_joint_denoising.yaml"
     )
-    with source_path.open("r", encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle)
 
-    raw["policy_variant"]["context_condition_latent_source"] = "single_frame_condition_latent"
-
-    config_path = tmp_path / "generalist_single_frame_context.yaml"
-    with config_path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(raw, handle, sort_keys=False)
-
-    with pytest.raises(ValueError, match="single_frame_condition_latent.*generalist_joint_denoising"):
-        load_experiment_config(config_path)
+    assert config.policy_variant.sequence_contract == (
+        VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO
+    )
+    assert config.policy_variant.context_condition_latent_source == (
+        ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
+    )
+    assert config.policy_variant.require_condition_latents is True
+    assert config.data.sample_construction.condition_source_frame_offset == -1
 
 
 def test_sample_construction_yaml_strings_are_coerced_to_enum_members(tmp_path: Path) -> None:

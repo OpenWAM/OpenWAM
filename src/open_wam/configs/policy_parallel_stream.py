@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from .enums import (
     ActionNormMethod,
     AttachSite,
-    ContextConditionLatentSource,
     CurrentBlockCoupling,
     GeneralistDenoisingMode,
     GeneralistTrainingParadigm,
@@ -20,7 +19,6 @@ from .enums import (
     ParallelStreamVariantProfile,
     PolicyVariantName,
     TemporalPositionMode,
-    VideoActionSequenceContract,
     coerce_fields,
 )
 from .policy_compatibility import resolve_legacy_policy_field
@@ -165,29 +163,6 @@ class ParallelStreamPolicyConfig(VideoActionPolicyConfig):
             paradigm=self.generalist_training_paradigm,
         )
         if self.variant_profile == ParallelStreamVariantProfile.GENERALIST_JOINT_DENOISING:
-            conditional_generalist_modes_enabled = any(
-                self.generalist_denoising_mode_probs[mode] > 0.0
-                for mode in (
-                    GeneralistDenoisingMode.ACTION_CONDITIONED_VIDEO,
-                    GeneralistDenoisingMode.VIDEO_CONDITIONED_ACTION,
-                )
-            )
-            if (
-                self.context_condition_latent_source
-                == ContextConditionLatentSource.SINGLE_FRAME_CONDITION_LATENT
-            ):
-                if self.sequence_contract != VideoActionSequenceContract.LEGACY_PREFIX_SINGLE_FRAME_PERCHUNK_PROPRIO:
-                    raise ValueError(
-                        "`context_condition_latent_source = single_frame_condition_latent` is not supported with "
-                        "`variant_profile = generalist_joint_denoising`; the generalist rewrite expects full clean "
-                        "video condition latents."
-                    )
-                if conditional_generalist_modes_enabled:
-                    raise ValueError(
-                        "`sequence_contract=legacy_prefix_single_frame_perchunk_proprio` supports "
-                        "`variant_profile=generalist_joint_denoising` only when "
-                        "`generalist_denoising_mode_probs` is pure `joint`."
-                    )
             if self.runtime_mode != ParallelRuntimeMode.LINGBOT_EXACT_ACTION_CONDITIONED:
                 raise ValueError(
                     "`variant_profile = generalist_joint_denoising` requires "

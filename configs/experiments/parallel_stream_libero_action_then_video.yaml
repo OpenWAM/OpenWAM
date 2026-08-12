@@ -7,10 +7,10 @@ data:
   dataset_type: lerobot_v2_latent_local
   local_root: "${paths.datasets.libero_root}"
   replay_status_path: "${paths.datasets.libero_replay_status_path}"
-  replay_status_policy: successful_only
-  val_replay_status_policy: failure_only
-  require_replay_status: true
-  val_require_replay_status: true
+  replay_status_policy: include_all
+  val_replay_status_policy: null
+  require_replay_status: false
+  val_require_replay_status: false
   empty_text_embedding_path: "${paths.datasets.empty_text_embedding}"
   split: train
   # View + latent layout knobs
@@ -25,23 +25,25 @@ data:
   episode_cache_size: 2
   train_fraction: 1.0
   split_seed: 0
-  # Strict fixed-128 rollout-parity segments. One real context frame is
-  # materialized before the 128 supervised targets. Tail overflow remains
-  # metadata-only, unavailable targets are masked, and chunk geometry is fixed at 4.
+  # Shared LIBERO planning recipe. Geometry is sampled per draw while the
+  # complete trajectory remains available to the local attention window.
   sample_construction:
-    mode: hierarchical_fixed_segment
-    segment_frames: 128
+    mode: uniform_segment
+    sample_order_mode: replacement
     chunk_size: 4
-    window_size: 30
-    randomize_geometry: false
-    start_padding_frames: 0
-    target_alignment: next_after_context
-    rollout_context_policy: one_frame
-    tail_padding_policy: zero_order_hold
-    padded_target_policy: mask_loss
-    task_start_power: 0.5
+    window_size: 64
+    randomize_geometry: true
+    segment_min_frames: 1000
+    segment_max_frames: 1000
+    segment_length_stride: 1
+    segment_locality_block_size: 1
+    randomize_segment_length: false
+    randomize_segment_start: false
+    require_full_segment: true
+    task_start_power: 0.0
     demo_count_power: 0.0
-    trajectory_start_power: 1.0
+    trajectory_start_power: 0.0
+    sample_weight_mode: uniform
   train_batch_size: 1
   val_batch_size: 1
   num_workers: 8
@@ -106,6 +108,8 @@ policy_variant:
   name: parallel_stream
   runtime_mode: lingbot_exact
   program: action_then_video
+  sequence_contract: legacy_prefix_single_frame_perchunk_proprio
+  noisy_video_condition_prob: 0.5
   joint_timestep_coupling: independent
   reference_profile: libero
   hidden_size: 3072
@@ -147,7 +151,7 @@ training:
   warmup_steps: 10
   gradient_accumulation_steps: 10
   max_grad_norm: 2.0
-  num_steps: 5000
+  num_steps: 10000
   text_condition_dropout_prob: 0.1
   # Supervision knobs
   # - enabled_objectives turns objective families on/off
@@ -158,13 +162,7 @@ training:
   # Trainability knobs
   # - choose which component families receive gradients
   trainable_components: [visual_tower.runtime_backbone]
-  # PR88 per-sample loss weighting: scale loss by valid_action_steps so longer
-  # masked-clean segments contribute more (and short ones less), normalized by
-  # the dataset mean. Clamped to [0.25, 4.0].
-  sample_loss_weight_mode: valid_action_steps
-  sample_loss_weight_reference_steps: null
-  sample_loss_weight_min: 0.25
-  sample_loss_weight_max: 4.0
+  sample_loss_weight_mode: none
 
 inference:
   # Rollout/inference knobs

@@ -1,15 +1,15 @@
 name: dual_expert_libero_video_noisy_to_action
 
 data:
-  # Shared fixed-128 hierarchical LIBERO training windows
+  # Full-trajectory sampling recipe validated by closed-loop LIBERO evaluation.
   dataset_name: libero
   dataset_type: lerobot_v2_latent_local
   local_root: "${paths.datasets.libero_root}"
   replay_status_path: "${paths.datasets.libero_replay_status_path}"
-  replay_status_policy: successful_only
-  val_replay_status_policy: failure_only
-  require_replay_status: true
-  val_require_replay_status: true
+  replay_status_policy: include_all
+  val_replay_status_policy: null
+  require_replay_status: false
+  val_require_replay_status: false
   empty_text_embedding_path: "${paths.datasets.empty_text_embedding}"
   split: train
   camera_names: [observation.images.agentview_rgb, observation.images.eye_in_hand_rgb]
@@ -19,23 +19,25 @@ data:
   num_frames: 4
   frame_stride: 1
   sample_stride: 1
-  # Use the shared benchmark-facing strict sampler: task/trajectory/start are
-  # sampled hierarchically, one real context frame precedes the 128 supervised
-  # targets, tail overflow is metadata-only, and chunk geometry is fixed at 4.
+  # Randomize packed chunk/window geometry inside a complete trajectory. The
+  # sequence contract below owns prefix alignment and proprio semantics.
   sample_construction:
-    mode: hierarchical_fixed_segment
-    segment_frames: 128
+    mode: uniform_segment
+    sample_order_mode: replacement
     chunk_size: 4
-    window_size: 30
-    randomize_geometry: false
-    start_padding_frames: 0
-    target_alignment: next_after_context
-    rollout_context_policy: one_frame
-    tail_padding_policy: zero_order_hold
-    padded_target_policy: mask_loss
-    task_start_power: 0.5
+    window_size: 64
+    randomize_geometry: true
+    segment_min_frames: 1000
+    segment_max_frames: 1000
+    segment_length_stride: 1
+    segment_locality_block_size: 1
+    randomize_segment_length: false
+    randomize_segment_start: false
+    require_full_segment: true
+    task_start_power: 0.0
     demo_count_power: 0.0
-    trajectory_start_power: 1.0
+    trajectory_start_power: 0.0
+    sample_weight_mode: uniform
   episode_cache_size: 2
   train_fraction: 1.0
   split_seed: 0
@@ -90,13 +92,14 @@ backbone:
   reference_assets_device_policy: cpu_offload
 
 policy_variant:
-  # Dual-expert packed coupling over one shared fixed-128 history window
+  # Dual-expert packed coupling with the checkpoint-validated prefix contract.
   name: dual_expert
   hidden_size: 3072
   attach_site: post_visual_core
   preset: fastwam_joint
   runtime_mode: non_joint_two_stream
   program: video_noisy_to_action
+  sequence_contract: legacy_prefix_single_frame_perchunk_proprio
   joint_timestep_coupling: match_sigma
   condition_mode: teacher_forcing_cond_video
   video_prefix_frames: 1
@@ -105,6 +108,7 @@ policy_variant:
   action_hidden_size: 2048
   action_ffn_dim: 8192
   video_can_attend_action: false
+  noisy_video_condition_prob: 0.5
   use_text_conditioning: true
   use_state_conditioning: false
   use_activation_checkpointing: true
@@ -123,7 +127,8 @@ training:
   action_sigma_shift: 1.0
   use_teacher_forcing: false
   chunk_size: 4
-  window_size: 30
+  window_size: 64
+  sample_loss_weight_mode: none
   optimizer_name: adamw
   scheduler_name: constant_with_warmup
   learning_rate: 1.0e-5
@@ -135,7 +140,7 @@ training:
   # FSDP CPU offload / activation checkpointing for 4xL40S headroom.
   gradient_accumulation_steps: 10
   max_grad_norm: 2.0
-  num_steps: 5000
+  num_steps: 10000
   text_condition_dropout_prob: 0.1
   enabled_objectives: [action, latent]
   latent_loss_weight: 1.0

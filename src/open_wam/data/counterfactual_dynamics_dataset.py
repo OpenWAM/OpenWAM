@@ -371,6 +371,10 @@ class EncodedCounterfactualDynamicsLatentDataset(Dataset[LatentWAMSample]):
                 )
             },
             **hierarchical_metadata,
+            # Counterfactual conditional samples carry t0 inside the model
+            # sequence. Keep this explicit for every sampler mode so policy
+            # variants do not infer placement from a dataset or method name.
+            "context_prefix_frames_in_sample": loss_frame_start,
         }
         return LatentWAMSample(
             video_latents=video_latents,
